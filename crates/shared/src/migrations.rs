@@ -14,7 +14,7 @@
 //! *before* calling `apply`: `PRAGMA foreign_keys` is a no-op if issued inside a
 //! transaction, and each migration here runs inside one.
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 /// Each migration's DDL and its `schema_migrations` bookkeeping row commit together
 /// or not at all. Without that, a crash in the window between the two re-runs the
@@ -27,7 +27,9 @@ use rusqlite::{Connection, params};
 /// database - e.g. every time a server restarts against its existing database file -
 /// is safe and a no-op for anything already applied.
 pub fn apply(conn: &Connection, migrations: &[(i64, &str)]) -> rusqlite::Result<()> {
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)",
+    )?;
     for (version, sql) in migrations {
         let already_applied: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
@@ -42,7 +44,10 @@ pub fn apply(conn: &Connection, migrations: &[(i64, &str)]) -> rusqlite::Result<
             // redundant there).
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(sql)?;
-            tx.execute("INSERT INTO schema_migrations (version) VALUES (?1)", params![version])?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                params![version],
+            )?;
             tx.commit()?;
         }
     }
@@ -65,17 +70,30 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         let migrations: &[(i64, &str)] = &[
             (1, "CREATE TABLE ok_table (id INTEGER PRIMARY KEY);"),
-            (2, "CREATE TABLE half_applied (id INTEGER PRIMARY KEY); THIS IS NOT VALID SQL;"),
+            (
+                2,
+                "CREATE TABLE half_applied (id INTEGER PRIMARY KEY); THIS IS NOT VALID SQL;",
+            ),
         ];
         let err = apply(&conn, migrations).unwrap_err();
         let _ = err;
 
         let applied: Vec<i64> = {
-            let mut stmt = conn.prepare("SELECT version FROM schema_migrations ORDER BY version").unwrap();
-            let rows = stmt.query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT version FROM schema_migrations ORDER BY version")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
             rows
         };
-        assert_eq!(applied, vec![1], "the migration that succeeded is recorded; the one that failed is not");
+        assert_eq!(
+            applied,
+            vec![1],
+            "the migration that succeeded is recorded; the one that failed is not"
+        );
 
         let half_applied_exists: bool = conn
             .query_row(
@@ -91,7 +109,10 @@ mod tests {
 
         // And the retry a restart would perform now succeeds against a fixed
         // migration, rather than tripping over its own leftovers.
-        let fixed: &[(i64, &str)] = &[migrations[0], (2, "CREATE TABLE half_applied (id INTEGER PRIMARY KEY);")];
+        let fixed: &[(i64, &str)] = &[
+            migrations[0],
+            (2, "CREATE TABLE half_applied (id INTEGER PRIMARY KEY);"),
+        ];
         apply(&conn, fixed).unwrap();
     }
 }

@@ -83,7 +83,9 @@ use crate::db::StoreConnectionRow;
 pub enum ExchangeRateConfigError {
     #[error("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED must be \"true\" or \"false\", got {0:?}")]
     InvalidCoingeckoEnabled(String),
-    #[error("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED must be \"true\" or \"false\", got {0:?}")]
+    #[error(
+        "MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED must be \"true\" or \"false\", got {0:?}"
+    )]
     InvalidCoinMarketCapEnabled(String),
     #[error("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED must be \"true\" or \"false\", got {0:?}")]
     InvalidHavenoEnabled(String),
@@ -127,25 +129,41 @@ fn parse_enabled(
 /// Parses the exchange-rate config from a plain key -> value lookup (a real
 /// `std::env::var` wrapper in production, an in-memory map in tests - see
 /// this module's own doc comment for why).
-pub fn parse<F: Fn(&str) -> Option<String>>(get_env: F) -> Result<ExchangeRateConfig, ExchangeRateConfigError> {
-    let coingecko_enabled = parse_enabled(get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED"), true, ExchangeRateConfigError::InvalidCoingeckoEnabled)?;
-    let coingecko_base_url =
-        get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL").unwrap_or_else(|| DEFAULT_COINGECKO_BASE_URL.to_string());
+pub fn parse<F: Fn(&str) -> Option<String>>(
+    get_env: F,
+) -> Result<ExchangeRateConfig, ExchangeRateConfigError> {
+    let coingecko_enabled = parse_enabled(
+        get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED"),
+        true,
+        ExchangeRateConfigError::InvalidCoingeckoEnabled,
+    )?;
+    let coingecko_base_url = get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL")
+        .unwrap_or_else(|| DEFAULT_COINGECKO_BASE_URL.to_string());
 
-    let coinmarketcap_enabled =
-        parse_enabled(get_env("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED"), true, ExchangeRateConfigError::InvalidCoinMarketCapEnabled)?;
-    let coinmarketcap_base_url =
-        get_env("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_BASE_URL").unwrap_or_else(|| DEFAULT_COINMARKETCAP_BASE_URL.to_string());
+    let coinmarketcap_enabled = parse_enabled(
+        get_env("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED"),
+        true,
+        ExchangeRateConfigError::InvalidCoinMarketCapEnabled,
+    )?;
+    let coinmarketcap_base_url = get_env("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_BASE_URL")
+        .unwrap_or_else(|| DEFAULT_COINMARKETCAP_BASE_URL.to_string());
 
     // Off by default, unlike the two above: it prices from a thin
     // peer-to-peer order book rather than an index (see `shared::haveno`), so
     // an operator opts in.
-    let haveno_enabled = parse_enabled(get_env("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED"), false, ExchangeRateConfigError::InvalidHavenoEnabled)?;
-    let haveno_base_url = get_env("MONOKULO_EXCHANGE_RATE_HAVENO_BASE_URL").unwrap_or_else(|| DEFAULT_HAVENO_BASE_URL.to_string());
+    let haveno_enabled = parse_enabled(
+        get_env("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED"),
+        false,
+        ExchangeRateConfigError::InvalidHavenoEnabled,
+    )?;
+    let haveno_base_url = get_env("MONOKULO_EXCHANGE_RATE_HAVENO_BASE_URL")
+        .unwrap_or_else(|| DEFAULT_HAVENO_BASE_URL.to_string());
 
     let cache_seconds = match get_env("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS") {
         None => DEFAULT_CACHE_SECONDS,
-        Some(raw) => raw.parse::<u64>().map_err(|_| ExchangeRateConfigError::InvalidCacheSeconds(raw))?,
+        Some(raw) => raw
+            .parse::<u64>()
+            .map_err(|_| ExchangeRateConfigError::InvalidCacheSeconds(raw))?,
     };
 
     Ok(ExchangeRateConfig {
@@ -230,10 +248,15 @@ impl ExchangeRateProviders {
     }
 
     /// Both providers, each pointed at its own (test) server.
-    pub fn coingecko_and_coinmarketcap(coingecko_base_url: impl Into<String>, coinmarketcap_base_url: impl Into<String>) -> Self {
+    pub fn coingecko_and_coinmarketcap(
+        coingecko_base_url: impl Into<String>,
+        coinmarketcap_base_url: impl Into<String>,
+    ) -> Self {
         ExchangeRateProviders::with(FiatProviders {
             coingecko: Some(Arc::new(CoingeckoRateProvider::new(coingecko_base_url))),
-            coinmarketcap: Some(Arc::new(CoinMarketCapRateProvider::new(coinmarketcap_base_url))),
+            coinmarketcap: Some(Arc::new(CoinMarketCapRateProvider::new(
+                coinmarketcap_base_url,
+            ))),
             haveno: None,
             cache_seconds: DEFAULT_CACHE_SECONDS,
         })
@@ -250,10 +273,16 @@ impl ExchangeRateProviders {
     }
 
     /// All three providers, each pointed at its own (test) server.
-    pub fn all(coingecko_base_url: impl Into<String>, coinmarketcap_base_url: impl Into<String>, haveno_base_url: impl Into<String>) -> Self {
+    pub fn all(
+        coingecko_base_url: impl Into<String>,
+        coinmarketcap_base_url: impl Into<String>,
+        haveno_base_url: impl Into<String>,
+    ) -> Self {
         ExchangeRateProviders::with(FiatProviders {
             coingecko: Some(Arc::new(CoingeckoRateProvider::new(coingecko_base_url))),
-            coinmarketcap: Some(Arc::new(CoinMarketCapRateProvider::new(coinmarketcap_base_url))),
+            coinmarketcap: Some(Arc::new(CoinMarketCapRateProvider::new(
+                coinmarketcap_base_url,
+            ))),
             haveno: Some(Arc::new(HavenoRateProvider::new(haveno_base_url))),
             cache_seconds: DEFAULT_CACHE_SECONDS,
         })
@@ -266,24 +295,49 @@ impl ExchangeRateProviders {
     /// tests just use `currency = "XMR"`, per
     /// `docs/fx_refactor.md`'s follow-up).
     pub fn xmr_only() -> Self {
-        ExchangeRateProviders::with(FiatProviders { coingecko: None, coinmarketcap: None, haveno: None, cache_seconds: DEFAULT_CACHE_SECONDS })
+        ExchangeRateProviders::with(FiatProviders {
+            coingecko: None,
+            coinmarketcap: None,
+            haveno: None,
+            cache_seconds: DEFAULT_CACHE_SECONDS,
+        })
     }
 
     fn with(fiat: FiatProviders) -> Self {
-        ExchangeRateProviders { xmr: XmrIdentityProvider, fiat: parking_lot::RwLock::new(Arc::new(fiat)) }
+        ExchangeRateProviders {
+            xmr: XmrIdentityProvider,
+            fiat: parking_lot::RwLock::new(Arc::new(fiat)),
+        }
     }
 
     fn fiat_for(config: &ExchangeRateConfig) -> FiatProviders {
-        let coingecko =
-            if config.coingecko_enabled { Some(Arc::new(CoingeckoRateProvider::new(config.coingecko_base_url.clone()))) } else { None };
-        let coinmarketcap = if config.coinmarketcap_enabled {
-            Some(Arc::new(CoinMarketCapRateProvider::new(config.coinmarketcap_base_url.clone())))
+        let coingecko = if config.coingecko_enabled {
+            Some(Arc::new(CoingeckoRateProvider::new(
+                config.coingecko_base_url.clone(),
+            )))
         } else {
             None
         };
-        let haveno =
-            if config.haveno_enabled { Some(Arc::new(HavenoRateProvider::new(config.haveno_base_url.clone()))) } else { None };
-        FiatProviders { coingecko, coinmarketcap, haveno, cache_seconds: config.cache_seconds }
+        let coinmarketcap = if config.coinmarketcap_enabled {
+            Some(Arc::new(CoinMarketCapRateProvider::new(
+                config.coinmarketcap_base_url.clone(),
+            )))
+        } else {
+            None
+        };
+        let haveno = if config.haveno_enabled {
+            Some(Arc::new(HavenoRateProvider::new(
+                config.haveno_base_url.clone(),
+            )))
+        } else {
+            None
+        };
+        FiatProviders {
+            coingecko,
+            coinmarketcap,
+            haveno,
+            cache_seconds: config.cache_seconds,
+        }
     }
 
     pub fn build(config: &ExchangeRateConfig) -> Self {
@@ -333,23 +387,36 @@ impl ExchangeRateProviders {
         for name in &store.fx_providers {
             let outcome = match name.as_str() {
                 COINGECKO => match &fiat.coingecko {
-                    Some(provider) => provider.piconero_per_unit_cached(currency, max_age).await.map(|rate| (COINGECKO, rate)),
+                    Some(provider) => provider
+                        .piconero_per_unit_cached(currency, max_age)
+                        .await
+                        .map(|rate| (COINGECKO, rate)),
                     None => continue,
                 },
                 COINMARKETCAP => match &fiat.coinmarketcap {
-                    Some(provider) => provider.piconero_per_unit_cached(currency, max_age).await.map(|rate| (COINMARKETCAP, rate)),
+                    Some(provider) => provider
+                        .piconero_per_unit_cached(currency, max_age)
+                        .await
+                        .map(|rate| (COINMARKETCAP, rate)),
                     None => continue,
                 },
                 HAVENO => match &fiat.haveno {
                     Some(provider) => {
                         let settings = &store.fx_provider_settings.haveno;
                         if settings.allows(currency) {
-                            provider.piconero_per_unit_cached(currency, max_age, &settings.policy()).await.map(|rate| (HAVENO, rate))
+                            provider
+                                .piconero_per_unit_cached(currency, max_age, &settings.policy())
+                                .await
+                                .map(|rate| (HAVENO, rate))
                         } else {
                             // Not one of the currencies this store lets
                             // Haveno quote: no request, and it counts as
                             // "no rate" so the next provider is tried.
-                            tracing::info!(provider = HAVENO, currency, "currency is not on this store's Haveno list - trying the next");
+                            tracing::info!(
+                                provider = HAVENO,
+                                currency,
+                                "currency is not on this store's Haveno list - trying the next"
+                            );
                             Ok((HAVENO, None))
                         }
                     }
@@ -361,7 +428,11 @@ impl ExchangeRateProviders {
             match outcome {
                 Ok((provider, Some(rate))) => return Ok(Some((rate, provider))),
                 Ok((provider, None)) => {
-                    tracing::info!(provider, currency, "exchange rate provider has no rate for this currency - trying the next");
+                    tracing::info!(
+                        provider,
+                        currency,
+                        "exchange rate provider has no rate for this currency - trying the next"
+                    );
                 }
                 Err(error) => {
                     tracing::warn!(provider = %name, currency, %error, "exchange rate provider failed - trying the next");
@@ -375,7 +446,13 @@ impl ExchangeRateProviders {
         if consulted {
             return Ok(None);
         }
-        Err(ExchangeRateLookupError::ProviderNotConfigured(store.fx_providers.first().cloned().unwrap_or_else(|| "none".to_string())))
+        Err(ExchangeRateLookupError::ProviderNotConfigured(
+            store
+                .fx_providers
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "none".to_string()),
+        ))
     }
 
     /// Every currency an order for `store` could actually be priced in
@@ -408,9 +485,14 @@ impl ExchangeRateProviders {
         for name in &store.fx_providers {
             match name.as_str() {
                 COINGECKO => {
-                    let Some(provider) = &fiat.coingecko else { continue };
+                    let Some(provider) = &fiat.coingecko else {
+                        continue;
+                    };
                     consulted = true;
-                    match provider.supported_currencies_cached(Duration::from_secs(fiat.cache_seconds)).await {
+                    match provider
+                        .supported_currencies_cached(Duration::from_secs(fiat.cache_seconds))
+                        .await
+                    {
                         Ok(list) => extend(list),
                         Err(error) => last_error = Some(error),
                     }
@@ -441,7 +523,9 @@ impl ExchangeRateProviders {
             }
         }
         match last_error {
-            Some(error) if currencies.len() == 1 && consulted => Err(ExchangeRateLookupError::Provider(error)),
+            Some(error) if currencies.len() == 1 && consulted => {
+                Err(ExchangeRateLookupError::Provider(error))
+            }
             _ => Ok(currencies),
         }
     }
@@ -477,7 +561,10 @@ mod tests {
     use std::collections::HashMap;
 
     fn env_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn test_store(fx_providers: &[&str]) -> StoreConnectionRow {
@@ -526,12 +613,18 @@ mod tests {
     fn an_invalid_coingecko_enabled_value_is_a_clear_error() {
         let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", "yes")]);
         let err = parse(|k| env.get(k).cloned()).unwrap_err();
-        assert_eq!(err, ExchangeRateConfigError::InvalidCoingeckoEnabled("yes".to_string()));
+        assert_eq!(
+            err,
+            ExchangeRateConfigError::InvalidCoingeckoEnabled("yes".to_string())
+        );
     }
 
     #[test]
     fn coingecko_base_url_overrides_the_real_default() {
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL", "http://127.0.0.1:9999")]);
+        let env = env_map(&[(
+            "MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL",
+            "http://127.0.0.1:9999",
+        )]);
         let config = parse(|k| env.get(k).cloned()).unwrap();
         assert_eq!(config.coingecko_base_url, "http://127.0.0.1:9999");
     }
@@ -553,36 +646,61 @@ mod tests {
     fn an_invalid_cache_seconds_value_is_a_clear_error() {
         let env = env_map(&[("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS", "not_a_number")]);
         let err = parse(|k| env.get(k).cloned()).unwrap_err();
-        assert_eq!(err, ExchangeRateConfigError::InvalidCacheSeconds("not_a_number".to_string()));
+        assert_eq!(
+            err,
+            ExchangeRateConfigError::InvalidCacheSeconds("not_a_number".to_string())
+        );
     }
 
     #[tokio::test]
-    async fn an_xmr_order_is_always_priced_at_the_identity_rate_regardless_of_the_stores_provider() {
+    async fn an_xmr_order_is_always_priced_at_the_identity_rate_regardless_of_the_stores_provider()
+    {
         let providers = ExchangeRateProviders::xmr_only();
         let store = test_store(&["coingecko"]); // not even configured - must not matter for XMR
-        let (rate, provider) = providers.piconero_per_unit_for(&store, "XMR").await.unwrap().unwrap();
+        let (rate, provider) = providers
+            .piconero_per_unit_for(&store, "XMR")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(rate, 1_000_000_000_000);
         assert_eq!(provider, "xmr");
 
         // Case-insensitive, same as every other currency lookup in this codebase.
-        let (rate, _) = providers.piconero_per_unit_for(&store, "xmr").await.unwrap().unwrap();
+        let (rate, _) = providers
+            .piconero_per_unit_for(&store, "xmr")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(rate, 1_000_000_000_000);
     }
 
     #[tokio::test]
-    async fn a_store_with_no_coingecko_configured_gets_a_clear_provider_not_configured_error_for_fiat() {
+    async fn a_store_with_no_coingecko_configured_gets_a_clear_provider_not_configured_error_for_fiat(
+    ) {
         let providers = ExchangeRateProviders::xmr_only();
         let store = test_store(&[COINGECKO]);
-        let err = providers.piconero_per_unit_for(&store, "USD").await.unwrap_err();
-        assert!(matches!(err, ExchangeRateLookupError::ProviderNotConfigured(ref p) if p == COINGECKO), "got {err:?}");
+        let err = providers
+            .piconero_per_unit_for(&store, "USD")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ExchangeRateLookupError::ProviderNotConfigured(ref p) if p == COINGECKO),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn an_unrecognized_provider_name_is_a_clear_error_not_a_panic() {
         let providers = ExchangeRateProviders::xmr_only();
         let store = test_store(&["fixed"]); // a stale pre-removal value
-        let err = providers.piconero_per_unit_for(&store, "USD").await.unwrap_err();
-        assert!(matches!(err, ExchangeRateLookupError::ProviderNotConfigured(ref p) if p == "fixed"), "got {err:?}");
+        let err = providers
+            .piconero_per_unit_for(&store, "USD")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ExchangeRateLookupError::ProviderNotConfigured(ref p) if p == "fixed"),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -600,7 +718,10 @@ mod tests {
     async fn supported_currencies_for_always_includes_xmr_even_with_nothing_configured() {
         let providers = ExchangeRateProviders::xmr_only();
         let store = test_store(&[COINGECKO]);
-        let currencies = providers.supported_currencies_for(&store, &[]).await.unwrap();
+        let currencies = providers
+            .supported_currencies_for(&store, &[])
+            .await
+            .unwrap();
         assert_eq!(currencies, vec!["XMR".to_string()]);
     }
 
@@ -611,7 +732,10 @@ mod tests {
         // must not error, just report what's actually usable.
         let providers = ExchangeRateProviders::coingecko_only("http://127.0.0.1:0");
         let store = test_store(&["fixed"]);
-        let currencies = providers.supported_currencies_for(&store, &[]).await.unwrap();
+        let currencies = providers
+            .supported_currencies_for(&store, &[])
+            .await
+            .unwrap();
         assert_eq!(currencies, vec!["XMR".to_string()]);
     }
 
@@ -620,7 +744,12 @@ mod tests {
             path,
             axum::routing::get(move || async move {
                 use axum::response::IntoResponse;
-                (axum::http::StatusCode::from_u16(status).unwrap(), [("content-type", "application/json")], body).into_response()
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [("content-type", "application/json")],
+                    body,
+                )
+                    .into_response()
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -642,9 +771,17 @@ mod tests {
         let cmc = spawn_json(CMC_PATH, CMC_USD_2, 200).await;
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(cg, cmc);
 
-        let (rate, name) = providers.piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD").await.unwrap().unwrap();
+        let (rate, name) = providers
+            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!((rate, name), (1_000_000_000_000, COINGECKO));
-        let (rate, name) = providers.piconero_per_unit_for(&test_store(&[COINMARKETCAP, COINGECKO]), "USD").await.unwrap().unwrap();
+        let (rate, name) = providers
+            .piconero_per_unit_for(&test_store(&[COINMARKETCAP, COINGECKO]), "USD")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!((rate, name), (500_000_000_000, COINMARKETCAP));
     }
 
@@ -653,27 +790,54 @@ mod tests {
         let down = spawn_json(CG_PATH, "boom", 500).await;
         let cmc = spawn_json(CMC_PATH, CMC_USD_2, 200).await;
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(down, cmc);
-        let (_, name) = providers.piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD").await.unwrap().unwrap();
+        let (_, name) = providers
+            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(name, COINMARKETCAP, "a failed provider is skipped");
 
         let no_usd = spawn_json(CG_PATH, r#"{"monero":{"eur":1.0}}"#, 200).await;
         let cmc = spawn_json(CMC_PATH, CMC_USD_2, 200).await;
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(no_usd, cmc);
-        let (_, name) = providers.piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD").await.unwrap().unwrap();
-        assert_eq!(name, COINMARKETCAP, "a provider with no rate for the currency is skipped");
+        let (_, name) = providers
+            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            name, COINMARKETCAP,
+            "a provider with no rate for the currency is skipped"
+        );
     }
 
     #[tokio::test]
     async fn no_rate_anywhere_is_none_but_a_failure_anywhere_is_an_error() {
         let no_usd = spawn_json(CG_PATH, r#"{"monero":{"eur":1.0}}"#, 200).await;
-        let cmc_none = spawn_json(CMC_PATH, r#"{"data":{"quote":{}},"status":{"error_code":0}}"#, 200).await;
-        let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(no_usd.clone(), cmc_none);
-        assert!(providers.piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD").await.unwrap().is_none());
+        let cmc_none = spawn_json(
+            CMC_PATH,
+            r#"{"data":{"quote":{}},"status":{"error_code":0}}"#,
+            200,
+        )
+        .await;
+        let providers =
+            ExchangeRateProviders::coingecko_and_coinmarketcap(no_usd.clone(), cmc_none);
+        assert!(providers
+            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .await
+            .unwrap()
+            .is_none());
 
         let cmc_down = spawn_json(CMC_PATH, "boom", 500).await;
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(no_usd, cmc_down);
-        let err = providers.piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD").await.unwrap_err();
-        assert!(matches!(err, ExchangeRateLookupError::Provider(_)), "got {err:?}");
+        let err = providers
+            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ExchangeRateLookupError::Provider(_)),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -681,27 +845,58 @@ mod tests {
         let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
         let cmc = spawn_json(CMC_PATH, CMC_USD_2, 200).await;
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(cg, cmc);
-        let (_, name) = providers.piconero_per_unit_for(&test_store(&[COINMARKETCAP]), "USD").await.unwrap().unwrap();
+        let (_, name) = providers
+            .piconero_per_unit_for(&test_store(&[COINMARKETCAP]), "USD")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(name, COINMARKETCAP, "coingecko is not in the store's list");
 
         // Store lists a provider the instance turned off, then one it kept.
-        let providers = ExchangeRateProviders::coinmarketcap_only(spawn_json(CMC_PATH, CMC_USD_2, 200).await);
-        let (_, name) = providers.piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD").await.unwrap().unwrap();
+        let providers =
+            ExchangeRateProviders::coinmarketcap_only(spawn_json(CMC_PATH, CMC_USD_2, 200).await);
+        let (_, name) = providers
+            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(name, COINMARKETCAP);
 
-        let err = providers.piconero_per_unit_for(&test_store(&[]), "USD").await.unwrap_err();
-        assert!(matches!(err, ExchangeRateLookupError::ProviderNotConfigured(_)), "a store with no providers can't price fiat: {err:?}");
+        let err = providers
+            .piconero_per_unit_for(&test_store(&[]), "USD")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ExchangeRateLookupError::ProviderNotConfigured(_)),
+            "a store with no providers can't price fiat: {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn supported_currencies_are_the_union_over_the_stores_providers_without_repeats() {
-        let cg = spawn_json("/api/v3/simple/supported_vs_currencies", r#"["usd","eur"]"#, 200).await;
-        let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(cg, "http://127.0.0.1:1");
+        let cg = spawn_json(
+            "/api/v3/simple/supported_vs_currencies",
+            r#"["usd","eur"]"#,
+            200,
+        )
+        .await;
+        let providers =
+            ExchangeRateProviders::coingecko_and_coinmarketcap(cg, "http://127.0.0.1:1");
         let known = vec!["XMR".to_string(), "USD".to_string(), "JPY".to_string()];
-        let both = providers.supported_currencies_for(&test_store(&[COINGECKO, COINMARKETCAP]), &known).await.unwrap();
+        let both = providers
+            .supported_currencies_for(&test_store(&[COINGECKO, COINMARKETCAP]), &known)
+            .await
+            .unwrap();
         assert_eq!(both, vec!["XMR", "USD", "EUR", "JPY"]);
-        let cmc_only = providers.supported_currencies_for(&test_store(&[COINMARKETCAP]), &known).await.unwrap();
-        assert_eq!(cmc_only, vec!["XMR", "USD", "JPY"], "coinmarketcap has no list of its own: the known currencies");
+        let cmc_only = providers
+            .supported_currencies_for(&test_store(&[COINMARKETCAP]), &known)
+            .await
+            .unwrap();
+        assert_eq!(
+            cmc_only,
+            vec!["XMR", "USD", "JPY"],
+            "coinmarketcap has no list of its own: the known currencies"
+        );
     }
 
     #[test]
@@ -709,7 +904,11 @@ mod tests {
         let config = parse(|_| None).unwrap();
         assert!(config.coinmarketcap_enabled);
         let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED", "false")]);
-        assert!(!parse(|k| env.get(k).cloned()).unwrap().coinmarketcap_enabled);
+        assert!(
+            !parse(|k| env.get(k).cloned())
+                .unwrap()
+                .coinmarketcap_enabled
+        );
         let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED", "maybe")]);
         assert_eq!(
             parse(|k| env.get(k).cloned()).unwrap_err(),
@@ -727,23 +926,42 @@ mod tests {
         let env = env_map(&[("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED", "true")]);
         assert!(parse(|k| env.get(k).cloned()).unwrap().haveno_enabled);
         let env = env_map(&[("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED", "1")]);
-        assert_eq!(parse(|k| env.get(k).cloned()).unwrap_err(), ExchangeRateConfigError::InvalidHavenoEnabled("1".to_string()));
+        assert_eq!(
+            parse(|k| env.get(k).cloned()).unwrap_err(),
+            ExchangeRateConfigError::InvalidHavenoEnabled("1".to_string())
+        );
     }
 
     #[tokio::test]
     async fn haveno_prices_from_its_book_and_a_one_sided_book_hands_over_to_the_next() {
         let hv = spawn_json(HAVENO_PATH, HAVENO_TICKERS, 200).await;
         let providers = ExchangeRateProviders::haveno_only(hv.clone());
-        let (rate, name) = providers.piconero_per_unit_for(&test_store(&[HAVENO]), "USD").await.unwrap().unwrap();
+        let (rate, name) = providers
+            .piconero_per_unit_for(&test_store(&[HAVENO]), "USD")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!((rate, name), (10_000_000_000, HAVENO));
-        assert!(providers.piconero_per_unit_for(&test_store(&[HAVENO]), "EUR").await.unwrap().is_none());
+        assert!(providers
+            .piconero_per_unit_for(&test_store(&[HAVENO]), "EUR")
+            .await
+            .unwrap()
+            .is_none());
 
         // EUR: haveno has no ask, so the next preferred provider prices it.
         let cg = spawn_json(CG_PATH, r#"{"monero":{"eur":2.0}}"#, 200).await;
         let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", hv);
-        let (_, name) = providers.piconero_per_unit_for(&test_store(&[HAVENO, COINGECKO]), "EUR").await.unwrap().unwrap();
+        let (_, name) = providers
+            .piconero_per_unit_for(&test_store(&[HAVENO, COINGECKO]), "EUR")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(name, COINGECKO);
-        let (_, name) = providers.piconero_per_unit_for(&test_store(&[HAVENO, COINGECKO]), "USD").await.unwrap().unwrap();
+        let (_, name) = providers
+            .piconero_per_unit_for(&test_store(&[HAVENO, COINGECKO]), "USD")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(name, HAVENO, "and USD, which has a book, stays with haveno");
     }
 
@@ -751,18 +969,35 @@ mod tests {
     async fn haveno_lists_the_stores_currencies_or_every_known_one_without_asking_haveno() {
         // Nothing is listening: the list must not depend on a live book.
         let providers = ExchangeRateProviders::haveno_only("http://127.0.0.1:1");
-        let known = vec!["XMR".to_string(), "USD".to_string(), "EUR".to_string(), "JPY".to_string()];
+        let known = vec![
+            "XMR".to_string(),
+            "USD".to_string(),
+            "EUR".to_string(),
+            "JPY".to_string(),
+        ];
         assert_eq!(providers.available_providers(), vec![HAVENO]);
 
         assert_eq!(
-            providers.supported_currencies_for(&test_store(&[HAVENO]), &known).await.unwrap(),
+            providers
+                .supported_currencies_for(&test_store(&[HAVENO]), &known)
+                .await
+                .unwrap(),
             vec!["XMR", "USD", "EUR", "JPY"],
             "an empty list means every known currency"
         );
 
         let mut store = test_store(&[HAVENO]);
-        store.fx_provider_settings.haveno = HavenoSettings { currencies: vec!["EUR".to_string(), "USD".to_string()], ..Default::default() };
-        assert_eq!(providers.supported_currencies_for(&store, &known).await.unwrap(), vec!["XMR", "EUR", "USD"]);
+        store.fx_provider_settings.haveno = HavenoSettings {
+            currencies: vec!["EUR".to_string(), "USD".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            providers
+                .supported_currencies_for(&store, &known)
+                .await
+                .unwrap(),
+            vec!["XMR", "EUR", "USD"]
+        );
     }
 
     fn store_with_haveno(settings: HavenoSettings, providers: &[&str]) -> StoreConnectionRow {
@@ -776,13 +1011,36 @@ mod tests {
         // Haveno is unreachable: were it asked, the lookup would be an error.
         let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
         let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", "http://127.0.0.1:1");
-        let store = store_with_haveno(HavenoSettings { currencies: vec!["EUR".to_string()], ..Default::default() }, &[HAVENO, COINGECKO]);
-        let (_, name) = providers.piconero_per_unit_for(&store, "USD").await.unwrap().unwrap();
-        assert_eq!(name, COINGECKO, "USD is not on the list, so haveno is not asked and coingecko answers");
+        let store = store_with_haveno(
+            HavenoSettings {
+                currencies: vec!["EUR".to_string()],
+                ..Default::default()
+            },
+            &[HAVENO, COINGECKO],
+        );
+        let (_, name) = providers
+            .piconero_per_unit_for(&store, "USD")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            name, COINGECKO,
+            "USD is not on the list, so haveno is not asked and coingecko answers"
+        );
 
         // And with haveno as the only provider: "no rate", not an error.
-        let only = store_with_haveno(HavenoSettings { currencies: vec!["EUR".to_string()], ..Default::default() }, &[HAVENO]);
-        assert!(providers.piconero_per_unit_for(&only, "USD").await.unwrap().is_none());
+        let only = store_with_haveno(
+            HavenoSettings {
+                currencies: vec!["EUR".to_string()],
+                ..Default::default()
+            },
+            &[HAVENO],
+        );
+        assert!(providers
+            .piconero_per_unit_for(&only, "USD")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -792,11 +1050,49 @@ mod tests {
         let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
         let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", hv);
 
-        let loose = store_with_haveno(HavenoSettings { max_spread_pct: 5.0, ..Default::default() }, &[HAVENO, COINGECKO]);
-        let strict = store_with_haveno(HavenoSettings { max_spread_pct: 1.0, ..Default::default() }, &[HAVENO, COINGECKO]);
-        assert_eq!(providers.piconero_per_unit_for(&loose, "USD").await.unwrap().unwrap().1, HAVENO);
-        assert_eq!(providers.piconero_per_unit_for(&strict, "USD").await.unwrap().unwrap().1, COINGECKO, "too wide for this store");
-        assert_eq!(providers.piconero_per_unit_for(&loose, "USD").await.unwrap().unwrap().1, HAVENO, "the other store's answer did not stick");
+        let loose = store_with_haveno(
+            HavenoSettings {
+                max_spread_pct: 5.0,
+                ..Default::default()
+            },
+            &[HAVENO, COINGECKO],
+        );
+        let strict = store_with_haveno(
+            HavenoSettings {
+                max_spread_pct: 1.0,
+                ..Default::default()
+            },
+            &[HAVENO, COINGECKO],
+        );
+        assert_eq!(
+            providers
+                .piconero_per_unit_for(&loose, "USD")
+                .await
+                .unwrap()
+                .unwrap()
+                .1,
+            HAVENO
+        );
+        assert_eq!(
+            providers
+                .piconero_per_unit_for(&strict, "USD")
+                .await
+                .unwrap()
+                .unwrap()
+                .1,
+            COINGECKO,
+            "too wide for this store"
+        );
+        assert_eq!(
+            providers
+                .piconero_per_unit_for(&loose, "USD")
+                .await
+                .unwrap()
+                .unwrap()
+                .1,
+            HAVENO,
+            "the other store's answer did not stick"
+        );
     }
 
     #[tokio::test]
@@ -817,10 +1113,39 @@ mod tests {
         .await;
         let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
         let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", hv);
-        let deep = store_with_haveno(HavenoSettings { min_depth_xmr_per_side: 5.0, ..Default::default() }, &[HAVENO, COINGECKO]);
-        let shallow = store_with_haveno(HavenoSettings { min_depth_xmr_per_side: 0.4, min_offers_per_side: 1, ..Default::default() }, &[HAVENO, COINGECKO]);
-        assert_eq!(providers.piconero_per_unit_for(&deep, "USD").await.unwrap().unwrap().1, COINGECKO);
-        assert_eq!(providers.piconero_per_unit_for(&shallow, "USD").await.unwrap().unwrap().1, HAVENO);
+        let deep = store_with_haveno(
+            HavenoSettings {
+                min_depth_xmr_per_side: 5.0,
+                ..Default::default()
+            },
+            &[HAVENO, COINGECKO],
+        );
+        let shallow = store_with_haveno(
+            HavenoSettings {
+                min_depth_xmr_per_side: 0.4,
+                min_offers_per_side: 1,
+                ..Default::default()
+            },
+            &[HAVENO, COINGECKO],
+        );
+        assert_eq!(
+            providers
+                .piconero_per_unit_for(&deep, "USD")
+                .await
+                .unwrap()
+                .unwrap()
+                .1,
+            COINGECKO
+        );
+        assert_eq!(
+            providers
+                .piconero_per_unit_for(&shallow, "USD")
+                .await
+                .unwrap()
+                .unwrap()
+                .1,
+            HAVENO
+        );
     }
 
     async fn spawn_router(app: axum::Router) -> String {

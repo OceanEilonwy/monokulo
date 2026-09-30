@@ -87,9 +87,16 @@ fn render_confirm_form(
     user: &UserRow,
 ) -> Response {
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
-        network_selected_flags(resubmit.and_then(|f| f.network.as_deref()).unwrap_or("mainnet"));
-    let selected_currency = resubmit.and_then(|f| f.base_currency.as_deref()).unwrap_or("XMR");
-    let currency_options = crate::currencies::currency_options(&state.db.lock(), selected_currency).unwrap_or_default();
+        network_selected_flags(
+            resubmit
+                .and_then(|f| f.network.as_deref())
+                .unwrap_or("mainnet"),
+        );
+    let selected_currency = resubmit
+        .and_then(|f| f.base_currency.as_deref())
+        .unwrap_or("XMR");
+    let currency_options = crate::currencies::currency_options(&state.db.lock(), selected_currency)
+        .unwrap_or_default();
     let existing_stores = state
         .db
         .lock()
@@ -110,13 +117,20 @@ fn render_confirm_form(
         return_url: return_url.to_string(),
         nonce: nonce.to_string(),
         error: error.map(str::to_string),
-        view_key_hex: resubmit.and_then(|f| f.view_key_hex.clone()).unwrap_or_default(),
-        spend_pubkey_hex: resubmit.and_then(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
+        view_key_hex: resubmit
+            .and_then(|f| f.view_key_hex.clone())
+            .unwrap_or_default(),
+        spend_pubkey_hex: resubmit
+            .and_then(|f| f.spend_pubkey_hex.clone())
+            .unwrap_or_default(),
         network_mainnet_selected,
         network_stagenet_selected,
         network_testnet_selected,
         currency_options,
-        custody_choices: super::status_page::custody_choice_views(state, resubmit.and_then(|f| f.key_custody_backend.as_deref())),
+        custody_choices: super::status_page::custody_choice_views(
+            state,
+            resubmit.and_then(|f| f.key_custody_backend.as_deref()),
+        ),
         existing_stores,
         unavailable,
     };
@@ -167,10 +181,22 @@ pub async fn start(
             encode_query_value(&query.return_url),
             encode_query_value(&query.nonce),
         );
-        return redirect_302(&format!("/dashboard/login?next={}", encode_query_value(&this_url)));
+        return redirect_302(&format!(
+            "/dashboard/login?next={}",
+            encode_query_value(&this_url)
+        ));
     };
 
-    render_confirm_form(&state, &platform, &query.site_url, &query.return_url, &query.nonce, None, None, &user)
+    render_confirm_form(
+        &state,
+        &platform,
+        &query.site_url,
+        &query.return_url,
+        &query.nonce,
+        None,
+        None,
+        &user,
+    )
 }
 
 /// `POST /connect/{platform}`'s form fields (WBS 1.4.1, step 4) - the same
@@ -250,7 +276,16 @@ pub async fn confirm_submit(
 ) -> Response {
     if public_url_for_plugins(&state).is_err() {
         // `render_confirm_form` shows the reason instead of the form.
-        return render_confirm_form(&state, &platform, &form.site_url, &form.return_url, &form.nonce, None, Some(&form), &user);
+        return render_confirm_form(
+            &state,
+            &platform,
+            &form.site_url,
+            &form.return_url,
+            &form.nonce,
+            None,
+            Some(&form),
+            &user,
+        );
     }
     if form.mode == "existing" {
         confirm_existing_store(&state, &user, &platform, &form).await
@@ -264,7 +299,12 @@ pub async fn confirm_submit(
 /// [`connections::create_connection_for_user`] every other surface uses. On
 /// an engine rejection or internal error, re-renders the confirm form with a
 /// visible error - same pattern as `dashboard::connect_submit`.
-async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, form: &ConfirmForm) -> Response {
+async fn confirm_new_store(
+    state: &AppState,
+    user: &UserRow,
+    platform: &str,
+    form: &ConfirmForm,
+) -> Response {
     let fields = CreateConnectionFields {
         platform: platform.to_string(),
         site_url: form.site_url.clone(),
@@ -319,7 +359,12 @@ async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, for
 /// `orders.rs`'s own `load_owned_connection` already guards against
 /// elsewhere in this crate, applied here to the one place that grants a
 /// *credential*, not just a read.
-async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str, form: &ConfirmForm) -> Response {
+async fn confirm_existing_store(
+    state: &AppState,
+    user: &UserRow,
+    platform: &str,
+    form: &ConfirmForm,
+) -> Response {
     let connection_id = match form.connection_id.as_deref().filter(|id| !id.is_empty()) {
         Some(id) => id,
         None => {
@@ -383,7 +428,12 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
     // (`crate::embed_domains`), and the row's `site_url` is updated so the
     // dashboard reflects the most recent site this store is actually serving.
     crate::embed_domains::suggest_site_domain(&state.db, &row.id, &form.site_url, now_unix());
-    if state.db.lock().update_store_connection_site_url(&row.id, &form.site_url).is_err() {
+    if state
+        .db
+        .lock()
+        .update_store_connection_site_url(&row.id, &form.site_url)
+        .is_err()
+    {
         return internal_error();
     }
 
@@ -396,10 +446,20 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
 /// with `token`/`nonce` appended (parsed and re-serialized via the `url`
 /// crate, so a `return_url` that already carries its own query string is
 /// handled correctly - never a naive string-concatenated `?`).
-fn mint_token_and_redirect(state: &AppState, connection_id: &str, platform: &str, form: &ConfirmForm, user: &UserRow) -> Response {
+fn mint_token_and_redirect(
+    state: &AppState,
+    connection_id: &str,
+    platform: &str,
+    form: &ConfirmForm,
+    user: &UserRow,
+) -> Response {
     let raw_token = shared::auth::generate_connect_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
-    let stored = state.db.lock().create_connect_token(&token_hash, connection_id, &form.nonce, now_unix());
+    let stored =
+        state
+            .db
+            .lock()
+            .create_connect_token(&token_hash, connection_id, &form.nonce, now_unix());
     if stored.is_err() {
         return render_confirm_form(
             state,
@@ -433,7 +493,10 @@ fn mint_token_and_redirect(state: &AppState, connection_id: &str, platform: &str
     // model) rather than string-concatenating a `?`/`&`, which would
     // produce a broken URL for a `return_url` that already has its own
     // query parameters.
-    redirect_url.query_pairs_mut().append_pair("token", &raw_token).append_pair("nonce", &form.nonce);
+    redirect_url
+        .query_pairs_mut()
+        .append_pair("token", &raw_token)
+        .append_pair("nonce", &form.nonce);
 
     redirect_302(redirect_url.as_str())
 }
@@ -494,7 +557,13 @@ pub struct FinishResponse {
 pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest>) -> Response {
     let endpoint = match public_url_for_plugins(&state) {
         Ok(url) => url,
-        Err(message) => return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": message }))).into_response(),
+        Err(message) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": message })),
+            )
+                .into_response()
+        }
     };
     let token_hash = shared::auth::hash_secret_token(&req.token);
 
@@ -520,10 +589,11 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
         }
     };
 
-    let secret_token = match crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted) {
-        Ok(v) => v,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
+    let secret_token =
+        match crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted) {
+            Ok(v) => v,
+            Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        };
 
     // Webhook registration (WBS 1.4.4): only attempted when the caller supplied a
     // `webhook_url`. On failure this collapses the *entire* `/finish` call to `401`,
@@ -544,7 +614,11 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
     // here explicitly in case a real deployment prefers "credentials now, webhook
     // registration retried separately" instead.
     let webhook_signing_secret = match &req.webhook_url {
-        Some(url) => match state.engine_client.create_webhook(&secret_token, url, &Default::default()).await {
+        Some(url) => match state
+            .engine_client
+            .create_webhook(&secret_token, url, &Default::default())
+            .await
+        {
             Ok((_webhook_id, signing_secret)) => Some(signing_secret),
             Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
         },
@@ -562,29 +636,40 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
 
 #[cfg(test)]
 mod tests {
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::Router;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use crate::engine_client::EngineClient;
 
-    use super::super::{AppState, build_router};
+    use super::super::{build_router, AppState};
 
     /// Same fixed-scalar construction `connections.rs`'s and
     /// `engine_client.rs`'s own tests use.
-    const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+    const TEST_VIEW_KEY_HEX: &str =
+        "0707070707070707070707070707070707070707070707070707070707070707";
+    const TEST_SPEND_PUBKEY_HEX: &str =
+        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     /// This test instance's configured public address - what `/finish`
     /// must hand plugins as `endpoint`.
     const TEST_PUBLIC_URL: &str = "https://pay.example.test";
 
     async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
-        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let engine =
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let state = AppState { engine_client, ..AppState::for_tests() };
-        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
+        let state = AppState {
+            engine_client,
+            ..AppState::for_tests()
+        };
+        state
+            .db
+            .lock()
+            .set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL)
+            .unwrap();
         (state, engine)
     }
 
@@ -604,7 +689,9 @@ mod tests {
         let mut out = String::with_capacity(s.len());
         for b in s.bytes() {
             match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char)
+                }
                 b' ' => out.push('+'),
                 _ => out.push_str(&format!("%{b:02X}")),
             }
@@ -613,8 +700,10 @@ mod tests {
     }
 
     fn form_request(uri: &str, cookie: Option<&str>, fields: &[(&str, &str)]) -> Request<Body> {
-        let mut builder =
-            Request::builder().method("POST").uri(uri).header("content-type", "application/x-www-form-urlencoded");
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/x-www-form-urlencoded");
         if let Some(cookie) = cookie {
             builder = builder.header("cookie", cookie);
         }
@@ -635,21 +724,48 @@ mod tests {
     /// returning the `session=<value>` pair a browser would send back as a
     /// `Cookie` header - same helper `http/tests.rs` uses for its own
     /// WBS 1.3.2 tests.
-    async fn signed_up_and_logged_in_session_cookie(router: &Router, email: &str, password: &str) -> String {
-        let signup =
-            router.clone().oneshot(form_request("/dashboard/signup", None, &[("email", email), ("password", password)])).await.unwrap();
+    async fn signed_up_and_logged_in_session_cookie(
+        router: &Router,
+        email: &str,
+        password: &str,
+    ) -> String {
+        let signup = router
+            .clone()
+            .oneshot(form_request(
+                "/dashboard/signup",
+                None,
+                &[("email", email), ("password", password)],
+            ))
+            .await
+            .unwrap();
         assert_eq!(signup.status(), StatusCode::FOUND);
 
-        let login =
-            router.clone().oneshot(form_request("/dashboard/login", None, &[("email", email), ("password", password)])).await.unwrap();
+        let login = router
+            .clone()
+            .oneshot(form_request(
+                "/dashboard/login",
+                None,
+                &[("email", email), ("password", password)],
+            ))
+            .await
+            .unwrap();
         assert_eq!(login.status(), StatusCode::FOUND);
-        let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+        let set_cookie = login
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         set_cookie.split(';').next().unwrap().to_string()
     }
 
     fn parse_query_params(url: &str) -> std::collections::HashMap<String, String> {
         let parsed = url::Url::parse(url).unwrap();
-        parsed.query_pairs().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        parsed
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[tokio::test]
@@ -657,9 +773,12 @@ mod tests {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let cookie =
-            signed_up_and_logged_in_session_cookie(&router, "connect-flow@example.com", "correct horse battery staple")
-                .await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "connect-flow@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         // Step 1-3: GET the connect start URL with a valid session - expect
         // the confirm form, not a login redirect.
@@ -675,10 +794,20 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(get_response.status(), StatusCode::OK, "expected the confirm form, not a redirect");
+        assert_eq!(
+            get_response.status(),
+            StatusCode::OK,
+            "expected the confirm form, not a redirect"
+        );
         let html = body_text(get_response).await;
-        assert!(html.contains("shop.example.com"), "expected the site_url shown on the confirm page, got: {html}");
-        assert!(html.contains(r#"action="/connect/woocommerce""#), "expected the confirm form to post back to /connect/woocommerce, got: {html}");
+        assert!(
+            html.contains("shop.example.com"),
+            "expected the site_url shown on the confirm page, got: {html}"
+        );
+        assert!(
+            html.contains(r#"action="/connect/woocommerce""#),
+            "expected the confirm form to post back to /connect/woocommerce, got: {html}"
+        );
 
         // Step 4: POST the confirm form with valid wallet fields.
         let post_response = router
@@ -688,28 +817,48 @@ mod tests {
                 Some(&cookie),
                 &[
                     ("site_url", "https://shop.example.com"),
-                    ("return_url", "https://shop.example.com/settings?page=monero"),
+                    (
+                        "return_url",
+                        "https://shop.example.com/settings?page=monero",
+                    ),
                     ("nonce", "nonce-xyz"),
                     ("view_key_hex", TEST_VIEW_KEY_HEX),
                     ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                     ("network", "mainnet"),
                     ("allowed_origins", ""),
-                ("base_currency", "XMR"),
+                    ("base_currency", "XMR"),
                 ],
             ))
             .await
             .unwrap();
-        assert_eq!(post_response.status(), StatusCode::FOUND, "expected a 302 redirect to return_url");
-        let location = post_response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        assert_eq!(
+            post_response.status(),
+            StatusCode::FOUND,
+            "expected a 302 redirect to return_url"
+        );
+        let location = post_response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
 
         // The existing `page=monero` query param must survive alongside the
         // newly appended ones - proof the redirect is built by parsing and
         // re-serializing `return_url`, not by naively concatenating a `?`.
         let params = parse_query_params(&location);
         assert_eq!(params.get("page").map(String::as_str), Some("monero"));
-        let token = params.get("token").expect("expected a token query param").clone();
+        let token = params
+            .get("token")
+            .expect("expected a token query param")
+            .clone();
         assert!(!token.is_empty());
-        assert_eq!(params.get("nonce").map(String::as_str), Some("nonce-xyz"), "the nonce must round-trip unchanged");
+        assert_eq!(
+            params.get("nonce").map(String::as_str),
+            Some("nonce-xyz"),
+            "the nonce must round-trip unchanged"
+        );
 
         // Step 5: POST the token to /finish - server-to-server, no session
         // at all.
@@ -720,12 +869,18 @@ mod tests {
                     .method("POST")
                     .uri("/connect/woocommerce/finish")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "token": token }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "token": token }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(finish_response.status(), StatusCode::OK, "expected the first finish call to succeed");
+        assert_eq!(
+            finish_response.status(),
+            StatusCode::OK,
+            "expected the first finish call to succeed"
+        );
         let finish_body = body_json(finish_response).await;
         let obj = finish_body.as_object().unwrap();
         let public_key = obj.get("public_key").unwrap().as_str().unwrap();
@@ -733,8 +888,15 @@ mod tests {
         let secret_token = obj.get("secret_token").unwrap().as_str().unwrap();
         assert!(secret_token.starts_with("sk_"));
         let endpoint = obj.get("endpoint").unwrap().as_str().unwrap();
-        assert_eq!(endpoint, TEST_PUBLIC_URL, "plugins get monokulo's public address");
-        assert_ne!(endpoint, format!("http://{}", engine.addr), "never the engine's");
+        assert_eq!(
+            endpoint, TEST_PUBLIC_URL,
+            "plugins get monokulo's public address"
+        );
+        assert_ne!(
+            endpoint,
+            format!("http://{}", engine.addr),
+            "never the engine's"
+        );
         // No webhook signing secret yet (WBS 1.4.4, not this task).
         assert!(!obj.contains_key("webhook_secret"));
         assert!(!obj.contains_key("signing_secret"));
@@ -743,10 +905,9 @@ mod tests {
         // credential, not just a string that happens to start with `sk_` -
         // same pattern 1.2.3/1.3.2 already established.
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let tenant_view = engine_client
-            .get_tenant(secret_token)
-            .await
-            .expect("the returned secret_token should be the tenant's genuine, functioning sk_ credential");
+        let tenant_view = engine_client.get_tenant(secret_token).await.expect(
+            "the returned secret_token should be the tenant's genuine, functioning sk_ credential",
+        );
         assert_eq!(tenant_view.public_key, public_key);
     }
 
@@ -775,13 +936,19 @@ mod tests {
                     ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                     ("network", "mainnet"),
                     ("allowed_origins", ""),
-                ("base_currency", "XMR"),
+                    ("base_currency", "XMR"),
                 ],
             ))
             .await
             .unwrap();
         assert_eq!(post_response.status(), StatusCode::FOUND);
-        let location = post_response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let location = post_response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         let token = parse_query_params(&location).get("token").unwrap().clone();
 
         let finish_request = || {
@@ -789,7 +956,9 @@ mod tests {
                 .method("POST")
                 .uri("/connect/woocommerce/finish")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::json!({ "token": token }).to_string()))
+                .body(Body::from(
+                    serde_json::json!({ "token": token }).to_string(),
+                ))
                 .unwrap()
         };
 
@@ -797,10 +966,18 @@ mod tests {
         // second fails - otherwise a second-call 401 could just mean the
         // token never worked at all.
         let first = router.clone().oneshot(finish_request()).await.unwrap();
-        assert_eq!(first.status(), StatusCode::OK, "the first finish call must actually succeed");
+        assert_eq!(
+            first.status(),
+            StatusCode::OK,
+            "the first finish call must actually succeed"
+        );
 
         let second = router.oneshot(finish_request()).await.unwrap();
-        assert_eq!(second.status(), StatusCode::UNAUTHORIZED, "reusing an already-consumed token must fail");
+        assert_eq!(
+            second.status(),
+            StatusCode::UNAUTHORIZED,
+            "reusing an already-consumed token must fail"
+        );
     }
 
     #[tokio::test]
@@ -814,7 +991,9 @@ mod tests {
                     .method("POST")
                     .uri("/connect/woocommerce/finish")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "token": "conn_nobody_ever_issued_this" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "token": "conn_nobody_ever_issued_this" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -834,7 +1013,12 @@ mod tests {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let cookie = signed_up_and_logged_in_session_cookie(&router, "webhook-register@example.com", "correct horse battery staple").await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "webhook-register@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let post_response = router
             .clone()
@@ -856,7 +1040,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(post_response.status(), StatusCode::FOUND);
-        let location = post_response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let location = post_response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         let token = parse_query_params(&location).get("token").unwrap().clone();
 
         let finish_response = router
@@ -876,9 +1066,17 @@ mod tests {
         assert_eq!(finish_response.status(), StatusCode::OK);
         let body = body_json(finish_response).await;
         let obj = body.as_object().unwrap();
-        let secret_token = obj.get("secret_token").unwrap().as_str().unwrap().to_string();
-        let signing_secret =
-            obj.get("webhook_signing_secret").expect("expected webhook_signing_secret in the response").as_str().unwrap();
+        let secret_token = obj
+            .get("secret_token")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        let signing_secret = obj
+            .get("webhook_signing_secret")
+            .expect("expected webhook_signing_secret in the response")
+            .as_str()
+            .unwrap();
         assert!(!signing_secret.is_empty());
 
         // Strong proof, not just a well-shaped response: the webhook genuinely
@@ -886,12 +1084,21 @@ mod tests {
         // submitted - and the tenant's order_expiry_seconds genuinely reached the
         // engine too.
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let webhooks = engine_client.list_webhooks(&secret_token).await.expect("list_webhooks against the real engine should succeed");
+        let webhooks = engine_client
+            .list_webhooks(&secret_token)
+            .await
+            .expect("list_webhooks against the real engine should succeed");
         assert_eq!(webhooks.len(), 1);
         assert_eq!(webhooks[0].url, "https://merchant.example/hook");
 
-        let tenant_view = engine_client.get_tenant(&secret_token).await.expect("get_tenant against the real engine should succeed");
-        assert_eq!(tenant_view.order_expiry_seconds, 1, "order_expiry_seconds must have reached the engine's real tenant record");
+        let tenant_view = engine_client
+            .get_tenant(&secret_token)
+            .await
+            .expect("get_tenant against the real engine should succeed");
+        assert_eq!(
+            tenant_view.order_expiry_seconds, 1,
+            "order_expiry_seconds must have reached the engine's real tenant record"
+        );
     }
 
     /// A `webhook_url` the engine rejects (WBS 1.4.4's collapse-to-401 policy, see
@@ -904,8 +1111,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let cookie =
-            signed_up_and_logged_in_session_cookie(&router, "webhook-reject@example.com", "correct horse battery staple").await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "webhook-reject@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let post_response = router
             .clone()
@@ -920,13 +1131,19 @@ mod tests {
                     ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                     ("network", "mainnet"),
                     ("allowed_origins", ""),
-                ("base_currency", "XMR"),
+                    ("base_currency", "XMR"),
                 ],
             ))
             .await
             .unwrap();
         assert_eq!(post_response.status(), StatusCode::FOUND);
-        let location = post_response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let location = post_response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         let token = parse_query_params(&location).get("token").unwrap().clone();
 
         // `ftp://` is neither `http` nor `https` - the engine's own
@@ -947,7 +1164,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unauthenticated_connect_start_redirects_through_login_and_back_to_the_original_url() {
+    async fn an_unauthenticated_connect_start_redirects_through_login_and_back_to_the_original_url()
+    {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -955,38 +1173,91 @@ mod tests {
 
         let get_response = router
             .clone()
-            .oneshot(Request::builder().method("GET").uri(original_uri).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(original_uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        assert_eq!(get_response.status(), StatusCode::FOUND, "expected a redirect to the login page");
-        let login_location = get_response.headers().get("location").unwrap().to_str().unwrap().to_string();
-        assert!(login_location.starts_with("/dashboard/login?next="), "expected a next-carrying login redirect, got: {login_location}");
+        assert_eq!(
+            get_response.status(),
+            StatusCode::FOUND,
+            "expected a redirect to the login page"
+        );
+        let login_location = get_response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            login_location.starts_with("/dashboard/login?next="),
+            "expected a next-carrying login redirect, got: {login_location}"
+        );
 
         // Extract the (still percent-encoded) `next` value exactly as a
         // browser would receive it in the `Location` header, then sign up
         // and log in, submitting that same value back as the login form's
         // hidden `next` field - the real end-to-end detour, not just a call
         // to the validator function in isolation.
-        let next_value = login_location.strip_prefix("/dashboard/login?next=").unwrap();
+        let next_value = login_location
+            .strip_prefix("/dashboard/login?next=")
+            .unwrap();
         let decoded_next = url::form_urlencoded::parse(format!("x={next_value}").as_bytes())
             .next()
             .map(|(_, v)| v.into_owned())
             .unwrap();
-        assert_eq!(decoded_next, original_uri, "the next value must reconstruct the exact original connect URL");
+        assert_eq!(
+            decoded_next, original_uri,
+            "the next value must reconstruct the exact original connect URL"
+        );
 
         let email = "connect-detour@example.com";
         let password = "correct horse battery staple";
-        let signup = router.clone().oneshot(form_request("/dashboard/signup", None, &[("email", email), ("password", password)])).await.unwrap();
+        let signup = router
+            .clone()
+            .oneshot(form_request(
+                "/dashboard/signup",
+                None,
+                &[("email", email), ("password", password)],
+            ))
+            .await
+            .unwrap();
         assert_eq!(signup.status(), StatusCode::FOUND);
 
         let login_response = router
             .clone()
-            .oneshot(form_request("/dashboard/login", None, &[("email", email), ("password", password), ("next", &decoded_next)]))
+            .oneshot(form_request(
+                "/dashboard/login",
+                None,
+                &[
+                    ("email", email),
+                    ("password", password),
+                    ("next", &decoded_next),
+                ],
+            ))
             .await
             .unwrap();
-        assert_eq!(login_response.status(), StatusCode::FOUND, "a successful login with a valid next must redirect");
-        let final_location = login_response.headers().get("location").unwrap().to_str().unwrap().to_string();
-        assert_eq!(final_location, original_uri, "must land back on the exact original connect URL, query params intact");
+        assert_eq!(
+            login_response.status(),
+            StatusCode::FOUND,
+            "a successful login with a valid next must redirect"
+        );
+        let final_location = login_response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            final_location, original_uri,
+            "must land back on the exact original connect URL, query params intact"
+        );
     }
 
     /// Same real UX bug `http/tests.rs`'s
@@ -1000,9 +1271,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let cookie =
-            signed_up_and_logged_in_session_cookie(&router, "keep-my-confirm-inputs@example.com", "correct horse battery staple")
-                .await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "keep-my-confirm-inputs@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let response = router
             .oneshot(form_request(
@@ -1018,7 +1292,7 @@ mod tests {
                     ("spend_pubkey_hex", &"ff".repeat(32)),
                     ("network", "stagenet"),
                     ("allowed_origins", "https://shop.example.com"),
-                ("base_currency", "XMR"),
+                    ("base_currency", "XMR"),
                 ],
             ))
             .await
@@ -1026,14 +1300,26 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains("class=\"error\""), "expected a visible error, got: {html}");
-        assert!(html.contains(&format!(r#"value="{TEST_VIEW_KEY_HEX}""#)), "expected the valid view key kept, got: {html}");
+        assert!(
+            html.contains("class=\"error\""),
+            "expected a visible error, got: {html}"
+        );
+        assert!(
+            html.contains(&format!(r#"value="{TEST_VIEW_KEY_HEX}""#)),
+            "expected the valid view key kept, got: {html}"
+        );
         assert!(
             html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),
             "expected the rejected spend key re-filled, got: {html}"
         );
-        assert!(!html.contains("allowed_origins"), "allowed origins are no longer asked for, got: {html}");
-        assert!(html.contains(r#"value="stagenet" selected"#), "expected stagenet to stay selected, got: {html}");
+        assert!(
+            !html.contains("allowed_origins"),
+            "allowed origins are no longer asked for, got: {html}"
+        );
+        assert!(
+            html.contains(r#"value="stagenet" selected"#),
+            "expected stagenet to stay selected, got: {html}"
+        );
         // The hidden site_url/return_url/nonce fields were already always
         // preserved (they're passed straight through, not part of this
         // bug) - confirmed here too so a future refactor can't silently
@@ -1042,12 +1328,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unknown_base_currency_on_the_generic_connect_flow_is_rejected_before_provisioning_a_tenant() {
+    async fn an_unknown_base_currency_on_the_generic_connect_flow_is_rejected_before_provisioning_a_tenant(
+    ) {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let cookie =
-            signed_up_and_logged_in_session_cookie(&router, "bad-currency-generic-flow@example.com", "correct horse battery staple").await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "bad-currency-generic-flow@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let response = router
             .oneshot(form_request(
@@ -1066,9 +1357,16 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "a rejected submission re-renders the confirm form, not a redirect");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a rejected submission re-renders the confirm form, not a redirect"
+        );
         let html = body_text(response).await;
-        assert!(html.contains("class=\"error\""), "expected a visible error, got: {html}");
+        assert!(
+            html.contains("class=\"error\""),
+            "expected a visible error, got: {html}"
+        );
     }
 
     /// Creates a real `store_connections` row for the given session cookie
@@ -1105,7 +1403,11 @@ mod tests {
         let body = body_json(response).await;
         let obj = body.as_object().unwrap();
         (
-            obj.get("connection_id").unwrap().as_str().unwrap().to_string(),
+            obj.get("connection_id")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string(),
             obj.get("public_key").unwrap().as_str().unwrap().to_string(),
         )
     }
@@ -1115,7 +1417,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let cookie = signed_up_and_logged_in_session_cookie(&router, "no-stores-yet@example.com", "correct horse battery staple").await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "no-stores-yet@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let response = router
             .oneshot(
                 Request::builder()
@@ -1137,8 +1444,14 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let cookie = signed_up_and_logged_in_session_cookie(&router, "has-a-store-already@example.com", "correct horse battery staple").await;
-        let (connection_id, public_key) = create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "has-a-store-already@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, public_key) =
+            create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
 
         let response = router
             .oneshot(
@@ -1153,9 +1466,18 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains("Use an existing store"), "expected the picker, got: {html}");
-        assert!(html.contains(&format!(r#"value="{connection_id}""#)), "expected the store's connection id as an option, got: {html}");
-        assert!(html.contains("my-existing-shop.example.com"), "expected the store's derived display name, got: {html}");
+        assert!(
+            html.contains("Use an existing store"),
+            "expected the picker, got: {html}"
+        );
+        assert!(
+            html.contains(&format!(r#"value="{connection_id}""#)),
+            "expected the store's connection id as an option, got: {html}"
+        );
+        assert!(
+            html.contains("my-existing-shop.example.com"),
+            "expected the store's derived display name, got: {html}"
+        );
         assert!(!html.contains(&public_key), "the picker only needs to identify the store by name, not expose its public key on this page");
     }
 
@@ -1168,11 +1490,28 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
-        let cookie = signed_up_and_logged_in_session_cookie(&router, "reuse-existing@example.com", "correct horse battery staple").await;
-        let (connection_id, public_key) = create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "reuse-existing@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, public_key) =
+            create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
 
-        let user_id = state.db.lock().get_user_by_email("reuse-existing@example.com").unwrap().unwrap().id;
-        let connections_before = state.db.lock().list_store_connections_for_user(&user_id).unwrap().len();
+        let user_id = state
+            .db
+            .lock()
+            .get_user_by_email("reuse-existing@example.com")
+            .unwrap()
+            .unwrap()
+            .id;
+        let connections_before = state
+            .db
+            .lock()
+            .list_store_connections_for_user(&user_id)
+            .unwrap()
+            .len();
         assert_eq!(connections_before, 1);
 
         let post_response = router
@@ -1190,16 +1529,40 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(post_response.status(), StatusCode::FOUND, "expected a redirect to return_url");
-        let location = post_response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        assert_eq!(
+            post_response.status(),
+            StatusCode::FOUND,
+            "expected a redirect to return_url"
+        );
+        let location = post_response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         let params = parse_query_params(&location);
-        let token = params.get("token").expect("expected a real connect token").clone();
-        assert_eq!(params.get("nonce").map(String::as_str), Some("nonce-existing"));
+        let token = params
+            .get("token")
+            .expect("expected a real connect token")
+            .clone();
+        assert_eq!(
+            params.get("nonce").map(String::as_str),
+            Some("nonce-existing")
+        );
 
         // No second store_connections row was created for this "existing"-mode
         // submission.
-        let connections_after = state.db.lock().list_store_connections_for_user(&user_id).unwrap().len();
-        assert_eq!(connections_after, 1, "using an existing store must not provision a second one");
+        let connections_after = state
+            .db
+            .lock()
+            .list_store_connections_for_user(&user_id)
+            .unwrap()
+            .len();
+        assert_eq!(
+            connections_after, 1,
+            "using an existing store must not provision a second one"
+        );
 
         // /finish hands back credentials for the *same* store - same
         // public_key as the one already created, not a fresh one.
@@ -1209,25 +1572,41 @@ mod tests {
                     .method("POST")
                     .uri("/connect/woocommerce/finish")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "token": token }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "token": token }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(finish_response.status(), StatusCode::OK);
         let finish_body = body_json(finish_response).await;
-        assert_eq!(finish_body["public_key"].as_str().unwrap(), public_key, "expected credentials for the same, already-existing store");
+        assert_eq!(
+            finish_body["public_key"].as_str().unwrap(),
+            public_key,
+            "expected credentials for the same, already-existing store"
+        );
 
         // The two real side effects of attaching a second site to an
         // existing store: the row's site_url reflects the new site...
-        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
-        assert_eq!(row.site_url, "https://new-wp-site.example.com", "expected the row's site_url to move to the newly-attached site");
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&connection_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.site_url, "https://new-wp-site.example.com",
+            "expected the row's site_url to move to the newly-attached site"
+        );
 
         // ...and the new site's domain joins the store's domains, waiting
         // for the merchant to verify it.
         let domains = state.db.lock().list_store_domains(&connection_id).unwrap();
         assert!(
-            domains.iter().any(|d| d.domain == "new-wp-site.example.com" && d.verified_at.is_none()),
+            domains
+                .iter()
+                .any(|d| d.domain == "new-wp-site.example.com" && d.verified_at.is_none()),
             "expected the new site's domain added, got: {domains:?}"
         );
     }
@@ -1240,7 +1619,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
-        let cookie = signed_up_and_logged_in_session_cookie(&router, "preserve-origin@example.com", "correct horse battery staple").await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "preserve-origin@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         // Create the store directly through the JSON API, so it starts with
         // its first site's domain already present.
@@ -1289,10 +1673,21 @@ mod tests {
             .unwrap();
         assert_eq!(post_response.status(), StatusCode::FOUND);
 
-        let domains: Vec<String> =
-            state.db.lock().list_store_domains(&connection_id).unwrap().into_iter().map(|d| d.domain).collect();
-        assert_eq!(domains, vec!["original-site.example.com".to_string(), "second-site.example.com".to_string()]);
-
+        let domains: Vec<String> = state
+            .db
+            .lock()
+            .list_store_domains(&connection_id)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.domain)
+            .collect();
+        assert_eq!(
+            domains,
+            vec![
+                "original-site.example.com".to_string(),
+                "second-site.example.com".to_string()
+            ]
+        );
     }
 
     /// The real security boundary: a signed-in user must not be able to
@@ -1304,10 +1699,21 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
-        let victim_cookie = signed_up_and_logged_in_session_cookie(&router, "victim@example.com", "correct horse battery staple").await;
-        let (victim_connection_id, _victim_public_key) = create_a_store(&router, &victim_cookie, "https://victims-shop.example.com").await;
+        let victim_cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "victim@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (victim_connection_id, _victim_public_key) =
+            create_a_store(&router, &victim_cookie, "https://victims-shop.example.com").await;
 
-        let attacker_cookie = signed_up_and_logged_in_session_cookie(&router, "attacker@example.com", "correct horse battery staple").await;
+        let attacker_cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "attacker@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let post_response = router
             .clone()
@@ -1327,10 +1733,20 @@ mod tests {
 
         // Not a redirect - never hand out a token for a store the caller
         // doesn't own.
-        assert_eq!(post_response.status(), StatusCode::OK, "expected the confirm form re-rendered with an error, not a redirect");
+        assert_eq!(
+            post_response.status(),
+            StatusCode::OK,
+            "expected the confirm form re-rendered with an error, not a redirect"
+        );
         let html = body_text(post_response).await;
-        assert!(html.contains("class=\"error\""), "expected a visible error, got: {html}");
-        assert!(!html.contains("token="), "must never leak a token for a store the caller doesn't own");
+        assert!(
+            html.contains("class=\"error\""),
+            "expected a visible error, got: {html}"
+        );
+        assert!(
+            !html.contains("token="),
+            "must never leak a token for a store the caller doesn't own"
+        );
     }
 
     #[tokio::test]
@@ -1338,7 +1754,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
-        let cookie = signed_up_and_logged_in_session_cookie(&router, "forgot-to-pick@example.com", "correct horse battery staple").await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "forgot-to-pick@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let _ = create_a_store(&router, &cookie, "https://shop.example.com").await;
 
         let post_response = router
@@ -1357,7 +1778,10 @@ mod tests {
             .unwrap();
         assert_eq!(post_response.status(), StatusCode::OK);
         let html = body_text(post_response).await;
-        assert!(html.contains("Choose a store to connect."), "expected a clear error, got: {html}");
+        assert!(
+            html.contains("Choose a store to connect."),
+            "expected a clear error, got: {html}"
+        );
     }
 
     /// While no public address is set, the confirm screen explains why
@@ -1367,9 +1791,18 @@ mod tests {
     #[tokio::test]
     async fn plugins_cannot_connect_until_the_public_url_is_set_and_are_told_why() {
         let (state, engine) = test_state_with_real_engine().await;
-        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, "").unwrap();
+        state
+            .db
+            .lock()
+            .set_setting(crate::settings::PUBLIC_URL.key, "")
+            .unwrap();
         let router = build_router(state.clone());
-        let cookie = signed_up_and_logged_in_session_cookie(&router, "no-public-url@example.com", "correct horse battery staple").await;
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "no-public-url@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let start = router
             .clone()
@@ -1384,7 +1817,10 @@ mod tests {
             .unwrap();
         let html = body_text(start).await;
         assert!(html.contains("hasn't set its public"), "got: {html}");
-        assert!(!html.contains("<form method=\"post\" action=\"/connect/woocommerce\""), "no confirm form, got: {html}");
+        assert!(
+            !html.contains("<form method=\"post\" action=\"/connect/woocommerce\""),
+            "no confirm form, got: {html}"
+        );
 
         let fields = [
             ("site_url", "https://shop.example.com"),
@@ -1395,17 +1831,39 @@ mod tests {
             ("network", "mainnet"),
             ("base_currency", "XMR"),
         ];
-        let submit = router.clone().oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields)).await.unwrap();
+        let submit = router
+            .clone()
+            .oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields))
+            .await
+            .unwrap();
         assert_eq!(submit.status(), StatusCode::OK, "no redirect, no token");
         let user_id = signed_in_user_id(&state, "no-public-url@example.com");
-        assert!(state.db.lock().list_store_connections_for_user(&user_id).unwrap().is_empty());
+        assert!(state
+            .db
+            .lock()
+            .list_store_connections_for_user(&user_id)
+            .unwrap()
+            .is_empty());
 
         // Get a real token with the address set, then unset it again.
-        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
-        let submit = router.clone().oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields)).await.unwrap();
+        state
+            .db
+            .lock()
+            .set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL)
+            .unwrap();
+        let submit = router
+            .clone()
+            .oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields))
+            .await
+            .unwrap();
         assert_eq!(submit.status(), StatusCode::FOUND);
-        let token = parse_query_params(submit.headers()["location"].to_str().unwrap())["token"].clone();
-        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, "").unwrap();
+        let token =
+            parse_query_params(submit.headers()["location"].to_str().unwrap())["token"].clone();
+        state
+            .db
+            .lock()
+            .set_setting(crate::settings::PUBLIC_URL.key, "")
+            .unwrap();
 
         let finish = |token: String| {
             router.clone().oneshot(
@@ -1413,24 +1871,46 @@ mod tests {
                     .method("POST")
                     .uri("/connect/woocommerce/finish")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "token": token }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "token": token }).to_string(),
+                    ))
                     .unwrap(),
             )
         };
         let response = finish(token.clone()).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = body_json(response).await;
-        assert!(body["error"].as_str().unwrap().contains("public address"), "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("public address"),
+            "{body}"
+        );
 
-        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
+        state
+            .db
+            .lock()
+            .set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL)
+            .unwrap();
         let response = finish(token).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "the token was not spent by the refused call");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the token was not spent by the refused call"
+        );
         let body = body_json(response).await;
         assert_eq!(body["endpoint"], TEST_PUBLIC_URL);
-        assert!(!body.to_string().contains(&engine.addr.to_string()), "nothing in the response names the engine: {body}");
+        assert!(
+            !body.to_string().contains(&engine.addr.to_string()),
+            "nothing in the response names the engine: {body}"
+        );
     }
 
     fn signed_in_user_id(state: &AppState, email: &str) -> String {
-        state.db.lock().get_user_by_email(email).unwrap().unwrap().id
+        state
+            .db
+            .lock()
+            .get_user_by_email(email)
+            .unwrap()
+            .unwrap()
+            .id
     }
 }

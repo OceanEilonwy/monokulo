@@ -20,7 +20,8 @@ use monero::{Address, Transaction};
 use parking_lot::RwLock;
 
 use super::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex, WalletHandle, WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex,
+    WalletHandle, WalletMaterial,
 };
 
 #[derive(Default)]
@@ -48,7 +49,10 @@ impl CustodyRouter {
     /// single-backend engine use.
     pub fn plain() -> Self {
         let mut backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::new();
-        backends.insert("plain".to_string(), Arc::new(super::PlainKeyCustody::default()));
+        backends.insert(
+            "plain".to_string(),
+            Arc::new(super::PlainKeyCustody::default()),
+        );
         CustodyRouter::new(backends, "plain")
     }
 
@@ -99,7 +103,11 @@ impl CustodyRouter {
     /// Forgets `handle` if its backend says it doesn't know it, so every
     /// liveness check (`handle_is_live`) sees it gone and the store is
     /// registered again - whatever made the backend lose it.
-    fn forget_if_unknown<T>(&self, handle: WalletHandle, result: Result<T, KeyCustodyError>) -> Result<T, KeyCustodyError> {
+    fn forget_if_unknown<T>(
+        &self,
+        handle: WalletHandle,
+        result: Result<T, KeyCustodyError>,
+    ) -> Result<T, KeyCustodyError> {
         if matches!(result, Err(KeyCustodyError::UnknownWallet)) {
             self.handles.write().remove(&handle);
         }
@@ -112,13 +120,21 @@ impl CustodyRouter {
     }
 
     fn for_handle(&self, handle: WalletHandle) -> Result<Arc<dyn KeyCustody>, KeyCustodyError> {
-        let name = self.handles.read().get(&handle).cloned().ok_or(KeyCustodyError::UnknownWallet)?;
+        let name = self
+            .handles
+            .read()
+            .get(&handle)
+            .cloned()
+            .ok_or(KeyCustodyError::UnknownWallet)?;
         self.backend(&name).ok_or(KeyCustodyError::UnknownWallet)
     }
 
     fn named(&self, backend: &str) -> Result<Arc<dyn KeyCustody>, KeyCustodyError> {
-        self.backend(backend)
-            .ok_or_else(|| KeyCustodyError::BackendUnavailable(format!("the {backend:?} key custody backend is not enabled")))
+        self.backend(backend).ok_or_else(|| {
+            KeyCustodyError::BackendUnavailable(format!(
+                "the {backend:?} key custody backend is not enabled"
+            ))
+        })
     }
 
     /// Remembers `handle`, registered in `custody` under `backend` - unless
@@ -132,7 +148,10 @@ impl CustodyRouter {
         handle: WalletHandle,
     ) -> Result<WalletHandle, KeyCustodyError> {
         let backends = self.backends.read();
-        if backends.get(backend).is_some_and(|current| same_instance(current, &custody)) {
+        if backends
+            .get(backend)
+            .is_some_and(|current| same_instance(current, &custody))
+        {
             self.handles.write().insert(handle, backend.to_string());
             return Ok(handle);
         }
@@ -151,7 +170,10 @@ impl CustodyRouter {
 
 #[async_trait::async_trait]
 impl KeyCustody for CustodyRouter {
-    async fn register_wallet(&self, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+    async fn register_wallet(
+        &self,
+        material: WalletMaterial,
+    ) -> Result<WalletHandle, KeyCustodyError> {
         let backend = self.default_backend();
         self.register_wallet_in(&backend, material).await
     }
@@ -181,7 +203,10 @@ impl KeyCustody for CustodyRouter {
         index: SubaddressIndex,
         network: Network,
     ) -> Result<Address, KeyCustodyError> {
-        let result = self.for_handle(handle)?.derive_subaddress(handle, index, network).await;
+        let result = self
+            .for_handle(handle)?
+            .derive_subaddress(handle, index, network)
+            .await;
         self.forget_if_unknown(handle, result)
     }
 
@@ -192,7 +217,10 @@ impl KeyCustody for CustodyRouter {
         major_range: Range<u32>,
         minor_range: Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-        let result = self.for_handle(handle)?.scan_tx_outputs(handle, tx, major_range, minor_range).await;
+        let result = self
+            .for_handle(handle)?
+            .scan_tx_outputs(handle, tx, major_range, minor_range)
+            .await;
         self.forget_if_unknown(handle, result)
     }
 
@@ -202,7 +230,10 @@ impl KeyCustody for CustodyRouter {
         tx: &Transaction,
         indices: &ScanIndices,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-        let result = self.for_handle(handle)?.scan_tx_outputs_for_indices(handle, tx, indices).await;
+        let result = self
+            .for_handle(handle)?
+            .scan_tx_outputs_for_indices(handle, tx, indices)
+            .await;
         self.forget_if_unknown(handle, result)
     }
 
@@ -247,27 +278,44 @@ impl KeyCustody for CustodyRouter {
         }
     }
 
-    async fn register_wallet_in(&self, backend: &str, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+    async fn register_wallet_in(
+        &self,
+        backend: &str,
+        material: WalletMaterial,
+    ) -> Result<WalletHandle, KeyCustodyError> {
         let custody = self.named(backend)?;
         let handle = custody.register_wallet(material).await?;
         self.remember_if_current(backend, custody, handle)
     }
 
-    async fn unseal_and_register_in(&self, backend: &str, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
+    async fn unseal_and_register_in(
+        &self,
+        backend: &str,
+        sealed: &[u8],
+    ) -> Result<WalletHandle, KeyCustodyError> {
         let custody = self.named(backend)?;
         let handle = custody.unseal_and_register(sealed).await?;
         self.remember_if_current(backend, custody, handle)
     }
 
     async fn unseal_and_register_in_idempotent(
-        &self, backend: &str, sealed: &[u8], registration_id: &str,
+        &self,
+        backend: &str,
+        sealed: &[u8],
+        registration_id: &str,
     ) -> Result<WalletHandle, KeyCustodyError> {
         let custody = self.named(backend)?;
-        let handle = custody.unseal_and_register_idempotent(sealed, registration_id).await?;
+        let handle = custody
+            .unseal_and_register_idempotent(sealed, registration_id)
+            .await?;
         self.remember_if_current(backend, custody, handle)
     }
 
-    async fn seal_in(&self, backend: &str, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
+    async fn seal_in(
+        &self,
+        backend: &str,
+        material: &WalletMaterial,
+    ) -> Result<Vec<u8>, KeyCustodyError> {
         self.named(backend)?.seal(material).await
     }
 
@@ -284,11 +332,17 @@ impl KeyCustody for CustodyRouter {
     /// Asks each backend directly, with a short deadline, without touching
     /// the epochs the scan loop acts on.
     async fn backend_health(&self) -> Vec<(String, Option<String>)> {
-        let mut backends: Vec<(String, Arc<dyn KeyCustody>)> = self.backends().into_iter().collect();
+        let mut backends: Vec<(String, Arc<dyn KeyCustody>)> =
+            self.backends().into_iter().collect();
         backends.sort_by(|a, b| a.0.cmp(&b.0));
         let mut health = Vec::with_capacity(backends.len());
         for (name, custody) in backends {
-            let error = match tokio::time::timeout(std::time::Duration::from_secs(2), custody.check_state()).await {
+            let error = match tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                custody.check_state(),
+            )
+            .await
+            {
                 Ok(Ok(_)) => None,
                 Ok(Err(e)) => Some(e.to_string()),
                 Err(_) => Some("did not answer within 2 seconds".to_string()),
@@ -312,10 +366,16 @@ pub fn free_handles(handles: Vec<(Arc<dyn KeyCustody>, WalletHandle)>) {
     if handles.is_empty() {
         return;
     }
-    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
     runtime.spawn(async move {
         for (custody, handle) in handles {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), custody.remove_wallet(handle)).await;
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                custody.remove_wallet(handle),
+            )
+            .await;
         }
     });
 }
@@ -331,7 +391,9 @@ mod tests {
         view[31] &= 0x0f;
         let mut spend = [seed.wrapping_add(1); 32];
         spend[31] &= 0x0f;
-        let spend = monero::PublicKey::from_private_key(&monero::PrivateKey::from_slice(&spend).unwrap()).to_bytes();
+        let spend =
+            monero::PublicKey::from_private_key(&monero::PrivateKey::from_slice(&spend).unwrap())
+                .to_bytes();
         WalletMaterial::new(view, spend)
     }
 
@@ -347,18 +409,38 @@ mod tests {
     #[tokio::test]
     async fn each_wallet_lives_in_its_own_backend_and_calls_are_routed_by_handle() {
         let (router, a, b) = two_backends();
-        let in_a = router.register_wallet_in("plain", material(1)).await.unwrap();
-        let in_b = router.register_wallet_in("socket", material(3)).await.unwrap();
-        assert!(a.derive_subaddress(in_a, SubaddressIndex::default(), Network::Mainnet).await.is_ok());
-        assert!(b.derive_subaddress(in_a, SubaddressIndex::default(), Network::Mainnet).await.is_err(), "not in the other one");
-        assert!(router.derive_subaddress(in_b, SubaddressIndex::default(), Network::Mainnet).await.is_ok());
+        let in_a = router
+            .register_wallet_in("plain", material(1))
+            .await
+            .unwrap();
+        let in_b = router
+            .register_wallet_in("socket", material(3))
+            .await
+            .unwrap();
+        assert!(a
+            .derive_subaddress(in_a, SubaddressIndex::default(), Network::Mainnet)
+            .await
+            .is_ok());
+        assert!(
+            b.derive_subaddress(in_a, SubaddressIndex::default(), Network::Mainnet)
+                .await
+                .is_err(),
+            "not in the other one"
+        );
+        assert!(router
+            .derive_subaddress(in_b, SubaddressIndex::default(), Network::Mainnet)
+            .await
+            .is_ok());
         assert_eq!(router.backend_of(in_b).as_deref(), Some("socket"));
     }
 
     #[tokio::test]
     async fn a_disabled_backend_can_not_take_wallets_and_its_handles_stop_being_live() {
         let (router, a, _) = two_backends();
-        let in_b = router.register_wallet_in("socket", material(3)).await.unwrap();
+        let in_b = router
+            .register_wallet_in("socket", material(3))
+            .await
+            .unwrap();
         let mut only_plain: HashMap<String, Arc<dyn KeyCustody>> = HashMap::new();
         only_plain.insert("plain".to_string(), a);
         let dropped = router.replace(only_plain, "plain");
@@ -372,19 +454,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_backend_replaced_by_a_new_instance_under_the_same_name_drops_its_handles_and_frees_them() {
+    async fn a_backend_replaced_by_a_new_instance_under_the_same_name_drops_its_handles_and_frees_them(
+    ) {
         let (router, a, b) = two_backends();
-        let in_a = router.register_wallet_in("plain", material(1)).await.unwrap();
-        let in_b = router.register_wallet_in("socket", material(3)).await.unwrap();
+        let in_a = router
+            .register_wallet_in("plain", material(1))
+            .await
+            .unwrap();
+        let in_b = router
+            .register_wallet_in("socket", material(3))
+            .await
+            .unwrap();
         let new_socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        let dropped = router.replace(HashMap::from([("plain".to_string(), a.clone()), ("socket".to_string(), new_socket)]), "plain");
-        assert!(router.handle_is_live(in_a), "the kept backend's stores are untouched");
-        assert!(!router.handle_is_live(in_b), "so the scan loop registers the store in the new instance");
+        let dropped = router.replace(
+            HashMap::from([
+                ("plain".to_string(), a.clone()),
+                ("socket".to_string(), new_socket),
+            ]),
+            "plain",
+        );
+        assert!(
+            router.handle_is_live(in_a),
+            "the kept backend's stores are untouched"
+        );
+        assert!(
+            !router.handle_is_live(in_b),
+            "so the scan loop registers the store in the new instance"
+        );
         assert_eq!(dropped.len(), 1);
-        assert!(same_instance(&dropped[0].0, &b) && dropped[0].1 == in_b, "freed in the instance that issued it");
+        assert!(
+            same_instance(&dropped[0].0, &b) && dropped[0].1 == in_b,
+            "freed in the instance that issued it"
+        );
         free_handles(dropped);
         for _ in 0..100 {
-            if b.derive_subaddress(in_b, SubaddressIndex::default(), Network::Mainnet).await.is_err() {
+            if b.derive_subaddress(in_b, SubaddressIndex::default(), Network::Mainnet)
+                .await
+                .is_err()
+            {
                 return;
             }
             tokio::task::yield_now().await;
@@ -395,14 +502,22 @@ mod tests {
     #[tokio::test]
     async fn a_handle_its_backend_no_longer_knows_stops_being_live() {
         let (router, a, _) = two_backends();
-        let handle = router.register_wallet_in("plain", material(1)).await.unwrap();
+        let handle = router
+            .register_wallet_in("plain", material(1))
+            .await
+            .unwrap();
         a.remove_wallet(handle).await.unwrap(); // lost behind the router's back
         assert!(router.handle_is_live(handle), "not known yet");
         assert!(matches!(
-            router.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await,
+            router
+                .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
+                .await,
             Err(KeyCustodyError::UnknownWallet)
         ));
-        assert!(!router.handle_is_live(handle), "now it is, so it gets registered again");
+        assert!(
+            !router.handle_is_live(handle),
+            "now it is, so it gets registered again"
+        );
     }
 
     /// A backend that restarts (its epoch goes up) and forgets its wallets.
@@ -414,7 +529,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl KeyCustody for Restartable {
-        async fn register_wallet(&self, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+        async fn register_wallet(
+            &self,
+            material: WalletMaterial,
+        ) -> Result<WalletHandle, KeyCustodyError> {
             self.inner.register_wallet(material).await
         }
         async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
@@ -423,10 +541,18 @@ mod tests {
         async fn seal(&self, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
             self.inner.seal(material).await
         }
-        async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
+        async fn unseal_and_register(
+            &self,
+            sealed: &[u8],
+        ) -> Result<WalletHandle, KeyCustodyError> {
             self.inner.unseal_and_register(sealed).await
         }
-        async fn derive_subaddress(&self, handle: WalletHandle, index: SubaddressIndex, network: Network) -> Result<Address, KeyCustodyError> {
+        async fn derive_subaddress(
+            &self,
+            handle: WalletHandle,
+            index: SubaddressIndex,
+            network: Network,
+        ) -> Result<Address, KeyCustodyError> {
             self.inner.derive_subaddress(handle, index, network).await
         }
         async fn scan_tx_outputs(
@@ -436,7 +562,9 @@ mod tests {
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+            self.inner
+                .scan_tx_outputs(handle, tx, major_range, minor_range)
+                .await
         }
         async fn check_state(&self) -> Result<u64, KeyCustodyError> {
             Ok(self.epoch.load(std::sync::atomic::Ordering::SeqCst))
@@ -448,20 +576,40 @@ mod tests {
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let restartable = Arc::new(Restartable::default());
         let socket: Arc<dyn KeyCustody> = restartable.clone();
-        let router = CustodyRouter::new(HashMap::from([("plain".to_string(), plain), ("socket".to_string(), socket)]), "plain");
-        let in_plain = router.register_wallet_in("plain", material(1)).await.unwrap();
-        let in_socket = router.register_wallet_in("socket", material(3)).await.unwrap();
+        let router = CustodyRouter::new(
+            HashMap::from([("plain".to_string(), plain), ("socket".to_string(), socket)]),
+            "plain",
+        );
+        let in_plain = router
+            .register_wallet_in("plain", material(1))
+            .await
+            .unwrap();
+        let in_socket = router
+            .register_wallet_in("socket", material(3))
+            .await
+            .unwrap();
         router.check_state().await.unwrap();
         assert!(router.handle_is_live(in_socket), "nothing restarted yet");
 
-        restartable.epoch.store(1, std::sync::atomic::Ordering::SeqCst);
+        restartable
+            .epoch
+            .store(1, std::sync::atomic::Ordering::SeqCst);
         router.check_state().await.unwrap();
         assert!(!router.handle_is_live(in_socket));
-        assert!(router.handle_is_live(in_plain), "the other backend's stores are untouched");
+        assert!(
+            router.handle_is_live(in_plain),
+            "the other backend's stores are untouched"
+        );
         router.check_state().await.unwrap();
-        let again = router.register_wallet_in("socket", material(3)).await.unwrap();
+        let again = router
+            .register_wallet_in("socket", material(3))
+            .await
+            .unwrap();
         router.check_state().await.unwrap();
-        assert!(router.handle_is_live(again), "the same epoch seen twice drops nothing");
+        assert!(
+            router.handle_is_live(again),
+            "the same epoch seen twice drops nothing"
+        );
     }
 
     /// Holds each registration until let go, so a test can change the
@@ -474,7 +622,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl KeyCustody for Gated {
-        async fn register_wallet(&self, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+        async fn register_wallet(
+            &self,
+            material: WalletMaterial,
+        ) -> Result<WalletHandle, KeyCustodyError> {
             self.entered.notify_one();
             self.gate.notified().await;
             self.inner.register_wallet(material).await
@@ -485,10 +636,18 @@ mod tests {
         async fn seal(&self, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
             self.inner.seal(material).await
         }
-        async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
+        async fn unseal_and_register(
+            &self,
+            sealed: &[u8],
+        ) -> Result<WalletHandle, KeyCustodyError> {
             self.inner.unseal_and_register(sealed).await
         }
-        async fn derive_subaddress(&self, handle: WalletHandle, index: SubaddressIndex, network: Network) -> Result<Address, KeyCustodyError> {
+        async fn derive_subaddress(
+            &self,
+            handle: WalletHandle,
+            index: SubaddressIndex,
+            network: Network,
+        ) -> Result<Address, KeyCustodyError> {
             self.inner.derive_subaddress(handle, index, network).await
         }
         async fn scan_tx_outputs(
@@ -498,15 +657,25 @@ mod tests {
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+            self.inner
+                .scan_tx_outputs(handle, tx, major_range, minor_range)
+                .await
         }
     }
 
     #[tokio::test]
-    async fn a_registration_that_finishes_after_its_backend_was_replaced_is_freed_there_and_retried() {
-        let gated = Arc::new(Gated { inner: PlainKeyCustody::default(), entered: tokio::sync::Notify::new(), gate: tokio::sync::Notify::new() });
+    async fn a_registration_that_finishes_after_its_backend_was_replaced_is_freed_there_and_retried(
+    ) {
+        let gated = Arc::new(Gated {
+            inner: PlainKeyCustody::default(),
+            entered: tokio::sync::Notify::new(),
+            gate: tokio::sync::Notify::new(),
+        });
         let old: Arc<dyn KeyCustody> = gated.clone();
-        let router = Arc::new(CustodyRouter::new(HashMap::from([("socket".to_string(), old)]), "socket"));
+        let router = Arc::new(CustodyRouter::new(
+            HashMap::from([("socket".to_string(), old)]),
+            "socket",
+        ));
         let registering = {
             let router = router.clone();
             tokio::spawn(async move { router.register_wallet_in("socket", material(1)).await })
@@ -515,7 +684,13 @@ mod tests {
         let fresh: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         router.replace(HashMap::from([("socket".to_string(), fresh)]), "socket");
         gated.gate.notify_one();
-        assert!(matches!(registering.await.unwrap(), Err(KeyCustodyError::BackendUnavailable(_))), "told to try again");
+        assert!(
+            matches!(
+                registering.await.unwrap(),
+                Err(KeyCustodyError::BackendUnavailable(_))
+            ),
+            "told to try again"
+        );
         // Freed in the old instance, in the background.
         for _ in 0..100 {
             if gated.inner.wallet_count() == 0 {
@@ -523,7 +698,17 @@ mod tests {
             }
             tokio::task::yield_now().await;
         }
-        assert_eq!(gated.inner.wallet_count(), 0, "no copy left behind in the replaced instance");
-        assert!(router.register_wallet_in("socket", material(1)).await.is_ok(), "the retry reaches the current one");
+        assert_eq!(
+            gated.inner.wallet_count(),
+            0,
+            "no copy left behind in the replaced instance"
+        );
+        assert!(
+            router
+                .register_wallet_in("socket", material(1))
+                .await
+                .is_ok(),
+            "the retry reaches the current one"
+        );
     }
 }

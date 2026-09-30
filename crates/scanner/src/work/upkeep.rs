@@ -82,7 +82,10 @@ async fn prune(round: &Round<'_>) -> Result<(), ScannerError> {
     round
         .db(move |s, network| -> Result<_, ScannerError> {
             if let Some(high_water) = s.max_scanned_height(network)? {
-                s.prune_scanned_blocks_below(network, high_water.saturating_sub(depth.saturating_mul(4)))?;
+                s.prune_scanned_blocks_below(
+                    network,
+                    high_water.saturating_sub(depth.saturating_mul(4)),
+                )?;
             }
             Ok(())
         })
@@ -108,7 +111,9 @@ async fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
     let finished = round
         .db(move |s, network| {
             s.in_transaction(|s| -> Result<bool, ScannerError> {
-                let after = s.scheduler_position::<ScanRange>(network)?.unwrap_or_default();
+                let after = s
+                    .scheduler_position::<ScanRange>(network)?
+                    .unwrap_or_default();
                 let page = s.active_tenants_page(network, now, grace, &after, RANGE_PAGE)?;
                 for (tenant_id, cursor) in &page {
                     if let Some(cursor) = cursor {
@@ -116,7 +121,11 @@ async fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
                     }
                 }
                 let finished = page.len() < RANGE_PAGE;
-                let next = if finished { String::new() } else { page.last().map(|(id, _)| id.clone()).unwrap_or_default() };
+                let next = if finished {
+                    String::new()
+                } else {
+                    page.last().map(|(id, _)| id.clone()).unwrap_or_default()
+                };
                 s.set_scheduler_position::<ScanRange>(network, &next)?;
                 Ok(finished)
             })
@@ -132,14 +141,18 @@ async fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
 /// `VOID_RECHECK_INTERVAL_SECS` and walks voided payments in id order; a
 /// failed or inconclusive recheck leaves the payment voided for the next
 /// pass.
-async fn recheck_voids(round: &mut Round<'_>, until: tokio::time::Instant) -> Result<(), ScannerError> {
+async fn recheck_voids(
+    round: &mut Round<'_>,
+    until: tokio::time::Instant,
+) -> Result<(), ScannerError> {
     let Some(tip) = round.tip else { return Ok(()) };
     let now = round.now;
     let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
     let page = round
         .db(move |s, network| -> Result<_, crate::store::StoreError> {
-            let started: i64 =
-                s.scheduler_position::<VoidRecheckPassStarted>(network)?.unwrap_or(i64::MIN);
+            let started: i64 = s
+                .scheduler_position::<VoidRecheckPassStarted>(network)?
+                .unwrap_or(i64::MIN);
             let after: i64 = s.scheduler_position::<VoidRecheck>(network)?.unwrap_or(0);
             if after == 0 {
                 if now.saturating_sub(started) < VOID_RECHECK_INTERVAL_SECS {
@@ -158,7 +171,16 @@ async fn recheck_voids(round: &mut Round<'_>, until: tokio::time::Instant) -> Re
         if last.is_some() && tokio::time::Instant::now() >= until {
             break;
         }
-        match recheck_voided_payment(round.inputs.db, round.inputs.daemon, round.network(), payment, tip, now).await {
+        match recheck_voided_payment(
+            round.inputs.db,
+            round.inputs.daemon,
+            round.network(),
+            payment,
+            tip,
+            now,
+        )
+        .await
+        {
             Ok(_) => last = Some(payment.id),
             Err(error) => {
                 tracing::warn!(network = %round.network(), order.id = %payment.order_id, error = %error,
@@ -172,7 +194,11 @@ async fn recheck_voids(round: &mut Round<'_>, until: tokio::time::Instant) -> Re
     if let Some(last) = last {
         round
             .db(move |s, network| -> Result<_, crate::store::StoreError> {
-                let next = if s.voided_payments_page(network, cutoff, last, 1)?.is_empty() { 0 } else { last };
+                let next = if s.voided_payments_page(network, cutoff, last, 1)?.is_empty() {
+                    0
+                } else {
+                    last
+                };
                 s.set_scheduler_position::<VoidRecheck>(network, &next)
             })
             .await?;

@@ -141,10 +141,14 @@ impl TryFrom<&WalletHandleWire> for WalletHandle {
     fn try_from(wire: &WalletHandleWire) -> Result<Self, Self::Error> {
         let bytes = hex::decode(&wire.uuid_hex)
             .map_err(|e| WireConversionError::InvalidHex(e.to_string()))?;
-        let array: [u8; 16] = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| WireConversionError::InvalidLength { expected: 16, got: bytes.len() })?;
+        let array: [u8; 16] =
+            bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| WireConversionError::InvalidLength {
+                    expected: 16,
+                    got: bytes.len(),
+                })?;
         Ok(WalletHandle::from_bytes(array))
     }
 }
@@ -194,7 +198,9 @@ impl std::fmt::Debug for WalletMaterialWire {
 impl From<&WalletMaterial> for WalletMaterialWire {
     fn from(material: &WalletMaterial) -> Self {
         let mut raw = material.to_raw_bytes();
-        let wire = WalletMaterialWire { raw_hex: hex::encode(raw) };
+        let wire = WalletMaterialWire {
+            raw_hex: hex::encode(raw),
+        };
         // `to_raw_bytes` hands back a fresh stack copy with no reason to outlive
         // this call - scrub it here rather than leaving it in the freed frame,
         // same reasoning `PlainKeyCustody::seal` already applies to its own copy.
@@ -249,7 +255,9 @@ impl std::fmt::Debug for SealedMaterialWire {
 
 impl From<&[u8]> for SealedMaterialWire {
     fn from(bytes: &[u8]) -> Self {
-        SealedMaterialWire { sealed_hex: hex::encode(bytes) }
+        SealedMaterialWire {
+            sealed_hex: hex::encode(bytes),
+        }
     }
 }
 
@@ -325,13 +333,19 @@ pub struct SubaddressIndexWire {
 
 impl From<SubaddressIndex> for SubaddressIndexWire {
     fn from(index: SubaddressIndex) -> Self {
-        SubaddressIndexWire { major: index.major, minor: index.minor }
+        SubaddressIndexWire {
+            major: index.major,
+            minor: index.minor,
+        }
     }
 }
 
 impl From<SubaddressIndexWire> for SubaddressIndex {
     fn from(wire: SubaddressIndexWire) -> Self {
-        SubaddressIndex { major: wire.major, minor: wire.minor }
+        SubaddressIndex {
+            major: wire.major,
+            minor: wire.minor,
+        }
     }
 }
 
@@ -399,7 +413,10 @@ pub struct RangeWire {
 
 impl From<Range<u32>> for RangeWire {
     fn from(range: Range<u32>) -> Self {
-        RangeWire { start: range.start, end: range.end }
+        RangeWire {
+            start: range.start,
+            end: range.end,
+        }
     }
 }
 
@@ -484,7 +501,9 @@ pub struct TransactionWire {
 
 impl From<&Transaction> for TransactionWire {
     fn from(tx: &Transaction) -> Self {
-        TransactionWire { bytes_hex: hex::encode(serialize(tx)) }
+        TransactionWire {
+            bytes_hex: hex::encode(serialize(tx)),
+        }
     }
 }
 
@@ -595,8 +614,10 @@ mod tests {
     /// round trip is exercised against real varints/field data, not a degenerate
     /// case that would round-trip even with a field dropped.
     fn fixture_tx() -> Transaction {
-        let raw = hex::decode(include_str!("../../scanner/tests/fixtures/subaddress_tx.hex"))
-            .expect("fixture is valid hex");
+        let raw = hex::decode(include_str!(
+            "../../scanner/tests/fixtures/subaddress_tx.hex"
+        ))
+        .expect("fixture is valid hex");
         deserialize(&raw).expect("fixture is a valid monero transaction")
     }
 
@@ -632,10 +653,15 @@ mod tests {
 
     #[test]
     fn wallet_handle_wire_rejects_truncated_hex_instead_of_silently_padding() {
-        let bad = WalletHandleWire { uuid_hex: hex::encode([1u8; 8]) };
+        let bad = WalletHandleWire {
+            uuid_hex: hex::encode([1u8; 8]),
+        };
         assert!(matches!(
             WalletHandle::try_from(&bad),
-            Err(WireConversionError::InvalidLength { expected: 16, got: 8 })
+            Err(WireConversionError::InvalidLength {
+                expected: 16,
+                got: 8
+            })
         ));
     }
 
@@ -682,7 +708,9 @@ mod tests {
 
     #[test]
     fn wallet_material_wire_rejects_the_wrong_byte_count() {
-        let wire = WalletMaterialWire { raw_hex: hex::encode([9u8; 40]) };
+        let wire = WalletMaterialWire {
+            raw_hex: hex::encode([9u8; 40]),
+        };
         assert!(matches!(
             WalletMaterial::try_from(&wire),
             Err(WireConversionError::InvalidKeyMaterial(_))
@@ -733,7 +761,10 @@ mod tests {
     fn matched_output_round_trips_with_a_known_amount() {
         let original = MatchedOutput {
             output_index: 3,
-            subaddress_index: SubaddressIndex { major: 0, minor: 12 },
+            subaddress_index: SubaddressIndex {
+                major: 0,
+                minor: 12,
+            },
             amount_piconero: Some(123_456_789_012),
         };
         let wire = MatchedOutputWire::from(original);
@@ -747,7 +778,10 @@ mod tests {
     fn matched_output_round_trips_with_no_decryptable_amount() {
         let original = MatchedOutput {
             output_index: 0,
-            subaddress_index: SubaddressIndex { major: u32::MAX, minor: u32::MAX },
+            subaddress_index: SubaddressIndex {
+                major: u32::MAX,
+                minor: u32::MAX,
+            },
             amount_piconero: None,
         };
         let wire = MatchedOutputWire::from(original);
@@ -785,7 +819,10 @@ mod tests {
     #[test]
     fn an_unrecognized_network_name_is_a_clean_conversion_error() {
         let wire = NetworkWire("not-a-real-network".to_string());
-        assert!(matches!(Network::try_from(&wire), Err(WireConversionError::InvalidNetwork(_))));
+        assert!(matches!(
+            Network::try_from(&wire),
+            Err(WireConversionError::InvalidNetwork(_))
+        ));
     }
 
     // -- Address: a real derived address, not a degenerate one --
@@ -811,7 +848,10 @@ mod tests {
     fn address_round_trips_a_real_subaddress() {
         let view_key = monero::PrivateKey::from_slice(&fixture_view_key()).unwrap();
         let spend_pubkey = monero::PublicKey::from_slice(&fixture_spend_pubkey()).unwrap();
-        let view_pair = monero::ViewPair { view: view_key, spend: spend_pubkey };
+        let view_pair = monero::ViewPair {
+            view: view_key,
+            spend: spend_pubkey,
+        };
         let original = monero::cryptonote::subaddress::get_subaddress(
             &view_pair,
             SubaddressIndex { major: 0, minor: 1 },
@@ -828,7 +868,10 @@ mod tests {
     #[test]
     fn address_wire_rejects_garbage_text() {
         let wire = AddressWire("not a monero address".to_string());
-        assert!(matches!(Address::try_from(&wire), Err(WireConversionError::InvalidAddress(_))));
+        assert!(matches!(
+            Address::try_from(&wire),
+            Err(WireConversionError::InvalidAddress(_))
+        ));
     }
 
     // -- Transaction: a real, non-trivial fixture --
@@ -845,8 +888,13 @@ mod tests {
 
     #[test]
     fn transaction_wire_rejects_truncated_bytes_rather_than_panicking() {
-        let wire = TransactionWire { bytes_hex: hex::encode([1u8, 2, 3]) };
-        assert!(matches!(Transaction::try_from(&wire), Err(WireConversionError::InvalidTransaction(_))));
+        let wire = TransactionWire {
+            bytes_hex: hex::encode([1u8, 2, 3]),
+        };
+        assert!(matches!(
+            Transaction::try_from(&wire),
+            Err(WireConversionError::InvalidTransaction(_))
+        ));
     }
 
     // -- Full per-method request/response DTOs --
@@ -854,7 +902,9 @@ mod tests {
     #[test]
     fn register_wallet_request_and_response_round_trip() {
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
-        let request = RegisterWalletRequest { material: WalletMaterialWire::from(&material) };
+        let request = RegisterWalletRequest {
+            material: WalletMaterialWire::from(&material),
+        };
         let json = serde_json::to_string(&request).unwrap();
         let decoded: RegisterWalletRequest = serde_json::from_str(&json).unwrap();
         let restored = WalletMaterial::try_from(&decoded.material).unwrap();
@@ -866,8 +916,9 @@ mod tests {
         let decoded: RegisterWalletResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(WalletHandle::try_from(decoded.unwrap()).unwrap(), handle);
 
-        let err_response: RegisterWalletResponse =
-            Err(KeyCustodyErrorWire::from(KeyCustodyError::InvalidKeyMaterial("bad".into())));
+        let err_response: RegisterWalletResponse = Err(KeyCustodyErrorWire::from(
+            KeyCustodyError::InvalidKeyMaterial("bad".into()),
+        ));
         let json = serde_json::to_string(&err_response).unwrap();
         let decoded: RegisterWalletResponse = serde_json::from_str(&json).unwrap();
         assert!(matches!(decoded, Err(KeyCustodyErrorWire::InvalidKeyMaterial(m)) if m == "bad"));
@@ -876,7 +927,9 @@ mod tests {
     #[test]
     fn remove_wallet_request_and_response_round_trip() {
         let handle = WalletHandle::from_bytes([9u8; 16]);
-        let request = RemoveWalletRequest { handle: WalletHandleWire::from(handle) };
+        let request = RemoveWalletRequest {
+            handle: WalletHandleWire::from(handle),
+        };
         let json = serde_json::to_string(&request).unwrap();
         let decoded: RemoveWalletRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(WalletHandle::try_from(&decoded.handle).unwrap(), handle);
@@ -886,7 +939,8 @@ mod tests {
         let decoded: RemoveWalletResponse = serde_json::from_str(&json).unwrap();
         assert!(decoded.is_ok());
 
-        let err_response: RemoveWalletResponse = Err(KeyCustodyErrorWire::from(KeyCustodyError::UnknownWallet));
+        let err_response: RemoveWalletResponse =
+            Err(KeyCustodyErrorWire::from(KeyCustodyError::UnknownWallet));
         let json = serde_json::to_string(&err_response).unwrap();
         let decoded: RemoveWalletResponse = serde_json::from_str(&json).unwrap();
         assert!(matches!(decoded, Err(KeyCustodyErrorWire::UnknownWallet)));
@@ -895,7 +949,9 @@ mod tests {
     #[test]
     fn seal_request_and_response_round_trip() {
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
-        let request = SealRequest { material: WalletMaterialWire::from(&material) };
+        let request = SealRequest {
+            material: WalletMaterialWire::from(&material),
+        };
         let json = serde_json::to_string(&request).unwrap();
         let decoded: SealRequest = serde_json::from_str(&json).unwrap();
         let restored = WalletMaterial::try_from(&decoded.material).unwrap();
@@ -911,7 +967,10 @@ mod tests {
     #[test]
     fn unseal_and_register_request_and_response_round_trip() {
         let sealed_bytes = vec![5u8; 64];
-        let request = UnsealAndRegisterRequest { sealed: SealedMaterialWire::from(sealed_bytes.as_slice()), registration_id: None };
+        let request = UnsealAndRegisterRequest {
+            sealed: SealedMaterialWire::from(sealed_bytes.as_slice()),
+            registration_id: None,
+        };
         let json = serde_json::to_string(&request).unwrap();
         let decoded: UnsealAndRegisterRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.sealed.to_bytes().unwrap(), sealed_bytes);
@@ -934,8 +993,14 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         let decoded: DeriveSubaddressRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(WalletHandle::try_from(&decoded.handle).unwrap(), handle);
-        assert_eq!(SubaddressIndex::from(decoded.index), SubaddressIndex { major: 0, minor: 4 });
-        assert_eq!(Network::try_from(&decoded.network).unwrap(), Network::Stagenet);
+        assert_eq!(
+            SubaddressIndex::from(decoded.index),
+            SubaddressIndex { major: 0, minor: 4 }
+        );
+        assert_eq!(
+            Network::try_from(&decoded.network).unwrap(),
+            Network::Stagenet
+        );
 
         let view_key = monero::PrivateKey::from_slice(&fixture_view_key()).unwrap();
         let spend_pubkey = monero::PublicKey::from_slice(&fixture_spend_pubkey()).unwrap();
@@ -981,18 +1046,27 @@ mod tests {
                 amount_piconero: None,
             },
         ];
-        let ok_response: ScanTxOutputsResponse =
-            Ok(matches.iter().copied().map(MatchedOutputWire::from).collect());
+        let ok_response: ScanTxOutputsResponse = Ok(matches
+            .iter()
+            .copied()
+            .map(MatchedOutputWire::from)
+            .collect());
         let json = serde_json::to_string(&ok_response).unwrap();
         let decoded: ScanTxOutputsResponse = serde_json::from_str(&json).unwrap();
-        let restored: Vec<MatchedOutput> =
-            decoded.unwrap().into_iter().map(|w| MatchedOutput::try_from(w).unwrap()).collect();
+        let restored: Vec<MatchedOutput> = decoded
+            .unwrap()
+            .into_iter()
+            .map(|w| MatchedOutput::try_from(w).unwrap())
+            .collect();
         assert_eq!(restored, matches);
 
-        let err_response: ScanTxOutputsResponse =
-            Err(KeyCustodyErrorWire::from(KeyCustodyError::ScanFailed("range too wide".into())));
+        let err_response: ScanTxOutputsResponse = Err(KeyCustodyErrorWire::from(
+            KeyCustodyError::ScanFailed("range too wide".into()),
+        ));
         let json = serde_json::to_string(&err_response).unwrap();
         let decoded: ScanTxOutputsResponse = serde_json::from_str(&json).unwrap();
-        assert!(matches!(decoded, Err(KeyCustodyErrorWire::ScanFailed(m)) if m == "range too wide"));
+        assert!(
+            matches!(decoded, Err(KeyCustodyErrorWire::ScanFailed(m)) if m == "range too wide")
+        );
     }
 }

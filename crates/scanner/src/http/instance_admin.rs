@@ -47,7 +47,9 @@ fn effective_admin_token_hash(store: &Store) -> Result<Option<String>, StatusCod
             return Ok(Some(shared::auth::hash_secret_token(&raw)));
         }
     }
-    store.get_setting(ADMIN_TOKEN_HASH_KEY).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    store
+        .get_setting(ADMIN_TOKEN_HASH_KEY)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// Called once at boot (`main.rs`), before the HTTP server starts accepting
@@ -59,17 +61,27 @@ fn effective_admin_token_hash(store: &Store) -> Result<Option<String>, StatusCod
 /// only on that first-boot path, for the caller to print - this function
 /// itself never prints anything, so a test can seed a database directly with
 /// this instead of scraping stdout for a token it needs to authenticate with.
-#[allow(clippy::expect_used, reason = "boot-time only: without a stored token the admin API is unusable, so failing loudly is right")]
+#[allow(
+    clippy::expect_used,
+    reason = "boot-time only: without a stored token the admin API is unusable, so failing loudly is right"
+)]
 pub fn ensure_admin_token_seeded(store: &Store) -> Option<String> {
     if std::env::var(ADMIN_TOKEN_ENV_VAR).is_ok_and(|v| !v.trim().is_empty()) {
         return None;
     }
-    if store.get_setting(ADMIN_TOKEN_HASH_KEY).ok().flatten().is_some() {
+    if store
+        .get_setting(ADMIN_TOKEN_HASH_KEY)
+        .ok()
+        .flatten()
+        .is_some()
+    {
         return None;
     }
     let token = shared::auth::generate_admin_token();
     let hash = shared::auth::hash_secret_token(&token);
-    store.set_setting(ADMIN_TOKEN_HASH_KEY, &hash).expect("failed to persist a freshly generated instance admin token");
+    store
+        .set_setting(ADMIN_TOKEN_HASH_KEY, &hash)
+        .expect("failed to persist a freshly generated instance admin token");
     Some(token)
 }
 
@@ -79,7 +91,12 @@ pub fn ensure_admin_token_seeded(store: &Store) -> Option<String> {
 /// for) whatever `ensure_admin_token_seeded` would otherwise generate.
 #[cfg(test)]
 pub fn seed_admin_token_for_tests(store: &Store, raw_token: &str) {
-    store.set_setting(ADMIN_TOKEN_HASH_KEY, &shared::auth::hash_secret_token(raw_token)).unwrap();
+    store
+        .set_setting(
+            ADMIN_TOKEN_HASH_KEY,
+            &shared::auth::hash_secret_token(raw_token),
+        )
+        .unwrap();
 }
 
 /// Resolves to this only once a presented `Authorization: Bearer <token>`
@@ -92,10 +109,18 @@ pub struct AuthedInstanceAdmin;
 impl FromRequestParts<AppState> for AuthedInstanceAdmin {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let header_value =
-            parts.headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or(ApiError::Unauthorized)?;
-        let token = header_value.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let header_value = parts
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or(ApiError::Unauthorized)?;
+        let token = header_value
+            .strip_prefix("Bearer ")
+            .ok_or(ApiError::Unauthorized)?;
         let presented_hash = shared::auth::hash_secret_token(token);
         let effective_hash = state
             .read_store(|store| Ok(effective_admin_token_hash(store)))
@@ -154,7 +179,10 @@ pub struct SettingsView {
 }
 
 fn is_node_key(key: &str) -> Option<&'static str> {
-    NETWORKS.iter().find(|(_, setting)| setting.key == key).map(|(network, _)| *network)
+    NETWORKS
+        .iter()
+        .find(|(_, setting)| setting.key == key)
+        .map(|(network, _)| *network)
 }
 
 /// `GET /api/v1/admin/settings` - every setting's current effective value,
@@ -165,7 +193,9 @@ pub async fn get_settings(
     State(state): State<AppState>,
 ) -> Result<Json<SettingsView>, ApiError> {
     let Some(registry) = state.settings.registry.as_ref() else {
-        return Err(ApiError::Unavailable("settings are not available on this engine".into()));
+        return Err(ApiError::Unavailable(
+            "settings are not available on this engine".into(),
+        ));
     };
     let tenant_counts = state.read_store(|s| s.count_tenants_by_network()).await?;
     let mut scalars = HashMap::new();
@@ -173,7 +203,11 @@ pub async fn get_settings(
     let mut networks = HashMap::new();
     for view in registry.describe() {
         if let Some(network) = is_node_key(view.key) {
-            let value = if view.value.trim().is_empty() { None } else { serde_json::from_str(&view.value).ok() };
+            let value = if view.value.trim().is_empty() {
+                None
+            } else {
+                serde_json::from_str(&view.value).ok()
+            };
             monero_node.insert(network.to_string(), value);
             networks.insert(
                 network.to_string(),
@@ -200,7 +234,11 @@ pub async fn get_settings(
             },
         );
     }
-    Ok(Json(SettingsView { scalars, monero_node, networks }))
+    Ok(Json(SettingsView {
+        scalars,
+        monero_node,
+        networks,
+    }))
 }
 
 #[derive(Deserialize, Default)]
@@ -233,32 +271,66 @@ async fn nodes_that_cannot_work(
     let mut errors = Vec::new();
     let mut probes = Vec::new();
     for (network, value) in submitted {
-        let Some((name, setting)) = NETWORKS.iter().find(|(n, _)| n == network) else { continue };
+        let Some((name, setting)) = NETWORKS.iter().find(|(n, _)| n == network) else {
+            continue;
+        };
         // Not a node the registry would accept: its own check says why.
-        let Some(node) = value.as_ref().and_then(|v| serde_json::from_value::<MoneroNodeSetting>(v.clone()).ok()) else { continue };
+        let Some(node) = value
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<MoneroNodeSetting>(v.clone()).ok())
+        else {
+            continue;
+        };
         if current.nodes.get(name) == Some(&node) {
             continue;
         }
-        let nodes: Vec<MoneroNodeSetting> = std::iter::once(node.clone()).chain(node.fallbacks.iter().cloned()).collect();
+        let nodes: Vec<MoneroNodeSetting> = std::iter::once(node.clone())
+            .chain(node.fallbacks.iter().cloned())
+            .collect();
         let mut seen = std::collections::HashSet::new();
-        if let Some(twice) = nodes.iter().find(|n| !seen.insert((n.host.to_ascii_lowercase(), n.port))) {
-            errors.push(live_settings::FieldError::new(setting.key, format!("{}:{} is listed twice.", twice.host, twice.port)));
+        if let Some(twice) = nodes
+            .iter()
+            .find(|n| !seen.insert((n.host.to_ascii_lowercase(), n.port)))
+        {
+            errors.push(live_settings::FieldError::new(
+                setting.key,
+                format!("{}:{} is listed twice.", twice.host, twice.port),
+            ));
             continue;
         }
         for node in nodes {
             let key = setting.key;
             let network = *name;
             probes.push(async move {
-                let client = crate::daemon_rpc::RpcDaemonClient::new(&node.host, node.port, node.ssl, node.accept_self_signed_certs).ok()?;
-                let info = tokio::time::timeout(NODE_INFO_TIMEOUT, client.get_info()).await.ok()?.ok()?;
+                let client = crate::daemon_rpc::RpcDaemonClient::new(
+                    &node.host,
+                    node.port,
+                    node.ssl,
+                    node.accept_self_signed_certs,
+                )
+                .ok()?;
+                let info = tokio::time::timeout(NODE_INFO_TIMEOUT, client.get_info())
+                    .await
+                    .ok()?
+                    .ok()?;
                 let on = info.network()?;
                 (crate::network::network_str(on) != network).then(|| {
-                    live_settings::FieldError::new(key, format!("{}:{} is on {}, not {network}.", node.host, node.port, info.nettype))
+                    live_settings::FieldError::new(
+                        key,
+                        format!(
+                            "{}:{} is on {}, not {network}.",
+                            node.host, node.port, info.nettype
+                        ),
+                    )
                 })
             });
         }
     }
-    let mut wrong: Vec<live_settings::FieldError> = futures_util::future::join_all(probes).await.into_iter().flatten().collect();
+    let mut wrong: Vec<live_settings::FieldError> = futures_util::future::join_all(probes)
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
     // One message per network: the first of its nodes in the order saved.
     let mut reported = std::collections::HashSet::new();
     wrong.retain(|e| reported.insert(e.key.clone()));
@@ -299,10 +371,14 @@ pub async fn update_settings(
     Json(req): Json<UpdateSettingsRequest>,
 ) -> axum::response::Response {
     let Some(registry) = state.settings.registry.as_ref() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "settings are not available on this engine" })))
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "settings are not available on this engine" })),
+        )
             .into_response();
     };
-    let mut changes: live_settings::Changes = req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
+    let mut changes: live_settings::Changes =
+        req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
     // A node that can never work where it's being saved is refused before
     // anything is stored (T9).
     let current_nodes = state.settings.nodes.load();
@@ -312,7 +388,11 @@ pub async fn update_settings(
     }
     for (network, node) in req.monero_node {
         let Some((_, setting)) = NETWORKS.iter().find(|(n, _)| *n == network) else {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("unknown network {network:?}") }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("unknown network {network:?}") })),
+            )
+                .into_response();
         };
         let raw = match node {
             Some(value) if !value.is_null() => Some(value.to_string()),
@@ -326,23 +406,37 @@ pub async fn update_settings(
             // Networks stores use that have no node now, or whose just-saved
             // nodes don't answer (task 2.2, decision D2). Only saved
             // networks are probed, each node briefly, all at once.
-            let counts = state.read_store(|s| s.count_tenants_by_network()).await.unwrap_or_default();
-            let saved_networks: Vec<&str> =
-                NETWORKS.iter().filter(|(_, setting)| report.changed.contains(&setting.key)).map(|(n, _)| *n).collect();
+            let counts = state
+                .read_store(|s| s.count_tenants_by_network())
+                .await
+                .unwrap_or_default();
+            let saved_networks: Vec<&str> = NETWORKS
+                .iter()
+                .filter(|(_, setting)| report.changed.contains(&setting.key))
+                .map(|(n, _)| *n)
+                .collect();
             let mut unserved = Vec::new();
             for (network, tenants) in counts {
                 if tenants == 0 {
                     continue;
                 }
-                let Ok(parsed) = crate::network::parse_network(&network) else { continue };
+                let Ok(parsed) = crate::network::parse_network(&network) else {
+                    continue;
+                };
                 let reachable = match state.daemons.get(parsed) {
                     None => false,
                     Some(_) if !saved_networks.contains(&network.as_str()) => true,
                     Some(daemon) => {
                         let probes = daemon.nodes().iter().map(|node| {
-                            tokio::time::timeout(std::time::Duration::from_secs(3), node.client.get_height())
+                            tokio::time::timeout(
+                                std::time::Duration::from_secs(3),
+                                node.client.get_height(),
+                            )
                         });
-                        futures_util::future::join_all(probes).await.into_iter().any(|r| matches!(r, Ok(Ok(_))))
+                        futures_util::future::join_all(probes)
+                            .await
+                            .into_iter()
+                            .any(|r| matches!(r, Ok(Ok(_))))
                     }
                 };
                 if !reachable {
@@ -366,10 +460,15 @@ pub async fn update_settings(
                 .into_response()
         }
         Err(live_settings::SaveError::Invalid(errors)) => refused(&errors),
-        Err(live_settings::SaveError::UnknownKey(key)) => {
-            (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("there is no setting called {key:?}") }))).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+        Err(live_settings::SaveError::UnknownKey(key)) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("there is no setting called {key:?}") })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
-

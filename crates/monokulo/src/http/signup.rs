@@ -78,7 +78,8 @@ pub(super) fn create_account(
     // Argon2id (`shared::password`, WBS 0.4) — deliberately not
     // `shared::auth`'s SHA-256, which is the wrong tool for a low-entropy,
     // human-chosen password (see that module's own doc comment).
-    let password_hash = shared::password::hash_password(password).map_err(|_| CreateAccountError::Internal)?;
+    let password_hash =
+        shared::password::hash_password(password).map_err(|_| CreateAccountError::Internal)?;
     let id = Uuid::new_v4().to_string();
     let created_at = now_unix();
 
@@ -88,15 +89,26 @@ pub(super) fn create_account(
             _ => return Err(CreateAccountError::InviteRequired),
         };
         let token_hash = shared::auth::hash_secret_token(token);
-        return match state.db.lock().redeem_invite_and_create_user(&token_hash, &id, email, &password_hash, created_at) {
+        return match state.db.lock().redeem_invite_and_create_user(
+            &token_hash,
+            &id,
+            email,
+            &password_hash,
+            created_at,
+        ) {
             Ok(RedeemInviteResult::Created) => Ok(id),
             Ok(RedeemInviteResult::DuplicateEmail) => Err(CreateAccountError::DuplicateEmail),
-            Ok(RedeemInviteResult::InvalidOrAlreadyUsed) => Err(CreateAccountError::InvalidOrUsedInvite),
+            Ok(RedeemInviteResult::InvalidOrAlreadyUsed) => {
+                Err(CreateAccountError::InvalidOrUsedInvite)
+            }
             Err(_) => Err(CreateAccountError::Internal),
         };
     }
 
-    let result = state.db.lock().create_user(&id, email, &password_hash, is_admin, created_at);
+    let result = state
+        .db
+        .lock()
+        .create_user(&id, email, &password_hash, is_admin, created_at);
     match result {
         Ok(()) => Ok(id),
         Err(e) if e.is_unique_violation() => Err(CreateAccountError::DuplicateEmail),
@@ -108,13 +120,21 @@ pub async fn signup(
     State(state): State<AppState>,
     Json(req): Json<SignupRequest>,
 ) -> Result<(StatusCode, Json<SignupResponse>), ApiError> {
-    match create_account(&state, &req.email, &req.password, false, req.invite_token.as_deref()) {
+    match create_account(
+        &state,
+        &req.email,
+        &req.password,
+        false,
+        req.invite_token.as_deref(),
+    ) {
         Ok(id) => Ok((StatusCode::CREATED, Json(SignupResponse { user_id: id }))),
         Err(CreateAccountError::DuplicateEmail) => Err(ApiError::Conflict),
         Err(CreateAccountError::Internal) => Err(ApiError::Internal),
-        Err(CreateAccountError::InviteRequired) => Err(ApiError::BadRequest("an invite token is required to sign up".to_string())),
-        Err(CreateAccountError::InvalidOrUsedInvite) => {
-            Err(ApiError::BadRequest("that invite link is invalid or has already been used".to_string()))
-        }
+        Err(CreateAccountError::InviteRequired) => Err(ApiError::BadRequest(
+            "an invite token is required to sign up".to_string(),
+        )),
+        Err(CreateAccountError::InvalidOrUsedInvite) => Err(ApiError::BadRequest(
+            "that invite link is invalid or has already been used".to_string(),
+        )),
     }
 }

@@ -38,7 +38,11 @@ pub const ORDERS_PER_PAGE: u32 = 50;
 
 /// The orders table shared by the Orders page and the store page's
 /// "Recent orders".
-pub fn orders_table(connection_id: &str, orders: &[OrderRowViewModel], clock: &super::time::Clock) -> Markup {
+pub fn orders_table(
+    connection_id: &str,
+    orders: &[OrderRowViewModel],
+    clock: &super::time::Clock,
+) -> Markup {
     html! {
         // On a phone each row is a card (`.table-cards`): order and status,
         // then amount and date, then reference and source.
@@ -121,7 +125,11 @@ pub fn list_results(data: &OrdersViewModel, clock: &super::time::Clock) -> Marku
         if page > 0 {
             query.push(format!("page={page}"));
         }
-        if query.is_empty() { base.clone() } else { format!("{base}?{}", query.join("&")) }
+        if query.is_empty() {
+            base.clone()
+        } else {
+            format!("{base}?{}", query.join("&"))
+        }
     };
     html! {
         div id="orders-results" {
@@ -163,15 +171,24 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
             (list_results(data, &chrome.clock))
         }
     };
-    layout(chrome, &format!("Orders - {} - Monokulo", data.display_name), body)
+    layout(
+        chrome,
+        &format!("Orders - {} - Monokulo", data.display_name),
+        body,
+    )
 }
 
 /// Percent-encodes a query value (a search term).
 fn urlencoding(value: &str) -> String {
-    value.bytes().map(|b| match b {
-        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-        _ => format!("%{b:02X}"),
-    }).collect()
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// One payment row inside the order detail page's `payments` table - mirrors
@@ -387,7 +404,10 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
     };
 
     let title = match &data.order {
-        Some(order) => format!("Order {} - {} - Monokulo", order.order_id, data.display_name),
+        Some(order) => format!(
+            "Order {} - {} - Monokulo",
+            order.order_id, data.display_name
+        ),
         None => format!("Order not found - {} - Monokulo", data.display_name),
     };
     layout_with_head(chrome, &title, extra_head, body)
@@ -422,7 +442,10 @@ mod tests {
         let html = list_page(&chrome(), &data).into_string();
         assert!(html.contains("pay_xyz"));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/pay_xyz""#));
-        assert!(html.contains(r#"href="/dashboard/stores/conn_1""#), "expected a back-to-store link");
+        assert!(
+            html.contains(r#"href="/dashboard/stores/conn_1""#),
+            "expected a back-to-store link"
+        );
     }
 
     fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
@@ -455,17 +478,28 @@ mod tests {
 
     #[test]
     fn detail_page_hides_the_double_spend_row_entirely_when_none_was_detected() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)) };
+        let data = OrderDetailViewModel {
+            connection_id: "conn_1".to_string(),
+            display_name: "shop.example.com".to_string(),
+            order: Some(test_order_detail_data(None)),
+        };
         let html = detail_page(&chrome(), &data).into_string();
         // The real point of this follow-up: no dash, no row at all - a
         // permanently-visible "Double-spend detected at" label reads as a
         // warning even when it says nothing happened.
-        assert!(!html.contains("Double-spend detected at"), "expected the row fully absent when no double-spend occurred, got: {html}");
+        assert!(
+            !html.contains("Double-spend detected at"),
+            "expected the row fully absent when no double-spend occurred, got: {html}"
+        );
     }
 
     #[test]
     fn detail_page_uses_order_breadcrumb() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)) };
+        let data = OrderDetailViewModel {
+            connection_id: "conn_1".to_string(),
+            display_name: "shop.example.com".to_string(),
+            order: Some(test_order_detail_data(None)),
+        };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><span class="breadcrumb-sep" aria-hidden="true">›</span><a href="/dashboard/stores/conn_1/orders">Orders</a></nav>"#));
         assert!(html.contains(r#"<span class="order-title-label">Order · </span><code class="order-title-id"><span class="mid-ellipsis" title="pay_abc123"><span class="mid-head">pay_</span><span class="mid-tail">abc123</span></span></code>"#), "{html}");
@@ -473,21 +507,38 @@ mod tests {
 
     #[test]
     fn detail_page_shows_the_double_spend_row_when_one_was_detected() {
-        let data =
-            OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(Some(1_700_000_000))) };
+        let data = OrderDetailViewModel {
+            connection_id: "conn_1".to_string(),
+            display_name: "shop.example.com".to_string(),
+            order: Some(test_order_detail_data(Some(1_700_000_000))),
+        };
         let html = detail_page(&chrome(), &data).into_string();
-        assert!(html.contains("Double-spend detected at"), "expected the row present when a double-spend was detected, got: {html}");
-        assert!(html.contains(r#"datetime="2023-11-14T22:13:20Z""#) && html.contains(">14 Nov 2023, 22:13</time>"), "expected the real detected-at time shown, got: {html}");
+        assert!(
+            html.contains("Double-spend detected at"),
+            "expected the row present when a double-spend was detected, got: {html}"
+        );
+        assert!(
+            html.contains(r#"datetime="2023-11-14T22:13:20Z""#)
+                && html.contains(">14 Nov 2023, 22:13</time>"),
+            "expected the real detected-at time shown, got: {html}"
+        );
     }
 
     #[test]
     fn detail_page_shows_a_not_found_state_when_order_is_none() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: None };
+        let data = OrderDetailViewModel {
+            connection_id: "conn_1".to_string(),
+            display_name: "shop.example.com".to_string(),
+            order: None,
+        };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.to_lowercase().contains("not found"));
         // The nav's own status-dot poll script always renders regardless -
         // it's the order-specific share-button script that must be absent
         // with no order to attach it to.
-        assert!(!html.contains("share-payment-link"), "no order means no share button to enhance");
+        assert!(
+            !html.contains("share-payment-link"),
+            "no order means no share button to enhance"
+        );
     }
 }

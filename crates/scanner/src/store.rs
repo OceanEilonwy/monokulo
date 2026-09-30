@@ -13,20 +13,23 @@
 //! order creation (the future HTTP handler / writer actor) — `Store` only persists the
 //! result.
 
-use std::cell::RefCell;
 use parking_lot::Mutex;
+use std::cell::RefCell;
 use std::sync::Arc;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::auth::{generate_public_key, generate_secret_token, hash_secret_token};
-use crate::status::{OrderStatus, PaymentView, StatusInputs, derive_status};
+use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
 
 pub mod db;
 mod work;
 pub use db::{Db, DbMetrics};
-pub use work::{position, sql_height, BlockCheckpoint, OpenedReorg, Position, ReorgCandidate, ReorgJob, ReorgPhase, StagedPayment};
+pub use work::{
+    position, sql_height, BlockCheckpoint, OpenedReorg, Position, ReorgCandidate, ReorgJob,
+    ReorgPhase, StagedPayment,
+};
 
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.
@@ -37,23 +40,65 @@ pub use work::{position, sql_height, BlockCheckpoint, OpenedReorg, Position, Reo
 /// unit test in this codebase opens a fresh `:memory:` database exactly once.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
-    (2, include_str!("../migrations/0002_active_orders_index.sql")),
-    (3, include_str!("../migrations/0003_network_scoped_scanning.sql")),
-    (4, include_str!("../migrations/0004_order_scoped_payment_uniqueness.sql")),
-    (5, include_str!("../migrations/0005_drop_order_fiat_columns.sql")),
-    (6, include_str!("../migrations/0006_drop_tenant_template_dir.sql")),
+    (
+        2,
+        include_str!("../migrations/0002_active_orders_index.sql"),
+    ),
+    (
+        3,
+        include_str!("../migrations/0003_network_scoped_scanning.sql"),
+    ),
+    (
+        4,
+        include_str!("../migrations/0004_order_scoped_payment_uniqueness.sql"),
+    ),
+    (
+        5,
+        include_str!("../migrations/0005_drop_order_fiat_columns.sql"),
+    ),
+    (
+        6,
+        include_str!("../migrations/0006_drop_tenant_template_dir.sql"),
+    ),
     (7, include_str!("../migrations/0007_order_rescans.sql")),
-    (8, include_str!("../migrations/0008_order_scanned_range.sql")),
-    (9, include_str!("../migrations/0009_utc_suffix_date_columns.sql")),
+    (
+        8,
+        include_str!("../migrations/0008_order_scanned_range.sql"),
+    ),
+    (
+        9,
+        include_str!("../migrations/0009_utc_suffix_date_columns.sql"),
+    ),
     (10, include_str!("../migrations/0010_settings.sql")),
-    (11, include_str!("../migrations/0011_order_confirmations_override.sql")),
-    (12, include_str!("../migrations/0012_drop_order_rescans.sql")),
-    (13, include_str!("../migrations/0013_drop_zero_conf_max_piconero.sql")),
-    (14, include_str!("../migrations/0014_drop_tenant_allowed_origins.sql")),
-    (15, include_str!("../migrations/0015_tenant_scan_cursor.sql")),
+    (
+        11,
+        include_str!("../migrations/0011_order_confirmations_override.sql"),
+    ),
+    (
+        12,
+        include_str!("../migrations/0012_drop_order_rescans.sql"),
+    ),
+    (
+        13,
+        include_str!("../migrations/0013_drop_zero_conf_max_piconero.sql"),
+    ),
+    (
+        14,
+        include_str!("../migrations/0014_drop_tenant_allowed_origins.sql"),
+    ),
+    (
+        15,
+        include_str!("../migrations/0015_tenant_scan_cursor.sql"),
+    ),
     (16, include_str!("../migrations/0016_order_closed_at.sql")),
-    (17, include_str!("../migrations/0017_pending_payment_recomputes.sql")),
-    (18, include_str!("../migrations/0018_partial_block_scans.sql")),
+    (
+        17,
+        include_str!("../migrations/0017_pending_payment_recomputes.sql"),
+    ),
+    (
+        18,
+        include_str!("../migrations/0018_partial_block_scans.sql"),
+    ),
     (19, include_str!("../migrations/0019_scanner_work.sql")),
     (20, include_str!("../migrations/0020_scanner_indexes.sql")),
 ];
@@ -147,12 +192,14 @@ impl ReadStorePool {
     pub fn open(path: &str, count: usize) -> Result<Self> {
         let mut workers = Vec::new();
         for n in 0..count.max(1) {
-            let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let conn =
+                Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA query_only = ON;")?;
             tune_connection(&conn)?;
             let store = Store::from_connection(conn);
             let (sender, mut receiver) = tokio::sync::mpsc::channel::<ReadJob>(64);
-            std::thread::Builder::new().name(format!("scanner-db-read-{n}"))
+            std::thread::Builder::new()
+                .name(format!("scanner-db-read-{n}"))
                 .spawn(move || {
                     while let Some(job) = receiver.blocking_recv() {
                         job(&store);
@@ -161,17 +208,29 @@ impl ReadStorePool {
                 .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
             workers.push(sender);
         }
-        Ok(Self { workers: Arc::new(workers), next: Arc::new(std::sync::atomic::AtomicUsize::new(0)) })
+        Ok(Self {
+            workers: Arc::new(workers),
+            next: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
     }
 
     pub async fn query<T: Send + 'static>(
-        &self, f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
+        &self,
+        f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let (reply, answer) = tokio::sync::oneshot::channel();
-        let job: ReadJob = Box::new(move |store| { let _ = reply.send(f(store)); });
-        let index = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.workers.len();
-        self.workers[index].send(job).await.map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?;
-        answer.await.map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?
+        let job: ReadJob = Box::new(move |store| {
+            let _ = reply.send(f(store));
+        });
+        let index =
+            self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.workers.len();
+        self.workers[index]
+            .send(job)
+            .await
+            .map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?;
+        answer
+            .await
+            .map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?
     }
 }
 
@@ -349,7 +408,10 @@ fn status_to_str(s: OrderStatus) -> &'static str {
 
 /// Paid, overpaid and expired orders are closed: nothing more is expected.
 fn is_terminal(s: OrderStatus) -> bool {
-    matches!(s, OrderStatus::Paid | OrderStatus::Overpaid | OrderStatus::Expired)
+    matches!(
+        s,
+        OrderStatus::Paid | OrderStatus::Overpaid | OrderStatus::Expired
+    )
 }
 
 /// A status that tells a merchant to ship: the one kind of transition that
@@ -390,7 +452,12 @@ struct StatusPlan {
 fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     let order = facts.order;
     let amount_received: u64 = facts.views.iter().map(|v| v.amount_piconero).sum();
-    let confirmations = facts.views.iter().map(|v| v.confirmations).min().unwrap_or(0);
+    let confirmations = facts
+        .views
+        .iter()
+        .map(|v| v.confirmations)
+        .min()
+        .unwrap_or(0);
     let derived = derive_status(
         facts.views,
         StatusInputs {
@@ -404,16 +471,23 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     // expired: its payment may be in a block not yet scanned for it, and an
     // `order.expired` webhook can make a shop cancel an order that turns out
     // to be paid. It expires once the tenant has caught up.
-    let expiry_held = derived == OrderStatus::Expired && order.status != OrderStatus::Expired && facts.tenant_lagging;
+    let expiry_held = derived == OrderStatus::Expired
+        && order.status != OrderStatus::Expired
+        && facts.tenant_lagging;
     // While a reorg on this network is being reconciled, confirmations may be
     // counted on the losing chain: an order can't newly settle until the
     // rewind. Everything else (expiry, confirmation counts, walking a
     // settlement back) still happens, and it shows where the payment stands.
-    let settlement_deferred = is_settlement(derived) && !is_settlement(order.status) && facts.settlement_frozen;
+    let settlement_deferred =
+        is_settlement(derived) && !is_settlement(order.status) && facts.settlement_frozen;
     let status = if expiry_held {
         order.status
     } else if settlement_deferred {
-        if facts.views.iter().all(|v| v.is_zero_conf) { OrderStatus::Unconfirmed } else { OrderStatus::Confirming }
+        if facts.views.iter().all(|v| v.is_zero_conf) {
+            OrderStatus::Unconfirmed
+        } else {
+            OrderStatus::Confirming
+        }
     } else {
         derived
     };
@@ -431,13 +505,23 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
         (None, None)
     } else {
         let short_of_amount = amount_received < order.xmr_amount_piconero;
-        let confirming = facts.views.iter().any(|v| !v.is_zero_conf && v.confirmations < facts.confirmations_required);
+        let confirming = facts
+            .views
+            .iter()
+            .any(|v| !v.is_zero_conf && v.confirmations < facts.confirmations_required);
         (
             short_of_amount.then_some(order.expires_at.saturating_add(1).max(facts.now)),
             confirming.then_some(facts.current_height.saturating_add(1) as i64),
         )
     };
-    StatusPlan { status, confirmations, amount_received, next_due_at, next_due_height, keep_obligation: settlement_deferred }
+    StatusPlan {
+        status,
+        confirmations,
+        amount_received,
+        next_due_at,
+        next_due_height,
+        keep_obligation: settlement_deferred,
+    }
 }
 
 /// The scan window (task 7.3, decision D10) as an SQL condition on an
@@ -504,7 +588,11 @@ fn new_id(prefix: &str) -> String {
 impl Store {
     fn from_connection(conn: Connection) -> Self {
         let (order_changes, _) = tokio::sync::broadcast::channel(ORDER_CHANGE_CAPACITY);
-        Store { conn, order_changes, pending_order_changes: RefCell::new(None) }
+        Store {
+            conn,
+            order_changes,
+            pending_order_changes: RefCell::new(None),
+        }
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -529,10 +617,17 @@ impl Store {
             let conn = Connection::open_in_memory().expect("an in-memory database");
             configure_connection(&conn).expect("configured");
             apply_migrations(&conn).expect("migrated");
-            conn.serialize(rusqlite::MAIN_DB).expect("serialized").to_vec()
+            conn.serialize(rusqlite::MAIN_DB)
+                .expect("serialized")
+                .to_vec()
         });
         let mut conn = Connection::open_in_memory()?;
-        conn.deserialize_read_exact(rusqlite::MAIN_DB, TEMPLATE.as_slice(), TEMPLATE.len(), false)?;
+        conn.deserialize_read_exact(
+            rusqlite::MAIN_DB,
+            TEMPLATE.as_slice(),
+            TEMPLATE.len(),
+            false,
+        )?;
         configure_connection(&conn)?;
         Ok(Store::from_connection(conn))
     }
@@ -542,7 +637,11 @@ impl Store {
     pub(crate) fn connect_again(&self, path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         configure_connection(&conn)?;
-        Ok(Store { conn, order_changes: self.order_changes.clone(), pending_order_changes: RefCell::new(None) })
+        Ok(Store {
+            conn,
+            order_changes: self.order_changes.clone(),
+            pending_order_changes: RefCell::new(None),
+        })
     }
 
     pub fn open_file(path: &str) -> Result<Self> {
@@ -562,7 +661,10 @@ impl Store {
         if self.order_changes.receiver_count() == 0 {
             return;
         }
-        let change = OrderChange { tenant_id: tenant_id.to_string(), order_id: order_id.to_string() };
+        let change = OrderChange {
+            tenant_id: tenant_id.to_string(),
+            order_id: order_id.to_string(),
+        };
         match self.pending_order_changes.borrow_mut().as_mut() {
             Some(pending) => {
                 if !pending.contains(&change) {
@@ -621,7 +723,11 @@ impl Store {
         *self.pending_order_changes.borrow_mut() = Some(Vec::new());
         let reset = ResetOnDrop(&self.pending_order_changes);
         let result = self.run_transaction(f);
-        let pending = self.pending_order_changes.borrow_mut().take().unwrap_or_default();
+        let pending = self
+            .pending_order_changes
+            .borrow_mut()
+            .take()
+            .unwrap_or_default();
         drop(reset);
         if result.is_ok() {
             for change in pending {
@@ -641,8 +747,11 @@ impl Store {
         // SQLITE_BUSY_SNAPSHOT (which no busy timeout retries) whenever another
         // connection committed in between; this waits for the lock up front
         // instead, so the decision reads and the writes see one snapshot.
-        let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
-            .map_err(StoreError::from)?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(StoreError::from)?;
         let out = f(self)?;
         tx.commit().map_err(StoreError::from)?;
         Ok(out)
@@ -665,7 +774,10 @@ impl Store {
     /// checked, each time it runs. Returns the running count of checks, so a
     /// sweep knows when `n` was past the last one.
     #[cfg(test)]
-    pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    pub(crate) fn fail_nth_access(
+        &self,
+        n: Option<usize>,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let seen = std::sync::Arc::new(AtomicUsize::new(0));
         match n {
@@ -683,7 +795,13 @@ impl Store {
                         let statement = context.accessor.is_none()
                             && matches!(
                                 context.action,
-                                Select | Insert { .. } | Update { .. } | Delete { .. } | Transaction { .. } | Savepoint { .. } | Pragma { .. }
+                                Select
+                                    | Insert { .. }
+                                    | Update { .. }
+                                    | Delete { .. }
+                                    | Transaction { .. }
+                                    | Savepoint { .. }
+                                    | Pragma { .. }
                             );
                         if statement && counter.fetch_add(1, Ordering::Relaxed) == n {
                             rusqlite::hooks::Authorization::Deny
@@ -694,8 +812,15 @@ impl Store {
                     .unwrap();
             }
             None => {
-                self.conn.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>).unwrap();
-                self.conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
+                self.conn
+                    .authorizer(
+                        None::<
+                            fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization,
+                        >,
+                    )
+                    .unwrap();
+                self.conn
+                    .set_prepared_statement_cache_capacity(STATEMENT_CACHE);
             }
         }
         seen
@@ -722,11 +847,17 @@ impl Store {
             .unwrap();
         let mut out = String::new();
         for table in tables {
-            let mut stmt = self.conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+            let mut stmt = self
+                .conn
+                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .unwrap();
             let columns = stmt.column_count();
             let mut rows: Vec<String> = stmt
                 .query_map([], |row| {
-                    Ok((0..columns).map(|i| value_text(row.get_ref(i).unwrap())).collect::<Vec<_>>().join("|"))
+                    Ok((0..columns)
+                        .map(|i| value_text(row.get_ref(i).unwrap()))
+                        .collect::<Vec<_>>()
+                        .join("|"))
                 })
                 .unwrap()
                 .collect::<rusqlite::Result<_>>()
@@ -769,7 +900,10 @@ impl Store {
         )?;
 
         let tenant = self.get_tenant_by_id(&id)?.ok_or(StoreError::NotFound)?;
-        Ok(CreatedTenant { tenant, secret_token })
+        Ok(CreatedTenant {
+            tenant,
+            secret_token,
+        })
     }
 
     fn row_to_tenant(row: &rusqlite::Row) -> rusqlite::Result<Tenant> {
@@ -785,7 +919,9 @@ impl Store {
             order_expiry_seconds: row.get("order_expiry_seconds")?,
             created_at: row.get("created_at_utc")?,
             disabled_at: row.get("disabled_at_utc")?,
-            scanned_through_height: row.get::<_, Option<i64>>("scanned_through_height")?.map(|h| h as u64),
+            scanned_through_height: row
+                .get::<_, Option<i64>>("scanned_through_height")?
+                .map(|h| h as u64),
         })
     }
 
@@ -793,7 +929,9 @@ impl Store {
     /// of stores that can't be scanned (task 3.7).
     pub fn tenant_public_keys_on_network(&self, network: &str) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare_cached("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY public_key")?;
-        let rows = stmt.query_map(params![network], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt
+            .query_map(params![network], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -803,7 +941,13 @@ impl Store {
             "SELECT public_key, network, key_custody_backend FROM tenants WHERE disabled_at_utc IS NULL ORDER BY public_key",
         )?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -817,7 +961,9 @@ impl Store {
              ORDER BY public_key",
         )?;
         let rows = stmt
-            .query_map(params![network], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
+            .query_map(params![network], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -825,13 +971,21 @@ impl Store {
     /// Sets every tenant's `key_custody_backend` (the one-time move to
     /// per-store custody, `engine_settings::migrate_key_custody_setting`).
     pub fn relabel_all_tenants_key_custody(&self, backend: &str) -> Result<()> {
-        self.conn.execute("UPDATE tenants SET key_custody_backend = ?1", params![backend])?;
+        self.conn.execute(
+            "UPDATE tenants SET key_custody_backend = ?1",
+            params![backend],
+        )?;
         Ok(())
     }
 
     /// Moves one tenant to another key custody backend with its newly sealed
     /// keys, in one statement (task 5.3).
-    pub fn update_tenant_key_custody(&self, tenant_id: &str, backend: &str, sealed: &[u8]) -> Result<()> {
+    pub fn update_tenant_key_custody(
+        &self,
+        tenant_id: &str,
+        backend: &str,
+        sealed: &[u8],
+    ) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE tenants SET key_custody_backend = ?2, sealed_key_material = ?3 WHERE id = ?1 AND disabled_at_utc IS NULL",
             params![tenant_id, backend, sealed],
@@ -845,9 +999,13 @@ impl Store {
     /// How many enabled tenants each network has, for the admin page (tasks
     /// 2.2 and 4.4).
     pub fn count_tenants_by_network(&self) -> Result<std::collections::HashMap<String, u64>> {
-        let mut stmt = self.conn.prepare_cached("SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL GROUP BY network")?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL GROUP BY network",
+        )?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?
             .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
         Ok(rows)
     }
@@ -857,19 +1015,29 @@ impl Store {
     /// in the HTTP layer (`http::resolve_wallet_handle`) is a fallback, not the
     /// only path.
     pub fn list_active_tenants(&self) -> Result<Vec<Tenant>> {
-        let mut stmt = self.conn.prepare_cached("SELECT * FROM tenants WHERE disabled_at_utc IS NULL")?;
-        let rows = stmt.query_map([], Self::row_to_tenant)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT * FROM tenants WHERE disabled_at_utc IS NULL")?;
+        let rows = stmt
+            .query_map([], Self::row_to_tenant)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     pub fn count_tenants(&self) -> Result<u64> {
-        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM tenants", [], |row| row.get(0))?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM tenants", [], |row| row.get(0))?;
         Ok(count as u64)
     }
 
     pub fn get_tenant_by_id(&self, id: &str) -> Result<Option<Tenant>> {
         self.conn
-            .query_row("SELECT * FROM tenants WHERE id = ?1", params![id], Self::row_to_tenant)
+            .query_row(
+                "SELECT * FROM tenants WHERE id = ?1",
+                params![id],
+                Self::row_to_tenant,
+            )
             .optional()
             .map_err(Into::into)
     }
@@ -956,7 +1124,10 @@ impl Store {
              LIMIT ?4",
         )?;
         let rows = stmt
-            .query_map(params![tenant_id, status_str, cursor, limit], Self::row_to_order)?
+            .query_map(
+                params![tenant_id, status_str, cursor, limit],
+                Self::row_to_order,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1034,7 +1205,12 @@ impl Store {
     /// payment that lands just after an order's own deadline, distinct from
     /// the manual rescan (`scanner::rescan_order`) which exists for after
     /// this window has already elapsed.
-    pub fn active_tenant_ids(&self, network: &str, now: i64, grace_period_seconds: i64) -> Result<Vec<String>> {
+    pub fn active_tenant_ids(
+        &self,
+        network: &str,
+        now: i64,
+        grace_period_seconds: i64,
+    ) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT t.id FROM tenants t WHERE t.network = :network AND t.disabled_at_utc IS NULL AND {}",
             tenant_in_scope("t.id")
@@ -1053,7 +1229,12 @@ impl Store {
     /// `since` minus the grace period. The live scan passes now; catch-up
     /// passes the time of the tenant's cursor block, so orders that closed
     /// during its gap are still looked for.
-    pub fn scan_window(&self, tenant_id: &str, since: i64, grace_period_seconds: i64) -> Result<Vec<u32>> {
+    pub fn scan_window(
+        &self,
+        tenant_id: &str,
+        since: i64,
+        grace_period_seconds: i64,
+    ) -> Result<Vec<u32>> {
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT minor_index FROM orders WHERE id IN ({}) ORDER BY minor_index",
             scan_window_orders("o.tenant_id = :tenant")
@@ -1083,7 +1264,12 @@ impl Store {
     /// whose transactions it matched during that same tick.
     /// `now`/`grace_period_seconds` - see `active_tenant_ids`'s own doc
     /// comment (the same widening, one level down).
-    pub fn non_terminal_order_ids(&self, network: &str, now: i64, grace_period_seconds: i64) -> Result<Vec<String>> {
+    pub fn non_terminal_order_ids(
+        &self,
+        network: &str,
+        now: i64,
+        grace_period_seconds: i64,
+    ) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT o.id FROM orders o
              JOIN tenants t ON t.id = o.tenant_id
@@ -1114,26 +1300,37 @@ impl Store {
              JOIN orders o ON o.id = p.order_id
              JOIN tenants t ON t.id = o.tenant_id WHERE t.network = ?1",
         )?;
-        let rows = stmt.query_map([network], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt
+            .query_map([network], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// A bounded, stable page for background status work. Keyset pagination
     /// avoids an OFFSET walk over a large backlog on every tick.
-    pub fn pending_payment_recomputes_page(&self, network: &str, after: &str, limit: usize) -> Result<Vec<String>> {
+    pub fn pending_payment_recomputes_page(
+        &self,
+        network: &str,
+        after: &str,
+        limit: usize,
+    ) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT p.order_id FROM pending_payment_recomputes p
              JOIN orders o ON o.id = p.order_id JOIN tenants t ON t.id = o.tenant_id
              WHERE t.network = ?1 AND p.order_id > ?2 ORDER BY p.order_id LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![network, after, limit as i64], |row| row.get(0))?
+        let rows = stmt
+            .query_map(params![network, after, limit as i64], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// Call inside the same transaction as the status update and webhook enqueue.
     pub fn clear_pending_payment_recompute(&self, order_id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM pending_payment_recomputes WHERE order_id = ?1", [order_id])?;
+        self.conn.execute(
+            "DELETE FROM pending_payment_recomputes WHERE order_id = ?1",
+            [order_id],
+        )?;
         Ok(())
     }
 
@@ -1201,10 +1398,17 @@ impl Store {
     /// retry on `Ok(None)`; a losing racer costs one extra derivation and burns no
     /// index (the conditional UPDATE leaves the counter untouched when it doesn't
     /// match), so two concurrent creations can never end up sharing an address.
-    pub fn create_order_claiming_minor_index(&self, expected_index: u32, new: NewOrder) -> Result<Option<Order>> {
+    pub fn create_order_claiming_minor_index(
+        &self,
+        expected_index: u32,
+        new: NewOrder,
+    ) -> Result<Option<Order>> {
         // IMMEDIATE, like every other write transaction: the write lock from
         // the start, so its reads and writes see one snapshot.
-        let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
         let claimed = tx.execute(
             "UPDATE tenants SET next_minor_index = next_minor_index + 1
              WHERE id = ?1 AND next_minor_index = ?2",
@@ -1216,7 +1420,9 @@ impl Store {
         let id = new_id("order");
         Self::insert_order(&tx, &id, &new)?;
         tx.commit()?;
-        Ok(Some(self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)?))
+        Ok(Some(
+            self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)?,
+        ))
     }
 
     // -- Orders -----------------------------------------------------------
@@ -1272,20 +1478,30 @@ impl Store {
             updated_at: row.get("updated_at_utc")?,
             first_scanned_height: row.get("first_scanned_height")?,
             last_scanned_height: row.get("last_scanned_height")?,
-            confirmations_required_override: row.get::<_, Option<i64>>("confirmations_required_override")?.map(|v| v as u64),
+            confirmations_required_override: row
+                .get::<_, Option<i64>>("confirmations_required_override")?
+                .map(|v| v as u64),
         })
     }
 
     fn get_order_by_id(&self, id: &str) -> Result<Option<Order>> {
         self.conn
-            .query_row("SELECT * FROM orders WHERE id = ?1", params![id], Self::row_to_order)
+            .query_row(
+                "SELECT * FROM orders WHERE id = ?1",
+                params![id],
+                Self::row_to_order,
+            )
             .optional()
             .map_err(Into::into)
     }
 
     /// Routes a scanner match (which only knows a subaddress minor index) back to
     /// the order that index was issued for.
-    pub fn find_order_by_minor_index(&self, tenant_id: &str, minor_index: u32) -> Result<Option<Order>> {
+    pub fn find_order_by_minor_index(
+        &self,
+        tenant_id: &str,
+        minor_index: u32,
+    ) -> Result<Option<Order>> {
         self.conn
             .query_row(
                 "SELECT * FROM orders WHERE tenant_id = ?1 AND minor_index = ?2",
@@ -1313,7 +1529,12 @@ impl Store {
 
     /// Scoped by `tenant_id`, same IDOR-prevention rule as `get_order`. Records
     /// only - nothing in this system ever sends to a refund address (§DESIGN.md 3).
-    pub fn set_refund_address(&self, tenant_id: &str, order_id: &str, refund_address: &str) -> Result<bool> {
+    pub fn set_refund_address(
+        &self,
+        tenant_id: &str,
+        order_id: &str,
+        refund_address: &str,
+    ) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE orders SET refund_address = ?3 WHERE id = ?1 AND tenant_id = ?2",
             params![order_id, tenant_id, refund_address],
@@ -1421,7 +1642,13 @@ impl Store {
     /// only once `is_key_image_spent` affirmatively proves a different, unrelated
     /// transaction consumed the same inputs (see `docs/DESIGN.md` §7.5). Returns
     /// `false` if the row didn't exist or was already voided (idempotent).
-    pub fn void_payment(&self, order_id: &str, txid: &str, output_index: i64, voided_at: i64) -> Result<bool> {
+    pub fn void_payment(
+        &self,
+        order_id: &str,
+        txid: &str,
+        output_index: i64,
+        voided_at: i64,
+    ) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE order_payments SET voided_at_utc = ?4
              WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NULL",
@@ -1465,9 +1692,9 @@ impl Store {
     /// Every payment (voided or not) for an order - the audit trail a merchant can
     /// inspect for "why does this show partial" or "when was this double-spent".
     pub fn get_all_payments(&self, order_id: &str) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT * FROM order_payments WHERE order_id = ?1 ORDER BY first_seen_at_utc")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM order_payments WHERE order_id = ?1 ORDER BY first_seen_at_utc",
+        )?;
         let rows = stmt
             .query_map(params![order_id], Self::row_to_payment)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1507,7 +1734,11 @@ impl Store {
     /// order's received total forever. Unconfirmed payments are inherently "above"
     /// any block height, so re-examining them is also just the correct reading of
     /// the question this query asks.
-    pub fn find_payments_at_or_after_height(&self, network: &str, min_height: u64) -> Result<Vec<OrderPaymentRow>> {
+    pub fn find_payments_at_or_after_height(
+        &self,
+        network: &str,
+        min_height: u64,
+    ) -> Result<Vec<OrderPaymentRow>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
@@ -1559,7 +1790,11 @@ impl Store {
     /// many voids happened *recently*, not by the network's entire history - see
     /// that function's own doc comment for why an old void is not worth rechecking
     /// forever. Scoped by network for the same reason every sibling query here is.
-    pub fn find_payments_voided_since(&self, network: &str, cutoff: i64) -> Result<Vec<OrderPaymentRow>> {
+    pub fn find_payments_voided_since(
+        &self,
+        network: &str,
+        cutoff: i64,
+    ) -> Result<Vec<OrderPaymentRow>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
@@ -1604,7 +1839,12 @@ impl Store {
     /// A bounded page for the routine vanished-mempool sweep. The rowid is a
     /// stable keyset cursor for the life of a payment row; callers wrap to zero
     /// at the end so transactions still absent from the pool are revisited.
-    pub fn unconfirmed_payments_page(&self, network: &str, after_rowid: i64, limit: usize) -> Result<Vec<(i64, OrderPaymentRow)>> {
+    pub fn unconfirmed_payments_page(
+        &self,
+        network: &str,
+        after_rowid: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, OrderPaymentRow)>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT op.rowid, op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
@@ -1613,15 +1853,22 @@ impl Store {
                AND op.block_height IS NULL AND t.network = ?1
              ORDER BY op.rowid LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![network, after_rowid, limit as i64], |row| {
-            Ok((row.get(0)?, Self::row_to_payment(row)?))
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt
+            .query_map(params![network, after_rowid, limit as i64], |row| {
+                Ok((row.get(0)?, Self::row_to_payment(row)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     #[cfg(test)]
     pub fn overwrite_payment_key_images_for_test(&self, order_id: &str, raw: &str) {
-        self.conn.execute("UPDATE order_payments SET key_images_json = ?2 WHERE order_id = ?1", params![order_id, raw]).unwrap();
+        self.conn
+            .execute(
+                "UPDATE order_payments SET key_images_json = ?2 WHERE order_id = ?1",
+                params![order_id, raw],
+            )
+            .unwrap();
     }
 
     pub fn find_payment_by_key_image(&self, key_image_hex: &str) -> Result<Vec<OrderPaymentRow>> {
@@ -1629,9 +1876,9 @@ impl Store {
         // is adequate at v1 scale and avoids a separate normalized table for what is
         // purely reorg-bookkeeping metadata (see docs/DESIGN.md §8.1).
         let pattern = format!("%\"{key_image_hex}\"%");
-        let mut stmt = self
-            .conn
-            .prepare("SELECT * FROM order_payments WHERE key_images_json LIKE ?1 AND voided_at_utc IS NULL")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM order_payments WHERE key_images_json LIKE ?1 AND voided_at_utc IS NULL",
+        )?;
         let rows = stmt
             .query_map(params![pattern], Self::row_to_payment)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1655,7 +1902,9 @@ impl Store {
         current_height: u64,
         now: i64,
     ) -> Result<(OrderStatus, OrderStatus)> {
-        let order = self.get_order_by_id(order_id)?.ok_or(StoreError::NotFound)?;
+        let order = self
+            .get_order_by_id(order_id)?
+            .ok_or(StoreError::NotFound)?;
         let (confirmations_required, network, lagging) = self.recompute_facts(&order.tenant_id)?;
         let views: Vec<PaymentView> = self
             .get_valid_payments(order_id)?
@@ -1672,7 +1921,9 @@ impl Store {
         let plan = plan_status(&StatusFacts {
             order: &order,
             views: &views,
-            confirmations_required: order.confirmations_required_override.unwrap_or(confirmations_required),
+            confirmations_required: order
+                .confirmations_required_override
+                .unwrap_or(confirmations_required),
             tenant_lagging: lagging,
             settlement_frozen: self.settlement_frozen(&network)?,
             current_height,
@@ -1685,7 +1936,11 @@ impl Store {
         // noticed (its store may have been catching up). Written only if
         // something changed: most recomputes change nothing, and a write that
         // changes nothing still costs a page write on slow storage.
-        let closed_at = if plan.status == OrderStatus::Expired { order.expires_at.min(now) } else { now };
+        let closed_at = if plan.status == OrderStatus::Expired {
+            order.expires_at.min(now)
+        } else {
+            now
+        };
         self.conn.execute(
             "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5,
                 closed_at_utc = CASE WHEN ?6 THEN COALESCE(closed_at_utc, ?7) ELSE NULL END,
@@ -1709,11 +1964,17 @@ impl Store {
         // The payment-change obligation is met by this recompute, unless the
         // settlement it implies had to wait.
         if plan.keep_obligation {
-            self.conn.execute("INSERT OR IGNORE INTO pending_payment_recomputes (order_id) VALUES (?1)", [order_id])?;
+            self.conn.execute(
+                "INSERT OR IGNORE INTO pending_payment_recomputes (order_id) VALUES (?1)",
+                [order_id],
+            )?;
         } else {
             self.clear_pending_payment_recompute(order_id)?;
         }
-        if order.status != plan.status || order.confirmations != plan.confirmations || order.amount_received_piconero != plan.amount_received {
+        if order.status != plan.status
+            || order.confirmations != plan.confirmations
+            || order.amount_received_piconero != plan.amount_received
+        {
             self.publish_order_change(&order.tenant_id, order_id);
         }
         Ok((order.status, plan.status))
@@ -1795,7 +2056,11 @@ impl Store {
     /// must go through `get_order`'s tenant-scoped query instead.
     pub fn get_order_tenant_id(&self, order_id: &str) -> Result<Option<String>> {
         self.conn
-            .query_row("SELECT tenant_id FROM orders WHERE id = ?1", params![order_id], |row| row.get(0))
+            .query_row(
+                "SELECT tenant_id FROM orders WHERE id = ?1",
+                params![order_id],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(Into::into)
     }
@@ -1832,8 +2097,14 @@ impl Store {
     }
 
     pub fn clear_partial_block(&self, network: &str, tenant_id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2", params![network, tenant_id])?;
-        self.conn.execute("DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2", params![network, tenant_id])?;
+        self.conn.execute(
+            "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
+            params![network, tenant_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
+            params![network, tenant_id],
+        )?;
         Ok(())
     }
 
@@ -1862,7 +2133,10 @@ impl Store {
     /// reset, `journal_size_limit` trims the file.
     pub fn checkpoint_wal(&self) -> Result<bool> {
         let (busy, log, checkpointed): (i64, i64, i64) =
-            self.conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            self.conn
+                .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?;
         Ok(busy == 0 && log == checkpointed)
     }
 
@@ -1917,7 +2191,9 @@ impl Store {
              ORDER BY scanned_through_height, id",
         )?;
         let rows = stmt
-            .query_map(params![network], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
+            .query_map(params![network], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1984,7 +2260,14 @@ impl Store {
     /// or `None` if nothing has ever been saved for `key`. Settings themselves are
     /// resolved by `engine_settings` (environment, then this, then the default).
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        self.conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0)).optional().map_err(Into::into)
+        self.conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// Persists one setting - an `INSERT ... ON CONFLICT DO UPDATE` upsert, since the
@@ -2008,7 +2291,8 @@ impl Store {
     /// where falling through to a hardcoded default would be wrong - there is
     /// no sensible default Monero node to fall back to.
     pub fn delete_setting(&self, key: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])?;
         Ok(())
     }
 
@@ -2017,16 +2301,26 @@ impl Store {
     /// call per known key, then resolves each known setting's effective value/source
     /// against this map plus the environment.
     pub fn list_settings(&self) -> Result<std::collections::HashMap<String, String>> {
-        let mut stmt = self.conn.prepare_cached("SELECT key, value FROM settings")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
-        rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>().map_err(Into::into)
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT key, value FROM settings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()
+            .map_err(Into::into)
     }
 
     /// `true` if this order is presently in the live scanner's own in-scope set
     /// (the same widened predicate `bump_scanned_heights_for_tenant` uses) - the
     /// only way an order can be "currently scanning" now that the manual rescan
     /// feature is gone (`docs/txid_lookup_and_scan_chunking_wbs.md` Part C.2).
-    pub fn is_order_currently_scanning(&self, order_id: &str, now: i64, grace_period_seconds: i64) -> Result<bool> {
+    pub fn is_order_currently_scanning(
+        &self,
+        order_id: &str,
+        now: i64,
+        grace_period_seconds: i64,
+    ) -> Result<bool> {
         self.conn
             .query_row(
                 &format!("SELECT EXISTS(SELECT 1 FROM orders o WHERE o.id = :order AND {IN_SCAN_WINDOW})"),
@@ -2064,7 +2358,9 @@ impl Store {
     }
 
     pub fn list_webhooks(&self, tenant_id: &str) -> Result<Vec<Webhook>> {
-        let mut stmt = self.conn.prepare_cached("SELECT * FROM webhooks WHERE tenant_id = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT * FROM webhooks WHERE tenant_id = ?1")?;
         let rows = stmt
             .query_map(params![tenant_id], |row| {
                 Ok(Webhook {
@@ -2117,7 +2413,12 @@ impl Store {
     ///   same order are never in flight at once and can't overtake each other;
     /// - at most `per_tenant` per store, so one store with a big backlog (or a
     ///   slow endpoint) can't fill the batch and hold up every other store.
-    pub fn due_webhook_deliveries_fair(&self, now: i64, per_tenant: u32, limit: u32) -> Result<Vec<DueDelivery>> {
+    pub fn due_webhook_deliveries_fair(
+        &self,
+        now: i64,
+        per_tenant: u32,
+        limit: u32,
+    ) -> Result<Vec<DueDelivery>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, webhook_id, order_id, event_type, payload_json, attempt_count, url, extra_headers, signing_secret
              FROM (
@@ -2192,7 +2493,12 @@ impl Store {
         Ok(rows)
     }
 
-    pub fn mark_webhook_delivered(&self, delivery_id: i64, response_status: u16, at: i64) -> Result<()> {
+    pub fn mark_webhook_delivered(
+        &self,
+        delivery_id: i64,
+        response_status: u16,
+        at: i64,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE webhook_deliveries SET delivered_at_utc = ?2, last_attempted_at_utc = ?2, last_response_status = ?3
              WHERE id = ?1",
@@ -2217,7 +2523,13 @@ impl Store {
                  last_response_status = ?4,
                  last_error = ?5
              WHERE id = ?1",
-            params![delivery_id, next_attempt_at, at, response_status.map(|s| s as i64), error],
+            params![
+                delivery_id,
+                next_attempt_at,
+                at,
+                response_status.map(|s| s as i64),
+                error
+            ],
         )?;
         Ok(())
     }
@@ -2265,11 +2577,19 @@ mod tests {
     }
 
     fn mined(amount: u64, confirmations: u64) -> PaymentView {
-        PaymentView { amount_piconero: amount, confirmations, is_zero_conf: false }
+        PaymentView {
+            amount_piconero: amount,
+            confirmations,
+            is_zero_conf: false,
+        }
     }
 
     fn pooled(amount: u64) -> PaymentView {
-        PaymentView { amount_piconero: amount, confirmations: 0, is_zero_conf: true }
+        PaymentView {
+            amount_piconero: amount,
+            confirmations: 0,
+            is_zero_conf: true,
+        }
     }
 
     /// The status rules as a table: derived status, the expiry hold, the
@@ -2289,32 +2609,136 @@ mod tests {
         }
         // Ten confirmations required, deadline 1000, tip 50.
         let cases = [
-            Case { what: "unpaid, before its deadline", was: Pending, views: vec![], lagging: false, frozen: false, now: 500, required: 10,
-                expect: (Pending, Some(1001), None, false) },
-            Case { what: "unpaid, after its deadline", was: Pending, views: vec![], lagging: false, frozen: false, now: 2000, required: 10,
-                expect: (Expired, None, None, false) },
-            Case { what: "expiry held while the tenant is behind", was: Pending, views: vec![], lagging: true, frozen: false, now: 2000, required: 10,
-                expect: (Pending, Some(2000), None, false) },
-            Case { what: "already expired: a hold doesn't reopen it", was: Expired, views: vec![], lagging: true, frozen: false, now: 2000, required: 10,
-                expect: (Expired, None, None, false) },
-            Case { what: "part paid, confirming", was: Pending, views: vec![mined(40, 3)], lagging: false, frozen: false, now: 500, required: 10,
-                expect: (Partial, Some(1001), Some(51), false) },
-            Case { what: "paid in the pool", was: Pending, views: vec![pooled(100)], lagging: false, frozen: false, now: 500, required: 10,
-                expect: (Unconfirmed, None, None, false) },
-            Case { what: "paid, confirming", was: Unconfirmed, views: vec![mined(100, 3)], lagging: false, frozen: false, now: 500, required: 10,
-                expect: (Confirming, None, Some(51), false) },
-            Case { what: "paid and confirmed", was: Confirming, views: vec![mined(100, 10)], lagging: false, frozen: false, now: 500, required: 10,
-                expect: (Paid, None, None, false) },
-            Case { what: "overpaid and confirmed", was: Confirming, views: vec![mined(150, 10)], lagging: false, frozen: false, now: 500, required: 10,
-                expect: (Overpaid, None, None, false) },
-            Case { what: "settlement waits for a reorg", was: Confirming, views: vec![mined(100, 10)], lagging: false, frozen: true, now: 500, required: 10,
-                expect: (Confirming, Some(500), None, true) },
-            Case { what: "a zero-conf settlement waits too", was: Pending, views: vec![pooled(100)], lagging: false, frozen: true, now: 500, required: 0,
-                expect: (Unconfirmed, Some(500), None, true) },
-            Case { what: "zero-conf accepted: paid from the pool", was: Pending, views: vec![pooled(100)], lagging: false, frozen: false, now: 500, required: 0,
-                expect: (Paid, None, None, false) },
-            Case { what: "already paid: the freeze doesn't hold it", was: Paid, views: vec![mined(100, 12)], lagging: false, frozen: true, now: 500, required: 10,
-                expect: (Paid, None, None, false) },
+            Case {
+                what: "unpaid, before its deadline",
+                was: Pending,
+                views: vec![],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Pending, Some(1001), None, false),
+            },
+            Case {
+                what: "unpaid, after its deadline",
+                was: Pending,
+                views: vec![],
+                lagging: false,
+                frozen: false,
+                now: 2000,
+                required: 10,
+                expect: (Expired, None, None, false),
+            },
+            Case {
+                what: "expiry held while the tenant is behind",
+                was: Pending,
+                views: vec![],
+                lagging: true,
+                frozen: false,
+                now: 2000,
+                required: 10,
+                expect: (Pending, Some(2000), None, false),
+            },
+            Case {
+                what: "already expired: a hold doesn't reopen it",
+                was: Expired,
+                views: vec![],
+                lagging: true,
+                frozen: false,
+                now: 2000,
+                required: 10,
+                expect: (Expired, None, None, false),
+            },
+            Case {
+                what: "part paid, confirming",
+                was: Pending,
+                views: vec![mined(40, 3)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Partial, Some(1001), Some(51), false),
+            },
+            Case {
+                what: "paid in the pool",
+                was: Pending,
+                views: vec![pooled(100)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Unconfirmed, None, None, false),
+            },
+            Case {
+                what: "paid, confirming",
+                was: Unconfirmed,
+                views: vec![mined(100, 3)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Confirming, None, Some(51), false),
+            },
+            Case {
+                what: "paid and confirmed",
+                was: Confirming,
+                views: vec![mined(100, 10)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Paid, None, None, false),
+            },
+            Case {
+                what: "overpaid and confirmed",
+                was: Confirming,
+                views: vec![mined(150, 10)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Overpaid, None, None, false),
+            },
+            Case {
+                what: "settlement waits for a reorg",
+                was: Confirming,
+                views: vec![mined(100, 10)],
+                lagging: false,
+                frozen: true,
+                now: 500,
+                required: 10,
+                expect: (Confirming, Some(500), None, true),
+            },
+            Case {
+                what: "a zero-conf settlement waits too",
+                was: Pending,
+                views: vec![pooled(100)],
+                lagging: false,
+                frozen: true,
+                now: 500,
+                required: 0,
+                expect: (Unconfirmed, Some(500), None, true),
+            },
+            Case {
+                what: "zero-conf accepted: paid from the pool",
+                was: Pending,
+                views: vec![pooled(100)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 0,
+                expect: (Paid, None, None, false),
+            },
+            Case {
+                what: "already paid: the freeze doesn't hold it",
+                was: Paid,
+                views: vec![mined(100, 12)],
+                lagging: false,
+                frozen: true,
+                now: 500,
+                required: 10,
+                expect: (Paid, None, None, false),
+            },
         ];
         for case in cases {
             let order = order(case.was, 1000);
@@ -2328,7 +2752,12 @@ mod tests {
                 now: case.now,
             });
             assert_eq!(
-                (plan.status, plan.next_due_at, plan.next_due_height, plan.keep_obligation),
+                (
+                    plan.status,
+                    plan.next_due_at,
+                    plan.next_due_height,
+                    plan.keep_obligation
+                ),
                 case.expect,
                 "{}",
                 case.what
@@ -2343,15 +2772,24 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
         store.recompute_order_status(&order.id, 10, 1_000).unwrap();
-        let before = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap().updated_at;
+        let before = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap()
+            .updated_at;
         store.recompute_order_status(&order.id, 11, 1_500).unwrap();
-        let after = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap().updated_at;
+        let after = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap()
+            .updated_at;
         assert_eq!(before, after);
     }
 
     #[tokio::test]
     async fn read_pool_uses_independent_connections_without_blocking_the_runtime() {
-        let path = std::env::temp_dir().join(format!("scanner_read_pool_{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("scanner_read_pool_{}.db", uuid::Uuid::new_v4()));
         let path_str = path.to_string_lossy().into_owned();
         let writer = Store::open_file(&path_str).unwrap();
         writer.set_scanned_block("mainnet", 1, "h1").unwrap();
@@ -2361,17 +2799,24 @@ mod tests {
         let (release, wait) = std::sync::mpsc::channel::<()>();
         let held_pool = pool.clone();
         let held = tokio::spawn(async move {
-            held_pool.query(move |store| {
-                started.send(()).unwrap();
-                wait.recv().unwrap();
-                store.max_scanned_height("mainnet")
-            }).await
+            held_pool
+                .query(move |store| {
+                    started.send(()).unwrap();
+                    wait.recv().unwrap();
+                    store.max_scanned_height("mainnet")
+                })
+                .await
         });
         ready.await.unwrap();
         // A second read reaches another connection while the first worker is
         // deliberately occupied. No async worker or writer mutex is involved.
-        let second = tokio::time::timeout(std::time::Duration::from_secs(2),
-            pool.query(|store| store.max_scanned_height("mainnet"))).await.unwrap().unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            pool.query(|store| store.max_scanned_height("mainnet")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(second, Some(1));
         release.send(()).unwrap();
         assert_eq!(held.await.unwrap().unwrap(), Some(1));
@@ -2422,13 +2867,19 @@ mod tests {
             panic!("simulated bug while holding the store lock");
         })
         .join();
-        assert!(joined.is_err(), "the helper thread must really have panicked");
+        assert!(
+            joined.is_err(),
+            "the helper thread must really have panicked"
+        );
 
         // With a poisoning mutex every later `lock()` would fail from here on,
         // taking the scan loop and every HTTP handler down with it.
         let store = shared.lock();
         let order = new_order(&store, &tenant.tenant.id, 1);
-        assert_eq!(store.get_order_by_id(&order.id).unwrap().unwrap().id, order.id);
+        assert_eq!(
+            store.get_order_by_id(&order.id).unwrap().unwrap().id,
+            order.id
+        );
     }
 
     #[test]
@@ -2446,7 +2897,10 @@ mod tests {
         assert!(caught.is_err());
 
         // Rolled back: the order written inside the transaction is gone.
-        assert!(store.find_order_by_minor_index(&tenant.tenant.id, 1).unwrap().is_none());
+        assert!(store
+            .find_order_by_minor_index(&tenant.tenant.id, 1)
+            .unwrap()
+            .is_none());
         // No transaction left open: a new one begins and commits normally.
         store
             .in_transaction(|s| -> Result<()> {
@@ -2454,13 +2908,21 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert!(store.find_order_by_minor_index(&tenant.tenant.id, 2).unwrap().is_some());
+        assert!(store
+            .find_order_by_minor_index(&tenant.tenant.id, 2)
+            .unwrap()
+            .is_some());
 
         // And changes made outside any transaction are published straight away,
         // not left in the buffer the panicked transaction had set up.
         while changes.try_recv().is_ok() {}
-        let order = store.find_order_by_minor_index(&tenant.tenant.id, 2).unwrap().unwrap();
-        assert!(store.set_refund_address(&tenant.tenant.id, &order.id, "refund").unwrap());
+        let order = store
+            .find_order_by_minor_index(&tenant.tenant.id, 2)
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .set_refund_address(&tenant.tenant.id, &order.id, "refund")
+            .unwrap());
         assert_eq!(changes.try_recv().unwrap().order_id, order.id);
     }
 
@@ -2485,9 +2947,14 @@ mod tests {
         let tenant = new_tenant(&store);
         // Cap the database at its current size, then fill whatever free space
         // is left, so the next write can't grow it.
-        store.execute_raw_for_test("PRAGMA max_page_count = 1;").unwrap();
+        store
+            .execute_raw_for_test("PRAGMA max_page_count = 1;")
+            .unwrap();
         let mut filled = 0;
-        while store.set_setting(&format!("filler.{filled}"), &"x".repeat(2000)).is_ok() {
+        while store
+            .set_setting(&format!("filler.{filled}"), &"x".repeat(2000))
+            .is_ok()
+        {
             filled += 1;
             assert!(filled < 10_000, "the cap didn't take effect");
         }
@@ -2503,38 +2970,68 @@ mod tests {
             expires_at: 2,
         });
         match err {
-            Err(StoreError::Sqlite(e)) => assert_eq!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DiskFull)),
+            Err(StoreError::Sqlite(e)) => {
+                assert_eq!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DiskFull))
+            }
             other => panic!("expected a disk-full error, got {other:?}"),
         }
-        assert!(store.find_order_by_minor_index(&tenant.tenant.id, 1).unwrap().is_none());
+        assert!(store
+            .find_order_by_minor_index(&tenant.tenant.id, 1)
+            .unwrap()
+            .is_none());
 
         // Space comes back: writes work again.
-        store.execute_raw_for_test("PRAGMA max_page_count = 1000000;").unwrap();
+        store
+            .execute_raw_for_test("PRAGMA max_page_count = 1000000;")
+            .unwrap();
         new_order(&store, &tenant.tenant.id, 1);
     }
 
     #[test]
     fn a_setting_that_was_never_saved_reads_as_none() {
         let store = Store::open_in_memory().unwrap();
-        assert_eq!(store.get_setting("payment.confirmations_required").unwrap(), None);
+        assert_eq!(
+            store.get_setting("payment.confirmations_required").unwrap(),
+            None
+        );
         assert_eq!(store.list_settings().unwrap().len(), 0);
     }
 
     #[test]
     fn a_saved_setting_round_trips_and_a_second_save_overwrites_rather_than_erroring() {
         let store = Store::open_in_memory().unwrap();
-        store.set_setting("payment.confirmations_required", "5").unwrap();
-        assert_eq!(store.get_setting("payment.confirmations_required").unwrap().as_deref(), Some("5"));
+        store
+            .set_setting("payment.confirmations_required", "5")
+            .unwrap();
+        assert_eq!(
+            store
+                .get_setting("payment.confirmations_required")
+                .unwrap()
+                .as_deref(),
+            Some("5")
+        );
 
         // The admin settings page's "Save" always writes every field it shows,
         // whether or not a row already exists for it - a second save of the same
         // key must update in place, not fail a UNIQUE constraint.
-        store.set_setting("payment.confirmations_required", "8").unwrap();
-        assert_eq!(store.get_setting("payment.confirmations_required").unwrap().as_deref(), Some("8"));
+        store
+            .set_setting("payment.confirmations_required", "8")
+            .unwrap();
+        assert_eq!(
+            store
+                .get_setting("payment.confirmations_required")
+                .unwrap()
+                .as_deref(),
+            Some("8")
+        );
 
         let all = store.list_settings().unwrap();
         assert_eq!(all.len(), 1);
-        assert_eq!(all.get("payment.confirmations_required").map(String::as_str), Some("8"));
+        assert_eq!(
+            all.get("payment.confirmations_required")
+                .map(String::as_str),
+            Some("8")
+        );
     }
 
     #[test]
@@ -2576,7 +3073,9 @@ mod tests {
                 s.set_setting("a", "1")
             })
             .unwrap();
-        other.execute("INSERT INTO settings (key, value) VALUES ('b', '1')", []).unwrap();
+        other
+            .execute("INSERT INTO settings (key, value) VALUES ('b', '1')", [])
+            .unwrap();
         assert_eq!(store.get_setting("a").unwrap().as_deref(), Some("1"));
         assert_eq!(store.get_setting("b").unwrap().as_deref(), Some("1"));
         drop(other);
@@ -2592,28 +3091,68 @@ mod tests {
         let store = Store::open_file(path.to_str().unwrap()).unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
-        store.record_payment_match(&order.id, "tx", 0, 1, "[]", 1000, Some(1)).unwrap();
+        store
+            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1000, Some(1))
+            .unwrap();
         drop(store);
         let store = Store::open_file(path.to_str().unwrap()).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
-        assert!(store.pending_payment_recomputes("stagenet").unwrap().is_empty());
+        assert_eq!(
+            store.pending_payment_recomputes("mainnet").unwrap(),
+            vec![order.id.clone()]
+        );
+        assert!(store
+            .pending_payment_recomputes("stagenet")
+            .unwrap()
+            .is_empty());
         store.clear_pending_payment_recompute(&order.id).unwrap();
-        store.record_payment_match(&order.id, "tx", 0, 1, "[]", 1001, Some(1)).unwrap();
-        assert!(store.pending_payment_recomputes("mainnet").unwrap().is_empty(), "duplicate sightings aren't new work");
-        store.update_payment_block_height(&order.id, "tx", 0, None).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        store
+            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1001, Some(1))
+            .unwrap();
+        assert!(
+            store
+                .pending_payment_recomputes("mainnet")
+                .unwrap()
+                .is_empty(),
+            "duplicate sightings aren't new work"
+        );
+        store
+            .update_payment_block_height(&order.id, "tx", 0, None)
+            .unwrap();
+        assert_eq!(
+            store.pending_payment_recomputes("mainnet").unwrap(),
+            vec![order.id.clone()]
+        );
         store.clear_pending_payment_recompute(&order.id).unwrap();
         store.void_payment(&order.id, "tx", 0, 1002).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        assert_eq!(
+            store.pending_payment_recomputes("mainnet").unwrap(),
+            vec![order.id.clone()]
+        );
         store.clear_pending_payment_recompute(&order.id).unwrap();
         store.unvoid_payment(&order.id, "tx", 0).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        assert_eq!(
+            store.pending_payment_recomputes("mainnet").unwrap(),
+            vec![order.id.clone()]
+        );
         // Reapply just the new DDL to pre-existing payments: an upgrade also
         // schedules recovery for writes made before durable tracking existed.
-        store.conn.execute_batch("DROP TRIGGER payment_insert_needs_recompute;
-            DROP TRIGGER payment_update_needs_recompute; DROP TABLE pending_payment_recomputes;").unwrap();
-        store.conn.execute_batch(include_str!("../migrations/0017_pending_payment_recomputes.sql")).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id]);
+        store
+            .conn
+            .execute_batch(
+                "DROP TRIGGER payment_insert_needs_recompute;
+            DROP TRIGGER payment_update_needs_recompute; DROP TABLE pending_payment_recomputes;",
+            )
+            .unwrap();
+        store
+            .conn
+            .execute_batch(include_str!(
+                "../migrations/0017_pending_payment_recomputes.sql"
+            ))
+            .unwrap();
+        assert_eq!(
+            store.pending_payment_recomputes("mainnet").unwrap(),
+            vec![order.id]
+        );
         drop(store);
         std::fs::remove_file(path).unwrap();
     }
@@ -2651,13 +3190,20 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let created = new_tenant(&store);
 
-        let by_pk = store.find_tenant_by_public_key(&created.tenant.public_key).unwrap();
+        let by_pk = store
+            .find_tenant_by_public_key(&created.tenant.public_key)
+            .unwrap();
         assert_eq!(by_pk.unwrap().id, created.tenant.id);
 
-        let by_secret = store.find_tenant_by_secret_token(&created.secret_token).unwrap();
+        let by_secret = store
+            .find_tenant_by_secret_token(&created.secret_token)
+            .unwrap();
         assert_eq!(by_secret.unwrap().id, created.tenant.id);
 
-        assert!(store.find_tenant_by_secret_token("sk_wrong").unwrap().is_none());
+        assert!(store
+            .find_tenant_by_secret_token("sk_wrong")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -2666,8 +3212,14 @@ mod tests {
         let created = new_tenant(&store);
         let new_secret = store.rotate_tenant_secret(&created.tenant.id).unwrap();
 
-        assert!(store.find_tenant_by_secret_token(&created.secret_token).unwrap().is_none());
-        assert!(store.find_tenant_by_secret_token(&new_secret).unwrap().is_some());
+        assert!(store
+            .find_tenant_by_secret_token(&created.secret_token)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_tenant_by_secret_token(&new_secret)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -2676,8 +3228,14 @@ mod tests {
         let created = new_tenant(&store);
         store.disable_tenant(&created.tenant.id, 2000).unwrap();
 
-        assert!(store.find_tenant_by_public_key(&created.tenant.public_key).unwrap().is_none());
-        assert!(store.find_tenant_by_secret_token(&created.secret_token).unwrap().is_none());
+        assert!(store
+            .find_tenant_by_public_key(&created.tenant.public_key)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_tenant_by_secret_token(&created.secret_token)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -2714,7 +3272,11 @@ mod tests {
         indices.sort_unstable();
         let mut deduped = indices.clone();
         deduped.dedup();
-        assert_eq!(indices.len(), deduped.len(), "duplicate minor_index allocated under concurrency");
+        assert_eq!(
+            indices.len(),
+            deduped.len(),
+            "duplicate minor_index allocated under concurrency"
+        );
         assert_eq!(indices, (1..=50).collect::<Vec<_>>());
     }
 
@@ -2727,8 +3289,14 @@ mod tests {
         let tenant_b = new_tenant(&store);
         let order_b = new_order(&store, &tenant_b.tenant.id, 1);
 
-        assert!(store.get_order(&tenant_a.tenant.id, &order_b.id).unwrap().is_none());
-        assert!(store.get_order(&tenant_b.tenant.id, &order_b.id).unwrap().is_some());
+        assert!(store
+            .get_order(&tenant_a.tenant.id, &order_b.id)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_order(&tenant_b.tenant.id, &order_b.id)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -2737,12 +3305,22 @@ mod tests {
         let tenant_a = new_tenant(&store);
         let tenant_b = new_tenant(&store);
         let webhook_b = store
-            .create_webhook(&tenant_b.tenant.id, "https://b.example/hook", "{}", "secret", 1000)
+            .create_webhook(
+                &tenant_b.tenant.id,
+                "https://b.example/hook",
+                "{}",
+                "secret",
+                1000,
+            )
             .unwrap();
 
-        assert!(!store.delete_webhook(&tenant_a.tenant.id, &webhook_b.id).unwrap());
+        assert!(!store
+            .delete_webhook(&tenant_a.tenant.id, &webhook_b.id)
+            .unwrap());
         assert_eq!(store.list_webhooks(&tenant_b.tenant.id).unwrap().len(), 1);
-        assert!(store.delete_webhook(&tenant_b.tenant.id, &webhook_b.id).unwrap());
+        assert!(store
+            .delete_webhook(&tenant_b.tenant.id, &webhook_b.id)
+            .unwrap());
         assert_eq!(store.list_webhooks(&tenant_b.tenant.id).unwrap().len(), 0);
     }
 
@@ -2760,7 +3338,10 @@ mod tests {
             .unwrap();
 
         assert!(first);
-        assert!(!second, "re-reporting the same output must be a no-op, not a new row");
+        assert!(
+            !second,
+            "re-reporting the same output must be a no-op, not a new row"
+        );
         assert_eq!(store.get_all_payments(&order.id).unwrap().len(), 1);
     }
 
@@ -2778,7 +3359,10 @@ mod tests {
         assert_eq!(old, OrderStatus::Pending);
         assert_eq!(new, OrderStatus::Paid);
 
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(refetched.status, OrderStatus::Paid);
         assert_eq!(refetched.amount_received_piconero, 100);
         assert_eq!(refetched.confirmations, 10);
@@ -2807,10 +3391,16 @@ mod tests {
             .unwrap();
         assert_eq!(order.confirmations_required_override, Some(2));
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         // current_height 51, payment mined at 50 -> 2 confirmations.
         let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
-        assert_eq!(status, OrderStatus::Paid, "2 confirmations must already be enough under a Some(2) override");
+        assert_eq!(
+            status,
+            OrderStatus::Paid,
+            "2 confirmations must already be enough under a Some(2) override"
+        );
     }
 
     #[test]
@@ -2820,11 +3410,17 @@ mod tests {
         let order = new_order(&store, &tenant.tenant.id, 1); // confirmations_required_override: None
         assert_eq!(order.confirmations_required_override, None);
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         // Same 2-confirmation depth as the override test above, but with no
         // override this must still be short of the tenant's default of 10.
         let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
-        assert_eq!(status, OrderStatus::Confirming, "with no override, the tenant's own default of 10 must still apply");
+        assert_eq!(
+            status,
+            OrderStatus::Confirming,
+            "with no override, the tenant's own default of 10 must still apply"
+        );
     }
 
     #[test]
@@ -2837,8 +3433,12 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
 
-        store.record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50)).unwrap();
-        store.record_payment_match(&order.id, "tx_b", 0, 40, "[\"ki_b\"]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&order.id, "tx_b", 0, 40, "[\"ki_b\"]", 1500, Some(50))
+            .unwrap();
         let (_, paid) = store.recompute_order_status(&order.id, 59, 1600).unwrap();
         assert_eq!(paid, OrderStatus::Paid);
 
@@ -2848,7 +3448,10 @@ mod tests {
         assert_eq!(before, OrderStatus::Paid);
         assert_eq!(after, OrderStatus::Partial);
 
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(refetched.amount_received_piconero, 40);
         assert!(refetched.double_spend_detected_at.is_some());
     }
@@ -2862,8 +3465,12 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
 
-        store.record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50)).unwrap();
-        store.record_payment_match(&order.id, "tx_c", 0, 100, "[\"ki_c\"]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&order.id, "tx_c", 0, 100, "[\"ki_c\"]", 1500, Some(50))
+            .unwrap();
         let (_, before_void) = store.recompute_order_status(&order.id, 59, 1600).unwrap();
         assert_eq!(before_void, OrderStatus::Overpaid); // 160 total against an expected 100
 
@@ -2874,11 +3481,16 @@ mod tests {
         // tx_c alone (100) exactly covers the expected amount - still `paid`, not
         // downgraded, even though a double-spend genuinely occurred on this order.
         assert_eq!(after, OrderStatus::Paid);
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert!(refetched.double_spend_detected_at.is_some());
     }
 
-    fn drain_changes(receiver: &mut tokio::sync::broadcast::Receiver<OrderChange>) -> Vec<OrderChange> {
+    fn drain_changes(
+        receiver: &mut tokio::sync::broadcast::Receiver<OrderChange>,
+    ) -> Vec<OrderChange> {
         let mut changes = Vec::new();
         while let Ok(change) = receiver.try_recv() {
             changes.push(change);
@@ -2892,27 +3504,44 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
         let mut changes = store.subscribe_order_changes();
-        let expected = vec![OrderChange { tenant_id: tenant.tenant.id.clone(), order_id: order.id.clone() }];
+        let expected = vec![OrderChange {
+            tenant_id: tenant.tenant.id.clone(),
+            order_id: order.id.clone(),
+        }];
 
         // Nothing paid, nothing expired: a recompute that changes nothing is silent.
-        store.recompute_order_status(&order.id, 100, order.created_at).unwrap();
+        store
+            .recompute_order_status(&order.id, 100, order.created_at)
+            .unwrap();
         assert!(drain_changes(&mut changes).is_empty());
 
         // First sighting in the mempool, then the same sighting again (the ~1s mempool poll).
-        store.record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None).unwrap();
+        store
+            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None)
+            .unwrap();
         assert_eq!(drain_changes(&mut changes), expected);
-        store.record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None).unwrap();
+        store
+            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None)
+            .unwrap();
         assert!(drain_changes(&mut changes).is_empty());
         // Mined: the height is new information.
-        store.record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, Some(90)).unwrap();
+        store
+            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, Some(90))
+            .unwrap();
         assert_eq!(drain_changes(&mut changes), expected);
 
-        store.recompute_order_status(&order.id, 100, order.created_at).unwrap();
+        store
+            .recompute_order_status(&order.id, 100, order.created_at)
+            .unwrap();
         assert_eq!(drain_changes(&mut changes), expected);
-        store.recompute_order_status(&order.id, 100, order.created_at).unwrap();
+        store
+            .recompute_order_status(&order.id, 100, order.created_at)
+            .unwrap();
         assert!(drain_changes(&mut changes).is_empty());
 
-        assert!(store.set_refund_address(&tenant.tenant.id, &order.id, "refund").unwrap());
+        assert!(store
+            .set_refund_address(&tenant.tenant.id, &order.id, "refund")
+            .unwrap());
         assert_eq!(drain_changes(&mut changes), expected);
         assert!(store.mark_double_spend_detected(&order.id, 1000).unwrap());
         assert_eq!(drain_changes(&mut changes), expected);
@@ -2932,19 +3561,28 @@ mod tests {
             Err(StoreError::NotFound)
         });
         assert!(rolled_back.is_err());
-        assert!(drain_changes(&mut changes).is_empty(), "a rolled-back write must announce nothing");
+        assert!(
+            drain_changes(&mut changes).is_empty(),
+            "a rolled-back write must announce nothing"
+        );
 
         store
             .in_transaction(|store| -> Result<()> {
                 store.set_refund_address(&tenant.tenant.id, &order.id, "refund")?;
                 store.mark_double_spend_detected(&order.id, 1000)?;
-                assert!(drain_changes(&mut changes).is_empty(), "nothing is published before the commit");
+                assert!(
+                    drain_changes(&mut changes).is_empty(),
+                    "nothing is published before the commit"
+                );
                 Ok(())
             })
             .unwrap();
         assert_eq!(
             drain_changes(&mut changes),
-            vec![OrderChange { tenant_id: tenant.tenant.id.clone(), order_id: order.id.clone() }],
+            vec![OrderChange {
+                tenant_id: tenant.tenant.id.clone(),
+                order_id: order.id.clone()
+            }],
             "one change per order per transaction"
         );
     }
@@ -2956,9 +3594,15 @@ mod tests {
         let order = new_order(&store, &tenant.tenant.id, 1);
 
         assert!(store.mark_double_spend_detected(&order.id, 1000).unwrap());
-        assert!(!store.mark_double_spend_detected(&order.id, 2000).unwrap(), "must not overwrite the first timestamp");
+        assert!(
+            !store.mark_double_spend_detected(&order.id, 2000).unwrap(),
+            "must not overwrite the first timestamp"
+        );
 
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(refetched.double_spend_detected_at, Some(1000));
     }
 
@@ -2978,14 +3622,30 @@ mod tests {
             .unwrap();
         let refetched = store.get_tenant_by_id(&created.tenant.id).unwrap().unwrap();
         assert_eq!(refetched.confirmations_required, 3);
-        assert_eq!(refetched.order_expiry_seconds, created.tenant.order_expiry_seconds); // untouched
+        assert_eq!(
+            refetched.order_expiry_seconds,
+            created.tenant.order_expiry_seconds
+        ); // untouched
 
         // Native 0-conf: a tenant's own default can be patched down to zero directly,
         // no separate ceiling/`_set` flag machinery needed.
         store
-            .update_tenant_config(&created.tenant.id, TenantConfigPatch { confirmations_required: Some(0), ..Default::default() })
+            .update_tenant_config(
+                &created.tenant.id,
+                TenantConfigPatch {
+                    confirmations_required: Some(0),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-        assert_eq!(store.get_tenant_by_id(&created.tenant.id).unwrap().unwrap().confirmations_required, 0);
+        assert_eq!(
+            store
+                .get_tenant_by_id(&created.tenant.id)
+                .unwrap()
+                .unwrap()
+                .confirmations_required,
+            0
+        );
     }
 
     #[test]
@@ -2995,13 +3655,19 @@ mod tests {
         for i in 1..=3u32 {
             new_order(&store, &tenant.tenant.id, i);
         }
-        let all = store.list_orders(&tenant.tenant.id, None, 10, None).unwrap();
+        let all = store
+            .list_orders(&tenant.tenant.id, None, 10, None)
+            .unwrap();
         assert_eq!(all.len(), 3);
         assert!(all[0].created_at >= all[1].created_at); // newest first (all equal here, but ordering must not error)
 
-        let pending_only = store.list_orders(&tenant.tenant.id, Some(OrderStatus::Pending), 10, None).unwrap();
+        let pending_only = store
+            .list_orders(&tenant.tenant.id, Some(OrderStatus::Pending), 10, None)
+            .unwrap();
         assert_eq!(pending_only.len(), 3);
-        let paid_only = store.list_orders(&tenant.tenant.id, Some(OrderStatus::Paid), 10, None).unwrap();
+        let paid_only = store
+            .list_orders(&tenant.tenant.id, Some(OrderStatus::Paid), 10, None)
+            .unwrap();
         assert_eq!(paid_only.len(), 0);
 
         let page = store.list_orders(&tenant.tenant.id, None, 2, None).unwrap();
@@ -3030,18 +3696,40 @@ mod tests {
             let order = new_order(&store, &tenant.tenant.id, i as u32 + 1);
             store
                 .conn
-                .execute("UPDATE orders SET status = ?2 WHERE id = ?1", params![order.id, status_to_str(status)])
+                .execute(
+                    "UPDATE orders SET status = ?2 WHERE id = ?1",
+                    params![order.id, status_to_str(status)],
+                )
                 .unwrap();
             tenants_by_status.insert(status, tenant.tenant.id);
         }
 
-        let active: std::collections::HashSet<String> = store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().into_iter().collect();
+        let active: std::collections::HashSet<String> = store
+            .active_tenant_ids("mainnet", i64::MAX, 0)
+            .unwrap()
+            .into_iter()
+            .collect();
 
-        for status in [OrderStatus::Pending, OrderStatus::Unconfirmed, OrderStatus::Confirming, OrderStatus::Partial] {
-            assert!(active.contains(&tenants_by_status[&status]), "{status} must be active");
+        for status in [
+            OrderStatus::Pending,
+            OrderStatus::Unconfirmed,
+            OrderStatus::Confirming,
+            OrderStatus::Partial,
+        ] {
+            assert!(
+                active.contains(&tenants_by_status[&status]),
+                "{status} must be active"
+            );
         }
-        for status in [OrderStatus::Paid, OrderStatus::Overpaid, OrderStatus::Expired] {
-            assert!(!active.contains(&tenants_by_status[&status]), "{status} must not be active");
+        for status in [
+            OrderStatus::Paid,
+            OrderStatus::Overpaid,
+            OrderStatus::Expired,
+        ] {
+            assert!(
+                !active.contains(&tenants_by_status[&status]),
+                "{status} must not be active"
+            );
         }
     }
 
@@ -3053,24 +3741,48 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1); // expires_at = 2000
-        // Closed at its deadline, as `recompute_order_status` records it.
+                                                             // Closed at its deadline, as `recompute_order_status` records it.
         store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![order.id]).unwrap();
 
         // Exactly at the boundary (`expires_at >= now - grace`) - inclusive.
-        assert!(store.active_tenant_ids("mainnet", 2000, 0).unwrap().contains(&tenant.tenant.id));
-        assert!(store.non_terminal_order_ids("mainnet", 2000, 0).unwrap().contains(&order.id));
+        assert!(store
+            .active_tenant_ids("mainnet", 2000, 0)
+            .unwrap()
+            .contains(&tenant.tenant.id));
+        assert!(store
+            .non_terminal_order_ids("mainnet", 2000, 0)
+            .unwrap()
+            .contains(&order.id));
 
         // One second past, with no grace at all - excluded.
-        assert!(!store.active_tenant_ids("mainnet", 2001, 0).unwrap().contains(&tenant.tenant.id));
-        assert!(!store.non_terminal_order_ids("mainnet", 2001, 0).unwrap().contains(&order.id));
+        assert!(!store
+            .active_tenant_ids("mainnet", 2001, 0)
+            .unwrap()
+            .contains(&tenant.tenant.id));
+        assert!(!store
+            .non_terminal_order_ids("mainnet", 2001, 0)
+            .unwrap()
+            .contains(&order.id));
 
         // A real grace window: still within it.
-        assert!(store.active_tenant_ids("mainnet", 2500, 600).unwrap().contains(&tenant.tenant.id));
-        assert!(store.non_terminal_order_ids("mainnet", 2500, 600).unwrap().contains(&order.id));
+        assert!(store
+            .active_tenant_ids("mainnet", 2500, 600)
+            .unwrap()
+            .contains(&tenant.tenant.id));
+        assert!(store
+            .non_terminal_order_ids("mainnet", 2500, 600)
+            .unwrap()
+            .contains(&order.id));
 
         // Past even the grace window - excluded again.
-        assert!(!store.active_tenant_ids("mainnet", 2601, 600).unwrap().contains(&tenant.tenant.id));
-        assert!(!store.non_terminal_order_ids("mainnet", 2601, 600).unwrap().contains(&order.id));
+        assert!(!store
+            .active_tenant_ids("mainnet", 2601, 600)
+            .unwrap()
+            .contains(&tenant.tenant.id));
+        assert!(!store
+            .non_terminal_order_ids("mainnet", 2601, 600)
+            .unwrap()
+            .contains(&order.id));
     }
 
     #[test]
@@ -3084,21 +3796,27 @@ mod tests {
 
         let pending_order = new_order(&store, &tenant.tenant.id, 1); // expires_at = 2000, status defaults to pending
         assert!(
-            store.is_order_currently_scanning(&pending_order.id, 2000, 0).unwrap(),
+            store
+                .is_order_currently_scanning(&pending_order.id, 2000, 0)
+                .unwrap(),
             "a non-terminal order must be currently scanning regardless of grace"
         );
 
         let expired_in_grace = new_order(&store, &tenant.tenant.id, 2);
         store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![expired_in_grace.id]).unwrap();
         assert!(
-            store.is_order_currently_scanning(&expired_in_grace.id, 2500, 600).unwrap(),
+            store
+                .is_order_currently_scanning(&expired_in_grace.id, 2500, 600)
+                .unwrap(),
             "an expired order still inside its grace window must be currently scanning"
         );
 
         let expired_past_grace = new_order(&store, &tenant.tenant.id, 3);
         store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![expired_past_grace.id]).unwrap();
         assert!(
-            !store.is_order_currently_scanning(&expired_past_grace.id, 2601, 600).unwrap(),
+            !store
+                .is_order_currently_scanning(&expired_past_grace.id, 2601, 600)
+                .unwrap(),
             "an expired order past its grace window must not be currently scanning"
         );
     }
@@ -3107,7 +3825,10 @@ mod tests {
     fn tenant_with_no_orders_at_all_is_not_active() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        assert!(!store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id));
+        assert!(!store
+            .active_tenant_ids("mainnet", i64::MAX, 0)
+            .unwrap()
+            .contains(&tenant.tenant.id));
     }
 
     #[test]
@@ -3122,19 +3843,30 @@ mod tests {
         let tenant = new_tenant(&store);
         let order_a = new_order(&store, &tenant.tenant.id, 1);
 
-        assert!(store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id));
+        assert!(store
+            .active_tenant_ids("mainnet", i64::MAX, 0)
+            .unwrap()
+            .contains(&tenant.tenant.id));
 
-        store.record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         let (_, status) = store.recompute_order_status(&order_a.id, 59, 1600).unwrap();
         assert_eq!(status, OrderStatus::Paid);
         assert!(
-            !store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id),
+            !store
+                .active_tenant_ids("mainnet", i64::MAX, 0)
+                .unwrap()
+                .contains(&tenant.tenant.id),
             "tenant must drop off once its only order is fully settled"
         );
 
         let order_b = new_order(&store, &tenant.tenant.id, 2);
         assert!(
-            store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id),
+            store
+                .active_tenant_ids("mainnet", i64::MAX, 0)
+                .unwrap()
+                .contains(&tenant.tenant.id),
             "a fresh order must bring the tenant straight back onto the watchlist"
         );
         let _ = order_b;
@@ -3147,11 +3879,16 @@ mod tests {
         let order_a = new_order(&store, &tenant.tenant.id, 1);
         let _order_b = new_order(&store, &tenant.tenant.id, 2);
 
-        store.record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         store.recompute_order_status(&order_a.id, 59, 1600).unwrap();
 
         assert!(
-            store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id),
+            store
+                .active_tenant_ids("mainnet", i64::MAX, 0)
+                .unwrap()
+                .contains(&tenant.tenant.id),
             "order_b is still pending, so the tenant must stay active even though order_a settled"
         );
     }
@@ -3162,7 +3899,13 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
         let webhook = store
-            .create_webhook(&tenant.tenant.id, "https://merchant.example/hook", "{}", "whsec_x", 1000)
+            .create_webhook(
+                &tenant.tenant.id,
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
             .unwrap();
 
         let id = store
@@ -3180,7 +3923,9 @@ mod tests {
 
         // A failed attempt reschedules and increments attempt_count; it stays due
         // once the new next_attempt_at has passed.
-        store.schedule_webhook_retry(id, 2000, Some(500), Some("server error"), 1000).unwrap();
+        store
+            .schedule_webhook_retry(id, 2000, Some(500), Some("server error"), 1000)
+            .unwrap();
         assert!(store.due_webhook_deliveries(1500, 10).unwrap().is_empty());
         let due = store.due_webhook_deliveries(2000, 10).unwrap();
         assert_eq!(due[0].attempt_count, 1);
@@ -3188,7 +3933,10 @@ mod tests {
         // A successful delivery removes it from the due set permanently, even if
         // asked about at a much later time.
         store.mark_webhook_delivered(id, 200, 2000).unwrap();
-        assert!(store.due_webhook_deliveries(999_999, 10).unwrap().is_empty());
+        assert!(store
+            .due_webhook_deliveries(999_999, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -3197,11 +3945,25 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
         let webhook = store
-            .create_webhook(&tenant.tenant.id, "https://merchant.example/hook", "{}", "whsec_x", 1000)
+            .create_webhook(
+                &tenant.tenant.id,
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
             .unwrap();
-        store.enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 1000).unwrap();
+        store
+            .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 1000)
+            .unwrap();
 
-        store.conn.execute("UPDATE webhooks SET enabled = 0 WHERE id = ?1", params![webhook.id]).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE webhooks SET enabled = 0 WHERE id = ?1",
+                params![webhook.id],
+            )
+            .unwrap();
         assert!(store.due_webhook_deliveries(1000, 10).unwrap().is_empty());
     }
 
@@ -3220,7 +3982,10 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
-        assert_eq!(store.get_order_tenant_id(&order.id).unwrap(), Some(tenant.tenant.id));
+        assert_eq!(
+            store.get_order_tenant_id(&order.id).unwrap(),
+            Some(tenant.tenant.id)
+        );
         assert_eq!(store.get_order_tenant_id("pay_nonexistent").unwrap(), None);
     }
 
@@ -3229,15 +3994,26 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.set_scanned_block("mainnet", 100, "hash100").unwrap();
         store.set_scanned_block("mainnet", 101, "hash101").unwrap();
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), Some("hash100".to_string()));
+        assert_eq!(
+            store.get_scanned_block_hash("mainnet", 100).unwrap(),
+            Some("hash100".to_string())
+        );
 
         // Reorg overwrite at the same height.
-        store.set_scanned_block("mainnet", 100, "hash100_v2").unwrap();
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), Some("hash100_v2".to_string()));
+        store
+            .set_scanned_block("mainnet", 100, "hash100_v2")
+            .unwrap();
+        assert_eq!(
+            store.get_scanned_block_hash("mainnet", 100).unwrap(),
+            Some("hash100_v2".to_string())
+        );
 
         store.prune_scanned_blocks_below("mainnet", 101).unwrap();
         assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), None);
-        assert!(store.get_scanned_block_hash("mainnet", 101).unwrap().is_some());
+        assert!(store
+            .get_scanned_block_hash("mainnet", 101)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -3247,15 +4023,31 @@ mod tests {
         // *different* hashes at the *same* height without colliding, and querying
         // one network must never see the other's data.
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 100, "mainnet_hash_100").unwrap();
-        store.set_scanned_block("stagenet", 100, "stagenet_hash_100").unwrap();
+        store
+            .set_scanned_block("mainnet", 100, "mainnet_hash_100")
+            .unwrap();
+        store
+            .set_scanned_block("stagenet", 100, "stagenet_hash_100")
+            .unwrap();
 
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), Some("mainnet_hash_100".to_string()));
-        assert_eq!(store.get_scanned_block_hash("stagenet", 100).unwrap(), Some("stagenet_hash_100".to_string()));
-        assert_eq!(store.get_scanned_block_hash("testnet", 100).unwrap(), None, "a third, never-written network must see nothing");
+        assert_eq!(
+            store.get_scanned_block_hash("mainnet", 100).unwrap(),
+            Some("mainnet_hash_100".to_string())
+        );
+        assert_eq!(
+            store.get_scanned_block_hash("stagenet", 100).unwrap(),
+            Some("stagenet_hash_100".to_string())
+        );
+        assert_eq!(
+            store.get_scanned_block_hash("testnet", 100).unwrap(),
+            None,
+            "a third, never-written network must see nothing"
+        );
 
         // Advancing one network's tip must not affect the other's.
-        store.set_scanned_block("mainnet", 105, "mainnet_hash_105").unwrap();
+        store
+            .set_scanned_block("mainnet", 105, "mainnet_hash_105")
+            .unwrap();
         assert_eq!(store.max_scanned_height("mainnet").unwrap(), Some(105));
         assert_eq!(store.max_scanned_height("stagenet").unwrap(), Some(100));
 
@@ -3292,7 +4084,10 @@ mod tests {
 
         let mainnet_active = store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap();
         assert!(mainnet_active.contains(&mainnet_tenant.tenant.id));
-        assert!(!mainnet_active.contains(&stagenet_tenant.tenant.id), "a stagenet tenant must never appear in a mainnet query");
+        assert!(
+            !mainnet_active.contains(&stagenet_tenant.tenant.id),
+            "a stagenet tenant must never appear in a mainnet query"
+        );
 
         let stagenet_active = store.active_tenant_ids("stagenet", i64::MAX, 0).unwrap();
         assert!(stagenet_active.contains(&stagenet_tenant.tenant.id));
@@ -3307,7 +4102,17 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let mainnet_tenant = new_tenant(&store);
         let mainnet_order = new_order(&store, &mainnet_tenant.tenant.id, 1);
-        store.record_payment_match(&mainnet_order.id, "tx_mainnet", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(
+                &mainnet_order.id,
+                "tx_mainnet",
+                0,
+                100,
+                "[]",
+                1500,
+                Some(50),
+            )
+            .unwrap();
 
         let stagenet_tenant = store
             .create_tenant(
@@ -3323,13 +4128,27 @@ mod tests {
             )
             .unwrap();
         let stagenet_order = new_order(&store, &stagenet_tenant.tenant.id, 1);
-        store.record_payment_match(&stagenet_order.id, "tx_stagenet", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(
+                &stagenet_order.id,
+                "tx_stagenet",
+                0,
+                100,
+                "[]",
+                1500,
+                Some(50),
+            )
+            .unwrap();
 
-        let mainnet_affected = store.find_payments_at_or_after_height("mainnet", 50).unwrap();
+        let mainnet_affected = store
+            .find_payments_at_or_after_height("mainnet", 50)
+            .unwrap();
         assert_eq!(mainnet_affected.len(), 1);
         assert_eq!(mainnet_affected[0].txid, "tx_mainnet");
 
-        let stagenet_affected = store.find_payments_at_or_after_height("stagenet", 50).unwrap();
+        let stagenet_affected = store
+            .find_payments_at_or_after_height("stagenet", 50)
+            .unwrap();
         assert_eq!(stagenet_affected.len(), 1);
         assert_eq!(stagenet_affected[0].txid, "tx_stagenet");
     }
@@ -3346,10 +4165,18 @@ mod tests {
         let mempool_order = new_order(&store, &tenant.tenant.id, 1);
         let mined_order = new_order(&store, &tenant.tenant.id, 2);
         let voided_order = new_order(&store, &tenant.tenant.id, 3);
-        store.record_payment_match(&mempool_order.id, "tx_pool", 0, 100, "[]", 1500, None).unwrap();
-        store.record_payment_match(&mined_order.id, "tx_mined", 0, 100, "[]", 1500, Some(50)).unwrap();
-        store.record_payment_match(&voided_order.id, "tx_voided", 0, 100, "[]", 1500, None).unwrap();
-        store.void_payment(&voided_order.id, "tx_voided", 0, 1600).unwrap();
+        store
+            .record_payment_match(&mempool_order.id, "tx_pool", 0, 100, "[]", 1500, None)
+            .unwrap();
+        store
+            .record_payment_match(&mined_order.id, "tx_mined", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&voided_order.id, "tx_voided", 0, 100, "[]", 1500, None)
+            .unwrap();
+        store
+            .void_payment(&voided_order.id, "tx_voided", 0, 1600)
+            .unwrap();
 
         let stagenet_tenant = store
             .create_tenant(
@@ -3365,16 +4192,33 @@ mod tests {
             )
             .unwrap();
         let stagenet_order = new_order(&store, &stagenet_tenant.tenant.id, 1);
-        store.record_payment_match(&stagenet_order.id, "tx_stagenet_pool", 0, 100, "[]", 1500, None).unwrap();
+        store
+            .record_payment_match(
+                &stagenet_order.id,
+                "tx_stagenet_pool",
+                0,
+                100,
+                "[]",
+                1500,
+                None,
+            )
+            .unwrap();
 
         let found = store.find_unconfirmed_payments("mainnet").unwrap();
-        assert_eq!(found.len(), 1, "only the live mempool-only mainnet row: {found:?}");
+        assert_eq!(
+            found.len(),
+            1,
+            "only the live mempool-only mainnet row: {found:?}"
+        );
         assert_eq!(found[0].txid, "tx_pool");
 
         let first_page = store.unconfirmed_payments_page("mainnet", 0, 1).unwrap();
         assert_eq!(first_page.len(), 1);
         assert_eq!(first_page[0].1.txid, "tx_pool");
-        assert!(store.unconfirmed_payments_page("mainnet", first_page[0].0, 1).unwrap().is_empty());
+        assert!(store
+            .unconfirmed_payments_page("mainnet", first_page[0].0, 1)
+            .unwrap()
+            .is_empty());
 
         let stagenet_found = store.find_unconfirmed_payments("stagenet").unwrap();
         assert_eq!(stagenet_found.len(), 1);
@@ -3387,13 +4231,32 @@ mod tests {
         let tenant = new_tenant(&store);
         for index in 1..=3 {
             let order = new_order(&store, &tenant.tenant.id, index);
-            store.record_payment_match(&order.id, &format!("tx_{index}"), 0, 100, "[]", 1500, None).unwrap();
+            store
+                .record_payment_match(&order.id, &format!("tx_{index}"), 0, 100, "[]", 1500, None)
+                .unwrap();
         }
         let first = store.unconfirmed_payments_page("mainnet", 0, 2).unwrap();
-        assert_eq!(first.iter().map(|(_, payment)| payment.txid.as_str()).collect::<Vec<_>>(), vec!["tx_1", "tx_2"]);
-        let second = store.unconfirmed_payments_page("mainnet", first.last().unwrap().0, 2).unwrap();
-        assert_eq!(second.iter().map(|(_, payment)| payment.txid.as_str()).collect::<Vec<_>>(), vec!["tx_3"]);
-        assert!(store.unconfirmed_payments_page("mainnet", second.last().unwrap().0, 2).unwrap().is_empty());
+        assert_eq!(
+            first
+                .iter()
+                .map(|(_, payment)| payment.txid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tx_1", "tx_2"]
+        );
+        let second = store
+            .unconfirmed_payments_page("mainnet", first.last().unwrap().0, 2)
+            .unwrap();
+        assert_eq!(
+            second
+                .iter()
+                .map(|(_, payment)| payment.txid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tx_3"]
+        );
+        assert!(store
+            .unconfirmed_payments_page("mainnet", second.last().unwrap().0, 2)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -3410,18 +4273,35 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
 
-        assert!(store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None).unwrap());
-        assert_eq!(store.get_all_payments(&order.id).unwrap()[0].block_height, None);
+        assert!(store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None)
+            .unwrap());
+        assert_eq!(
+            store.get_all_payments(&order.id).unwrap()[0].block_height,
+            None
+        );
 
         // Same output, now seen inside a block - the row must learn its height.
-        assert!(!store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, Some(50)).unwrap());
+        assert!(!store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, Some(50))
+            .unwrap());
         let payments = store.get_all_payments(&order.id).unwrap();
-        assert_eq!(payments.len(), 1, "still exactly one row - this is an update, not a second payment");
+        assert_eq!(
+            payments.len(),
+            1,
+            "still exactly one row - this is an update, not a second payment"
+        );
         assert_eq!(payments[0].block_height, Some(50));
 
         // And with a height known, the payment is now reachable by reorg
         // reconciliation, which filters on `block_height >= ?`.
-        assert_eq!(store.find_payments_at_or_after_height("mainnet", 50).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .find_payments_at_or_after_height("mainnet", 50)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -3435,10 +4315,17 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50)).unwrap();
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None)
+            .unwrap();
 
-        assert_eq!(store.get_all_payments(&order.id).unwrap()[0].block_height, Some(50));
+        assert_eq!(
+            store.get_all_payments(&order.id).unwrap()[0].block_height,
+            Some(50)
+        );
     }
 
     #[test]
@@ -3451,14 +4338,21 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None)
+            .unwrap();
         assert!(store.void_payment(&order.id, "txabc", 0, 1600).unwrap());
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1700, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1700, Some(50))
+            .unwrap();
         let payments = store.get_all_payments(&order.id).unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(payments[0].voided_at, Some(1600), "still voided");
-        assert_eq!(payments[0].block_height, None, "and the guarded update must not have run either");
+        assert_eq!(
+            payments[0].block_height, None,
+            "and the guarded update must not have run either"
+        );
     }
 
     #[test]
@@ -3475,14 +4369,20 @@ mod tests {
         let order_a = new_order(&store, &tenant_a.tenant.id, 1);
         let order_b = new_order(&store, &tenant_b.tenant.id, 1);
 
-        assert!(store.record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1500, Some(50)).unwrap());
-        assert!(store.record_payment_match(&order_b.id, "shared_tx", 0, 100, "[]", 1500, Some(50)).unwrap());
+        assert!(store
+            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1500, Some(50))
+            .unwrap());
+        assert!(store
+            .record_payment_match(&order_b.id, "shared_tx", 0, 100, "[]", 1500, Some(50))
+            .unwrap());
 
         assert_eq!(store.get_all_payments(&order_a.id).unwrap().len(), 1);
         assert_eq!(store.get_all_payments(&order_b.id).unwrap().len(), 1);
 
         // Within one order it is still an idempotent no-op, exactly as before.
-        assert!(!store.record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1600, Some(50)).unwrap());
+        assert!(!store
+            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1600, Some(50))
+            .unwrap());
         assert_eq!(store.get_all_payments(&order_a.id).unwrap().len(), 1);
     }
 
@@ -3491,17 +4391,27 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
-        store.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         store.void_payment(&order.id, "tx_a", 0, 1600).unwrap();
         store.mark_double_spend_detected(&order.id, 1600).unwrap();
 
         assert!(store.unvoid_payment(&order.id, "tx_a", 0).unwrap());
-        assert!(store.get_all_payments(&order.id).unwrap()[0].voided_at.is_none());
-        assert!(!store.unvoid_payment(&order.id, "tx_a", 0).unwrap(), "idempotent - already un-voided");
+        assert!(store.get_all_payments(&order.id).unwrap()[0]
+            .voided_at
+            .is_none());
+        assert!(
+            !store.unvoid_payment(&order.id, "tx_a", 0).unwrap(),
+            "idempotent - already un-voided"
+        );
 
         // Sticky by design (see the schema comment): the incident happened, whether
         // or not the payment ultimately stood.
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(refetched.double_spend_detected_at, Some(1600));
     }
 
@@ -3530,18 +4440,39 @@ mod tests {
             let order = new_order(&store, &tenant.tenant.id, i as u32 + 1);
             store
                 .conn
-                .execute("UPDATE orders SET status = ?2 WHERE id = ?1", params![order.id, status_to_str(status)])
+                .execute(
+                    "UPDATE orders SET status = ?2 WHERE id = ?1",
+                    params![order.id, status_to_str(status)],
+                )
                 .unwrap();
             ids_by_status.insert(status, order.id);
         }
 
-        let ids: std::collections::HashSet<String> =
-            store.non_terminal_order_ids("mainnet", i64::MAX, 0).unwrap().into_iter().collect();
-        for status in [OrderStatus::Pending, OrderStatus::Unconfirmed, OrderStatus::Confirming, OrderStatus::Partial] {
-            assert!(ids.contains(&ids_by_status[&status]), "{status} orders must be recomputed every tick");
+        let ids: std::collections::HashSet<String> = store
+            .non_terminal_order_ids("mainnet", i64::MAX, 0)
+            .unwrap()
+            .into_iter()
+            .collect();
+        for status in [
+            OrderStatus::Pending,
+            OrderStatus::Unconfirmed,
+            OrderStatus::Confirming,
+            OrderStatus::Partial,
+        ] {
+            assert!(
+                ids.contains(&ids_by_status[&status]),
+                "{status} orders must be recomputed every tick"
+            );
         }
-        for status in [OrderStatus::Paid, OrderStatus::Overpaid, OrderStatus::Expired] {
-            assert!(!ids.contains(&ids_by_status[&status]), "{status} is terminal - nothing left to recompute");
+        for status in [
+            OrderStatus::Paid,
+            OrderStatus::Overpaid,
+            OrderStatus::Expired,
+        ] {
+            assert!(
+                !ids.contains(&ids_by_status[&status]),
+                "{status} is terminal - nothing left to recompute"
+            );
         }
 
         let stagenet = store
@@ -3558,8 +4489,14 @@ mod tests {
             )
             .unwrap();
         let stagenet_order = new_order(&store, &stagenet.tenant.id, 1);
-        assert!(!store.non_terminal_order_ids("mainnet", i64::MAX, 0).unwrap().contains(&stagenet_order.id));
-        assert!(store.non_terminal_order_ids("stagenet", i64::MAX, 0).unwrap().contains(&stagenet_order.id));
+        assert!(!store
+            .non_terminal_order_ids("mainnet", i64::MAX, 0)
+            .unwrap()
+            .contains(&stagenet_order.id));
+        assert!(store
+            .non_terminal_order_ids("stagenet", i64::MAX, 0)
+            .unwrap()
+            .contains(&stagenet_order.id));
     }
 
     #[test]
@@ -3577,17 +4514,20 @@ mod tests {
 
         let first = store.peek_next_minor_index(&tenant_id).unwrap();
         let order = store
-            .create_order_claiming_minor_index(first, NewOrder {
-                confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
-                merchant_order_id: None,
-                minor_index: first,
-                address: "sub_1".into(),
-                xmr_amount_piconero: 100,
-                description: None,
-                created_at: 1000,
-                expires_at: 2000,
-            })
+            .create_order_claiming_minor_index(
+                first,
+                NewOrder {
+                    confirmations_required_override: None,
+                    tenant_id: tenant_id.clone(),
+                    merchant_order_id: None,
+                    minor_index: first,
+                    address: "sub_1".into(),
+                    xmr_amount_piconero: 100,
+                    description: None,
+                    created_at: 1000,
+                    expires_at: 2000,
+                },
+            )
             .unwrap()
             .expect("the first claim of a fresh index must succeed");
         assert_eq!(order.minor_index, first);
@@ -3596,35 +4536,45 @@ mod tests {
         // A claim of an index the counter has already moved past changes nothing at
         // all - the caller re-derives against the new index rather than burning one.
         let stale = store
-            .create_order_claiming_minor_index(first, NewOrder {
-                confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
-                merchant_order_id: None,
-                minor_index: first,
-                address: "sub_1_again".into(),
-                xmr_amount_piconero: 100,
-                description: None,
-                created_at: 1000,
-                expires_at: 2000,
-            })
+            .create_order_claiming_minor_index(
+                first,
+                NewOrder {
+                    confirmations_required_override: None,
+                    tenant_id: tenant_id.clone(),
+                    merchant_order_id: None,
+                    minor_index: first,
+                    address: "sub_1_again".into(),
+                    xmr_amount_piconero: 100,
+                    description: None,
+                    created_at: 1000,
+                    expires_at: 2000,
+                },
+            )
             .unwrap();
         assert!(stale.is_none());
-        assert_eq!(store.peek_next_minor_index(&tenant_id).unwrap(), first + 1, "a losing racer must not burn an index");
+        assert_eq!(
+            store.peek_next_minor_index(&tenant_id).unwrap(),
+            first + 1,
+            "a losing racer must not burn an index"
+        );
 
         // A *failing* insert (this minor_index is already taken, violating
         // UNIQUE(tenant_id, minor_index)) must roll the counter bump back with it.
         let next = store.peek_next_minor_index(&tenant_id).unwrap();
-        let failed = store.create_order_claiming_minor_index(next, NewOrder {
-            confirmations_required_override: None,
-            tenant_id: tenant_id.clone(),
-            merchant_order_id: None,
-            minor_index: first, // deliberately the already-used index, not `next`
-            address: "sub_collision".into(),
-            xmr_amount_piconero: 100,
-            description: None,
-            created_at: 1000,
-            expires_at: 2000,
-        });
+        let failed = store.create_order_claiming_minor_index(
+            next,
+            NewOrder {
+                confirmations_required_override: None,
+                tenant_id: tenant_id.clone(),
+                merchant_order_id: None,
+                minor_index: first, // deliberately the already-used index, not `next`
+                address: "sub_collision".into(),
+                xmr_amount_piconero: 100,
+                description: None,
+                created_at: 1000,
+                expires_at: 2000,
+            },
+        );
         assert!(failed.is_err());
         assert_eq!(
             store.peek_next_minor_index(&tenant_id).unwrap(),
@@ -3737,20 +4687,36 @@ mod tests {
         shared::migrations::apply(&store.conn, MIGRATIONS).unwrap();
 
         let payments = store.get_all_payments(order_id).unwrap();
-        assert_eq!(payments.len(), 1, "the pre-upgrade payment must survive the table rebuild");
+        assert_eq!(
+            payments.len(),
+            1,
+            "the pre-upgrade payment must survive the table rebuild"
+        );
         assert_eq!(payments[0].txid, "tx_from_before_the_upgrade");
         assert_eq!(payments[0].output_index, 2);
         assert_eq!(payments[0].amount_piconero, 4242);
         assert_eq!(payments[0].key_images_json, "[\"ki_a\"]");
         assert_eq!(payments[0].first_seen_at, 1500);
-        assert_eq!(payments[0].block_height, Some(77), "every column, not just the ones the new constraint names");
+        assert_eq!(
+            payments[0].block_height,
+            Some(77),
+            "every column, not just the ones the new constraint names"
+        );
         assert_eq!(payments[0].voided_at, Some(1600));
 
         // And the new constraint is genuinely in force afterwards.
         let other_tenant = new_tenant(&store);
         let other_order = new_order(&store, &other_tenant.tenant.id, 1);
         assert!(store
-            .record_payment_match(&other_order.id, "tx_from_before_the_upgrade", 2, 100, "[]", 1700, Some(77))
+            .record_payment_match(
+                &other_order.id,
+                "tx_from_before_the_upgrade",
+                2,
+                100,
+                "[]",
+                1700,
+                Some(77)
+            )
             .unwrap());
 
         // SQLite drops a table's indexes with the table, and does *not* re-derive
@@ -3763,7 +4729,11 @@ mod tests {
                 .conn
                 .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='order_payments' AND sql IS NOT NULL ORDER BY name")
                 .unwrap();
-            let rows = stmt.query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+            let rows = stmt
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
             rows
         };
         // Later migrations add their own indexes (0019's reorg collection
@@ -3789,7 +4759,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(has_unique_index, "the UNIQUE(order_id, txid, output_index) constraint must survive as a real index");
+        assert!(
+            has_unique_index,
+            "the UNIQUE(order_id, txid, output_index) constraint must survive as a real index"
+        );
     }
 
     #[test]
@@ -3812,9 +4785,15 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert!(!columns.iter().any(|c| c == "allowed_origins"), "got columns {columns:?}");
+        assert!(
+            !columns.iter().any(|c| c == "allowed_origins"),
+            "got columns {columns:?}"
+        );
         let store = Store::from_connection(conn);
-        assert_eq!(store.get_tenant_by_id("old").unwrap().unwrap().public_key, "pk_old");
+        assert_eq!(
+            store.get_tenant_by_id("old").unwrap().unwrap().public_key,
+            "pk_old"
+        );
     }
 
     #[test]
@@ -3837,7 +4816,12 @@ mod tests {
 
         shared::migrations::apply(&conn, MIGRATIONS).unwrap();
         let override_for = |id: &str| -> Option<i64> {
-            conn.query_row("SELECT confirmations_required_override FROM orders WHERE id = ?1", [id], |row| row.get(0)).unwrap()
+            conn.query_row(
+                "SELECT confirmations_required_override FROM orders WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
         };
         assert_eq!(override_for("trusted"), Some(0));
         assert_eq!(override_for("pending"), None);
@@ -3855,23 +4839,54 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
-        store.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50)).unwrap();
-        assert_eq!(store.find_payments_at_or_after_height("mainnet", 50).unwrap().len(), 1);
+        store
+            .record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
+        assert_eq!(
+            store
+                .find_payments_at_or_after_height("mainnet", 50)
+                .unwrap()
+                .len(),
+            1
+        );
 
         // A reorg drops it back to the mempool.
-        store.update_payment_block_height(&order.id, "tx_a", 0, None).unwrap();
-        let still_visible = store.find_payments_at_or_after_height("mainnet", 50).unwrap();
-        assert_eq!(still_visible.len(), 1, "an unconfirmed payment is above every block height, not below all of them");
+        store
+            .update_payment_block_height(&order.id, "tx_a", 0, None)
+            .unwrap();
+        let still_visible = store
+            .find_payments_at_or_after_height("mainnet", 50)
+            .unwrap();
+        assert_eq!(
+            still_visible.len(),
+            1,
+            "an unconfirmed payment is above every block height, not below all of them"
+        );
         assert_eq!(still_visible[0].block_height, None);
 
         // The same applies to the voided half of the pair, which un-voiding depends on.
         store.void_payment(&order.id, "tx_a", 0, 1600).unwrap();
-        assert!(store.find_payments_at_or_after_height("mainnet", 50).unwrap().is_empty());
-        assert_eq!(store.find_voided_payments_at_or_after_height("mainnet", 50).unwrap().len(), 1);
+        assert!(store
+            .find_payments_at_or_after_height("mainnet", 50)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .find_voided_payments_at_or_after_height("mainnet", 50)
+                .unwrap()
+                .len(),
+            1
+        );
 
         // And a network scope violation is still impossible either way.
-        assert!(store.find_payments_at_or_after_height("stagenet", 50).unwrap().is_empty());
-        assert!(store.find_voided_payments_at_or_after_height("stagenet", 50).unwrap().is_empty());
+        assert!(store
+            .find_payments_at_or_after_height("stagenet", 50)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .find_voided_payments_at_or_after_height("stagenet", 50)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -3879,8 +4894,12 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
-        store.record_payment_match(&order.id, "tx_old", 0, 100, "[]", 1000, Some(50)).unwrap();
-        store.record_payment_match(&order.id, "tx_recent", 1, 100, "[]", 1000, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "tx_old", 0, 100, "[]", 1000, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&order.id, "tx_recent", 1, 100, "[]", 1000, Some(50))
+            .unwrap();
         store.void_payment(&order.id, "tx_old", 0, 1000).unwrap();
         store.void_payment(&order.id, "tx_recent", 1, 5000).unwrap();
 
@@ -3889,14 +4908,24 @@ mod tests {
         assert_eq!(recent_only[0].txid, "tx_recent");
 
         let both = store.find_payments_voided_since("mainnet", 0).unwrap();
-        assert_eq!(both.len(), 2, "a cutoff at or before every void returns all of them");
+        assert_eq!(
+            both.len(),
+            2,
+            "a cutoff at or before every void returns all of them"
+        );
 
         assert!(
-            store.find_payments_voided_since("mainnet", 5001).unwrap().is_empty(),
+            store
+                .find_payments_voided_since("mainnet", 5001)
+                .unwrap()
+                .is_empty(),
             "a cutoff after every void returns nothing"
         );
         assert!(
-            store.find_payments_voided_since("stagenet", 0).unwrap().is_empty(),
+            store
+                .find_payments_voided_since("stagenet", 0)
+                .unwrap()
+                .is_empty(),
             "network scope violation must still be impossible"
         );
     }
@@ -3907,15 +4936,31 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
 
-        assert!(!store.clear_double_spend_flag(&order.id).unwrap(), "nothing to clear yet");
+        assert!(
+            !store.clear_double_spend_flag(&order.id).unwrap(),
+            "nothing to clear yet"
+        );
 
         store.mark_double_spend_detected(&order.id, 1000).unwrap();
-        assert!(store.get_order_by_id(&order.id).unwrap().unwrap().double_spend_detected_at.is_some());
+        assert!(store
+            .get_order_by_id(&order.id)
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_some());
 
         assert!(store.clear_double_spend_flag(&order.id).unwrap());
-        assert!(store.get_order_by_id(&order.id).unwrap().unwrap().double_spend_detected_at.is_none());
+        assert!(store
+            .get_order_by_id(&order.id)
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_none());
 
-        assert!(!store.clear_double_spend_flag(&order.id).unwrap(), "already clear - idempotent");
+        assert!(
+            !store.clear_double_spend_flag(&order.id).unwrap(),
+            "already clear - idempotent"
+        );
     }
 
     #[test]
@@ -3930,12 +4975,22 @@ mod tests {
             Err(StoreError::NotFound)
         });
         assert!(result.is_err());
-        assert!(store.get_all_payments(&order.id).unwrap().is_empty(), "the whole group must be gone, not just the last write");
-        assert!(store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap().double_spend_detected_at.is_none());
+        assert!(
+            store.get_all_payments(&order.id).unwrap().is_empty(),
+            "the whole group must be gone, not just the last write"
+        );
+        assert!(store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_none());
 
         // And the successful case commits normally.
         store
-            .in_transaction(|s| s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50)))
+            .in_transaction(|s| {
+                s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            })
             .unwrap();
         assert_eq!(store.get_all_payments(&order.id).unwrap().len(), 1);
     }
@@ -3944,13 +4999,22 @@ mod tests {
     fn forget_scanned_blocks_at_or_above_walks_the_high_water_mark_back() {
         let store = Store::open_in_memory().unwrap();
         for h in 100..=105 {
-            store.set_scanned_block("mainnet", h, &format!("hash{h}")).unwrap();
+            store
+                .set_scanned_block("mainnet", h, &format!("hash{h}"))
+                .unwrap();
         }
-        store.set_scanned_block("stagenet", 103, "stagenet_hash").unwrap();
+        store
+            .set_scanned_block("stagenet", 103, "stagenet_hash")
+            .unwrap();
 
-        store.forget_scanned_blocks_at_or_above("mainnet", 103).unwrap();
+        store
+            .forget_scanned_blocks_at_or_above("mainnet", 103)
+            .unwrap();
         assert_eq!(store.max_scanned_height("mainnet").unwrap(), Some(102));
-        assert!(store.get_scanned_block_hash("mainnet", 103).unwrap().is_none());
+        assert!(store
+            .get_scanned_block_hash("mainnet", 103)
+            .unwrap()
+            .is_none());
         assert_eq!(
             store.get_scanned_block_hash("stagenet", 103).unwrap(),
             Some("stagenet_hash".to_string()),
@@ -3964,14 +5028,24 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
         store
-            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"deadbeef\",\"cafef00d\"]", 1500, None)
+            .record_payment_match(
+                &order.id,
+                "tx_a",
+                0,
+                60,
+                "[\"deadbeef\",\"cafef00d\"]",
+                1500,
+                None,
+            )
             .unwrap();
 
         let found = store.find_payment_by_key_image("cafef00d").unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].txid, "tx_a");
 
-        assert!(store.find_payment_by_key_image("not_present").unwrap().is_empty());
+        assert!(store
+            .find_payment_by_key_image("not_present")
+            .unwrap()
+            .is_empty());
     }
-
 }

@@ -154,17 +154,32 @@ impl<T: SettingValue> Setting<T> {
         let mut problem = None;
         if let Some(raw) = env.get(self.env_var) {
             match self.parse(&raw) {
-                Ok(value) => return Resolved { value, source: SettingSource::Env, problem: None },
+                Ok(value) => {
+                    return Resolved {
+                        value,
+                        source: SettingSource::Env,
+                        problem: None,
+                    }
+                }
                 Err(e) => {
                     problem = Some(Problem {
                         from_env: true,
-                        message: format!("{} is set to an invalid value, so the default is used. {e}", self.env_var),
+                        message: format!(
+                            "{} is set to an invalid value, so the default is used. {e}",
+                            self.env_var
+                        ),
                     })
                 }
             }
         } else if let Some(raw) = stored {
             match self.parse(raw) {
-                Ok(value) => return Resolved { value, source: SettingSource::Database, problem: None },
+                Ok(value) => {
+                    return Resolved {
+                        value,
+                        source: SettingSource::Database,
+                        problem: None,
+                    }
+                }
                 Err(e) => {
                     problem = Some(Problem {
                         from_env: false,
@@ -173,7 +188,11 @@ impl<T: SettingValue> Setting<T> {
                 }
             }
         }
-        Resolved { value: self.default_value(), source: SettingSource::Default, problem }
+        Resolved {
+            value: self.default_value(),
+            source: SettingSource::Default,
+            problem,
+        }
     }
 }
 
@@ -275,13 +294,17 @@ pub(crate) mod private {
                 }
             }
             let default = self.default_value();
-            self.validate(&default).map_err(|e| format!("the default is rejected by its own rules: {e}"))?;
+            self.validate(&default)
+                .map_err(|e| format!("the default is rejected by its own rules: {e}"))?;
             match T::parse(&default.to_stored()) {
                 Ok(back) if back == default => {}
-                _ => return Err("the default doesn't survive being stored and read back".to_string()),
+                _ => {
+                    return Err("the default doesn't survive being stored and read back".to_string())
+                }
             }
             if let Some(example) = self.example {
-                self.parse(example).map_err(|e| format!("the example {example:?} is invalid: {e}"))?;
+                self.parse(example)
+                    .map_err(|e| format!("the example {example:?} is invalid: {e}"))?;
             }
             Ok(())
         }
@@ -306,7 +329,13 @@ impl Env {
 
     /// A fixed set of variables, with nothing else set.
     pub fn fixed<K: Into<String>, V: Into<String>>(vars: impl IntoIterator<Item = (K, V)>) -> Self {
-        Env { fixed: Some(Arc::new(vars.into_iter().map(|(k, v)| (k.into(), v.into())).collect())) }
+        Env {
+            fixed: Some(Arc::new(
+                vars.into_iter()
+                    .map(|(k, v)| (k.into(), v.into()))
+                    .collect(),
+            )),
+        }
     }
 
     /// The variable's value. Unset and blank are the same: a blank
@@ -344,17 +373,24 @@ impl Snapshot {
     /// Nothing stored and nothing in the environment: every setting at its
     /// default.
     pub fn defaults() -> Self {
-        Snapshot { stored: HashMap::new(), env: Env::fixed(Vec::<(String, String)>::new()) }
+        Snapshot {
+            stored: HashMap::new(),
+            env: Env::fixed(Vec::<(String, String)>::new()),
+        }
     }
 
     /// The effective value of `setting`.
     pub fn get<T: SettingValue>(&self, setting: &Setting<T>) -> T {
-        setting.resolve(self.stored.get(setting.key).map(String::as_str), &self.env).value
+        setting
+            .resolve(self.stored.get(setting.key).map(String::as_str), &self.env)
+            .value
     }
 
     /// Where `setting`'s effective value comes from.
     pub fn source<T: SettingValue>(&self, setting: &Setting<T>) -> SettingSource {
-        setting.resolve(self.stored.get(setting.key).map(String::as_str), &self.env).source
+        setting
+            .resolve(self.stored.get(setting.key).map(String::as_str), &self.env)
+            .source
     }
 
     pub(crate) fn stored(&self) -> &HashMap<String, String> {

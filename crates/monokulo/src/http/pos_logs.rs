@@ -62,12 +62,24 @@ pub fn is_session_id(text: &str) -> bool {
 
 /// Event kinds are dotted lowercase names (`order.created`).
 fn kind(text: &str) -> String {
-    let ok = !text.is_empty() && text.len() <= 40 && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_');
-    if ok { text.to_string() } else { "unknown".to_string() }
+    let ok = !text.is_empty()
+        && text.len() <= 40
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_');
+    if ok {
+        text.to_string()
+    } else {
+        "unknown".to_string()
+    }
 }
 
 fn order_id(text: &str) -> Option<String> {
-    let ok = !text.is_empty() && text.len() <= 64 && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    let ok = !text.is_empty()
+        && text.len() <= 64
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
     ok.then(|| text.to_string())
 }
 
@@ -77,7 +89,17 @@ fn order_id(text: &str) -> Option<String> {
 pub fn detail_text(detail: &Map<String, Value>) -> String {
     let mut out = String::new();
     for (key, value) in detail {
-        let key: String = key.chars().take(32).map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
+        let key: String = key
+            .chars()
+            .take(32)
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
         let value = match value {
             Value::String(s) => s.clone(),
             Value::Number(n) => n.to_string(),
@@ -87,8 +109,16 @@ pub fn detail_text(detail: &Map<String, Value>) -> String {
         if key.is_empty() {
             continue;
         }
-        let value: String = value.chars().take(200).map(|c| if c.is_control() { ' ' } else { c }).collect();
-        let value = if value.contains(' ') || value.is_empty() { format!("{value:?}") } else { value };
+        let value: String = value
+            .chars()
+            .take(200)
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let value = if value.contains(' ') || value.is_empty() {
+            format!("{value:?}")
+        } else {
+            value
+        };
         if !out.is_empty() {
             out.push(' ');
         }
@@ -99,7 +129,12 @@ pub fn detail_text(detail: &Map<String, Value>) -> String {
     out.chars().take(MAX_DETAIL).collect()
 }
 
-pub async fn receive(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Path(id): Path<String>, body: Bytes) -> StatusCode {
+pub async fn receive(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> StatusCode {
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND,
@@ -125,7 +160,11 @@ pub async fn receive(State(state): State<AppState>, AuthedUser(user, _): AuthedU
         let kind = kind(&event.kind);
         let order = event.order_id.as_deref().and_then(order_id);
         let detail = detail_text(&event.detail);
-        let message = if detail.is_empty() { kind.clone() } else { format!("{kind} {detail}") };
+        let message = if detail.is_empty() {
+            kind.clone()
+        } else {
+            format!("{kind} {detail}")
+        };
         let detail = Some(detail).filter(|d| !d.is_empty());
         macro_rules! line {
             ($level:ident) => {
@@ -197,7 +236,10 @@ mod tests {
         assert!(!is_session_id(&"a".repeat(65)));
         assert_eq!(kind("order.created"), "order.created");
         assert_eq!(kind("Order Created\n"), "unknown");
-        assert_eq!(order_id("order_8f42a91c").as_deref(), Some("order_8f42a91c"));
+        assert_eq!(
+            order_id("order_8f42a91c").as_deref(),
+            Some("order_8f42a91c")
+        );
         assert_eq!(order_id("order'; drop"), None);
     }
 
@@ -207,15 +249,30 @@ mod tests {
             r#"{"offline_ms": 42000, "persisted": true, "route": "/pos/orders", "error": "Failed to\nfetch", "nested": {"x": 1}, "Bad Key!": "v"}"#,
         )
         .unwrap();
-        assert_eq!(detail_text(&detail), r#"bad_key_=v error="Failed to fetch" offline_ms=42000 persisted=true route=/pos/orders"#);
+        assert_eq!(
+            detail_text(&detail),
+            r#"bad_key_=v error="Failed to fetch" offline_ms=42000 persisted=true route=/pos/orders"#
+        );
         assert_eq!(
             detail_pairs(&detail_text(&detail)),
-            [("bad_key_", "v"), ("error", "Failed to fetch"), ("offline_ms", "42000"), ("persisted", "true"), ("route", "/pos/orders")]
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+            [
+                ("bad_key_", "v"),
+                ("error", "Failed to fetch"),
+                ("offline_ms", "42000"),
+                ("persisted", "true"),
+                ("route", "/pos/orders")
+            ]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
         );
-        let quoted: Map<String, Value> = serde_json::from_str(r#"{"message": "say \"hi\" now"}"#).unwrap();
-        assert_eq!(detail_pairs(&detail_text(&quoted)), [("message".to_string(), "say \"hi\" now".to_string())]);
-        let long: Map<String, Value> = (0..20).map(|n| (format!("k{n}"), Value::String("x".repeat(200)))).collect();
+        let quoted: Map<String, Value> =
+            serde_json::from_str(r#"{"message": "say \"hi\" now"}"#).unwrap();
+        assert_eq!(
+            detail_pairs(&detail_text(&quoted)),
+            [("message".to_string(), "say \"hi\" now".to_string())]
+        );
+        let long: Map<String, Value> = (0..20)
+            .map(|n| (format!("k{n}"), Value::String("x".repeat(200))))
+            .collect();
         assert_eq!(detail_text(&long).chars().count(), MAX_DETAIL);
     }
 }

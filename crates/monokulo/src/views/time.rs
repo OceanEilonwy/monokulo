@@ -20,22 +20,45 @@ pub struct Clock {
 
 impl Clock {
     pub fn utc(now: i64) -> Self {
-        Clock { zone: jiff::tz::TimeZone::UTC, name: "UTC".into(), automatic: true, now }
+        Clock {
+            zone: jiff::tz::TimeZone::UTC,
+            name: "UTC".into(),
+            automatic: true,
+            now,
+        }
     }
 
     /// A signed-in user's clock, as every page of theirs shows times.
     pub fn for_user(user: &crate::db::UserRow) -> Self {
-        Clock::new(user.timezone.as_deref(), user.browser_timezone.as_deref(), crate::now_unix())
+        Clock::new(
+            user.timezone.as_deref(),
+            user.browser_timezone.as_deref(),
+            crate::now_unix(),
+        )
     }
 
     /// `chosen` wins; without it, `browser`; without that (or when neither
     /// names a real zone), UTC.
     pub fn new(chosen: Option<&str>, browser: Option<&str>, now: i64) -> Self {
-        let named = |name: &str| jiff::tz::TimeZone::get(name).ok().map(|zone| (zone, name.to_string()));
+        let named = |name: &str| {
+            jiff::tz::TimeZone::get(name)
+                .ok()
+                .map(|zone| (zone, name.to_string()))
+        };
         match chosen.and_then(named) {
-            Some((zone, name)) => Clock { zone, name, automatic: false, now },
+            Some((zone, name)) => Clock {
+                zone,
+                name,
+                automatic: false,
+                now,
+            },
             None => match browser.and_then(named) {
-                Some((zone, name)) => Clock { zone, name, automatic: true, now },
+                Some((zone, name)) => Clock {
+                    zone,
+                    name,
+                    automatic: true,
+                    now,
+                },
                 None => Clock::utc(now),
             },
         }
@@ -52,7 +75,12 @@ impl Clock {
 
     /// The zone as a word or two: `perth`, `new york`, `utc`.
     pub fn short_label(&self) -> String {
-        self.name.rsplit('/').next().unwrap_or(&self.name).replace('_', " ").to_lowercase()
+        self.name
+            .rsplit('/')
+            .next()
+            .unwrap_or(&self.name)
+            .replace('_', " ")
+            .to_lowercase()
     }
 
     /// `28 Sep, 14:22` (with the year when it isn't this one), in a
@@ -78,19 +106,35 @@ impl Clock {
 
     /// The short text alone, for a page title or attribute.
     pub fn text(&self, unix: i64) -> String {
-        let Some(zoned) = self.zoned(unix) else { return unix.to_string() };
+        let Some(zoned) = self.zoned(unix) else {
+            return unix.to_string();
+        };
         let this_year = self.zoned(self.now).map(|now| now.year()) == Some(zoned.year());
-        zoned.strftime(if this_year { "%-d %b, %H:%M" } else { "%-d %b %Y, %H:%M" }).to_string()
+        zoned
+            .strftime(if this_year {
+                "%-d %b, %H:%M"
+            } else {
+                "%-d %b %Y, %H:%M"
+            })
+            .to_string()
     }
 
     fn zoned(&self, unix: i64) -> Option<jiff::Zoned> {
-        jiff::Timestamp::from_second(unix).ok().map(|ts| ts.to_zoned(self.zone.clone()))
+        jiff::Timestamp::from_second(unix)
+            .ok()
+            .map(|ts| ts.to_zoned(self.zone.clone()))
     }
 
     fn render(&self, unix: i64, local: bool) -> Markup {
-        let Some(zoned) = self.zoned(unix) else { return html! { (unix) } };
+        let Some(zoned) = self.zoned(unix) else {
+            return html! { (unix) };
+        };
         let iso = zoned.timestamp().to_string();
-        let full = format!("{} ({})", zoned.strftime("%A %-d %B %Y, %H:%M:%S"), self.name);
+        let full = format!(
+            "{} ({})",
+            zoned.strftime("%A %-d %B %Y, %H:%M:%S"),
+            self.name
+        );
         html! {
             time class="when" datetime=(iso) title=(full) data-local[local] { (self.text(unix)) }
         }
@@ -99,7 +143,10 @@ impl Clock {
 
 /// Every zone name this build knows, for the time zone setting.
 pub fn zone_names() -> Vec<String> {
-    let mut names: Vec<String> = jiff::tz::db().available().map(|name| name.to_string()).collect();
+    let mut names: Vec<String> = jiff::tz::db()
+        .available()
+        .map(|name| name.to_string())
+        .collect();
     names.sort();
     names
 }
@@ -113,9 +160,15 @@ mod tests {
 
     #[test]
     fn a_chosen_zone_wins_then_the_browsers_then_utc() {
-        assert_eq!(Clock::new(Some("Asia/Tokyo"), Some("Australia/Perth"), T).name(), "Asia/Tokyo");
+        assert_eq!(
+            Clock::new(Some("Asia/Tokyo"), Some("Australia/Perth"), T).name(),
+            "Asia/Tokyo"
+        );
         let browser = Clock::new(None, Some("Australia/Perth"), T);
-        assert_eq!((browser.name(), browser.is_automatic()), ("Australia/Perth", true));
+        assert_eq!(
+            (browser.name(), browser.is_automatic()),
+            ("Australia/Perth", true)
+        );
         assert_eq!(Clock::new(None, Some("Not/AZone"), T).name(), "UTC");
         assert_eq!(Clock::new(Some("Not/AZone"), None, T).name(), "UTC");
     }
@@ -128,14 +181,26 @@ mod tests {
         assert_eq!(perth.text(T - 365 * 86_400), "28 Sep 2025, 14:22");
         assert_eq!(Clock::utc(T).text(T), "28 Sep, 06:22");
         let html = perth.time(T).into_string();
-        assert_eq!(html, r#"<time class="when" datetime="2026-09-28T06:22:07Z" title="Monday 28 September 2026, 14:22:07 (Australia/Perth)">28 Sep, 14:22</time>"#);
-        assert!(Clock::utc(T).time_local(T).into_string().contains(" data-local>"));
+        assert_eq!(
+            html,
+            r#"<time class="when" datetime="2026-09-28T06:22:07Z" title="Monday 28 September 2026, 14:22:07 (Australia/Perth)">28 Sep, 14:22</time>"#
+        );
+        assert!(Clock::utc(T)
+            .time_local(T)
+            .into_string()
+            .contains(" data-local>"));
     }
 
     #[test]
     fn a_zone_reads_as_its_last_part() {
-        assert_eq!(Clock::new(Some("Australia/Perth"), None, T).short_label(), "perth");
-        assert_eq!(Clock::new(Some("America/New_York"), None, T).short_label(), "new york");
+        assert_eq!(
+            Clock::new(Some("Australia/Perth"), None, T).short_label(),
+            "perth"
+        );
+        assert_eq!(
+            Clock::new(Some("America/New_York"), None, T).short_label(),
+            "new york"
+        );
         assert_eq!(Clock::utc(T).short_label(), "utc");
     }
 }

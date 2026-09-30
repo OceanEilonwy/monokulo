@@ -125,7 +125,12 @@ pub(super) async fn create_connection_for_user(
     // connection attempt then fails to record locally.
     let base_currency = crate::currencies::resolve_currency(&state.db.lock(), &req.base_currency)
         .map_err(|_| CreateConnectionError::Internal)?
-        .ok_or_else(|| CreateConnectionError::BadRequest(format!("{:?} is not a known currency", req.base_currency)))?;
+        .ok_or_else(|| {
+            CreateConnectionError::BadRequest(format!(
+                "{:?} is not a known currency",
+                req.base_currency
+            ))
+        })?;
 
     let created = state
         .engine_client
@@ -145,7 +150,9 @@ pub(super) async fn create_connection_for_user(
             // 500. Any other status (or a transport-level failure reaching
             // the engine at all) is this service's own problem, not the
             // caller's - that stays `Internal`.
-            EngineClientError::EngineError { status, message } if status == reqwest::StatusCode::BAD_REQUEST => {
+            EngineClientError::EngineError { status, message }
+                if status == reqwest::StatusCode::BAD_REQUEST =>
+            {
                 CreateConnectionError::BadRequest(message)
             }
             _ => CreateConnectionError::Internal,
@@ -177,7 +184,10 @@ pub(super) async fn create_connection_for_user(
     }
     let _ = state.db.lock().mark_store_domains_imported(&id);
 
-    Ok(CreateConnectionOutcome { connection_id: id, public_key: created.public_key })
+    Ok(CreateConnectionOutcome {
+        connection_id: id,
+        public_key: created.public_key,
+    })
 }
 
 pub async fn create_connection(
@@ -198,38 +208,47 @@ pub async fn create_connection(
         key_custody_backend: req.key_custody_backend,
     };
 
-    let outcome = create_connection_for_user(&state, &user, fields).await.map_err(|e| match e {
-        CreateConnectionError::BadRequest(message) => ApiError::BadRequest(message),
-        CreateConnectionError::Internal => ApiError::Internal,
-    })?;
+    let outcome = create_connection_for_user(&state, &user, fields)
+        .await
+        .map_err(|e| match e {
+            CreateConnectionError::BadRequest(message) => ApiError::BadRequest(message),
+            CreateConnectionError::Internal => ApiError::Internal,
+        })?;
 
     Ok((
         StatusCode::CREATED,
-        Json(CreateConnectionResponse { connection_id: outcome.connection_id, public_key: outcome.public_key }),
+        Json(CreateConnectionResponse {
+            connection_id: outcome.connection_id,
+            public_key: outcome.public_key,
+        }),
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::Router;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use crate::crypto;
     use crate::engine_client::EngineClient;
 
-    use super::super::{AppState, build_router};
+    use super::super::{build_router, AppState};
 
     /// Same fixed-scalar construction `engine_client.rs`'s own tests use —
     /// see that module for why these particular values pass the engine's
     /// real wallet-material validation.
-    const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+    const TEST_VIEW_KEY_HEX: &str =
+        "0707070707070707070707070707070707070707070707070707070707070707";
+    const TEST_SPEND_PUBKEY_HEX: &str =
+        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
     async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
-        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let engine =
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
             engine_client,
@@ -243,7 +262,9 @@ mod tests {
             .method("POST")
             .uri("/signup")
             .header("content-type", "application/json")
-            .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+            .body(Body::from(
+                serde_json::json!({ "email": email, "password": password }).to_string(),
+            ))
             .unwrap()
     }
 
@@ -252,12 +273,17 @@ mod tests {
             .method("POST")
             .uri("/login")
             .header("content-type", "application/json")
-            .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+            .body(Body::from(
+                serde_json::json!({ "email": email, "password": password }).to_string(),
+            ))
             .unwrap()
     }
 
     fn create_connection_request(bearer: Option<&str>) -> Request<Body> {
-        let mut builder = Request::builder().method("POST").uri("/connections").header("content-type", "application/json");
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/connections")
+            .header("content-type", "application/json");
         if let Some(token) = bearer {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
@@ -280,34 +306,71 @@ mod tests {
 
     /// Signs up and logs in a fresh user against `router`, returning their
     /// session token.
-    async fn signed_up_and_logged_in_session_token(router: &Router, email: &str, password: &str) -> String {
-        let signup = router.clone().oneshot(signup_request(email, password)).await.unwrap();
+    async fn signed_up_and_logged_in_session_token(
+        router: &Router,
+        email: &str,
+        password: &str,
+    ) -> String {
+        let signup = router
+            .clone()
+            .oneshot(signup_request(email, password))
+            .await
+            .unwrap();
         assert_eq!(signup.status(), StatusCode::CREATED);
 
-        let login = router.clone().oneshot(login_request(email, password)).await.unwrap();
+        let login = router
+            .clone()
+            .oneshot(login_request(email, password))
+            .await
+            .unwrap();
         assert_eq!(login.status(), StatusCode::OK);
-        body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string()
+        body_json(login)
+            .await
+            .as_object()
+            .unwrap()
+            .get("session_token")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     #[tokio::test]
-    async fn a_logged_in_user_posting_valid_wallet_fields_creates_a_real_tenant_and_a_store_connections_row() {
+    async fn a_logged_in_user_posting_valid_wallet_fields_creates_a_real_tenant_and_a_store_connections_row(
+    ) {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "merchant@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "merchant@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
-        let response = router.oneshot(create_connection_request(Some(&session_token))).await.unwrap();
+        let response = router
+            .oneshot(create_connection_request(Some(&session_token)))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
 
         let body = body_json(response).await;
         let rendered = body.to_string();
         let obj = body.as_object().unwrap();
 
-        let connection_id = obj.get("connection_id").and_then(|v| v.as_str()).expect("connection_id present");
+        let connection_id = obj
+            .get("connection_id")
+            .and_then(|v| v.as_str())
+            .expect("connection_id present");
         assert!(!connection_id.is_empty());
-        let public_key = obj.get("public_key").and_then(|v| v.as_str()).expect("public_key present");
-        assert!(public_key.starts_with("pk_"), "expected a real pk_ value, got: {public_key}");
+        let public_key = obj
+            .get("public_key")
+            .and_then(|v| v.as_str())
+            .expect("public_key present");
+        assert!(
+            public_key.starts_with("pk_"),
+            "expected a real pk_ value, got: {public_key}"
+        );
 
         // The secret token must never be re-shown to the merchant.
         assert!(!obj.contains_key("secret_token"));
@@ -315,7 +378,12 @@ mod tests {
         assert!(!rendered.contains("sk_"));
 
         // Confirm the row that actually landed in `store_connections`.
-        let row = state.db.lock().get_store_connection_by_id(connection_id).unwrap().unwrap();
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(connection_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(row.platform, "woocommerce");
         assert_eq!(row.site_url, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, public_key);
@@ -341,13 +409,15 @@ mod tests {
         // (or no) tenant.
         let decrypted = crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
             .expect("decrypting the stored value with the correct key must succeed");
-        assert!(decrypted.starts_with("sk_"), "decrypted value should be a real sk_ token, got: {decrypted}");
+        assert!(
+            decrypted.starts_with("sk_"),
+            "decrypted value should be a real sk_ token, got: {decrypted}"
+        );
 
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let tenant_view = engine_client
-            .get_tenant(&decrypted)
-            .await
-            .expect("the decrypted token should be the tenant's genuine, functioning sk_ credential");
+        let tenant_view = engine_client.get_tenant(&decrypted).await.expect(
+            "the decrypted token should be the tenant's genuine, functioning sk_ credential",
+        );
         assert_eq!(
             tenant_view.public_key, public_key,
             "decrypting the stored value must recover the exact secret token this specific tenant was issued"
@@ -368,7 +438,10 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let response = router.oneshot(create_connection_request(None)).await.unwrap();
+        let response = router
+            .oneshot(create_connection_request(None))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -376,8 +449,12 @@ mod tests {
     async fn an_unknown_base_currency_is_rejected_before_ever_provisioning_a_real_tenant() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "bad-currency@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "bad-currency@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let body = serde_json::json!({
             "platform": "woocommerce",
@@ -398,15 +475,32 @@ mod tests {
         let response = router.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body_json(response).await;
-        assert!(body["error"].as_str().unwrap().contains("NOTREAL"), "expected a clear error naming the bad currency, got: {body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("NOTREAL"),
+            "expected a clear error naming the bad currency, got: {body}"
+        );
 
         // The real point: rejected before ever provisioning anything - no
         // local store_connections row exists for this user at all (and, by
         // extension, no real engine tenant was ever created for it either,
         // since that's the only thing that would have produced one).
-        let user_id = state.db.lock().get_user_by_email("bad-currency@example.com").unwrap().unwrap().id;
-        let rows = state.db.lock().list_store_connections_for_user(&user_id).unwrap();
-        assert_eq!(rows.len(), 0, "no local store_connections row should exist either");
+        let user_id = state
+            .db
+            .lock()
+            .get_user_by_email("bad-currency@example.com")
+            .unwrap()
+            .unwrap()
+            .id;
+        let rows = state
+            .db
+            .lock()
+            .list_store_connections_for_user(&user_id)
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            0,
+            "no local store_connections row should exist either"
+        );
     }
 
     /// The literal point of decoupling currency selection from provider
@@ -419,8 +513,12 @@ mod tests {
     async fn a_known_currency_with_no_enabled_rate_provider_is_still_accepted_as_a_base_currency() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "eur-no-provider@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "eur-no-provider@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let body = serde_json::json!({
             "platform": "woocommerce",
@@ -439,10 +537,22 @@ mod tests {
             .body(Body::from(body.to_string()))
             .unwrap();
         let response = router.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED, "a known currency must be selectable regardless of provider support");
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "a known currency must be selectable regardless of provider support"
+        );
 
-        let connection_id = body_json(response).await["connection_id"].as_str().unwrap().to_string();
-        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let connection_id = body_json(response).await["connection_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&connection_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(row.base_currency, "EUR");
     }
 }

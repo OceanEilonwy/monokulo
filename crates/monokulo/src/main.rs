@@ -6,7 +6,7 @@
 use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;
 use monokulo::http::status_page::new_status_cache;
-use monokulo::http::{AppState, build_router};
+use monokulo::http::{build_router, AppState};
 use monokulo::settings;
 use std::sync::Arc;
 
@@ -43,17 +43,21 @@ async fn main() {
     let bind = std::env::var("MONOKULO_BIND").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
     let db = Db::open_file(&db_path).expect("failed to open monokulo database");
     // Beside the main database; lines logged since start-up go in too.
-    let log_store = telemetry::global().and_then(|t| t.open_store_beside(std::path::Path::new(&db_path)));
+    let log_store =
+        telemetry::global().and_then(|t| t.open_store_beside(std::path::Path::new(&db_path)));
     let encryption_key = encryption_key_from_env();
     // Verified embed domains: the machine's own resolver. If it can't be set
     // up, the dashboard still works and every check says why it failed.
-    let dns: Arc<dyn monokulo::embed_domains::TxtLookup> = match monokulo::embed_domains::SystemDns::new() {
-        Ok(dns) => Arc::new(dns),
-        Err(e) => {
-            tracing::error!(error = %e, "DNS resolver unavailable, domain verification will fail");
-            Arc::new(monokulo::embed_domains::UnavailableDns(format!("this server's DNS resolver is unavailable ({e})")))
-        }
-    };
+    let dns: Arc<dyn monokulo::embed_domains::TxtLookup> =
+        match monokulo::embed_domains::SystemDns::new() {
+            Ok(dns) => Arc::new(dns),
+            Err(e) => {
+                tracing::error!(error = %e, "DNS resolver unavailable, domain verification will fail");
+                Arc::new(monokulo::embed_domains::UnavailableDns(format!(
+                    "this server's DNS resolver is unavailable ({e})"
+                )))
+            }
+        };
     let db = db.into_shared();
 
     // Every setting, live (admin_settings_v2.md parts 1 and 3): the engine
@@ -101,13 +105,18 @@ async fn main() {
     // the Tor circuit - each circuit is then its own client.
     onion.router_ready(router.clone());
 
-    let listener = tokio::net::TcpListener::bind(&bind).await.expect("failed to bind server address");
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .expect("failed to bind server address");
     tracing::info!(server.address = %bind, "monokulo listening");
     // `with_connect_info` - without this, `http::abuse`'s client lookup
     // would never see a real peer address in production, and would fail
     // open for every request (the "no signal at all" case that should only
     // ever happen in a test harness driven via `tower::ServiceExt::oneshot`).
-    axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .await
-        .expect("server error");
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }

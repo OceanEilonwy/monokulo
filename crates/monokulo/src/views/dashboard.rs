@@ -174,7 +174,10 @@ mod tests {
     fn shows_the_add_store_cta_when_the_user_has_no_stores() {
         let html = page(&chrome(), &empty_data()).into_string();
         assert!(html.contains(r#"href="/dashboard/stores/new""#));
-        assert!(!html.contains("<table"), "an empty dashboard shouldn't render a store table at all");
+        assert!(
+            !html.contains("<table"),
+            "an empty dashboard shouldn't render a store table at all"
+        );
     }
 
     #[test]

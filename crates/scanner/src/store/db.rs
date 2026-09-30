@@ -36,7 +36,11 @@ impl Class {
 }
 
 /// Longest an inline job waits for the shared store's lock.
-const INLINE_LOCK_WAIT: Duration = if cfg!(test) { Duration::from_millis(200) } else { Duration::from_secs(30) };
+const INLINE_LOCK_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(30)
+};
 
 /// Faults a test injects into one worker; production starts with none.
 #[derive(Clone, Copy, Default)]
@@ -82,7 +86,10 @@ pub struct Db {
 #[derive(Clone)]
 enum Inner {
     /// A worker thread with its own connection.
-    Worker { senders: Arc<[tokio::sync::mpsc::Sender<Job>; 3]>, wake: std::sync::mpsc::SyncSender<()> },
+    Worker {
+        senders: Arc<[tokio::sync::mpsc::Sender<Job>; 3]>,
+        wake: std::sync::mpsc::SyncSender<()>,
+    },
     /// Jobs run on the caller, on the store everything else shares.
     Inline(SharedStore),
 }
@@ -101,7 +108,10 @@ impl Db {
     /// waits on another thread) and in-memory databases, which can't be
     /// opened twice. Production uses [`Db::open`].
     pub fn over_shared(store: SharedStore) -> Self {
-        Db { inner: Inner::Inline(store), counters: Arc::new(Counters::default()) }
+        Db {
+            inner: Inner::Inline(store),
+            counters: Arc::new(Counters::default()),
+        }
     }
 
     fn start(store: Store, faults: Faults) -> Result<Self> {
@@ -133,13 +143,23 @@ impl Db {
                 }
             })
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
-        Ok(Db { inner: Inner::Worker { senders: Arc::new(senders), wake }, counters })
+        Ok(Db {
+            inner: Inner::Worker {
+                senders: Arc::new(senders),
+                wake,
+            },
+            counters,
+        })
     }
 
     /// Runs `f` on the worker and returns its result. Waits for room in the
     /// class's queue if it is full. If the caller stops waiting, a job that
     /// has been queued still runs.
-    pub async fn run<T, E>(&self, class: Class, f: impl FnOnce(&Store) -> std::result::Result<T, E> + Send + 'static) -> std::result::Result<T, E>
+    pub async fn run<T, E>(
+        &self,
+        class: Class,
+        f: impl FnOnce(&Store) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<T, E>
     where
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
@@ -170,7 +190,11 @@ impl Db {
             .await
             .map_err(|_| StoreError::WorkerUnavailable("the database worker stopped".into()))?;
         let _ = wake.try_send(());
-        answer.await.map_err(|_| E::from(StoreError::WorkerUnavailable("the database worker dropped a job".into())))?
+        answer.await.map_err(|_| {
+            E::from(StoreError::WorkerUnavailable(
+                "the database worker dropped a job".into(),
+            ))
+        })?
     }
 
     pub fn metrics(&self) -> DbMetrics {
@@ -187,17 +211,29 @@ impl Db {
 /// deadlock.
 fn lock_inline(store: &SharedStore) -> Result<parking_lot::MutexGuard<'_, Store>> {
     store.try_lock_for(INLINE_LOCK_WAIT).ok_or_else(|| {
-        StoreError::WorkerUnavailable(format!("the store stayed locked for {INLINE_LOCK_WAIT:?} (is the caller holding it?)"))
+        StoreError::WorkerUnavailable(format!(
+            "the store stayed locked for {INLINE_LOCK_WAIT:?} (is the caller holding it?)"
+        ))
     })
 }
 
 fn record(counters: &Counters, queued_at: Instant, started: Instant) {
-    counters.max_queue_wait_us.fetch_max(started.duration_since(queued_at).as_micros() as u64, Ordering::Relaxed);
-    counters.max_run_us.fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+    counters.max_queue_wait_us.fetch_max(
+        started.duration_since(queued_at).as_micros() as u64,
+        Ordering::Relaxed,
+    );
+    counters
+        .max_run_us
+        .fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
     counters.completed.fetch_add(1, Ordering::Relaxed);
 }
 
-fn serve(store: &Store, receivers: &mut [tokio::sync::mpsc::Receiver<Job>], woken: &std::sync::mpsc::Receiver<()>, faults: &mut Faults) {
+fn serve(
+    store: &Store,
+    receivers: &mut [tokio::sync::mpsc::Receiver<Job>],
+    woken: &std::sync::mpsc::Receiver<()>,
+    faults: &mut Faults,
+) {
     let mut next = 0;
     loop {
         if faults.exit_loop {
@@ -253,19 +289,32 @@ mod tests {
         let db = Db::over_shared(shared.clone());
         let held = shared.lock();
         let result = db.run(Class::Admin, |s| s.count_tenants()).await;
-        assert!(matches!(result, Err(StoreError::WorkerUnavailable(_))), "{result:?}");
+        assert!(
+            matches!(result, Err(StoreError::WorkerUnavailable(_))),
+            "{result:?}"
+        );
         drop(held);
-        assert_eq!(db.run(Class::Admin, |s| s.count_tenants()).await.unwrap(), 0);
+        assert_eq!(
+            db.run(Class::Admin, |s| s.count_tenants()).await.unwrap(),
+            0
+        );
     }
 
     /// If the worker's own loop panics, it restarts and keeps serving.
     #[tokio::test]
     async fn the_worker_loop_restarts_after_a_panic() {
         let (store, path) = file_store();
-        let faults = Faults { panic_loop_once: true, ..Faults::default() };
+        let faults = Faults {
+            panic_loop_once: true,
+            ..Faults::default()
+        };
         let db = Db::start(store.connect_again(&path).unwrap(), faults).unwrap();
-        db.run(Class::Admin, |s| s.set_setting("first", "1")).await.unwrap();
-        db.run(Class::Admin, |s| s.set_setting("second", "2")).await.unwrap();
+        db.run(Class::Admin, |s| s.set_setting("first", "1"))
+            .await
+            .unwrap();
+        db.run(Class::Admin, |s| s.set_setting("second", "2"))
+            .await
+            .unwrap();
         assert_eq!(store.get_setting("second").unwrap().as_deref(), Some("2"));
         drop(db);
         cleanup(&path);
@@ -276,7 +325,10 @@ mod tests {
     #[test]
     fn a_worker_that_cannot_start_is_an_error() {
         let (store, path) = file_store();
-        let faults = Faults { fail_spawn: true, ..Faults::default() };
+        let faults = Faults {
+            fail_spawn: true,
+            ..Faults::default()
+        };
         let result = Db::start(store.connect_again(&path).unwrap(), faults);
         assert!(matches!(result, Err(StoreError::WorkerUnavailable(_))));
         cleanup(&path);
@@ -287,15 +339,23 @@ mod tests {
     #[tokio::test]
     async fn a_stopped_worker_fails_jobs_instead_of_hanging() {
         let (store, path) = file_store();
-        let faults = Faults { exit_loop: true, ..Faults::default() };
+        let faults = Faults {
+            exit_loop: true,
+            ..Faults::default()
+        };
         let db = Db::start(store.connect_again(&path).unwrap(), faults).unwrap();
         // The loop exits at once and its queues close.
-        let Inner::Worker { senders, .. } = &db.inner else { unreachable!() };
+        let Inner::Worker { senders, .. } = &db.inner else {
+            unreachable!()
+        };
         while !senders[Class::Admin.index()].is_closed() {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         let result = db.run(Class::Admin, |s| s.count_tenants()).await;
-        assert!(matches!(result, Err(StoreError::WorkerUnavailable(ref m)) if m.contains("stopped")), "{result:?}");
+        assert!(
+            matches!(result, Err(StoreError::WorkerUnavailable(ref m)) if m.contains("stopped")),
+            "{result:?}"
+        );
         drop(db);
         cleanup(&path);
     }
@@ -329,7 +389,10 @@ mod tests {
         });
         let started = Instant::now();
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(started.elapsed() < Duration::from_millis(200), "the timer fired while the job was stalled");
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "the timer fired while the job was stalled"
+        );
         job.await.unwrap().unwrap();
         assert!(db.metrics().max_run_us >= 300_000);
         drop(db);
@@ -387,7 +450,10 @@ mod tests {
         }
         let order = order.lock();
         let admin_at = order.iter().position(|j| j == "admin").unwrap();
-        assert!(admin_at <= 1, "admin ran at position {admin_at} of {order:?}");
+        assert!(
+            admin_at <= 1,
+            "admin ran at position {admin_at} of {order:?}"
+        );
         drop(db);
         cleanup(&path);
     }
@@ -437,7 +503,10 @@ mod tests {
         })
         .await
         .unwrap();
-        let change = tokio::time::timeout(Duration::from_secs(2), changes.recv()).await.unwrap().unwrap();
+        let change = tokio::time::timeout(Duration::from_secs(2), changes.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(change.order_id, order.id);
         drop(db);
         cleanup(&path);
@@ -451,11 +520,25 @@ mod tests {
         let db = Db::open(&path, &store).unwrap();
         let abandoned = db.run(Class::Admin, |s| s.set_setting("abandoned", "ran"));
         drop(tokio::time::timeout(Duration::ZERO, abandoned).await);
-        let panicked = db.run(Class::Admin, |_| -> Result<()> { panic!("a bug in one job") }).await;
+        let panicked = db
+            .run(Class::Admin, |_| -> Result<()> {
+                panic!("a bug in one job")
+            })
+            .await;
         assert!(matches!(panicked, Err(StoreError::WorkerUnavailable(_))));
-        db.run(Class::Admin, |s| s.set_setting("after", "ok")).await.unwrap();
-        assert_eq!(store.get_setting("after").unwrap().as_deref(), Some("ok"), "the worker survived");
-        assert_eq!(store.get_setting("abandoned").unwrap().as_deref(), Some("ran"), "queued before it, so it ran first");
+        db.run(Class::Admin, |s| s.set_setting("after", "ok"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_setting("after").unwrap().as_deref(),
+            Some("ok"),
+            "the worker survived"
+        );
+        assert_eq!(
+            store.get_setting("abandoned").unwrap().as_deref(),
+            Some("ran"),
+            "queued before it, so it ran first"
+        );
         drop(db);
         cleanup(&path);
     }

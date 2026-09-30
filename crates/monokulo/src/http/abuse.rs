@@ -83,12 +83,18 @@ pub enum RouteClass {
 
 /// The anonymous client a request comes from: the Tor circuit on the onion
 /// listener, otherwise the clearnet address behind any trusted proxies.
-pub fn anonymous_identity(extensions: &Extensions, headers: &HeaderMap, trusted: &TrustedProxies) -> Option<ClientIdentity> {
+pub fn anonymous_identity(
+    extensions: &Extensions,
+    headers: &HeaderMap,
+    trusted: &TrustedProxies,
+) -> Option<ClientIdentity> {
     if let Some(ConnectInfo(peer)) = extensions.get::<ConnectInfo<OnionPeer>>() {
         return Some(peer.identity());
     }
     let ConnectInfo(peer) = extensions.get::<ConnectInfo<SocketAddr>>()?;
-    let forwarded_for = headers.get("x-forwarded-for").and_then(|value| value.to_str().ok());
+    let forwarded_for = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok());
     let address = identity::client_address(peer.ip(), forwarded_for, trusted);
     // The request span recorded the connecting peer; behind a trusted proxy
     // this is the real client (truncated to its network when written out).
@@ -99,8 +105,12 @@ pub fn anonymous_identity(extensions: &Extensions, headers: &HeaderMap, trusted:
 fn pay_route_class(method: &Method, path: &str) -> RouteClass {
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match (method.as_str(), segments.as_slice()) {
-        ("GET", ["pay", _, "orders", _]) | ("GET", ["pay", _, "orders", _, "share"]) => RouteClass::Page,
-        ("POST", ["pay", _, "orders"]) | ("GET", ["pay", _, "orders", _, "status"]) => RouteClass::Api,
+        ("GET", ["pay", _, "orders", _]) | ("GET", ["pay", _, "orders", _, "share"]) => {
+            RouteClass::Page
+        }
+        ("POST", ["pay", _, "orders"]) | ("GET", ["pay", _, "orders", _, "status"]) => {
+            RouteClass::Api
+        }
         ("GET", ["pay", _, "orders", _, "events"]) => RouteClass::Stream,
         ("POST", ["pay", _, "logs"]) => RouteClass::Logs,
         _ => RouteClass::Other,
@@ -111,17 +121,30 @@ fn site_route_class(method: &Method, path: &str) -> RouteClass {
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match (method.as_str(), path, segments.as_slice()) {
         (_, "/status/summary", _) => RouteClass::Exempt,
-        ("GET", "/" | "/dashboard/login" | "/dashboard/signup" | "/request-invite" | "/status", _) => RouteClass::Page,
-        ("POST", "/telemetry/client", _) | ("POST", _, ["dashboard", "stores", _, "pos", "logs"]) => RouteClass::Logs,
+        (
+            "GET",
+            "/" | "/dashboard/login" | "/dashboard/signup" | "/request-invite" | "/status",
+            _,
+        ) => RouteClass::Page,
+        ("POST", "/telemetry/client", _)
+        | ("POST", _, ["dashboard", "stores", _, "pos", "logs"]) => RouteClass::Logs,
         _ => RouteClass::Other,
     }
 }
 
 /// See the module doc comment.
-pub async fn pay_middleware(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+pub async fn pay_middleware(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let class = pay_route_class(request.method(), request.uri().path());
     let config = state.abuse.config();
-    let anonymous = anonymous_identity(request.extensions(), request.headers(), &config.trusted_proxies);
+    let anonymous = anonymous_identity(
+        request.extensions(),
+        request.headers(),
+        &config.trusted_proxies,
+    );
     let pk = public_key_of_pay_path(request.uri().path()).map(str::to_string);
     let key = match &pk {
         Some(pk) => store_key::check(&state, pk, request.headers()),
@@ -135,25 +158,41 @@ pub async fn pay_middleware(State(state): State<AppState>, mut request: Request,
         }
         KeyCheck::Invalid => {
             if let Some(anonymous) = &anonymous {
-                if let Tier::Blocked { retry_after_secs } = state.abuse.check(anonymous, false, crate::now_unix()) {
+                if let Tier::Blocked { retry_after_secs } =
+                    state.abuse.check(anonymous, false, crate::now_unix())
+                {
                     return blocked(&state, class, retry_after_secs);
                 }
             }
-            let error = "This store's secret key was not accepted. Check the key, or reconnect the store.";
-            return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": error }))).into_response();
+            let error =
+                "This store's secret key was not accepted. Check the key, or reconnect the store.";
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(json!({ "error": error })),
+            )
+                .into_response();
         }
     };
     guard(&state, class, client, request, next).await
 }
 
 /// See the module doc comment.
-pub async fn site_middleware(State(state): State<AppState>, request: Request, next: Next) -> Response {
+pub async fn site_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
     let class = site_route_class(request.method(), request.uri().path());
     if class == RouteClass::Exempt {
         return next.run(request).await;
     }
-    let client = signed_in_identity(&state, request.headers())
-        .or_else(|| anonymous_identity(request.extensions(), request.headers(), &state.abuse.config().trusted_proxies));
+    let client = signed_in_identity(&state, request.headers()).or_else(|| {
+        anonymous_identity(
+            request.extensions(),
+            request.headers(),
+            &state.abuse.config().trusted_proxies,
+        )
+    });
     guard(&state, class, client, request, next).await
 }
 
@@ -166,8 +205,16 @@ fn signed_in_identity(state: &AppState, headers: &HeaderMap) -> Option<ClientIde
     super::resolve_authed_user(state, headers).map(|(user, _)| ClientIdentity::User(user.id))
 }
 
-async fn guard(state: &AppState, class: RouteClass, client: Option<ClientIdentity>, mut request: Request, next: Next) -> Response {
-    let Some(client) = client else { return next.run(request).await };
+async fn guard(
+    state: &AppState,
+    class: RouteClass,
+    client: Option<ClientIdentity>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let Some(client) = client else {
+        return next.run(request).await;
+    };
     let now = crate::now_unix();
     let abuse = &state.abuse;
 
@@ -176,7 +223,13 @@ async fn guard(state: &AppState, class: RouteClass, client: Option<ClientIdentit
             // Keyed by the kind of report, not the path (paths carry store
             // ids and keys a flood could vary).
             let path = request.uri().path();
-            let source = if path.starts_with("/pay/") { "woocommerce" } else if path.ends_with("/pos/logs") { "pos" } else { "browser" };
+            let source = if path.starts_with("/pay/") {
+                "woocommerce"
+            } else if path.ends_with("/pos/logs") {
+                "pos"
+            } else {
+                "browser"
+            };
             shared::throttled!(
                 format!("client-logs-dropped:{source}"),
                 warn,
@@ -195,7 +248,10 @@ async fn guard(state: &AppState, class: RouteClass, client: Option<ClientIdentit
         let redeemed = match class {
             RouteClass::Page => query_param(&request, PROOF_PARAM)
                 .map(|proof| abuse.challenges.redeem_proof(&proof, &client, now))
-                .or_else(|| query_param(&request, WAIT_PARAM).map(|token| abuse.challenges.redeem_wait(&token, &client, now))),
+                .or_else(|| {
+                    query_param(&request, WAIT_PARAM)
+                        .map(|token| abuse.challenges.redeem_wait(&token, &client, now))
+                }),
             RouteClass::Api => request
                 .headers()
                 .get(PROOF_HEADER)
@@ -240,7 +296,10 @@ async fn guard(state: &AppState, class: RouteClass, client: Option<ClientIdentit
                 return challenge_json(state, &client, redeem_error, now);
             }
             RouteClass::Stream => {
-                return (StatusCode::TOO_MANY_REQUESTS, axum::Json(json!({ "error": "too many requests; retry shortly" })))
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    axum::Json(json!({ "error": "too many requests; retry shortly" })),
+                )
                     .into_response();
             }
             _ => {}
@@ -252,7 +311,9 @@ async fn guard(state: &AppState, class: RouteClass, client: Option<ClientIdentit
 
 fn query_param(request: &Request, name: &str) -> Option<String> {
     let query = request.uri().query()?;
-    url::form_urlencoded::parse(query.as_bytes()).find(|(key, _)| key == name).map(|(_, value)| value.into_owned())
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
 }
 
 /// The request's path and query, minus any challenge parameters.
@@ -271,7 +332,9 @@ fn url_without_challenge_params(request: &Request) -> String {
     if kept.is_empty() {
         return path.to_string();
     }
-    let query: String = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(kept).finish();
+    let query: String = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(kept)
+        .finish();
     format!("{path}?{query}")
 }
 
@@ -290,23 +353,58 @@ fn see_other(location: &str) -> Response {
 }
 
 fn no_store(mut response: Response) -> Response {
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
-fn challenge_page(state: &AppState, client: &ClientIdentity, request: &Request, error: Option<String>, now: i64) -> Response {
+fn challenge_page(
+    state: &AppState,
+    client: &ClientIdentity,
+    request: &Request,
+    error: Option<String>,
+    now: i64,
+) -> Response {
     let config = state.abuse.config();
-    let issued = state.abuse.challenges.issue(client, config.challenge_bits, now);
+    let issued = state
+        .abuse
+        .challenges
+        .issue(client, config.challenge_bits, now);
     let continue_url = url_without_challenge_params(request);
-    let wait_url = with_param(&continue_url, WAIT_PARAM, &state.abuse.challenges.issue_wait(client, now));
-    let view = views::challenge::ChallengePageView { challenge: issued.challenge, difficulty: issued.difficulty, continue_url, wait_url, error };
+    let wait_url = with_param(
+        &continue_url,
+        WAIT_PARAM,
+        &state.abuse.challenges.issue_wait(client, now),
+    );
+    let view = views::challenge::ChallengePageView {
+        challenge: issued.challenge,
+        difficulty: issued.difficulty,
+        continue_url,
+        wait_url,
+        error,
+    };
     let chrome = views::PageChrome::from_user(None, request.uri().path());
     // 429: this is not the page that was asked for (yet).
-    no_store((StatusCode::TOO_MANY_REQUESTS, views::challenge::challenge_page(&chrome, &view)).into_response())
+    no_store(
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            views::challenge::challenge_page(&chrome, &view),
+        )
+            .into_response(),
+    )
 }
 
-fn challenge_json(state: &AppState, client: &ClientIdentity, error: Option<String>, now: i64) -> Response {
-    let issued = state.abuse.challenges.issue(client, state.abuse.config().challenge_bits, now);
+fn challenge_json(
+    state: &AppState,
+    client: &ClientIdentity,
+    error: Option<String>,
+    now: i64,
+) -> Response {
+    let issued = state
+        .abuse
+        .challenges
+        .issue(client, state.abuse.config().challenge_bits, now);
     let header_value = format!("{}; difficulty={}", issued.challenge, issued.difficulty);
     let body = json!({
         "error": error.unwrap_or_else(|| "Too many requests from this connection. Solve the challenge and retry with the Monokulo-Proof header.".to_string()),
@@ -329,11 +427,21 @@ fn blocked(state: &AppState, class: RouteClass, retry_after_secs: u64) -> Respon
     let _ = state;
     let mut response = if class == RouteClass::Page {
         let chrome = views::PageChrome::from_user(None, "/");
-        (StatusCode::TOO_MANY_REQUESTS, views::challenge::too_many_requests_page(&chrome, retry_after_secs)).into_response()
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            views::challenge::too_many_requests_page(&chrome, retry_after_secs),
+        )
+            .into_response()
     } else {
-        (StatusCode::TOO_MANY_REQUESTS, axum::Json(json!({ "error": "rate limit exceeded", "retry_after": retry_after_secs }))).into_response()
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(json!({ "error": "rate limit exceeded", "retry_after": retry_after_secs })),
+        )
+            .into_response()
     };
-    response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));
     no_store(response)
 }
 
@@ -357,18 +465,25 @@ mod tests {
         }
     }
 
-    async fn status_from(router: &axum::Router, peer: &str, forwarded_for: Option<&str>) -> StatusCode {
+    async fn status_from(
+        router: &axum::Router,
+        peer: &str,
+        forwarded_for: Option<&str>,
+    ) -> StatusCode {
         let mut builder = Request::builder().uri("/pay/pk_unknown/orders/o1/status");
         if let Some(value) = forwarded_for {
             builder = builder.header("x-forwarded-for", value);
         }
         let mut request = builder.body(Body::empty()).unwrap();
-        request.extensions_mut().insert(axum::extract::ConnectInfo(peer.parse::<std::net::SocketAddr>().unwrap()));
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            peer.parse::<std::net::SocketAddr>().unwrap(),
+        ));
         router.clone().oneshot(request).await.unwrap().status()
     }
 
     #[tokio::test]
-    async fn clients_behind_a_trusted_proxy_get_their_own_budgets_and_untrusted_forwarding_is_ignored() {
+    async fn clients_behind_a_trusted_proxy_get_their_own_budgets_and_untrusted_forwarding_is_ignored(
+    ) {
         let config = AbuseConfig {
             soft_per_min: 1,
             trusted_proxies: TrustedProxies::parse("127.0.0.1").unwrap(),
@@ -377,28 +492,60 @@ mod tests {
         let router = build_router(state(config));
 
         // Two visitors behind the local proxy: separate budgets.
-        assert_eq!(status_from(&router, "127.0.0.1:1000", Some("198.51.100.1")).await, StatusCode::NOT_FOUND);
-        assert_eq!(status_from(&router, "127.0.0.1:1001", Some("198.51.100.2")).await, StatusCode::NOT_FOUND);
-        assert_eq!(status_from(&router, "127.0.0.1:1002", Some("198.51.100.1")).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            status_from(&router, "127.0.0.1:1000", Some("198.51.100.1")).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_from(&router, "127.0.0.1:1001", Some("198.51.100.2")).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_from(&router, "127.0.0.1:1002", Some("198.51.100.1")).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
 
         // A direct client can't dodge its limit by inventing X-Forwarded-For.
-        assert_eq!(status_from(&router, "203.0.113.9:1", Some("1.1.1.1")).await, StatusCode::NOT_FOUND);
-        assert_eq!(status_from(&router, "203.0.113.9:2", Some("2.2.2.2")).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            status_from(&router, "203.0.113.9:1", Some("1.1.1.1")).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_from(&router, "203.0.113.9:2", Some("2.2.2.2")).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
 
         // One IPv6 /64 is one client.
-        assert_eq!(status_from(&router, "[2001:db8:1:2::1]:1", None).await, StatusCode::NOT_FOUND);
-        assert_eq!(status_from(&router, "[2001:db8:1:2::ffff]:1", None).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            status_from(&router, "[2001:db8:1:2::1]:1", None).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_from(&router, "[2001:db8:1:2::ffff]:1", None).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
 
     fn get(uri: &str, peer: &str) -> Request<Body> {
         let mut request = Request::builder().uri(uri).body(Body::empty()).unwrap();
-        request.extensions_mut().insert(axum::extract::ConnectInfo(peer.parse::<std::net::SocketAddr>().unwrap()));
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            peer.parse::<std::net::SocketAddr>().unwrap(),
+        ));
         request
     }
 
     async fn text(response: axum::response::Response) -> String {
         use http_body_util::BodyExt;
-        String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+        String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap()
     }
 
     fn attribute(html: &str, name: &str) -> String {
@@ -407,7 +554,12 @@ mod tests {
     }
 
     fn low_limits() -> AbuseConfig {
-        AbuseConfig { soft_per_min: 1, hard_per_min: 10, challenge_bits: 8, ..Default::default() }
+        AbuseConfig {
+            soft_per_min: 1,
+            hard_per_min: 10,
+            challenge_bits: 8,
+            ..Default::default()
+        }
     }
 
     #[tokio::test]
@@ -415,7 +567,15 @@ mod tests {
         let router = build_router(state(low_limits()));
         let page = "/pay/pk_unknown/orders/o1?view=compact";
         let peer = "198.51.100.1:1";
-        assert_eq!(router.clone().oneshot(get(page, peer)).await.unwrap().status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(get(page, peer))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
 
         let response = router.clone().oneshot(get(page, peer)).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -424,7 +584,8 @@ mod tests {
         assert!(html.contains("Checking your connection"), "{html}");
         let challenge = attribute(&html, "data-challenge");
         assert_eq!(attribute(&html, "data-continue"), page);
-        assert!(attribute(&html, "data-wait").starts_with("/pay/pk_unknown/orders/o1?view=compact&monokulo_wait="));
+        assert!(attribute(&html, "data-wait")
+            .starts_with("/pay/pk_unknown/orders/o1?view=compact&monokulo_wait="));
 
         // A wait token used straight away is too early: the interstitial again, saying so.
         let wait = attribute(&html, "data-wait");
@@ -438,11 +599,23 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(response.headers()["location"], page);
         // ...and the pass lets the next request through without a challenge.
-        assert_eq!(router.clone().oneshot(get(page, peer)).await.unwrap().status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(get(page, peer))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
         // The same proof can't be used again (the client still holds its
         // pass, so the page itself is served).
         let response = router.clone().oneshot(get(&proof, peer)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "a replayed proof is not redeemed again");
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "a replayed proof is not redeemed again"
+        );
     }
 
     #[tokio::test]
@@ -453,20 +626,47 @@ mod tests {
         router.clone().oneshot(get(uri, peer)).await.unwrap();
         let response = router.clone().oneshot(get(uri, peer)).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        let header = response.headers()["monokulo-challenge"].to_str().unwrap().to_string();
+        let header = response.headers()["monokulo-challenge"]
+            .to_str()
+            .unwrap()
+            .to_string();
         let body: serde_json::Value = serde_json::from_str(&text(response).await).unwrap();
         let challenge = body["challenge"]["challenge"].as_str().unwrap().to_string();
         assert_eq!(header, format!("{challenge}; difficulty=8"));
         assert_eq!(body["challenge"]["difficulty"], 8);
 
         let mut retry = get(uri, peer);
-        retry.headers_mut().insert("monokulo-proof", format!("{challenge}.{}", crate::abuse::challenge::solve(&challenge, 8)).parse().unwrap());
-        assert_eq!(router.clone().oneshot(retry).await.unwrap().status(), StatusCode::NOT_FOUND, "the proof is accepted");
+        retry.headers_mut().insert(
+            "monokulo-proof",
+            format!(
+                "{challenge}.{}",
+                crate::abuse::challenge::solve(&challenge, 8)
+            )
+            .parse()
+            .unwrap(),
+        );
+        assert_eq!(
+            router.clone().oneshot(retry).await.unwrap().status(),
+            StatusCode::NOT_FOUND,
+            "the proof is accepted"
+        );
 
         // A proof for someone else's connection is refused (with a new challenge).
         let mut stolen = get(uri, "198.51.100.3:1");
-        router.clone().oneshot(get(uri, "198.51.100.3:1")).await.unwrap();
-        stolen.headers_mut().insert("monokulo-proof", format!("{challenge}.{}", crate::abuse::challenge::solve(&challenge, 8)).parse().unwrap());
+        router
+            .clone()
+            .oneshot(get(uri, "198.51.100.3:1"))
+            .await
+            .unwrap();
+        stolen.headers_mut().insert(
+            "monokulo-proof",
+            format!(
+                "{challenge}.{}",
+                crate::abuse::challenge::solve(&challenge, 8)
+            )
+            .parse()
+            .unwrap(),
+        );
         let response = router.clone().oneshot(stolen).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(text(response).await.contains("different connection"));
@@ -474,20 +674,43 @@ mod tests {
 
     #[tokio::test]
     async fn past_the_hard_limit_everything_gets_429_with_retry_after() {
-        let router = build_router(state(AbuseConfig { soft_per_min: 1, hard_per_min: 2, ..Default::default() }));
+        let router = build_router(state(AbuseConfig {
+            soft_per_min: 1,
+            hard_per_min: 2,
+            ..Default::default()
+        }));
         let peer = "198.51.100.4:1";
         for _ in 0..2 {
-            router.clone().oneshot(get("/pay/pk_unknown/orders/o1/status", peer)).await.unwrap();
+            router
+                .clone()
+                .oneshot(get("/pay/pk_unknown/orders/o1/status", peer))
+                .await
+                .unwrap();
         }
-        let response = router.clone().oneshot(get("/pay/pk_unknown/orders/o1/status", peer)).await.unwrap();
+        let response = router
+            .clone()
+            .oneshot(get("/pay/pk_unknown/orders/o1/status", peer))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(response.headers().contains_key("retry-after"));
-        assert!(!response.headers().contains_key("monokulo-challenge"), "nothing to solve past the hard limit");
-        let page = router.clone().oneshot(get("/pay/pk_unknown/orders/o1", peer)).await.unwrap();
+        assert!(
+            !response.headers().contains_key("monokulo-challenge"),
+            "nothing to solve past the hard limit"
+        );
+        let page = router
+            .clone()
+            .oneshot(get("/pay/pk_unknown/orders/o1", peer))
+            .await
+            .unwrap();
         assert_eq!(page.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(page.headers().contains_key("retry-after"));
         assert!(text(page).await.contains("Too many requests"));
-        let stream = router.clone().oneshot(get("/pay/pk_unknown/orders/o1/events", peer)).await.unwrap();
+        let stream = router
+            .clone()
+            .oneshot(get("/pay/pk_unknown/orders/o1/events", peer))
+            .await
+            .unwrap();
         assert_eq!(stream.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -496,77 +719,174 @@ mod tests {
         let state = state(low_limits());
         {
             let db = state.db.lock();
-            db.create_user("u1", "merchant@example.com", "x", false, 0).unwrap();
-            db.create_session(&shared::auth::hash_secret_token("session-token"), "u1", crate::now_unix()).unwrap();
+            db.create_user("u1", "merchant@example.com", "x", false, 0)
+                .unwrap();
+            db.create_session(
+                &shared::auth::hash_secret_token("session-token"),
+                "u1",
+                crate::now_unix(),
+            )
+            .unwrap();
         }
         let router = build_router(state);
         for _ in 0..6 {
             let mut request = get("/", "198.51.100.5:1");
-            request.headers_mut().insert("cookie", "session=session-token".parse().unwrap());
+            request
+                .headers_mut()
+                .insert("cookie", "session=session-token".parse().unwrap());
             let response = router.clone().oneshot(request).await.unwrap();
             // The landing page sends a signed-in merchant on to the dashboard.
-            assert_eq!(response.status(), StatusCode::FOUND, "a signed-in merchant has their own, higher limit");
+            assert_eq!(
+                response.status(),
+                StatusCode::FOUND,
+                "a signed-in merchant has their own, higher limit"
+            );
         }
         // An anonymous visitor to the same page is challenged past soft.
-        router.clone().oneshot(get("/", "198.51.100.6:1")).await.unwrap();
-        let html = text(router.clone().oneshot(get("/", "198.51.100.6:1")).await.unwrap()).await;
+        router
+            .clone()
+            .oneshot(get("/", "198.51.100.6:1"))
+            .await
+            .unwrap();
+        let html = text(
+            router
+                .clone()
+                .oneshot(get("/", "198.51.100.6:1"))
+                .await
+                .unwrap(),
+        )
+        .await;
         assert!(html.contains("Checking your connection"));
     }
 
     fn report(peer: &str) -> Request<Body> {
         let body = r#"{"kind":"error","message":"x is undefined","page":"/dashboard/admin/logs"}"#;
-        let mut request = Request::builder().method("POST").uri("/telemetry/client").body(Body::from(body)).unwrap();
-        request.extensions_mut().insert(axum::extract::ConnectInfo(peer.parse::<std::net::SocketAddr>().unwrap()));
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/telemetry/client")
+            .body(Body::from(body))
+            .unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            peer.parse::<std::net::SocketAddr>().unwrap(),
+        ));
         request
     }
 
     #[tokio::test]
     async fn a_client_flooding_log_reports_loses_only_its_reports_and_is_never_challenged() {
-        let router = build_router(state(AbuseConfig { client_logs_per_min: 3, under_attack: false, ..low_limits() }));
+        let router = build_router(state(AbuseConfig {
+            client_logs_per_min: 3,
+            under_attack: false,
+            ..low_limits()
+        }));
         let peer = "198.51.100.20:1";
         for _ in 0..3 {
-            assert_eq!(router.clone().oneshot(report(peer)).await.unwrap().status(), StatusCode::NO_CONTENT);
+            assert_eq!(
+                router.clone().oneshot(report(peer)).await.unwrap().status(),
+                StatusCode::NO_CONTENT
+            );
         }
         let dropped = router.clone().oneshot(report(peer)).await.unwrap();
         assert_eq!(dropped.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(dropped.headers().contains_key("retry-after"));
-        assert!(!dropped.headers().contains_key("monokulo-challenge"), "no challenge for log reports");
+        assert!(
+            !dropped.headers().contains_key("monokulo-challenge"),
+            "no challenge for log reports"
+        );
 
         // The reports spent nothing of the main budget (soft limit 1): the
         // first page is served, not challenged.
         let page = router.clone().oneshot(get("/", peer)).await.unwrap();
-        assert_ne!(page.status(), StatusCode::TOO_MANY_REQUESTS, "the page is served, not challenged");
+        assert_ne!(
+            page.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the page is served, not challenged"
+        );
         // Another client's reports have their own budget.
-        assert_eq!(router.clone().oneshot(report("198.51.100.21:1")).await.unwrap().status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(report("198.51.100.21:1"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
     }
 
     #[tokio::test]
     async fn under_attack_never_challenges_log_reports() {
-        let router = build_router(state(AbuseConfig { under_attack: true, ..Default::default() }));
-        let response = router.clone().oneshot(report("198.51.100.22:1")).await.unwrap();
+        let router = build_router(state(AbuseConfig {
+            under_attack: true,
+            ..Default::default()
+        }));
+        let response = router
+            .clone()
+            .oneshot(report("198.51.100.22:1"))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[test]
     fn log_routes_are_classed_as_logs() {
         use axum::http::Method;
-        assert_eq!(super::site_route_class(&Method::POST, "/telemetry/client"), super::RouteClass::Logs);
-        assert_eq!(super::site_route_class(&Method::POST, "/dashboard/stores/c1/pos/logs"), super::RouteClass::Logs);
-        assert_eq!(super::site_route_class(&Method::GET, "/dashboard/stores/c1/pos/logs"), super::RouteClass::Other);
-        assert_eq!(super::pay_route_class(&Method::POST, "/pay/pk_1/logs"), super::RouteClass::Logs);
+        assert_eq!(
+            super::site_route_class(&Method::POST, "/telemetry/client"),
+            super::RouteClass::Logs
+        );
+        assert_eq!(
+            super::site_route_class(&Method::POST, "/dashboard/stores/c1/pos/logs"),
+            super::RouteClass::Logs
+        );
+        assert_eq!(
+            super::site_route_class(&Method::GET, "/dashboard/stores/c1/pos/logs"),
+            super::RouteClass::Other
+        );
+        assert_eq!(
+            super::pay_route_class(&Method::POST, "/pay/pk_1/logs"),
+            super::RouteClass::Logs
+        );
     }
 
     #[tokio::test]
-    async fn under_attack_challenges_every_anonymous_page_and_api_request_but_not_streams_or_static_files() {
-        let router = build_router(state(AbuseConfig { under_attack: true, ..Default::default() }));
+    async fn under_attack_challenges_every_anonymous_page_and_api_request_but_not_streams_or_static_files(
+    ) {
+        let router = build_router(state(AbuseConfig {
+            under_attack: true,
+            ..Default::default()
+        }));
         let peer = "198.51.100.7:1";
-        let html = text(router.clone().oneshot(get("/pay/pk_unknown/orders/o1", peer)).await.unwrap()).await;
+        let html = text(
+            router
+                .clone()
+                .oneshot(get("/pay/pk_unknown/orders/o1", peer))
+                .await
+                .unwrap(),
+        )
+        .await;
         assert!(html.contains("Checking your connection"));
-        let api = router.clone().oneshot(get("/pay/pk_unknown/orders/o1/status", peer)).await.unwrap();
+        let api = router
+            .clone()
+            .oneshot(get("/pay/pk_unknown/orders/o1/status", peer))
+            .await
+            .unwrap();
         assert!(api.headers().contains_key("monokulo-challenge"));
-        let stream = router.clone().oneshot(get("/pay/pk_unknown/orders/o1/events", peer)).await.unwrap();
-        assert_eq!(stream.status(), StatusCode::NOT_FOUND, "streams aren't challenged");
-        let script = router.clone().oneshot(get("/static/challenge.js", peer)).await.unwrap();
+        let stream = router
+            .clone()
+            .oneshot(get("/pay/pk_unknown/orders/o1/events", peer))
+            .await
+            .unwrap();
+        assert_eq!(
+            stream.status(),
+            StatusCode::NOT_FOUND,
+            "streams aren't challenged"
+        );
+        let script = router
+            .clone()
+            .oneshot(get("/static/challenge.js", peer))
+            .await
+            .unwrap();
         assert_eq!(script.status(), StatusCode::OK);
     }
 
@@ -578,18 +898,32 @@ mod tests {
             .uri("/pay/pk_unknown/orders")
             .header("origin", "https://shop.example")
             .header("access-control-request-method", "POST")
-            .header("access-control-request-headers", "content-type,monokulo-proof")
+            .header(
+                "access-control-request-headers",
+                "content-type,monokulo-proof",
+            )
             .body(Body::empty())
             .unwrap();
         let response = router.clone().oneshot(preflight).await.unwrap();
-        let allowed = response.headers()["access-control-allow-headers"].to_str().unwrap().to_ascii_lowercase();
+        let allowed = response.headers()["access-control-allow-headers"]
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
         assert!(allowed.contains("monokulo-proof"), "{allowed}");
 
         let mut request = get("/pay/pk_unknown/orders/o1/status", "198.51.100.8:1");
-        request.headers_mut().insert("origin", "https://shop.example".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("origin", "https://shop.example".parse().unwrap());
         let response = router.clone().oneshot(request).await.unwrap();
-        let exposed = response.headers()["access-control-expose-headers"].to_str().unwrap().to_ascii_lowercase();
-        assert!(exposed.contains("monokulo-challenge") && exposed.contains("retry-after"), "{exposed}");
+        let exposed = response.headers()["access-control-expose-headers"]
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(
+            exposed.contains("monokulo-challenge") && exposed.contains("retry-after"),
+            "{exposed}"
+        );
     }
 
     #[tokio::test]
@@ -597,17 +931,37 @@ mod tests {
         let state = state(low_limits());
         {
             let db = state.db.lock();
-            db.create_user("admin", "admin@example.com", "x", true, 0).unwrap();
-            db.create_user("merchant", "m@example.com", "x", false, 0).unwrap();
-            db.create_session(&shared::auth::hash_secret_token("admin-token"), "admin", crate::now_unix()).unwrap();
-            db.create_session(&shared::auth::hash_secret_token("merchant-token"), "merchant", crate::now_unix()).unwrap();
+            db.create_user("admin", "admin@example.com", "x", true, 0)
+                .unwrap();
+            db.create_user("merchant", "m@example.com", "x", false, 0)
+                .unwrap();
+            db.create_session(
+                &shared::auth::hash_secret_token("admin-token"),
+                "admin",
+                crate::now_unix(),
+            )
+            .unwrap();
+            db.create_session(
+                &shared::auth::hash_secret_token("merchant-token"),
+                "merchant",
+                crate::now_unix(),
+            )
+            .unwrap();
         }
-        state.abuse.stats.record(crate::abuse::stats::Event::Issued, crate::now_unix());
+        state
+            .abuse
+            .stats
+            .record(crate::abuse::stats::Event::Issued, crate::now_unix());
         let router = build_router(state);
         let page = |cookie: Option<&'static str>| {
-            let mut request = Request::builder().uri("/status").body(Body::empty()).unwrap();
+            let mut request = Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .unwrap();
             if let Some(cookie) = cookie {
-                request.headers_mut().insert("cookie", cookie.parse().unwrap());
+                request
+                    .headers_mut()
+                    .insert("cookie", cookie.parse().unwrap());
             }
             router.clone().oneshot(request)
         };

@@ -26,15 +26,37 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 pub const REDACTED: &str = "[redacted]";
 
 /// Field names that end like a secret's but hold nothing secret.
-const PUBLIC_NAMES: &[&str] = &["public_key", "idempotency_key", "throttle_key", "cache_key", "settings_key"];
+const PUBLIC_NAMES: &[&str] = &[
+    "public_key",
+    "idempotency_key",
+    "throttle_key",
+    "cache_key",
+    "settings_key",
+];
 
 /// Field names that hold a secret whatever their ending.
-const SECRET_NAMES: &[&str] =
-    &["password", "authorization", "cookie", "seed", "mnemonic", "key_material", "sealed_key_material", "secret"];
+const SECRET_NAMES: &[&str] = &[
+    "password",
+    "authorization",
+    "cookie",
+    "seed",
+    "mnemonic",
+    "key_material",
+    "sealed_key_material",
+    "secret",
+];
 
 /// Field names that hold a client's address.
-const CLIENT_ADDRESS_NAMES: &[&str] =
-    &["client.address", "client.ip", "client_ip", "client_addr", "peer_addr", "remote_addr", "network.peer.address", "ip"];
+const CLIENT_ADDRESS_NAMES: &[&str] = &[
+    "client.address",
+    "client.ip",
+    "client_ip",
+    "client_addr",
+    "peer_addr",
+    "remote_addr",
+    "network.peer.address",
+    "ip",
+];
 
 /// Whether a field with this name holds a secret.
 pub fn is_secret_name(name: &str) -> bool {
@@ -140,7 +162,10 @@ fn word_redacted(word: &str) -> Cow<'_, str> {
 fn is_monero_address(word: &str) -> bool {
     matches!(word.len(), 95 | 106)
         && word.bytes().all(is_base58)
-        && matches!(word.as_bytes()[0], b'4' | b'8' | b'5' | b'7' | b'9' | b'A' | b'B')
+        && matches!(
+            word.as_bytes()[0],
+            b'4' | b'8' | b'5' | b'7' | b'9' | b'A' | b'B'
+        )
 }
 
 fn has_long_base58_run(value: &str) -> bool {
@@ -185,11 +210,25 @@ mod tests {
     /// A made-up address of the standard length (95) and one of the
     /// integrated length (106); only the shape matters here.
     fn address() -> String {
-        format!("44AFFq{}wEP3A", "5kSiGBoZ4NMDwYtN18obc8".repeat(4).chars().take(84).collect::<String>())
+        format!(
+            "44AFFq{}wEP3A",
+            "5kSiGBoZ4NMDwYtN18obc8"
+                .repeat(4)
+                .chars()
+                .take(84)
+                .collect::<String>()
+        )
     }
 
     fn integrated() -> String {
-        format!("4LL9oS{}khPK", "LmtpccfufTMvppY6JwXN".repeat(5).chars().take(96).collect::<String>())
+        format!(
+            "4LL9oS{}khPK",
+            "LmtpccfufTMvppY6JwXN"
+                .repeat(5)
+                .chars()
+                .take(96)
+                .collect::<String>()
+        )
     }
 
     #[test]
@@ -214,7 +253,16 @@ mod tests {
 
     #[test]
     fn public_names_and_ordinary_fields_are_kept() {
-        for name in ["public_key", "idempotency_key", "throttle_key", "key", "store.id", "order.id", "network", "message"] {
+        for name in [
+            "public_key",
+            "idempotency_key",
+            "throttle_key",
+            "key",
+            "store.id",
+            "order.id",
+            "network",
+            "message",
+        ] {
             assert_eq!(field(name, "abc"), "abc", "{name}");
         }
     }
@@ -223,8 +271,14 @@ mod tests {
     fn client_addresses_keep_only_their_network() {
         assert_eq!(field("client.address", "203.0.113.77:51234"), "203.0.113.0");
         assert_eq!(field("client.address", "203.0.113.77"), "203.0.113.0");
-        assert_eq!(field("client.address", "[2001:db8:abcd:12:1:2:3:4]:443"), "2001:db8:abcd::");
-        assert_eq!(field("client.address", "::ffff:203.0.113.77"), "203.0.113.0");
+        assert_eq!(
+            field("client.address", "[2001:db8:abcd:12:1:2:3:4]:443"),
+            "2001:db8:abcd::"
+        );
+        assert_eq!(
+            field("client.address", "::ffff:203.0.113.77"),
+            "203.0.113.0"
+        );
         assert_eq!(field("client.address", "127.0.0.1:9000"), "127.0.0.1");
         assert_eq!(field("client.address", "192.168.1.20"), "192.168.1.20");
         assert_eq!(field("client.address", "not an ip"), REDACTED);
@@ -236,7 +290,10 @@ mod tests {
         assert_eq!((address.len(), integrated.len()), (95, 106));
         assert_eq!(text(&address), "44AFFq…EP3A");
         let message = format!("payment to {address}, and to {integrated}.");
-        assert_eq!(text(&message), "payment to 44AFFq…EP3A, and to 4LL9oS…khPK.");
+        assert_eq!(
+            text(&message),
+            "payment to 44AFFq…EP3A, and to 4LL9oS…khPK."
+        );
         // A field with an ordinary name still gets it.
         assert_eq!(field("primary_address", &address), "44AFFq…EP3A");
     }
@@ -244,13 +301,21 @@ mod tests {
     #[test]
     fn store_secret_keys_are_removed_anywhere_in_a_string() {
         let secret = format!("sk_{}", "ab".repeat(32));
-        assert_eq!(text(&format!("rotated to {secret} ok")), "rotated to sk_[redacted] ok");
+        assert_eq!(
+            text(&format!("rotated to {secret} ok")),
+            "rotated to sk_[redacted] ok"
+        );
         assert_eq!(field("detail", &format!("({secret})")), "(sk_[redacted])");
     }
 
     #[test]
     fn strings_without_anything_to_redact_are_borrowed_unchanged() {
-        for s in ["scan tick failed for Stagenet: timeout", "", "tx 5f2c9e", "é ünïcode ✓"] {
+        for s in [
+            "scan tick failed for Stagenet: timeout",
+            "",
+            "tx 5f2c9e",
+            "é ünïcode ✓",
+        ] {
             assert!(matches!(text(s), Cow::Borrowed(b) if b == s), "{s}");
         }
         // Too short to be a key: copied, but unchanged.

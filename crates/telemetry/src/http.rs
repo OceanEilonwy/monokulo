@@ -36,7 +36,10 @@ pub const TRACERESPONSE: &str = "traceresponse";
 /// is left off the request's lines.
 pub async fn server(request: Request, next: Next) -> Response {
     let method = request.method().clone();
-    let route = request.extensions().get::<MatchedPath>().map(|p| p.as_str().to_string());
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|p| p.as_str().to_string());
     let path = request.uri().path().to_string();
     let name = match &route {
         Some(route) => format!("{method} {route}"),
@@ -59,7 +62,11 @@ pub async fn server(request: Request, next: Next) -> Response {
     if let Some(ConnectInfo(peer)) = request.extensions().get::<ConnectInfo<SocketAddr>>() {
         span.record("client.address", peer.ip().to_string());
     }
-    if let Some(parent) = request.headers().get(trace::TRACEPARENT).and_then(|v| v.to_str().ok()) {
+    if let Some(parent) = request
+        .headers()
+        .get(trace::TRACEPARENT)
+        .and_then(|v| v.to_str().ok())
+    {
         trace::set_remote_parent(&span, parent);
     }
 
@@ -108,12 +115,24 @@ mod tests {
 
     fn router() -> Router {
         Router::new()
-            .route("/stores/{id}", get(|| async { tracing::info!(store.id = "s_1", "looked up"); "ok" }))
-            .route("/boom", get(|| async { (axum::http::StatusCode::BAD_GATEWAY, "no") }))
+            .route(
+                "/stores/{id}",
+                get(|| async {
+                    tracing::info!(store.id = "s_1", "looked up");
+                    "ok"
+                }),
+            )
+            .route(
+                "/boom",
+                get(|| async { (axum::http::StatusCode::BAD_GATEWAY, "no") }),
+            )
             .route(
                 "/me",
                 get(|| async {
-                    tracing::Span::current().record("user.id", "u_1").record("session.id", "5e55").record("store.id", "s_2");
+                    tracing::Span::current()
+                        .record("user.id", "u_1")
+                        .record("session.id", "5e55")
+                        .record("store.id", "s_2");
                     "me"
                 }),
             )
@@ -128,9 +147,17 @@ mod tests {
     #[tokio::test]
     async fn a_request_gets_a_span_with_http_attributes_and_one_line_at_the_end() {
         let (_telemetry, capture, _guard) = subscriber(Format::Json, "info");
-        let request = axum::http::Request::get("/stores/s_1?x=secret").body(Body::empty()).unwrap();
+        let request = axum::http::Request::get("/stores/s_1?x=secret")
+            .body(Body::empty())
+            .unwrap();
         let response = call(router(), request).await;
-        let traceresponse = response.headers().get(super::TRACERESPONSE).unwrap().to_str().unwrap().to_string();
+        let traceresponse = response
+            .headers()
+            .get(super::TRACERESPONSE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
 
         let lines = lines(&capture);
         assert_eq!(lines.len(), 2, "{}", capture.text());
@@ -141,24 +168,44 @@ mod tests {
         assert_eq!(finished["message"], "GET /stores/{id} 200");
         assert_eq!(finished["attributes"]["http.response.status_code"], 200);
         assert!(finished["attributes"]["duration_ms"].is_u64());
-        assert_eq!(finished["attributes"]["url.path"], "/stores/s_1", "never the query string");
+        assert_eq!(
+            finished["attributes"]["url.path"], "/stores/s_1",
+            "never the query string"
+        );
         assert_eq!(handler["trace_id"], finished["trace_id"]);
-        assert!(traceresponse.contains(finished["trace_id"].as_str().unwrap()), "{traceresponse}");
+        assert!(
+            traceresponse.contains(finished["trace_id"].as_str().unwrap()),
+            "{traceresponse}"
+        );
         assert!(!capture.text().contains("secret"));
     }
 
     #[tokio::test]
     async fn who_a_request_is_for_is_on_its_lines_once_recorded() {
         let (_telemetry, capture, _guard) = subscriber(Format::Json, "info");
-        call(router(), axum::http::Request::get("/me").body(Body::empty()).unwrap()).await;
-        call(router(), axum::http::Request::get("/boom").body(Body::empty()).unwrap()).await;
+        call(
+            router(),
+            axum::http::Request::get("/me").body(Body::empty()).unwrap(),
+        )
+        .await;
+        call(
+            router(),
+            axum::http::Request::get("/boom")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         let lines = lines(&capture);
         assert_eq!(lines.len(), 2, "{}", capture.text());
         assert_eq!(lines[0]["attributes"]["user.id"], "u_1");
         assert_eq!(lines[0]["attributes"]["session.id"], "5e55");
         assert_eq!(lines[0]["attributes"]["store.id"], "s_2");
         for name in ["user.id", "session.id", "store.id"] {
-            assert!(lines[1]["attributes"].get(name).is_none(), "not recorded, not shown: {}", lines[1]);
+            assert!(
+                lines[1]["attributes"].get(name).is_none(),
+                "not recorded, not shown: {}",
+                lines[1]
+            );
         }
     }
 
@@ -166,24 +213,53 @@ mod tests {
     async fn a_callers_traceparent_is_joined() {
         let (_telemetry, capture, _guard) = subscriber(Format::Json, "info");
         let request = axum::http::Request::get("/stores/s_1")
-            .header("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+            .header(
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            )
             .body(Body::empty())
             .unwrap();
         let response = call(router(), request).await;
-        assert!(response.headers()[super::TRACERESPONSE].to_str().unwrap().starts_with("00-4bf92f3577b34da6a3ce929d0e0e4736-"));
-        assert!(lines(&capture).iter().all(|l| l["trace_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"));
+        assert!(response.headers()[super::TRACERESPONSE]
+            .to_str()
+            .unwrap()
+            .starts_with("00-4bf92f3577b34da6a3ce929d0e0e4736-"));
+        assert!(lines(&capture)
+            .iter()
+            .all(|l| l["trace_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"));
     }
 
     #[tokio::test]
     async fn server_errors_are_warnings_and_static_files_are_debug() {
         let (_telemetry, capture, _guard) = subscriber(Format::Json, "info");
-        call(router(), axum::http::Request::get("/boom").body(Body::empty()).unwrap()).await;
-        call(router(), axum::http::Request::get("/static/x.js").body(Body::empty()).unwrap()).await;
-        call(router(), axum::http::Request::get("/nowhere").body(Body::empty()).unwrap()).await;
+        call(
+            router(),
+            axum::http::Request::get("/boom")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        call(
+            router(),
+            axum::http::Request::get("/static/x.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        call(
+            router(),
+            axum::http::Request::get("/nowhere")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         let lines = lines(&capture);
         assert_eq!(lines.len(), 2, "{}", capture.text());
         assert_eq!(lines[0]["level"], "WARN");
         assert_eq!(lines[0]["message"], "GET /boom 502");
-        assert_eq!(lines[1]["message"], "GET /nowhere 404", "an unmatched path is shown as requested");
+        assert_eq!(
+            lines[1]["message"], "GET /nowhere 404",
+            "an unmatched path is shown as requested"
+        );
     }
 }

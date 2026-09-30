@@ -43,8 +43,14 @@ pub use router::CustodyRouter;
 /// from the private view key. Compares keys, not strings, so any valid
 /// spelling of the address works. `Err` if the address doesn't parse or the
 /// keys are malformed.
-pub fn wallet_matches_address(material: &WalletMaterial, address: &str, network: Network) -> Result<bool, String> {
-    let address: monero::Address = address.parse().map_err(|_| format!("{address:?} is not a Monero address"))?;
+pub fn wallet_matches_address(
+    material: &WalletMaterial,
+    address: &str,
+    network: Network,
+) -> Result<bool, String> {
+    let address: monero::Address = address
+        .parse()
+        .map_err(|_| format!("{address:?} is not a Monero address"))?;
     let pair = material.to_view_pair().map_err(|e| e.to_string())?;
     Ok(address.network == network
         && address.public_spend == pair.spend
@@ -53,6 +59,6 @@ pub fn wallet_matches_address(material: &WalletMaterial, address: &str, network:
 pub use plain::PlainKeyCustody;
 
 pub use shared::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex, WalletHandle,
-    WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex,
+    WalletHandle, WalletMaterial,
 };

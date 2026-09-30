@@ -27,7 +27,12 @@ pub const HAVENO_CURRENCIES: &str = "haveno_currencies";
 pub const HAVENO_MAX_SPREAD_PCT: &str = "haveno_max_spread_pct";
 pub const HAVENO_MIN_OFFERS_PER_SIDE: &str = "haveno_min_offers_per_side";
 pub const HAVENO_MIN_DEPTH_XMR_PER_SIDE: &str = "haveno_min_depth_xmr_per_side";
-const HAVENO_FIELDS: [&str; 4] = [HAVENO_CURRENCIES, HAVENO_MAX_SPREAD_PCT, HAVENO_MIN_OFFERS_PER_SIDE, HAVENO_MIN_DEPTH_XMR_PER_SIDE];
+const HAVENO_FIELDS: [&str; 4] = [
+    HAVENO_CURRENCIES,
+    HAVENO_MAX_SPREAD_PCT,
+    HAVENO_MIN_OFFERS_PER_SIDE,
+    HAVENO_MIN_DEPTH_XMR_PER_SIDE,
+];
 
 fn default_max_spread_pct() -> f64 {
     DEFAULT_MAX_SPREAD_PCT
@@ -70,7 +75,11 @@ impl Default for HavenoSettings {
 impl HavenoSettings {
     /// Whether Haveno may quote `currency` for this store at all.
     pub fn allows(&self, currency: &str) -> bool {
-        self.currencies.is_empty() || self.currencies.iter().any(|c| c.eq_ignore_ascii_case(currency))
+        self.currencies.is_empty()
+            || self
+                .currencies
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(currency))
     }
 
     pub fn policy(&self) -> HavenoPolicy {
@@ -120,10 +129,18 @@ pub fn parse_haveno_form(
     if !HAVENO_FIELDS.iter().any(|field| form.contains_key(*field)) {
         return Ok(None);
     }
-    let field = |name: &str| form.get(name).map(|v| v.trim()).ok_or_else(|| "The Haveno settings were incomplete. Please try again.".to_string());
+    let field = |name: &str| {
+        form.get(name)
+            .map(|v| v.trim())
+            .ok_or_else(|| "The Haveno settings were incomplete. Please try again.".to_string())
+    };
 
     let mut currencies: Vec<String> = Vec::new();
-    for entry in field(HAVENO_CURRENCIES)?.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+    for entry in field(HAVENO_CURRENCIES)?
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+    {
         let code = match resolve(entry) {
             Ok(Some(code)) => code,
             Ok(None) => return Err(format!("{entry:?} is not a known currency.")),
@@ -146,14 +163,25 @@ pub fn parse_haveno_form(
         .parse::<u32>()
         .ok()
         .filter(|v| (1..=MAX_OFFERS_PER_SIDE).contains(v))
-        .ok_or_else(|| format!("Minimum offers per side must be a whole number from 1 to {MAX_OFFERS_PER_SIDE}."))?;
+        .ok_or_else(|| {
+            format!(
+                "Minimum offers per side must be a whole number from 1 to {MAX_OFFERS_PER_SIDE}."
+            )
+        })?;
     let min_depth_xmr_per_side = field(HAVENO_MIN_DEPTH_XMR_PER_SIDE)?
         .parse::<f64>()
         .ok()
         .filter(|v| v.is_finite() && (0.0..=MAX_DEPTH_XMR).contains(v))
-        .ok_or_else(|| format!("Minimum XMR per side must be a number from 0 to {MAX_DEPTH_XMR}."))?;
+        .ok_or_else(|| {
+            format!("Minimum XMR per side must be a number from 0 to {MAX_DEPTH_XMR}.")
+        })?;
 
-    Ok(Some(HavenoSettings { currencies, max_spread_pct, min_offers_per_side, min_depth_xmr_per_side }))
+    Ok(Some(HavenoSettings {
+        currencies,
+        max_spread_pct,
+        min_offers_per_side,
+        min_depth_xmr_per_side,
+    }))
 }
 
 #[cfg(test)]
@@ -161,7 +189,10 @@ mod tests {
     use super::*;
 
     fn form(fields: &[(&str, &str)]) -> HashMap<String, String> {
-        fields.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        fields
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn full(currencies: &str, spread: &str, offers: &str, depth: &str) -> HashMap<String, String> {
@@ -196,40 +227,93 @@ mod tests {
     fn the_defaults_are_a_five_percent_spread_one_offer_per_side_no_depth_and_every_currency() {
         let settings = HavenoSettings::default();
         assert_eq!(settings.currencies, Vec::<String>::new());
-        assert_eq!((settings.max_spread_pct, settings.min_offers_per_side, settings.min_depth_xmr_per_side), (5.0, 1, 0.0));
-        assert!(settings.allows("USD") && settings.allows("JPY"), "an empty list allows everything");
+        assert_eq!(
+            (
+                settings.max_spread_pct,
+                settings.min_offers_per_side,
+                settings.min_depth_xmr_per_side
+            ),
+            (5.0, 1, 0.0)
+        );
+        assert!(
+            settings.allows("USD") && settings.allows("JPY"),
+            "an empty list allows everything"
+        );
         assert_eq!(settings.policy(), HavenoPolicy::default());
     }
 
     #[test]
     fn a_non_empty_list_allows_only_its_currencies_case_insensitively() {
-        let settings = HavenoSettings { currencies: vec!["USD".to_string(), "EUR".to_string()], ..Default::default() };
+        let settings = HavenoSettings {
+            currencies: vec!["USD".to_string(), "EUR".to_string()],
+            ..Default::default()
+        };
         assert!(settings.allows("USD") && settings.allows("eur"));
         assert!(!settings.allows("GBP"));
     }
 
     #[test]
     fn the_policy_carries_the_stores_limits() {
-        let settings = HavenoSettings { currencies: vec![], max_spread_pct: 2.5, min_offers_per_side: 3, min_depth_xmr_per_side: 1.5 };
-        assert_eq!(settings.policy(), HavenoPolicy { max_spread_pct: 2.5, min_offers_per_side: 3, min_depth_xmr_per_side: 1.5 });
+        let settings = HavenoSettings {
+            currencies: vec![],
+            max_spread_pct: 2.5,
+            min_offers_per_side: 3,
+            min_depth_xmr_per_side: 1.5,
+        };
+        assert_eq!(
+            settings.policy(),
+            HavenoPolicy {
+                max_spread_pct: 2.5,
+                min_offers_per_side: 3,
+                min_depth_xmr_per_side: 1.5
+            }
+        );
     }
 
     #[test]
     fn stored_json_round_trips_and_missing_pieces_fall_back_to_defaults() {
         let settings = FxProviderSettings {
-            haveno: HavenoSettings { currencies: vec!["USD".to_string()], max_spread_pct: 3.0, min_offers_per_side: 2, min_depth_xmr_per_side: 0.5 },
+            haveno: HavenoSettings {
+                currencies: vec!["USD".to_string()],
+                max_spread_pct: 3.0,
+                min_offers_per_side: 2,
+                min_depth_xmr_per_side: 0.5,
+            },
         };
         assert_eq!(FxProviderSettings::parse(&settings.to_json()), settings);
 
-        assert_eq!(FxProviderSettings::parse("{}"), FxProviderSettings::default());
-        assert_eq!(FxProviderSettings::parse(r#"{"haveno":{"max_spread_pct":1.0}}"#).haveno.min_offers_per_side, 1);
-        assert_eq!(FxProviderSettings::parse(r#"{"haveno":{"max_spread_pct":1.0}}"#).haveno.max_spread_pct, 1.0);
+        assert_eq!(
+            FxProviderSettings::parse("{}"),
+            FxProviderSettings::default()
+        );
+        assert_eq!(
+            FxProviderSettings::parse(r#"{"haveno":{"max_spread_pct":1.0}}"#)
+                .haveno
+                .min_offers_per_side,
+            1
+        );
+        assert_eq!(
+            FxProviderSettings::parse(r#"{"haveno":{"max_spread_pct":1.0}}"#)
+                .haveno
+                .max_spread_pct,
+            1.0
+        );
     }
 
     #[test]
     fn unreadable_stored_settings_are_the_defaults_not_an_error() {
-        for raw in ["", "not json", "[1,2]", r#"{"haveno":"x"}"#, r#"{"haveno":{"max_spread_pct":"wide"}}"#] {
-            assert_eq!(FxProviderSettings::parse(raw), FxProviderSettings::default(), "{raw:?}");
+        for raw in [
+            "",
+            "not json",
+            "[1,2]",
+            r#"{"haveno":"x"}"#,
+            r#"{"haveno":{"max_spread_pct":"wide"}}"#,
+        ] {
+            assert_eq!(
+                FxProviderSettings::parse(raw),
+                FxProviderSettings::default(),
+                "{raw:?}"
+            );
         }
     }
 
@@ -241,29 +325,53 @@ mod tests {
 
     #[test]
     fn a_valid_form_is_read_in_full() {
-        let settings = parse(&full("USD, EUR", "3.5", "2", "1.25")).unwrap().unwrap();
+        let settings = parse(&full("USD, EUR", "3.5", "2", "1.25"))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             settings,
-            HavenoSettings { currencies: vec!["USD".to_string(), "EUR".to_string()], max_spread_pct: 3.5, min_offers_per_side: 2, min_depth_xmr_per_side: 1.25 }
+            HavenoSettings {
+                currencies: vec!["USD".to_string(), "EUR".to_string()],
+                max_spread_pct: 3.5,
+                min_offers_per_side: 2,
+                min_depth_xmr_per_side: 1.25
+            }
         );
     }
 
     #[test]
     fn an_empty_currency_list_means_every_currency() {
-        assert!(parse(&full("", "5", "1", "0")).unwrap().unwrap().currencies.is_empty());
-        assert!(parse(&full(" , ,, ", "5", "1", "0")).unwrap().unwrap().currencies.is_empty());
+        assert!(parse(&full("", "5", "1", "0"))
+            .unwrap()
+            .unwrap()
+            .currencies
+            .is_empty());
+        assert!(parse(&full(" , ,, ", "5", "1", "0"))
+            .unwrap()
+            .unwrap()
+            .currencies
+            .is_empty());
     }
 
     #[test]
     fn currencies_are_canonicalised_deduplicated_and_kept_in_order() {
-        let settings = parse(&full(" eur ,$, usd,EUR , gbp", "5", "1", "0")).unwrap().unwrap();
-        assert_eq!(settings.currencies, vec!["EUR", "USD", "GBP"], "a ticker resolves to its code and repeats collapse");
+        let settings = parse(&full(" eur ,$, usd,EUR , gbp", "5", "1", "0"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            settings.currencies,
+            vec!["EUR", "USD", "GBP"],
+            "a ticker resolves to its code and repeats collapse"
+        );
     }
 
     #[test]
     fn an_unknown_currency_is_rejected_by_name() {
         let err = parse(&full("USD, ZZZ", "5", "1", "0")).unwrap_err();
-        assert!(err.contains("\"ZZZ\"") && err.contains("not a known currency"), "{err}");
+        assert!(
+            err.contains("\"ZZZ\"") && err.contains("not a known currency"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -274,13 +382,21 @@ mod tests {
 
     #[test]
     fn a_failed_currency_lookup_is_a_generic_error() {
-        assert_eq!(parse(&full("boom", "5", "1", "0")).unwrap_err(), "Something went wrong. Please try again.");
+        assert_eq!(
+            parse(&full("boom", "5", "1", "0")).unwrap_err(),
+            "Something went wrong. Please try again."
+        );
     }
 
     #[test]
     fn the_spread_must_be_a_percentage_above_zero() {
         for bad in ["0", "-1", "100.1", "abc", "", "NaN", "inf"] {
-            assert!(parse(&full("", bad, "1", "0")).unwrap_err().contains("Maximum spread"), "{bad:?}");
+            assert!(
+                parse(&full("", bad, "1", "0"))
+                    .unwrap_err()
+                    .contains("Maximum spread"),
+                "{bad:?}"
+            );
         }
         for good in ["0.01", "5", "100", " 7.5 "] {
             assert!(parse(&full("", good, "1", "0")).is_ok(), "{good:?}");
@@ -290,7 +406,12 @@ mod tests {
     #[test]
     fn offers_per_side_must_be_a_whole_number_from_one_to_the_cap() {
         for bad in ["0", "-1", "1001", "1.5", "two", ""] {
-            assert!(parse(&full("", "5", bad, "0")).unwrap_err().contains("Minimum offers"), "{bad:?}");
+            assert!(
+                parse(&full("", "5", bad, "0"))
+                    .unwrap_err()
+                    .contains("Minimum offers"),
+                "{bad:?}"
+            );
         }
         for good in ["1", "1000", " 3 "] {
             assert!(parse(&full("", "5", good, "0")).is_ok(), "{good:?}");
@@ -300,7 +421,12 @@ mod tests {
     #[test]
     fn xmr_depth_must_be_a_number_from_zero_to_the_cap() {
         for bad in ["-0.1", "1000001", "lots", "", "NaN", "inf"] {
-            assert!(parse(&full("", "5", "1", bad)).unwrap_err().contains("Minimum XMR"), "{bad:?}");
+            assert!(
+                parse(&full("", "5", "1", bad))
+                    .unwrap_err()
+                    .contains("Minimum XMR"),
+                "{bad:?}"
+            );
         }
         for good in ["0", "0.5", "1000000"] {
             assert!(parse(&full("", "5", "1", good)).is_ok(), "{good:?}");

@@ -41,7 +41,12 @@ pub(crate) struct EventLayer<W> {
 
 impl<W> EventLayer<W> {
     pub(crate) fn new(service: &'static str, json: Option<W>, store: Arc<StoreSink>) -> Self {
-        EventLayer { service, json, store, ids: SpanIds::default() }
+        EventLayer {
+            service,
+            json,
+            store,
+            ids: SpanIds::default(),
+        }
     }
 }
 
@@ -59,7 +64,10 @@ pub(crate) struct JsonVisitor {
 impl JsonVisitor {
     fn put(&mut self, field: &Field, value: Value) {
         if redact::is_secret_name(field.name()) {
-            self.fields.insert(field.name().to_string(), Value::String(redact::REDACTED.to_string()));
+            self.fields.insert(
+                field.name().to_string(),
+                Value::String(redact::REDACTED.to_string()),
+            );
         } else {
             self.fields.insert(field.name().to_string(), value);
         }
@@ -70,7 +78,8 @@ impl JsonVisitor {
             self.message = Some(redact::text(value).into_owned());
         } else {
             let value = redact::field(field.name(), value).into_owned();
-            self.fields.insert(field.name().to_string(), Value::String(value));
+            self.fields
+                .insert(field.name().to_string(), Value::String(value));
         }
     }
 }
@@ -101,7 +110,10 @@ impl Visit for JsonVisitor {
     }
 
     fn record_f64(&mut self, field: &Field, value: f64) {
-        self.put(field, serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number));
+        self.put(
+            field,
+            serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number),
+        );
     }
 }
 
@@ -131,12 +143,17 @@ impl SpanIds {
         };
         let registry = dispatch.downcast_ref::<tracing_subscriber::Registry>()?;
         // Collected first: the lookup below borrows each span's extensions.
-        let spans: Vec<Id> = registry.span(&start)?.scope().map(|span| span.id()).collect();
+        let spans: Vec<Id> = registry
+            .span(&start)?
+            .scope()
+            .map(|span| span.id())
+            .collect();
         spans.iter().find_map(|id| {
             let context = tracing_opentelemetry::get_otel_context(id, &dispatch)?;
             let span = context.span();
             let ids = span.span_context();
-            ids.is_valid().then(|| (ids.trace_id().to_string(), ids.span_id().to_string()))
+            ids.is_valid()
+                .then(|| (ids.trace_id().to_string(), ids.span_id().to_string()))
         })
     }
 }
@@ -164,7 +181,10 @@ impl Line {
             line.push(':');
             line.push_str(&value.to_string());
         };
-        let timestamp = self.timestamp.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
+        let timestamp = self
+            .timestamp
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
         push("timestamp", &Value::String(timestamp));
         push("level", &Value::String(self.level.to_string()));
         push("service", &Value::String(service.to_string()));
@@ -176,7 +196,10 @@ impl Line {
         push("message", &Value::String(self.message.clone()));
         push("attributes", &Value::Object(self.attributes.clone()));
         if !self.spans.is_empty() {
-            push("spans", &Value::Array(self.spans.iter().cloned().map(Value::String).collect()));
+            push(
+                "spans",
+                &Value::Array(self.spans.iter().cloned().map(Value::String).collect()),
+            );
         }
         line.push_str("}\n");
         line
@@ -242,7 +265,9 @@ where
             // One write per line, so lines from different threads don't
             // interleave. A failed write to stderr has nowhere to be
             // reported.
-            let _ = make_writer.make_writer_for(metadata).write_all(line.to_json(self.service).as_bytes());
+            let _ = make_writer
+                .make_writer_for(metadata)
+                .write_all(line.to_json(self.service).as_bytes());
         }
         self.store.log(self.service, line);
     }

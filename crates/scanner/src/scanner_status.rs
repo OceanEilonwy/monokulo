@@ -8,8 +8,8 @@
 //! `daemon_fallback`'s own log events have to real behavior,
 //! just queryable instead of log-only.
 
-use std::collections::HashMap;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use monero::Network;
@@ -85,7 +85,14 @@ mod tests {
     fn record_tick_tracks_success_then_failure_then_success_correctly() {
         let map = new_scanner_status_map();
 
-        record_tick(&map, Network::Stagenet, 1000, 1001, 3, &Ok::<(), String>(()));
+        record_tick(
+            &map,
+            Network::Stagenet,
+            1000,
+            1001,
+            3,
+            &Ok::<(), String>(()),
+        );
         {
             let guard = map.read();
             let status = guard.get(&Network::Stagenet).unwrap();
@@ -97,7 +104,14 @@ mod tests {
             assert_eq!(status.last_tick_finished_at, Some(1001));
         }
 
-        record_tick(&map, Network::Stagenet, 1010, 1012, 3, &Err("node unreachable".to_string()));
+        record_tick(
+            &map,
+            Network::Stagenet,
+            1010,
+            1012,
+            3,
+            &Err("node unreachable".to_string()),
+        );
         {
             let guard = map.read();
             let status = guard.get(&Network::Stagenet).unwrap();
@@ -106,12 +120,25 @@ mod tests {
             assert_eq!(status.last_error.as_deref(), Some("node unreachable"));
         }
 
-        record_tick(&map, Network::Stagenet, 1020, 1021, 5, &Ok::<(), String>(()));
+        record_tick(
+            &map,
+            Network::Stagenet,
+            1020,
+            1021,
+            5,
+            &Ok::<(), String>(()),
+        );
         let guard = map.read();
         let status = guard.get(&Network::Stagenet).unwrap();
         assert_eq!(status.tick_count, 3);
-        assert!(status.last_tick_ok, "a later success must clear the earlier failure");
-        assert!(status.last_error.is_none(), "the stale error must not linger past a real success");
+        assert!(
+            status.last_tick_ok,
+            "a later success must clear the earlier failure"
+        );
+        assert!(
+            status.last_error.is_none(),
+            "the stale error must not linger past a real success"
+        );
         assert_eq!(status.tenants_scanned, 5);
     }
 
@@ -119,7 +146,14 @@ mod tests {
     fn different_networks_are_tracked_independently() {
         let map = new_scanner_status_map();
         record_tick(&map, Network::Mainnet, 1000, 1001, 1, &Ok::<(), String>(()));
-        record_tick(&map, Network::Stagenet, 2000, 2005, 2, &Err("down".to_string()));
+        record_tick(
+            &map,
+            Network::Stagenet,
+            2000,
+            2005,
+            2,
+            &Err("down".to_string()),
+        );
 
         let guard = map.read();
         assert!(guard.get(&Network::Mainnet).unwrap().last_tick_ok);

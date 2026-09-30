@@ -10,8 +10,8 @@
 //! recommended API) is that hash. Do not reuse this module for tokens, and
 //! do not reuse `shared::auth` for passwords.
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::password_hash::rand_core::OsRng;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 
 /// Hashes `password` with Argon2id, using the crate's current
@@ -79,7 +79,10 @@ mod tests {
 
     #[test]
     fn verifying_against_a_malformed_hash_string_returns_false_rather_than_panicking() {
-        assert!(!verify_password("whatever", "this is not a PHC-format hash"));
+        assert!(!verify_password(
+            "whatever",
+            "this is not a PHC-format hash"
+        ));
         assert!(!verify_password("whatever", ""));
     }
 }

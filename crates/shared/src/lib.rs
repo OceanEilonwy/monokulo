@@ -10,13 +10,13 @@
 //! keep `key-custody-service` and `scanner` from forming a cyclic Cargo
 //! dependency once `main.rs` needed to depend on both.
 
-pub mod log;
 pub mod auth;
 pub mod coinmarketcap;
 pub mod exchange_rate;
 pub mod haveno;
 pub mod http_cache;
 pub mod key_custody;
+pub mod log;
 pub mod migrations;
 pub mod network;
 pub mod password;

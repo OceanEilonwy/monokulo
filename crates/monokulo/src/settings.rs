@@ -22,8 +22,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use live_settings::{
-    choice_value, settings, AnySetting, FieldError, HttpUrl, Registry, Secret, Section, Setting, SettingValue,
-    Snapshot, Warning,
+    choice_value, settings, AnySetting, FieldError, HttpUrl, Registry, Secret, Section, Setting,
+    SettingValue, Snapshot, Warning,
 };
 
 use crate::abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
@@ -45,7 +45,9 @@ fn check_public_url(value: &String) -> Result<(), String> {
 }
 
 fn check_trusted_proxies(value: &String) -> Result<(), String> {
-    TrustedProxies::parse(value).map(|_| ()).map_err(|e| e.to_string())
+    TrustedProxies::parse(value)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn check_onion_listener(value: &String) -> Result<(), String> {
@@ -279,7 +281,14 @@ impl AsRef<telemetry::LogConfig> for LoggingConfig {
 impl Section for LoggingConfig {
     const NAME: &'static str = "logging";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&LOGGING_LEVEL, &LOGGING_DEV_MODE_UNTIL, &LOGGING_RETENTION_DAYS, &LOGGING_MAX_MB, &LOGGING_OTLP_ENDPOINT, &LOGGING_OTLP_HEADERS]
+        &[
+            &LOGGING_LEVEL,
+            &LOGGING_DEV_MODE_UNTIL,
+            &LOGGING_RETENTION_DAYS,
+            &LOGGING_MAX_MB,
+            &LOGGING_OTLP_ENDPOINT,
+            &LOGGING_OTLP_HEADERS,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(LoggingConfig(telemetry::LogConfig {
@@ -302,14 +311,18 @@ pub fn get<T: SettingValue>(db: &Db, setting: &Setting<T>) -> T {
         if !raw.trim().is_empty() {
             match setting.parse(&raw) {
                 Ok(value) => return value,
-                Err(e) => tracing::warn!(setting = setting.key, env = setting.env_var, error = %e, "settings: the environment variable's value is invalid; ignoring it"),
+                Err(e) => {
+                    tracing::warn!(setting = setting.key, env = setting.env_var, error = %e, "settings: the environment variable's value is invalid; ignoring it")
+                }
             }
         }
     }
     if let Some(raw) = db.get_setting(setting.key).ok().flatten() {
         match setting.parse(&raw) {
             Ok(value) => return value,
-            Err(e) => tracing::warn!(setting = setting.key, error = %e, "settings: the saved value is invalid; using the default"),
+            Err(e) => {
+                tracing::warn!(setting = setting.key, error = %e, "settings: the saved value is invalid; using the default")
+            }
         }
     }
     setting.default_value()
@@ -413,11 +426,20 @@ impl Section for ExchangeRateConfig {
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(ExchangeRateConfig {
             coingecko_enabled: snapshot.get(&EXCHANGE_RATE_COINGECKO_ENABLED),
-            coingecko_base_url: snapshot.get(&EXCHANGE_RATE_COINGECKO_BASE_URL).as_str().to_string(),
+            coingecko_base_url: snapshot
+                .get(&EXCHANGE_RATE_COINGECKO_BASE_URL)
+                .as_str()
+                .to_string(),
             coinmarketcap_enabled: snapshot.get(&EXCHANGE_RATE_COINMARKETCAP_ENABLED),
-            coinmarketcap_base_url: snapshot.get(&EXCHANGE_RATE_COINMARKETCAP_BASE_URL).as_str().to_string(),
+            coinmarketcap_base_url: snapshot
+                .get(&EXCHANGE_RATE_COINMARKETCAP_BASE_URL)
+                .as_str()
+                .to_string(),
             haveno_enabled: snapshot.get(&EXCHANGE_RATE_HAVENO_ENABLED),
-            haveno_base_url: snapshot.get(&EXCHANGE_RATE_HAVENO_BASE_URL).as_str().to_string(),
+            haveno_base_url: snapshot
+                .get(&EXCHANGE_RATE_HAVENO_BASE_URL)
+                .as_str()
+                .to_string(),
             cache_seconds: snapshot.get(&EXCHANGE_RATE_CACHE_SECONDS),
         })
     }
@@ -448,7 +470,8 @@ impl Section for AbuseConfig {
             )]);
         }
         Ok(AbuseConfig {
-            trusted_proxies: TrustedProxies::parse(&snapshot.get(&ABUSE_TRUSTED_PROXIES)).unwrap_or_default(),
+            trusted_proxies: TrustedProxies::parse(&snapshot.get(&ABUSE_TRUSTED_PROXIES))
+                .unwrap_or_default(),
             soft_per_min: soft,
             hard_per_min: hard,
             signed_in_per_min: snapshot.get(&ABUSE_SIGNED_IN_PER_MIN),
@@ -483,12 +506,23 @@ impl Section for OnionListenerConfig {
 pub struct DbSettings(pub SharedDb);
 
 impl live_settings::SettingsStore for DbSettings {
-    fn read_all(&self) -> Result<std::collections::HashMap<String, String>, live_settings::StoreError> {
-        self.0.lock().list_settings().map_err(live_settings::StoreError::new)
+    fn read_all(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, live_settings::StoreError> {
+        self.0
+            .lock()
+            .list_settings()
+            .map_err(live_settings::StoreError::new)
     }
 
-    fn write_all(&self, changes: &[(&str, Option<String>)]) -> Result<(), live_settings::StoreError> {
-        self.0.lock().write_settings(changes).map_err(live_settings::StoreError::new)
+    fn write_all(
+        &self,
+        changes: &[(&str, Option<String>)],
+    ) -> Result<(), live_settings::StoreError> {
+        self.0
+            .lock()
+            .write_settings(changes)
+            .map_err(live_settings::StoreError::new)
     }
 }
 
@@ -504,7 +538,11 @@ impl live_settings::Reloadable for EngineConnectionReloadable {
     type Config = EngineConnection;
     type Prepared = EngineConnection;
 
-    async fn prepare(&self, new: &EngineConnection, old: &EngineConnection) -> Result<(EngineConnection, Vec<Warning>), FieldError> {
+    async fn prepare(
+        &self,
+        new: &EngineConnection,
+        old: &EngineConnection,
+    ) -> Result<(EngineConnection, Vec<Warning>), FieldError> {
         let mut warnings = Vec::new();
         if new.url != old.url {
             let probe = EngineClient::with_cache_limit(new.url.clone(), 1024 * 1024);
@@ -516,7 +554,10 @@ impl live_settings::Reloadable for EngineConnectionReloadable {
                 )),
                 Err(_) => warnings.push(Warning::for_key(
                     ENGINE_URL.key,
-                    format!("Saved, but the engine at {} didn't answer within 3 seconds.", new.url),
+                    format!(
+                        "Saved, but the engine at {} didn't answer within 3 seconds.",
+                        new.url
+                    ),
                 )),
             }
         }
@@ -524,7 +565,8 @@ impl live_settings::Reloadable for EngineConnectionReloadable {
     }
 
     async fn install(&self, connection: EngineConnection) {
-        self.engine_client.retarget(connection.url, connection.http_cache_bytes);
+        self.engine_client
+            .retarget(connection.url, connection.http_cache_bytes);
     }
 
     fn boot_policy(&self) -> live_settings::BootPolicy {
@@ -542,7 +584,11 @@ impl live_settings::Reloadable for ExchangeRatesReloadable {
     type Config = ExchangeRateConfig;
     type Prepared = ExchangeRateConfig;
 
-    async fn prepare(&self, new: &ExchangeRateConfig, _old: &ExchangeRateConfig) -> Result<(ExchangeRateConfig, Vec<Warning>), FieldError> {
+    async fn prepare(
+        &self,
+        new: &ExchangeRateConfig,
+        _old: &ExchangeRateConfig,
+    ) -> Result<(ExchangeRateConfig, Vec<Warning>), FieldError> {
         Ok((new.clone(), Vec::new()))
     }
 
@@ -565,7 +611,11 @@ impl live_settings::Reloadable for AbuseReloadable {
     type Config = AbuseConfig;
     type Prepared = AbuseConfig;
 
-    async fn prepare(&self, new: &AbuseConfig, _old: &AbuseConfig) -> Result<(AbuseConfig, Vec<Warning>), FieldError> {
+    async fn prepare(
+        &self,
+        new: &AbuseConfig,
+        _old: &AbuseConfig,
+    ) -> Result<(AbuseConfig, Vec<Warning>), FieldError> {
         Ok((new.clone(), Vec::new()))
     }
 
@@ -617,7 +667,9 @@ impl OnionReloadable {
         tokio::spawn(async move {
             let serve = axum::serve(
                 listener,
-                router.into_make_service_with_connect_info::<crate::abuse::proxy_protocol::OnionPeer>(),
+                router
+                    .into_make_service_with_connect_info::<crate::abuse::proxy_protocol::OnionPeer>(
+                    ),
             )
             .with_graceful_shutdown(async move {
                 let _ = stopped.wait_for(|s| *s).await;
@@ -646,7 +698,11 @@ impl live_settings::Reloadable for OnionReloadable {
     type Config = OnionListenerConfig;
     type Prepared = OnionChange;
 
-    async fn prepare(&self, new: &OnionListenerConfig, old: &OnionListenerConfig) -> Result<(OnionChange, Vec<Warning>), FieldError> {
+    async fn prepare(
+        &self,
+        new: &OnionListenerConfig,
+        old: &OnionListenerConfig,
+    ) -> Result<(OnionChange, Vec<Warning>), FieldError> {
         let active = self.inner.running.lock().is_some() || self.inner.waiting.lock().is_some();
         if new == old && (active || new.address.is_none()) {
             return Ok((OnionChange::Keep, Vec::new()));
@@ -664,7 +720,12 @@ impl live_settings::Reloadable for OnionReloadable {
                             attempts += 1;
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }
-                        Err(e) => return Err(FieldError::new(ABUSE_ONION_LISTENER.key, format!("Can't listen on {address}: {e}."))),
+                        Err(e) => {
+                            return Err(FieldError::new(
+                                ABUSE_ONION_LISTENER.key,
+                                format!("Can't listen on {address}: {e}."),
+                            ))
+                        }
                     }
                 }
             }
@@ -720,7 +781,9 @@ impl MonokuloSettings {
     ) -> Result<Arc<Self>, String> {
         let mut builder = Registry::builder_with_env(Arc::new(DbSettings(db)), ALL, env);
         builder.reloadable(EngineConnectionReloadable { engine_client });
-        builder.reloadable(ExchangeRatesReloadable { providers: exchange_rates });
+        builder.reloadable(ExchangeRatesReloadable {
+            providers: exchange_rates,
+        });
         builder.reloadable(AbuseReloadable { abuse });
         match onion {
             Some(onion) => {
@@ -737,12 +800,18 @@ impl MonokuloSettings {
         let registry = builder.build().map_err(|e| e.to_string())?;
         let report = registry.boot().await.map_err(|e| e.to_string())?;
         for warning in &report.warnings {
-            tracing::warn!(setting = warning.key.as_deref(), "settings: {}", warning.message);
+            tracing::warn!(
+                setting = warning.key.as_deref(),
+                "settings: {}",
+                warning.message
+            );
         }
         for (section, error) in &report.degraded {
             tracing::warn!(section = %section, error = %error, "settings: could not be applied at start, carrying on without it");
         }
-        Ok(Arc::new(MonokuloSettings { registry: Some(registry) }))
+        Ok(Arc::new(MonokuloSettings {
+            registry: Some(registry),
+        }))
     }
 }
 
@@ -755,10 +824,20 @@ mod tests {
         for (input, expected) in [
             ("https://pay.example.com", "https://pay.example.com"),
             ("https://pay.example.com/", "https://pay.example.com"),
-            ("  http://pay.example.com:8081/ ", "http://pay.example.com:8081"),
-            ("http://abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz234.onion", "http://abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz234.onion"),
+            (
+                "  http://pay.example.com:8081/ ",
+                "http://pay.example.com:8081",
+            ),
+            (
+                "http://abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz234.onion",
+                "http://abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz234.onion",
+            ),
         ] {
-            assert_eq!(validate_public_url(input).as_deref(), Ok(expected), "{input}");
+            assert_eq!(
+                validate_public_url(input).as_deref(),
+                Ok(expected),
+                "{input}"
+            );
         }
         for bad in [
             "",
@@ -770,7 +849,10 @@ mod tests {
             "https://user:pass@pay.example.com",
             "https://",
         ] {
-            assert!(validate_public_url(bad).is_err(), "{bad:?} should be refused");
+            assert!(
+                validate_public_url(bad).is_err(),
+                "{bad:?} should be refused"
+            );
         }
     }
 
@@ -778,7 +860,8 @@ mod tests {
     fn public_url_is_none_until_set_and_then_normalized() {
         let db = Db::open_in_memory().unwrap();
         assert_eq!(public_url(&db), None);
-        db.set_setting(PUBLIC_URL.key, "https://pay.example.com/").unwrap();
+        db.set_setting(PUBLIC_URL.key, "https://pay.example.com/")
+            .unwrap();
         assert_eq!(public_url(&db).as_deref(), Some("https://pay.example.com"));
         db.set_setting(PUBLIC_URL.key, "not a url").unwrap();
         assert_eq!(public_url(&db), None);
@@ -788,7 +871,8 @@ mod tests {
     fn a_saved_setting_is_read_back_over_the_default_and_an_env_var_wins() {
         let db = Db::open_in_memory().unwrap();
         assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 30);
-        db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3").unwrap();
+        db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3")
+            .unwrap();
         assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 3);
         let _env = shared::settings::test_env::set(EXCHANGE_RATE_CACHE_SECONDS.env_var, Some("9"));
         assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 9);
@@ -816,7 +900,14 @@ mod tests {
         assert_eq!(covered, ALL.len());
     }
 
-    async fn loaded(onion: Option<OnionReloadable>) -> (Arc<MonokuloSettings>, EngineClient, Arc<ExchangeRateProviders>, Arc<AbuseProtection>) {
+    async fn loaded(
+        onion: Option<OnionReloadable>,
+    ) -> (
+        Arc<MonokuloSettings>,
+        EngineClient,
+        Arc<ExchangeRateProviders>,
+        Arc<AbuseProtection>,
+    ) {
         let db = Db::open_in_memory().unwrap().into_shared();
         let engine = EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
         let rates = Arc::new(ExchangeRateProviders::xmr_only());
@@ -844,21 +935,54 @@ mod tests {
         let registry = settings.registry.as_ref().unwrap();
         // Loading applied the saved (here: default) settings.
         assert_eq!(engine.base_url(), "http://127.0.0.1:8443");
-        assert_eq!(rates.available_providers(), vec!["coingecko", "coinmarketcap"], "haveno is off until an admin turns it on");
-        registry.save(change("exchange_rate.haveno_enabled", "true")).await.unwrap();
-        assert_eq!(rates.available_providers(), vec!["coingecko", "coinmarketcap", "haveno"]);
+        assert_eq!(
+            rates.available_providers(),
+            vec!["coingecko", "coinmarketcap"],
+            "haveno is off until an admin turns it on"
+        );
+        registry
+            .save(change("exchange_rate.haveno_enabled", "true"))
+            .await
+            .unwrap();
+        assert_eq!(
+            rates.available_providers(),
+            vec!["coingecko", "coinmarketcap", "haveno"]
+        );
 
-        let report = registry.save(change("engine.url", "http://127.0.0.1:2")).await.unwrap();
-        assert_eq!(engine.base_url(), "http://127.0.0.1:2", "the next engine call goes to the new address");
-        assert_eq!(report.warnings.len(), 1, "nothing answers there, and the save says so (D4)");
+        let report = registry
+            .save(change("engine.url", "http://127.0.0.1:2"))
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.base_url(),
+            "http://127.0.0.1:2",
+            "the next engine call goes to the new address"
+        );
+        assert_eq!(
+            report.warnings.len(),
+            1,
+            "nothing answers there, and the save says so (D4)"
+        );
 
-        registry.save(change("exchange_rate.coingecko_enabled", "false")).await.unwrap();
+        registry
+            .save(change("exchange_rate.coingecko_enabled", "false"))
+            .await
+            .unwrap();
         assert_eq!(rates.available_providers(), vec!["coinmarketcap", "haveno"]);
-        registry.save(change("exchange_rate.haveno_enabled", "false")).await.unwrap();
-        registry.save(change("exchange_rate.coinmarketcap_enabled", "false")).await.unwrap();
+        registry
+            .save(change("exchange_rate.haveno_enabled", "false"))
+            .await
+            .unwrap();
+        registry
+            .save(change("exchange_rate.coinmarketcap_enabled", "false"))
+            .await
+            .unwrap();
         assert!(rates.available_providers().is_empty());
 
-        registry.save(change("abuse.soft_per_min", "7")).await.unwrap();
+        registry
+            .save(change("abuse.soft_per_min", "7"))
+            .await
+            .unwrap();
         assert_eq!(abuse.config().soft_per_min, 7);
 
         let refused = registry.save(change("abuse.hard_per_min", "5")).await;
@@ -873,20 +997,44 @@ mod tests {
         onion.router_ready(axum::Router::new().route("/", axum::routing::get(|| async { "ok" })));
         let registry = settings.registry.as_ref().unwrap();
 
-        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        registry.save(change("abuse.onion_listener", &free.to_string())).await.unwrap();
+        let free = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        registry
+            .save(change("abuse.onion_listener", &free.to_string()))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(tokio::net::TcpStream::connect(free).await.is_ok(), "listening straight away");
+        assert!(
+            tokio::net::TcpStream::connect(free).await.is_ok(),
+            "listening straight away"
+        );
 
         // Moved away and straight back: the first address is free again at
         // once, with no connection needed to let go of it.
-        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        registry.save(change("abuse.onion_listener", &other.to_string())).await.unwrap();
-        registry.save(change("abuse.onion_listener", &free.to_string())).await.expect("moving back to the first address");
+        let other = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        registry
+            .save(change("abuse.onion_listener", &other.to_string()))
+            .await
+            .unwrap();
+        registry
+            .save(change("abuse.onion_listener", &free.to_string()))
+            .await
+            .expect("moving back to the first address");
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(tokio::net::TcpStream::connect(free).await.is_ok(), "listening on the first address again");
+        assert!(
+            tokio::net::TcpStream::connect(free).await.is_ok(),
+            "listening on the first address again"
+        );
 
-        registry.save(change("abuse.onion_listener", "")).await.unwrap();
+        registry
+            .save(change("abuse.onion_listener", ""))
+            .await
+            .unwrap();
         let mut closed = false;
         for _ in 0..50 {
             if tokio::net::TcpStream::connect(free).await.is_err() {
@@ -898,8 +1046,24 @@ mod tests {
         assert!(closed, "cleared: no longer listening");
 
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let refused = registry.save(change("abuse.onion_listener", &taken.local_addr().unwrap().to_string())).await;
-        assert!(refused.is_err(), "an address that can't be bound refuses the save");
-        assert_eq!(registry.describe().iter().find(|v| v.key == "abuse.onion_listener").unwrap().value, "");
+        let refused = registry
+            .save(change(
+                "abuse.onion_listener",
+                &taken.local_addr().unwrap().to_string(),
+            ))
+            .await;
+        assert!(
+            refused.is_err(),
+            "an address that can't be bound refuses the save"
+        );
+        assert_eq!(
+            registry
+                .describe()
+                .iter()
+                .find(|v| v.key == "abuse.onion_listener")
+                .unwrap()
+                .value,
+            ""
+        );
     }
 }

@@ -99,7 +99,10 @@ const KNOWN_STATUS_MAX_AGE: Duration = Duration::from_secs(300);
 /// visitors without JavaScript too.
 pub fn known_health(state: &AppState) -> Option<bool> {
     let mut cache = status_cache(state);
-    let age = cache.cached.as_ref().map(|cached| cached.fetched_at.elapsed());
+    let age = cache
+        .cached
+        .as_ref()
+        .map(|cached| cached.fetched_at.elapsed());
     if age.is_none_or(|age| age >= CACHE_TTL) && !cache.refreshing {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             cache.refreshing = true;
@@ -110,7 +113,10 @@ pub fn known_health(state: &AppState) -> Option<bool> {
             });
         }
     }
-    let cached = cache.cached.as_ref().filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)?;
+    let cached = cache
+        .cached
+        .as_ref()
+        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)?;
     Some(is_healthy(&cached.result))
 }
 
@@ -138,7 +144,11 @@ pub fn known_enabled_custody_backends(state: &AppState) -> Vec<String> {
     else {
         return Vec::new();
     };
-    let mut choices: Vec<String> = status.key_custody.iter().map(|b| b.backend.clone()).collect();
+    let mut choices: Vec<String> = status
+        .key_custody
+        .iter()
+        .map(|b| b.backend.clone())
+        .collect();
     if let Some(default) = &status.key_custody_default {
         if let Some(at) = choices.iter().position(|b| b == default) {
             let default = choices.remove(at);
@@ -150,9 +160,15 @@ pub fn known_enabled_custody_backends(state: &AppState) -> Vec<String> {
 
 /// [`known_custody_choices`] as form options, `selected` (or the default)
 /// selected.
-pub fn custody_choice_views(state: &AppState, selected: Option<&str>) -> Vec<crate::views::connect::CustodyChoice> {
+pub fn custody_choice_views(
+    state: &AppState,
+    selected: Option<&str>,
+) -> Vec<crate::views::connect::CustodyChoice> {
     let choices = known_custody_choices(state);
-    let selected = selected.filter(|s| choices.iter().any(|c| c == s)).or(choices.first().map(String::as_str)).map(str::to_string);
+    let selected = selected
+        .filter(|s| choices.iter().any(|c| c == s))
+        .or(choices.first().map(String::as_str))
+        .map(str::to_string);
     choices
         .iter()
         .map(|backend| crate::views::connect::CustodyChoice {
@@ -167,7 +183,9 @@ pub fn custody_choice_views(state: &AppState, selected: Option<&str>) -> Vec<cra
 pub fn custody_backend_label(backend: &str) -> String {
     match backend {
         "plain" => "In the engine (simplest)".to_string(),
-        "socket" => "In a separate key storage service (the engine never holds the keys)".to_string(),
+        "socket" => {
+            "In a separate key storage service (the engine never holds the keys)".to_string()
+        }
         other => other.to_string(),
     }
 }
@@ -183,7 +201,10 @@ pub fn invalidate_status_cache(state: &AppState) {
 /// read it without waiting on an engine.
 #[cfg(test)]
 pub(crate) fn seed_status_for_tests(state: &AppState, status: EngineStatusResponse) {
-    status_cache(state).cached = Some(CachedStatus { fetched_at: Instant::now(), result: Ok(status) });
+    status_cache(state).cached = Some(CachedStatus {
+        fetched_at: Instant::now(),
+        result: Ok(status),
+    });
 }
 
 /// The stores the engine last said it can't scan (task 3.7), from the same
@@ -210,10 +231,11 @@ fn is_healthy(result: &Result<EngineStatusResponse, String>) -> bool {
     // it's nothing to be fine *about*, so that case is excluded
     // explicitly rather than trusted to fall out of `all` on its own.
     !status.networks.is_empty()
-        && status
-            .networks
-            .iter()
-            .all(|n| n.nodes.iter().any(|node| node.error.is_none()) && !n.scanner.is_stale && n.scanner.last_tick_ok)
+        && status.networks.iter().all(|n| {
+            n.nodes.iter().any(|node| node.error.is_none())
+                && !n.scanner.is_stale
+                && n.scanner.last_tick_ok
+        })
 }
 
 /// Returns the cached engine status if it's still fresh, otherwise fetches a
@@ -230,11 +252,18 @@ pub(crate) async fn get_status_cached(state: &AppState) -> Result<EngineStatusRe
         }
     }
     let asked = state.engine_client.base_url();
-    let result = state.engine_client.get_status().await.map_err(|e| describe_engine_error(&e));
+    let result = state
+        .engine_client
+        .get_status()
+        .await
+        .map_err(|e| describe_engine_error(&e));
     let mut cache = status_cache(state);
     // Not cached if the engine URL changed while this was being fetched.
     if cache.base_url == asked {
-        cache.cached = Some(CachedStatus { fetched_at: Instant::now(), result: result.clone() });
+        cache.cached = Some(CachedStatus {
+            fetched_at: Instant::now(),
+            result: result.clone(),
+        });
     }
     result
 }
@@ -242,9 +271,16 @@ pub(crate) async fn get_status_cached(state: &AppState) -> Result<EngineStatusRe
 /// `GET /status` - the full page. Unauthenticated, so `logged_in` is a real
 /// per-request check (see `StatusPageViewModel::logged_in`'s own doc
 /// comment), not a fixed literal like most other pages.
-pub async fn status_page(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
+pub async fn status_page(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let authed = super::resolve_authed_user(&state, &headers);
-    let view_model = status_view(&state, authed.as_ref().is_some_and(|(user, _)| user.is_admin)).await;
+    let view_model = status_view(
+        &state,
+        authed.as_ref().is_some_and(|(user, _)| user.is_admin),
+    )
+    .await;
     let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/status");
     views::status::page(&chrome, &view_model).into_response()
 }
@@ -253,31 +289,53 @@ pub async fn status_page(State(state): State<AppState>, headers: axum::http::Hea
 /// changes (checked as often as the cached engine status can change), as
 /// ssexi JSON-routed events replacing `#status-live`. One open stream per
 /// client, like the checkout's.
-pub async fn status_events(State(state): State<AppState>, headers: axum::http::HeaderMap, extensions: axum::http::Extensions) -> Response {
+pub async fn status_events(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
+) -> Response {
     let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
         Some(client) => match state.abuse.streams.try_acquire(client, "status") {
             Some(permit) => Some(permit),
-            None => return (axum::http::StatusCode::TOO_MANY_REQUESTS, "too many open update streams").into_response(),
+            None => {
+                return (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    "too many open update streams",
+                )
+                    .into_response()
+            }
         },
         None => None,
     };
     let admin = super::resolve_authed_user(&state, &headers).is_some_and(|(user, _)| user.is_admin);
-    let stream = futures_util::stream::unfold((state, None::<String>, true), move |(state, last, first)| {
-        // Held by the stream, so the slot frees when it ends.
-        let _permit = &permit;
-        async move {
-            if !first {
-                tokio::time::sleep(CACHE_TTL).await;
+    let stream = futures_util::stream::unfold(
+        (state, None::<String>, true),
+        move |(state, last, first)| {
+            // Held by the stream, so the slot frees when it ends.
+            let _permit = &permit;
+            async move {
+                if !first {
+                    tokio::time::sleep(CACHE_TTL).await;
+                }
+                let html =
+                    views::status::live_fragment(&status_view(&state, admin).await).into_string();
+                if last.as_deref() == Some(html.as_str()) {
+                    // Unchanged: a comment keeps the connection's clock honest.
+                    return Some((
+                        Ok(axum::response::sse::Event::default().comment("unchanged")),
+                        (state, last, false),
+                    ));
+                }
+                let event = axum::response::sse::Event::default()
+                    .event(r##"{"target":"#status-live","swap":"outerHTML"}"##)
+                    .data(html.clone());
+                Some((
+                    Ok::<_, std::convert::Infallible>(event),
+                    (state, Some(html), false),
+                ))
             }
-            let html = views::status::live_fragment(&status_view(&state, admin).await).into_string();
-            if last.as_deref() == Some(html.as_str()) {
-                // Unchanged: a comment keeps the connection's clock honest.
-                return Some((Ok(axum::response::sse::Event::default().comment("unchanged")), (state, last, false)));
-            }
-            let event = axum::response::sse::Event::default().event(r##"{"target":"#status-live","swap":"outerHTML"}"##).data(html.clone());
-            Some((Ok::<_, std::convert::Infallible>(event), (state, Some(html), false)))
-        }
-    });
+        },
+    );
     crate::live::sse(stream)
 }
 
@@ -318,14 +376,22 @@ pub async fn status_summary(State(state): State<AppState>) -> Response {
 
 fn describe_engine_error(err: &EngineClientError) -> String {
     match err {
-        EngineClientError::Request(_) | EngineClientError::Middleware(_) => "the engine could not be reached".to_string(),
-        EngineClientError::EngineError { status, .. } => format!("the engine responded with an error ({status})"),
+        EngineClientError::Request(_) | EngineClientError::Middleware(_) => {
+            "the engine could not be reached".to_string()
+        }
+        EngineClientError::EngineError { status, .. } => {
+            format!("the engine responded with an error ({status})")
+        }
     }
 }
 
 fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageViewModel {
     let now = crate::now_unix();
-    let networks = status.networks.into_iter().map(|n| build_network_view(n, now)).collect();
+    let networks = status
+        .networks
+        .into_iter()
+        .map(|n| build_network_view(n, now))
+        .collect();
     views::status::StatusPageViewModel {
         abuse: None,
         engine_error: None,
@@ -343,7 +409,10 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
             label: node.label,
             is_active: node.is_active,
             is_reachable: node.error.is_none(),
-            height_display: node.height.map(|h| h.to_string()).unwrap_or_else(|| "-".to_string()),
+            height_display: node
+                .height
+                .map(|h| h.to_string())
+                .unwrap_or_else(|| "-".to_string()),
             error: node.error,
         })
         .collect();
@@ -424,7 +493,10 @@ mod tests {
         assert_eq!(known_health(&state), None);
         let deadline = Instant::now() + Duration::from_secs(5);
         while status_cache(&state).refreshing {
-            assert!(Instant::now() < deadline, "the background refresh never finished");
+            assert!(
+                Instant::now() < deadline,
+                "the background refresh never finished"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         // The test engine is unreachable, which is a known problem.
@@ -440,14 +512,14 @@ mod tests {
     }
 
     mod http_tests {
-        use axum::Router;
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
+        use axum::Router;
         use http_body_util::BodyExt;
         use tower::ServiceExt;
 
         use crate::engine_client::EngineClient;
-        use crate::http::{AppState, build_router};
+        use crate::http::{build_router, AppState};
 
         use super::super::get_status_cached;
 
@@ -459,20 +531,37 @@ mod tests {
         /// same-second real refetch could also produce).
         #[tokio::test]
         async fn get_status_cached_reuses_a_fresh_fetch_instead_of_refetching() {
-            let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+            let engine =
+                scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                    .await;
             let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
 
-            let first = get_status_cached(&state).await.expect("first fetch should succeed");
-            let fetched_at_after_first = super::super::status_cache(&state).cached.as_ref().unwrap().fetched_at;
+            let first = get_status_cached(&state)
+                .await
+                .expect("first fetch should succeed");
+            let fetched_at_after_first = super::super::status_cache(&state)
+                .cached
+                .as_ref()
+                .unwrap()
+                .fetched_at;
 
-            let second = get_status_cached(&state).await.expect("second fetch should succeed");
-            let fetched_at_after_second = super::super::status_cache(&state).cached.as_ref().unwrap().fetched_at;
+            let second = get_status_cached(&state)
+                .await
+                .expect("second fetch should succeed");
+            let fetched_at_after_second = super::super::status_cache(&state)
+                .cached
+                .as_ref()
+                .unwrap()
+                .fetched_at;
 
             assert_eq!(
                 fetched_at_after_first, fetched_at_after_second,
                 "a second call within the TTL must reuse the cached fetch, not trigger a new one"
             );
-            assert_eq!(first.generated_at, second.generated_at, "a reused cache entry must hand back the exact same response");
+            assert_eq!(
+                first.generated_at, second.generated_at,
+                "a reused cache entry must hand back the exact same response"
+            );
         }
 
         fn state_with_engine(engine_client: EngineClient) -> AppState {
@@ -497,27 +586,50 @@ mod tests {
         /// own doc comment) - proves the page renders the honest "no nodes
         /// configured" state end to end, not a fabricated one.
         #[tokio::test]
-        async fn status_page_is_reachable_with_no_authentication_and_shows_no_configured_networks() {
+        async fn status_page_is_reachable_with_no_authentication_and_shows_no_configured_networks()
+        {
             let engine = scanner_test_support::spawn_test_engine().await;
             let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
             let router: Router = build_router(state);
 
-            let response =
-                router.oneshot(Request::builder().method("GET").uri("/status").body(Body::empty()).unwrap()).await.unwrap();
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/status")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             let html = body_text(response).await;
-            assert!(html.contains("Engine status"), "expected the real status page, got: {html}");
-            assert!(html.contains("No Monero nodes are configured"), "expected the honest empty state, got: {html}");
+            assert!(
+                html.contains("Engine status"),
+                "expected the real status page, got: {html}"
+            );
+            assert!(
+                html.contains("No Monero nodes are configured"),
+                "expected the honest empty state, got: {html}"
+            );
         }
 
         #[tokio::test]
         async fn status_summary_reports_unhealthy_when_there_are_no_configured_networks() {
-            let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+            let engine =
+                scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                    .await;
             let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
             let router: Router = build_router(state);
 
             let response = router
-                .oneshot(Request::builder().method("GET").uri("/status/summary").body(Body::empty()).unwrap())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/status/summary")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
@@ -525,7 +637,10 @@ mod tests {
             // An empty `networks` list vacuously satisfies `Iterator::all`, so
             // this must be pinned down explicitly rather than assumed - an
             // engine reporting no networks at all is not "everything's fine".
-            assert_eq!(body["healthy"], false, "an engine with zero configured networks must not read as healthy, got: {body}");
+            assert_eq!(
+                body["healthy"], false,
+                "an engine with zero configured networks must not read as healthy, got: {body}"
+            );
         }
 
         /// The real degradation path: the engine is entirely unreachable (no
@@ -536,11 +651,26 @@ mod tests {
             let state = state_with_engine(EngineClient::new("http://127.0.0.1:1"));
             let router: Router = build_router(state);
 
-            let response =
-                router.oneshot(Request::builder().method("GET").uri("/status").body(Body::empty()).unwrap()).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "an unreachable engine is not this page's own server error");
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/status")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "an unreachable engine is not this page's own server error"
+            );
             let html = body_text(response).await;
-            assert!(html.contains("could not be reached"), "expected a plain error banner, got: {html}");
+            assert!(
+                html.contains("could not be reached"),
+                "expected a plain error banner, got: {html}"
+            );
         }
 
         /// The page as it normally looks: a configured network whose node
@@ -549,14 +679,49 @@ mod tests {
         #[tokio::test]
         async fn status_page_lists_a_configured_networks_node_and_a_scanner_not_yet_run() {
             let engine = scanner_test_support::TestEngineConfig::new()
-                .with_networks(&[monero::Network::Mainnet]).with_admin_lookup_daemon().spawn().await;
-            let router: Router = build_router(state_with_engine(EngineClient::new(format!("http://{}", engine.addr))));
-            let html = body_text(router.clone().oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap()).await.unwrap()).await;
+                .with_networks(&[monero::Network::Mainnet])
+                .with_admin_lookup_daemon()
+                .spawn()
+                .await;
+            let router: Router = build_router(state_with_engine(EngineClient::new(format!(
+                "http://{}",
+                engine.addr
+            ))));
+            let html = body_text(
+                router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri("/status")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .await;
             assert!(html.contains("mainnet"), "got: {html}");
-            assert!(html.contains("lookup-test-daemon"), "the node is listed by its label: {html}");
+            assert!(
+                html.contains("lookup-test-daemon"),
+                "the node is listed by its label: {html}"
+            );
             assert!(html.contains("has not been scanned yet"), "got: {html}");
-            let summary = body_json(router.oneshot(Request::builder().uri("/status/summary").body(Body::empty()).unwrap()).await.unwrap()).await;
-            assert_eq!(summary["healthy"], false, "not healthy before the first scan: {summary}");
+            let summary = body_json(
+                router
+                    .oneshot(
+                        Request::builder()
+                            .uri("/status/summary")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(
+                summary["healthy"], false,
+                "not healthy before the first scan: {summary}"
+            );
         }
 
         /// What an operator sees for each scanner state the engine reports:
@@ -564,17 +729,40 @@ mod tests {
         /// run; and an unreachable node beside the active one.
         #[test]
         fn status_page_describes_each_scanner_state_and_an_unreachable_node() {
-            use crate::engine_client::{EngineStatusResponse, NetworkStatus, NodeStatus, ScannerStatusView};
-            let now = crate::now_unix();
-            let scanner = |ever_ticked, last_tick_ok, is_stale, last_error: Option<&str>| ScannerStatusView {
-                ever_ticked, last_tick_started_at: Some(now - 90), last_tick_finished_at: ever_ticked.then_some(now - 90),
-                tick_count: 7, tenants_scanned: 3, last_tick_ok, last_error: last_error.map(str::to_string), is_stale,
+            use crate::engine_client::{
+                EngineStatusResponse, NetworkStatus, NodeStatus, ScannerStatusView,
             };
+            let now = crate::now_unix();
+            let scanner =
+                |ever_ticked, last_tick_ok, is_stale, last_error: Option<&str>| ScannerStatusView {
+                    ever_ticked,
+                    last_tick_started_at: Some(now - 90),
+                    last_tick_finished_at: ever_ticked.then_some(now - 90),
+                    tick_count: 7,
+                    tenants_scanned: 3,
+                    last_tick_ok,
+                    last_error: last_error.map(str::to_string),
+                    is_stale,
+                };
             let network = |name: &str, scanner| NetworkStatus {
                 network: name.to_string(),
                 nodes: vec![
-                    NodeStatus { label: "node-a:18081".into(), is_active: true, in_cooldown: false, height: Some(3_700_000), error: None, network: None },
-                    NodeStatus { label: "node-b:18081".into(), is_active: false, in_cooldown: false, height: None, error: Some("connection refused".into()), network: None },
+                    NodeStatus {
+                        label: "node-a:18081".into(),
+                        is_active: true,
+                        in_cooldown: false,
+                        height: Some(3_700_000),
+                        error: None,
+                        network: None,
+                    },
+                    NodeStatus {
+                        label: "node-b:18081".into(),
+                        is_active: false,
+                        in_cooldown: false,
+                        height: None,
+                        error: Some("connection refused".into()),
+                        network: None,
+                    },
                 ],
                 scanner,
             };
@@ -582,7 +770,10 @@ mod tests {
                 networks: vec![
                     network("mainnet", scanner(true, true, false, None)),
                     network("stagenet", scanner(true, true, true, None)),
-                    network("testnet", scanner(true, false, false, Some("daemon request failed: timed out"))),
+                    network(
+                        "testnet",
+                        scanner(true, false, false, Some("daemon request failed: timed out")),
+                    ),
                 ],
                 poll_interval_secs: 2,
                 generated_at: now - 5,
@@ -590,15 +781,43 @@ mod tests {
                 key_custody: vec![],
                 key_custody_default: None,
             });
-            let labels: Vec<(&str, &str)> = view.networks.iter().map(|n| (n.scanner.status_label.as_str(), n.scanner.status_tag_class.as_str())).collect();
-            assert_eq!(labels, vec![("healthy", "tag-ok"), ("stale", "tag-error"), ("tick failing", "tag-error")]);
-            assert_eq!(view.networks[2].scanner.last_error.as_deref(), Some("daemon request failed: timed out"));
+            let labels: Vec<(&str, &str)> = view
+                .networks
+                .iter()
+                .map(|n| {
+                    (
+                        n.scanner.status_label.as_str(),
+                        n.scanner.status_tag_class.as_str(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                labels,
+                vec![
+                    ("healthy", "tag-ok"),
+                    ("stale", "tag-error"),
+                    ("tick failing", "tag-error")
+                ]
+            );
+            assert_eq!(
+                view.networks[2].scanner.last_error.as_deref(),
+                Some("daemon request failed: timed out")
+            );
             assert_eq!(view.networks[0].scanner.last_tick_display, "1m ago");
             let node_b = &view.networks[0].nodes[1];
             assert!(!node_b.is_reachable);
             assert_eq!(node_b.height_display, "-");
-            let html = crate::views::status::page(&crate::views::PageChrome::from_user(None, "/status"), &view).into_string();
-            assert!(html.contains("connection refused") && html.contains("3700000") && html.contains("daemon request failed: timed out"), "got: {html}");
+            let html = crate::views::status::page(
+                &crate::views::PageChrome::from_user(None, "/status"),
+                &view,
+            )
+            .into_string();
+            assert!(
+                html.contains("connection refused")
+                    && html.contains("3700000")
+                    && html.contains("daemon request failed: timed out"),
+                "got: {html}"
+            );
         }
 
         #[tokio::test]
@@ -607,7 +826,13 @@ mod tests {
             let router: Router = build_router(state);
 
             let response = router
-                .oneshot(Request::builder().method("GET").uri("/status/summary").body(Body::empty()).unwrap())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/status/summary")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);

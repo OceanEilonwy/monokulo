@@ -16,9 +16,9 @@
 //! with `429` and the page still works - `checkout.js` backs off and tries
 //! again.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use parking_lot::Mutex;
 use std::sync::Arc;
 
 use super::ClientIdentity;
@@ -34,12 +34,17 @@ pub struct StreamLimiter {
 }
 
 impl Default for StreamLimiter {
-    fn default() -> Self { StreamLimiter::new(MAX_STREAMS_PER_SOURCE) }
+    fn default() -> Self {
+        StreamLimiter::new(MAX_STREAMS_PER_SOURCE)
+    }
 }
 
 impl StreamLimiter {
     pub fn new(max: usize) -> Self {
-        StreamLimiter { max: AtomicUsize::new(max), open: Mutex::new(HashMap::new()) }
+        StreamLimiter {
+            max: AtomicUsize::new(max),
+            open: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Changes the cap for streams opened from now on.
@@ -50,7 +55,11 @@ impl StreamLimiter {
     /// A permit to hold for as long as the stream is open, or `None` when
     /// this client already has the maximum number of streams open to this
     /// store.
-    pub fn try_acquire(self: &Arc<Self>, client: &ClientIdentity, pk: &str) -> Option<StreamPermit> {
+    pub fn try_acquire(
+        self: &Arc<Self>,
+        client: &ClientIdentity,
+        pk: &str,
+    ) -> Option<StreamPermit> {
         let key = (client.clone(), pk.to_string());
         let mut open = self.open.lock();
         let count = open.entry(key.clone()).or_insert(0);
@@ -58,12 +67,19 @@ impl StreamLimiter {
             return None;
         }
         *count += 1;
-        Some(StreamPermit { limiter: Arc::clone(self), key })
+        Some(StreamPermit {
+            limiter: Arc::clone(self),
+            key,
+        })
     }
 
     #[cfg(test)]
     fn open_count(&self, client: &ClientIdentity, pk: &str) -> usize {
-        self.open.lock().get(&(client.clone(), pk.to_string())).copied().unwrap_or(0)
+        self.open
+            .lock()
+            .get(&(client.clone(), pk.to_string()))
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -99,18 +115,36 @@ mod tests {
 
         let first = limiter.try_acquire(&a, "pk_one").unwrap();
         let _second = limiter.try_acquire(&a, "pk_one").unwrap();
-        assert!(limiter.try_acquire(&a, "pk_one").is_none(), "a third stream from the same client to the same store is refused");
-        assert!(limiter.try_acquire(&a, "pk_two").is_some(), "another store has its own allowance");
-        assert!(limiter.try_acquire(&b, "pk_one").is_some(), "another client has its own allowance");
-        assert!(limiter.try_acquire(&circuit, "pk_one").is_some(), "a Tor circuit is its own client");
+        assert!(
+            limiter.try_acquire(&a, "pk_one").is_none(),
+            "a third stream from the same client to the same store is refused"
+        );
+        assert!(
+            limiter.try_acquire(&a, "pk_two").is_some(),
+            "another store has its own allowance"
+        );
+        assert!(
+            limiter.try_acquire(&b, "pk_one").is_some(),
+            "another client has its own allowance"
+        );
+        assert!(
+            limiter.try_acquire(&circuit, "pk_one").is_some(),
+            "a Tor circuit is its own client"
+        );
 
         drop(first);
         assert_eq!(limiter.open_count(&a, "pk_one"), 1);
-        assert!(limiter.try_acquire(&a, "pk_one").is_some(), "a closed stream frees its slot");
+        assert!(
+            limiter.try_acquire(&a, "pk_one").is_some(),
+            "a closed stream frees its slot"
+        );
 
         limiter.set_max(1);
         let _held = limiter.try_acquire(&circuit, "pk_two").unwrap();
-        assert!(limiter.try_acquire(&circuit, "pk_two").is_none(), "a lowered cap applies to new streams");
+        assert!(
+            limiter.try_acquire(&circuit, "pk_two").is_none(),
+            "a lowered cap applies to new streams"
+        );
     }
 
     #[test]

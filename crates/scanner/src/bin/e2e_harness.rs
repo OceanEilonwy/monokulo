@@ -31,8 +31,8 @@
 //! behind the same `e2e` feature every other real-stagenet test in this
 //! crate uses).
 
-use std::collections::HashMap;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,7 +64,6 @@ use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;
 use monokulo::http::{build_router as build_monokulo_router, AppState as ControlPlaneAppState};
 
-
 // Deliberately duplicated from `tests/support/mod.rs::e2e_fixture` rather
 // than imported - a `[[bin]]` target has no access to `tests/`-local modules
 // at all (that's the whole reason this is a `[[bin]]`, see this file's own
@@ -80,15 +79,19 @@ const NODE_PORT: u16 = 38089;
 const FALLBACK_NODE_HOSTS: [&str; 2] = ["node2.monerodevs.org", "node3.monerodevs.org"];
 const NODE_SSL: bool = false;
 const NODE_ACCEPT_SELF_SIGNED_CERTS: bool = true;
-const WALLET_PRIVATE_VIEW_KEY: &str = "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e";
-const WALLET_PUBLIC_SPEND_KEY: &str = "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335";
+const WALLET_PRIVATE_VIEW_KEY: &str =
+    "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e";
+const WALLET_PUBLIC_SPEND_KEY: &str =
+    "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335";
 const PAYMENT_REORG_CHECK_DEPTH: u64 = 20;
 
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -97,7 +100,11 @@ fn urlencode(s: &str) -> String {
 }
 
 fn form_body(fields: &[(&str, &str)]) -> String {
-    fields.iter().map(|(k, v)| format!("{}={}", urlencode(k), urlencode(v))).collect::<Vec<_>>().join("&")
+    fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlencode(k), urlencode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 async fn body_text(response: axum::response::Response) -> String {
@@ -152,10 +159,19 @@ struct SendPaymentResponse {
 /// `network_lock` (see its own doc comment for why that's still worth
 /// keeping even though the new wallet's own live-call count is already far
 /// smaller).
-async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): Json<SendPaymentRequest>) -> Response {
+async fn send_payment_handler(
+    State(state): State<SendPaymentState>,
+    Json(req): Json<SendPaymentRequest>,
+) -> Response {
     let piconero_amount: u64 = match req.piconero_amount.parse() {
         Ok(n) => n,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("piconero_amount must be a plain integer: {e}")).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("piconero_amount must be a plain integer: {e}"),
+            )
+                .into_response()
+        }
     };
     let _guard = state.network_lock.lock().await;
 
@@ -164,17 +180,36 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
     // that node, and a public node rate-limiting this address would
     // otherwise fail the payment.
     let mut node_urls = vec![state.node_url.clone()];
-    node_urls.extend(cli_wallet::DEFAULT_STAGENET_NODES.iter().map(|url| url.to_string()).filter(|url| *url != state.node_url));
-    let ctx = cli_wallet::WalletCtx { node_urls, ..Default::default() };
-    let spender = match cli_wallet::WalletStore::load(&ctx).and_then(|store| store.wallet("spender")) {
-        Ok(w) => w,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to load the spender wallet: {e}")).into_response(),
+    node_urls.extend(
+        cli_wallet::DEFAULT_STAGENET_NODES
+            .iter()
+            .map(|url| url.to_string())
+            .filter(|url| *url != state.node_url),
+    );
+    let ctx = cli_wallet::WalletCtx {
+        node_urls,
+        ..Default::default()
     };
-    let tx_hash = match cli_wallet::send_payment(spender, &req.address, piconero_amount, None).await {
+    let spender =
+        match cli_wallet::WalletStore::load(&ctx).and_then(|store| store.wallet("spender")) {
+            Ok(w) => w,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to load the spender wallet: {e}"),
+                )
+                    .into_response()
+            }
+        };
+    let tx_hash = match cli_wallet::send_payment(spender, &req.address, piconero_amount, None).await
+    {
         Ok(hash) => hash,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    Json(SendPaymentResponse { tx_hash: hex::encode(tx_hash) }).into_response()
+    Json(SendPaymentResponse {
+        tx_hash: hex::encode(tx_hash),
+    })
+    .into_response()
 }
 
 #[tokio::main]
@@ -194,19 +229,35 @@ async fn main() {
     // ---- real, network-bound engine against the real public stagenet node ----
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let daemon: Arc<dyn MoneroDaemonClient> =
-        Arc::new(RpcDaemonClient::new(NODE_HOST, NODE_PORT, NODE_SSL, NODE_ACCEPT_SELF_SIGNED_CERTS).expect("failed to build daemon RPC client"));
+    let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
+        RpcDaemonClient::new(
+            NODE_HOST,
+            NODE_PORT,
+            NODE_SSL,
+            NODE_ACCEPT_SELF_SIGNED_CERTS,
+        )
+        .expect("failed to build daemon RPC client"),
+    );
     if let Err(e) = daemon.get_height().await {
         panic!("\n\ncannot reach the stagenet node at {NODE_HOST}:{NODE_PORT}: {e}\n");
     }
-    let mut nodes = vec![FallbackNode { label: format!("{NODE_HOST}:{NODE_PORT}"), client: daemon.clone() }];
+    let mut nodes = vec![FallbackNode {
+        label: format!("{NODE_HOST}:{NODE_PORT}"),
+        client: daemon.clone(),
+    }];
     for host in FALLBACK_NODE_HOSTS {
-        let client: Arc<dyn MoneroDaemonClient> =
-            Arc::new(RpcDaemonClient::new(host, NODE_PORT, NODE_SSL, NODE_ACCEPT_SELF_SIGNED_CERTS).expect("failed to build daemon RPC client"));
-        nodes.push(FallbackNode { label: format!("{host}:{NODE_PORT}"), client });
+        let client: Arc<dyn MoneroDaemonClient> = Arc::new(
+            RpcDaemonClient::new(host, NODE_PORT, NODE_SSL, NODE_ACCEPT_SELF_SIGNED_CERTS)
+                .expect("failed to build daemon RPC client"),
+        );
+        nodes.push(FallbackNode {
+            label: format!("{host}:{NODE_PORT}"),
+            client,
+        });
     }
     let fallback_daemon = Arc::new(FallbackDaemonClient::new(nodes));
-    let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::new(RwLock::new(HashMap::new()));
+    let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
         db: scanner::store::Db::over_shared(store.clone().clone()),
@@ -216,18 +267,26 @@ async fn main() {
         key_custody_backend: "plain".to_string(),
         wallet_handles: wallet_handles.clone(),
         admin_rate_limiter: Arc::new(RateLimiter::new(1_000_000)),
-        daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(Network::Stagenet, fallback_daemon.clone())])),
+        daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(
+            Network::Stagenet,
+            fallback_daemon.clone(),
+        )])),
         scanner_status: new_scanner_status_map(),
         log_store: None,
         settings: scanner::engine_settings::EngineSettings::defaults(),
     };
     let engine_router = build_engine_router(engine_state, 1_000_000);
-    let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral engine port");
+    let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind an ephemeral engine port");
     let engine_addr = engine_listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(engine_listener, engine_router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-            .await
-            .expect("engine server error");
+        axum::serve(
+            engine_listener,
+            engine_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .expect("engine server error");
     });
     let engine_base_url = format!("http://{engine_addr}");
 
@@ -241,18 +300,25 @@ async fn main() {
         status_cache: monokulo::http::status_page::new_status_cache(),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Default::default(),
-        dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+        dns: Arc::new(monokulo::embed_domains::UnavailableDns(
+            "DNS is not available in tests".to_string(),
+        )),
         log_store: None,
         settings: monokulo::settings::MonokuloSettings::defaults(),
     };
     let cp_router = build_monokulo_router(cp_state);
-    let cp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral monokulo port");
+    let cp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind an ephemeral monokulo port");
     let cp_addr = cp_listener.local_addr().unwrap();
     let cp_router_for_serve = cp_router.clone();
     tokio::spawn(async move {
-        axum::serve(cp_listener, cp_router_for_serve.into_make_service_with_connect_info::<std::net::SocketAddr>())
-            .await
-            .expect("monokulo server error");
+        axum::serve(
+            cp_listener,
+            cp_router_for_serve.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .expect("monokulo server error");
     });
     let monokulo_base_url = format!("http://{cp_addr}");
 
@@ -261,18 +327,30 @@ async fn main() {
     // handler so this whole process never opens two connections to the real
     // node at once.
     let network_lock: Arc<AsyncMutex<()>> = Arc::new(AsyncMutex::new(()));
-    let node_url = format!("http{}://{NODE_HOST}:{NODE_PORT}", if NODE_SSL { "s" } else { "" });
+    let node_url = format!(
+        "http{}://{NODE_HOST}:{NODE_PORT}",
+        if NODE_SSL { "s" } else { "" }
+    );
 
     // ---- the internal-only "send a real payment" endpoint (see
     // `send_payment_handler`'s own doc comment) - its own tiny router, bound
     // to its own ephemeral port, entirely separate from monokulo's real
     // production router above. ----
-    let send_payment_state = SendPaymentState { node_url: node_url.clone(), network_lock: network_lock.clone() };
-    let send_payment_router = Router::new().route("/send-payment", post(send_payment_handler)).with_state(send_payment_state);
-    let send_payment_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral send-payment port");
+    let send_payment_state = SendPaymentState {
+        node_url: node_url.clone(),
+        network_lock: network_lock.clone(),
+    };
+    let send_payment_router = Router::new()
+        .route("/send-payment", post(send_payment_handler))
+        .with_state(send_payment_state);
+    let send_payment_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind an ephemeral send-payment port");
     let send_payment_addr = send_payment_listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(send_payment_listener, send_payment_router).await.expect("send-payment server error");
+        axum::serve(send_payment_listener, send_payment_router)
+            .await
+            .expect("send-payment server error");
     });
     let send_payment_url = format!("http://{send_payment_addr}/send-payment");
 
@@ -301,12 +379,23 @@ async fn main() {
         let network_lock = network_lock.clone();
         tokio::spawn(async move {
             loop {
-                let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().iter().map(|(id, h)| (id.clone(), *h)).collect();
+                let tenants: Vec<(String, WalletHandle)> = wallet_handles
+                    .read()
+                    .iter()
+                    .map(|(id, h)| (id.clone(), *h))
+                    .collect();
                 {
                     let _guard = network_lock.lock().await;
-                    if let Err(e) =
-                        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, PAYMENT_REORG_CHECK_DEPTH, 0)
-                            .await
+                    if let Err(e) = run_scan_tick(
+                        &store,
+                        key_custody.as_ref(),
+                        daemon.as_ref(),
+                        network_str(Network::Stagenet),
+                        &tenants,
+                        PAYMENT_REORG_CHECK_DEPTH,
+                        0,
+                    )
+                    .await
                     {
                         eprintln!("e2e-harness: scan tick failed: {e}");
                     }
@@ -328,12 +417,19 @@ async fn main() {
                 .method("POST")
                 .uri("/dashboard/signup")
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(form_body(&[("email", &email), ("password", password)])))
+                .body(Body::from(form_body(&[
+                    ("email", &email),
+                    ("password", password),
+                ])))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(signup_response.status(), StatusCode::FOUND, "real signup should redirect to login");
+    assert_eq!(
+        signup_response.status(),
+        StatusCode::FOUND,
+        "real signup should redirect to login"
+    );
 
     let login_response = cp_router
         .clone()
@@ -342,13 +438,26 @@ async fn main() {
                 .method("POST")
                 .uri("/dashboard/login")
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(form_body(&[("email", &email), ("password", password)])))
+                .body(Body::from(form_body(&[
+                    ("email", &email),
+                    ("password", password),
+                ])))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(login_response.status(), StatusCode::FOUND, "real login should redirect to /dashboard");
-    let set_cookie = login_response.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    assert_eq!(
+        login_response.status(),
+        StatusCode::FOUND,
+        "real login should redirect to /dashboard"
+    );
+    let set_cookie = login_response
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let session_cookie = set_cookie.split(';').next().unwrap().to_string();
 
     let site_url = "https://pos-e2e-test.example.com";
@@ -386,11 +495,23 @@ async fn main() {
         )
         .await
         .unwrap();
-    assert_eq!(connect_response.status(), StatusCode::OK, "expected the connect success page, not a re-rendered form");
+    assert_eq!(
+        connect_response.status(),
+        StatusCode::OK,
+        "expected the connect success page, not a re-rendered form"
+    );
     let connect_html = body_text(connect_response).await;
-    assert!(connect_html.contains("Store connected"), "expected a real successful connect, got: {connect_html}");
-    let pk_start = connect_html.find("pk_").expect("expected a real pk_ value in the connect success page");
-    let public_key: String = connect_html[pk_start..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    assert!(
+        connect_html.contains("Store connected"),
+        "expected a real successful connect, got: {connect_html}"
+    );
+    let pk_start = connect_html
+        .find("pk_")
+        .expect("expected a real pk_ value in the connect success page");
+    let public_key: String = connect_html[pk_start..]
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
 
     // The connect flow's own response has no `connection_id` in it (only the
     // public `pk_...`, the identifier a storefront integration would use) -
@@ -398,13 +519,26 @@ async fn main() {
     // `connection_id` (what the POS route path actually needs) first appears.
     let dashboard_response = cp_router
         .clone()
-        .oneshot(Request::builder().method("GET").uri("/dashboard").header("cookie", &session_cookie).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/dashboard")
+                .header("cookie", &session_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let dashboard_html = body_text(dashboard_response).await;
     let link_marker = "/dashboard/stores/";
-    let link_start = dashboard_html.find(link_marker).expect("expected a real store link on the dashboard") + link_marker.len();
-    let connection_id: String = dashboard_html[link_start..].chars().take_while(|c| c.is_alphanumeric() || *c == '-').collect();
+    let link_start = dashboard_html
+        .find(link_marker)
+        .expect("expected a real store link on the dashboard")
+        + link_marker.len();
+    let connection_id: String = dashboard_html[link_start..]
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '-')
+        .collect();
 
     let ready: Value = json!({
         "engine_base_url": engine_base_url,

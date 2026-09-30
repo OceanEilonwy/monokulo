@@ -276,7 +276,10 @@ pub trait KeyCustody: Send + Sync {
     /// pasting keys into the onboarding form) and return an opaque handle to it.
     /// `material` is consumed; implementations must not retain it in any form the
     /// caller can reach afterwards.
-    async fn register_wallet(&self, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError>;
+    async fn register_wallet(
+        &self,
+        material: WalletMaterial,
+    ) -> Result<WalletHandle, KeyCustodyError>;
 
     /// Forget a wallet's key material entirely (tenant offboarding).
     async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError>;
@@ -303,7 +306,11 @@ pub trait KeyCustody: Send + Sync {
     /// Retryable registration for a stored tenant. Reusing `registration_id`
     /// returns the same handle if the server completed an earlier attempt but
     /// its response was lost. Backends without remote state may use the default.
-    async fn unseal_and_register_idempotent(&self, sealed: &[u8], registration_id: &str) -> Result<WalletHandle, KeyCustodyError> {
+    async fn unseal_and_register_idempotent(
+        &self,
+        sealed: &[u8],
+        registration_id: &str,
+    ) -> Result<WalletHandle, KeyCustodyError> {
         let _ = registration_id;
         self.unseal_and_register(sealed).await
     }
@@ -347,7 +354,10 @@ pub trait KeyCustody: Send + Sync {
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
         match indices.bounds() {
             None => Ok(Vec::new()),
-            Some((low, high)) => self.scan_tx_outputs(handle, tx, 0..1, low..high.saturating_add(1)).await,
+            Some((low, high)) => {
+                self.scan_tx_outputs(handle, tx, 0..1, low..high.saturating_add(1))
+                    .await
+            }
         }
     }
     /// Checks whether the backend still holds the wallets registered with it
@@ -370,26 +380,42 @@ pub trait KeyCustody: Send + Sync {
     // and routes every other call by the handle, which it remembers.
 
     /// `register_wallet`, in the backend called `backend`.
-    async fn register_wallet_in(&self, backend: &str, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+    async fn register_wallet_in(
+        &self,
+        backend: &str,
+        material: WalletMaterial,
+    ) -> Result<WalletHandle, KeyCustodyError> {
         let _ = backend;
         self.register_wallet(material).await
     }
 
     /// `unseal_and_register`, in the backend called `backend`.
-    async fn unseal_and_register_in(&self, backend: &str, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
+    async fn unseal_and_register_in(
+        &self,
+        backend: &str,
+        sealed: &[u8],
+    ) -> Result<WalletHandle, KeyCustodyError> {
         let _ = backend;
         self.unseal_and_register(sealed).await
     }
 
     async fn unseal_and_register_in_idempotent(
-        &self, backend: &str, sealed: &[u8], registration_id: &str,
+        &self,
+        backend: &str,
+        sealed: &[u8],
+        registration_id: &str,
     ) -> Result<WalletHandle, KeyCustodyError> {
         let _ = backend;
-        self.unseal_and_register_idempotent(sealed, registration_id).await
+        self.unseal_and_register_idempotent(sealed, registration_id)
+            .await
     }
 
     /// `seal`, by the backend called `backend`.
-    async fn seal_in(&self, backend: &str, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
+    async fn seal_in(
+        &self,
+        backend: &str,
+        material: &WalletMaterial,
+    ) -> Result<Vec<u8>, KeyCustodyError> {
         let _ = backend;
         self.seal(material).await
     }
@@ -438,7 +464,10 @@ impl ScanIndices {
                 generation = generation.wrapping_mul(0x100000001b3);
             }
         }
-        ScanIndices { minors: std::sync::Arc::new(minors), generation }
+        ScanIndices {
+            minors: std::sync::Arc::new(minors),
+            generation,
+        }
     }
 
     /// Every index in `range`.

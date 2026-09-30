@@ -23,11 +23,18 @@ use crate::webhook_delivery::run_delivery_tick_on;
 
 /// Delivers due webhooks, waking as soon as the scanner enqueues one (`wake`)
 /// and otherwise every few seconds (retries fall due with time).
-pub async fn run_webhook_delivery_loop(db: Db, settings: Arc<EngineSettings>, wake: Arc<tokio::sync::Notify>) {
+pub async fn run_webhook_delivery_loop(
+    db: Db,
+    settings: Arc<EngineSettings>,
+    wake: Arc<tokio::sync::Notify>,
+) {
     // Building the client can only fail if the TLS backend can't initialise.
     // Retry rather than panic, so the supervisor isn't left in a crash loop.
     let client = loop {
-        match reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build() {
+        match reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+        {
             Ok(client) => break client,
             Err(e) => {
                 tracing::error!(error = %e, "failed to build the webhook HTTP client, retrying in 30s");
@@ -101,7 +108,11 @@ pub async fn run_fast_mempool_loop(
         let scan = settings.scan.load();
         let interval = fast_mempool_interval(scan.poll_interval);
         if let Some(daemon) = daemons.get(network) {
-            let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().iter().map(|(id, h)| (id.clone(), *h)).collect();
+            let tenants: Vec<(String, WalletHandle)> = wallet_handles
+                .read()
+                .iter()
+                .map(|(id, h)| (id.clone(), *h))
+                .collect();
             let pinned = daemon.pin();
             let inputs = crate::work::RoundInputs {
                 db: &db,
@@ -113,7 +124,11 @@ pub async fn run_fast_mempool_loop(
                 grace_period_seconds: scan.expired_order_grace_period_seconds,
                 scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
             };
-            let pass = tokio::time::timeout(tick_deadline(scan.poll_interval), crate::work::fast_pass(&scan_state, &inputs)).await;
+            let pass = tokio::time::timeout(
+                tick_deadline(scan.poll_interval),
+                crate::work::fast_pass(&scan_state, &inputs),
+            )
+            .await;
             if let Ok(Some(report)) = pass {
                 if report.paid_orders > 0 {
                     tracing::debug!(network = ?network, orders = report.paid_orders, "payments seen in the mempool");
@@ -174,19 +189,29 @@ pub async fn manage_network_loops(
             // Shared by the network's round loop and its fast mempool loop.
             let scan_state = Arc::new(crate::work::ScanState::waking(webhooks.clone()));
             {
-                let (db, key_custody, daemons, wallet_handles, settings, scan_state) =
-                    (db.clone(), key_custody.clone(), daemons.clone(), wallet_handles.clone(), settings.clone(), scan_state.clone());
-                supervise_until(fast_mempool_loop_name(network), stopped.clone(), move || {
-                    run_fast_mempool_loop(
-                        scan_state.clone(),
-                        db.clone(),
-                        key_custody.clone(),
-                        network,
-                        daemons.clone(),
-                        wallet_handles.clone(),
-                        settings.clone(),
-                    )
-                });
+                let (db, key_custody, daemons, wallet_handles, settings, scan_state) = (
+                    db.clone(),
+                    key_custody.clone(),
+                    daemons.clone(),
+                    wallet_handles.clone(),
+                    settings.clone(),
+                    scan_state.clone(),
+                );
+                supervise_until(
+                    fast_mempool_loop_name(network),
+                    stopped.clone(),
+                    move || {
+                        run_fast_mempool_loop(
+                            scan_state.clone(),
+                            db.clone(),
+                            key_custody.clone(),
+                            network,
+                            daemons.clone(),
+                            wallet_handles.clone(),
+                            settings.clone(),
+                        )
+                    },
+                );
             }
             let (db, key_custody, daemons, wallet_handles, scanner_status, settings) = (
                 db.clone(),
@@ -253,7 +278,8 @@ pub async fn run_scanner_loop(
     // repeated work: everything that matters is in the database.
     // Shared by every network's loop, so the handle map is cleared once per
     // lost-state epoch of the key-custody backend, not once per network.
-    static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
     loop {
         // `debug`: a tick runs every few seconds, too often for a span at
         // `info` (each would become a stored trace). Lines inside carry
@@ -268,27 +294,37 @@ pub async fn run_scanner_loop(
         // Sooner when a store's handle has just stopped being live (its
         // backend lost it, or was replaced or turned off): that store isn't
         // scanned until it's registered again.
-        let lost_a_handle = wallet_handles.read().values().any(|handle| !key_custody.handle_is_live(*handle));
-        let retry_after =
-            if lost_a_handle || registrations_failed { REGISTRATION_RETRY_AFTER_LOSS } else { REGISTRATION_RETRY };
+        let lost_a_handle = wallet_handles
+            .read()
+            .values()
+            .any(|handle| !key_custody.handle_is_live(*handle));
+        let retry_after = if lost_a_handle || registrations_failed {
+            REGISTRATION_RETRY_AFTER_LOSS
+        } else {
+            REGISTRATION_RETRY
+        };
         if last_registration_attempt.is_none_or(|at| at.elapsed() >= retry_after) {
             last_registration_attempt = Some(tokio::time::Instant::now());
-            let crate::scanner::Registration { registered, failed } = crate::scanner::register_missing_wallets_reporting(
-                &db,
-                key_custody.as_ref(),
-                &wallet_handles,
-                Some(&HANDLED_CUSTODY_EPOCH),
-                network_str(network),
-            )
-            .instrument(tick.clone())
-            .await;
+            let crate::scanner::Registration { registered, failed } =
+                crate::scanner::register_missing_wallets_reporting(
+                    &db,
+                    key_custody.as_ref(),
+                    &wallet_handles,
+                    Some(&HANDLED_CUSTODY_EPOCH),
+                    network_str(network),
+                )
+                .instrument(tick.clone())
+                .await;
             registrations_failed = failed > 0;
             if registered > 0 {
                 tracing::info!(network = ?network, stores = registered, "registered the keys of stores that had none");
             }
         }
-        let tenants: Vec<(String, WalletHandle)> =
-            wallet_handles.read().iter().map(|(id, h)| (id.clone(), *h)).collect();
+        let tenants: Vec<(String, WalletHandle)> = wallet_handles
+            .read()
+            .iter()
+            .map(|(id, h)| (id.clone(), *h))
+            .collect();
         let started_at = now_unix();
         // One node for the whole tick (task 7.6), so answers from nodes at
         // different heights or on different forks are never mixed.
@@ -307,7 +343,8 @@ pub async fn run_scanner_loop(
         // a unit stuck somewhere no inner deadline reaches.
         let (result, backlogged) = match tokio::time::timeout(
             tick_deadline(scan.poll_interval),
-            crate::work::run_round(&scan_state, &inputs, crate::work::ROUND_BUDGET).instrument(tick.clone()),
+            crate::work::run_round(&scan_state, &inputs, crate::work::ROUND_BUDGET)
+                .instrument(tick.clone()),
         )
         .await
         {
@@ -330,7 +367,14 @@ pub async fn run_scanner_loop(
         // Not for a network whose node setting was cleared during this tick:
         // its status was removed when its loops were stopped.
         if daemons.get(network).is_some() {
-            scanner_status::record_tick(&scanner_status, network, started_at, finished_at, tenants.len(), &result);
+            scanner_status::record_tick(
+                &scanner_status,
+                network,
+                started_at,
+                finished_at,
+                tenants.len(),
+                &result,
+            );
         }
         // Work left over (a catch-up after downtime, a backlog of recomputes):
         // go again at once, yielding so other tasks run first.
@@ -401,19 +445,35 @@ mod tests {
             .unwrap();
         // A private address: refused, so the attempt is recorded at once
         // without any network wait.
-        let webhook = store.create_webhook(&tenant.id, "http://127.0.0.1:9/hook", "{}", "secret", 1000).unwrap();
+        let webhook = store
+            .create_webhook(&tenant.id, "http://127.0.0.1:9/hook", "{}", "secret", 1000)
+            .unwrap();
         let store = store.into_shared();
         let wake = Arc::new(tokio::sync::Notify::new());
-        let delivery =
-            tokio::spawn(run_webhook_delivery_loop(Db::over_shared(store.clone()), EngineSettings::defaults(), wake.clone()));
+        let delivery = tokio::spawn(run_webhook_delivery_loop(
+            Db::over_shared(store.clone()),
+            EngineSettings::defaults(),
+            wake.clone(),
+        ));
         // Let its first pass find nothing and go to sleep.
         tokio::time::sleep(Duration::from_millis(200)).await;
         let now = now_unix();
-        store.lock().enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", now).unwrap();
+        store
+            .lock()
+            .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", now)
+            .unwrap();
         let woken_at = tokio::time::Instant::now();
         wake.notify_one();
-        while !store.lock().due_webhook_deliveries(now + 1, 10).unwrap().is_empty() {
-            assert!(woken_at.elapsed() < Duration::from_secs(2), "not attempted within 2 s of being woken");
+        while !store
+            .lock()
+            .due_webhook_deliveries(now + 1, 10)
+            .unwrap()
+            .is_empty()
+        {
+            assert!(
+                woken_at.elapsed() < Duration::from_secs(2),
+                "not attempted within 2 s of being woken"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         delivery.abort();
@@ -427,7 +487,10 @@ mod tests {
         let rate_limiter = Arc::new(RateLimiter::new(10_000));
         let settings = EngineSettings::load_with(
             store.clone(),
-            Some(crate::engine_settings::NodesReloadable { daemons: daemons.clone(), strict_tls: false }),
+            Some(crate::engine_settings::NodesReloadable {
+                daemons: daemons.clone(),
+                strict_tls: false,
+            }),
             rate_limiter.clone(),
             live_settings::Env::fixed(Vec::<(String, String)>::new()),
         )
@@ -474,14 +537,27 @@ mod tests {
         };
         // Nothing listens on port 9: the loop runs and records failing ticks.
         let node = serde_json::json!({ "host": "127.0.0.1", "port": 9, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
-        let saved = save(serde_json::json!({ "monero_node": { "stagenet": node } })).await.unwrap();
+        let saved = save(serde_json::json!({ "monero_node": { "stagenet": node } }))
+            .await
+            .unwrap();
         assert_eq!(saved.status(), StatusCode::OK);
-        eventually("the stagenet scanner to tick", || status.read().contains_key(&Network::Stagenet)).await;
-        assert!(!status.read().contains_key(&Network::Mainnet), "only configured networks get loops");
+        eventually("the stagenet scanner to tick", || {
+            status.read().contains_key(&Network::Stagenet)
+        })
+        .await;
+        assert!(
+            !status.read().contains_key(&Network::Mainnet),
+            "only configured networks get loops"
+        );
 
-        let cleared = save(serde_json::json!({ "monero_node": { "stagenet": null } })).await.unwrap();
+        let cleared = save(serde_json::json!({ "monero_node": { "stagenet": null } }))
+            .await
+            .unwrap();
         assert_eq!(cleared.status(), StatusCode::OK);
-        eventually("the stagenet status to go", || !status.read().contains_key(&Network::Stagenet)).await;
+        eventually("the stagenet status to go", || {
+            !status.read().contains_key(&Network::Stagenet)
+        })
+        .await;
         // And it stays gone: the stopped loop doesn't record another tick.
         tokio::time::sleep(Duration::from_millis(1500)).await;
         assert!(!status.read().contains_key(&Network::Stagenet));
@@ -495,13 +571,19 @@ mod tests {
             b
         };
         let spend = monero::PrivateKey::from_slice(&scalar(2)).unwrap();
-        WalletMaterial::new(scalar(1), monero::PublicKey::from_private_key(&spend).to_bytes())
+        WalletMaterial::new(
+            scalar(1),
+            monero::PublicKey::from_private_key(&spend).to_bytes(),
+        )
     }
 
     #[tokio::test]
     async fn a_store_whose_backend_was_replaced_is_registered_again_within_seconds() {
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        let router = Arc::new(CustodyRouter::new(HashMap::from([("plain".to_string(), plain)]), "plain"));
+        let router = Arc::new(CustodyRouter::new(
+            HashMap::from([("plain".to_string(), plain)]),
+            "plain",
+        ));
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
@@ -522,7 +604,10 @@ mod tests {
         node.push_block("h1", vec![]);
         let daemons = Daemons::fixed(HashMap::from([(
             Network::Stagenet,
-            Arc::new(FallbackDaemonClient::new(vec![FallbackNode { label: "fake".to_string(), client: Arc::new(node) }])),
+            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                label: "fake".to_string(),
+                client: Arc::new(node),
+            }])),
         )]));
         let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::default();
         let key_custody: Arc<dyn KeyCustody> = router.clone();
@@ -536,14 +621,23 @@ mod tests {
             scanner_status::new_scanner_status_map(),
             EngineSettings::defaults(),
         ));
-        eventually("the store to be registered", || wallet_handles.read().contains_key(&tenant.id)).await;
+        eventually("the store to be registered", || {
+            wallet_handles.read().contains_key(&tenant.id)
+        })
+        .await;
         let first = wallet_handles.read()[&tenant.id];
 
         // The backend is replaced by a new instance: the old handle is gone.
         let fresh: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        router.replace(HashMap::from([("plain".to_string(), fresh.clone())]), "plain");
+        router.replace(
+            HashMap::from([("plain".to_string(), fresh.clone())]),
+            "plain",
+        );
         eventually("the store to be registered in the new instance", || {
-            wallet_handles.read().get(&tenant.id).is_some_and(|h| *h != first && router.handle_is_live(*h))
+            wallet_handles
+                .read()
+                .get(&tenant.id)
+                .is_some_and(|h| *h != first && router.handle_is_live(*h))
         })
         .await;
         scan_loop.abort();

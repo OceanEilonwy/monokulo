@@ -43,7 +43,13 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 5] = [Tier::Chain, Tier::Blocks, Tier::Mempool, Tier::Settlement, Tier::Upkeep];
+    pub const ALL: [Tier; 5] = [
+        Tier::Chain,
+        Tier::Blocks,
+        Tier::Mempool,
+        Tier::Settlement,
+        Tier::Upkeep,
+    ];
 
     /// The share of a round's time reserved for this tier, in percent.
     const fn reserved_percent(self) -> u32 {
@@ -59,7 +65,6 @@ impl Tier {
     const fn index(self) -> usize {
         self as usize
     }
-
 }
 
 impl std::fmt::Display for Tier {
@@ -94,7 +99,9 @@ impl<T: Copy> PerTier<T> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Tier, T)> + '_ {
-        Tier::ALL.into_iter().map(|tier| (tier, self.0[tier.index()]))
+        Tier::ALL
+            .into_iter()
+            .map(|tier| (tier, self.0[tier.index()]))
     }
 }
 
@@ -140,12 +147,16 @@ impl std::fmt::Display for Wait {
         f.write_str(match self {
             Wait::ChainHeightUnknown => "the chain height is unknown",
             Wait::ReorgBeingReconciled => "a reorganisation is being reconciled",
-            Wait::RewoundThisRound => "rewound this round; replacement blocks are scanned from the next",
+            Wait::RewoundThisRound => {
+                "rewound this round; replacement blocks are scanned from the next"
+            }
             Wait::NodeFailed => "the node failed",
             Wait::NodeCannotServeTip => "the node can't serve its own tip yet",
             Wait::MempoolUnreadable => "the mempool couldn't be read",
             Wait::ReorgCandidatesRetrying => "reorg candidates are waiting to be retried",
-            Wait::ChainDiverged => "the node's chain differs from the recorded one; waiting for reorg reconciliation",
+            Wait::ChainDiverged => {
+                "the node's chain differs from the recorded one; waiting for reorg reconciliation"
+            }
         })
     }
 }
@@ -190,7 +201,9 @@ impl RoundReport {
     /// Whether any tier stopped with work left: the loop starts the next
     /// round at once instead of waiting for the poll interval.
     pub fn backlogged(&self) -> bool {
-        self.outcomes.iter().any(|(_, outcome)| outcome == TierOutcome::Backlogged)
+        self.outcomes
+            .iter()
+            .any(|(_, outcome)| outcome == TierOutcome::Backlogged)
     }
 
     pub fn outcome(&self, tier: Tier) -> TierOutcome {
@@ -230,15 +243,17 @@ pub const ROUND_BUDGET: Duration = Duration::from_secs(10);
 pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(15);
 
 /// A daemon (or other) call with [`CALL_DEADLINE`].
-pub(crate) async fn bounded<T, E>(call: impl std::future::Future<Output = Result<T, E>>) -> Result<T, ScannerError>
+pub(crate) async fn bounded<T, E>(
+    call: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, ScannerError>
 where
     ScannerError: From<E>,
 {
     match tokio::time::timeout(CALL_DEADLINE, call).await {
         Ok(result) => result.map_err(ScannerError::from),
-        Err(_) => Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
-            "no answer within {CALL_DEADLINE:?}"
-        )))),
+        Err(_) => Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
+            format!("no answer within {CALL_DEADLINE:?}"),
+        ))),
     }
 }
 
@@ -268,7 +283,10 @@ pub(crate) struct Backoff<K: BackoffKind> {
 
 impl<K: BackoffKind> Default for Backoff<K> {
     fn default() -> Self {
-        Self { failures: Default::default(), kind: std::marker::PhantomData }
+        Self {
+            failures: Default::default(),
+            kind: std::marker::PhantomData,
+        }
     }
 }
 
@@ -301,12 +319,20 @@ impl<K: BackoffKind> Backoff<K> {
     pub(crate) fn waiting(&self) -> Vec<String> {
         let now = Instant::now();
         let mut failures = self.failures.lock();
-        failures.retain(|_, (_, _, last)| now.saturating_duration_since(*last) < Self::FORGET_AFTER);
-        failures.iter().filter(|(_, (_, until, _))| *until > now).map(|(key, _)| key.clone()).collect()
+        failures
+            .retain(|_, (_, _, last)| now.saturating_duration_since(*last) < Self::FORGET_AFTER);
+        failures
+            .iter()
+            .filter(|(_, (_, until, _))| *until > now)
+            .map(|(key, _)| key.clone())
+            .collect()
     }
 
     pub(crate) fn is_waiting(&self, key: &str) -> bool {
-        self.failures.lock().get(key).is_some_and(|(_, until, _)| *until > Instant::now())
+        self.failures
+            .lock()
+            .get(key)
+            .is_some_and(|(_, until, _)| *until > Instant::now())
     }
 }
 
@@ -331,7 +357,10 @@ pub struct ScanState {
 impl ScanState {
     /// State that wakes `webhooks` whenever it enqueues webhook deliveries.
     pub fn waking(webhooks: std::sync::Arc<tokio::sync::Notify>) -> Self {
-        Self { webhooks, ..Self::default() }
+        Self {
+            webhooks,
+            ..Self::default()
+        }
     }
 
     pub(crate) fn wake_webhooks(&self) {
@@ -368,13 +397,19 @@ impl<'a> Round<'a> {
     /// Runs `f` on the database worker, with this round's network name:
     /// `round.db(|s, network| s.reorg_job(network))`. `f` may fail with a
     /// store error or a scanner error.
-    pub(crate) async fn db<T, E>(&self, f: impl FnOnce(&Store, &str) -> Result<T, E> + Send + 'static) -> Result<T, ScannerError>
+    pub(crate) async fn db<T, E>(
+        &self,
+        f: impl FnOnce(&Store, &str) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, ScannerError>
     where
         T: Send + 'static,
         E: Into<ScannerError> + Send + 'static,
     {
         let network = self.network();
-        self.inputs.db.run(Class::Scanner, move |s| f(s, network).map_err(Into::into)).await
+        self.inputs
+            .db
+            .run(Class::Scanner, move |s| f(s, network).map_err(Into::into))
+            .await
     }
 }
 
@@ -395,7 +430,11 @@ async fn step(tier: Tier, round: &mut Round<'_>, until: Instant) -> Progress {
 /// the tiers that still have work, again in priority order. A tier with work
 /// always completes at least one unit, even over budget, so every kind of
 /// work advances every round.
-pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Duration) -> RoundReport {
+pub async fn run_round(
+    state: &ScanState,
+    inputs: &RoundInputs<'_>,
+    budget: Duration,
+) -> RoundReport {
     let started = Instant::now();
     let round_end = started + budget;
     let (tip, tip_error) = match bounded(inputs.daemon.get_height()).await {
@@ -412,14 +451,21 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
         }
     };
     if let Some(tip) = tip {
-        state.mempool.last_tip.store(tip, std::sync::atomic::Ordering::Relaxed);
+        state
+            .mempool
+            .last_tip
+            .store(tip, std::sync::atomic::Ordering::Relaxed);
     }
     let mut round = Round {
         inputs,
         state,
         now: crate::now_unix(),
         tip,
-        handles: inputs.tenants.iter().map(|(id, handle)| (id.as_str(), *handle)).collect(),
+        handles: inputs
+            .tenants
+            .iter()
+            .map(|(id, handle)| (id.as_str(), *handle))
+            .collect(),
         pool_txids: None,
         chain: Default::default(),
         blocks: Default::default(),
@@ -427,7 +473,11 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
         settlement: Default::default(),
         upkeep: Default::default(),
     };
-    let mut report = RoundReport { steps: PerTier::filled(0), outcomes: PerTier::filled(TierOutcome::Backlogged), error: tip_error };
+    let mut report = RoundReport {
+        steps: PerTier::filled(0),
+        outcomes: PerTier::filled(TierOutcome::Backlogged),
+        error: tip_error,
+    };
     let mut open = PerTier::filled(true);
 
     for pass_end in [None, Some(round_end)] {
@@ -435,7 +485,7 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
             let until = pass_end.unwrap_or_else(|| {
                 (Instant::now() + budget * tier.reserved_percent() / 100).min(round_end)
             });
-                        while open[tier] {
+            while open[tier] {
                 if report.steps[tier] > 0 && Instant::now() >= until {
                     break;
                 }

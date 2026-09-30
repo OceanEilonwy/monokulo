@@ -66,7 +66,11 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
             }
         }
     };
-    layout(chrome, &format!("Create order - {} - Monokulo", data.display_name), body)
+    layout(
+        chrome,
+        &format!("Create order - {} - Monokulo", data.display_name),
+        body,
+    )
 }
 
 #[cfg(test)]
@@ -97,7 +101,10 @@ mod tests {
 
     #[test]
     fn shows_the_create_order_error_when_present() {
-        let store = CreateOrderData { order_creation_error: Some("unsupported currency: XYZ".to_string()), ..data() };
+        let store = CreateOrderData {
+            order_creation_error: Some("unsupported currency: XYZ".to_string()),
+            ..data()
+        };
         let html = page(&chrome(), &store).into_string();
         assert!(html.contains("unsupported currency: XYZ"));
         assert!(html.contains("<form"));
@@ -105,7 +112,11 @@ mod tests {
 
     #[test]
     fn locks_currency_to_xmr_when_no_provider_is_available() {
-        let store = CreateOrderData { order_currency_options: vec!["XMR".to_string()], order_currency_is_locked_to_xmr: true, ..data() };
+        let store = CreateOrderData {
+            order_currency_options: vec!["XMR".to_string()],
+            order_currency_is_locked_to_xmr: true,
+            ..data()
+        };
         let html = page(&chrome(), &store).into_string();
         assert!(html.contains(r#"value="XMR" readonly"#));
     }

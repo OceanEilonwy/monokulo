@@ -129,7 +129,10 @@ fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
 /// A site's address as people say it: `shop.example.com`, not
 /// `https://shop.example.com/`.
 fn site_host(url: &str) -> &str {
-    let host = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
+    let host = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
     host.strip_suffix('/').unwrap_or(host)
 }
 
@@ -287,7 +290,11 @@ mod tests {
         StoreDetailData {
             connection_id: "conn_1".to_string(),
             display_name: "shop.example.com".to_string(),
-            platform: if is_woocommerce { "woocommerce".to_string() } else { "custom".to_string() },
+            platform: if is_woocommerce {
+                "woocommerce".to_string()
+            } else {
+                "custom".to_string()
+            },
             site_url: "https://shop.example.com".to_string(),
             public_key: "pk_abc123".to_string(),
             public_url: None,
@@ -300,13 +307,24 @@ mod tests {
             lookup_txid_value: String::new(),
             lookup_message: None,
             lookup_found_order_id: None,
-            embed_warnings: EmbedWarnings { restricted: false, any_site_dismissed: false, shown_nowhere: false, failing: vec![] },
+            embed_warnings: EmbedWarnings {
+                restricted: false,
+                any_site_dismissed: false,
+                shown_nowhere: false,
+                failing: vec![],
+            },
         }
     }
 
     #[test]
     fn the_any_site_warning_can_be_dismissed_to_one_line_but_a_failing_domain_warning_cannot() {
-        let html = page(&chrome(), &StoreDetailViewModel { store: Some(base_store(false)) }).into_string();
+        let html = page(
+            &chrome(),
+            &StoreDetailViewModel {
+                store: Some(base_store(false)),
+            },
+        )
+        .into_string();
         assert!(html.contains(r#"<div class="embed-warning" id="embed-warning"><strong>Any website can show this store's checkout</strong>"#), "got: {html}");
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/embed-warning/dismiss""#));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/settings#verified-domains""#));
@@ -337,21 +355,41 @@ mod tests {
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(html.contains(r#"<div class="embed-warning is-compact" id="embed-warning"><strong>Any website can show this store's checkout.</strong>"#), "got: {html}");
-        assert!(!html.contains("embed-warning/dismiss"), "a dismissed warning offers nothing more to dismiss");
+        assert!(
+            !html.contains("embed-warning/dismiss"),
+            "a dismissed warning offers nothing more to dismiss"
+        );
         assert!(html.contains("shop.example failed its DNS check"));
-        assert!(html.contains("If it isn't back within 2d 19h, shop.example will stop counting as verified."));
+        assert!(html.contains(
+            "If it isn't back within 2d 19h, shop.example will stop counting as verified."
+        ));
         assert!(html.contains("old.example is no longer verified"));
-        assert_eq!(html.matches(r#"class="embed-warning is-error" role="alert""#).count(), 2);
+        assert_eq!(
+            html.matches(r#"class="embed-warning is-error" role="alert""#)
+                .count(),
+            2
+        );
     }
 
     #[test]
     fn a_restricted_store_drops_the_any_site_warning_but_warns_when_no_domain_counts() {
-        let warnings = |shown_nowhere| EmbedWarnings { restricted: true, any_site_dismissed: false, shown_nowhere, failing: vec![] };
-        let store = StoreDetailData { embed_warnings: warnings(false), ..base_store(false) };
+        let warnings = |shown_nowhere| EmbedWarnings {
+            restricted: true,
+            any_site_dismissed: false,
+            shown_nowhere,
+            failing: vec![],
+        };
+        let store = StoreDetailData {
+            embed_warnings: warnings(false),
+            ..base_store(false)
+        };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(!html.contains(r#"class="embed-warning"#), "got: {html}");
 
-        let store = StoreDetailData { embed_warnings: warnings(true), ..base_store(false) };
+        let store = StoreDetailData {
+            embed_warnings: warnings(true),
+            ..base_store(false)
+        };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(html.contains("No website can show this store's checkout"));
     }
@@ -364,7 +402,11 @@ mod tests {
 
     #[test]
     fn renders_integration_help_with_the_right_public_key_via_the_shared_fragment() {
-        let store = StoreDetailData { health: "error".to_string(), health_label: "unreachable".to_string(), ..base_store(true) };
+        let store = StoreDetailData {
+            health: "error".to_string(),
+            health_label: "unreachable".to_string(),
+            ..base_store(true)
+        };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         // Proves the integration_help fragment actually received this
         // store's own public_key, not some stale or empty value - the exact
@@ -380,7 +422,10 @@ mod tests {
         // used to always show WooCommerce onboarding instructions even for
         // stores connected through the advanced/custom form.
         assert!(html.contains("already connected via the WooCommerce plugin"));
-        assert!(!html.contains("Install the"), "should not show plugin-install instructions for an already-connected store");
+        assert!(
+            !html.contains("Install the"),
+            "should not show plugin-install instructions for an already-connected store"
+        );
     }
 
     /// The other half of the same real bug: a store connected via the
@@ -389,34 +434,82 @@ mod tests {
     /// connected through the plugin at all.
     #[test]
     fn shows_generic_integration_help_for_a_non_woocommerce_store() {
-        let html = page(&chrome(), &StoreDetailViewModel { store: Some(base_store(false)) }).into_string();
-        assert!(html.contains("Install the"), "expected the WooCommerce onboarding steps to still be offered, got: {html}");
+        let html = page(
+            &chrome(),
+            &StoreDetailViewModel {
+                store: Some(base_store(false)),
+            },
+        )
+        .into_string();
+        assert!(
+            html.contains("Install the"),
+            "expected the WooCommerce onboarding steps to still be offered, got: {html}"
+        );
         assert!(!html.contains("already connected via the WooCommerce plugin"));
     }
 
     #[test]
     fn shows_the_base_currency_at_the_top_of_the_table_and_hides_the_engine_endpoint() {
-        let store = StoreDetailData { base_currency: "USD".to_string(), ..base_store(false) };
+        let store = StoreDetailData {
+            base_currency: "USD".to_string(),
+            ..base_store(false)
+        };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        assert!(html.contains(r#"<th>Base currency</th><td>USD</td>"#), "expected the base currency row, got: {html}");
-        let base_currency_pos = html.find("Base currency").expect("base currency row missing");
+        assert!(
+            html.contains(r#"<th>Base currency</th><td>USD</td>"#),
+            "expected the base currency row, got: {html}"
+        );
+        let base_currency_pos = html
+            .find("Base currency")
+            .expect("base currency row missing");
         let public_key_pos = html.find("Public key").expect("public key row missing");
-        assert!(base_currency_pos < public_key_pos, "expected Base currency above Public key, got: {html}");
-        assert!(!html.contains("Engine endpoint"), "the engine endpoint row should no longer render on this page, got: {html}");
+        assert!(
+            base_currency_pos < public_key_pos,
+            "expected Base currency above Public key, got: {html}"
+        );
+        assert!(
+            !html.contains("Engine endpoint"),
+            "the engine endpoint row should no longer render on this page, got: {html}"
+        );
     }
 
     #[test]
     fn links_to_the_settings_page_and_widget_pages() {
-        let html = page(&chrome(), &StoreDetailViewModel { store: Some(base_store(false)) }).into_string();
-        assert!(html.contains(r#"href="/dashboard/stores/conn_1/settings""#), "expected a Settings link, got: {html}");
-        let help = html.find("class=\"btn btn-secondary help-control\"").unwrap();
-        let settings = html.find("class=\"btn btn-secondary settings-link\"").unwrap();
-        assert!(settings < help, "Help should be the rightmost control in the store header: {html}");
-        assert!(html.contains(r#"<summary class="btn btn-secondary help-control">Help</summary>"#), "expected Help to be the disclosure's only summary content: {html}");
+        let html = page(
+            &chrome(),
+            &StoreDetailViewModel {
+                store: Some(base_store(false)),
+            },
+        )
+        .into_string();
+        assert!(
+            html.contains(r#"href="/dashboard/stores/conn_1/settings""#),
+            "expected a Settings link, got: {html}"
+        );
+        let help = html
+            .find("class=\"btn btn-secondary help-control\"")
+            .unwrap();
+        let settings = html
+            .find("class=\"btn btn-secondary settings-link\"")
+            .unwrap();
+        assert!(
+            settings < help,
+            "Help should be the rightmost control in the store header: {html}"
+        );
+        assert!(
+            html.contains(r#"<summary class="btn btn-secondary help-control">Help</summary>"#),
+            "expected Help to be the disclosure's only summary content: {html}"
+        );
         let summary_start = html.find("<summary").unwrap();
         assert!(html.find("class=\"store-header-status\"").unwrap() < summary_start);
-        assert!(settings < summary_start, "Settings must sit outside the Help summary: {html}");
-        assert!(html.contains("Settings <span aria-hidden=\"true\">→</span>"), "expected the Settings arrow: {html}");
+        assert!(
+            settings < summary_start,
+            "Settings must sit outside the Help summary: {html}"
+        );
+        assert!(
+            html.contains("Settings <span aria-hidden=\"true\">→</span>"),
+            "expected the Settings arrow: {html}"
+        );
         assert!(html.contains(r#"data-href="/dashboard/stores/conn_1/pos""#));
         assert!(html.contains("Requires JS"));
         assert!(html.contains(r#"aria-disabled="true""#));
@@ -427,7 +520,9 @@ mod tests {
     fn shows_the_lookup_message_when_present() {
         let store = StoreDetailData {
             lookup_txid_value: "abc123".to_string(),
-            lookup_message: Some("No transaction with that ID was found on the network.".to_string()),
+            lookup_message: Some(
+                "No transaction with that ID was found on the network.".to_string(),
+            ),
             ..base_store(false)
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();

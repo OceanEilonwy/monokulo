@@ -30,5 +30,8 @@ pub mod work;
 
 pub fn now_unix() -> i64 {
     // A clock set before 1970 reads as 0 rather than panicking in every loop.
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }

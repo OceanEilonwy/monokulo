@@ -15,7 +15,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use telemetry::store::api::{
-    is_trace_id, AttributesResponse, HistogramRequest, HistogramResponse, LogsRequest, LogsResponse, QueryErrorResponse,
+    is_trace_id, AttributesResponse, HistogramRequest, HistogramResponse, LogsRequest,
+    LogsResponse, QueryErrorResponse,
 };
 use telemetry::store::{LogStore, StoreError};
 
@@ -23,7 +24,10 @@ use super::instance_admin::AuthedInstanceAdmin;
 use super::{ApiError, AppState};
 
 fn store(state: &AppState) -> Result<LogStore, ApiError> {
-    state.log_store.clone().ok_or_else(|| ApiError::Unavailable("this engine has no log store open".into()))
+    state
+        .log_store
+        .clone()
+        .ok_or_else(|| ApiError::Unavailable("this engine has no log store open".into()))
 }
 
 /// Runs a store read off the async threads.
@@ -41,7 +45,11 @@ fn bad_query(e: telemetry::query::ParseError) -> Response {
     (StatusCode::BAD_REQUEST, Json(QueryErrorResponse::from(e))).into_response()
 }
 
-pub async fn list(_: AuthedInstanceAdmin, State(state): State<AppState>, Query(request): Query<LogsRequest>) -> Response {
+pub async fn list(
+    _: AuthedInstanceAdmin,
+    State(state): State<AppState>,
+    Query(request): Query<LogsRequest>,
+) -> Response {
     let query = match request.to_query() {
         Ok(query) => query,
         Err(e) => return bad_query(e),
@@ -56,9 +64,14 @@ pub async fn list(_: AuthedInstanceAdmin, State(state): State<AppState>, Query(r
     }
 }
 
-pub async fn trace(_: AuthedInstanceAdmin, State(state): State<AppState>, Path(trace_id): Path<String>) -> Response {
+pub async fn trace(
+    _: AuthedInstanceAdmin,
+    State(state): State<AppState>,
+    Path(trace_id): Path<String>,
+) -> Response {
     if !is_trace_id(&trace_id) {
-        return ApiError::BadRequest("a trace id is 32 lowercase hex characters".into()).into_response();
+        return ApiError::BadRequest("a trace id is 32 lowercase hex characters".into())
+            .into_response();
     }
     let result = match store(&state) {
         Ok(store) => read(store, move |s| s.trace(&trace_id)).await,
@@ -70,13 +83,22 @@ pub async fn trace(_: AuthedInstanceAdmin, State(state): State<AppState>, Path(t
     }
 }
 
-pub async fn histogram(_: AuthedInstanceAdmin, State(state): State<AppState>, Query(request): Query<HistogramRequest>) -> Response {
+pub async fn histogram(
+    _: AuthedInstanceAdmin,
+    State(state): State<AppState>,
+    Query(request): Query<HistogramRequest>,
+) -> Response {
     let filter = match telemetry::query::parse(request.q.as_deref().unwrap_or("")) {
         Ok(filter) => filter,
         Err(e) => return bad_query(e),
     };
     let result = match store(&state) {
-        Ok(store) => read(store, move |s| s.histogram(filter.as_ref(), request.from, request.to, request.buckets)).await,
+        Ok(store) => {
+            read(store, move |s| {
+                s.histogram(filter.as_ref(), request.from, request.to, request.buckets)
+            })
+            .await
+        }
         Err(e) => Err(e),
     };
     match result {

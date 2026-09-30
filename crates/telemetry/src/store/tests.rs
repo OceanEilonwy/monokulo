@@ -16,7 +16,11 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new() -> TempDir {
-        let dir = std::env::temp_dir().join(format!("telemetry-store-{}-{}", std::process::id(), now_nanos()));
+        let dir = std::env::temp_dir().join(format!(
+            "telemetry-store-{}-{}",
+            std::process::id(),
+            now_nanos()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         TempDir(dir)
     }
@@ -34,11 +38,21 @@ fn setup(level: &str) -> Setup {
     let guard = tracing::subscriber::set_default(subscriber);
     let telemetry = Arc::new(telemetry);
     let store = telemetry.open_store(&dir.0.join("logs.db")).unwrap();
-    Setup { telemetry, store, _dir: dir, _guard: guard }
+    Setup {
+        telemetry,
+        store,
+        _dir: dir,
+        _guard: guard,
+    }
 }
 
 fn all(store: &LogStore) -> Vec<LogRow> {
-    store.query(&LogQuery { limit: 1000, ..LogQuery::default() }).unwrap()
+    store
+        .query(&LogQuery {
+            limit: 1000,
+            ..LogQuery::default()
+        })
+        .unwrap()
 }
 
 /// Waits for the writer thread to have stored `count` lines.
@@ -54,8 +68,17 @@ fn wait_for(store: &LogStore, count: usize) -> Vec<LogRow> {
 }
 
 fn filtered(store: &LogStore, filter: &str) -> Vec<String> {
-    let query = LogQuery { filter: parse(filter).unwrap(), limit: 100, ..LogQuery::default() };
-    store.query(&query).unwrap().into_iter().map(|r| r.message).collect()
+    let query = LogQuery {
+        filter: parse(filter).unwrap(),
+        limit: 100,
+        ..LogQuery::default()
+    };
+    store
+        .query(&query)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.message)
+        .collect()
 }
 
 #[test]
@@ -70,7 +93,11 @@ fn lines_are_stored_with_their_attributes_and_trace_and_found_by_filter() {
     tracing::error!(store.id = "s_2", "third");
 
     let rows = wait_for(&s.store, 3);
-    assert_eq!(rows.iter().map(|r| r.message.as_str()).collect::<Vec<_>>(), ["third", "second", "first"], "newest first");
+    assert_eq!(
+        rows.iter().map(|r| r.message.as_str()).collect::<Vec<_>>(),
+        ["third", "second", "first"],
+        "newest first"
+    );
     let first = &rows[2];
     assert_eq!(first.service, "scanner");
     assert_eq!(first.severity(), Severity::Info);
@@ -84,11 +111,21 @@ fn lines_are_stored_with_their_attributes_and_trace_and_found_by_filter() {
 
     assert_eq!(filtered(&s.store, "store.id = 's_1'"), ["second", "first"]);
     assert_eq!(filtered(&s.store, "level >= warn"), ["third", "second"]);
-    assert_eq!(filtered(&s.store, "order.id = 'o_1' or store.id = 's_2'"), ["third", "first"]);
+    assert_eq!(
+        filtered(&s.store, "order.id = 'o_1' or store.id = 's_2'"),
+        ["third", "first"]
+    );
     assert_eq!(filtered(&s.store, "attempts > 2"), ["first"]);
     assert_eq!(filtered(&s.store, "not has order.id"), ["third"]);
-    assert_eq!(filtered(&s.store, "'SEC'"), ["second"], "text search is case-insensitive");
-    assert_eq!(filtered(&s.store, &format!("trace_id = '{trace_id}'")), ["second", "first"]);
+    assert_eq!(
+        filtered(&s.store, "'SEC'"),
+        ["second"],
+        "text search is case-insensitive"
+    );
+    assert_eq!(
+        filtered(&s.store, &format!("trace_id = '{trace_id}'")),
+        ["second", "first"]
+    );
 }
 
 #[test]
@@ -99,19 +136,53 @@ fn pages_follow_the_cursor_both_ways_and_time_ranges_apply() {
     }
     let rows = wait_for(&s.store, 7);
     let page = |before: Option<Cursor>, after: Option<Cursor>| -> Vec<String> {
-        s.store.query(&LogQuery { before, after, limit: 3, ..LogQuery::default() }).unwrap().into_iter().map(|r| r.message).collect()
+        s.store
+            .query(&LogQuery {
+                before,
+                after,
+                limit: 3,
+                ..LogQuery::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|r| r.message)
+            .collect()
     };
     assert_eq!(page(None, None), ["line 6", "line 5", "line 4"]);
-    assert_eq!(page(Some(rows[2].cursor()), None), ["line 3", "line 2", "line 1"]);
-    assert_eq!(page(None, Some(rows[4].cursor())), ["line 5", "line 4", "line 3"], "the page just newer, still newest first");
+    assert_eq!(
+        page(Some(rows[2].cursor()), None),
+        ["line 3", "line 2", "line 1"]
+    );
+    assert_eq!(
+        page(None, Some(rows[4].cursor())),
+        ["line 5", "line 4", "line 3"],
+        "the page just newer, still newest first"
+    );
     assert_eq!(page(None, Some(rows[0].cursor())), Vec::<String>::new());
 
-    let middle = s.store.query(&LogQuery { from: Some(rows[4].ts), to: Some(rows[1].ts), limit: 10, ..LogQuery::default() }).unwrap();
-    assert_eq!(middle.iter().map(|r| r.message.as_str()).collect::<Vec<_>>(), ["line 4", "line 3", "line 2"]);
+    let middle = s
+        .store
+        .query(&LogQuery {
+            from: Some(rows[4].ts),
+            to: Some(rows[1].ts),
+            limit: 10,
+            ..LogQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        middle
+            .iter()
+            .map(|r| r.message.as_str())
+            .collect::<Vec<_>>(),
+        ["line 4", "line 3", "line 2"]
+    );
 
     let cursor = rows[3].cursor();
     assert_eq!(Cursor::parse(&cursor.encode()), Some(cursor));
-    assert_eq!(Cursor::parse("1.2.key-custody-server").unwrap().service, "key-custody-server");
+    assert_eq!(
+        Cursor::parse("1.2.key-custody-server").unwrap().service,
+        "key-custody-server"
+    );
     assert_eq!(Cursor::parse("x.2.a"), None);
 }
 
@@ -124,14 +195,25 @@ fn lines_logged_before_the_store_opens_are_kept() {
     let store = telemetry.open_store(&dir.0.join("logs.db")).unwrap();
     tracing::info!("started");
     let rows = wait_for(&store, 2);
-    assert_eq!(rows.iter().map(|r| r.message.as_str()).collect::<Vec<_>>(), ["started", "starting"]);
+    assert_eq!(
+        rows.iter().map(|r| r.message.as_str()).collect::<Vec<_>>(),
+        ["started", "starting"]
+    );
 }
 
 #[test]
 fn spans_are_stored_redacted_with_their_parents_and_a_trace_reads_back_whole() {
     let s = setup("info");
-    let outer = tracing::info_span!("HTTP request", otel.kind = "server", secret_token = "sk_abc", store.id = "s_1");
-    let trace_id = crate::trace::span_context(&outer).unwrap().trace_id().to_string();
+    let outer = tracing::info_span!(
+        "HTTP request",
+        otel.kind = "server",
+        secret_token = "sk_abc",
+        store.id = "s_1"
+    );
+    let trace_id = crate::trace::span_context(&outer)
+        .unwrap()
+        .trace_id()
+        .to_string();
     outer.in_scope(|| {
         let inner = tracing::info_span!("engine call");
         inner.in_scope(|| tracing::info!("inside"));
@@ -151,12 +233,18 @@ fn spans_are_stored_redacted_with_their_parents_and_a_trace_reads_back_whole() {
     assert_eq!(request.name, "HTTP request");
     assert_eq!(request.kind, "server");
     assert_eq!(request.parent_span_id, None);
-    assert_eq!(call.parent_span_id.as_deref(), Some(request.span_id.as_str()));
+    assert_eq!(
+        call.parent_span_id.as_deref(),
+        Some(request.span_id.as_str())
+    );
     assert!(request.end >= request.start);
     assert_eq!(request.attributes["secret_token"], redact::REDACTED);
     assert_eq!(request.attributes["store.id"], "s_1");
     assert_eq!(trace.logs.len(), 1);
-    assert_eq!(trace.logs[0].span_id.as_deref(), Some(call.span_id.as_str()));
+    assert_eq!(
+        trace.logs[0].span_id.as_deref(),
+        Some(call.span_id.as_str())
+    );
 }
 
 #[test]
@@ -179,16 +267,28 @@ fn retention_removes_old_lines_then_the_oldest_until_under_the_size_limit() {
 
     // By age: everything is older than a day, a day from now.
     s.store.set_limits(1, 500);
-    s.store.maintain(&conn, now_nanos() + 2 * 86_400_000_000_000).unwrap();
+    s.store
+        .maintain(&conn, now_nanos() + 2 * 86_400_000_000_000)
+        .unwrap();
     assert!(all(&s.store).is_empty());
 }
 
 #[test]
 fn the_retention_settings_reach_the_store() {
     let s = setup("info");
-    s.telemetry.apply(&LogConfig { retention_days: 3, max_mb: 20, ..LogConfig::default() });
-    assert_eq!(s.store.inner.limits.retention_days.load(Ordering::Relaxed), 3);
-    assert_eq!(s.store.inner.limits.max_bytes.load(Ordering::Relaxed), 20 * 1024 * 1024);
+    s.telemetry.apply(&LogConfig {
+        retention_days: 3,
+        max_mb: 20,
+        ..LogConfig::default()
+    });
+    assert_eq!(
+        s.store.inner.limits.retention_days.load(Ordering::Relaxed),
+        3
+    );
+    assert_eq!(
+        s.store.inner.limits.max_bytes.load(Ordering::Relaxed),
+        20 * 1024 * 1024
+    );
 }
 
 #[test]
@@ -202,7 +302,10 @@ fn a_histogram_counts_lines_per_slice_and_attribute_names_are_listed() {
     let to = rows[0].ts + 1;
     let counts = s.store.histogram(None, from, to, 1).unwrap();
     assert_eq!(counts, [3]);
-    let warnings = s.store.histogram(parse("level = warn").unwrap().as_ref(), from, to, 4).unwrap();
+    let warnings = s
+        .store
+        .histogram(parse("level = warn").unwrap().as_ref(), from, to, 4)
+        .unwrap();
     assert_eq!(warnings.iter().sum::<u64>(), 2);
     assert_eq!(warnings.len(), 4);
     assert_eq!(s.store.attribute_names().unwrap(), ["network", "order.id"]);
@@ -237,16 +340,31 @@ fn a_store_made_before_session_ids_were_indexed_gets_the_column_and_finds_by_it(
             [r#"{"session.id":"5e55"}"#],
         )
         .unwrap();
-        let has: i64 = conn.query_row("SELECT count(*) FROM pragma_table_xinfo('logs') WHERE name = 'session_id'", [], |r| r.get(0)).unwrap();
+        let has: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_xinfo('logs') WHERE name = 'session_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(has, 0, "the old table really lacks it");
     }
     let conn = open_writer(&path).unwrap();
-    let plan: String = conn.query_row("EXPLAIN QUERY PLAN SELECT id FROM logs WHERE session_id = '5e55'", [], |r| r.get(3)).unwrap();
+    let plan: String = conn
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT id FROM logs WHERE session_id = '5e55'",
+            [],
+            |r| r.get(3),
+        )
+        .unwrap();
     assert!(plan.contains("logs_session"), "{plan}");
     drop(conn);
     let (telemetry, subscriber) = build("monokulo", Format::Json, false, "info", std::io::sink);
     let _guard = tracing::subscriber::set_default(subscriber);
     let store = telemetry.open_store(&path).unwrap();
-    assert_eq!(filtered(&store, "session.id = '5e55'"), vec!["signed in".to_string()]);
+    assert_eq!(
+        filtered(&store, "session.id = '5e55'"),
+        vec!["signed in".to_string()]
+    );
     assert!(filtered(&store, "session.id = 'other'").is_empty());
 }

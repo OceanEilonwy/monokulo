@@ -47,14 +47,16 @@ use std::time::Duration;
 
 use key_custody_server::server::KeyCustodyServer;
 use key_custody_service::client::SocketKeyCustody;
-use key_custody_service::protocol::{read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse};
+use key_custody_service::protocol::{
+    read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse,
+};
 use key_custody_service::WalletHandleWire;
+use monero::consensus::encode::deserialize;
+use monero::{PrivateKey, PublicKey, Transaction};
 use scanner::key_custody::{
     KeyCustody, KeyCustodyError, Network, PlainKeyCustody, SubaddressIndex, WalletHandle,
     WalletMaterial,
 };
-use monero::consensus::encode::deserialize;
-use monero::{PrivateKey, PublicKey, Transaction};
 use tokio::net::{UnixListener, UnixStream};
 
 // ---------------------------------------------------------------------------
@@ -97,7 +99,10 @@ async fn connect_with_retry(path: &Path) -> SocketKeyCustody {
             Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
         }
     }
-    panic!("key-custody-server never became reachable at {}", path.display());
+    panic!(
+        "key-custody-server never became reachable at {}",
+        path.display()
+    );
 }
 
 /// A real `KeyCustodyServer` (wrapping a fresh `PlainKeyCustody`) running as a
@@ -119,7 +124,10 @@ async fn spawn_server_and_client(tag: &str) -> TestServer {
         }
     });
     let client = connect_with_retry(&socket_path).await;
-    TestServer { client, _cleanup: CleanupSocket(socket_path) }
+    TestServer {
+        client,
+        _cleanup: CleanupSocket(socket_path),
+    }
 }
 
 fn random_scalar_bytes(seed: u8) -> [u8; 32] {
@@ -131,8 +139,10 @@ fn random_scalar_bytes(seed: u8) -> [u8; 32] {
 }
 
 fn fixture_tx() -> Transaction {
-    let raw = hex::decode(include_str!("../../scanner/tests/fixtures/subaddress_tx.hex"))
-        .expect("fixture is valid hex");
+    let raw = hex::decode(include_str!(
+        "../../scanner/tests/fixtures/subaddress_tx.hex"
+    ))
+    .expect("fixture is valid hex");
     deserialize(&raw).expect("fixture is a valid monero transaction")
 }
 
@@ -167,7 +177,10 @@ async fn register_then_derive_subaddress_roundtrip() {
     let ts = spawn_server_and_client("roundtrip").await;
     let handle = ts
         .client
-        .register_wallet(WalletMaterial::new(view_key.to_bytes(), spend_pubkey.to_bytes()))
+        .register_wallet(WalletMaterial::new(
+            view_key.to_bytes(),
+            spend_pubkey.to_bytes(),
+        ))
         .await
         .unwrap();
 
@@ -201,11 +214,18 @@ async fn scan_tx_outputs_finds_output_paid_to_subaddress() {
         .await
         .unwrap();
 
-    let matches = ts.client.scan_tx_outputs(handle, &tx, 0..2, 0..3).await.unwrap();
+    let matches = ts
+        .client
+        .scan_tx_outputs(handle, &tx, 0..2, 0..3)
+        .await
+        .unwrap();
 
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].output_index, 1);
-    assert_eq!(matches[0].subaddress_index, SubaddressIndex { major: 0, minor: 1 });
+    assert_eq!(
+        matches[0].subaddress_index,
+        SubaddressIndex { major: 0, minor: 1 }
+    );
     assert!(matches[0].amount_piconero.unwrap() > 0);
 }
 
@@ -260,12 +280,28 @@ async fn repeated_scans_over_same_range_reuse_the_cached_table() {
         .unwrap();
 
     for _ in 0..3 {
-        let matches = ts.client.scan_tx_outputs(handle, &tx, 0..2, 0..3).await.unwrap();
-        assert_eq!(matches.len(), 1, "same-range scan should still find the real output");
+        let matches = ts
+            .client
+            .scan_tx_outputs(handle, &tx, 0..2, 0..3)
+            .await
+            .unwrap();
+        assert_eq!(
+            matches.len(),
+            1,
+            "same-range scan should still find the real output"
+        );
     }
 
-    let widened = ts.client.scan_tx_outputs(handle, &tx, 0..2, 0..4).await.unwrap();
-    assert_eq!(widened.len(), 1, "a genuinely wider range must still find the same real output");
+    let widened = ts
+        .client
+        .scan_tx_outputs(handle, &tx, 0..2, 0..4)
+        .await
+        .unwrap();
+    assert_eq!(
+        widened.len(),
+        1,
+        "a genuinely wider range must still find the same real output"
+    );
 }
 
 #[tokio::test]
@@ -277,10 +313,18 @@ async fn seal_then_unseal_survives_a_simulated_restart() {
 
     // "Before restart": one server/client pair, register, derive, seal.
     let before = spawn_server_and_client("restart-before").await;
-    let handle_before = before.client.register_wallet(material.clone()).await.unwrap();
+    let handle_before = before
+        .client
+        .register_wallet(material.clone())
+        .await
+        .unwrap();
     let address_before = before
         .client
-        .derive_subaddress(handle_before, SubaddressIndex { major: 0, minor: 7 }, Network::Mainnet)
+        .derive_subaddress(
+            handle_before,
+            SubaddressIndex { major: 0, minor: 7 },
+            Network::Mainnet,
+        )
         .await
         .unwrap();
     let sealed = before.client.seal(&material).await.unwrap();
@@ -295,7 +339,11 @@ async fn seal_then_unseal_survives_a_simulated_restart() {
 
     let address_after = after
         .client
-        .derive_subaddress(handle_after, SubaddressIndex { major: 0, minor: 7 }, Network::Mainnet)
+        .derive_subaddress(
+            handle_after,
+            SubaddressIndex { major: 0, minor: 7 },
+            Network::Mainnet,
+        )
         .await
         .unwrap();
     assert_eq!(address_before, address_after);
@@ -306,14 +354,39 @@ async fn a_retried_scoped_registration_returns_the_original_remote_handle() {
     let ts = spawn_server_and_client("idempotent-registration").await;
     let material = fixture_material();
     let sealed = ts.client.seal(&material).await.unwrap();
-    let first = ts.client.unseal_and_register_idempotent(&sealed, "tenant-a").await.unwrap();
-    let retry = ts.client.unseal_and_register_idempotent(&sealed, "tenant-a").await.unwrap();
-    assert_eq!(first, retry, "a lost response must not create an unreachable second wallet");
-    let another = ts.client.unseal_and_register_idempotent(&sealed, "tenant-b").await.unwrap();
-    assert_ne!(first, another, "separate tenants may legitimately use the same wallet material");
+    let first = ts
+        .client
+        .unseal_and_register_idempotent(&sealed, "tenant-a")
+        .await
+        .unwrap();
+    let retry = ts
+        .client
+        .unseal_and_register_idempotent(&sealed, "tenant-a")
+        .await
+        .unwrap();
+    assert_eq!(
+        first, retry,
+        "a lost response must not create an unreachable second wallet"
+    );
+    let another = ts
+        .client
+        .unseal_and_register_idempotent(&sealed, "tenant-b")
+        .await
+        .unwrap();
+    assert_ne!(
+        first, another,
+        "separate tenants may legitimately use the same wallet material"
+    );
     ts.client.remove_wallet(first).await.unwrap();
-    let registered_again = ts.client.unseal_and_register_idempotent(&sealed, "tenant-a").await.unwrap();
-    assert_ne!(first, registered_again, "offboarding releases the registration id");
+    let registered_again = ts
+        .client
+        .unseal_and_register_idempotent(&sealed, "tenant-a")
+        .await
+        .unwrap();
+    assert_ne!(
+        first, registered_again,
+        "offboarding releases the registration id"
+    );
 }
 
 #[tokio::test]
@@ -325,7 +398,10 @@ async fn index_zero_derives_a_standard_address_not_an_unpayable_subaddress() {
     let ts = spawn_server_and_client("index-zero").await;
     let handle = ts
         .client
-        .register_wallet(WalletMaterial::new(view_key.to_bytes(), spend_pubkey.to_bytes()))
+        .register_wallet(WalletMaterial::new(
+            view_key.to_bytes(),
+            spend_pubkey.to_bytes(),
+        ))
         .await
         .unwrap();
 
@@ -341,16 +417,27 @@ async fn index_zero_derives_a_standard_address_not_an_unpayable_subaddress() {
     );
     assert_eq!(
         primary,
-        monero::Address::standard(Network::Mainnet, spend_pubkey, PublicKey::from_private_key(&view_key))
+        monero::Address::standard(
+            Network::Mainnet,
+            spend_pubkey,
+            PublicKey::from_private_key(&view_key)
+        )
     );
     assert!(primary.to_string().starts_with('4'), "got {primary}");
 
     let first_order_address = ts
         .client
-        .derive_subaddress(handle, SubaddressIndex { major: 0, minor: 1 }, Network::Mainnet)
+        .derive_subaddress(
+            handle,
+            SubaddressIndex { major: 0, minor: 1 },
+            Network::Mainnet,
+        )
         .await
         .unwrap();
-    assert_eq!(first_order_address.addr_type, monero::AddressType::SubAddress);
+    assert_eq!(
+        first_order_address.addr_type,
+        monero::AddressType::SubAddress
+    );
     assert_ne!(first_order_address.public_spend, spend_pubkey);
 }
 
@@ -370,7 +457,14 @@ async fn an_index_at_the_top_of_the_u32_range_derives_without_overflowing() {
 
     let extreme = ts
         .client
-        .derive_subaddress(handle, SubaddressIndex { major: u32::MAX, minor: u32::MAX }, Network::Mainnet)
+        .derive_subaddress(
+            handle,
+            SubaddressIndex {
+                major: u32::MAX,
+                minor: u32::MAX,
+            },
+            Network::Mainnet,
+        )
         .await
         .unwrap();
     assert_eq!(extreme.addr_type, monero::AddressType::SubAddress);
@@ -379,7 +473,10 @@ async fn an_index_at_the_top_of_the_u32_range_derives_without_overflowing() {
         .client
         .derive_subaddress(
             handle,
-            SubaddressIndex { major: u32::MAX, minor: u32::MAX - 1 },
+            SubaddressIndex {
+                major: u32::MAX,
+                minor: u32::MAX - 1,
+            },
             Network::Mainnet,
         )
         .await
@@ -402,12 +499,19 @@ async fn an_absurdly_wide_scan_range_is_refused_rather_than_hanging_forever() {
         .await
         .unwrap();
 
-    let err = ts.client.scan_tx_outputs(handle, &tx, 0..1, 0..u32::MAX).await.unwrap_err();
+    let err = ts
+        .client
+        .scan_tx_outputs(handle, &tx, 0..1, 0..u32::MAX)
+        .await
+        .unwrap_err();
     assert!(matches!(err, KeyCustodyError::ScanFailed(_)), "got {err:?}");
 
     // A realistic range is still accepted - proves the refusal above is about
     // the range's size, not a general scan-tx-outputs breakage.
-    ts.client.scan_tx_outputs(handle, &tx, 0..1, 0..64).await.unwrap();
+    ts.client
+        .scan_tx_outputs(handle, &tx, 0..1, 0..64)
+        .await
+        .unwrap();
 }
 
 /// Ported *partially* - see this test's counterpart doc comment above
@@ -447,11 +551,17 @@ async fn removing_a_wallet_scrubs_its_view_key_rather_than_leaving_it_in_freed_m
         .unwrap();
 
     ts.client.remove_wallet(handle).await.unwrap();
-    assert!(matches!(ts.client.remove_wallet(handle).await.unwrap_err(), KeyCustodyError::UnknownWallet));
+    assert!(matches!(
+        ts.client.remove_wallet(handle).await.unwrap_err(),
+        KeyCustodyError::UnknownWallet
+    ));
 
     let tx = fixture_tx();
     assert!(matches!(
-        ts.client.scan_tx_outputs(handle, &tx, 0..1, 0..2).await.unwrap_err(),
+        ts.client
+            .scan_tx_outputs(handle, &tx, 0..1, 0..2)
+            .await
+            .unwrap_err(),
         KeyCustodyError::UnknownWallet
     ));
 }
@@ -460,8 +570,10 @@ async fn removing_a_wallet_scrubs_its_view_key_rather_than_leaving_it_in_freed_m
 async fn registering_the_same_material_twice_yields_independent_handles_that_both_work() {
     let view_key = PrivateKey::from_slice(&random_scalar_bytes(13)).unwrap();
     let spend_key = PrivateKey::from_slice(&random_scalar_bytes(14)).unwrap();
-    let material =
-        WalletMaterial::new(view_key.to_bytes(), PublicKey::from_private_key(&spend_key).to_bytes());
+    let material = WalletMaterial::new(
+        view_key.to_bytes(),
+        PublicKey::from_private_key(&spend_key).to_bytes(),
+    );
 
     let ts = spawn_server_and_client("dup-register").await;
     let sealed = ts.client.seal(&material).await.unwrap();
@@ -470,13 +582,24 @@ async fn registering_the_same_material_twice_yields_independent_handles_that_bot
     assert_ne!(first, second, "each registration must get its own handle");
 
     let index = SubaddressIndex { major: 0, minor: 3 };
-    let from_first = ts.client.derive_subaddress(first, index, Network::Mainnet).await.unwrap();
-    let from_second = ts.client.derive_subaddress(second, index, Network::Mainnet).await.unwrap();
+    let from_first = ts
+        .client
+        .derive_subaddress(first, index, Network::Mainnet)
+        .await
+        .unwrap();
+    let from_second = ts
+        .client
+        .derive_subaddress(second, index, Network::Mainnet)
+        .await
+        .unwrap();
     assert_eq!(from_first, from_second);
 
     ts.client.remove_wallet(first).await.unwrap();
     assert_eq!(
-        ts.client.derive_subaddress(second, index, Network::Mainnet).await.unwrap(),
+        ts.client
+            .derive_subaddress(second, index, Network::Mainnet)
+            .await
+            .unwrap(),
         from_second,
         "removing one registration must not invalidate an independent one"
     );
@@ -486,7 +609,11 @@ async fn registering_the_same_material_twice_yields_independent_handles_that_bot
 async fn seal_rejects_truncated_or_overlong_material_instead_of_silently_padding() {
     for bad_len in [0usize, 31, 32, 63, 65, 128] {
         let ts = spawn_server_and_client(&format!("bad-len-{bad_len}")).await;
-        let err = ts.client.unseal_and_register(&vec![7u8; bad_len]).await.unwrap_err();
+        let err = ts
+            .client
+            .unseal_and_register(&vec![7u8; bad_len])
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, KeyCustodyError::InvalidKeyMaterial(_)),
             "{bad_len} bytes should be rejected, got {err:?}"
@@ -502,7 +629,8 @@ async fn seal_round_trips_every_byte_of_both_keys_including_high_bytes() {
     }
     view_bytes[31] &= 0x0f;
     let spend_bytes =
-        PublicKey::from_private_key(&PrivateKey::from_slice(&random_scalar_bytes(15)).unwrap()).to_bytes();
+        PublicKey::from_private_key(&PrivateKey::from_slice(&random_scalar_bytes(15)).unwrap())
+            .to_bytes();
 
     let material = WalletMaterial::new(view_bytes, spend_bytes);
     let ts = spawn_server_and_client("seal-bytes").await;
@@ -522,9 +650,16 @@ async fn seal_round_trips_every_byte_of_both_keys_including_high_bytes() {
     let handle_direct = ts.client.register_wallet(material.clone()).await.unwrap();
     let handle_restored = ts.client.unseal_and_register(&sealed).await.unwrap();
     let index = SubaddressIndex { major: 0, minor: 2 };
-    let address_direct = ts.client.derive_subaddress(handle_direct, index, Network::Mainnet).await.unwrap();
-    let address_restored =
-        ts.client.derive_subaddress(handle_restored, index, Network::Mainnet).await.unwrap();
+    let address_direct = ts
+        .client
+        .derive_subaddress(handle_direct, index, Network::Mainnet)
+        .await
+        .unwrap();
+    let address_restored = ts
+        .client
+        .derive_subaddress(handle_restored, index, Network::Mainnet)
+        .await
+        .unwrap();
     assert_eq!(address_direct, address_restored);
 }
 
@@ -538,11 +673,17 @@ async fn concurrent_registrations_and_removals_never_cross_wires_between_wallets
         let spend_key = PrivateKey::from_slice(&random_scalar_bytes(seed + 40)).unwrap();
         let spend_pubkey = PublicKey::from_private_key(&spend_key);
         let handle = client
-            .register_wallet(WalletMaterial::new(view_key.to_bytes(), spend_pubkey.to_bytes()))
+            .register_wallet(WalletMaterial::new(
+                view_key.to_bytes(),
+                spend_pubkey.to_bytes(),
+            ))
             .await
             .unwrap();
         let index = SubaddressIndex { major: 0, minor: 1 };
-        let address = client.derive_subaddress(handle, index, Network::Mainnet).await.unwrap();
+        let address = client
+            .derive_subaddress(handle, index, Network::Mainnet)
+            .await
+            .unwrap();
         expected.push((handle, address));
     }
 
@@ -553,7 +694,10 @@ async fn concurrent_registrations_and_removals_never_cross_wires_between_wallets
             tasks.push(tokio::spawn(async move {
                 let index = SubaddressIndex { major: 0, minor: 1 };
                 assert_eq!(
-                    client.derive_subaddress(handle, index, Network::Mainnet).await.unwrap(),
+                    client
+                        .derive_subaddress(handle, index, Network::Mainnet)
+                        .await
+                        .unwrap(),
                     address,
                     "a handle resolved to another wallet's key material"
                 );
@@ -586,7 +730,13 @@ async fn concurrent_registrations_and_removals_never_cross_wires_between_wallets
 
     for (handle, address) in expected {
         let index = SubaddressIndex { major: 0, minor: 1 };
-        assert_eq!(client.derive_subaddress(handle, index, Network::Mainnet).await.unwrap(), address);
+        assert_eq!(
+            client
+                .derive_subaddress(handle, index, Network::Mainnet)
+                .await
+                .unwrap(),
+            address
+        );
     }
 }
 
@@ -599,8 +749,8 @@ async fn concurrent_registrations_and_removals_never_cross_wires_between_wallets
 /// process's address space - see this file's own top doc comment for why that
 /// distinction matters and why every other test here doesn't bother with it.
 #[tokio::test]
-async fn a_real_child_process_running_the_compiled_server_binary_serves_a_full_round_trip_over_a_real_socket()
-{
+async fn a_real_child_process_running_the_compiled_server_binary_serves_a_full_round_trip_over_a_real_socket(
+) {
     let socket_path = temp_socket_path("subprocess");
     let _cleanup = CleanupSocket(socket_path.clone());
 
@@ -640,7 +790,11 @@ async fn a_real_child_process_running_the_compiled_server_binary_serves_a_full_r
         .expect("register_wallet over the real child process");
 
     let address = client
-        .derive_subaddress(handle, SubaddressIndex { major: 0, minor: 1 }, Network::Stagenet)
+        .derive_subaddress(
+            handle,
+            SubaddressIndex { major: 0, minor: 1 },
+            Network::Stagenet,
+        )
         .await
         .expect("derive_subaddress over the real child process");
     assert_eq!(address.addr_type, monero::AddressType::SubAddress);
@@ -651,9 +805,15 @@ async fn a_real_child_process_running_the_compiled_server_binary_serves_a_full_r
         .await
         .expect("scan_tx_outputs over the real child process");
     assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].subaddress_index, SubaddressIndex { major: 0, minor: 1 });
+    assert_eq!(
+        matches[0].subaddress_index,
+        SubaddressIndex { major: 0, minor: 1 }
+    );
 
-    client.remove_wallet(handle).await.expect("remove_wallet over the real child process");
+    client
+        .remove_wallet(handle)
+        .await
+        .expect("remove_wallet over the real child process");
     let err = client
         .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
         .await
@@ -667,13 +827,16 @@ async fn a_real_child_process_running_the_compiled_server_binary_serves_a_full_r
 }
 
 #[tokio::test]
-async fn connecting_to_a_socket_that_nothing_is_listening_on_is_a_clean_error_not_a_panic_or_hang() {
+async fn connecting_to_a_socket_that_nothing_is_listening_on_is_a_clean_error_not_a_panic_or_hang()
+{
     let socket_path = temp_socket_path("never-bound");
     // Deliberately never bound by anything - this path has never existed.
     match SocketKeyCustody::connect(&socket_path).await {
         Err(KeyCustodyError::BackendUnavailable(_)) => {}
         Ok(_) => panic!("connecting to a socket nothing is listening on unexpectedly succeeded"),
-        Err(other) => panic!("expected BackendUnavailable, got a different KeyCustodyError: {other}"),
+        Err(other) => {
+            panic!("expected BackendUnavailable, got a different KeyCustodyError: {other}")
+        }
     }
 }
 
@@ -694,7 +857,8 @@ async fn a_clean_error_not_a_hang_when_the_server_closes_the_connection_mid_sess
             let request: Result<Option<KeyCustodyRequest>, _> = read_frame(&mut stream).await;
             if let Ok(Some(KeyCustodyRequest::RegisterWallet(_))) = request {
                 let handle = WalletHandle::from_bytes([9u8; 16]);
-                let response = KeyCustodyResponse::RegisterWallet(Ok(WalletHandleWire::from(handle)));
+                let response =
+                    KeyCustodyResponse::RegisterWallet(Ok(WalletHandleWire::from(handle)));
                 let _ = write_frame(&mut stream, &response).await;
             }
             // `stream` dropped here: the connection closes.
@@ -703,12 +867,18 @@ async fn a_clean_error_not_a_hang_when_the_server_closes_the_connection_mid_sess
 
     let client = connect_with_retry(&socket_path).await;
     let material = WalletMaterial::new(random_scalar_bytes(200), random_scalar_bytes(201));
-    let handle = client.register_wallet(material).await.expect("first call should succeed normally");
+    let handle = client
+        .register_wallet(material)
+        .await
+        .expect("first call should succeed normally");
     assert_eq!(handle, WalletHandle::from_bytes([9u8; 16]));
 
     // Second call on the same, now-closed connection.
     let err = client.remove_wallet(handle).await.unwrap_err();
-    assert!(matches!(err, KeyCustodyError::BackendUnavailable(_)), "expected a clean error, got {err}");
+    assert!(
+        matches!(err, KeyCustodyError::BackendUnavailable(_)),
+        "expected a clean error, got {err}"
+    );
 }
 
 #[tokio::test]
@@ -734,7 +904,10 @@ async fn client_returns_a_clean_error_when_the_peer_sends_garbage_instead_of_a_v
     let client = connect_with_retry(&socket_path).await;
     let material = WalletMaterial::new(random_scalar_bytes(210), random_scalar_bytes(211));
     let err = client.register_wallet(material).await.unwrap_err();
-    assert!(matches!(err, KeyCustodyError::BackendUnavailable(_)), "expected a clean error, got {err}");
+    assert!(
+        matches!(err, KeyCustodyError::BackendUnavailable(_)),
+        "expected a clean error, got {err}"
+    );
 }
 
 #[tokio::test]
@@ -777,7 +950,10 @@ async fn garbage_bytes_from_a_raw_connection_are_rejected_cleanly_without_taking
             raw.read(&mut buf).await
         })
         .await;
-        assert!(result.is_ok(), "server did not close the connection within 5s after an oversized frame");
+        assert!(
+            result.is_ok(),
+            "server did not close the connection within 5s after an oversized frame"
+        );
     }
 
     // Case 2: a valid, small length prefix followed by bytes that aren't
@@ -792,7 +968,10 @@ async fn garbage_bytes_from_a_raw_connection_are_rejected_cleanly_without_taking
             raw.read(&mut buf).await
         })
         .await;
-        assert!(result.is_ok(), "server did not close the connection within 5s after a malformed payload");
+        assert!(
+            result.is_ok(),
+            "server did not close the connection within 5s after a malformed payload"
+        );
     }
 
     // The server itself must still be alive and functioning normally for a
@@ -801,7 +980,10 @@ async fn garbage_bytes_from_a_raw_connection_are_rejected_cleanly_without_taking
     // wedged or crashed the whole server.
     let client = connect_with_retry(&socket_path).await;
     let handle = client
-        .register_wallet(WalletMaterial::new(random_scalar_bytes(220), random_scalar_bytes(221)))
+        .register_wallet(WalletMaterial::new(
+            random_scalar_bytes(220),
+            random_scalar_bytes(221),
+        ))
         .await
         .expect("server should still serve a well-behaved client after receiving garbage");
     client.remove_wallet(handle).await.unwrap();
@@ -823,7 +1005,11 @@ impl ServerProcess {
         let path = path.to_path_buf();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let thread = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
             runtime.block_on(async move {
                 let server = KeyCustodyServer::new(PlainKeyCustody::default());
                 tokio::select! {
@@ -834,7 +1020,10 @@ impl ServerProcess {
             // Dropping the runtime drops every connection task.
             runtime.shutdown_timeout(Duration::from_secs(1));
         });
-        ServerProcess { stop: Some(stop), thread: Some(thread) }
+        ServerProcess {
+            stop: Some(stop),
+            thread: Some(thread),
+        }
     }
 
     fn stop(mut self) {
@@ -848,7 +1037,10 @@ impl ServerProcess {
 }
 
 fn fixture_material() -> WalletMaterial {
-    WalletMaterial::new(fixture_view_key().to_bytes(), fixture_spend_pubkey().to_bytes())
+    WalletMaterial::new(
+        fixture_view_key().to_bytes(),
+        fixture_spend_pubkey().to_bytes(),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -856,9 +1048,21 @@ async fn an_index_set_scan_over_the_socket_finds_the_payment() {
     let ts = spawn_server_and_client("indices").await;
     let handle = ts.client.register_wallet(fixture_material()).await.unwrap();
     let with_1 = scanner::key_custody::ScanIndices::new([1, 40, 900]);
-    assert_eq!(ts.client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &with_1).await.unwrap().len(), 1);
+    assert_eq!(
+        ts.client
+            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &with_1)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     let without = scanner::key_custody::ScanIndices::new([40, 900]);
-    assert!(ts.client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &without).await.unwrap().is_empty());
+    assert!(ts
+        .client
+        .scan_tx_outputs_for_indices(handle, &fixture_tx(), &without)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -872,7 +1076,9 @@ async fn an_older_server_without_index_set_scans_is_served_by_range_scans() {
     let custody = Arc::new(PlainKeyCustody::default());
     tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
             let custody = custody.clone();
             tokio::spawn(async move {
                 loop {
@@ -883,7 +1089,11 @@ async fn an_older_server_without_index_set_scans_is_served_by_range_scans() {
                     if matches!(request, KeyCustodyRequest::ScanTxOutputsForIndices(_)) {
                         return;
                     }
-                    let Ok(response) = key_custody_server::server::dispatch(&custody, request).await else { return };
+                    let Ok(response) =
+                        key_custody_server::server::dispatch(&custody, request).await
+                    else {
+                        return;
+                    };
                     if write_frame(&mut stream, &response).await.is_err() {
                         return;
                     }
@@ -895,7 +1105,10 @@ async fn an_older_server_without_index_set_scans_is_served_by_range_scans() {
     let handle = client.register_wallet(fixture_material()).await.unwrap();
     let window = scanner::key_custody::ScanIndices::new([1, 5]);
     for _ in 0..3 {
-        let matches = client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.unwrap();
+        let matches = client
+            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
+            .await
+            .unwrap();
         assert_eq!(matches.len(), 1, "found through the covering range instead");
     }
 }
@@ -908,7 +1121,9 @@ fn spawn_server_rejecting(socket_path: &Path, reject: fn(&KeyCustodyRequest) -> 
     let custody = Arc::new(PlainKeyCustody::default());
     tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
             let custody = custody.clone();
             tokio::spawn(async move {
                 loop {
@@ -919,7 +1134,11 @@ fn spawn_server_rejecting(socket_path: &Path, reject: fn(&KeyCustodyRequest) -> 
                     if reject(&request) {
                         return;
                     }
-                    let Ok(response) = key_custody_server::server::dispatch(&custody, request).await else { return };
+                    let Ok(response) =
+                        key_custody_server::server::dispatch(&custody, request).await
+                    else {
+                        return;
+                    };
                     if write_frame(&mut stream, &response).await.is_err() {
                         return;
                     }
@@ -949,11 +1168,16 @@ async fn a_server_restart_behind_pooled_connections_is_not_mistaken_for_an_older
     // scans. The wallet is registered there through another client, so the
     // first one's next call really does meet a stale connection.
     server.stop();
-    spawn_server_rejecting(&socket_path, |request| matches!(request, KeyCustodyRequest::ScanTxOutputs(_)));
+    spawn_server_rejecting(&socket_path, |request| {
+        matches!(request, KeyCustodyRequest::ScanTxOutputs(_))
+    });
     let other = connect_with_retry(&socket_path).await;
     let handle = other.register_wallet(fixture_material()).await.unwrap();
     for _ in 0..3 {
-        let matches = client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.expect("still index-set scans");
+        let matches = client
+            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
+            .await
+            .expect("still index-set scans");
         assert_eq!(matches.len(), 1);
     }
 }
@@ -966,24 +1190,43 @@ async fn a_server_that_is_down_during_an_index_set_scan_is_not_mistaken_for_an_o
     let client = connect_with_retry(&socket_path).await;
     let handle = client.register_wallet(fixture_material()).await.unwrap();
     let window = scanner::key_custody::ScanIndices::new([1, 5]);
-    assert_eq!(client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.unwrap().len(), 1);
+    assert_eq!(
+        client
+            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 
     server.stop();
     assert!(
-        client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.is_err(),
+        client
+            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
+            .await
+            .is_err(),
         "an outage is an error, not a quiet switch to range scans"
     );
 
     // Back, as a server that only takes index-set scans: the client still
     // uses them.
-    spawn_server_rejecting(&socket_path, |request| matches!(request, KeyCustodyRequest::ScanTxOutputs(_)));
+    spawn_server_rejecting(&socket_path, |request| {
+        matches!(request, KeyCustodyRequest::ScanTxOutputs(_))
+    });
     let handle = loop {
         match client.register_wallet(fixture_material()).await {
             Ok(handle) => break handle,
             Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
         }
     };
-    assert_eq!(client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.unwrap().len(), 1);
+    assert_eq!(
+        client
+            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -998,7 +1241,9 @@ async fn the_client_reconnects_to_a_restarted_server_and_notices_it_lost_its_wal
 
     server.stop();
     assert!(matches!(
-        client.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await,
+        client
+            .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
+            .await,
         Err(KeyCustodyError::BackendUnavailable(_))
     ));
 
@@ -1011,13 +1256,22 @@ async fn the_client_reconnects_to_a_restarted_server_and_notices_it_lost_its_wal
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert_eq!(state, Some(1), "same client, reconnected, and it saw the wallets were gone");
+    assert_eq!(
+        state,
+        Some(1),
+        "same client, reconnected, and it saw the wallets were gone"
+    );
     assert!(matches!(
-        client.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await,
+        client
+            .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
+            .await,
         Err(KeyCustodyError::UnknownWallet)
     ));
     let again = client.register_wallet(fixture_material()).await.unwrap();
-    client.derive_subaddress(again, SubaddressIndex::default(), Network::Mainnet).await.unwrap();
+    client
+        .derive_subaddress(again, SubaddressIndex::default(), Network::Mainnet)
+        .await
+        .unwrap();
     server.stop();
 }
 
@@ -1026,7 +1280,10 @@ async fn a_client_made_before_the_server_exists_starts_working_when_it_appears()
     let socket_path = temp_socket_path("late-server");
     let _cleanup = CleanupSocket(socket_path.clone());
     let client = SocketKeyCustody::not_connected_yet(&socket_path, Duration::from_secs(5));
-    assert!(matches!(client.register_wallet(fixture_material()).await, Err(KeyCustodyError::BackendUnavailable(_))));
+    assert!(matches!(
+        client.register_wallet(fixture_material()).await,
+        Err(KeyCustodyError::BackendUnavailable(_))
+    ));
     let server = ServerProcess::start(&socket_path);
     let mut registered = None;
     for _ in 0..200 {
@@ -1049,7 +1306,11 @@ async fn concurrent_calls_use_several_connections_and_all_succeed() {
     let calls = (0..16).map(|_| {
         let client = client.clone();
         let window = window.clone();
-        tokio::spawn(async move { client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await })
+        tokio::spawn(async move {
+            client
+                .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
+                .await
+        })
     });
     for call in calls {
         assert_eq!(call.await.unwrap().unwrap().len(), 1);

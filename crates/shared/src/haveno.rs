@@ -71,7 +71,11 @@ pub struct HavenoPolicy {
 
 impl Default for HavenoPolicy {
     fn default() -> Self {
-        HavenoPolicy { max_spread_pct: 5.0, min_offers_per_side: 1, min_depth_xmr_per_side: 0.0 }
+        HavenoPolicy {
+            max_spread_pct: 5.0,
+            min_offers_per_side: 1,
+            min_depth_xmr_per_side: 0.0,
+        }
     }
 }
 
@@ -126,26 +130,39 @@ impl HavenoRateProvider {
     }
 
     async fn fetch_tickers(&self) -> Result<HashMap<String, Book>, ExchangeRateError> {
-        let url = format!("{}/api/v1/tickers?network={NETWORK}&time_period=24h", self.base_url);
+        let url = format!(
+            "{}/api/v1/tickers?network={NETWORK}&time_period=24h",
+            self.base_url
+        );
         let response = self.client.get(&url).send().await?.error_for_status()?;
         let body: serde_json::Value = response.json().await?;
-        let tickers = body
-            .as_object()
-            .ok_or_else(|| ExchangeRateError::UnexpectedResponse(format!("tickers body is not an object: {body}")))?;
+        let tickers = body.as_object().ok_or_else(|| {
+            ExchangeRateError::UnexpectedResponse(format!("tickers body is not an object: {body}"))
+        })?;
         // A body with a `status` and `message` (the API's error shape, e.g.
         // "Haveno network 'reto' not available") is not a ticker map.
-        if tickers.get("status").is_some_and(serde_json::Value::is_number) && tickers.contains_key("message") {
-            return Err(ExchangeRateError::UnexpectedResponse(format!("haveno.markets error: {body}")));
+        if tickers
+            .get("status")
+            .is_some_and(serde_json::Value::is_number)
+            && tickers.contains_key("message")
+        {
+            return Err(ExchangeRateError::UnexpectedResponse(format!(
+                "haveno.markets error: {body}"
+            )));
         }
 
         let mut books = HashMap::new();
         for (code, ticker) in tickers {
             let code = code.to_uppercase();
-            if ticker.get("pair").and_then(serde_json::Value::as_str) != Some(format!("XMR_{code}").as_str()) {
+            if ticker.get("pair").and_then(serde_json::Value::as_str)
+                != Some(format!("XMR_{code}").as_str())
+            {
                 continue;
             }
             let (Some(bid), Some(ask)) = (
-                ticker.get("highest_bid").and_then(serde_json::Value::as_f64),
+                ticker
+                    .get("highest_bid")
+                    .and_then(serde_json::Value::as_f64),
                 ticker.get("lowest_ask").and_then(serde_json::Value::as_f64),
             ) else {
                 continue;
@@ -159,19 +176,32 @@ impl HavenoRateProvider {
     }
 
     async fn fetch_depth(&self, currency_upper: &str) -> Result<Depth, ExchangeRateError> {
-        let url = format!("{}/api/v1/depth/XMR_{currency_upper}?network={NETWORK}", self.base_url);
+        let url = format!(
+            "{}/api/v1/depth/XMR_{currency_upper}?network={NETWORK}",
+            self.base_url
+        );
         let response = self.client.get(&url).send().await?.error_for_status()?;
         let body: serde_json::Value = response.json().await?;
         let side = |name: &str| -> Result<(u64, f64), ExchangeRateError> {
             let levels = body
                 .get(name)
                 .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| ExchangeRateError::UnexpectedResponse(format!("no \"{name}\" array in depth body: {body}")))?;
+                .ok_or_else(|| {
+                    ExchangeRateError::UnexpectedResponse(format!(
+                        "no \"{name}\" array in depth body: {body}"
+                    ))
+                })?;
             let mut offers = 0u64;
             let mut xmr = 0.0f64;
             for level in levels {
-                offers += level.get("offer_count").and_then(serde_json::Value::as_u64).unwrap_or(0);
-                let amount = level.get("amount").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                offers += level
+                    .get("offer_count")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let amount = level
+                    .get("amount")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0);
                 if amount.is_finite() && amount > 0.0 {
                     xmr += amount;
                 }
@@ -180,7 +210,12 @@ impl HavenoRateProvider {
         };
         let (bid_offers, bid_xmr) = side("bids")?;
         let (ask_offers, ask_xmr) = side("asks")?;
-        Ok(Depth { bid_offers, bid_xmr, ask_offers, ask_xmr })
+        Ok(Depth {
+            bid_offers,
+            bid_xmr,
+            ask_offers,
+            ask_xmr,
+        })
     }
 
     /// Piconero per one unit of `currency` (case-insensitive), or `Ok(None)`
@@ -204,7 +239,12 @@ impl HavenoRateProvider {
             let books = self.fetch_tickers().await?;
             cache.tickers = Some((books, std::time::Instant::now()));
         }
-        let Some(book) = cache.tickers.as_ref().and_then(|(books, _)| books.get(&key)).copied() else {
+        let Some(book) = cache
+            .tickers
+            .as_ref()
+            .and_then(|(books, _)| books.get(&key))
+            .copied()
+        else {
             tracing::info!(provider = "haveno", currency = %key, "no two-sided book");
             return Ok(None);
         };
@@ -229,11 +269,19 @@ impl HavenoRateProvider {
             };
             if depth_stale {
                 let depth = self.fetch_depth(&key).await?;
-                cache.depth.insert(key.clone(), (depth, std::time::Instant::now()));
+                cache
+                    .depth
+                    .insert(key.clone(), (depth, std::time::Instant::now()));
             }
-            let depth = cache.depth.get(&key).map(|(depth, _)| *depth).expect("filled just above");
-            let offers_ok = depth.bid_offers >= u64::from(policy.min_offers_per_side) && depth.ask_offers >= u64::from(policy.min_offers_per_side);
-            let xmr_ok = depth.bid_xmr >= policy.min_depth_xmr_per_side && depth.ask_xmr >= policy.min_depth_xmr_per_side;
+            let depth = cache
+                .depth
+                .get(&key)
+                .map(|(depth, _)| *depth)
+                .expect("filled just above");
+            let offers_ok = depth.bid_offers >= u64::from(policy.min_offers_per_side)
+                && depth.ask_offers >= u64::from(policy.min_offers_per_side);
+            let xmr_ok = depth.bid_xmr >= policy.min_depth_xmr_per_side
+                && depth.ask_xmr >= policy.min_depth_xmr_per_side;
             if !offers_ok || !xmr_ok {
                 tracing::info!(
                     provider = "haveno",
@@ -285,11 +333,22 @@ mod tests {
             tickers_calls: Arc<AtomicUsize>,
             depth_calls: Arc<AtomicUsize>,
         }
-        async fn tickers_route(State(s): State<Shared>, Query(q): Query<HashMap<String, String>>) -> Response {
-            assert_eq!(q.get("network").map(String::as_str), Some("reto"), "must ask for the RetoSwap network");
+        async fn tickers_route(
+            State(s): State<Shared>,
+            Query(q): Query<HashMap<String, String>>,
+        ) -> Response {
+            assert_eq!(
+                q.get("network").map(String::as_str),
+                Some("reto"),
+                "must ask for the RetoSwap network"
+            );
             (s.tickers)(s.tickers_calls.fetch_add(1, Ordering::SeqCst))
         }
-        async fn depth_route(State(s): State<Shared>, Path(pair): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
+        async fn depth_route(
+            State(s): State<Shared>,
+            Path(pair): Path<String>,
+            Query(q): Query<HashMap<String, String>>,
+        ) -> Response {
             assert_eq!(q.get("network").map(String::as_str), Some("reto"));
             (s.depth)(&pair, s.depth_calls.fetch_add(1, Ordering::SeqCst))
         }
@@ -310,7 +369,11 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        Server { url: format!("http://{addr}"), tickers_calls, depth_calls }
+        Server {
+            url: format!("http://{addr}"),
+            tickers_calls,
+            depth_calls,
+        }
     }
 
     fn json_body(body: &str) -> Response {
@@ -349,18 +412,58 @@ mod tests {
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
         // midpoint 101.0 -> 1e12 / 101 rounded; last_price 581.49 would be far off.
-        assert_eq!(provider.piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap(), Some(9_900_990_099));
-        assert_eq!(provider.piconero_per_unit_cached("usd", TTL, &policy()).await.unwrap(), Some(9_900_990_099));
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("USD", TTL, &policy())
+                .await
+                .unwrap(),
+            Some(9_900_990_099)
+        );
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("usd", TTL, &policy())
+                .await
+                .unwrap(),
+            Some(9_900_990_099)
+        );
     }
 
     #[tokio::test]
     async fn a_one_sided_book_a_missing_currency_and_a_crypto_pair_are_unpriced() {
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
-        assert_eq!(provider.piconero_per_unit_cached("EUR", TTL, &policy()).await.unwrap(), None, "no ask");
-        assert_eq!(provider.piconero_per_unit_cached("AUD", TTL, &policy()).await.unwrap(), None, "no bid");
-        assert_eq!(provider.piconero_per_unit_cached("JPY", TTL, &policy()).await.unwrap(), None, "not listed");
-        assert_eq!(provider.piconero_per_unit_cached("BTC", TTL, &policy()).await.unwrap(), None, "BTC_XMR is not XMR_BTC");
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("EUR", TTL, &policy())
+                .await
+                .unwrap(),
+            None,
+            "no ask"
+        );
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("AUD", TTL, &policy())
+                .await
+                .unwrap(),
+            None,
+            "no bid"
+        );
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("JPY", TTL, &policy())
+                .await
+                .unwrap(),
+            None,
+            "not listed"
+        );
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("BTC", TTL, &policy())
+                .await
+                .unwrap(),
+            None,
+            "BTC_XMR is not XMR_BTC"
+        );
     }
 
     #[tokio::test]
@@ -373,7 +476,14 @@ mod tests {
         let server = spawn_server(move |_| json_body(body), |_, _| json_body(DEPTH)).await;
         let provider = HavenoRateProvider::new(&server.url);
         for code in ["USD", "EUR", "GBP"] {
-            assert_eq!(provider.piconero_per_unit_cached(code, TTL, &policy()).await.unwrap(), None, "{code}");
+            assert_eq!(
+                provider
+                    .piconero_per_unit_cached(code, TTL, &policy())
+                    .await
+                    .unwrap(),
+                None,
+                "{code}"
+            );
         }
     }
 
@@ -382,24 +492,66 @@ mod tests {
         // USD: bid 100, ask 102 -> 2 / 101 = 1.980198...% wide.
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
-        let at = |max_spread_pct| HavenoPolicy { max_spread_pct, ..policy() };
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &at(5.0)).await.unwrap().is_some());
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &at(1.99)).await.unwrap().is_some());
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &at(1.98)).await.unwrap().is_none(), "just too wide");
-        assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 1, "different policies share the one cached fetch");
+        let at = |max_spread_pct| HavenoPolicy {
+            max_spread_pct,
+            ..policy()
+        };
+        assert!(provider
+            .piconero_per_unit_cached("USD", TTL, &at(5.0))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(provider
+            .piconero_per_unit_cached("USD", TTL, &at(1.99))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            provider
+                .piconero_per_unit_cached("USD", TTL, &at(1.98))
+                .await
+                .unwrap()
+                .is_none(),
+            "just too wide"
+        );
+        assert_eq!(
+            server.tickers_calls.load(Ordering::SeqCst),
+            1,
+            "different policies share the one cached fetch"
+        );
     }
 
     #[tokio::test]
     async fn depth_is_fetched_only_when_the_policy_needs_it() {
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
-        provider.piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap();
-        assert_eq!(server.depth_calls.load(Ordering::SeqCst), 0, "the default policy needs no depth");
+        provider
+            .piconero_per_unit_cached("USD", TTL, &policy())
+            .await
+            .unwrap();
+        assert_eq!(
+            server.depth_calls.load(Ordering::SeqCst),
+            0,
+            "the default policy needs no depth"
+        );
 
-        let wants_two = HavenoPolicy { min_offers_per_side: 2, ..policy() };
-        provider.piconero_per_unit_cached("USD", TTL, &wants_two).await.unwrap();
-        provider.piconero_per_unit_cached("USD", TTL, &wants_two).await.unwrap();
-        assert_eq!(server.depth_calls.load(Ordering::SeqCst), 1, "fetched once, then cached");
+        let wants_two = HavenoPolicy {
+            min_offers_per_side: 2,
+            ..policy()
+        };
+        provider
+            .piconero_per_unit_cached("USD", TTL, &wants_two)
+            .await
+            .unwrap();
+        provider
+            .piconero_per_unit_cached("USD", TTL, &wants_two)
+            .await
+            .unwrap();
+        assert_eq!(
+            server.depth_calls.load(Ordering::SeqCst),
+            1,
+            "fetched once, then cached"
+        );
     }
 
     #[tokio::test]
@@ -407,9 +559,23 @@ mod tests {
         // Bids have 3 offers, asks 2.
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
-        let at = |min_offers_per_side| HavenoPolicy { min_offers_per_side, ..policy() };
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &at(2)).await.unwrap().is_some());
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &at(3)).await.unwrap().is_none(), "the ask side only has 2");
+        let at = |min_offers_per_side| HavenoPolicy {
+            min_offers_per_side,
+            ..policy()
+        };
+        assert!(provider
+            .piconero_per_unit_cached("USD", TTL, &at(2))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            provider
+                .piconero_per_unit_cached("USD", TTL, &at(3))
+                .await
+                .unwrap()
+                .is_none(),
+            "the ask side only has 2"
+        );
     }
 
     #[tokio::test]
@@ -417,10 +583,31 @@ mod tests {
         // Bids list 5 XMR, asks 1.5.
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
-        let at = |min_depth_xmr_per_side| HavenoPolicy { min_depth_xmr_per_side, ..policy() };
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &at(1.5)).await.unwrap().is_some(), "at the limit passes");
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &at(1.6)).await.unwrap().is_none(), "the ask side only lists 1.5");
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &at(0.0)).await.unwrap().is_some());
+        let at = |min_depth_xmr_per_side| HavenoPolicy {
+            min_depth_xmr_per_side,
+            ..policy()
+        };
+        assert!(
+            provider
+                .piconero_per_unit_cached("USD", TTL, &at(1.5))
+                .await
+                .unwrap()
+                .is_some(),
+            "at the limit passes"
+        );
+        assert!(
+            provider
+                .piconero_per_unit_cached("USD", TTL, &at(1.6))
+                .await
+                .unwrap()
+                .is_none(),
+            "the ask side only lists 1.5"
+        );
+        assert!(provider
+            .piconero_per_unit_cached("USD", TTL, &at(0.0))
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -440,10 +627,22 @@ mod tests {
         )
         .await;
         let provider = HavenoRateProvider::new(&server.url);
-        let strict = HavenoPolicy { min_offers_per_side: 2, ..policy() };
-        provider.piconero_per_unit_cached("USD", TTL, &strict).await.unwrap();
-        provider.piconero_per_unit_cached("EUR", TTL, &strict).await.unwrap();
-        provider.piconero_per_unit_cached("usd", TTL, &strict).await.unwrap();
+        let strict = HavenoPolicy {
+            min_offers_per_side: 2,
+            ..policy()
+        };
+        provider
+            .piconero_per_unit_cached("USD", TTL, &strict)
+            .await
+            .unwrap();
+        provider
+            .piconero_per_unit_cached("EUR", TTL, &strict)
+            .await
+            .unwrap();
+        provider
+            .piconero_per_unit_cached("usd", TTL, &strict)
+            .await
+            .unwrap();
         assert_eq!(*pairs.lock(), vec!["XMR_USD", "XMR_EUR"]);
     }
 
@@ -451,9 +650,25 @@ mod tests {
     async fn depth_is_not_fetched_for_a_currency_with_no_book_or_a_too_wide_spread() {
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
-        let strict = HavenoPolicy { min_offers_per_side: 2, max_spread_pct: 0.5, ..policy() };
-        assert_eq!(provider.piconero_per_unit_cached("JPY", TTL, &strict).await.unwrap(), None);
-        assert_eq!(provider.piconero_per_unit_cached("USD", TTL, &strict).await.unwrap(), None);
+        let strict = HavenoPolicy {
+            min_offers_per_side: 2,
+            max_spread_pct: 0.5,
+            ..policy()
+        };
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("JPY", TTL, &strict)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("USD", TTL, &strict)
+                .await
+                .unwrap(),
+            None
+        );
         assert_eq!(server.depth_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -461,20 +676,42 @@ mod tests {
     async fn one_request_prices_every_currency_and_a_fresh_cache_is_reused() {
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
-        provider.piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap();
-        provider.piconero_per_unit_cached("EUR", TTL, &policy()).await.unwrap();
+        provider
+            .piconero_per_unit_cached("USD", TTL, &policy())
+            .await
+            .unwrap();
+        provider
+            .piconero_per_unit_cached("EUR", TTL, &policy())
+            .await
+            .unwrap();
         assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 1);
-        provider.piconero_per_unit_cached("USD", NOW, &policy()).await.unwrap();
-        assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 2, "a stale cache refetches");
+        provider
+            .piconero_per_unit_cached("USD", NOW, &policy())
+            .await
+            .unwrap();
+        assert_eq!(
+            server.tickers_calls.load(Ordering::SeqCst),
+            2,
+            "a stale cache refetches"
+        );
     }
 
     #[tokio::test]
     async fn stale_depth_is_refetched() {
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
-        let strict = HavenoPolicy { min_offers_per_side: 2, ..policy() };
-        provider.piconero_per_unit_cached("USD", TTL, &strict).await.unwrap();
-        provider.piconero_per_unit_cached("USD", NOW, &strict).await.unwrap();
+        let strict = HavenoPolicy {
+            min_offers_per_side: 2,
+            ..policy()
+        };
+        provider
+            .piconero_per_unit_cached("USD", TTL, &strict)
+            .await
+            .unwrap();
+        provider
+            .piconero_per_unit_cached("USD", NOW, &strict)
+            .await
+            .unwrap();
         assert_eq!(server.depth_calls.load(Ordering::SeqCst), 2);
     }
 
@@ -492,57 +729,155 @@ mod tests {
         )
         .await;
         let provider = HavenoRateProvider::new(&server.url);
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap().is_some());
-        assert_eq!(provider.piconero_per_unit_cached("USD", NOW, &policy()).await.unwrap(), None);
+        assert!(provider
+            .piconero_per_unit_cached("USD", TTL, &policy())
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("USD", NOW, &policy())
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
     async fn ticker_failures_are_errors_and_are_not_cached() {
         let server = spawn_server(|_| status(429), |_, _| json_body(DEPTH)).await;
-        assert!(HavenoRateProvider::new(&server.url).piconero_per_unit_cached("USD", TTL, &policy()).await.is_err());
+        assert!(HavenoRateProvider::new(&server.url)
+            .piconero_per_unit_cached("USD", TTL, &policy())
+            .await
+            .is_err());
 
-        let server = spawn_server(|_| json_body(r#"{"status":404,"message":"Haveno network 'reto' not available."}"#), |_, _| json_body(DEPTH)).await;
-        let err = HavenoRateProvider::new(&server.url).piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap_err();
-        assert!(matches!(err, ExchangeRateError::UnexpectedResponse(_)), "got {err:?}");
+        let server = spawn_server(
+            |_| json_body(r#"{"status":404,"message":"Haveno network 'reto' not available."}"#),
+            |_, _| json_body(DEPTH),
+        )
+        .await;
+        let err = HavenoRateProvider::new(&server.url)
+            .piconero_per_unit_cached("USD", TTL, &policy())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ExchangeRateError::UnexpectedResponse(_)),
+            "got {err:?}"
+        );
 
         let server = spawn_server(|_| json_body("[1,2]"), |_, _| json_body(DEPTH)).await;
         assert!(matches!(
-            HavenoRateProvider::new(&server.url).piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap_err(),
+            HavenoRateProvider::new(&server.url)
+                .piconero_per_unit_cached("USD", TTL, &policy())
+                .await
+                .unwrap_err(),
             ExchangeRateError::UnexpectedResponse(_)
         ));
 
-        let server = spawn_server(|call| if call == 0 { status(502) } else { json_body(TICKERS) }, |_, _| json_body(DEPTH)).await;
+        let server = spawn_server(
+            |call| {
+                if call == 0 {
+                    status(502)
+                } else {
+                    json_body(TICKERS)
+                }
+            },
+            |_, _| json_body(DEPTH),
+        )
+        .await;
         let provider = HavenoRateProvider::new(&server.url);
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &policy()).await.is_err());
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap().is_some(), "the failure was not cached");
+        assert!(provider
+            .piconero_per_unit_cached("USD", TTL, &policy())
+            .await
+            .is_err());
+        assert!(
+            provider
+                .piconero_per_unit_cached("USD", TTL, &policy())
+                .await
+                .unwrap()
+                .is_some(),
+            "the failure was not cached"
+        );
         assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 2);
 
-        assert!(HavenoRateProvider::new("http://127.0.0.1:1").piconero_per_unit_cached("USD", TTL, &policy()).await.is_err());
+        assert!(HavenoRateProvider::new("http://127.0.0.1:1")
+            .piconero_per_unit_cached("USD", TTL, &policy())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
     async fn depth_failures_are_errors_not_a_no_and_are_not_cached() {
-        let strict = HavenoPolicy { min_offers_per_side: 2, ..policy() };
+        let strict = HavenoPolicy {
+            min_offers_per_side: 2,
+            ..policy()
+        };
 
         let server = spawn_server(|_| json_body(TICKERS), |_, _| status(500)).await;
-        assert!(HavenoRateProvider::new(&server.url).piconero_per_unit_cached("USD", TTL, &strict).await.is_err());
+        assert!(HavenoRateProvider::new(&server.url)
+            .piconero_per_unit_cached("USD", TTL, &strict)
+            .await
+            .is_err());
 
-        let server = spawn_server(|_| json_body(TICKERS), |_, _| json_body(r#"{"status":404,"message":"no such pair"}"#)).await;
-        let err = HavenoRateProvider::new(&server.url).piconero_per_unit_cached("USD", TTL, &strict).await.unwrap_err();
-        assert!(matches!(err, ExchangeRateError::UnexpectedResponse(_)), "got {err:?}");
+        let server = spawn_server(
+            |_| json_body(TICKERS),
+            |_, _| json_body(r#"{"status":404,"message":"no such pair"}"#),
+        )
+        .await;
+        let err = HavenoRateProvider::new(&server.url)
+            .piconero_per_unit_cached("USD", TTL, &strict)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ExchangeRateError::UnexpectedResponse(_)),
+            "got {err:?}"
+        );
 
-        let server = spawn_server(|_| json_body(TICKERS), |_, call| if call == 0 { status(500) } else { json_body(DEPTH) }).await;
+        let server = spawn_server(
+            |_| json_body(TICKERS),
+            |_, call| {
+                if call == 0 {
+                    status(500)
+                } else {
+                    json_body(DEPTH)
+                }
+            },
+        )
+        .await;
         let provider = HavenoRateProvider::new(&server.url);
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &strict).await.is_err());
-        assert!(provider.piconero_per_unit_cached("USD", TTL, &strict).await.unwrap().is_some(), "the failed depth fetch was not cached");
+        assert!(provider
+            .piconero_per_unit_cached("USD", TTL, &strict)
+            .await
+            .is_err());
+        assert!(
+            provider
+                .piconero_per_unit_cached("USD", TTL, &strict)
+                .await
+                .unwrap()
+                .is_some(),
+            "the failed depth fetch was not cached"
+        );
     }
 
     #[tokio::test]
     async fn a_missing_side_in_the_depth_response_counts_as_zero_offers() {
-        let server = spawn_server(|_| json_body(TICKERS), |_, _| json_body(r#"{"bids":[],"asks":[{"amount":1.0,"offer_count":1}]}"#)).await;
+        let server = spawn_server(
+            |_| json_body(TICKERS),
+            |_, _| json_body(r#"{"bids":[],"asks":[{"amount":1.0,"offer_count":1}]}"#),
+        )
+        .await;
         let provider = HavenoRateProvider::new(&server.url);
-        let strict = HavenoPolicy { min_offers_per_side: 2, ..policy() };
-        assert_eq!(provider.piconero_per_unit_cached("USD", TTL, &strict).await.unwrap(), None);
+        let strict = HavenoPolicy {
+            min_offers_per_side: 2,
+            ..policy()
+        };
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("USD", TTL, &strict)
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     /// Every limit the policy has, chosen so each one passes for some and
@@ -551,13 +886,35 @@ mod tests {
     fn every_kind_of_policy() -> Vec<HavenoPolicy> {
         vec![
             policy(),
-            HavenoPolicy { max_spread_pct: 1.0, ..policy() },
-            HavenoPolicy { max_spread_pct: 2.0, ..policy() },
-            HavenoPolicy { min_offers_per_side: 2, ..policy() },
-            HavenoPolicy { min_offers_per_side: 3, ..policy() },
-            HavenoPolicy { min_depth_xmr_per_side: 1.5, ..policy() },
-            HavenoPolicy { min_depth_xmr_per_side: 1.6, ..policy() },
-            HavenoPolicy { max_spread_pct: 1.0, min_offers_per_side: 3, min_depth_xmr_per_side: 9.0 },
+            HavenoPolicy {
+                max_spread_pct: 1.0,
+                ..policy()
+            },
+            HavenoPolicy {
+                max_spread_pct: 2.0,
+                ..policy()
+            },
+            HavenoPolicy {
+                min_offers_per_side: 2,
+                ..policy()
+            },
+            HavenoPolicy {
+                min_offers_per_side: 3,
+                ..policy()
+            },
+            HavenoPolicy {
+                min_depth_xmr_per_side: 1.5,
+                ..policy()
+            },
+            HavenoPolicy {
+                min_depth_xmr_per_side: 1.6,
+                ..policy()
+            },
+            HavenoPolicy {
+                max_spread_pct: 1.0,
+                min_offers_per_side: 3,
+                min_depth_xmr_per_side: 9.0,
+            },
         ]
     }
 
@@ -570,9 +927,17 @@ mod tests {
         let mut expected = Vec::new();
         for policy in &policies {
             let fresh = HavenoRateProvider::new(&standard().await.url);
-            expected.push(fresh.piconero_per_unit_cached("USD", TTL, policy).await.unwrap());
+            expected.push(
+                fresh
+                    .piconero_per_unit_cached("USD", TTL, policy)
+                    .await
+                    .unwrap(),
+            );
         }
-        assert!(expected.iter().any(Option::is_some) && expected.iter().any(Option::is_none), "the set must include both passes and rejections");
+        assert!(
+            expected.iter().any(Option::is_some) && expected.iter().any(Option::is_none),
+            "the set must include both passes and rejections"
+        );
 
         let n = policies.len();
         let orders: Vec<Vec<usize>> = vec![
@@ -585,11 +950,26 @@ mod tests {
             let server = standard().await;
             let shared = HavenoRateProvider::new(&server.url);
             for &i in &order {
-                let got = shared.piconero_per_unit_cached("USD", TTL, &policies[i]).await.unwrap();
-                assert_eq!(got, expected[i], "policy {i} ({:?}) after order {order:?}", policies[i]);
+                let got = shared
+                    .piconero_per_unit_cached("USD", TTL, &policies[i])
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    got, expected[i],
+                    "policy {i} ({:?}) after order {order:?}",
+                    policies[i]
+                );
             }
-            assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 1, "one ticker fetch serves every policy ({order:?})");
-            assert_eq!(server.depth_calls.load(Ordering::SeqCst), 1, "one depth fetch serves every policy ({order:?})");
+            assert_eq!(
+                server.tickers_calls.load(Ordering::SeqCst),
+                1,
+                "one ticker fetch serves every policy ({order:?})"
+            );
+            assert_eq!(
+                server.depth_calls.load(Ordering::SeqCst),
+                1,
+                "one depth fetch serves every policy ({order:?})"
+            );
         }
     }
 
@@ -599,13 +979,35 @@ mod tests {
     async fn a_rejection_is_not_cached_for_the_next_caller() {
         let server = standard().await;
         let provider = HavenoRateProvider::new(&server.url);
-        let strict_spread = HavenoPolicy { max_spread_pct: 1.0, ..policy() };
-        let strict_depth = HavenoPolicy { min_depth_xmr_per_side: 9.0, ..policy() };
+        let strict_spread = HavenoPolicy {
+            max_spread_pct: 1.0,
+            ..policy()
+        };
+        let strict_depth = HavenoPolicy {
+            min_depth_xmr_per_side: 9.0,
+            ..policy()
+        };
         for _ in 0..2 {
-            assert!(provider.piconero_per_unit_cached("USD", TTL, &strict_spread).await.unwrap().is_none());
-            assert!(provider.piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap().is_some());
-            assert!(provider.piconero_per_unit_cached("USD", TTL, &strict_depth).await.unwrap().is_none());
-            assert!(provider.piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap().is_some());
+            assert!(provider
+                .piconero_per_unit_cached("USD", TTL, &strict_spread)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(provider
+                .piconero_per_unit_cached("USD", TTL, &policy())
+                .await
+                .unwrap()
+                .is_some());
+            assert!(provider
+                .piconero_per_unit_cached("USD", TTL, &strict_depth)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(provider
+                .piconero_per_unit_cached("USD", TTL, &policy())
+                .await
+                .unwrap()
+                .is_some());
         }
     }
 
@@ -616,7 +1018,11 @@ mod tests {
         let provider = HavenoRateProvider::new(&server.url);
         let mut prices = std::collections::HashSet::new();
         for policy in every_kind_of_policy() {
-            if let Some(price) = provider.piconero_per_unit_cached("USD", TTL, &policy).await.unwrap() {
+            if let Some(price) = provider
+                .piconero_per_unit_cached("USD", TTL, &policy)
+                .await
+                .unwrap()
+            {
                 prices.insert(price);
             }
         }
@@ -626,13 +1032,19 @@ mod tests {
     /// Many callers with different policies at once: still one fetch each,
     /// and each gets the answer its own policy gives.
     #[tokio::test]
-    async fn concurrent_callers_with_different_policies_share_one_fetch_and_keep_their_own_answers() {
+    async fn concurrent_callers_with_different_policies_share_one_fetch_and_keep_their_own_answers()
+    {
         let server = standard().await;
         let provider = Arc::new(HavenoRateProvider::new(&server.url));
         let policies = every_kind_of_policy();
         let mut expected = Vec::new();
         for policy in &policies {
-            expected.push(HavenoRateProvider::new(&standard().await.url).piconero_per_unit_cached("USD", TTL, policy).await.unwrap());
+            expected.push(
+                HavenoRateProvider::new(&standard().await.url)
+                    .piconero_per_unit_cached("USD", TTL, policy)
+                    .await
+                    .unwrap(),
+            );
         }
 
         let mut tasks = Vec::new();
@@ -640,7 +1052,15 @@ mod tests {
             for (i, policy) in policies.iter().enumerate() {
                 let provider = provider.clone();
                 let policy = *policy;
-                tasks.push(tokio::spawn(async move { (i, provider.piconero_per_unit_cached("USD", TTL, &policy).await.unwrap()) }));
+                tasks.push(tokio::spawn(async move {
+                    (
+                        i,
+                        provider
+                            .piconero_per_unit_cached("USD", TTL, &policy)
+                            .await
+                            .unwrap(),
+                    )
+                }));
             }
         }
         for task in tasks {
@@ -669,25 +1089,66 @@ mod tests {
         })
         .await;
         let provider = HavenoRateProvider::new(&server.url);
-        let wants_5_offers = HavenoPolicy { min_offers_per_side: 5, ..policy() };
-        let wants_5_xmr = HavenoPolicy { min_depth_xmr_per_side: 5.0, ..policy() };
+        let wants_5_offers = HavenoPolicy {
+            min_offers_per_side: 5,
+            ..policy()
+        };
+        let wants_5_xmr = HavenoPolicy {
+            min_depth_xmr_per_side: 5.0,
+            ..policy()
+        };
         for _ in 0..2 {
-            assert!(provider.piconero_per_unit_cached("USD", TTL, &wants_5_offers).await.unwrap().is_none());
-            assert!(provider.piconero_per_unit_cached("EUR", TTL, &wants_5_offers).await.unwrap().is_some());
-            assert!(provider.piconero_per_unit_cached("USD", TTL, &wants_5_xmr).await.unwrap().is_none());
-            assert!(provider.piconero_per_unit_cached("EUR", TTL, &wants_5_xmr).await.unwrap().is_some());
+            assert!(provider
+                .piconero_per_unit_cached("USD", TTL, &wants_5_offers)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(provider
+                .piconero_per_unit_cached("EUR", TTL, &wants_5_offers)
+                .await
+                .unwrap()
+                .is_some());
+            assert!(provider
+                .piconero_per_unit_cached("USD", TTL, &wants_5_xmr)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(provider
+                .piconero_per_unit_cached("EUR", TTL, &wants_5_xmr)
+                .await
+                .unwrap()
+                .is_some());
         }
-        assert_eq!(server.depth_calls.load(Ordering::SeqCst), 2, "one depth fetch per currency, whichever policy asked");
+        assert_eq!(
+            server.depth_calls.load(Ordering::SeqCst),
+            2,
+            "one depth fetch per currency, whichever policy asked"
+        );
         assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn the_default_policy_is_a_five_percent_spread_and_needs_no_depth() {
         let policy = HavenoPolicy::default();
-        assert_eq!(policy, HavenoPolicy { max_spread_pct: 5.0, min_offers_per_side: 1, min_depth_xmr_per_side: 0.0 });
+        assert_eq!(
+            policy,
+            HavenoPolicy {
+                max_spread_pct: 5.0,
+                min_offers_per_side: 1,
+                min_depth_xmr_per_side: 0.0
+            }
+        );
         assert!(!policy.needs_depth());
-        assert!(HavenoPolicy { min_offers_per_side: 2, ..policy }.needs_depth());
-        assert!(HavenoPolicy { min_depth_xmr_per_side: 0.1, ..policy }.needs_depth());
+        assert!(HavenoPolicy {
+            min_offers_per_side: 2,
+            ..policy
+        }
+        .needs_depth());
+        assert!(HavenoPolicy {
+            min_depth_xmr_per_side: 0.1,
+            ..policy
+        }
+        .needs_depth());
     }
 
     #[tokio::test]
@@ -695,12 +1156,25 @@ mod tests {
                 (`cargo test -p shared haveno::tests::manual_smoke -- --ignored --nocapture`), never as part of the default suite"]
     async fn manual_smoke_test_against_the_real_haveno_markets_api() {
         let provider = HavenoRateProvider::new("https://haveno.markets");
-        let strict = HavenoPolicy { min_offers_per_side: 2, min_depth_xmr_per_side: 1.0, ..policy() };
+        let strict = HavenoPolicy {
+            min_offers_per_side: 2,
+            min_depth_xmr_per_side: 1.0,
+            ..policy()
+        };
         for code in ["USD", "EUR", "GBP", "JPY"] {
-            let loose = provider.piconero_per_unit_cached(code, TTL, &policy()).await.expect("real call failed");
-            let tight = provider.piconero_per_unit_cached(code, TTL, &strict).await.expect("real depth call failed");
+            let loose = provider
+                .piconero_per_unit_cached(code, TTL, &policy())
+                .await
+                .expect("real call failed");
+            let tight = provider
+                .piconero_per_unit_cached(code, TTL, &strict)
+                .await
+                .expect("real depth call failed");
             println!("live haveno smoke test: {code} loose={loose:?} strict={tight:?}");
-            assert!(tight.is_none() || loose.is_some(), "a stricter policy never prices what a looser one does not");
+            assert!(
+                tight.is_none() || loose.is_some(),
+                "a stricter policy never prices what a looser one does not"
+            );
         }
     }
 }

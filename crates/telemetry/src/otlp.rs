@@ -19,7 +19,9 @@ use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{any_value, AnyValue, InstrumentationScope, KeyValue};
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 use opentelemetry_proto::tonic::resource::v1::Resource;
-use opentelemetry_proto::tonic::trace::v1::{span, status, ResourceSpans, ScopeSpans, Span, Status};
+use opentelemetry_proto::tonic::trace::v1::{
+    span, status, ResourceSpans, ScopeSpans, Span, Status,
+};
 use prost::Message;
 use serde_json::{Map, Value};
 
@@ -55,19 +57,29 @@ impl OtlpConfig {
             .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
             .filter(|(name, _)| !name.is_empty())
             .collect();
-        Some(OtlpConfig { endpoint: endpoint.to_string(), headers })
+        Some(OtlpConfig {
+            endpoint: endpoint.to_string(),
+            headers,
+        })
     }
 }
 
 /// The `check` for `logging.otlp_headers`.
-#[allow(clippy::ptr_arg, reason = "a setting's `check` takes `&T`, and this setting is a `String`")]
+#[allow(
+    clippy::ptr_arg,
+    reason = "a setting's `check` takes `&T`, and this setting is a `String`"
+)]
 pub fn check_headers(headers: &String) -> Result<(), String> {
     for pair in headers.split(',').filter(|p| !p.trim().is_empty()) {
         let Some((name, _)) = pair.split_once('=') else {
             return Err(format!("\"{}\" isn't name=value. Separate pairs with commas: authorization=Bearer abc,x-team=ops", pair.trim()));
         };
         let name = name.trim();
-        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
             return Err(format!("\"{name}\" isn't a header name."));
         }
     }
@@ -75,7 +87,10 @@ pub fn check_headers(headers: &String) -> Result<(), String> {
 }
 
 /// The `check` for `logging.otlp_endpoint`: empty (off) or an http(s) URL.
-#[allow(clippy::ptr_arg, reason = "a setting's `check` takes `&T`, and this setting is a `String`")]
+#[allow(
+    clippy::ptr_arg,
+    reason = "a setting's `check` takes `&T`, and this setting is a `String`"
+)]
 pub fn check_endpoint(endpoint: &String) -> Result<(), String> {
     let endpoint = endpoint.trim();
     if endpoint.is_empty() || endpoint.starts_with("http://") || endpoint.starts_with("https://") {
@@ -86,7 +101,9 @@ pub fn check_endpoint(endpoint: &String) -> Result<(), String> {
 }
 
 fn text(value: impl Into<String>) -> Option<AnyValue> {
-    Some(AnyValue { value: Some(any_value::Value::StringValue(value.into())) })
+    Some(AnyValue {
+        value: Some(any_value::Value::StringValue(value.into())),
+    })
 }
 
 fn any(value: &Value) -> Option<AnyValue> {
@@ -104,24 +121,38 @@ fn any(value: &Value) -> Option<AnyValue> {
 }
 
 fn kv(key: String, value: Option<AnyValue>) -> KeyValue {
-    KeyValue { key, value, ..Default::default() }
+    KeyValue {
+        key,
+        value,
+        ..Default::default()
+    }
 }
 
 fn attributes(map: &Map<String, Value>) -> Vec<KeyValue> {
-    map.iter().map(|(key, value)| kv(key.clone(), any(value))).collect()
+    map.iter()
+        .map(|(key, value)| kv(key.clone(), any(value)))
+        .collect()
 }
 
 fn hex_bytes(hex: Option<&str>) -> Vec<u8> {
     let Some(hex) = hex else { return Vec::new() };
-    (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()).collect()
+    (0..hex.len() / 2)
+        .filter_map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok())
+        .collect()
 }
 
 fn resource(service: &str) -> Option<Resource> {
-    Some(Resource { attributes: vec![kv("service.name".into(), text(service))], ..Default::default() })
+    Some(Resource {
+        attributes: vec![kv("service.name".into(), text(service))],
+        ..Default::default()
+    })
 }
 
 fn scope() -> Option<InstrumentationScope> {
-    Some(InstrumentationScope { name: "mokulo".into(), ..Default::default() })
+    Some(InstrumentationScope {
+        name: "mokulo".into(),
+        ..Default::default()
+    })
 }
 
 fn nanos(ts: i64) -> u64 {
@@ -161,18 +192,31 @@ pub(crate) fn span(row: &SpanRow) -> Span {
         trace_id: hex_bytes(Some(&row.trace_id)),
         span_id: hex_bytes(Some(&row.span_id)),
         parent_span_id: hex_bytes(row.parent_span_id.as_deref()),
-        name: row.attributes.get("otel.name").and_then(Value::as_str).unwrap_or(&row.name).to_string(),
+        name: row
+            .attributes
+            .get("otel.name")
+            .and_then(Value::as_str)
+            .unwrap_or(&row.name)
+            .to_string(),
         kind: kind as i32,
         start_time_unix_nano: nanos(row.start),
         end_time_unix_nano: nanos(row.end),
         attributes: attributes(&row.attributes),
-        status: Some(Status { code: code as i32, ..Default::default() }),
+        status: Some(Status {
+            code: code as i32,
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
 
 /// The two requests for one batch, grouped by service.
-pub(crate) fn requests(batch: &[Record]) -> (Option<ExportLogsServiceRequest>, Option<ExportTraceServiceRequest>) {
+pub(crate) fn requests(
+    batch: &[Record],
+) -> (
+    Option<ExportLogsServiceRequest>,
+    Option<ExportTraceServiceRequest>,
+) {
     let mut logs: Vec<(String, Vec<LogRecord>)> = Vec::new();
     let mut spans: Vec<(String, Vec<Span>)> = Vec::new();
     for record in batch {
@@ -192,7 +236,11 @@ pub(crate) fn requests(batch: &[Record]) -> (Option<ExportLogsServiceRequest>, O
             .into_iter()
             .map(|(service, log_records)| ResourceLogs {
                 resource: resource(&service),
-                scope_logs: vec![ScopeLogs { scope: scope(), log_records, ..Default::default() }],
+                scope_logs: vec![ScopeLogs {
+                    scope: scope(),
+                    log_records,
+                    ..Default::default()
+                }],
                 ..Default::default()
             })
             .collect(),
@@ -202,7 +250,11 @@ pub(crate) fn requests(batch: &[Record]) -> (Option<ExportLogsServiceRequest>, O
             .into_iter()
             .map(|(service, spans)| ResourceSpans {
                 resource: resource(&service),
-                scope_spans: vec![ScopeSpans { scope: scope(), spans, ..Default::default() }],
+                scope_spans: vec![ScopeSpans {
+                    scope: scope(),
+                    spans,
+                    ..Default::default()
+                }],
                 ..Default::default()
             })
             .collect(),
@@ -233,7 +285,10 @@ impl Exporter {
 }
 
 async fn run(config: OtlpConfig, mut receiver: tokio::sync::mpsc::Receiver<Record>) {
-    let client = match reqwest::Client::builder().timeout(Duration::from_secs(10)).build() {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
         Ok(client) => client,
         Err(e) => {
             tracing::error!(error = %e, "OTLP export not started");
@@ -243,10 +298,11 @@ async fn run(config: OtlpConfig, mut receiver: tokio::sync::mpsc::Receiver<Recor
     let mut batch = Vec::with_capacity(BATCH);
     let mut last_failure: Option<std::time::Instant> = None;
     loop {
-        let open = match tokio::time::timeout(FLUSH_EVERY, receiver.recv_many(&mut batch, BATCH)).await {
-            Ok(0) => false,
-            Ok(_) | Err(_) => true,
-        };
+        let open =
+            match tokio::time::timeout(FLUSH_EVERY, receiver.recv_many(&mut batch, BATCH)).await {
+                Ok(0) => false,
+                Ok(_) | Err(_) => true,
+            };
         if !batch.is_empty() {
             let (logs, spans) = requests(&batch);
             batch.clear();
@@ -255,7 +311,8 @@ async fn run(config: OtlpConfig, mut receiver: tokio::sync::mpsc::Receiver<Recor
                 result = result.and(post(&client, &config, "/v1/logs", logs.encode_to_vec()).await);
             }
             if let Some(spans) = spans {
-                result = result.and(post(&client, &config, "/v1/traces", spans.encode_to_vec()).await);
+                result =
+                    result.and(post(&client, &config, "/v1/traces", spans.encode_to_vec()).await);
             }
             // At most one line a minute about it: the line itself is exported too.
             if let Err(e) = result {
@@ -271,8 +328,16 @@ async fn run(config: OtlpConfig, mut receiver: tokio::sync::mpsc::Receiver<Recor
     }
 }
 
-async fn post(client: &reqwest::Client, config: &OtlpConfig, path: &str, body: Vec<u8>) -> Result<(), String> {
-    let mut request = client.post(format!("{}{path}", config.endpoint)).header("content-type", "application/x-protobuf").body(body);
+async fn post(
+    client: &reqwest::Client,
+    config: &OtlpConfig,
+    path: &str,
+    body: Vec<u8>,
+) -> Result<(), String> {
+    let mut request = client
+        .post(format!("{}{path}", config.endpoint))
+        .header("content-type", "application/x-protobuf")
+        .body(body);
     for (name, value) in &config.headers {
         request = request.header(name.as_str(), value.as_str());
     }

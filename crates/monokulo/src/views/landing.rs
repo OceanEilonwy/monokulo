@@ -91,7 +91,10 @@ mod tests {
     #[test]
     fn landing_page_renders_with_a_signup_cta_in_public_mode() {
         let html = page(&PageChrome::from_user(None, "/"), true).into_string();
-        assert!(html.contains(r#"class="btn btn-primary" href="/dashboard/signup""#), "expected the main sign-up CTA, got: {html}");
+        assert!(
+            html.contains(r#"class="btn btn-primary" href="/dashboard/signup""#),
+            "expected the main sign-up CTA, got: {html}"
+        );
         assert!(!html.contains("Request an invite"));
         assert!(html.to_lowercase().contains("monero"));
     }
@@ -99,7 +102,13 @@ mod tests {
     #[test]
     fn landing_page_renders_with_a_request_invite_cta_in_invite_only_mode() {
         let html = page(&PageChrome::from_user(None, "/"), false).into_string();
-        assert!(html.contains(r#"href="/request-invite""#), "expected the request-invite CTA, got: {html}");
-        assert!(!html.contains(r#"class="btn btn-primary" href="/dashboard/signup""#), "the main sign-up CTA must not appear in invite-only mode");
+        assert!(
+            html.contains(r#"href="/request-invite""#),
+            "expected the request-invite CTA, got: {html}"
+        );
+        assert!(
+            !html.contains(r#"class="btn btn-primary" href="/dashboard/signup""#),
+            "the main sign-up CTA must not appear in invite-only mode"
+        );
     }
 }

@@ -82,17 +82,28 @@ pub struct QueryErrorResponse {
 
 impl From<ParseError> for QueryErrorResponse {
     fn from(e: ParseError) -> Self {
-        QueryErrorResponse { error: e.message, start: e.start, end: e.end }
+        QueryErrorResponse {
+            error: e.message,
+            start: e.start,
+            end: e.end,
+        }
     }
 }
 
 impl From<QueryErrorResponse> for ParseError {
     fn from(e: QueryErrorResponse) -> Self {
-        ParseError { message: e.error, start: e.start, end: e.end }
+        ParseError {
+            message: e.error,
+            start: e.start,
+            end: e.end,
+        }
     }
 }
 
 /// A trace id as the API accepts it: 32 lowercase hex characters.
 pub fn is_trace_id(text: &str) -> bool {
-    text.len() == 32 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    text.len() == 32
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }

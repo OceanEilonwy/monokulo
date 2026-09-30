@@ -53,7 +53,11 @@ pub enum SaveError {
 }
 
 fn join_errors(errors: &[FieldError]) -> String {
-    errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
+    errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Why `Registry::build` refused. Each of these is a mistake in the code
@@ -68,7 +72,10 @@ pub enum BuildError {
     #[error("the setting {key} is declared wrongly: {message}")]
     BadDeclaration { key: &'static str, message: String },
     #[error("section {section} reads {key}, which isn't declared")]
-    UndeclaredKey { section: &'static str, key: &'static str },
+    UndeclaredKey {
+        section: &'static str,
+        key: &'static str,
+    },
     #[error("these settings belong to no section, so nothing would ever read them: {0:?}")]
     Orphaned(Vec<&'static str>),
     #[error("section {0} is registered twice")]
@@ -92,7 +99,10 @@ pub struct BootReport {
 pub enum BootError {
     /// A section with `BootPolicy::Exit` couldn't prepare.
     #[error("{section} couldn't start: {error}")]
-    Exit { section: &'static str, error: FieldError },
+    Exit {
+        section: &'static str,
+        error: FieldError,
+    },
     #[error("the registry has already booted")]
     AlreadyBooted,
     #[error("applying the settings at boot failed: {0}")]
@@ -204,8 +214,14 @@ impl<R: Reloadable> Entry for SectionEntry<R> {
 
     async fn prepare_staged(&self, boot: bool) -> Result<Vec<Warning>, FieldError> {
         let new = (*self.staged.lock()).clone();
-        let Some(new) = new else { return Ok(Vec::new()) };
-        let old = if boot { self.defaults.clone() } else { (*self.live.load()).clone() };
+        let Some(new) = new else {
+            return Ok(Vec::new());
+        };
+        let old = if boot {
+            self.defaults.clone()
+        } else {
+            (*self.live.load()).clone()
+        };
         let (prepared, warnings) = self.reloadable.prepare(&new, &old).await?;
         *self.prepared.lock() = Some(prepared);
         Ok(warnings)
@@ -242,7 +258,10 @@ struct Staging {
 
 impl Staging {
     fn new(entries: Vec<Arc<dyn Entry>>) -> Self {
-        Staging { entries, armed: true }
+        Staging {
+            entries,
+            armed: true,
+        }
     }
 
     fn disarm(mut self) {
@@ -316,7 +335,12 @@ impl RegistryBuilder {
             if by_key.insert(setting.key(), *setting).is_some() {
                 return Err(BuildError::DuplicateKey(setting.key()));
             }
-            setting.check_declaration().map_err(|message| BuildError::BadDeclaration { key: setting.key(), message })?;
+            setting
+                .check_declaration()
+                .map_err(|message| BuildError::BadDeclaration {
+                    key: setting.key(),
+                    message,
+                })?;
         }
 
         let mut names = HashSet::new();
@@ -332,16 +356,27 @@ impl RegistryBuilder {
             }
             for key in keys {
                 if !by_key.contains_key(key.key()) {
-                    return Err(BuildError::UndeclaredKey { section, key: key.key() });
+                    return Err(BuildError::UndeclaredKey {
+                        section,
+                        key: key.key(),
+                    });
                 }
                 covered.insert(key.key());
             }
-            let restart = keys.iter().filter(|k| k.applies() == Applies::Restart).count();
+            let restart = keys
+                .iter()
+                .filter(|k| k.applies() == Applies::Restart)
+                .count();
             if restart != 0 && restart != keys.len() {
                 return Err(BuildError::MixedApplies(section));
             }
         }
-        let orphaned: Vec<_> = self.declared.iter().map(|s| s.key()).filter(|k| !covered.contains(k)).collect();
+        let orphaned: Vec<_> = self
+            .declared
+            .iter()
+            .map(|s| s.key())
+            .filter(|k| !covered.contains(k))
+            .collect();
         if !orphaned.is_empty() {
             return Err(BuildError::Orphaned(orphaned));
         }
@@ -349,7 +384,8 @@ impl RegistryBuilder {
         let stored = self.snapshot.stored().clone();
         let mut boot_effective = HashMap::new();
         for setting in &self.declared {
-            let view = setting.resolve_view(stored.get(setting.key()).map(String::as_str), &self.env);
+            let view =
+                setting.resolve_view(stored.get(setting.key()).map(String::as_str), &self.env);
             if let Some(problem) = &view.problem {
                 tracing::warn!(setting = setting.key(), "settings: {}", problem.message);
             }
@@ -410,13 +446,20 @@ impl Registry {
     ///
     /// The store is read once here, so each section's `Live` value exists
     /// as soon as it is registered.
-    pub fn builder(store: Arc<dyn SettingsStore>, declared: &[&'static dyn AnySetting]) -> RegistryBuilder {
+    pub fn builder(
+        store: Arc<dyn SettingsStore>,
+        declared: &[&'static dyn AnySetting],
+    ) -> RegistryBuilder {
         Registry::builder_with_env(store, declared, Env::process())
     }
 
     /// As [`Registry::builder`], resolving against `env` instead of the
     /// process environment.
-    pub fn builder_with_env(store: Arc<dyn SettingsStore>, declared: &[&'static dyn AnySetting], env: Env) -> RegistryBuilder {
+    pub fn builder_with_env(
+        store: Arc<dyn SettingsStore>,
+        declared: &[&'static dyn AnySetting],
+        env: Env,
+    ) -> RegistryBuilder {
         let (stored, read_error) = match store.read_all() {
             Ok(stored) => (stored, None),
             Err(e) => (HashMap::new(), Some(e)),
@@ -456,7 +499,12 @@ impl Registry {
                     to_apply.push(Arc::clone(entry));
                 }
                 Err(error) => match entry.boot_policy() {
-                    BootPolicy::Exit => return Err(BootError::Exit { section: entry.name(), error }),
+                    BootPolicy::Exit => {
+                        return Err(BootError::Exit {
+                            section: entry.name(),
+                            error,
+                        })
+                    }
                     BootPolicy::StartDegraded => {
                         tracing::warn!(section = %entry.name(), error = %error, "settings: starting without it");
                         entry.discard();
@@ -515,7 +563,10 @@ impl Registry {
                 return Err(SaveError::UnknownKey(key.clone()));
             };
             if !seen.insert(setting.key()) {
-                errors.push(FieldError::new(key, "This setting was submitted more than once."));
+                errors.push(FieldError::new(
+                    key,
+                    "This setting was submitted more than once.",
+                ));
                 continue;
             }
             match raw {
@@ -615,7 +666,10 @@ impl Registry {
 
         // 6. Report.
         let env = snapshot.env();
-        let mut report = SaveReport { warnings, ..SaveReport::default() };
+        let mut report = SaveReport {
+            warnings,
+            ..SaveReport::default()
+        };
         for setting in changed {
             let key = setting.key();
             report.changed.push(key);
@@ -623,7 +677,9 @@ impl Registry {
                 report.env_overridden.push(key);
             }
             if setting.applies() == Applies::Restart {
-                let now = setting.resolve_view(snapshot.stored().get(key).map(String::as_str), env).stored_form;
+                let now = setting
+                    .resolve_view(snapshot.stored().get(key).map(String::as_str), env)
+                    .stored_form;
                 if inner.boot_effective.get(key) != Some(&now) {
                     report.restart_required.push(key);
                 }
@@ -674,7 +730,13 @@ impl Registry {
     /// Sections running on their defaults because the stored values broke
     /// a rule between fields, and why.
     pub fn section_problems(&self) -> Vec<(&'static str, Vec<FieldError>)> {
-        let mut problems: Vec<_> = self.inner.section_problems.read().iter().map(|(k, v)| (*k, v.clone())).collect();
+        let mut problems: Vec<_> = self
+            .inner
+            .section_problems
+            .read()
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
         problems.sort_by_key(|(section, _)| *section);
         problems
     }
@@ -723,6 +785,10 @@ fn section_value<S: Section>(snapshot: &Snapshot) -> (S, Option<Vec<FieldError>>
 fn defaults_of<S: Section>() -> S {
     match S::from_snapshot(&Snapshot::defaults()) {
         Ok(value) => value,
-        Err(errors) => panic!("section {} rejects its own defaults: {}", S::NAME, join_errors(&errors)),
+        Err(errors) => panic!(
+            "section {} rejects its own defaults: {}",
+            S::NAME,
+            join_errors(&errors)
+        ),
     }
 }

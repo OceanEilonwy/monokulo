@@ -121,10 +121,19 @@ const RANGES: &[(&str, &str)] = &[
     ("custom", "From / to below"),
 ];
 
-const LEVELS: &[(&str, &str)] =
-    &[("", "Any level"), ("debug", "Debug and up"), ("info", "Info and up"), ("warn", "Warnings and errors"), ("error", "Errors")];
+const LEVELS: &[(&str, &str)] = &[
+    ("", "Any level"),
+    ("debug", "Debug and up"),
+    ("info", "Info and up"),
+    ("warn", "Warnings and errors"),
+    ("error", "Errors"),
+];
 
-const SERVICES: &[(&str, &str)] = &[("", "Monokulo and the engine"), ("monokulo", "Monokulo only"), ("scanner", "The engine only")];
+const SERVICES: &[(&str, &str)] = &[
+    ("", "Monokulo and the engine"),
+    ("monokulo", "Monokulo only"),
+    ("scanner", "The engine only"),
+];
 
 const PAGE_STYLE: &str = r#"
 .wrap.wrap-wide { max-width: 1200px; }
@@ -555,21 +564,36 @@ pub const SYNTAX_PAGE: &str = "/dashboard/admin/logs/syntax";
 /// Examples of each part of the language (`telemetry::query`), with what
 /// each shows.
 const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
-    ("Compare a property", &[
-        ("level >= warn", "levels go trace, debug, info, warn, error"),
-        ("order.id = 'o_9'", "= equals; != or <> differs"),
-        ("http.status >= 500", "< <= > >= for numbers"),
-    ]),
-    ("Match text", &[
-        ("message contains 'timeout'", "anywhere in the text"),
-        ("http.route like '/pay/%'", "% is any run of characters, _ one character"),
-        ("payment not seen", "plain words search the message"),
-    ]),
-    ("Combine", &[
-        ("level >= warn and store.id = 's_1'", "both"),
-        ("service = 'scanner' or has error", "either; has means the line has that property"),
-        ("not (service = 'scanner')", "brackets group; not negates"),
-    ]),
+    (
+        "Compare a property",
+        &[
+            ("level >= warn", "levels go trace, debug, info, warn, error"),
+            ("order.id = 'o_9'", "= equals; != or <> differs"),
+            ("http.status >= 500", "< <= > >= for numbers"),
+        ],
+    ),
+    (
+        "Match text",
+        &[
+            ("message contains 'timeout'", "anywhere in the text"),
+            (
+                "http.route like '/pay/%'",
+                "% is any run of characters, _ one character",
+            ),
+            ("payment not seen", "plain words search the message"),
+        ],
+    ),
+    (
+        "Combine",
+        &[
+            ("level >= warn and store.id = 's_1'", "both"),
+            (
+                "service = 'scanner' or has error",
+                "either; has means the line has that property",
+            ),
+            ("not (service = 'scanner')", "brackets group; not negates"),
+        ],
+    ),
 ];
 
 /// The query language, for the Logs page's dialog and its own page. Each

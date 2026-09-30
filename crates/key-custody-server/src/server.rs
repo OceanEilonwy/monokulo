@@ -39,15 +39,17 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use key_custody_service::protocol::{read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse};
+use key_custody_service::protocol::{
+    read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse,
+};
 use key_custody_service::{
     AddressWire, KeyCustodyErrorWire, MatchedOutputWire, SealedMaterialWire, WalletHandleWire,
     WireConversionError,
 };
+use monero::Transaction;
 use scanner::key_custody::{
     KeyCustody, Network, PlainKeyCustody, SubaddressIndex, WalletHandle, WalletMaterial,
 };
-use monero::Transaction;
 use tokio::net::{UnixListener, UnixStream};
 
 /// Wraps a real `PlainKeyCustody` behind a Unix socket. Owns nothing about
@@ -60,7 +62,9 @@ pub struct KeyCustodyServer {
 
 impl KeyCustodyServer {
     pub fn new(custody: PlainKeyCustody) -> Self {
-        KeyCustodyServer { custody: Arc::new(custody) }
+        KeyCustodyServer {
+            custody: Arc::new(custody),
+        }
     }
 
     /// Bind `socket_path` and serve connections until an unrecoverable accept
@@ -167,7 +171,10 @@ pub async fn dispatch(
         }
         KeyCustodyRequest::RemoveWallet(req) => {
             let handle = WalletHandle::try_from(&req.handle)?;
-            let result = custody.remove_wallet(handle).await.map_err(KeyCustodyErrorWire::from);
+            let result = custody
+                .remove_wallet(handle)
+                .await
+                .map_err(KeyCustodyErrorWire::from);
             KeyCustodyResponse::RemoveWallet(result)
         }
         KeyCustodyRequest::Seal(req) => {
@@ -185,8 +192,8 @@ pub async fn dispatch(
                 Some(id) => custody.unseal_and_register_idempotent(&sealed, id).await,
                 None => custody.unseal_and_register(&sealed).await,
             }
-                .map(WalletHandleWire::from)
-                .map_err(KeyCustodyErrorWire::from);
+            .map(WalletHandleWire::from)
+            .map_err(KeyCustodyErrorWire::from);
             KeyCustodyResponse::UnsealAndRegister(result)
         }
         KeyCustodyRequest::DeriveSubaddress(req) => {

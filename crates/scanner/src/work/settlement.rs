@@ -39,7 +39,9 @@ pub(crate) struct SettlementRound {
 /// page of recomputes. Both in one unit, so even a round with no time to
 /// spare recomputes something.
 pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
-    let Some(tip) = round.tip else { return Progress::Blocked(Wait::ChainHeightUnknown) };
+    let Some(tip) = round.tip else {
+        return Progress::Blocked(Wait::ChainHeightUnknown);
+    };
     let mut failure = None;
     if !round.settlement.vanished_done {
         round.settlement.vanished_done = true;
@@ -65,12 +67,16 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
 /// as "it's gone"). A failed row stays eligible on the next circuit; the
 /// position moves past it so the others make progress.
 async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(), ScannerError> {
-    let Some(txids) = round.pool_txids.clone() else { return Ok(()) };
+    let Some(txids) = round.pool_txids.clone() else {
+        return Ok(());
+    };
     let network = round.network().to_string();
     let db = round.inputs.db;
     let page = round
         .db(|s, network| -> Result<_, ScannerError> {
-            let after: i64 = s.scheduler_position::<VanishedPayments>(network)?.unwrap_or(0);
+            let after: i64 = s
+                .scheduler_position::<VanishedPayments>(network)?
+                .unwrap_or(0);
             let mut page = s.unconfirmed_payments_page(network, after, VANISHED_PAGE)?;
             if page.is_empty() && after != 0 {
                 page = s.unconfirmed_payments_page(network, 0, VANISHED_PAGE)?;
@@ -95,7 +101,14 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
         }
         let checked = tokio::time::timeout(
             VANISHED_CALL_DEADLINE,
-            check_vanished_candidates(db, round.inputs.daemon, &txids, tip, round.now, vec![payment]),
+            check_vanished_candidates(
+                db,
+                round.inputs.daemon,
+                &txids,
+                tip,
+                round.now,
+                vec![payment],
+            ),
         )
         .await;
         match checked {
@@ -116,7 +129,9 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
     }
     // The position moves past what was checked, once per page.
     if let Some(last) = last {
-        round.db(move |s, network| s.set_scheduler_position::<VanishedPayments>(network, &last)).await?;
+        round
+            .db(move |s, network| s.set_scheduler_position::<VanishedPayments>(network, &last))
+            .await?;
     }
     match failure {
         Some(error) => Err(error),
@@ -132,7 +147,9 @@ async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, Scanne
     // Skipped: orders recomputed this round, and orders waiting to retry.
     let mut skip = round.settlement.recomputed.clone();
     skip.extend(round.state.order_backoff.waiting());
-    let (ids, next_after) = round.db(move |s, network| pick(s, network, &after, &skip, now, tip)).await?;
+    let (ids, next_after) = round
+        .db(move |s, network| pick(s, network, &after, &skip, now, tip))
+        .await?;
     *round.state.settlement.obligations_after.lock() = next_after;
     round.settlement.recomputed.extend(ids.iter().cloned());
     let count = ids.len();
@@ -198,13 +215,23 @@ fn pick(
     let page = s.pending_payment_recomputes_page(network, after, RECOMPUTE_PAGE)?;
     let full = page.len() == RECOMPUTE_PAGE;
     let wrap = !full && !after.is_empty();
-    let next_after = if full { page.last().cloned().unwrap_or_default() } else { String::new() };
+    let next_after = if full {
+        page.last().cloned().unwrap_or_default()
+    } else {
+        String::new()
+    };
     take(page, &mut ids);
     if wrap {
-        take(s.pending_payment_recomputes_page(network, "", RECOMPUTE_PAGE)?, &mut ids);
+        take(
+            s.pending_payment_recomputes_page(network, "", RECOMPUTE_PAGE)?,
+            &mut ids,
+        );
     }
     if ids.len() < RECOMPUTE_PAGE {
-        take(s.due_order_ids(network, now, tip, RECOMPUTE_PAGE + recomputed.len())?, &mut ids);
+        take(
+            s.due_order_ids(network, now, tip, RECOMPUTE_PAGE + recomputed.len())?,
+            &mut ids,
+        );
     }
     Ok((ids, next_after))
 }

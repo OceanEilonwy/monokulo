@@ -242,8 +242,15 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 /// The order's event stream, routed part by part, with the page's own
 /// options.
 fn events_url(data: &CheckoutViewModel) -> String {
-    let join = if data.query_suffix.is_empty() { '?' } else { '&' };
-    format!("/pay/{}/orders/{}/events{}{join}routed=true", data.pk, data.order_id, data.query_suffix)
+    let join = if data.query_suffix.is_empty() {
+        '?'
+    } else {
+        '&'
+    };
+    format!(
+        "/pay/{}/orders/{}/events{}{join}routed=true",
+        data.pk, data.order_id, data.query_suffix
+    )
 }
 
 pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
@@ -355,7 +362,13 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
         @if data.refund_enabled { script src="/static/jsQR.js" {} }
         script src="/static/checkout.js" {}
     };
-    layout_bare_with_head(chrome, "Pay with Monero", "width=device-width, initial-scale=1", extra_head, body)
+    layout_bare_with_head(
+        chrome,
+        "Pay with Monero",
+        "width=device-width, initial-scale=1",
+        extra_head,
+        body,
+    )
 }
 
 /// The checkout page's parts that change while it's open, each an element
@@ -425,19 +438,30 @@ impl Step {
 /// The track: Send, Confirm, Paid - without Confirm when the store counts a
 /// payment as soon as it's seen (`confirmations_required == 0`).
 fn stage_steps(data: &CheckoutViewModel) -> Vec<(&'static str, Step)> {
-    let [send, confirm, paid] = if data.double_spend_detected_at.is_some() && !awaiting_payment(data) {
-        [Step::Fail, Step::Todo, Step::Todo]
-    } else {
-        match data.status.as_str() {
-            "pending" => [Step::Now, Step::Todo, Step::Todo],
-            "partial" => [Step::Part, Step::Todo, Step::Todo],
-            "unconfirmed" | "confirming" => [Step::Done, Step::Now, Step::Todo],
-            "paid" | "overpaid" => [Step::Done, Step::Done, Step::Done],
-            _ => [Step::Fail, Step::Todo, Step::Todo],
-        }
-    };
+    let [send, confirm, paid] =
+        if data.double_spend_detected_at.is_some() && !awaiting_payment(data) {
+            [Step::Fail, Step::Todo, Step::Todo]
+        } else {
+            match data.status.as_str() {
+                "pending" => [Step::Now, Step::Todo, Step::Todo],
+                "partial" => [Step::Part, Step::Todo, Step::Todo],
+                "unconfirmed" | "confirming" => [Step::Done, Step::Now, Step::Todo],
+                "paid" | "overpaid" => [Step::Done, Step::Done, Step::Done],
+                _ => [Step::Fail, Step::Todo, Step::Todo],
+            }
+        };
     if data.confirmations_required == 0 {
-        vec![("Send", send), ("Paid", if confirm == Step::Now { Step::Now } else { paid })]
+        vec![
+            ("Send", send),
+            (
+                "Paid",
+                if confirm == Step::Now {
+                    Step::Now
+                } else {
+                    paid
+                },
+            ),
+        ]
     } else {
         vec![("Send", send), ("Confirm", confirm), ("Paid", paid)]
     }
@@ -452,26 +476,59 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
     if let Some(at) = data.double_spend_detected_at {
         let when = html! { span id="double-spend-time" { @if data.local_times { (data.clock.time_local(at)) } @else { (data.clock.time(at)) } } };
         return if awaiting_payment(data) {
-            ("A payment was reversed".to_string(), html! { "A double spend was detected at " (when) ", so it doesn't count. Send " (due) " XMR to pay this order. " (left) })
+            (
+                "A payment was reversed".to_string(),
+                html! { "A double spend was detected at " (when) ", so it doesn't count. Send " (due) " XMR to pay this order. " (left) },
+            )
         } else {
-            ("Payment reversed".to_string(), html! { "A double spend was detected at " (when) ", so that payment doesn't count. Contact the merchant before sending anything." })
+            (
+                "Payment reversed".to_string(),
+                html! { "A double spend was detected at " (when) ", so that payment doesn't count. Contact the merchant before sending anything." },
+            )
         };
     }
     match data.status.as_str() {
-        "pending" => (format!("Send {total} XMR"), html! { "Scan the code or copy the address. " (left) }),
-        "partial" => (format!("Send the remaining {due} XMR"), html! { (received) " of " (total) " XMR received. This new code asks for the rest. " (left) }),
-        "unconfirmed" => ("Waiting for confirmation".to_string(), html! { (received) " XMR seen on the network. Don't send it again; this page updates by itself." }),
-        "confirming" => ("Confirming".to_string(), html! { (data.confirmations) " of " (data.confirmations_required) " confirmations. Don't send it again; this page updates by itself." }),
-        "paid" => ("Paid".to_string(), html! { (received) " XMR received" @if data.confirmations_required > 0 { " and confirmed" } ". Nothing more to send." }),
-        "overpaid" => ("Paid, with extra".to_string(), html! {
-            @if let Some(message) = &data.payment_error { (message) } @else { "Don't send more. Contact the merchant about the extra amount." }
-        }),
-        "expired" => ("This payment expired".to_string(), html! {
-            @if received == "0" { "Nothing arrived in time. Don't send to this address; go back to the shop to start again." }
-            @else { (received) " XMR arrived before it expired. Don't send more; contact the merchant about it." }
-        }),
-        "cancelled" => ("Cancelled".to_string(), html! { "This order was cancelled. Don't send to this address." }),
-        _ => (data.status_label.clone(), html! { "Contact the merchant before sending anything." }),
+        "pending" => (
+            format!("Send {total} XMR"),
+            html! { "Scan the code or copy the address. " (left) },
+        ),
+        "partial" => (
+            format!("Send the remaining {due} XMR"),
+            html! { (received) " of " (total) " XMR received. This new code asks for the rest. " (left) },
+        ),
+        "unconfirmed" => (
+            "Waiting for confirmation".to_string(),
+            html! { (received) " XMR seen on the network. Don't send it again; this page updates by itself." },
+        ),
+        "confirming" => (
+            "Confirming".to_string(),
+            html! { (data.confirmations) " of " (data.confirmations_required) " confirmations. Don't send it again; this page updates by itself." },
+        ),
+        "paid" => (
+            "Paid".to_string(),
+            html! { (received) " XMR received" @if data.confirmations_required > 0 { " and confirmed" } ". Nothing more to send." },
+        ),
+        "overpaid" => (
+            "Paid, with extra".to_string(),
+            html! {
+                @if let Some(message) = &data.payment_error { (message) } @else { "Don't send more. Contact the merchant about the extra amount." }
+            },
+        ),
+        "expired" => (
+            "This payment expired".to_string(),
+            html! {
+                @if received == "0" { "Nothing arrived in time. Don't send to this address; go back to the shop to start again." }
+                @else { (received) " XMR arrived before it expired. Don't send more; contact the merchant about it." }
+            },
+        ),
+        "cancelled" => (
+            "Cancelled".to_string(),
+            html! { "This order was cancelled. Don't send to this address." },
+        ),
+        _ => (
+            data.status_label.clone(),
+            html! { "Contact the merchant before sending anything." },
+        ),
     }
 }
 
@@ -480,7 +537,11 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
 fn live_status(data: &CheckoutViewModel) -> Markup {
     let steps = stage_steps(data);
     let (title, message) = stage_message(data);
-    let state_class = if data.double_spend_detected_at.is_some() { "state-double-spend" } else { data.status_class.as_str() };
+    let state_class = if data.double_spend_detected_at.is_some() {
+        "state-double-spend"
+    } else {
+        data.status_class.as_str()
+    };
     html! {
         div id="live-status" class="stage-slot" data-live {
             span id="status-badge" class=(format!("tag {} sr-only", data.status_class)) { (data.status_label) }
@@ -510,7 +571,13 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
     let due = super::trim_xmr(&data.amount_due_xmr);
     let total = super::trim_xmr(&data.xmr_amount);
     let partial = data.status == "partial";
-    let (label, amount) = if partial { ("Still to pay", due) } else if awaiting_payment(data) { ("Amount due", total) } else { ("Order total", total) };
+    let (label, amount) = if partial {
+        ("Still to pay", due)
+    } else if awaiting_payment(data) {
+        ("Amount due", total)
+    } else {
+        ("Order total", total)
+    };
     html! {
         div id="live-pay" data-live {
             span class="amount-label" id="amount-label" { (label) }
@@ -643,9 +710,17 @@ fn share_frame_src(chrome: &PageChrome, data: &CheckoutShareViewModel) -> String
     // A signed-in viewer who chose a zone sees times in it; otherwise the
     // checkout shows the browser's own.
     if chrome.logged_in && !chrome.clock.is_automatic() {
-        params.push(format!("timezone={}", url::form_urlencoded::byte_serialize(chrome.clock.name().as_bytes()).collect::<String>()));
+        params.push(format!(
+            "timezone={}",
+            url::form_urlencoded::byte_serialize(chrome.clock.name().as_bytes())
+                .collect::<String>()
+        ));
     }
-    let query = if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) };
+    let query = if params.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", params.join("&"))
+    };
     format!("/pay/{}/orders/{}{query}", data.pk, data.order_id)
 }
 
@@ -774,11 +849,21 @@ mod tests {
         assert!(html.contains("/static/checkout.js"));
         assert!(html.contains("id=\"scan-refund\""));
         assert!(html.contains("/static/jsQR.js"));
-        assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#));
+        assert!(html.contains(
+            r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#
+        ));
         assert!(html.contains(r#"<noscript><p class="refresh-toggle"><a href="/pay/pk_abc123/orders/pay_abc123?refresh=false">Auto Refresh: ON</a></p></noscript>"#), "got: {html}");
-        assert!(html.contains(r#"<noscript><button type="submit" class="btn-secondary">Save</button></noscript>"#));
-        assert!(!html.contains(r#"<nav class="site-nav""#), "the checkout page must not carry the site nav, got: {html}");
-        assert!(!html.contains("Monokulo"), "the checkout page must not carry the site brand/logo, got: {html}");
+        assert!(html.contains(
+            r#"<noscript><button type="submit" class="btn-secondary">Save</button></noscript>"#
+        ));
+        assert!(
+            !html.contains(r#"<nav class="site-nav""#),
+            "the checkout page must not carry the site nav, got: {html}"
+        );
+        assert!(
+            !html.contains("Monokulo"),
+            "the checkout page must not carry the site brand/logo, got: {html}"
+        );
     }
 
     #[test]
@@ -798,12 +883,23 @@ mod tests {
         data.query_suffix = "?view=compact&refresh=false".to_string();
         data.toggled_refresh_suffix = "?view=compact".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(!html.contains(r#"http-equiv="refresh""#), "auto refresh off must drop the meta refresh, got: {html}");
-        assert!(html.contains(r#"<a href="/pay/pk_abc123/orders/pay_abc123?view=compact">Auto Refresh: OFF</a>"#), "got: {html}");
+        assert!(
+            !html.contains(r#"http-equiv="refresh""#),
+            "auto refresh off must drop the meta refresh, got: {html}"
+        );
+        assert!(
+            html.contains(
+                r#"<a href="/pay/pk_abc123/orders/pay_abc123?view=compact">Auto Refresh: OFF</a>"#
+            ),
+            "got: {html}"
+        );
         assert!(html.contains(r#"action="/pay/pk_abc123/orders/pay_abc123/refund-address?view=compact&amp;refresh=false""#), "saving must keep auto refresh off, got: {html}");
 
         let terminal = checkout_page(&chrome(), &test_checkout_view_model(true)).into_string();
-        assert!(!terminal.contains("Auto Refresh"), "a terminal order never refreshes, so it has nothing to toggle, got: {terminal}");
+        assert!(
+            !terminal.contains("Auto Refresh"),
+            "a terminal order never refreshes, so it has nothing to toggle, got: {terminal}"
+        );
     }
 
     #[test]
@@ -811,8 +907,14 @@ mod tests {
         let mut data = test_checkout_view_model(false);
         data.refund_address = Some(data.address.clone());
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#));
-        assert_eq!(html.matches("http-equiv=\"refresh\"").count(), 1, "the refresh must only exist inside noscript, got: {html}");
+        assert!(html.contains(
+            r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#
+        ));
+        assert_eq!(
+            html.matches("http-equiv=\"refresh\"").count(),
+            1,
+            "the refresh must only exist inside noscript, got: {html}"
+        );
     }
 
     #[test]
@@ -826,17 +928,34 @@ mod tests {
             is_zero_conf: true,
         }];
         let fragment = live_fragment(&data).into_string();
-        for id in ["live-status", "live-pay", "address-label", "live-progress", "live-payments"] {
-            assert!(fragment.contains(&format!(r#"id="{id}""#)), "missing {id} in {fragment}");
+        for id in [
+            "live-status",
+            "live-pay",
+            "address-label",
+            "live-progress",
+            "live-payments",
+        ] {
+            assert!(
+                fragment.contains(&format!(r#"id="{id}""#)),
+                "missing {id} in {fragment}"
+            );
         }
         assert_eq!(fragment.matches("data-live").count(), 5);
         assert!(fragment.contains("mempool"));
-        assert!(!fragment.contains("refund_address"), "the refund form must never be swapped mid-edit");
+        assert!(
+            !fragment.contains("refund_address"),
+            "the refund form must never be swapped mid-edit"
+        );
         // The QR code follows the amount due, so it is a live part too.
-        assert!(fragment.contains(r#"<div class="qr-wrap qr-new">"#), "{fragment}");
+        assert!(
+            fragment.contains(r#"<div class="qr-wrap qr-new">"#),
+            "{fragment}"
+        );
         // Every region in the fragment is the same markup the page itself renders.
         let page = checkout_page(&chrome(), &data).into_string();
-        assert!(page.contains(&fragment[fragment.find("<span").unwrap()..fragment.find("</span>").unwrap()]));
+        assert!(page.contains(
+            &fragment[fragment.find("<span").unwrap()..fragment.find("</span>").unwrap()]
+        ));
     }
 
     #[test]
@@ -847,7 +966,11 @@ mod tests {
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(html.contains("pay-wrap checkout-compact"));
         // Paid: the stage says so over the faded code, as in the full view.
-        assert!(html.contains("<strong>Paid.</strong>") && html.contains(r#"<div class="qr-wrap is-spent">"#), "{html}");
+        assert!(
+            html.contains("<strong>Paid.</strong>")
+                && html.contains(r#"<div class="qr-wrap is-spent">"#),
+            "{html}"
+        );
         assert!(!html.contains(r#"id="payment-state""#) && !html.contains(r#"class="receipt"#));
         assert!(html.contains("id=\"copy-address\""));
         assert!(html.contains("class=\"address-block\""));
@@ -862,17 +985,26 @@ mod tests {
         data.status_label = "Partial payment received".to_string();
         data.status_class = "state-partial".to_string();
         data.amount_received_xmr = "0.200000000000".to_string();
-        data.payment_error = Some("0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below.".to_string());
+        data.payment_error = Some(
+            "0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below."
+                .to_string(),
+        );
         data.amount_due_xmr = "0.300000000000".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
         // The stage says what arrived and what's left, with the time left;
         // the badge stays for screen readers only.
         assert!(html.contains(r#"class="tag state-partial sr-only""#));
-        assert!(html.contains(r#"<div class="stage-track state-partial">"#), "{html}");
+        assert!(
+            html.contains(r#"<div class="stage-track state-partial">"#),
+            "{html}"
+        );
         assert!(html.contains(r#"<li class="step-part">"#));
         assert!(html.contains("<strong>Send the remaining 0.3 XMR.</strong>"));
         assert!(html.contains("0.2 of 0.5 XMR received. This new code asks for the rest."));
-        assert!(html.contains(r#"<span class="stage-expiry ">30m left</span>"#), "{html}");
+        assert!(
+            html.contains(r#"<span class="stage-expiry ">30m left</span>"#),
+            "{html}"
+        );
         // The amount is what's left, under a new code for it.
         assert!(html.contains(r#"<span class="amount-value">0.3</span>"#));
         assert!(html.contains(r#"<div class="qr-wrap qr-new">"#));
@@ -882,20 +1014,53 @@ mod tests {
 
     #[test]
     fn the_stage_leads_the_page_in_every_state_and_the_code_never_leaves() {
-        for status in ["pending", "partial", "unconfirmed", "confirming", "paid", "overpaid", "expired", "cancelled"] {
-            let mut data = test_checkout_view_model(!matches!(status, "pending" | "partial" | "unconfirmed" | "confirming"));
+        for status in [
+            "pending",
+            "partial",
+            "unconfirmed",
+            "confirming",
+            "paid",
+            "overpaid",
+            "expired",
+            "cancelled",
+        ] {
+            let mut data = test_checkout_view_model(!matches!(
+                status,
+                "pending" | "partial" | "unconfirmed" | "confirming"
+            ));
             data.status = status.to_string();
             let html = checkout_page(&chrome(), &data).into_string();
-            let stage = html.find(r#"class="stage-slot""#).unwrap_or_else(|| panic!("{status}: no stage in {html}"));
-            let code = html.find(r#"<div class="qr-wrap"#).unwrap_or_else(|| panic!("{status}: no code in {html}"));
-            assert!(stage < code, "{status}: the stage must come before the code");
-            assert!(!html.contains(r#"id="payment-state""#) && !html.contains(r#"class="receipt"#) && !html.contains(r#"class="expiry-pill"#), "{status}: {html}");
+            let stage = html
+                .find(r#"class="stage-slot""#)
+                .unwrap_or_else(|| panic!("{status}: no stage in {html}"));
+            let code = html
+                .find(r#"<div class="qr-wrap"#)
+                .unwrap_or_else(|| panic!("{status}: no code in {html}"));
+            assert!(
+                stage < code,
+                "{status}: the stage must come before the code"
+            );
+            assert!(
+                !html.contains(r#"id="payment-state""#)
+                    && !html.contains(r#"class="receipt"#)
+                    && !html.contains(r#"class="expiry-pill"#),
+                "{status}: {html}"
+            );
         }
     }
 
     #[test]
     fn the_code_fades_once_the_payment_is_seen_or_the_order_is_over() {
-        for (status, faded) in [("pending", false), ("partial", false), ("unconfirmed", true), ("confirming", true), ("paid", true), ("overpaid", true), ("expired", true), ("cancelled", true)] {
+        for (status, faded) in [
+            ("pending", false),
+            ("partial", false),
+            ("unconfirmed", true),
+            ("confirming", true),
+            ("paid", true),
+            ("overpaid", true),
+            ("expired", true),
+            ("cancelled", true),
+        ] {
             let mut data = test_checkout_view_model(false);
             data.status = status.to_string();
             let html = checkout_page(&chrome(), &data).into_string();
@@ -907,20 +1072,29 @@ mod tests {
     fn the_track_has_no_confirm_step_when_one_payment_is_enough() {
         let mut data = test_checkout_view_model(false);
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"<ol class="track" aria-label="Payment progress">"#), "{html}");
+        assert!(
+            html.contains(r#"<ol class="track" aria-label="Payment progress">"#),
+            "{html}"
+        );
         assert!(html.contains("Confirm<span"));
 
         data.confirmations_required = 0;
         data.status = "unconfirmed".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"<ol class="track track-2" aria-label="Payment progress">"#), "{html}");
+        assert!(
+            html.contains(r#"<ol class="track track-2" aria-label="Payment progress">"#),
+            "{html}"
+        );
         assert!(!html.contains("Confirm<span"), "{html}");
         // Seen is the last step before Paid, so Paid is where the order is.
         assert!(html.contains(r#"<li class="step-now"><span class="track-dot" aria-hidden="true"></span><span class="track-name">Paid<span class="sr-only">, now</span>"#), "{html}");
 
         data.status = "paid".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains("XMR received. Nothing more to send."), "{html}");
+        assert!(
+            html.contains("XMR received. Nothing more to send."),
+            "{html}"
+        );
     }
 
     #[test]
@@ -941,8 +1115,13 @@ mod tests {
         data.payment_error = Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount.".to_string());
         let html = checkout_page(&chrome(), &data).into_string();
         // The stage explains the extra over a faded code for the order total.
-        assert!(html.contains("<strong>Paid, with extra.</strong>") && html.contains(r#"<span class="amount-value">0.5</span>"#), "{html}");
-        assert!(html.contains("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more."));
+        assert!(
+            html.contains("<strong>Paid, with extra.</strong>")
+                && html.contains(r#"<span class="amount-value">0.5</span>"#),
+            "{html}"
+        );
+        assert!(html
+            .contains("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more."));
         assert!(html.contains(r#"<div class="qr-wrap is-spent">"#));
         assert!(!html.contains(" left</span>"));
         assert!(!html.contains("the customer sent"));
@@ -975,15 +1154,26 @@ mod tests {
     #[test]
     fn checkout_page_shows_the_double_spend_stage_only_when_one_was_detected() {
         let mut data = test_checkout_view_model(false);
-        assert!(!checkout_page(&chrome(), &data).into_string().contains(r#"<div class="stage-track state-double-spend">"#));
+        assert!(!checkout_page(&chrome(), &data)
+            .into_string()
+            .contains(r#"<div class="stage-track state-double-spend">"#));
         data.double_spend_detected_at = Some(1_700_000_000);
         let html = checkout_page(&chrome(), &data).into_string();
         // Still owed: the stage says so, and the code stays live.
-        assert!(html.contains(r#"<div class="stage-track state-double-spend">"#) && html.contains("A payment was reversed"), "{html}");
+        assert!(
+            html.contains(r#"<div class="stage-track state-double-spend">"#)
+                && html.contains("A payment was reversed"),
+            "{html}"
+        );
         assert!(!html.contains(r#"<div class="qr-wrap is-spent">"#));
         data.status = "unconfirmed".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains("Payment reversed") && html.contains("Contact the merchant before sending anything.") && html.contains(r#"<div class="qr-wrap is-spent">"#), "{html}");
+        assert!(
+            html.contains("Payment reversed")
+                && html.contains("Contact the merchant before sending anything.")
+                && html.contains(r#"<div class="qr-wrap is-spent">"#),
+            "{html}"
+        );
         assert!(html.contains(r#"<li class="step-fail">"#));
         data.status = "pending".to_string();
         // UTC, marked for the script to show in the customer's own zone.
@@ -992,15 +1182,28 @@ mod tests {
         data.clock = crate::views::time::Clock::new(Some("Australia/Perth"), None, 0);
         data.local_times = false;
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains(">15 Nov 2023, 06:13</time>") && !html.contains("data-local"), "{html}");
+        assert!(
+            html.contains(">15 Nov 2023, 06:13</time>") && !html.contains("data-local"),
+            "{html}"
+        );
     }
 
     #[test]
     fn checkout_page_lists_payments_when_present() {
         let mut data = test_checkout_view_model(false);
         data.payments = vec![
-            CheckoutPaymentViewModel { txid_short: "abc…def".to_string(), amount_xmr: "0.25".to_string(), confirmations: 3, is_zero_conf: false },
-            CheckoutPaymentViewModel { txid_short: "ghi…jkl".to_string(), amount_xmr: "0.25".to_string(), confirmations: 0, is_zero_conf: true },
+            CheckoutPaymentViewModel {
+                txid_short: "abc…def".to_string(),
+                amount_xmr: "0.25".to_string(),
+                confirmations: 3,
+                is_zero_conf: false,
+            },
+            CheckoutPaymentViewModel {
+                txid_short: "ghi…jkl".to_string(),
+                amount_xmr: "0.25".to_string(),
+                confirmations: 0,
+                is_zero_conf: true,
+            },
         ];
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(html.contains("abc…def"));
@@ -1016,7 +1219,11 @@ mod tests {
 
     #[test]
     fn share_page_wraps_the_iframe_with_the_site_nav_when_found() {
-        let data = CheckoutShareViewModel { pk: "pk_abc123".to_string(), order_id: "pay_abc123".to_string(), found: true };
+        let data = CheckoutShareViewModel {
+            pk: "pk_abc123".to_string(),
+            order_id: "pay_abc123".to_string(),
+            found: true,
+        };
         let html = share_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="site-nav""#));
         assert!(html.contains("Monokulo"));
@@ -1026,7 +1233,11 @@ mod tests {
 
     #[test]
     fn share_page_shows_a_not_found_state_with_the_site_nav_when_not_found() {
-        let data = CheckoutShareViewModel { pk: "pk_abc123".to_string(), order_id: "pay_abc123".to_string(), found: false };
+        let data = CheckoutShareViewModel {
+            pk: "pk_abc123".to_string(),
+            order_id: "pay_abc123".to_string(),
+            found: false,
+        };
         let html = share_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="site-nav""#));
         assert!(html.to_lowercase().contains("not found"));

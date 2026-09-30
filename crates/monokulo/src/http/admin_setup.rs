@@ -21,8 +21,8 @@
 
 use axum::extract::{Form, State};
 use axum::response::{IntoResponse, Response};
-use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
+use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 
 use crate::views;
@@ -50,7 +50,10 @@ pub struct SetupForm {
 
 fn render_setup_form(state: &AppState, error: Option<&str>, email: &str) -> Response {
     let chrome = super::page_chrome(state, None, "/admin/setup");
-    let data = SetupViewModel { error: error.map(str::to_string), email: email.to_string() };
+    let data = SetupViewModel {
+        error: error.map(str::to_string),
+        email: email.to_string(),
+    };
     views::admin::setup_page(&chrome, &data).into_response()
 }
 
@@ -82,7 +85,9 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
     if form.password.len() < MIN_ADMIN_PASSWORD_LEN {
         return render_setup_form(
             &state,
-            Some(&format!("Password must be at least {MIN_ADMIN_PASSWORD_LEN} characters.")),
+            Some(&format!(
+                "Password must be at least {MIN_ADMIN_PASSWORD_LEN} characters."
+            )),
             &form.email,
         );
     }
@@ -117,9 +122,11 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
                 Err(_) => redirect_302("/dashboard/login"),
             }
         }
-        Err(CreateAccountError::DuplicateEmail) => {
-            render_setup_form(&state, Some("That email is already registered."), &form.email)
-        }
+        Err(CreateAccountError::DuplicateEmail) => render_setup_form(
+            &state,
+            Some("That email is already registered."),
+            &form.email,
+        ),
         // `is_admin: true` above skips the invite check outright
         // (`signup::create_account`'s own doc comment) - these two variants
         // are genuinely unreachable from this call site, kept as a plain
@@ -128,17 +135,19 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
         // somehow changed.
         Err(CreateAccountError::Internal)
         | Err(CreateAccountError::InviteRequired)
-        | Err(CreateAccountError::InvalidOrUsedInvite) => {
-            render_setup_form(&state, Some("Something went wrong. Please try again."), &form.email)
-        }
+        | Err(CreateAccountError::InvalidOrUsedInvite) => render_setup_form(
+            &state,
+            Some("Something went wrong. Please try again."),
+            &form.email,
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::Router;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -185,7 +194,16 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_install_redirects_the_landing_page_to_the_setup_wizard() {
         let router = fresh_router();
-        let response = router.oneshot(Request::builder().method("GET").uri("/").body(Body::empty()).unwrap()).await.unwrap();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(response.headers().get("location").unwrap(), "/admin/setup");
     }
@@ -193,33 +211,66 @@ mod tests {
     #[tokio::test]
     async fn the_setup_wizard_form_itself_is_reachable_on_a_fresh_install() {
         let router = fresh_router();
-        let response =
-            router.oneshot(Request::builder().method("GET").uri("/admin/setup").body(Body::empty()).unwrap()).await.unwrap();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/setup")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains("Set up your admin account"), "expected the wizard form, got: {html}");
+        assert!(
+            html.contains("Set up your admin account"),
+            "expected the wizard form, got: {html}"
+        );
     }
 
     /// Once setup is complete, revisiting the wizard (e.g. a stale bookmark)
     /// must never let a second submission overwrite or add another admin -
     /// it just bounces away.
     #[tokio::test]
-    async fn revisiting_the_wizard_after_setup_is_complete_redirects_away_instead_of_re_rendering() {
+    async fn revisiting_the_wizard_after_setup_is_complete_redirects_away_instead_of_re_rendering()
+    {
         let router = fresh_router();
         let submit = router
             .clone()
-            .oneshot(setup_form_request("admin@example.com", "a very long admin password", "a very long admin password"))
+            .oneshot(setup_form_request(
+                "admin@example.com",
+                "a very long admin password",
+                "a very long admin password",
+            ))
             .await
             .unwrap();
-        assert_eq!(submit.status(), StatusCode::FOUND, "the first submission should succeed and redirect");
+        assert_eq!(
+            submit.status(),
+            StatusCode::FOUND,
+            "the first submission should succeed and redirect"
+        );
 
-        let second_get =
-            router.clone().oneshot(Request::builder().method("GET").uri("/admin/setup").body(Body::empty()).unwrap()).await.unwrap();
+        let second_get = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/setup")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(second_get.status(), StatusCode::FOUND);
         assert_eq!(second_get.headers().get("location").unwrap(), "/");
 
         let second_post = router
-            .oneshot(setup_form_request("attacker@example.com", "another long password here", "another long password here"))
+            .oneshot(setup_form_request(
+                "attacker@example.com",
+                "another long password here",
+                "another long password here",
+            ))
             .await
             .unwrap();
         assert_eq!(second_post.status(), StatusCode::FOUND);
@@ -227,27 +278,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_successful_submission_creates_an_admin_marks_setup_complete_logs_in_and_lands_on_the_settings_page() {
+    async fn a_successful_submission_creates_an_admin_marks_setup_complete_logs_in_and_lands_on_the_settings_page(
+    ) {
         let router = fresh_router();
 
         let response = router
             .clone()
-            .oneshot(setup_form_request("owner@example.com", "a very long admin password", "a very long admin password"))
+            .oneshot(setup_form_request(
+                "owner@example.com",
+                "a very long admin password",
+                "a very long admin password",
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
-        assert_eq!(response.headers().get("location").unwrap(), "/dashboard/admin/settings");
-        let set_cookie = response.headers().get("set-cookie").expect("expected a session cookie to be set").to_str().unwrap();
-        assert!(set_cookie.starts_with("session="), "expected a real session cookie, got: {set_cookie}");
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            "/dashboard/admin/settings"
+        );
+        let set_cookie = response
+            .headers()
+            .get("set-cookie")
+            .expect("expected a session cookie to be set")
+            .to_str()
+            .unwrap();
+        assert!(
+            set_cookie.starts_with("session="),
+            "expected a real session cookie, got: {set_cookie}"
+        );
 
         // The wizard's own gate on `/` must now be gone - setup is complete.
         let landing = router
-            .oneshot(Request::builder().method("GET").uri("/").header("cookie", set_cookie.split(';').next().unwrap()).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/")
+                    .header("cookie", set_cookie.split(';').next().unwrap())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(landing.status(), StatusCode::OK);
         let html = body_text(landing).await;
-        assert!(html.contains("log out"), "the freshly created admin should already be logged in, got: {html}");
+        assert!(
+            html.contains("log out"),
+            "the freshly created admin should already be logged in, got: {html}"
+        );
     }
 
     #[tokio::test]
@@ -255,15 +332,35 @@ mod tests {
         let router = fresh_router();
         let response = router
             .clone()
-            .oneshot(setup_form_request("owner@example.com", "a very long admin password", "does not match at all"))
+            .oneshot(setup_form_request(
+                "owner@example.com",
+                "a very long admin password",
+                "does not match at all",
+            ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "a rejected submission re-renders the form, not a redirect");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a rejected submission re-renders the form, not a redirect"
+        );
         let html = body_text(response).await;
-        assert!(html.contains("do not match"), "expected a clear error, got: {html}");
+        assert!(
+            html.contains("do not match"),
+            "expected a clear error, got: {html}"
+        );
 
         // Setup must still be incomplete - the wizard still gates `/`.
-        let landing = router.oneshot(Request::builder().method("GET").uri("/").body(Body::empty()).unwrap()).await.unwrap();
+        let landing = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(landing.status(), StatusCode::FOUND);
         assert_eq!(landing.headers().get("location").unwrap(), "/admin/setup");
     }
@@ -271,10 +368,15 @@ mod tests {
     #[tokio::test]
     async fn a_too_short_password_is_rejected() {
         let router = fresh_router();
-        let response =
-            router.oneshot(setup_form_request("owner@example.com", "short1", "short1")).await.unwrap();
+        let response = router
+            .oneshot(setup_form_request("owner@example.com", "short1", "short1"))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains("at least"), "expected a clear minimum-length error, got: {html}");
+        assert!(
+            html.contains("at least"),
+            "expected a clear minimum-length error, got: {html}"
+        );
     }
 }

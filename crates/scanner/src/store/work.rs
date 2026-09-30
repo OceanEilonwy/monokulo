@@ -18,7 +18,10 @@ where
     <T as TryInto<i64>>::Error: std::error::Error + Send + Sync + 'static,
 {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let value: i64 = self.0.try_into().map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let value: i64 = self
+            .0
+            .try_into()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         Ok(value.into())
     }
 }
@@ -26,14 +29,17 @@ where
 impl<T: TryFrom<i64>> rusqlite::types::FromSql for Unsigned<T> {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
         let raw = value.as_i64()?;
-        T::try_from(raw).map(Unsigned).map_err(|_| rusqlite::types::FromSqlError::OutOfRange(raw))
+        T::try_from(raw)
+            .map(Unsigned)
+            .map_err(|_| rusqlite::types::FromSqlError::OutOfRange(raw))
     }
 }
 
 /// A block height as SQLite stores it. Heights never come near `i64::MAX`;
 /// one that did is refused rather than wrapped negative.
 pub fn sql_height(height: u64) -> Result<i64> {
-    i64::try_from(height).map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))
+    i64::try_from(height)
+        .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))
 }
 
 /// A list of ids as a JSON array, for `json_each` in SQL.
@@ -74,7 +80,9 @@ pub enum OpenedReorg {
     Created,
     /// A deeper fork than the open job's: its fork moved down to this one
     /// and collection restarted there.
-    Deepened { from: u64 },
+    Deepened {
+        from: u64,
+    },
     /// The open job already covers this fork.
     Covered,
 }
@@ -149,7 +157,10 @@ pub fn reorg_retry_delay(attempts: u32) -> i64 {
 
 fn phase_from_row(phase: &str, after_height: u64, after_id: i64) -> rusqlite::Result<ReorgPhase> {
     Ok(match phase {
-        "collect_confirmed" => ReorgPhase::CollectConfirmed { after_height, after_id },
+        "collect_confirmed" => ReorgPhase::CollectConfirmed {
+            after_height,
+            after_id,
+        },
         "collect_unconfirmed" => ReorgPhase::CollectUnconfirmed { after_id },
         "process" => ReorgPhase::Process,
         other => {
@@ -167,9 +178,16 @@ impl Store {
     /// for a query's three ways to fail: the statement (a broken schema), its
     /// parameters (a value out of SQLite's range) and a row (a corrupted
     /// value).
-    fn rows<T, P: rusqlite::Params>(&self, sql: &str, params: P, read: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>) -> Result<Vec<T>> {
+    fn rows<T, P: rusqlite::Params>(
+        &self,
+        sql: &str,
+        params: P,
+        read: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    ) -> Result<Vec<T>> {
         let mut stmt = self.conn.prepare_cached(sql)?;
-        let rows = stmt.query_map(params, read)?.collect::<rusqlite::Result<Vec<T>>>()?;
+        let rows = stmt
+            .query_map(params, read)?
+            .collect::<rusqlite::Result<Vec<T>>>()?;
         Ok(rows)
     }
 
@@ -227,7 +245,12 @@ impl Store {
     /// Adds up to `limit` candidates to `reorg_work` and moves the job's
     /// collection cursor past them, in one transaction. Returns the job's
     /// phase afterwards (`Process` once collection is complete).
-    pub fn collect_reorg_candidates(&self, network: &str, limit: usize, now: i64) -> Result<ReorgPhase> {
+    pub fn collect_reorg_candidates(
+        &self,
+        network: &str,
+        limit: usize,
+        now: i64,
+    ) -> Result<ReorgPhase> {
         self.in_transaction(|s| {
             let job = s.reorg_job(network)?.ok_or(StoreError::NotFound)?;
             let (ids, next) = match job.phase {
@@ -288,14 +311,24 @@ impl Store {
     }
 
     /// Up to `limit` candidates whose retry time has come, oldest retry first.
-    pub fn due_reorg_candidates(&self, network: &str, now: i64, limit: usize) -> Result<Vec<ReorgCandidate>> {
+    pub fn due_reorg_candidates(
+        &self,
+        network: &str,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<ReorgCandidate>> {
         self.rows(
             "SELECT op.*, w.attempts AS reorg_attempts FROM reorg_work w
              JOIN order_payments op ON op.id = w.payment_id
              WHERE w.network = ?1 AND w.next_attempt_at_utc <= ?2
              ORDER BY w.next_attempt_at_utc, w.payment_id LIMIT ?3",
             params![network, now, Unsigned(limit)],
-            |row| Ok(ReorgCandidate { payment: Self::row_to_payment(row)?, attempts: row.get::<_, Unsigned<u32>>("reorg_attempts")?.0 }),
+            |row| {
+                Ok(ReorgCandidate {
+                    payment: Self::row_to_payment(row)?,
+                    attempts: row.get::<_, Unsigned<u32>>("reorg_attempts")?.0,
+                })
+            },
         )
     }
 
@@ -313,7 +346,10 @@ impl Store {
     /// Removes a candidate. Call inside the transaction that applies its
     /// outcome, so the two can't come apart.
     pub fn complete_reorg_candidate(&self, network: &str, payment_id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM reorg_work WHERE network = ?1 AND payment_id = ?2", params![network, payment_id])?;
+        self.conn.execute(
+            "DELETE FROM reorg_work WHERE network = ?1 AND payment_id = ?2",
+            params![network, payment_id],
+        )?;
         Ok(())
     }
 
@@ -346,7 +382,12 @@ impl Store {
     /// Refuses (`NotFound`) unless the job still forks at `fork_height` and
     /// has no candidates left: a deeper fork found meanwhile must be
     /// reconciled first.
-    pub fn finish_reorg(&self, network: &str, fork_height: u64, ancestor: Option<(u64, &str)>) -> Result<()> {
+    pub fn finish_reorg(
+        &self,
+        network: &str,
+        fork_height: u64,
+        ancestor: Option<(u64, &str)>,
+    ) -> Result<()> {
         self.in_transaction(|s| {
             let job = s.reorg_job(network)?.ok_or(StoreError::NotFound)?;
             let (remaining, _) = s.reorg_work_remaining(network)?;
@@ -378,13 +419,22 @@ impl Store {
     /// reconciled there, so confirmations may be counted on a losing chain.
     pub fn settlement_frozen(&self, network: &str) -> Result<bool> {
         self.conn
-            .query_row("SELECT EXISTS (SELECT 1 FROM reorg_jobs WHERE network = ?1)", [network], |row| row.get(0))
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM reorg_jobs WHERE network = ?1)",
+                [network],
+                |row| row.get(0),
+            )
             .map_err(Into::into)
     }
 
     /// Stored block hashes on `network` from `from` to `to` inclusive,
     /// lowest first. Bounded by the retained window.
-    pub fn scanned_blocks_between(&self, network: &str, from: u64, to: u64) -> Result<Vec<(u64, String)>> {
+    pub fn scanned_blocks_between(
+        &self,
+        network: &str,
+        from: u64,
+        to: u64,
+    ) -> Result<Vec<(u64, String)>> {
         self.rows(
             "SELECT height, block_hash FROM scanned_blocks WHERE network = ?1 AND height BETWEEN ?2 AND ?3 ORDER BY height",
             params![network, Unsigned(from), Unsigned(to)],
@@ -395,7 +445,13 @@ impl Store {
     /// Up to `limit` orders on `network` whose status may have changed with
     /// time (`next_due_at_utc <= now`) or height (`next_due_height <= tip`),
     /// earliest due first.
-    pub fn due_order_ids(&self, network: &str, now: i64, tip: u64, limit: usize) -> Result<Vec<String>> {
+    pub fn due_order_ids(
+        &self,
+        network: &str,
+        now: i64,
+        tip: u64,
+        limit: usize,
+    ) -> Result<Vec<String>> {
         let mut ids: Vec<String> = Vec::new();
         let tip = i64::try_from(tip).unwrap_or(i64::MAX);
         for (sql, due) in [
@@ -412,7 +468,9 @@ impl Store {
                 tip,
             ),
         ] {
-            for id in self.rows(sql, params![network, due, Unsigned(limit)], |row| row.get::<_, String>(0))? {
+            for id in self.rows(sql, params![network, due, Unsigned(limit)], |row| {
+                row.get::<_, String>(0)
+            })? {
                 if ids.len() < limit && !ids.contains(&id) {
                     ids.push(id);
                 }
@@ -442,7 +500,11 @@ impl Store {
         }))
     }
 
-    pub fn set_scheduler_position<P: Position>(&self, network: &str, value: &P::Value) -> Result<()> {
+    pub fn set_scheduler_position<P: Position>(
+        &self,
+        network: &str,
+        value: &P::Value,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO scheduler_positions (network, position, value) VALUES (?1, ?2, ?3)
              ON CONFLICT (network, position) DO UPDATE SET value = excluded.value",
@@ -454,7 +516,11 @@ impl Store {
     /// A payment by its row id, voided or not.
     pub fn payment_by_id(&self, payment_id: i64) -> Result<Option<OrderPaymentRow>> {
         self.conn
-            .query_row("SELECT * FROM order_payments WHERE id = ?1", [payment_id], Self::row_to_payment)
+            .query_row(
+                "SELECT * FROM order_payments WHERE id = ?1",
+                [payment_id],
+                Self::row_to_payment,
+            )
             .optional()
             .map_err(Into::into)
     }
@@ -462,7 +528,13 @@ impl Store {
     /// Up to `limit` payments on `network` voided no earlier than `cutoff`,
     /// after payment id `after`, in id order: one page of the slow recheck
     /// for false double-spend accusations.
-    pub fn voided_payments_page(&self, network: &str, cutoff: i64, after: i64, limit: usize) -> Result<Vec<OrderPaymentRow>> {
+    pub fn voided_payments_page(
+        &self,
+        network: &str,
+        cutoff: i64,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<OrderPaymentRow>> {
         self.rows(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
@@ -495,7 +567,11 @@ pub struct StagedPayment {
 }
 
 impl Store {
-    pub fn block_checkpoint(&self, network: &str, tenant_id: &str) -> Result<Option<BlockCheckpoint>> {
+    pub fn block_checkpoint(
+        &self,
+        network: &str,
+        tenant_id: &str,
+    ) -> Result<Option<BlockCheckpoint>> {
         self.conn
             .query_row(
                 "SELECT height, block_hash, next_tx_index FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
@@ -516,8 +592,16 @@ impl Store {
     /// other block (another hash: a block's hash names its height too) is
     /// replaced, with its staged matches. Call in the transaction that stages
     /// this block's matches.
-    pub fn save_block_checkpoint(&self, network: &str, tenant_id: &str, checkpoint: &BlockCheckpoint) -> Result<()> {
-        if self.block_checkpoint(network, tenant_id)?.is_some_and(|old| old.hash != checkpoint.hash) {
+    pub fn save_block_checkpoint(
+        &self,
+        network: &str,
+        tenant_id: &str,
+        checkpoint: &BlockCheckpoint,
+    ) -> Result<()> {
+        if self
+            .block_checkpoint(network, tenant_id)?
+            .is_some_and(|old| old.hash != checkpoint.hash)
+        {
             self.clear_partial_block(network, tenant_id)?;
         }
         self.conn.execute(
@@ -532,8 +616,15 @@ impl Store {
 
     /// Removes a tenant's checkpoint and returns its staged matches if it was
     /// for the block with this hash; a stale one is dropped.
-    pub fn take_staged_payments(&self, network: &str, tenant_id: &str, hash: &str) -> Result<Vec<StagedPayment>> {
-        let current = self.block_checkpoint(network, tenant_id)?.is_some_and(|c| c.hash == hash);
+    pub fn take_staged_payments(
+        &self,
+        network: &str,
+        tenant_id: &str,
+        hash: &str,
+    ) -> Result<Vec<StagedPayment>> {
+        let current = self
+            .block_checkpoint(network, tenant_id)?
+            .is_some_and(|c| c.hash == hash);
         let staged = if current {
             self.rows(
                 "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc
@@ -560,13 +651,24 @@ impl Store {
     /// Up to `limit` distinct cursor heights below `below` held by enabled
     /// tenants on `network`, after `after` (all, from the lowest, for
     /// `None`): the catch-up groups, in rotation order.
-    pub fn scan_group_cursors(&self, network: &str, below: u64, after: Option<u64>, limit: usize) -> Result<Vec<u64>> {
+    pub fn scan_group_cursors(
+        &self,
+        network: &str,
+        below: u64,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<u64>> {
         self.rows(
             "SELECT DISTINCT scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height IS NOT NULL
                AND scanned_through_height < ?2 AND scanned_through_height >= ?3
              ORDER BY scanned_through_height LIMIT ?4",
-            params![network, Unsigned(below), Unsigned(after.map_or(0, |a| a.saturating_add(1))), Unsigned(limit)],
+            params![
+                network,
+                Unsigned(below),
+                Unsigned(after.map_or(0, |a| a.saturating_add(1))),
+                Unsigned(limit)
+            ],
             |row| unsigned(row, 0),
         )
     }
@@ -574,7 +676,13 @@ impl Store {
     /// Up to `limit` enabled tenants on `network` whose cursor is `cursor`,
     /// leaving out `excluding` (tenants waiting out a retry delay), in id
     /// order.
-    pub fn tenants_at_cursor(&self, network: &str, cursor: u64, excluding: &[String], limit: usize) -> Result<Vec<String>> {
+    pub fn tenants_at_cursor(
+        &self,
+        network: &str,
+        cursor: u64,
+        excluding: &[String],
+        limit: usize,
+    ) -> Result<Vec<String>> {
         let excluding = json_array(excluding);
         self.rows(
             "SELECT id FROM tenants
@@ -590,7 +698,10 @@ impl Store {
     /// one query: minor indices by tenant, each list ascending and never
     /// empty. A tenant with nothing in scope is absent.
     pub fn scan_windows(
-        &self, tenant_ids: &[String], since: i64, grace_period_seconds: i64,
+        &self,
+        tenant_ids: &[String],
+        since: i64,
+        grace_period_seconds: i64,
     ) -> Result<std::collections::HashMap<String, Vec<u32>>> {
         let ids = json_array(tenant_ids);
         let rows = self.rows(
@@ -601,7 +712,8 @@ impl Store {
             rusqlite::named_params! { ":ids": ids, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
             |row| Ok((row.get::<_, String>(0)?, unsigned::<u32>(row, 1)?)),
         )?;
-        let mut windows: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
+        let mut windows: std::collections::HashMap<String, Vec<u32>> =
+            std::collections::HashMap::new();
         for (tenant_id, minor) in rows {
             windows.entry(tenant_id).or_default().push(minor);
         }
@@ -614,7 +726,14 @@ impl Store {
     /// for it to find. The predicate is evaluated here, inside the caller's
     /// transaction, so an order committed before it counts. Returns how many
     /// moved.
-    pub fn advance_idle_cursors(&self, network: &str, from: u64, to: u64, since: i64, grace_period_seconds: i64) -> Result<usize> {
+    pub fn advance_idle_cursors(
+        &self,
+        network: &str,
+        from: u64,
+        to: u64,
+        since: i64,
+        grace_period_seconds: i64,
+    ) -> Result<usize> {
         let moved = self.conn.execute(
             &format!(
                 "UPDATE tenants SET scanned_through_height = :to
@@ -638,9 +757,16 @@ impl Store {
     /// still being at the block's parent, so a reorg rewind in between wins;
     /// returns the tenants that moved.
     pub fn advance_scanned_cursors(
-        &self, network: &str, height: u64, scanned: &[crate::work::ScannedBlock],
+        &self,
+        network: &str,
+        height: u64,
+        scanned: &[crate::work::ScannedBlock],
     ) -> Result<std::collections::HashSet<String>> {
-        let ids: Vec<&str> = scanned.iter().filter(|b| b.height() == height).map(|b| b.tenant_id()).collect();
+        let ids: Vec<&str> = scanned
+            .iter()
+            .filter(|b| b.height() == height)
+            .map(|b| b.tenant_id())
+            .collect();
         if ids.is_empty() {
             return Ok(Default::default());
         }
@@ -659,7 +785,12 @@ impl Store {
     /// after `after` in id order, with their cursors: one page of the
     /// scanned-range bookkeeping.
     pub fn active_tenants_page(
-        &self, network: &str, now: i64, grace_period_seconds: i64, after: &str, limit: usize,
+        &self,
+        network: &str,
+        now: i64,
+        grace_period_seconds: i64,
+        after: &str,
+        limit: usize,
     ) -> Result<Vec<(String, Option<u64>)>> {
         self.rows(
             &format!(
@@ -674,7 +805,12 @@ impl Store {
                 ":limit": Unsigned(limit),
                 ":since_minus_grace": now - grace_period_seconds,
             },
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Unsigned<u64>>>(1)?.map(|h| h.0))),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<Unsigned<u64>>>(1)?.map(|h| h.0),
+                ))
+            },
         )
     }
 }
@@ -734,12 +870,25 @@ mod tests {
     }
 
     fn pay(store: &Store, order_id: &str, txid: &str, height: Option<i64>) -> i64 {
-        store.record_payment_match(order_id, txid, 0, 10, "[\"ki\"]", 100, height).unwrap();
-        store.get_all_payments(order_id).unwrap().into_iter().find(|p| p.txid == txid).unwrap().id
+        store
+            .record_payment_match(order_id, txid, 0, 10, "[\"ki\"]", 100, height)
+            .unwrap();
+        store
+            .get_all_payments(order_id)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.txid == txid)
+            .unwrap()
+            .id
     }
 
     fn work(store: &Store, network: &str) -> Vec<i64> {
-        store.due_reorg_candidates(network, i64::MAX, 1000).unwrap().into_iter().map(|c| c.payment.id).collect()
+        store
+            .due_reorg_candidates(network, i64::MAX, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.payment.id)
+            .collect()
     }
 
     /// Collection covers confirmed payments at or above the fork and every
@@ -752,14 +901,22 @@ mod tests {
         let s = &store.0;
         let below = pay(s, main_order, "below", Some(9));
         let at = pay(s, main_order, "at", Some(10));
-        let above: Vec<i64> = (0..5).map(|i| pay(s, main_order, &format!("above{i}"), Some(11 + i))).collect();
+        let above: Vec<i64> = (0..5)
+            .map(|i| pay(s, main_order, &format!("above{i}"), Some(11 + i)))
+            .collect();
         let unconfirmed = pay(s, main_order, "pool", None);
         let _other_network = pay(s, other_order, "other", Some(12));
-        assert_eq!(s.open_reorg_job("mainnet", 10, 1000).unwrap(), OpenedReorg::Created);
+        assert_eq!(
+            s.open_reorg_job("mainnet", 10, 1000).unwrap(),
+            OpenedReorg::Created
+        );
         let late = pay(s, main_order, "late", Some(12));
 
         // Two candidates per page, restarting the process between pages.
-        assert!(matches!(s.collect_reorg_candidates("mainnet", 2, 1001).unwrap(), ReorgPhase::CollectConfirmed { .. }));
+        assert!(matches!(
+            s.collect_reorg_candidates("mainnet", 2, 1001).unwrap(),
+            ReorgPhase::CollectConfirmed { .. }
+        ));
         let s = reopen(store, &path);
         let mut phase = s.collect_reorg_candidates("mainnet", 2, 1002).unwrap();
         while phase != ReorgPhase::Process {
@@ -788,8 +945,14 @@ mod tests {
         s.open_reorg_job("mainnet", 8, 1000).unwrap();
         while s.collect_reorg_candidates("mainnet", 10, 1000).unwrap() != ReorgPhase::Process {}
         assert_eq!(work(s, "mainnet"), vec![shallow]);
-        assert_eq!(s.open_reorg_job("mainnet", 9, 1001).unwrap(), OpenedReorg::Covered);
-        assert_eq!(s.open_reorg_job("mainnet", 4, 1002).unwrap(), OpenedReorg::Deepened { from: 8 });
+        assert_eq!(
+            s.open_reorg_job("mainnet", 9, 1001).unwrap(),
+            OpenedReorg::Covered
+        );
+        assert_eq!(
+            s.open_reorg_job("mainnet", 4, 1002).unwrap(),
+            OpenedReorg::Deepened { from: 8 }
+        );
         while s.collect_reorg_candidates("mainnet", 10, 1003).unwrap() != ReorgPhase::Process {}
         let mut collected = work(s, "mainnet");
         collected.sort();
@@ -807,7 +970,8 @@ mod tests {
         let first = pay(s, &store.1, "first", Some(10));
         let second = pay(s, &store.1, "second", Some(11));
         for h in 8..=12 {
-            s.set_scanned_block("mainnet", h, &format!("old{h}")).unwrap();
+            s.set_scanned_block("mainnet", h, &format!("old{h}"))
+                .unwrap();
         }
         s.open_reorg_job("mainnet", 10, 1000).unwrap();
         while s.collect_reorg_candidates("mainnet", 10, 1000).unwrap() != ReorgPhase::Process {}
@@ -818,17 +982,40 @@ mod tests {
         for _ in 0..3 {
             s.defer_reorg_candidate("mainnet", first, 1000).unwrap();
         }
-        assert_eq!((reorg_retry_delay(1), reorg_retry_delay(2), reorg_retry_delay(3)), (0, 0, 1));
-        let due: Vec<i64> = s.due_reorg_candidates("mainnet", 1000, 10).unwrap().iter().map(|c| c.payment.id).collect();
+        assert_eq!(
+            (
+                reorg_retry_delay(1),
+                reorg_retry_delay(2),
+                reorg_retry_delay(3)
+            ),
+            (0, 0, 1)
+        );
+        let due: Vec<i64> = s
+            .due_reorg_candidates("mainnet", 1000, 10)
+            .unwrap()
+            .iter()
+            .map(|c| c.payment.id)
+            .collect();
         assert_eq!(due, vec![second], "the failed one waits");
-        assert!(matches!(s.finish_reorg("mainnet", 10, Some((9, "old9"))), Err(StoreError::NotFound)));
+        assert!(matches!(
+            s.finish_reorg("mainnet", 10, Some((9, "old9"))),
+            Err(StoreError::NotFound)
+        ));
         s.complete_reorg_candidate("mainnet", second).unwrap();
-        let later = s.due_reorg_candidates("mainnet", 1000 + reorg_retry_delay(3), 10).unwrap();
+        let later = s
+            .due_reorg_candidates("mainnet", 1000 + reorg_retry_delay(3), 10)
+            .unwrap();
         assert_eq!(later.len(), 1);
         assert_eq!((later[0].payment.id, later[0].attempts), (first, 3));
         s.complete_reorg_candidate("mainnet", first).unwrap();
 
-        assert!(matches!(s.finish_reorg("mainnet", 9, Some((8, "old8"))), Err(StoreError::NotFound)), "wrong fork");
+        assert!(
+            matches!(
+                s.finish_reorg("mainnet", 9, Some((8, "old8"))),
+                Err(StoreError::NotFound)
+            ),
+            "wrong fork"
+        );
         s.finish_reorg("mainnet", 10, Some((9, "old9"))).unwrap();
         assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(9));
         assert!(s.reorg_job("mainnet").unwrap().is_none());
@@ -846,13 +1033,22 @@ mod tests {
         let s = &store.0;
         s.set_scanned_block("mainnet", 20, "old20").unwrap();
         s.set_scanned_block("mainnet", 21, "old21").unwrap();
-        s.execute_raw_for_test("UPDATE tenants SET scanned_through_height = 21").unwrap();
+        s.execute_raw_for_test("UPDATE tenants SET scanned_through_height = 21")
+            .unwrap();
         s.open_reorg_job("mainnet", 20, 1000).unwrap();
         while s.collect_reorg_candidates("mainnet", 10, 1000).unwrap() != ReorgPhase::Process {}
         s.finish_reorg("mainnet", 20, Some((19, "new19"))).unwrap();
-        assert_eq!(s.scanned_blocks_between("mainnet", 0, 100).unwrap(), vec![(19, "new19".to_string())]);
-        let cursors: Vec<Option<u64>> = s.list_active_tenants().unwrap().into_iter()
-            .filter(|t| t.network == "mainnet").map(|t| t.scanned_through_height).collect();
+        assert_eq!(
+            s.scanned_blocks_between("mainnet", 0, 100).unwrap(),
+            vec![(19, "new19".to_string())]
+        );
+        let cursors: Vec<Option<u64>> = s
+            .list_active_tenants()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.network == "mainnet")
+            .map(|t| t.scanned_through_height)
+            .collect();
         assert!(cursors.iter().all(|c| *c == Some(19)), "{cursors:?}");
         drop(store);
         cleanup(&path);
@@ -865,18 +1061,41 @@ mod tests {
         let (store, path) = fixture();
         let s = &store.0;
         let expiring = order(s, &store.3, 5_000);
-        assert_eq!(s.due_order_ids("mainnet", 4_999, 0, 10).unwrap(), Vec::<String>::new());
-        assert_eq!(s.due_order_ids("mainnet", 5_000, 0, 10).unwrap(), vec![expiring.clone()]);
+        assert_eq!(
+            s.due_order_ids("mainnet", 4_999, 0, 10).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            s.due_order_ids("mainnet", 5_000, 0, 10).unwrap(),
+            vec![expiring.clone()]
+        );
 
         // Fully paid at height 50 with ten confirmations needed: due again
         // each block until it settles, then never.
-        s.record_payment_match(&expiring, "tx", 0, 100, "[\"ki\"]", 1_000, Some(50)).unwrap();
+        s.record_payment_match(&expiring, "tx", 0, 100, "[\"ki\"]", 1_000, Some(50))
+            .unwrap();
         s.recompute_order_status(&expiring, 52, 1_000).unwrap();
-        assert!(s.due_order_ids("mainnet", 1_000, 52, 10).unwrap().is_empty());
-        assert_eq!(s.due_order_ids("mainnet", 1_000, 53, 10).unwrap(), vec![expiring.clone()]);
-        assert!(s.due_order_ids("mainnet", 9_999, 52, 10).unwrap().is_empty(), "no deadline once fully paid");
+        assert!(s
+            .due_order_ids("mainnet", 1_000, 52, 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            s.due_order_ids("mainnet", 1_000, 53, 10).unwrap(),
+            vec![expiring.clone()]
+        );
+        assert!(
+            s.due_order_ids("mainnet", 9_999, 52, 10)
+                .unwrap()
+                .is_empty(),
+            "no deadline once fully paid"
+        );
         s.recompute_order_status(&expiring, 59, 1_000).unwrap();
-        assert!(!s.due_order_ids("mainnet", i64::MAX, u64::MAX, 10).unwrap().contains(&expiring), "settled");
+        assert!(
+            !s.due_order_ids("mainnet", i64::MAX, u64::MAX, 10)
+                .unwrap()
+                .contains(&expiring),
+            "settled"
+        );
         drop(store);
         cleanup(&path);
     }
@@ -888,12 +1107,20 @@ mod tests {
         let (store, path) = fixture();
         let s = &store.0;
         let o = order(s, &store.3, 5_000);
-        s.record_payment_match(&o, "tx", 0, 100, "[\"ki\"]", 1_000, Some(50)).unwrap();
+        s.record_payment_match(&o, "tx", 0, 100, "[\"ki\"]", 1_000, Some(50))
+            .unwrap();
         s.open_reorg_job("mainnet", 70, 1_000).unwrap();
         let (_, frozen) = s.recompute_order_status(&o, 59, 1_000).unwrap();
         assert_eq!(frozen, crate::status::OrderStatus::Confirming);
-        assert_eq!(s.pending_payment_recomputes("mainnet").unwrap(), vec![o.clone()]);
-        assert_eq!(s.due_order_ids("mainnet", 1_000, 0, 10).unwrap(), vec![o.clone()], "due again at once");
+        assert_eq!(
+            s.pending_payment_recomputes("mainnet").unwrap(),
+            vec![o.clone()]
+        );
+        assert_eq!(
+            s.due_order_ids("mainnet", 1_000, 0, 10).unwrap(),
+            vec![o.clone()],
+            "due again at once"
+        );
 
         while s.collect_reorg_candidates("mainnet", 10, 1000).unwrap() != ReorgPhase::Process {}
         s.finish_reorg("mainnet", 70, Some((69, "h69"))).unwrap();
@@ -911,7 +1138,10 @@ mod tests {
     fn the_scanners_hot_queries_use_their_indexes() {
         let store = Store::open_in_memory().unwrap();
         let plan = |sql: &str| -> String {
-            let mut stmt = store.conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let mut stmt = store
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
             let rows = stmt.query_map([], |row| row.get::<_, String>(3)).unwrap();
             rows.map(|row| row.unwrap()).collect::<Vec<_>>().join(" | ")
         };
@@ -966,17 +1196,46 @@ mod tests {
     fn scheduler_positions_are_per_network_typed_and_survive_a_restart() {
         use position::{CatchUpGroup, ScanRange, VoidRecheck};
         let (store, path) = fixture();
-        store.0.set_scheduler_position::<CatchUpGroup>("mainnet", &42).unwrap();
-        store.0.set_scheduler_position::<CatchUpGroup>("mainnet", &43).unwrap();
-        store.0.set_scheduler_position::<ScanRange>("mainnet", &"tn_x".to_string()).unwrap();
+        store
+            .0
+            .set_scheduler_position::<CatchUpGroup>("mainnet", &42)
+            .unwrap();
+        store
+            .0
+            .set_scheduler_position::<CatchUpGroup>("mainnet", &43)
+            .unwrap();
+        store
+            .0
+            .set_scheduler_position::<ScanRange>("mainnet", &"tn_x".to_string())
+            .unwrap();
         let s = reopen(store, &path);
-        assert_eq!(s.scheduler_position::<CatchUpGroup>("mainnet").unwrap(), Some(43));
-        assert_eq!(s.scheduler_position::<ScanRange>("mainnet").unwrap().as_deref(), Some("tn_x"));
-        assert_eq!(s.scheduler_position::<CatchUpGroup>("stagenet").unwrap(), None);
-        assert_eq!(s.scheduler_position::<VoidRecheck>("mainnet").unwrap(), None);
+        assert_eq!(
+            s.scheduler_position::<CatchUpGroup>("mainnet").unwrap(),
+            Some(43)
+        );
+        assert_eq!(
+            s.scheduler_position::<ScanRange>("mainnet")
+                .unwrap()
+                .as_deref(),
+            Some("tn_x")
+        );
+        assert_eq!(
+            s.scheduler_position::<CatchUpGroup>("stagenet").unwrap(),
+            None
+        );
+        assert_eq!(
+            s.scheduler_position::<VoidRecheck>("mainnet").unwrap(),
+            None
+        );
         // A hand-edited, unreadable value starts that rotation over.
-        s.execute_raw_for_test("UPDATE scheduler_positions SET value = 'x' WHERE position = 'catch_up_group'").unwrap();
-        assert_eq!(s.scheduler_position::<CatchUpGroup>("mainnet").unwrap(), None);
+        s.execute_raw_for_test(
+            "UPDATE scheduler_positions SET value = 'x' WHERE position = 'catch_up_group'",
+        )
+        .unwrap();
+        assert_eq!(
+            s.scheduler_position::<CatchUpGroup>("mainnet").unwrap(),
+            None
+        );
         drop(s);
         cleanup(&path);
     }
@@ -995,8 +1254,15 @@ mod tests {
             if seen.load(std::sync::atomic::Ordering::Relaxed) <= fault {
                 return result.unwrap();
             }
-            assert!(result.is_err(), "the failure of statement {fault} was swallowed");
-            assert_eq!(store.dump_for_test(), before, "the failure of statement {fault} left a partial write");
+            assert!(
+                result.is_err(),
+                "the failure of statement {fault} was swallowed"
+            );
+            assert_eq!(
+                store.dump_for_test(),
+                before,
+                "the failure of statement {fault} left a partial write"
+            );
         }
         unreachable!()
     }
@@ -1011,46 +1277,112 @@ mod tests {
         let order_id = order(&store, &tenant_id, 10_000);
         // `other` has no order: nothing in scope, ever.
         for h in 1..=12u64 {
-            store.set_scanned_block("mainnet", h, &format!("a{h}")).unwrap();
+            store
+                .set_scanned_block("mainnet", h, &format!("a{h}"))
+                .unwrap();
         }
-        store.execute_raw_for_test("UPDATE tenants SET scanned_through_height = 12").unwrap();
-        store.record_payment_match(&order_id, "tx_confirmed", 0, 50, "[\"ki1\"]", 150, Some(11)).unwrap();
-        store.record_payment_match(&order_id, "tx_pool", 0, 50, "[\"ki2\"]", 150, None).unwrap();
-        store.record_payment_match(&order_id, "tx_voided", 0, 50, "[\"ki3\"]", 150, Some(10)).unwrap();
+        store
+            .execute_raw_for_test("UPDATE tenants SET scanned_through_height = 12")
+            .unwrap();
+        store
+            .record_payment_match(&order_id, "tx_confirmed", 0, 50, "[\"ki1\"]", 150, Some(11))
+            .unwrap();
+        store
+            .record_payment_match(&order_id, "tx_pool", 0, 50, "[\"ki2\"]", 150, None)
+            .unwrap();
+        store
+            .record_payment_match(&order_id, "tx_voided", 0, 50, "[\"ki3\"]", 150, Some(10))
+            .unwrap();
         store.void_payment(&order_id, "tx_voided", 0, 160).unwrap();
-        let voided_id = store.get_all_payments(&order_id).unwrap().iter().find(|p| p.txid == "tx_voided").unwrap().id;
+        let voided_id = store
+            .get_all_payments(&order_id)
+            .unwrap()
+            .iter()
+            .find(|p| p.txid == "tx_voided")
+            .unwrap()
+            .id;
 
         // A reorg's life.
         sweep(&store, |s| s.open_reorg_job("mainnet", 11, 200));
         assert!(sweep(&store, |s| s.settlement_frozen("mainnet")));
-        assert_eq!(sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200)), ReorgPhase::CollectConfirmed { after_height: 11, after_id: 1 });
+        assert_eq!(
+            sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200)),
+            ReorgPhase::CollectConfirmed {
+                after_height: 11,
+                after_id: 1
+            }
+        );
         sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200));
         sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200));
-        assert_eq!(sweep(&store, |s| s.collect_reorg_candidates("mainnet", 64, 200)), ReorgPhase::Process);
+        assert_eq!(
+            sweep(&store, |s| s.collect_reorg_candidates("mainnet", 64, 200)),
+            ReorgPhase::Process
+        );
         let due = sweep(&store, |s| s.due_reorg_candidates("mainnet", 200, 10));
         assert_eq!(due.len(), 2);
-        sweep(&store, |s| s.defer_reorg_candidate("mainnet", due[0].payment.id, 200));
+        sweep(&store, |s| {
+            s.defer_reorg_candidate("mainnet", due[0].payment.id, 200)
+        });
         assert_eq!(sweep(&store, |s| s.reorg_work_remaining("mainnet")).0, 2);
-        sweep(&store, |s| s.complete_reorg_candidate("mainnet", due[0].payment.id));
-        sweep(&store, |s| s.complete_reorg_candidate("mainnet", due[1].payment.id));
+        sweep(&store, |s| {
+            s.complete_reorg_candidate("mainnet", due[0].payment.id)
+        });
+        sweep(&store, |s| {
+            s.complete_reorg_candidate("mainnet", due[1].payment.id)
+        });
         sweep(&store, |s| s.finish_reorg("mainnet", 11, Some((10, "a10"))));
         assert!(sweep(&store, |s| s.reorg_job("mainnet")).is_none());
 
         // Positions, pages and lookups.
-        sweep(&store, |s| s.set_scheduler_position::<position::VoidRecheck>("mainnet", &5));
-        assert_eq!(sweep(&store, |s| s.scheduler_position::<position::VoidRecheck>("mainnet")), Some(5));
-        assert_eq!(sweep(&store, |s| s.scanned_blocks_between("mainnet", 9, 10)).len(), 2);
+        sweep(&store, |s| {
+            s.set_scheduler_position::<position::VoidRecheck>("mainnet", &5)
+        });
+        assert_eq!(
+            sweep(&store, |s| s
+                .scheduler_position::<position::VoidRecheck>("mainnet")),
+            Some(5)
+        );
+        assert_eq!(
+            sweep(&store, |s| s.scanned_blocks_between("mainnet", 9, 10)).len(),
+            2
+        );
         sweep(&store, |s| s.due_order_ids("mainnet", 20_000, 12, 10));
-        assert_eq!(sweep(&store, |s| s.voided_payments_page("mainnet", 0, 0, 10)).len(), 1);
+        assert_eq!(
+            sweep(&store, |s| s.voided_payments_page("mainnet", 0, 0, 10)).len(),
+            1
+        );
         assert!(sweep(&store, |s| s.payment_by_id(voided_id)).is_some());
-        assert_eq!(sweep(&store, |s| s.scan_group_cursors("mainnet", 20, None, 10)), vec![10]);
-        assert_eq!(sweep(&store, |s| s.tenants_at_cursor("mainnet", 10, &[], 10)).len(), 2);
-        assert_eq!(sweep(&store, |s| s.scan_windows(&[tenant_id.clone(), other.clone()], 150, 0)).len(), 1);
-        assert_eq!(sweep(&store, |s| s.active_tenants_page("mainnet", 150, 0, "", 10)).len(), 1);
+        assert_eq!(
+            sweep(&store, |s| s.scan_group_cursors("mainnet", 20, None, 10)),
+            vec![10]
+        );
+        assert_eq!(
+            sweep(&store, |s| s.tenants_at_cursor("mainnet", 10, &[], 10)).len(),
+            2
+        );
+        assert_eq!(
+            sweep(&store, |s| s.scan_windows(
+                &[tenant_id.clone(), other.clone()],
+                150,
+                0
+            ))
+            .len(),
+            1
+        );
+        assert_eq!(
+            sweep(&store, |s| s.active_tenants_page("mainnet", 150, 0, "", 10)).len(),
+            1
+        );
 
         // A block scan: checkpointed, staged, replaced, taken, committed.
-        let checkpoint = BlockCheckpoint { height: 11, hash: "b11".into(), next_tx: 3 };
-        sweep(&store, |s| s.in_transaction(|s| s.save_block_checkpoint("mainnet", &tenant_id, &checkpoint)));
+        let checkpoint = BlockCheckpoint {
+            height: 11,
+            hash: "b11".into(),
+            next_tx: 3,
+        };
+        sweep(&store, |s| {
+            s.in_transaction(|s| s.save_block_checkpoint("mainnet", &tenant_id, &checkpoint))
+        });
         sweep(&store, |s| {
             s.stage_partial_match(crate::store::StagedMatch {
                 network: "mainnet",
@@ -1063,16 +1395,42 @@ mod tests {
                 seen_at: 170,
             })
         });
-        let replaced = BlockCheckpoint { height: 11, hash: "c11".into(), next_tx: 1 };
-        sweep(&store, |s| s.in_transaction(|s| s.save_block_checkpoint("mainnet", &tenant_id, &replaced)));
+        let replaced = BlockCheckpoint {
+            height: 11,
+            hash: "c11".into(),
+            next_tx: 1,
+        };
+        sweep(&store, |s| {
+            s.in_transaction(|s| s.save_block_checkpoint("mainnet", &tenant_id, &replaced))
+        });
         assert!(
-            sweep(&store, |s| s.in_transaction(|s| s.take_staged_payments("mainnet", &tenant_id, "c11"))).is_empty(),
+            sweep(&store, |s| s.in_transaction(
+                |s| s.take_staged_payments("mainnet", &tenant_id, "c11")
+            ))
+            .is_empty(),
             "the staged match went with the old block"
         );
-        assert_eq!(sweep(&store, |s| s.block_checkpoint("mainnet", &tenant_id)), None);
+        assert_eq!(
+            sweep(&store, |s| s.block_checkpoint("mainnet", &tenant_id)),
+            None
+        );
         let scanned = [crate::work::ScannedBlock::for_test(&tenant_id, 11)];
-        assert_eq!(sweep(&store, |s| s.advance_scanned_cursors("mainnet", 11, &scanned)).len(), 1);
-        assert_eq!(sweep(&store, |s| s.advance_idle_cursors("mainnet", 10, 11, i64::MAX / 2, 0)), 1);
+        assert_eq!(
+            sweep(&store, |s| s
+                .advance_scanned_cursors("mainnet", 11, &scanned))
+            .len(),
+            1
+        );
+        assert_eq!(
+            sweep(&store, |s| s.advance_idle_cursors(
+                "mainnet",
+                10,
+                11,
+                i64::MAX / 2,
+                0
+            )),
+            1
+        );
     }
 
     /// A value past SQLite's range is refused before it reaches the query,
@@ -1084,16 +1442,24 @@ mod tests {
         let tenant_id = tenant(&store, "mainnet");
         assert!(matches!(
             store.scan_group_cursors("mainnet", u64::MAX, None, 10),
-            Err(StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(_)))
+            Err(StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(
+                _
+            )))
         ));
         let order_id = order(&store, &tenant_id, 10_000);
-        store.record_payment_match(&order_id, "tx", 0, 1, "[]", 100, Some(7)).unwrap();
+        store
+            .record_payment_match(&order_id, "tx", 0, 1, "[]", 100, Some(7))
+            .unwrap();
         store.open_reorg_job("mainnet", 5, 100).unwrap();
         while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
-        store.execute_raw_for_test("UPDATE reorg_work SET attempts = -3").unwrap();
+        store
+            .execute_raw_for_test("UPDATE reorg_work SET attempts = -3")
+            .unwrap();
         assert!(matches!(
             store.due_reorg_candidates("mainnet", 100, 10),
-            Err(StoreError::Sqlite(rusqlite::Error::IntegralValueOutOfRange(_, -3)))
+            Err(StoreError::Sqlite(
+                rusqlite::Error::IntegralValueOutOfRange(_, -3)
+            ))
         ));
     }
 
@@ -1116,7 +1482,10 @@ mod tests {
         store.open_reorg_job("mainnet", 5, 100).unwrap();
         while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
         let before = store.dump_for_test();
-        assert_eq!(store.collect_reorg_candidates("mainnet", 10, 100).unwrap(), ReorgPhase::Process);
+        assert_eq!(
+            store.collect_reorg_candidates("mainnet", 10, 100).unwrap(),
+            ReorgPhase::Process
+        );
         store.defer_reorg_candidate("mainnet", 12345, 100).unwrap();
         assert_eq!(store.dump_for_test(), before);
     }
@@ -1128,7 +1497,9 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant_id = tenant(&store, "mainnet");
         let orders: Vec<String> = (0..3).map(|_| order(&store, &tenant_id, 10_000)).collect();
-        store.execute_raw_for_test("UPDATE orders SET next_due_at_utc = 50, next_due_height = 7").unwrap();
+        store
+            .execute_raw_for_test("UPDATE orders SET next_due_at_utc = 50, next_due_height = 7")
+            .unwrap();
         let due = store.due_order_ids("mainnet", 100, 10, 10).unwrap();
         assert_eq!(due.len(), 3, "each once: {due:?}");
         assert!(orders.iter().all(|o| due.contains(o)));
@@ -1141,11 +1512,29 @@ mod tests {
     fn finishing_a_reorg_early_or_at_another_fork_is_refused() {
         let store = Store::open_in_memory().unwrap();
         store.open_reorg_job("mainnet", 5, 100).unwrap();
-        assert!(matches!(store.finish_reorg("mainnet", 5, None), Err(StoreError::NotFound)), "still collecting");
+        assert!(
+            matches!(
+                store.finish_reorg("mainnet", 5, None),
+                Err(StoreError::NotFound)
+            ),
+            "still collecting"
+        );
         while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
-        assert!(matches!(store.finish_reorg("mainnet", 4, None), Err(StoreError::NotFound)), "another fork");
+        assert!(
+            matches!(
+                store.finish_reorg("mainnet", 4, None),
+                Err(StoreError::NotFound)
+            ),
+            "another fork"
+        );
         store.finish_reorg("mainnet", 5, None).unwrap();
-        assert!(matches!(store.finish_reorg("mainnet", 5, None), Err(StoreError::NotFound)), "no job");
+        assert!(
+            matches!(
+                store.finish_reorg("mainnet", 5, None),
+                Err(StoreError::NotFound)
+            ),
+            "no job"
+        );
     }
 
     /// (store, mainnet order, stagenet order, mainnet tenant)
@@ -1169,10 +1558,18 @@ mod tests {
         let read = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, Unsigned<u64>>(0));
         assert_eq!(read("SELECT 42").unwrap(), Unsigned(42));
         // A negative value read back is an error, not a wrapped huge height.
-        assert!(matches!(read("SELECT -1"), Err(rusqlite::Error::IntegralValueOutOfRange(0, -1))));
+        assert!(matches!(
+            read("SELECT -1"),
+            Err(rusqlite::Error::IntegralValueOutOfRange(0, -1))
+        ));
         // A value too big for SQLite's signed integers is refused on the way in.
-        let wrote = conn.query_row("SELECT ?1", [Unsigned(u64::MAX)], |row| row.get::<_, i64>(0));
-        assert!(matches!(wrote, Err(rusqlite::Error::ToSqlConversionFailure(_))));
+        let wrote = conn.query_row("SELECT ?1", [Unsigned(u64::MAX)], |row| {
+            row.get::<_, i64>(0)
+        });
+        assert!(matches!(
+            wrote,
+            Err(rusqlite::Error::ToSqlConversionFailure(_))
+        ));
         let wrote = conn.query_row("SELECT ?1", [Unsigned(7usize)], |row| row.get::<_, i64>(0));
         assert_eq!(wrote.unwrap(), 7);
     }

@@ -50,8 +50,15 @@ pub mod test_env {
     /// Makes `env_var` read as `value` (or as unset, for `None`) for
     /// settings resolved on this thread, until the guard is dropped.
     pub fn set(env_var: &str, value: Option<&str>) -> EnvOverride {
-        let previous = OVERRIDES.with(|overrides| overrides.borrow_mut().insert(env_var.to_string(), value.map(str::to_string)));
-        EnvOverride { env_var: env_var.to_string(), previous }
+        let previous = OVERRIDES.with(|overrides| {
+            overrides
+                .borrow_mut()
+                .insert(env_var.to_string(), value.map(str::to_string))
+        });
+        EnvOverride {
+            env_var: env_var.to_string(),
+            previous,
+        }
     }
 
     impl Drop for EnvOverride {
@@ -76,9 +83,14 @@ mod tests {
         std::env::remove_var("SETTINGS_TEST_THREAD_OVERRIDE");
         {
             let _guard = test_env::set("SETTINGS_TEST_THREAD_OVERRIDE", Some("from-override"));
-            assert_eq!(env_value("SETTINGS_TEST_THREAD_OVERRIDE").as_deref(), Some("from-override"));
+            assert_eq!(
+                env_value("SETTINGS_TEST_THREAD_OVERRIDE").as_deref(),
+                Some("from-override")
+            );
             // Invisible on any other thread.
-            let elsewhere = std::thread::spawn(|| env_value("SETTINGS_TEST_THREAD_OVERRIDE")).join().unwrap();
+            let elsewhere = std::thread::spawn(|| env_value("SETTINGS_TEST_THREAD_OVERRIDE"))
+                .join()
+                .unwrap();
             assert_eq!(elsewhere, None);
             {
                 let _unset = test_env::set("SETTINGS_TEST_THREAD_OVERRIDE", None);

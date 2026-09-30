@@ -61,7 +61,11 @@ pub fn normalize_domain(input: &str) -> Result<String, &'static str> {
     if let Some(end) = domain.find(['/', '?', '#']) {
         domain.truncate(end);
     }
-    let domain = domain.strip_prefix("*.").unwrap_or(&domain).trim_end_matches('.').to_string();
+    let domain = domain
+        .strip_prefix("*.")
+        .unwrap_or(&domain)
+        .trim_end_matches('.')
+        .to_string();
     if domain.is_empty() {
         return Err("Enter a domain, like shop.example.");
     }
@@ -85,7 +89,9 @@ pub fn normalize_domain(input: &str) -> Result<String, &'static str> {
             && label.len() <= 63
             && !label.starts_with('-')
             && !label.ends_with('-')
-            && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
     };
     if !domain.split('.').all(valid_label) {
         return Err("That isn't a valid domain name. Use letters, digits, hyphens and dots, like shop.example.");
@@ -142,7 +148,10 @@ impl DomainState {
 /// Whether verifying `domain` covers `host`: the domain itself, or any
 /// subdomain of it. `evilshop.example` is not covered by `shop.example`.
 pub fn covers(domain: &str, host: &str) -> bool {
-    host == domain || host.strip_suffix(domain).is_some_and(|prefix| prefix.ends_with('.'))
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 /// A store's embed policy, looked up per request by public key.
@@ -155,7 +164,10 @@ pub struct EmbedPolicy {
 impl EmbedPolicy {
     /// The domains that currently count as verified.
     pub fn counting_domains(&self, now: i64) -> impl Iterator<Item = &str> {
-        self.domains.iter().filter(move |row| DomainState::of(row, now).counts()).map(|row| row.domain.as_str())
+        self.domains
+            .iter()
+            .filter(move |row| DomainState::of(row, now).counts())
+            .map(|row| row.domain.as_str())
     }
 
     /// Whether a browser page on `origin` (an `Origin` header value) may use
@@ -165,9 +177,17 @@ impl EmbedPolicy {
         if !self.restricted {
             return true;
         }
-        let Some(authority) = origin.strip_prefix("https://") else { return false };
-        let host = authority.split(':').next().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
-        self.counting_domains(now).any(|domain| covers(domain, &host))
+        let Some(authority) = origin.strip_prefix("https://") else {
+            return false;
+        };
+        let host = authority
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        self.counting_domains(now)
+            .any(|domain| covers(domain, &host))
     }
 
     /// The `Content-Security-Policy` a restricted store's pages are sent
@@ -190,7 +210,10 @@ impl EmbedPolicy {
 /// store's checkout offline.
 pub fn policy_for_public_key(db: &SharedDb, public_key: &str) -> Option<EmbedPolicy> {
     match db.lock().embed_policy_for_public_key(public_key) {
-        Ok(policy) => policy.map(|(restricted, domains)| EmbedPolicy { restricted, domains }),
+        Ok(policy) => policy.map(|(restricted, domains)| EmbedPolicy {
+            restricted,
+            domains,
+        }),
         Err(e) => {
             tracing::error!(public_key = %public_key, error = %e, "could not read the embed policy");
             None
@@ -225,7 +248,10 @@ pub fn suggest_domain(db: &SharedDb, connection_id: &str, input: &str, now: i64)
 }
 
 fn suggest(db: &SharedDb, connection_id: &str, domain: &str, now: i64) {
-    if let Err(e) = db.lock().suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE) {
+    if let Err(e) =
+        db.lock()
+            .suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE)
+    {
         tracing::warn!(store.id = %connection_id, domain = %domain, error = %e, "could not add a domain to a store");
     }
 }
@@ -282,7 +308,10 @@ impl CheckOutcome {
 /// TXT records; `Err` means the lookup itself failed. A trait so tests can
 /// answer without a network.
 pub trait TxtLookup: Send + Sync {
-    fn txt_values<'a>(&'a self, name: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
+    fn txt_values<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
 }
 
 /// The real lookup, through the machine's own resolver configuration
@@ -301,10 +330,18 @@ impl SystemDns {
 }
 
 impl TxtLookup for SystemDns {
-    fn txt_values<'a>(&'a self, name: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+    fn txt_values<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
         Box::pin(async move {
             // Fully qualified, so the resolver's search domains never apply.
-            let lookup = match tokio::time::timeout(LOOKUP_TIMEOUT, self.resolver.txt_lookup(format!("{name}."))).await {
+            let lookup = match tokio::time::timeout(
+                LOOKUP_TIMEOUT,
+                self.resolver.txt_lookup(format!("{name}.")),
+            )
+            .await
+            {
                 Err(_) => return Err("timed out".to_string()),
                 Ok(Err(e)) if e.is_no_records_found() => return Ok(Vec::new()),
                 Ok(Err(e)) => return Err(e.to_string()),
@@ -316,9 +353,12 @@ impl TxtLookup for SystemDns {
                 .filter_map(|record| match &record.data {
                     // One TXT record may be split into several strings; they
                     // join into one value.
-                    hickory_resolver::proto::rr::RData::TXT(txt) => {
-                        Some(txt.txt_data.iter().map(|part| String::from_utf8_lossy(part)).collect::<String>())
-                    }
+                    hickory_resolver::proto::rr::RData::TXT(txt) => Some(
+                        txt.txt_data
+                            .iter()
+                            .map(|part| String::from_utf8_lossy(part))
+                            .collect::<String>(),
+                    ),
                     _ => None,
                 })
                 .collect())
@@ -331,7 +371,10 @@ impl TxtLookup for SystemDns {
 pub struct UnavailableDns(pub String);
 
 impl TxtLookup for UnavailableDns {
-    fn txt_values<'a>(&'a self, _name: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+    fn txt_values<'a>(
+        &'a self,
+        _name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
         let error = self.0.clone();
         Box::pin(async move { Err(error) })
     }
@@ -348,16 +391,26 @@ pub async fn check(dns: &dyn TxtLookup, domain: &str, token: &str) -> CheckOutco
 }
 
 /// Checks one domain and records the result on its row.
-pub async fn check_and_record(db: &SharedDb, dns: &dyn TxtLookup, row: &StoreDomainRow, now: i64) -> Result<CheckOutcome, crate::db::DbError> {
+pub async fn check_and_record(
+    db: &SharedDb,
+    dns: &dyn TxtLookup,
+    row: &StoreDomainRow,
+    now: i64,
+) -> Result<CheckOutcome, crate::db::DbError> {
     let outcome = check(dns, &row.domain, &row.token).await;
     let error = outcome.error_message(&row.domain, &row.token);
-    db.lock().record_store_domain_check(&row.id, now, error.as_deref())?;
+    db.lock()
+        .record_store_domain_check(&row.id, now, error.as_deref())?;
     Ok(outcome)
 }
 
 /// Re-checks every verified domain that is due, one at a time.
 pub async fn recheck_due(db: &SharedDb, dns: &dyn TxtLookup, now: i64) {
-    let due = match db.lock().list_store_domains_due_for_recheck(now, RECHECK_EVERY_SECS, FAILING_RECHECK_EVERY_SECS) {
+    let due = match db.lock().list_store_domains_due_for_recheck(
+        now,
+        RECHECK_EVERY_SECS,
+        FAILING_RECHECK_EVERY_SECS,
+    ) {
         Ok(due) => due,
         Err(e) => {
             tracing::error!(error = %e, "could not list domains to re-check");
@@ -384,8 +437,8 @@ pub fn spawn_rechecks(db: SharedDb, dns: Arc<dyn TxtLookup>) -> tokio::task::Joi
 
 #[cfg(test)]
 pub mod test_support {
-    use std::collections::HashMap;
     use parking_lot::Mutex;
+    use std::collections::HashMap;
 
     use super::*;
 
@@ -398,19 +451,31 @@ pub mod test_support {
 
     impl FakeDns {
         pub fn publish(&self, name: &str, value: &str) {
-            self.records.lock().insert(name.to_string(), Ok(vec![value.to_string()]));
+            self.records
+                .lock()
+                .insert(name.to_string(), Ok(vec![value.to_string()]));
         }
         pub fn remove(&self, name: &str) {
             self.records.lock().remove(name);
         }
         pub fn fail(&self, name: &str, error: &str) {
-            self.records.lock().insert(name.to_string(), Err(error.to_string()));
+            self.records
+                .lock()
+                .insert(name.to_string(), Err(error.to_string()));
         }
     }
 
     impl TxtLookup for FakeDns {
-        fn txt_values<'a>(&'a self, name: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
-            let answer = self.records.lock().get(name).cloned().unwrap_or(Ok(Vec::new()));
+        fn txt_values<'a>(
+            &'a self,
+            name: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+            let answer = self
+                .records
+                .lock()
+                .get(name)
+                .cloned()
+                .unwrap_or(Ok(Vec::new()));
             Box::pin(async move { answer })
         }
     }
@@ -434,12 +499,13 @@ mod tests {
     #[test]
     fn a_restricted_policy_allows_only_https_pages_on_counting_domains() {
         let now = 1_000_000;
-        let domain = |name: &str, verified_at: Option<i64>, failing_since: Option<i64>| StoreDomainRow {
-            domain: name.to_string(),
-            verified_at,
-            failing_since,
-            ..row(None, None)
-        };
+        let domain =
+            |name: &str, verified_at: Option<i64>, failing_since: Option<i64>| StoreDomainRow {
+                domain: name.to_string(),
+                verified_at,
+                failing_since,
+                ..row(None, None)
+            };
         let mut policy = EmbedPolicy {
             restricted: false,
             domains: vec![
@@ -449,14 +515,23 @@ mod tests {
                 domain("lapsed.example", Some(1), Some(now - GRACE_SECS)),
             ],
         };
-        assert!(policy.allows_origin("https://anything.example", now), "unrestricted allows any site");
+        assert!(
+            policy.allows_origin("https://anything.example", now),
+            "unrestricted allows any site"
+        );
         assert_eq!(policy.frame_ancestors(now), None);
 
         policy.restricted = true;
         assert!(policy.allows_origin("https://shop.example", now));
         assert!(policy.allows_origin("https://www.shop.example:8443", now));
-        assert!(policy.allows_origin("https://failing.example", now), "still inside its grace period");
-        assert!(!policy.allows_origin("http://shop.example", now), "only https pages count");
+        assert!(
+            policy.allows_origin("https://failing.example", now),
+            "still inside its grace period"
+        );
+        assert!(
+            !policy.allows_origin("http://shop.example", now),
+            "only https pages count"
+        );
         assert!(!policy.allows_origin("https://evilshop.example", now));
         assert!(!policy.allows_origin("https://pending.example", now));
         assert!(!policy.allows_origin("https://lapsed.example", now));
@@ -469,7 +544,10 @@ mod tests {
 
     #[test]
     fn a_site_url_suggests_its_domain_when_it_can_be_verified() {
-        assert_eq!(domain_of_site("https://Shop.Example/wp"), Some("shop.example".to_string()));
+        assert_eq!(
+            domain_of_site("https://Shop.Example/wp"),
+            Some("shop.example".to_string())
+        );
         assert_eq!(domain_of_site("http://abcdefghijklmnop.onion"), None);
         assert_eq!(domain_of_site("http://192.0.2.1:8080"), None);
         assert_eq!(domain_of_site("not a url"), None);
@@ -477,11 +555,26 @@ mod tests {
 
     #[test]
     fn normalize_domain_accepts_urls_and_rejects_what_cannot_be_verified() {
-        assert_eq!(normalize_domain(" https://Shop.Example/checkout?x=1 "), Ok("shop.example".to_string()));
-        assert_eq!(normalize_domain("*.shop.example."), Ok("shop.example".to_string()));
-        assert_eq!(normalize_domain("www.shop-outlet.example"), Ok("www.shop-outlet.example".to_string()));
-        assert!(normalize_domain("abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion").unwrap_err().contains("Onion"));
-        assert!(normalize_domain("192.0.2.1").unwrap_err().contains("IP address"));
+        assert_eq!(
+            normalize_domain(" https://Shop.Example/checkout?x=1 "),
+            Ok("shop.example".to_string())
+        );
+        assert_eq!(
+            normalize_domain("*.shop.example."),
+            Ok("shop.example".to_string())
+        );
+        assert_eq!(
+            normalize_domain("www.shop-outlet.example"),
+            Ok("www.shop-outlet.example".to_string())
+        );
+        assert!(
+            normalize_domain("abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion")
+                .unwrap_err()
+                .contains("Onion")
+        );
+        assert!(normalize_domain("192.0.2.1")
+            .unwrap_err()
+            .contains("IP address"));
         assert!(normalize_domain("shop.example:8443").is_err());
         assert!(normalize_domain("localhost").is_err());
         assert!(normalize_domain("-shop.example").is_err());
@@ -493,17 +586,32 @@ mod tests {
     #[tokio::test]
     async fn check_finds_the_token_only_at_the_right_name() {
         let dns = FakeDns::default();
-        assert_eq!(check(&dns, "shop.example", "abc").await, CheckOutcome::Missing);
+        assert_eq!(
+            check(&dns, "shop.example", "abc").await,
+            CheckOutcome::Missing
+        );
 
         dns.publish("_monokulo.shop.example", "monokulo-verify=wrong");
-        assert_eq!(check(&dns, "shop.example", "abc").await, CheckOutcome::Missing);
+        assert_eq!(
+            check(&dns, "shop.example", "abc").await,
+            CheckOutcome::Missing
+        );
 
         dns.publish("_monokulo.shop.example", "monokulo-verify=abc");
-        assert_eq!(check(&dns, "shop.example", "abc").await, CheckOutcome::Found);
-        assert_eq!(check(&dns, "other.example", "abc").await, CheckOutcome::Missing);
+        assert_eq!(
+            check(&dns, "shop.example", "abc").await,
+            CheckOutcome::Found
+        );
+        assert_eq!(
+            check(&dns, "other.example", "abc").await,
+            CheckOutcome::Missing
+        );
 
         dns.fail("_monokulo.shop.example", "timed out");
-        assert_eq!(check(&dns, "shop.example", "abc").await, CheckOutcome::LookupFailed("timed out".to_string()));
+        assert_eq!(
+            check(&dns, "shop.example", "abc").await,
+            CheckOutcome::LookupFailed("timed out".to_string())
+        );
     }
 
     fn row(verified_at: Option<i64>, failing_since: Option<i64>) -> StoreDomainRow {
@@ -527,14 +635,23 @@ mod tests {
     async fn the_system_resolver_reads_real_txt_records() {
         let dns = SystemDns::new().unwrap();
         let values = dns.txt_values("_dmarc.google.com").await.unwrap();
-        assert!(values.iter().any(|v| v.starts_with("v=DMARC1")), "got: {values:?}");
-        assert_eq!(dns.txt_values("_monokulo.example.invalid").await, Ok(vec![]));
+        assert!(
+            values.iter().any(|v| v.starts_with("v=DMARC1")),
+            "got: {values:?}"
+        );
+        assert_eq!(
+            dns.txt_values("_monokulo.example.invalid").await,
+            Ok(vec![])
+        );
     }
 
     #[test]
     fn a_missing_record_keeps_counting_through_the_grace_period_then_lapses() {
         assert_eq!(DomainState::of(&row(None, None), 100), DomainState::Pending);
-        assert_eq!(DomainState::of(&row(Some(10), None), 100), DomainState::Verified);
+        assert_eq!(
+            DomainState::of(&row(Some(10), None), 100),
+            DomainState::Verified
+        );
         let failing = DomainState::of(&row(Some(10), Some(100)), 100 + GRACE_SECS - 1);
         assert_eq!(failing, DomainState::Failing { since: 100 });
         assert!(failing.counts());

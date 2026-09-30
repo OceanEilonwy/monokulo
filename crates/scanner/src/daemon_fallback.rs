@@ -78,8 +78,15 @@ impl FallbackDaemonClient {
     /// with zero `fallbacks`) - see `note_all_failed`'s doc comment for what happens
     /// if this invariant is ever violated anyway.
     pub fn new(nodes: Vec<FallbackNode>) -> Self {
-        let health = nodes.iter().map(|_| Mutex::new(NodeHealth::default())).collect();
-        Self { nodes, health, current: AtomicUsize::new(0) }
+        let health = nodes
+            .iter()
+            .map(|_| Mutex::new(NodeHealth::default()))
+            .collect();
+        Self {
+            nodes,
+            health,
+            current: AtomicUsize::new(0),
+        }
     }
 
     /// Every configured node, in priority order - for a caller that wants to
@@ -102,7 +109,11 @@ impl FallbackDaemonClient {
 
     /// Whether node `idx` is in its post-failure cooldown right now.
     pub fn in_cooldown(&self, idx: usize) -> bool {
-        self.health.get(idx).is_some_and(|h| h.lock().cooldown_until.is_some_and(|until| Instant::now() < until))
+        self.health.get(idx).is_some_and(|h| {
+            h.lock()
+                .cooldown_until
+                .is_some_and(|until| Instant::now() < until)
+        })
     }
 
     /// The order to try nodes in for one call: from `current` round the list,
@@ -110,8 +121,11 @@ impl FallbackDaemonClient {
     /// the ones in cooldown.
     fn attempt_order(&self) -> Vec<usize> {
         let start = self.current.load(Ordering::Relaxed);
-        let all: Vec<usize> = (0..self.nodes.len()).map(|offset| (start + offset) % self.nodes.len()).collect();
-        let (ready, cooling): (Vec<usize>, Vec<usize>) = all.into_iter().partition(|&idx| !self.in_cooldown(idx));
+        let all: Vec<usize> = (0..self.nodes.len())
+            .map(|offset| (start + offset) % self.nodes.len())
+            .collect();
+        let (ready, cooling): (Vec<usize>, Vec<usize>) =
+            all.into_iter().partition(|&idx| !self.in_cooldown(idx));
         ready.into_iter().chain(cooling).collect()
     }
 
@@ -131,7 +145,9 @@ impl FallbackDaemonClient {
         let cooldown = {
             let mut health = self.health[idx].lock();
             health.failures_in_a_row = health.failures_in_a_row.saturating_add(1);
-            let cooldown = FIRST_COOLDOWN.saturating_mul(1 << health.failures_in_a_row.saturating_sub(1).min(16)).min(MAX_COOLDOWN);
+            let cooldown = FIRST_COOLDOWN
+                .saturating_mul(1 << health.failures_in_a_row.saturating_sub(1).min(16))
+                .min(MAX_COOLDOWN);
             health.cooldown_until = Some(Instant::now() + cooldown);
             cooldown
         };
@@ -177,17 +193,24 @@ impl FallbackDaemonClient {
         for (tried, &idx) in order.iter().enumerate() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                last_err = Some(DaemonError::Request(format!("no node answered within {CALL_DEADLINE:?}")));
+                last_err = Some(DaemonError::Request(format!(
+                    "no node answered within {CALL_DEADLINE:?}"
+                )));
                 break;
             }
             // A node that hangs gets its share of what's left, not all of it,
             // so the nodes after it still get a turn.
             let nodes_left = (order.len() - tried) as u32;
             let this_attempt = (remaining / nodes_left).max(MIN_ATTEMPT).min(remaining);
-            let outcome = match tokio::time::timeout(this_attempt, call(self.nodes[idx].client.as_ref())).await {
-                Ok(outcome) => outcome,
-                Err(_) => Err(DaemonError::Request(format!("no answer within the call's {CALL_DEADLINE:?} deadline"))),
-            };
+            let outcome =
+                match tokio::time::timeout(this_attempt, call(self.nodes[idx].client.as_ref()))
+                    .await
+                {
+                    Ok(outcome) => outcome,
+                    Err(_) => Err(DaemonError::Request(format!(
+                        "no answer within the call's {CALL_DEADLINE:?} deadline"
+                    ))),
+                };
             match outcome {
                 Ok(v) => {
                     self.note_success(idx);
@@ -225,7 +248,9 @@ impl PinnedDaemon<'_> {
         };
         let outcome = match tokio::time::timeout(CALL_DEADLINE, call(node.client.as_ref())).await {
             Ok(outcome) => outcome,
-            Err(_) => Err(DaemonError::Request(format!("no answer within the call's {CALL_DEADLINE:?} deadline"))),
+            Err(_) => Err(DaemonError::Request(format!(
+                "no answer within the call's {CALL_DEADLINE:?} deadline"
+            ))),
         };
         match &outcome {
             Ok(_) => self.inner.note_success(self.idx),
@@ -249,10 +274,18 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         self.one(|c| c.get_block_transactions(height)).await
     }
-    async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+    async fn get_blocks_range(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
         self.one(|c| c.get_blocks_range(start_height, count)).await
     }
-    async fn get_chain_blocks(&self, start_height: u64, count: u64) -> Result<Vec<ChainBlock>, DaemonError> {
+    async fn get_chain_blocks(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainBlock>, DaemonError> {
         self.one(|c| c.get_chain_blocks(start_height, count)).await
     }
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
@@ -270,12 +303,18 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
         self.one(|c| c.get_transaction(txid)).await
     }
-    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+    async fn is_key_image_spent(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
         self.one(|c| c.is_key_image_spent(key_images)).await
     }
     /// Deliberately every node, not just the pinned one: see
     /// `FallbackDaemonClient::is_key_image_spent_corroborated`.
-    async fn is_key_image_spent_corroborated(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+    async fn is_key_image_spent_corroborated(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
         self.inner.is_key_image_spent_corroborated(key_images).await
     }
 }
@@ -298,14 +337,24 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         self.failover(|c| c.get_block_transactions(height)).await
     }
 
-    async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        self.failover(|c| c.get_blocks_range(start_height, count)).await
+    async fn get_blocks_range(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+        self.failover(|c| c.get_blocks_range(start_height, count))
+            .await
     }
 
     /// One node answers for the whole range: a block's contents and id never
     /// come from two nodes.
-    async fn get_chain_blocks(&self, start_height: u64, count: u64) -> Result<Vec<ChainBlock>, DaemonError> {
-        self.failover(|c| c.get_chain_blocks(start_height, count)).await
+    async fn get_chain_blocks(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainBlock>, DaemonError> {
+        self.failover(|c| c.get_chain_blocks(start_height, count))
+            .await
     }
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
@@ -328,7 +377,10 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         self.failover(|c| c.get_transaction(txid)).await
     }
 
-    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+    async fn is_key_image_spent(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
         self.failover(|c| c.is_key_image_spent(key_images)).await
     }
 
@@ -383,7 +435,9 @@ impl MoneroDaemonClient for FallbackDaemonClient {
             }
         }
         if responses.is_empty() {
-            return Err(DaemonError::Request("no nodes reachable to check key image status".to_string()));
+            return Err(DaemonError::Request(
+                "no nodes reachable to check key image status".to_string(),
+            ));
         }
 
         let mut result = Vec::with_capacity(key_images.len());
@@ -424,7 +478,10 @@ mod tests {
 
     impl FlakyDaemonClient {
         fn new(healthy: bool) -> Self {
-            Self { healthy: AtomicBool::new(healthy), calls: AtomicUsize::new(0) }
+            Self {
+                healthy: AtomicBool::new(healthy),
+                calls: AtomicUsize::new(0),
+            }
         }
 
         fn set_healthy(&self, healthy: bool) {
@@ -455,7 +512,10 @@ mod tests {
             unimplemented!("not exercised by these tests")
         }
 
-        async fn get_block_transactions(&self, _height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        async fn get_block_transactions(
+            &self,
+            _height: u64,
+        ) -> Result<Vec<Transaction>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
 
@@ -470,13 +530,22 @@ mod tests {
             unimplemented!("not exercised by these tests")
         }
 
-        async fn is_key_image_spent(&self, _key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        async fn is_key_image_spent(
+            &self,
+            _key_images: &[String],
+        ) -> Result<Vec<KeyImageStatus>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
     }
 
     fn node(label: &str, client: Arc<FlakyDaemonClient>) -> (FallbackNode, Arc<FlakyDaemonClient>) {
-        (FallbackNode { label: label.to_string(), client: client.clone() }, client)
+        (
+            FallbackNode {
+                label: label.to_string(),
+                client: client.clone(),
+            },
+            client,
+        )
     }
 
     #[tokio::test]
@@ -517,7 +586,11 @@ mod tests {
         // A second call must not re-try the still-down primary first - it should go
         // straight to the fallback that already proved healthy.
         client.get_height().await.unwrap();
-        assert_eq!(primary.call_count(), 1, "the down primary should not be retried once a fallback is sticky");
+        assert_eq!(
+            primary.call_count(),
+            1,
+            "the down primary should not be retried once a fallback is sticky"
+        );
         assert_eq!(fallback.call_count(), 2);
     }
 
@@ -569,11 +642,17 @@ mod tests {
 
     impl KeyImageDaemonClient {
         fn answering(statuses: Vec<KeyImageStatus>) -> Self {
-            Self { statuses, unreachable: false }
+            Self {
+                statuses,
+                unreachable: false,
+            }
         }
 
         fn unreachable() -> Self {
-            Self { statuses: vec![], unreachable: true }
+            Self {
+                statuses: vec![],
+                unreachable: true,
+            }
         }
     }
 
@@ -588,7 +667,10 @@ mod tests {
         async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
-        async fn get_block_transactions(&self, _height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        async fn get_block_transactions(
+            &self,
+            _height: u64,
+        ) -> Result<Vec<Transaction>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
         async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
@@ -600,26 +682,47 @@ mod tests {
         async fn get_transaction(&self, _txid: &str) -> Result<Transaction, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
-        async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> Result<Vec<KeyImageStatus>, DaemonError> {
             if self.unreachable {
-                return Err(DaemonError::Request("key image daemon is unreachable".to_string()));
+                return Err(DaemonError::Request(
+                    "key image daemon is unreachable".to_string(),
+                ));
             }
-            assert_eq!(key_images.len(), self.statuses.len(), "test misconfigured: statuses must match key_images length");
+            assert_eq!(
+                key_images.len(),
+                self.statuses.len(),
+                "test misconfigured: statuses must match key_images length"
+            );
             Ok(self.statuses.clone())
         }
     }
 
     fn ki_node(label: &str, client: KeyImageDaemonClient) -> FallbackNode {
-        FallbackNode { label: label.to_string(), client: Arc::new(client) }
+        FallbackNode {
+            label: label.to_string(),
+            client: Arc::new(client),
+        }
     }
 
     #[tokio::test]
     async fn unanimous_spent_in_blockchain_across_every_node_is_affirmed() {
         let client = FallbackDaemonClient::new(vec![
-            ki_node("a", KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain])),
-            ki_node("b", KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain])),
+            ki_node(
+                "a",
+                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]),
+            ),
+            ki_node(
+                "b",
+                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]),
+            ),
         ]);
-        let result = client.is_key_image_spent_corroborated(&["ki1".to_string()]).await.unwrap();
+        let result = client
+            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .await
+            .unwrap();
         assert_eq!(result, vec![KeyImageStatus::SpentInBlockchain]);
     }
 
@@ -630,27 +733,57 @@ mod tests {
         // equally configured) says otherwise. Corroboration must not just trust
         // whichever one happens to be asked.
         let client = FallbackDaemonClient::new(vec![
-            ki_node("a", KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain])),
-            ki_node("b", KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent])),
+            ki_node(
+                "a",
+                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]),
+            ),
+            ki_node(
+                "b",
+                KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent]),
+            ),
         ]);
-        let result = client.is_key_image_spent_corroborated(&["ki1".to_string()]).await.unwrap();
-        assert_eq!(result, vec![KeyImageStatus::Disputed], "a disagreement must remain inconclusive");
+        let result = client
+            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![KeyImageStatus::Disputed],
+            "a disagreement must remain inconclusive"
+        );
     }
 
     #[tokio::test]
     async fn pool_and_unspent_disagreement_is_also_inconclusive() {
         let client = FallbackDaemonClient::new(vec![
-            ki_node("a", KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent])),
-            ki_node("b", KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInPool])),
+            ki_node(
+                "a",
+                KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent]),
+            ),
+            ki_node(
+                "b",
+                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInPool]),
+            ),
         ]);
-        assert_eq!(client.is_key_image_spent_corroborated(&["ki1".to_string()]).await.unwrap(), vec![KeyImageStatus::Disputed]);
+        assert_eq!(
+            client
+                .is_key_image_spent_corroborated(&["ki1".to_string()])
+                .await
+                .unwrap(),
+            vec![KeyImageStatus::Disputed]
+        );
     }
 
     #[tokio::test]
     async fn a_single_configured_node_is_trusted_as_is_with_nothing_to_corroborate_against() {
-        let client =
-            FallbackDaemonClient::new(vec![ki_node("only", KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]))]);
-        let result = client.is_key_image_spent_corroborated(&["ki1".to_string()]).await.unwrap();
+        let client = FallbackDaemonClient::new(vec![ki_node(
+            "only",
+            KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]),
+        )]);
+        let result = client
+            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .await
+            .unwrap();
         assert_eq!(
             result,
             vec![KeyImageStatus::SpentInBlockchain],
@@ -662,9 +795,15 @@ mod tests {
     async fn only_one_node_reachable_this_call_is_also_trusted_as_is() {
         let client = FallbackDaemonClient::new(vec![
             ki_node("a", KeyImageDaemonClient::unreachable()),
-            ki_node("b", KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain])),
+            ki_node(
+                "b",
+                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]),
+            ),
         ]);
-        let result = client.is_key_image_spent_corroborated(&["ki1".to_string()]).await.unwrap();
+        let result = client
+            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .await
+            .unwrap();
         assert_eq!(
             result,
             vec![KeyImageStatus::SpentInBlockchain],
@@ -678,17 +817,29 @@ mod tests {
             ki_node("a", KeyImageDaemonClient::unreachable()),
             ki_node("b", KeyImageDaemonClient::unreachable()),
         ]);
-        let err = client.is_key_image_spent_corroborated(&["ki1".to_string()]).await.unwrap_err();
+        let err = client
+            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .await
+            .unwrap_err();
         assert!(matches!(err, DaemonError::Request(_)));
     }
 
     #[tokio::test]
     async fn unanimous_agreement_on_unspent_is_reported_as_is() {
         let client = FallbackDaemonClient::new(vec![
-            ki_node("a", KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent])),
-            ki_node("b", KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent])),
+            ki_node(
+                "a",
+                KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent]),
+            ),
+            ki_node(
+                "b",
+                KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent]),
+            ),
         ]);
-        let result = client.is_key_image_spent_corroborated(&["ki1".to_string()]).await.unwrap();
+        let result = client
+            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .await
+            .unwrap();
         assert_eq!(result, vec![KeyImageStatus::Unspent]);
     }
 
@@ -699,12 +850,27 @@ mod tests {
         let client = FallbackDaemonClient::new(vec![
             ki_node(
                 "a",
-                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain, KeyImageStatus::SpentInBlockchain]),
+                KeyImageDaemonClient::answering(vec![
+                    KeyImageStatus::SpentInBlockchain,
+                    KeyImageStatus::SpentInBlockchain,
+                ]),
             ),
-            ki_node("b", KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain, KeyImageStatus::Unspent])),
+            ki_node(
+                "b",
+                KeyImageDaemonClient::answering(vec![
+                    KeyImageStatus::SpentInBlockchain,
+                    KeyImageStatus::Unspent,
+                ]),
+            ),
         ]);
-        let result = client.is_key_image_spent_corroborated(&["ki1".to_string(), "ki2".to_string()]).await.unwrap();
-        assert_eq!(result, vec![KeyImageStatus::SpentInBlockchain, KeyImageStatus::Disputed]);
+        let result = client
+            .is_key_image_spent_corroborated(&["ki1".to_string(), "ki2".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![KeyImageStatus::SpentInBlockchain, KeyImageStatus::Disputed]
+        );
     }
 
     // -- Cooldown, call deadline and per-tick pinning (task 7.6) --------------
@@ -724,7 +890,10 @@ mod tests {
         async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
             std::future::pending().await
         }
-        async fn get_block_transactions(&self, _height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        async fn get_block_transactions(
+            &self,
+            _height: u64,
+        ) -> Result<Vec<Transaction>, DaemonError> {
             std::future::pending().await
         }
         async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
@@ -736,7 +905,10 @@ mod tests {
         async fn get_transaction(&self, _txid: &str) -> Result<Transaction, DaemonError> {
             std::future::pending().await
         }
-        async fn is_key_image_spent(&self, _key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        async fn is_key_image_spent(
+            &self,
+            _key_images: &[String],
+        ) -> Result<Vec<KeyImageStatus>, DaemonError> {
             std::future::pending().await
         }
     }
@@ -755,7 +927,10 @@ mod tests {
         // A second failure in a row doubles it.
         assert!(client.get_height().await.is_err());
         tokio::time::advance(FIRST_COOLDOWN + Duration::from_millis(1)).await;
-        assert!(client.in_cooldown(0), "still cooling down after a second failure");
+        assert!(
+            client.in_cooldown(0),
+            "still cooling down after a second failure"
+        );
         tokio::time::advance(FIRST_COOLDOWN).await;
         assert!(!client.in_cooldown(0));
 
@@ -787,24 +962,48 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_hanging_node_gets_only_its_share_of_the_call_deadline() {
-        let hanging = FallbackNode { label: "hanging".into(), client: Arc::new(HangingDaemonClient) };
+        let hanging = FallbackNode {
+            label: "hanging".into(),
+            client: Arc::new(HangingDaemonClient),
+        };
         let (ok_node, ok) = node("ok", Arc::new(FlakyDaemonClient::new(true)));
         let client = FallbackDaemonClient::new(vec![hanging, ok_node]);
 
         let started = Instant::now();
-        assert_eq!(client.get_height().await.unwrap(), 1, "the second node still got its turn");
-        assert!(started.elapsed() <= CALL_DEADLINE / 2 + Duration::from_millis(10), "took {:?}", started.elapsed());
+        assert_eq!(
+            client.get_height().await.unwrap(),
+            1,
+            "the second node still got its turn"
+        );
+        assert!(
+            started.elapsed() <= CALL_DEADLINE / 2 + Duration::from_millis(10),
+            "took {:?}",
+            started.elapsed()
+        );
         assert_eq!(ok.call_count(), 1);
 
         // With every node hanging, the call fails within the deadline.
         let all_hanging = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "h1".into(), client: Arc::new(HangingDaemonClient) },
-            FallbackNode { label: "h2".into(), client: Arc::new(HangingDaemonClient) },
-            FallbackNode { label: "h3".into(), client: Arc::new(HangingDaemonClient) },
+            FallbackNode {
+                label: "h1".into(),
+                client: Arc::new(HangingDaemonClient),
+            },
+            FallbackNode {
+                label: "h2".into(),
+                client: Arc::new(HangingDaemonClient),
+            },
+            FallbackNode {
+                label: "h3".into(),
+                client: Arc::new(HangingDaemonClient),
+            },
         ]);
         let started = Instant::now();
         assert!(all_hanging.get_height().await.is_err());
-        assert!(started.elapsed() <= CALL_DEADLINE + MIN_ATTEMPT, "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() <= CALL_DEADLINE + MIN_ATTEMPT,
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -818,14 +1017,25 @@ mod tests {
         for _ in 0..3 {
             pinned.get_height().await.unwrap();
         }
-        assert_eq!((a.call_count(), b.call_count()), (3, 0), "every call of the tick went to one node");
+        assert_eq!(
+            (a.call_count(), b.call_count()),
+            (3, 0),
+            "every call of the tick went to one node"
+        );
 
         a.set_healthy(false);
-        assert!(pinned.get_height().await.is_err(), "no failover inside a pinned tick");
+        assert!(
+            pinned.get_height().await.is_err(),
+            "no failover inside a pinned tick"
+        );
         assert_eq!(b.call_count(), 0);
 
         let next_tick = client.pin();
-        assert_eq!(next_tick.node_index(), 1, "the failed node is cooling down, so the next tick picks another");
+        assert_eq!(
+            next_tick.node_index(),
+            1,
+            "the failed node is cooling down, so the next tick picks another"
+        );
         next_tick.get_height().await.unwrap();
         assert_eq!(b.call_count(), 1);
     }

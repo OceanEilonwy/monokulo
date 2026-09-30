@@ -151,16 +151,20 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     // identical fix for the full "why" - without this, signup silently
     // no-ops (a plain `200`, not an error), and everything downstream fails
     // confusingly instead.
-    db.set_setting("signup.mode", "public").expect("failed to set signup.mode for test monokulo db");
+    db.set_setting("signup.mode", "public")
+        .expect("failed to set signup.mode for test monokulo db");
     let state = AppState {
         engine_client: EngineClient::new(format!("http://{engine_addr}")),
         ..AppState::for_tests_with_db(db.into_shared())
     };
     let router = build_router(state);
 
-    let listener =
-        tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral local port for the test control plane");
-    let addr = listener.local_addr().expect("bound listener has no local address");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind an ephemeral local port for the test control plane");
+    let addr = listener
+        .local_addr()
+        .expect("bound listener has no local address");
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
@@ -169,8 +173,16 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
 
 async fn body_json(response: reqwest::Response) -> Value {
     let status = response.status();
-    let bytes = response.bytes().await.expect("failed to read response body");
-    serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("response body was not JSON (status {status}): {e}\nbody: {}", String::from_utf8_lossy(&bytes)))
+    let bytes = response
+        .bytes()
+        .await
+        .expect("failed to read response body");
+    serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+        panic!(
+            "response body was not JSON (status {status}): {e}\nbody: {}",
+            String::from_utf8_lossy(&bytes)
+        )
+    })
 }
 
 // `flavor = "multi_thread"`: this test drives a manually-triggered scan tick
@@ -184,9 +196,14 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // from the repository root, same as this file's own doc comment says.
     let ctx = cli_wallet::WalletCtx::default();
 
-    let wallets = cli_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
-    let merchant = wallets.wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
-    let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
+    let wallets = cli_wallet::WalletStore::load(&ctx)
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
+    let merchant = wallets
+        .wallet("merchant")
+        .unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
+    let spender = wallets
+        .wallet("spender")
+        .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
     // Deliberately not one daemon client held for the test's whole duration - see
     // `e2e_stagenet_connect_flow.rs`'s own identical fix/comment: this specific
@@ -197,15 +214,25 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // below, only once it's actually needed for the post-payment scan-tick polling.
     {
         let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
-            RpcDaemonClient::new(node_fixture::HOST, node_fixture::PORT, node_fixture::SSL, node_fixture::ACCEPT_SELF_SIGNED_CERTS)
-                .expect("failed to build daemon RPC client"),
+            RpcDaemonClient::new(
+                node_fixture::HOST,
+                node_fixture::PORT,
+                node_fixture::SSL,
+                node_fixture::ACCEPT_SELF_SIGNED_CERTS,
+            )
+            .expect("failed to build daemon RPC client"),
         );
         require_daemon_reachable(daemon.as_ref(), node_fixture::HOST, node_fixture::PORT).await;
     }
 
-    let balance_wallet = retry(5, Duration::from_secs(5), || spender.connect()).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
+    let balance_wallet = retry(5, Duration::from_secs(5), || spender.connect())
+        .await
+        .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     const MIN_SPENDABLE_PICONERO: u64 = 10_000_000_000; // 0.01 XMR.
-    let balance = balance_wallet.balance().await.unwrap_or_else(|e| panic!("failed to check spender wallet balance: {e}"));
+    let balance = balance_wallet
+        .balance()
+        .await
+        .unwrap_or_else(|e| panic!("failed to check spender wallet balance: {e}"));
     if balance.spendable_piconero < MIN_SPENDABLE_PICONERO {
         panic!(
             "\n\nspender wallet has only {} piconero spendable across {} output(s) (needs at least \
@@ -222,7 +249,11 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // `without_background_scan_loop` reasoning as
     // `e2e_stagenet_connect_flow.rs`'s own module doc comment), no
     // background webhook loop either (this test doesn't need one).
-    let engine = scanner_test_support::TestEngineConfig::new().with_networks(&[Network::Stagenet]).without_background_scan_loop().spawn().await;
+    let engine = scanner_test_support::TestEngineConfig::new()
+        .with_networks(&[Network::Stagenet])
+        .without_background_scan_loop()
+        .spawn()
+        .await;
     let monokulo = spawn_test_monokulo(engine.addr).await;
     let monokulo_base_url = format!("http://{}", monokulo.addr);
 
@@ -230,12 +261,33 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     let email = format!("e2e-threshold+{}@example.com", uuid::Uuid::new_v4());
     let password = "correct horse battery staple";
 
-    let signup = client.post(format!("{monokulo_base_url}/signup")).json(&json!({ "email": email, "password": password })).send().await.unwrap();
-    assert!(signup.status().is_success(), "signup failed: {}", signup.status());
+    let signup = client
+        .post(format!("{monokulo_base_url}/signup"))
+        .json(&json!({ "email": email, "password": password }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        signup.status().is_success(),
+        "signup failed: {}",
+        signup.status()
+    );
 
-    let login = client.post(format!("{monokulo_base_url}/login")).json(&json!({ "email": email, "password": password })).send().await.unwrap();
-    assert!(login.status().is_success(), "login failed: {}", login.status());
-    let session_token = body_json(login).await["session_token"].as_str().expect("expected a real session_token").to_string();
+    let login = client
+        .post(format!("{monokulo_base_url}/login"))
+        .json(&json!({ "email": email, "password": password }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        login.status().is_success(),
+        "login failed: {}",
+        login.status()
+    );
+    let session_token = body_json(login).await["session_token"]
+        .as_str()
+        .expect("expected a real session_token")
+        .to_string();
     let bearer = format!("Bearer {session_token}");
 
     // A real store, connected against the real stagenet-configured engine -
@@ -258,10 +310,20 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .send()
         .await
         .unwrap();
-    assert!(connect_response.status().is_success(), "creating the real stagenet connection failed: {}", connect_response.status());
+    assert!(
+        connect_response.status().is_success(),
+        "creating the real stagenet connection failed: {}",
+        connect_response.status()
+    );
     let connect_body = body_json(connect_response).await;
-    let connection_id = connect_body["connection_id"].as_str().expect("expected a real connection_id").to_string();
-    let public_key = connect_body["public_key"].as_str().expect("expected a real public_key").to_string();
+    let connection_id = connect_body["connection_id"]
+        .as_str()
+        .expect("expected a real connection_id")
+        .to_string();
+    let public_key = connect_body["public_key"]
+        .as_str()
+        .expect("expected a real public_key")
+        .to_string();
     println!("connected: connection_id={connection_id} public_key={public_key}");
 
     // The real point of this test: one real custom confirmation threshold,
@@ -272,16 +334,29 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // 302 itself; checking the landing page actually shows the new row is a
     // stronger proof of success than a raw status code would be anyway.
     let threshold_response = client
-        .post(format!("{monokulo_base_url}/dashboard/stores/{connection_id}/settings/confirmation-thresholds"))
+        .post(format!(
+            "{monokulo_base_url}/dashboard/stores/{connection_id}/settings/confirmation-thresholds"
+        ))
         .header("authorization", &bearer)
-        .form(&[("unit_amount", THRESHOLD_UNIT_AMOUNT), ("confirmations_required", &THRESHOLD_CONFIRMATIONS_REQUIRED.to_string())])
+        .form(&[
+            ("unit_amount", THRESHOLD_UNIT_AMOUNT),
+            (
+                "confirmations_required",
+                &THRESHOLD_CONFIRMATIONS_REQUIRED.to_string(),
+            ),
+        ])
         .send()
         .await
         .unwrap();
-    assert!(threshold_response.status().is_success(), "expected the real threshold form's landing page, got: {}", threshold_response.status());
+    assert!(
+        threshold_response.status().is_success(),
+        "expected the real threshold form's landing page, got: {}",
+        threshold_response.status()
+    );
     let threshold_html = threshold_response.text().await.unwrap();
     assert!(
-        threshold_html.contains(&format!("<td>{THRESHOLD_UNIT_AMOUNT}</td>")) && threshold_html.contains(&format!("<td>{THRESHOLD_CONFIRMATIONS_REQUIRED}</td>")),
+        threshold_html.contains(&format!("<td>{THRESHOLD_UNIT_AMOUNT}</td>"))
+            && threshold_html.contains(&format!("<td>{THRESHOLD_CONFIRMATIONS_REQUIRED}</td>")),
         "expected the real new threshold row on the landing page, got: {threshold_html}"
     );
     println!("created a real confirmation threshold: {THRESHOLD_UNIT_AMOUNT} XMR -> {THRESHOLD_CONFIRMATIONS_REQUIRED} confirmations");
@@ -295,11 +370,23 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .send()
         .await
         .unwrap();
-    assert!(order_response.status().is_success(), "creating the real order failed: {}", order_response.status());
+    assert!(
+        order_response.status().is_success(),
+        "creating the real order failed: {}",
+        order_response.status()
+    );
     let order_body = body_json(order_response).await;
-    let order_id = order_body["order_id"].as_str().expect("expected a real order_id").to_string();
-    let address = order_body["address"].as_str().expect("expected a real derived address").to_string();
-    let amount_piconero = order_body["xmr_amount_piconero"].as_u64().expect("expected a real xmr_amount_piconero");
+    let order_id = order_body["order_id"]
+        .as_str()
+        .expect("expected a real order_id")
+        .to_string();
+    let address = order_body["address"]
+        .as_str()
+        .expect("expected a real derived address")
+        .to_string();
+    let amount_piconero = order_body["xmr_amount_piconero"]
+        .as_u64()
+        .expect("expected a real xmr_amount_piconero");
     assert_eq!(amount_piconero, TEST_ORDER_AMOUNT_PICONERO);
     println!("created order {order_id}: {amount_piconero} piconero to {address}");
 
@@ -308,7 +395,11 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // tenant's default - checked immediately, no payment or waiting needed.
     {
         let store = engine.store().lock();
-        let tenant_id = store.find_tenant_by_public_key(&public_key).unwrap().unwrap().id;
+        let tenant_id = store
+            .find_tenant_by_public_key(&public_key)
+            .unwrap()
+            .unwrap()
+            .id;
         let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
         assert_eq!(
             stored.confirmations_required_override,
@@ -323,7 +414,9 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // (WBS task: "makes it clear how the confirmation threshold was
     // decided", `templates::OrderDetailData::confirmations_required_display`).
     let detail_html = client
-        .get(format!("{monokulo_base_url}/dashboard/stores/{connection_id}/orders/{order_id}"))
+        .get(format!(
+            "{monokulo_base_url}/dashboard/stores/{connection_id}/orders/{order_id}"
+        ))
         .header("authorization", &bearer)
         .send()
         .await
@@ -331,9 +424,18 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .text()
         .await
         .unwrap();
-    assert!(detail_html.contains("Confirmations required"), "expected the confirmations-required row's label, got: {detail_html}");
-    assert!(detail_html.contains(&format!(">{THRESHOLD_CONFIRMATIONS_REQUIRED}<")), "expected the resolved threshold's own count shown, got: {detail_html}");
-    assert!(detail_html.contains("Store base currency"), "expected the base-currency snapshot row's label, got: {detail_html}");
+    assert!(
+        detail_html.contains("Confirmations required"),
+        "expected the confirmations-required row's label, got: {detail_html}"
+    );
+    assert!(
+        detail_html.contains(&format!(">{THRESHOLD_CONFIRMATIONS_REQUIRED}<")),
+        "expected the resolved threshold's own count shown, got: {detail_html}"
+    );
+    assert!(
+        detail_html.contains("Store base currency"),
+        "expected the base-currency snapshot row's label, got: {detail_html}"
+    );
     println!("PASS: the real order detail dashboard page shows the resolved threshold snapshot");
 
     // Point 2: pay it for real and prove the resolved value actually drives
@@ -341,16 +443,21 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // (the order's own confirmation requirement is nonzero), so
     // this can only succeed once the payment has a real confirmation.
     let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
-    .await
-    .unwrap_or_else(|e| panic!("\n\n{e}\n"));
+        .await
+        .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
     println!("sent real stagenet payment, tx {tx_hash_hex}");
 
     // A fresh connection, built only now - see the earlier reachability check's
     // own comment on why this isn't kept alive for the test's whole duration.
     let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
-        RpcDaemonClient::new(node_fixture::HOST, node_fixture::PORT, node_fixture::SSL, node_fixture::ACCEPT_SELF_SIGNED_CERTS)
-            .expect("failed to build daemon RPC client"),
+        RpcDaemonClient::new(
+            node_fixture::HOST,
+            node_fixture::PORT,
+            node_fixture::SSL,
+            node_fixture::ACCEPT_SELF_SIGNED_CERTS,
+        )
+        .expect("failed to build daemon RPC client"),
     );
 
     // A generous deadline: this test needs a real block (~2 minutes on
@@ -361,13 +468,22 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     let mut tick = 0u32;
     let last_status = loop {
         tick += 1;
-        let scan_result = engine.run_scan_tick_now(daemon.as_ref(), Network::Stagenet, 3).await;
+        let scan_result = engine
+            .run_scan_tick_now(daemon.as_ref(), Network::Stagenet, 3)
+            .await;
         if let Err(e) = &scan_result {
             eprintln!("DIAG tick {tick}: scan tick failed, continuing: {e}");
         }
 
         // Monokulo's public status route - what the customer's checkout page polls.
-        let order_status: Value = reqwest::get(format!("{monokulo_base_url}/pay/{public_key}/orders/{order_id}/status")).await.expect("order status request failed").json().await.expect("order status response was not valid JSON");
+        let order_status: Value = reqwest::get(format!(
+            "{monokulo_base_url}/pay/{public_key}/orders/{order_id}/status"
+        ))
+        .await
+        .expect("order status request failed")
+        .json()
+        .await
+        .expect("order status response was not valid JSON");
         let status = order_status["status"].as_str().unwrap_or("?").to_string();
         eprintln!(
             "DIAG tick {tick}: status={status} confirmations={:?}",
@@ -376,7 +492,10 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         if matches!(status.as_str(), "paid" | "confirming" | "overpaid") {
             break status;
         }
-        assert_ne!(status, "expired", "order expired before the real payment reached its resolved confirmations_required");
+        assert_ne!(
+            status, "expired",
+            "order expired before the real payment reached its resolved confirmations_required"
+        );
         if tokio::time::Instant::now() >= deadline {
             break status;
         }

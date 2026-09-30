@@ -20,7 +20,10 @@ impl Captured {
 
     /// How many captured lines contain `needle`.
     pub(crate) fn count(&self, needle: &str) -> usize {
-        self.text().lines().filter(|line| line.contains(needle)).count()
+        self.text()
+            .lines()
+            .filter(|line| line.contains(needle))
+            .count()
     }
 }
 

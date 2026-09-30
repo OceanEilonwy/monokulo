@@ -45,12 +45,12 @@ use axum::extract::{Form, Query, State};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
+use crate::admin_nodes::{self, NodeForm};
 use crate::db::{Db, UserRow};
 use crate::views;
-use crate::admin_nodes::{self, NodeForm};
 use crate::views::admin::{
-    setting_placement, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, NodeRowView, NodeStatusView, Notice,
-    SettingKindView, SettingOwner, SettingsTab,
+    setting_placement, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel,
+    NodeRowView, NodeStatusView, Notice, SettingKindView, SettingOwner, SettingsTab,
 };
 
 use super::fx::FxRequest;
@@ -85,7 +85,9 @@ fn live_source(source: live_settings::SettingSource) -> &'static str {
 /// description of them (tasks 4.1, 4.6). Without a registry (a test state),
 /// nothing is listed.
 fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
-    let Some(registry) = state.settings.registry.as_ref() else { return Vec::new() };
+    let Some(registry) = state.settings.registry.as_ref() else {
+        return Vec::new();
+    };
     registry
         .describe()
         .into_iter()
@@ -114,7 +116,11 @@ fn is_monokulo_key(key: &str) -> bool {
 /// monokulo has a setting with the same key (both have `logging.level`),
 /// when it's `engine:<key>` so the two can sit in one form on one tab.
 fn engine_form_name(key: &str) -> String {
-    if is_monokulo_key(key) { format!("engine:{key}") } else { String::new() }
+    if is_monokulo_key(key) {
+        format!("engine:{key}")
+    } else {
+        String::new()
+    }
 }
 
 /// A request to the engine carrying this request's trace
@@ -131,8 +137,12 @@ fn traced(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 /// `.await` on their own.
 fn engine_connection(db: &Db) -> (String, String) {
     (
-        crate::settings::get(db, &crate::settings::ENGINE_URL).as_str().to_string(),
-        crate::settings::get(db, &crate::settings::SCANNER_ADMIN_TOKEN).expose().to_string(),
+        crate::settings::get(db, &crate::settings::ENGINE_URL)
+            .as_str()
+            .to_string(),
+        crate::settings::get(db, &crate::settings::SCANNER_ADMIN_TOKEN)
+            .expose()
+            .to_string(),
     )
 }
 
@@ -193,7 +203,10 @@ async fn fetch_scanner_settings(
     if !response.status().is_success() {
         return Err(format!("the engine responded with {}", response.status()));
     }
-    let parsed: RemoteSettingsResponse = response.json().await.map_err(|e| format!("could not parse the engine's response: {e}"))?;
+    let parsed: RemoteSettingsResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("could not parse the engine's response: {e}"))?;
 
     let fields = parsed
         .scalars
@@ -222,12 +235,20 @@ async fn fetch_scanner_settings(
             let example_address = meta
                 .example
                 .and_then(|example| serde_json::from_str::<serde_json::Value>(&example).ok())
-                .and_then(|example| admin_nodes::rows_from_setting(Some(&example)).into_iter().next())
+                .and_then(|example| {
+                    admin_nodes::rows_from_setting(Some(&example))
+                        .into_iter()
+                        .next()
+                })
                 .map(|(_, row)| row.address);
             AdminNetworkFieldView {
                 rows: admin_nodes::rows_from_setting(value.as_ref())
                     .into_iter()
-                    .map(|(label, row)| NodeRowView { row, label, status: None })
+                    .map(|(label, row)| NodeRowView {
+                        row,
+                        label,
+                        status: None,
+                    })
                     .collect(),
                 network,
                 example_address,
@@ -236,7 +257,12 @@ async fn fetch_scanner_settings(
             }
         })
         .collect();
-    networks.sort_by_key(|n| admin_nodes::NETWORKS.iter().position(|known| *known == n.network).unwrap_or(usize::MAX));
+    networks.sort_by_key(|n| {
+        admin_nodes::NETWORKS
+            .iter()
+            .position(|known| *known == n.network)
+            .unwrap_or(usize::MAX)
+    });
     Ok(Some((fields, networks)))
 }
 
@@ -246,7 +272,10 @@ async fn fetch_scanner_settings(
 /// "off / on for N hours" control instead of a number box.
 fn with_time_limits(fields: &mut [AdminScalarFieldView]) {
     let now = u64::try_from(crate::now_unix()).unwrap_or(0);
-    for field in fields.iter_mut().filter(|f| f.key == "logging.dev_mode_until") {
+    for field in fields
+        .iter_mut()
+        .filter(|f| f.key == "logging.dev_mode_until")
+    {
         field.kind = SettingKindView::TimeLimit { now };
     }
 }
@@ -264,12 +293,29 @@ struct SaveResult {
     field_errors: Vec<(String, String)>,
 }
 
-async fn build_view_model(state: &AppState, tab: SettingsTab, result: SaveResult) -> AdminSettingsViewModel {
-    let SaveResult { error, success, notices, nodes, field_errors } = result;
+async fn build_view_model(
+    state: &AppState,
+    tab: SettingsTab,
+    result: SaveResult,
+) -> AdminSettingsViewModel {
+    let SaveResult {
+        error,
+        success,
+        notices,
+        nodes,
+        field_errors,
+    } = result;
     let mut monokulo_fields = monokulo_fields(state);
     with_time_limits(&mut monokulo_fields);
     let (engine_url, admin_token) = engine_connection(&state.db.lock());
-    let mut view = AdminSettingsViewModel { tab, error, success, notices, monokulo_fields, ..Default::default() };
+    let mut view = AdminSettingsViewModel {
+        tab,
+        error,
+        success,
+        notices,
+        monokulo_fields,
+        ..Default::default()
+    };
     match fetch_scanner_settings(&engine_url, &admin_token).await {
         Ok(Some((mut fields, networks))) => {
             with_time_limits(&mut fields);
@@ -295,7 +341,9 @@ async fn build_view_model(state: &AppState, tab: SettingsTab, result: SaveResult
                 network.rows = rows
                     .iter()
                     .map(|row| NodeRowView {
-                        label: admin_nodes::parse_address(&row.address).map(|a| a.label()).unwrap_or_default(),
+                        label: admin_nodes::parse_address(&row.address)
+                            .map(|a| a.label())
+                            .unwrap_or_default(),
                         row: row.clone(),
                         status: None,
                     })
@@ -305,7 +353,10 @@ async fn build_view_model(state: &AppState, tab: SettingsTab, result: SaveResult
     }
     for network in &mut view.scanner_networks {
         let key = format!("monero_node.{}", network.network);
-        network.error = field_errors.iter().find(|(k, _)| *k == key).map(|(_, message)| message.clone());
+        network.error = field_errors
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, message)| message.clone());
     }
     if view.scanner_reachable {
         // The Monero nodes tab waits for a current answer (monokulo's short
@@ -331,8 +382,11 @@ async fn build_view_model(state: &AppState, tab: SettingsTab, result: SaveResult
 /// Networks stores use that no node answers for, from the engine's
 /// `/status` (it reports each such store as `no_reachable_node`).
 fn unreachable_networks(unserved: Vec<crate::engine_client::UnservedTenant>) -> Vec<String> {
-    let mut networks: Vec<String> =
-        unserved.into_iter().filter(|tenant| tenant.reason == "no_reachable_node").map(|tenant| tenant.network).collect();
+    let mut networks: Vec<String> = unserved
+        .into_iter()
+        .filter(|tenant| tenant.reason == "no_reachable_node")
+        .map(|tenant| tenant.network)
+        .collect();
     networks.sort();
     networks.dedup();
     networks
@@ -341,15 +395,29 @@ fn unreachable_networks(unserved: Vec<crate::engine_client::UnservedTenant>) -> 
 /// Each row's status from `/status`, found by the engine's label for the
 /// node (`host:port`). A node on a network other than its block's says so;
 /// one that reports `fakechain`, or nothing, isn't called wrong.
-fn attach_node_status(networks: &mut [AdminNetworkFieldView], status: &crate::engine_client::EngineStatusResponse) {
+fn attach_node_status(
+    networks: &mut [AdminNetworkFieldView],
+    status: &crate::engine_client::EngineStatusResponse,
+) {
     for network in networks {
-        let Some(reported) = status.networks.iter().find(|n| n.network == network.network) else { continue };
+        let Some(reported) = status
+            .networks
+            .iter()
+            .find(|n| n.network == network.network)
+        else {
+            continue;
+        };
         for row in &mut network.rows {
-            let Some(node) = reported.nodes.iter().find(|node| !row.label.is_empty() && node.label == row.label) else { continue };
-            let wrong_network = node
-                .network
-                .clone()
-                .filter(|on| admin_nodes::NETWORKS.contains(&on.as_str()) && *on != network.network);
+            let Some(node) = reported
+                .nodes
+                .iter()
+                .find(|node| !row.label.is_empty() && node.label == row.label)
+            else {
+                continue;
+            };
+            let wrong_network = node.network.clone().filter(|on| {
+                admin_nodes::NETWORKS.contains(&on.as_str()) && *on != network.network
+            });
             row.status = Some(NodeStatusView {
                 height: node.height,
                 error: node.error.clone(),
@@ -386,7 +454,11 @@ pub async fn page(
     let tab = SettingsTab::from_id(query.tab.as_deref());
     let view = match query.saved.as_deref().and_then(take_flash) {
         Some(flash) => {
-            let result = SaveResult { success: Some(flash.success), notices: flash.notices, ..Default::default() };
+            let result = SaveResult {
+                success: Some(flash.success),
+                notices: flash.notices,
+                ..Default::default()
+            };
             let mut view = build_view_model(&state, tab, result).await;
             view.saved_tab = Some(flash.tab);
             view
@@ -394,7 +466,8 @@ pub async fn page(
         None => build_view_model(&state, tab, SaveResult::default()).await,
     };
     if fx.0 {
-        return axum::response::Html(views::admin::settings_fragment(&view, true).into_string()).into_response();
+        return axum::response::Html(views::admin::settings_fragment(&view, true).into_string())
+            .into_response();
     }
     render(&state, &admin_user, view)
 }
@@ -452,9 +525,14 @@ impl SplitForm {
             if engine_key.is_none() && is_monokulo_key(bare) {
                 split.monokulo.insert(name.clone(), value.clone());
             } else if clear {
-                split.engine_clears.push(engine_key.unwrap_or(bare).to_string());
+                split
+                    .engine_clears
+                    .push(engine_key.unwrap_or(bare).to_string());
             } else {
-                split.engine.scalars.insert(engine_key.unwrap_or(bare).to_string(), value.clone());
+                split
+                    .engine
+                    .scalars
+                    .insert(engine_key.unwrap_or(bare).to_string(), value.clone());
             }
         }
         split
@@ -478,7 +556,10 @@ struct SaveOutcome {
 
 impl SaveOutcome {
     fn refused(message: String) -> SaveOutcome {
-        SaveOutcome { error: Some(message), ..Default::default() }
+        SaveOutcome {
+            error: Some(message),
+            ..Default::default()
+        }
     }
 }
 
@@ -492,11 +573,14 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
     };
     // A new value and "Clear it" together can't both be meant.
     if let Some(key) = crate::settings::ALL.iter().map(|s| s.key()).find(|key| {
-        form.contains_key(&format!("clear:{key}")) && form.get(*key).is_some_and(|value| !value.is_empty())
+        form.contains_key(&format!("clear:{key}"))
+            && form.get(*key).is_some_and(|value| !value.is_empty())
     }) {
         return SaveOutcome {
             error_key: Some((key.to_string(), SettingOwner::Monokulo)),
-            ..SaveOutcome::refused(format!("{key}: either type a new value or tick \"Clear it\", not both."))
+            ..SaveOutcome::refused(format!(
+                "{key}: either type a new value or tick \"Clear it\", not both."
+            ))
         };
     }
     let secrets: Vec<&str> = crate::settings::ALL
@@ -509,7 +593,9 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
         .filter_map(|setting| {
             // A secret's field is always empty on the page, so empty means
             // "keep it"; its "Clear it" box removes it.
-            if secrets.contains(&setting.key()) && form.contains_key(&format!("clear:{}", setting.key())) {
+            if secrets.contains(&setting.key())
+                && form.contains_key(&format!("clear:{}", setting.key()))
+            {
                 return Some((setting.key().to_string(), None));
             }
             let value = form.get(setting.key())?;
@@ -540,15 +626,28 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
                     report.restart_required.join(", ")
                 )));
             }
-            SaveOutcome { notices, ..Default::default() }
+            SaveOutcome {
+                notices,
+                ..Default::default()
+            }
         }
         Err(live_settings::SaveError::Invalid(errors)) => SaveOutcome {
-            error_key: errors.first().map(|e| (e.key.clone(), SettingOwner::Monokulo)),
-            ..SaveOutcome::refused(errors.iter().map(ToString::to_string).collect::<Vec<_>>().join(" "))
+            error_key: errors
+                .first()
+                .map(|e| (e.key.clone(), SettingOwner::Monokulo)),
+            ..SaveOutcome::refused(
+                errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
         },
         Err(e) => {
             tracing::error!(error = %e, "saving monokulo settings failed");
-            SaveOutcome::refused("Something went wrong saving these settings. Please try again.".to_string())
+            SaveOutcome::refused(
+                "Something went wrong saving these settings. Please try again.".to_string(),
+            )
         }
     }
 }
@@ -603,7 +702,11 @@ struct RemoteSaveResponse {
 fn scanner_save_notices(warnings: RemoteSaveWarnings, submitted_bind: Option<&str>) -> Vec<Notice> {
     let mut notices = Vec::new();
     for unserved in &warnings.unserved_networks {
-        let stores = if unserved.tenants == 1 { "1 store uses".to_string() } else { format!("{} stores use", unserved.tenants) };
+        let stores = if unserved.tenants == 1 {
+            "1 store uses".to_string()
+        } else {
+            format!("{} stores use", unserved.tenants)
+        };
         notices.push(Notice::Error(format!(
             "{stores} the {} network, which no longer has any reachable nodes. Their payments won't be detected until a node is set.",
             unserved.network
@@ -651,13 +754,19 @@ async fn apply_engine_secrets(
     let fields = match fetch_scanner_settings(engine_url, admin_token).await {
         Ok(Some((fields, _))) => fields,
         Ok(None) => Vec::new(),
-        Err(e) => return Err(SaveOutcome::refused(format!("Could not reach the configured engine: {e}"))),
+        Err(e) => {
+            return Err(SaveOutcome::refused(format!(
+                "Could not reach the configured engine: {e}"
+            )))
+        }
     };
     for key in clears {
         if req.scalars.get(key).is_some_and(|value| !value.is_empty()) {
             return Err(SaveOutcome {
                 error_key: Some((key.clone(), SettingOwner::Engine)),
-                ..SaveOutcome::refused(format!("{key}: either type a new value or tick \"Clear it\", not both."))
+                ..SaveOutcome::refused(format!(
+                    "{key}: either type a new value or tick \"Clear it\", not both."
+                ))
             });
         }
     }
@@ -675,7 +784,11 @@ async fn apply_engine_secrets(
 /// `POST /api/v1/admin/settings`, which checks it. Whatever the engine
 /// refuses comes back as the page's error, verbatim; what it accepts comes
 /// back with its warnings as banners.
-async fn save_engine(state: &AppState, mut req: RemoteUpdateRequest, clears: &[String]) -> SaveOutcome {
+async fn save_engine(
+    state: &AppState,
+    mut req: RemoteUpdateRequest,
+    clears: &[String],
+) -> SaveOutcome {
     let (engine_url, admin_token) = engine_connection(&state.db.lock());
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
         return SaveOutcome::refused("No engine connection is configured.".to_string());
@@ -687,16 +800,30 @@ async fn save_engine(state: &AppState, mut req: RemoteUpdateRequest, clears: &[S
         return SaveOutcome::default();
     }
     let url = format!("{}/api/v1/admin/settings", engine_url.trim_end_matches('/'));
-    let result = traced(reqwest::Client::new().post(&url)).bearer_auth(&admin_token).json(&req).send().await;
+    let result = traced(reqwest::Client::new().post(&url))
+        .bearer_auth(&admin_token)
+        .json(&req)
+        .send()
+        .await;
     match result {
         Ok(response) if response.status().is_success() => {
             let saved: RemoteSaveResponse = response.json().await.unwrap_or_default();
             // New nodes: the next page shows their status, not the cached
             // one of the nodes they replaced.
-            if saved.changed.iter().any(|key| key.starts_with("monero_node.")) {
+            if saved
+                .changed
+                .iter()
+                .any(|key| key.starts_with("monero_node."))
+            {
                 super::status_page::invalidate_status_cache(state);
             }
-            SaveOutcome { notices: scanner_save_notices(saved.warnings, req.scalars.get("server.bind").map(String::as_str)), ..Default::default() }
+            SaveOutcome {
+                notices: scanner_save_notices(
+                    saved.warnings,
+                    req.scalars.get("server.bind").map(String::as_str),
+                ),
+                ..Default::default()
+            }
         }
         Ok(response) => {
             let status = response.status();
@@ -708,15 +835,27 @@ async fn save_engine(state: &AppState, mut req: RemoteUpdateRequest, clears: &[S
                 .map(|fields| {
                     fields
                         .iter()
-                        .filter_map(|f| Some((f["key"].as_str()?.to_string(), f["message"].as_str()?.to_string())))
+                        .filter_map(|f| {
+                            Some((
+                                f["key"].as_str()?.to_string(),
+                                f["message"].as_str()?.to_string(),
+                            ))
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
-            let message = parsed.as_ref().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(body);
+            let message = parsed
+                .as_ref()
+                .and_then(|v| v["error"].as_str().map(str::to_string))
+                .unwrap_or(body);
             SaveOutcome {
-                error_key: field_errors.first().map(|(key, _)| (key.clone(), SettingOwner::Engine)),
+                error_key: field_errors
+                    .first()
+                    .map(|(key, _)| (key.clone(), SettingOwner::Engine)),
                 field_errors,
-                ..SaveOutcome::refused(format!("The engine refused the change ({status}): {message}"))
+                ..SaveOutcome::refused(format!(
+                    "The engine refused the change ({status}): {message}"
+                ))
             }
         }
         Err(e) => SaveOutcome::refused(format!("Could not reach the configured engine: {e}")),
@@ -731,18 +870,31 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutco
     let mut split = SplitForm::new(form);
     // The node form: the rows as submitted, with a row button applied.
     // Nothing is saved while any row has something to fix.
-    let nodes = split.nodes.then(|| NodeForm::from_form(form, &admin_nodes::NETWORKS));
+    let nodes = split
+        .nodes
+        .then(|| NodeForm::from_form(form, &admin_nodes::NETWORKS));
     if let Some(nodes) = &nodes {
         if nodes.has_errors() {
-            let first = nodes.networks.iter().find(|(_, rows)| rows.iter().any(|row| row.error.is_some())).map(|(n, _)| n.clone());
+            let first = nodes
+                .networks
+                .iter()
+                .find(|(_, rows)| rows.iter().any(|row| row.error.is_some()))
+                .map(|(n, _)| n.clone());
             return SaveOutcome {
-                error_key: first.map(|network| (format!("monero_node.{network}"), SettingOwner::Engine)),
+                error_key: first
+                    .map(|network| (format!("monero_node.{network}"), SettingOwner::Engine)),
                 nodes: Some(nodes.clone()),
-                ..SaveOutcome::refused("Nothing was saved: some node addresses need fixing (marked below).".to_string())
+                ..SaveOutcome::refused(
+                    "Nothing was saved: some node addresses need fixing (marked below)."
+                        .to_string(),
+                )
             };
         }
         for (network, rows) in &nodes.networks {
-            split.engine.monero_node.insert(network.clone(), admin_nodes::rows_to_setting(rows));
+            split
+                .engine
+                .monero_node
+                .insert(network.clone(), admin_nodes::rows_to_setting(rows));
         }
     }
     let mut outcome = SaveOutcome::default();
@@ -779,7 +931,8 @@ struct Flash {
 /// for the one redirect, and a restart in between just loses a banner
 /// (the settings themselves are saved). Old ones are dropped, and there
 /// are never many: only the admin saves settings.
-static FLASHES: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, Flash>>> = std::sync::LazyLock::new(Default::default);
+static FLASHES: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, Flash>>> =
+    std::sync::LazyLock::new(Default::default);
 
 const FLASH_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 const MAX_FLASHES: usize = 64;
@@ -792,7 +945,11 @@ fn put_flash(flash: Flash) -> String {
     let mut flashes = FLASHES.lock();
     flashes.retain(|_, f| f.created.elapsed() < FLASH_TTL);
     if flashes.len() >= MAX_FLASHES {
-        if let Some(oldest) = flashes.iter().min_by_key(|(_, f)| f.created).map(|(k, _)| k.clone()) {
+        if let Some(oldest) = flashes
+            .iter()
+            .min_by_key(|(_, f)| f.created)
+            .map(|(k, _)| k.clone())
+        {
             flashes.remove(&oldest);
         }
     }
@@ -801,7 +958,10 @@ fn put_flash(flash: Flash) -> String {
 }
 
 fn take_flash(token: &str) -> Option<Flash> {
-    FLASHES.lock().remove(token).filter(|f| f.created.elapsed() < FLASH_TTL)
+    FLASHES
+        .lock()
+        .remove(token)
+        .filter(|f| f.created.elapsed() < FLASH_TTL)
 }
 
 /// `POST /dashboard/admin/settings` - saves one tab: any mix of monokulo's
@@ -820,10 +980,19 @@ pub async fn save(
     let form = joined(form);
     let submitted_tab = SettingsTab::from_id(form.get("tab").map(String::as_str));
     let outcome = save_tab(&state, &form).await;
-    let tab = outcome.error_key.as_ref().map(|(key, owner)| setting_placement(key, *owner).0).unwrap_or(submitted_tab);
+    let tab = outcome
+        .error_key
+        .as_ref()
+        .map(|(key, owner)| setting_placement(key, *owner).0)
+        .unwrap_or(submitted_tab);
     let success = "Settings saved and applied.".to_string();
     if outcome.error.is_none() && !fx.0 {
-        let token = put_flash(Flash { tab, success, notices: outcome.notices, created: std::time::Instant::now() });
+        let token = put_flash(Flash {
+            tab,
+            success,
+            notices: outcome.notices,
+            created: std::time::Instant::now(),
+        });
         return super::dashboard::redirect_303(&format!("{}&saved={token}", tab.href()));
     }
     let refused = outcome.error.is_some();
@@ -849,9 +1018,9 @@ pub async fn save(
 
 #[cfg(test)]
 mod tests {
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::Router;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -861,7 +1030,8 @@ mod tests {
 
     const SCANNER_ADMIN_TOKEN: &str = "admin_test_token_for_monokulo_admin_settings_tests";
 
-    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
+    fn test_exchange_rate_provider(
+    ) -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
         std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
     }
 
@@ -876,7 +1046,10 @@ mod tests {
         engine
             .store()
             .lock()
-            .set_setting("instance_admin_token_hash", &shared::auth::hash_secret_token(SCANNER_ADMIN_TOKEN))
+            .set_setting(
+                "instance_admin_token_hash",
+                &shared::auth::hash_secret_token(SCANNER_ADMIN_TOKEN),
+            )
             .unwrap();
         engine
     }
@@ -888,8 +1061,16 @@ mod tests {
     async fn test_app_state_connected_to(scanner_addr: std::net::SocketAddr) -> AppState {
         let db = Db::open_in_memory().unwrap();
         db.seed_test_admin();
-        db.set_setting(crate::settings::ENGINE_URL.key, &format!("http://{scanner_addr}")).unwrap();
-        db.set_setting(crate::settings::SCANNER_ADMIN_TOKEN.key, SCANNER_ADMIN_TOKEN).unwrap();
+        db.set_setting(
+            crate::settings::ENGINE_URL.key,
+            &format!("http://{scanner_addr}"),
+        )
+        .unwrap();
+        db.set_setting(
+            crate::settings::SCANNER_ADMIN_TOKEN.key,
+            SCANNER_ADMIN_TOKEN,
+        )
+        .unwrap();
         let db = db.into_shared();
         let engine_client = EngineClient::new(format!("http://{scanner_addr}"));
         let exchange_rate = test_exchange_rate_provider();
@@ -904,7 +1085,13 @@ mod tests {
         )
         .await
         .unwrap();
-        AppState { engine_client, exchange_rate, abuse, settings, ..AppState::for_tests_with_db(db) }
+        AppState {
+            engine_client,
+            exchange_rate,
+            abuse,
+            settings,
+            ..AppState::for_tests_with_db(db)
+        }
     }
 
     async fn body_text(response: axum::response::Response) -> String {
@@ -917,14 +1104,30 @@ mod tests {
     }
 
     fn form_request(method: &str, uri: &str, fields: &[(&str, &str)]) -> Request<Body> {
-        let body =
-            fields.iter().map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v))).collect::<Vec<_>>().join("&");
-        Request::builder().method(method).uri(uri).header("content-type", "application/x-www-form-urlencoded").body(Body::from(body)).unwrap()
+        let body = fields
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap()
     }
 
-    fn authed_form_request(method: &str, uri: &str, cookie: &str, fields: &[(&str, &str)]) -> Request<Body> {
-        let body =
-            fields.iter().map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v))).collect::<Vec<_>>().join("&");
+    fn authed_form_request(
+        method: &str,
+        uri: &str,
+        cookie: &str,
+        fields: &[(&str, &str)],
+    ) -> Request<Body> {
+        let body = fields
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
         Request::builder()
             .method(method)
             .uri(uri)
@@ -939,10 +1142,22 @@ mod tests {
     async fn admin_session_cookie(router: &Router) -> String {
         let response = router
             .clone()
-            .oneshot(form_request("POST", "/dashboard/login", &[("email", TEST_ADMIN_EMAIL), ("password", TEST_ADMIN_PASSWORD)]))
+            .oneshot(form_request(
+                "POST",
+                "/dashboard/login",
+                &[
+                    ("email", TEST_ADMIN_EMAIL),
+                    ("password", TEST_ADMIN_PASSWORD),
+                ],
+            ))
             .await
             .unwrap();
-        let set_cookie = response.headers().get("set-cookie").expect("expected a session cookie from a correct admin login").to_str().unwrap();
+        let set_cookie = response
+            .headers()
+            .get("set-cookie")
+            .expect("expected a session cookie from a correct admin login")
+            .to_str()
+            .unwrap();
         set_cookie.split(';').next().unwrap().to_string()
     }
 
@@ -955,7 +1170,14 @@ mod tests {
         let location = response.headers()["location"].to_str().unwrap().to_string();
         let page = router
             .clone()
-            .oneshot(Request::builder().method("GET").uri(&location).header("cookie", cookie).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&location)
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(page.status(), StatusCode::OK, "{location}");
@@ -975,7 +1197,14 @@ mod tests {
     async fn get_settings_page(router: &Router, cookie: &str) -> axum::response::Response {
         router
             .clone()
-            .oneshot(Request::builder().method("GET").uri("/dashboard/admin/settings").header("cookie", cookie).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/dashboard/admin/settings")
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap()
     }
@@ -985,7 +1214,13 @@ mod tests {
         let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let response = router
-            .oneshot(Request::builder().method("GET").uri("/dashboard/admin/settings").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/dashboard/admin/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -1000,16 +1235,39 @@ mod tests {
 
         let signup = router
             .clone()
-            .oneshot(form_request("POST", "/dashboard/signup", &[("email", "merchant@example.com"), ("password", "correct horse battery staple")]))
+            .oneshot(form_request(
+                "POST",
+                "/dashboard/signup",
+                &[
+                    ("email", "merchant@example.com"),
+                    ("password", "correct horse battery staple"),
+                ],
+            ))
             .await
             .unwrap();
         assert_eq!(signup.status(), StatusCode::FOUND);
         let login = router
             .clone()
-            .oneshot(form_request("POST", "/dashboard/login", &[("email", "merchant@example.com"), ("password", "correct horse battery staple")]))
+            .oneshot(form_request(
+                "POST",
+                "/dashboard/login",
+                &[
+                    ("email", "merchant@example.com"),
+                    ("password", "correct horse battery staple"),
+                ],
+            ))
             .await
             .unwrap();
-        let cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
+        let cookie = login
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
 
         let response = get_settings_page(&router, &cookie).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -1025,9 +1283,18 @@ mod tests {
         let response = get_settings_page(&router, &cookie).await;
         assert_eq!(response.status(), StatusCode::OK);
         let html = settings_tabs_html(&router, &cookie).await;
-        assert!(html.contains("engine url"), "expected monokulo's own settings listed, got: {html}");
-        assert!(html.contains("payment confirmations required"), "expected the scanner's own settings proxied in, got: {html}");
-        assert!(html.contains("value=\"10\""), "expected the scanner's real default value, got: {html}");
+        assert!(
+            html.contains("engine url"),
+            "expected monokulo's own settings listed, got: {html}"
+        );
+        assert!(
+            html.contains("payment confirmations required"),
+            "expected the scanner's own settings proxied in, got: {html}"
+        );
+        assert!(
+            html.contains("value=\"10\""),
+            "expected the scanner's real default value, got: {html}"
+        );
     }
 
     #[tokio::test]
@@ -1038,17 +1305,34 @@ mod tests {
 
         let save = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "abuse"), ("abuse.soft_per_min", "5")]))
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("tab", "abuse"), ("abuse.soft_per_min", "5")],
+            ))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(html.contains("Settings saved and applied."), "expected a success banner, got: {html}");
-        assert!(html.contains("value=\"5\""), "expected the just-saved value reflected immediately, got: {html}");
+        assert!(
+            html.contains("Settings saved and applied."),
+            "expected a success banner, got: {html}"
+        );
+        assert!(
+            html.contains("value=\"5\""),
+            "expected the just-saved value reflected immediately, got: {html}"
+        );
 
         let html = settings_tabs_html(&router, &cookie).await;
-        assert!(html.contains("value=\"5\""), "expected the saved value to survive a fresh page load, got: {html}");
-        assert!(html.contains("saved value"), "expected the source label to say this came from a saved value, got: {html}");
+        assert!(
+            html.contains("value=\"5\""),
+            "expected the saved value to survive a fresh page load, got: {html}"
+        );
+        assert!(
+            html.contains("saved value"),
+            "expected the source label to say this came from a saved value, got: {html}"
+        );
     }
 
     /// The literal ask: "write tests to ensure that all settings exposed on
@@ -1070,7 +1354,10 @@ mod tests {
             ("exchange_rate.coingecko_enabled", "false"),
             ("exchange_rate.coingecko_base_url", "http://127.0.0.1:9999"),
             ("exchange_rate.coinmarketcap_enabled", "false"),
-            ("exchange_rate.coinmarketcap_base_url", "http://127.0.0.1:9998"),
+            (
+                "exchange_rate.coinmarketcap_base_url",
+                "http://127.0.0.1:9998",
+            ),
             ("exchange_rate.haveno_enabled", "true"),
             ("exchange_rate.haveno_base_url", "http://127.0.0.1:9997"),
             ("exchange_rate.cache_seconds", "77"),
@@ -1095,13 +1382,32 @@ mod tests {
         ];
         // Every monokulo setting must be covered here, or this test would
         // silently stop proving anything about a setting added later.
-        assert_eq!(new_values.len(), crate::settings::ALL.len(), "this test must cover every known monokulo setting");
+        assert_eq!(
+            new_values.len(),
+            crate::settings::ALL.len(),
+            "this test must cover every known monokulo setting"
+        );
 
-        let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, new_values)).await.unwrap();
+        let save = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                new_values,
+            ))
+            .await
+            .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(html.contains("Settings saved and applied."), "expected a success banner, got: {html}");
-        assert!(html.contains("didn&#39;t answer") || html.contains("didn't answer"), "the new engine URL doesn't answer, and the page says so (D4): {html}");
+        assert!(
+            html.contains("Settings saved and applied."),
+            "expected a success banner, got: {html}"
+        );
+        assert!(
+            html.contains("didn&#39;t answer") || html.contains("didn't answer"),
+            "the new engine URL doesn't answer, and the page says so (D4): {html}"
+        );
 
         let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
@@ -1109,7 +1415,10 @@ mod tests {
                 assert!(!html.contains(value), "a secret is never echoed back");
                 continue;
             }
-            assert!(shows_value(&html, value), "expected {key}={value:?} to have round-tripped, got: {html}");
+            assert!(
+                shows_value(&html, value),
+                "expected {key}={value:?} to have round-tripped, got: {html}"
+            );
         }
     }
 
@@ -1157,12 +1466,31 @@ mod tests {
             "this test must cover every known engine setting apart from the node ones"
         );
 
-        let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, new_values)).await.unwrap();
+        let save = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                new_values,
+            ))
+            .await
+            .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(html.contains("Settings saved and applied."), "expected a success banner, got: {html}");
-        assert!(html.contains("take effect after the engine restarts"), "worker threads and bind are restart-only: {html}");
-        assert!(html.contains("set monokulo&#39;s engine.url to http://127.0.0.1:9443") || html.contains("set monokulo's engine.url to http://127.0.0.1:9443"), "{html}");
+        assert!(
+            html.contains("Settings saved and applied."),
+            "expected a success banner, got: {html}"
+        );
+        assert!(
+            html.contains("take effect after the engine restarts"),
+            "worker threads and bind are restart-only: {html}"
+        );
+        assert!(
+            html.contains("set monokulo&#39;s engine.url to http://127.0.0.1:9443")
+                || html.contains("set monokulo's engine.url to http://127.0.0.1:9443"),
+            "{html}"
+        );
 
         let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
@@ -1178,17 +1506,35 @@ mod tests {
                 assert!(!html.contains(value), "a secret is never echoed back");
                 continue;
             }
-            assert!(shows_value(&html, value), "expected {key}={value:?} to have round-tripped, got: {html}");
+            assert!(
+                shows_value(&html, value),
+                "expected {key}={value:?} to have round-tripped, got: {html}"
+            );
         }
         let engine_view = engine_settings(&engine).await;
-        assert_eq!(engine_view["scalars"]["logging.level"]["value"], "warn,scanner::loops=debug", "the engine's own logging level");
-        assert_eq!(engine_view["scalars"]["logging.otlp_headers"]["source"], "database", "{engine_view}");
+        assert_eq!(
+            engine_view["scalars"]["logging.level"]["value"], "warn,scanner::loops=debug",
+            "the engine's own logging level"
+        );
+        assert_eq!(
+            engine_view["scalars"]["logging.otlp_headers"]["source"], "database",
+            "{engine_view}"
+        );
     }
 
     #[test]
     fn ticked_choices_are_joined_and_ticking_none_still_sends_the_name() {
-        let pairs = |list: &[(&str, &str)]| list.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
-        let form = super::joined(pairs(&[("list", ""), ("list", "plain"), ("list", "socket"), ("other", "a,b")]));
+        let pairs = |list: &[(&str, &str)]| {
+            list.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let form = super::joined(pairs(&[
+            ("list", ""),
+            ("list", "plain"),
+            ("list", "socket"),
+            ("other", "a,b"),
+        ]));
         assert_eq!(form["list"], "plain,socket");
         assert_eq!(form["other"], "a,b");
         assert_eq!(super::joined(pairs(&[("list", "")]))["list"], "");
@@ -1196,8 +1542,10 @@ mod tests {
 
     /// A value shown in a text or number input, or selected in a select.
     fn shows_value(html: &str, value: &str) -> bool {
-        html.contains(&format!("value=\"{value}\" selected")) || html.contains(&format!("value=\"{value}\">"))
-            || html.contains(&format!("value=\"{value}\" min")) || html.contains(&format!("value=\"{value}\" id="))
+        html.contains(&format!("value=\"{value}\" selected"))
+            || html.contains(&format!("value=\"{value}\">"))
+            || html.contains(&format!("value=\"{value}\" min"))
+            || html.contains(&format!("value=\"{value}\" id="))
             || html.contains(&format!("value=\"{value}\" checked"))
             || html.contains(&format!("\">{value}</textarea>"))
     }
@@ -1209,7 +1557,11 @@ mod tests {
         if let Some(cookie) = cookie {
             request = request.header("cookie", cookie);
         }
-        router.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap()
+        router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -1226,15 +1578,58 @@ mod tests {
                 .unwrap()
         };
         // The test instance starts with public signup (`Db::seed_test_admin`).
-        assert_eq!(router.clone().oneshot(signup("first@example.com")).await.unwrap().status(), StatusCode::CREATED);
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(signup("first@example.com"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED
+        );
 
-        let saved =
-            router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("signup.mode", "invite_only")])).await.unwrap();
+        let saved = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("signup.mode", "invite_only")],
+            ))
+            .await
+            .unwrap();
         assert_eq!(saved.status(), StatusCode::SEE_OTHER);
-        assert_ne!(router.clone().oneshot(signup("second@example.com")).await.unwrap().status(), StatusCode::CREATED, "needs an invite now");
+        assert_ne!(
+            router
+                .clone()
+                .oneshot(signup("second@example.com"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED,
+            "needs an invite now"
+        );
 
-        router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("signup.mode", "public")])).await.unwrap();
-        assert_eq!(router.clone().oneshot(signup("third@example.com")).await.unwrap().status(), StatusCode::CREATED, "and back");
+        router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("signup.mode", "public")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(signup("third@example.com"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED,
+            "and back"
+        );
     }
 
     #[tokio::test]
@@ -1244,16 +1639,28 @@ mod tests {
         let cookie = admin_session_cookie(&router).await;
         let confirm = "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fdone&nonce=n1";
         let before = body_text(get(&router, confirm, Some(&cookie)).await).await;
-        assert!(before.contains("can't connect plugins yet") || before.contains("can&#39;t connect plugins yet"), "{before}");
+        assert!(
+            before.contains("can't connect plugins yet")
+                || before.contains("can&#39;t connect plugins yet"),
+            "{before}"
+        );
 
         let saved = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("public_url", "https://pay.example.com")]))
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("public_url", "https://pay.example.com")],
+            ))
             .await
             .unwrap();
         assert_eq!(saved.status(), StatusCode::SEE_OTHER);
         let after = body_text(get(&router, confirm, Some(&cookie)).await).await;
-        assert!(!after.contains("connect plugins yet"), "the next request sees it: {after}");
+        assert!(
+            !after.contains("connect plugins yet"),
+            "the next request sees it: {after}"
+        );
         assert!(after.contains(r#"name="view_key_hex""#), "{after}");
     }
 
@@ -1265,22 +1672,44 @@ mod tests {
         let cookie = admin_session_cookie(&router).await;
         let engine_tab = crate::views::admin::SettingsTab::Payments.href();
         let reachable = |html: String| html.contains(r#"name="payment.confirmations_required""#);
-        assert!(reachable(body_text(get(&router, &engine_tab, Some(&cookie)).await).await), "the right token");
+        assert!(
+            reachable(body_text(get(&router, &engine_tab, Some(&cookie)).await).await),
+            "the right token"
+        );
 
         router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(crate::settings::SCANNER_ADMIN_TOKEN.key, "wrong-token")]))
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[(crate::settings::SCANNER_ADMIN_TOKEN.key, "wrong-token")],
+            ))
             .await
             .unwrap();
         let page = body_text(get(&router, &engine_tab, Some(&cookie)).await).await;
-        assert!(page.contains("Could not reach the configured engine"), "the wrong one, used at once: {page}");
+        assert!(
+            page.contains("Could not reach the configured engine"),
+            "the wrong one, used at once: {page}"
+        );
 
         router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(crate::settings::SCANNER_ADMIN_TOKEN.key, SCANNER_ADMIN_TOKEN)]))
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[(
+                    crate::settings::SCANNER_ADMIN_TOKEN.key,
+                    SCANNER_ADMIN_TOKEN,
+                )],
+            ))
             .await
             .unwrap();
-        assert!(reachable(body_text(get(&router, &engine_tab, Some(&cookie)).await).await), "and back");
+        assert!(
+            reachable(body_text(get(&router, &engine_tab, Some(&cookie)).await).await),
+            "and back"
+        );
     }
 
     #[tokio::test]
@@ -1292,31 +1721,64 @@ mod tests {
         let key = crate::settings::SCANNER_ADMIN_TOKEN.key;
 
         let page = body_text(get_settings_page(&router, &cookie).await).await;
-        assert!(page.contains(&format!(r#"name="clear:{key}""#)), "a set secret can be cleared: {page}");
+        assert!(
+            page.contains(&format!(r#"name="clear:{key}""#)),
+            "a set secret can be cleared: {page}"
+        );
 
-        let kept = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, "")])).await.unwrap();
+        let kept = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[(key, "")],
+            ))
+            .await
+            .unwrap();
         assert_eq!(kept.status(), StatusCode::SEE_OTHER);
-        assert_eq!(db.lock().get_setting(key).unwrap().as_deref(), Some(SCANNER_ADMIN_TOKEN), "empty keeps it");
+        assert_eq!(
+            db.lock().get_setting(key).unwrap().as_deref(),
+            Some(SCANNER_ADMIN_TOKEN),
+            "empty keeps it"
+        );
 
         let clear = format!("clear:{key}");
         let cleared = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, ""), (clear.as_str(), "on")]))
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[(key, ""), (clear.as_str(), "on")],
+            ))
             .await
             .unwrap();
         assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
         assert_eq!(db.lock().get_setting(key).unwrap(), None);
         let page = body_text(get_settings_page(&router, &cookie).await).await;
-        assert!(!page.contains(&format!(r#"name="clear:{key}""#)), "nothing left to clear");
+        assert!(
+            !page.contains(&format!(r#"name="clear:{key}""#)),
+            "nothing left to clear"
+        );
 
         db.lock().set_setting(key, "some-token").unwrap();
         let both = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, "new-token"), (clear.as_str(), "on")]))
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[(key, "new-token"), (clear.as_str(), "on")],
+            ))
             .await
             .unwrap();
         assert!(body_text(both).await.contains("not both"));
-        assert_eq!(db.lock().get_setting(key).unwrap().as_deref(), Some("some-token"), "nothing changed");
+        assert_eq!(
+            db.lock().get_setting(key).unwrap().as_deref(),
+            Some("some-token"),
+            "nothing changed"
+        );
     }
 
     #[tokio::test]
@@ -1327,15 +1789,26 @@ mod tests {
 
         let save = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("abuse.soft_per_min", "not-a-number")]))
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("abuse.soft_per_min", "not-a-number")],
+            ))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.contains("abuse.soft_per_min: Enter a whole number"), "expected a clear validation error, got: {html}");
+        assert!(
+            html.contains("abuse.soft_per_min: Enter a whole number"),
+            "expected a clear validation error, got: {html}"
+        );
 
         let html = settings_tabs_html(&router, &cookie).await;
-        assert!(html.contains("value=\"60\""), "the rejected save must not have changed the default, got: {html}");
+        assert!(
+            html.contains("value=\"60\""),
+            "the rejected save must not have changed the default, got: {html}"
+        );
     }
 
     /// The mistakes an operator makes typing into the settings form: each
@@ -1347,21 +1820,71 @@ mod tests {
         let cookie = admin_session_cookie(&router).await;
         for (key, value, expected) in [
             ("signup.mode", "open", "Choose one of: public, invite_only"),
-            ("exchange_rate.coingecko_enabled", "yes", "Enter true or false."),
+            (
+                "exchange_rate.coingecko_enabled",
+                "yes",
+                "Enter true or false.",
+            ),
             ("abuse.under_attack", "on", "Enter true or false."),
-            ("exchange_rate.cache_seconds", "-5", "Enter a whole number, 0 or more."),
+            (
+                "exchange_rate.cache_seconds",
+                "-5",
+                "Enter a whole number, 0 or more.",
+            ),
             ("http_cache.max_mb", "1.5", "Enter a whole number"),
-            ("abuse.hard_per_min", "0", "Enter a whole number from 1 to 10000000."),
-            ("abuse.challenge_bits", "30", "Enter a whole number from 8 to 24."),
-            ("rate_limit.per_store_key_per_min", "0", "Enter a whole number from 1 to 10000000."),
-            ("abuse.stream_cap", "0", "Enter a whole number from 1 to 100000."),
+            (
+                "abuse.hard_per_min",
+                "0",
+                "Enter a whole number from 1 to 10000000.",
+            ),
+            (
+                "abuse.challenge_bits",
+                "30",
+                "Enter a whole number from 8 to 24.",
+            ),
+            (
+                "rate_limit.per_store_key_per_min",
+                "0",
+                "Enter a whole number from 1 to 10000000.",
+            ),
+            (
+                "abuse.stream_cap",
+                "0",
+                "Enter a whole number from 1 to 100000.",
+            ),
             ("engine.url", " ", "Enter a full web address"),
-            ("public_url", "not a url", "Enter this instance's public address"),
+            (
+                "public_url",
+                "not a url",
+                "Enter this instance's public address",
+            ),
         ] {
-            let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, value)])).await.unwrap();
+            let save = router
+                .clone()
+                .oneshot(authed_form_request(
+                    "POST",
+                    "/dashboard/admin/settings",
+                    &cookie,
+                    &[(key, value)],
+                ))
+                .await
+                .unwrap();
             assert_eq!(save.status(), StatusCode::OK, "{key}={value:?}");
-            let html = body_text(save).await.replace("&quot;", "\"").replace("&#34;", "\"").replace("&#39;", "'");
-            assert!(html.contains(key) && html.contains(expected), "{key}={value:?}: expected {expected:?}, got: {}", html.split("role=\"alert\">").nth(1).unwrap_or("").split("<").next().unwrap_or(""));
+            let html = body_text(save)
+                .await
+                .replace("&quot;", "\"")
+                .replace("&#34;", "\"")
+                .replace("&#39;", "'");
+            assert!(
+                html.contains(key) && html.contains(expected),
+                "{key}={value:?}: expected {expected:?}, got: {}",
+                html.split("role=\"alert\">")
+                    .nth(1)
+                    .unwrap_or("")
+                    .split("<")
+                    .next()
+                    .unwrap_or("")
+            );
         }
     }
 
@@ -1374,20 +1897,36 @@ mod tests {
 
         let save = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "payments"), ("payment.confirmations_required", "5")]))
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("tab", "payments"), ("payment.confirmations_required", "5")],
+            ))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(html.contains("Settings saved and applied."), "expected a success banner, got: {html}");
-        assert!(html.contains("value=\"5\""), "expected the scanner's own just-saved value reflected, got: {html}");
+        assert!(
+            html.contains("Settings saved and applied."),
+            "expected a success banner, got: {html}"
+        );
+        assert!(
+            html.contains("value=\"5\""),
+            "expected the scanner's own just-saved value reflected, got: {html}"
+        );
 
         let html = settings_tabs_html(&router, &cookie).await;
-        assert!(html.contains("value=\"5\""), "expected the scanner's change to survive a fresh page load, got: {html}");
+        assert!(
+            html.contains("value=\"5\""),
+            "expected the scanner's change to survive a fresh page load, got: {html}"
+        );
     }
 
     fn fixi(mut request: Request<Body>) -> Request<Body> {
-        request.headers_mut().insert("FX-Request", "true".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("FX-Request", "true".parse().unwrap());
         request
     }
 
@@ -1401,39 +1940,85 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
-        let page = body_text(get(&router, "/dashboard/admin/settings?tab=abuse", Some(&cookie)).await).await;
+        let page = body_text(
+            get(
+                &router,
+                "/dashboard/admin/settings?tab=abuse",
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
         assert!(page.contains(r##"fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#settings-panel""##), "{page}");
 
         let save = router
             .clone()
-            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "abuse"), ("abuse.soft_per_min", "70")])))
+            .oneshot(fixi(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("tab", "abuse"), ("abuse.soft_per_min", "70")],
+            )))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.starts_with(r#"<section id="settings-panel" aria-labelledby="settings-panel-title">"#), "{html}");
+        assert!(
+            html.starts_with(
+                r#"<section id="settings-panel" aria-labelledby="settings-panel-title">"#
+            ),
+            "{html}"
+        );
         assert!(html.contains(r#"<div id="settings-banners" class="save-banners" data-fx-oob><p class="success" role="status">Settings saved and applied."#), "{html}");
         assert!(html.contains(r#"<nav id="settings-tabs" class="tab-bar" aria-label="Settings sections" data-fx-oob>"#), "{html}");
-        assert!(html.contains(r#"value="70""#) && !html.contains("<html"), "{html}");
-        assert!(html.contains(r#"<span class="save-status success" role="status" data-fx-focus"#), "a word by the button gets focus: {html}");
+        assert!(
+            html.contains(r#"value="70""#) && !html.contains("<html"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="save-status success" role="status" data-fx-focus"#),
+            "a word by the button gets focus: {html}"
+        );
 
         let refused = router
             .clone()
-            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "payments"), ("payment.confirmations_required", "-1")])))
+            .oneshot(fixi(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[
+                    ("tab", "payments"),
+                    ("payment.confirmations_required", "-1"),
+                ],
+            )))
             .await
             .unwrap();
         assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let html = body_text(refused).await;
-        assert!(html.starts_with(r#"<section id="settings-panel""#) && html.contains("The engine refused the change"), "{html}");
-        assert!(html.contains(r#"<span class="save-status error" role="alert" data-fx-focus"#), "a word by the button gets focus: {html}");
+        assert!(
+            html.starts_with(r#"<section id="settings-panel""#)
+                && html.contains("The engine refused the change"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="save-status error" role="alert" data-fx-focus"#),
+            "a word by the button gets focus: {html}"
+        );
 
         let saved = router
             .clone()
-            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "payments"), ("payment.confirmations_required", "4")])))
+            .oneshot(fixi(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("tab", "payments"), ("payment.confirmations_required", "4")],
+            )))
             .await
             .unwrap();
         assert_eq!(saved.status(), StatusCode::OK);
-        assert!(body_text(saved).await.contains("Settings saved and applied."));
+        assert!(body_text(saved)
+            .await
+            .contains("Settings saved and applied."));
     }
 
     /// Saving a wrong engine token on General with fixi: the engine's tabs
@@ -1448,19 +2033,41 @@ mod tests {
 
         let changed = router
             .clone()
-            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "general"), (key, "wrong-token")])))
+            .oneshot(fixi(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("tab", "general"), (key, "wrong-token")],
+            )))
             .await
             .unwrap();
         assert_eq!(changed.status(), StatusCode::OK);
         let tab = router
             .clone()
-            .oneshot(fixi(Request::builder().uri("/dashboard/admin/settings?tab=nodes").header("cookie", &cookie).body(Body::empty()).unwrap()))
+            .oneshot(fixi(
+                Request::builder()
+                    .uri("/dashboard/admin/settings?tab=nodes")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            ))
             .await
             .unwrap();
         let html = body_text(tab).await;
-        assert!(html.starts_with(r#"<section id="settings-panel""#), "a tab link gets just the panel: {html}");
-        assert!(html.contains("Could not reach the configured engine"), "{html}");
-        assert!(html.contains(r#"<h2 id="settings-panel-title" tabindex="-1" data-fx-focus>Monero nodes</h2>"#), "{html}");
+        assert!(
+            html.starts_with(r#"<section id="settings-panel""#),
+            "a tab link gets just the panel: {html}"
+        );
+        assert!(
+            html.contains("Could not reach the configured engine"),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<h2 id="settings-panel-title" tabindex="-1" data-fx-focus>Monero nodes</h2>"#
+            ),
+            "{html}"
+        );
         assert!(html.contains(r##"href="/dashboard/admin/settings?tab=nodes" fx-action="/dashboard/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
     }
 
@@ -1473,12 +2080,20 @@ mod tests {
 
         let save = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("payment.confirmations_required", "not-a-number")]))
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("payment.confirmations_required", "not-a-number")],
+            ))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.contains("The engine refused the change"), "expected the engine's own rejection surfaced, got: {html}");
+        assert!(
+            html.contains("The engine refused the change"),
+            "expected the engine's own rejection surfaced, got: {html}"
+        );
     }
 
     #[tokio::test]
@@ -1487,20 +2102,36 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
-        let html = body_text(get(&router, "/dashboard/admin/settings?tab=payments", Some(&cookie)).await).await;
-        assert!(html.contains("Set <code>engine.url</code>"), "expected the configure-first prompt, got: {html}");
+        let html = body_text(
+            get(
+                &router,
+                "/dashboard/admin/settings?tab=payments",
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            html.contains("Set <code>engine.url</code>"),
+            "expected the configure-first prompt, got: {html}"
+        );
     }
 
     // -- One save for a whole tab (nicer_admin_screen.md step 2) ----------
 
     /// [`spawn_scanner_with_known_admin_token`] for an engine built from
     /// `config`.
-    async fn spawn_configured_scanner(config: scanner_test_support::TestEngineConfig) -> scanner_test_support::TestEngineHandle {
+    async fn spawn_configured_scanner(
+        config: scanner_test_support::TestEngineConfig,
+    ) -> scanner_test_support::TestEngineHandle {
         let engine = config.spawn().await;
         engine
             .store()
             .lock()
-            .set_setting("instance_admin_token_hash", &shared::auth::hash_secret_token(SCANNER_ADMIN_TOKEN))
+            .set_setting(
+                "instance_admin_token_hash",
+                &shared::auth::hash_secret_token(SCANNER_ADMIN_TOKEN),
+            )
             .unwrap();
         engine
     }
@@ -1520,15 +2151,34 @@ mod tests {
 
     /// Every monokulo setting as stored, to see that a save left them alone.
     fn monokulo_stored(db: &crate::db::SharedDb) -> Vec<(&'static str, Option<String>)> {
-        crate::settings::ALL.iter().map(|s| (s.key(), db.lock().get_setting(s.key()).unwrap())).collect()
+        crate::settings::ALL
+            .iter()
+            .map(|s| (s.key(), db.lock().get_setting(s.key()).unwrap()))
+            .collect()
     }
 
-    async fn post_settings(router: &Router, cookie: &str, fields: &[(&str, &str)]) -> axum::response::Response {
-        router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", cookie, fields)).await.unwrap()
+    async fn post_settings(
+        router: &Router,
+        cookie: &str,
+        fields: &[(&str, &str)],
+    ) -> axum::response::Response {
+        router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                cookie,
+                fields,
+            ))
+            .await
+            .unwrap()
     }
 
     fn unescaped(html: &str) -> String {
-        html.replace("&quot;", "\"").replace("&#34;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+        html.replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&")
     }
 
     /// Nothing listens at this instance's engine address, so a save that
@@ -1541,12 +2191,28 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
-        let save = post_settings(&router, &cookie, &[("tab", "abuse"), ("abuse.soft_per_min", "61")]).await;
+        let save = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "abuse"), ("abuse.soft_per_min", "61")],
+        )
+        .await;
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let location = save.headers()["location"].to_str().unwrap().to_string();
-        assert!(location.starts_with("/dashboard/admin/settings?tab=abuse&saved="), "{location}");
-        assert!(follow(&router, &cookie, save).await.contains("Settings saved and applied."));
-        assert_eq!(db.lock().get_setting("abuse.soft_per_min").unwrap().as_deref(), Some("61"));
+        assert!(
+            location.starts_with("/dashboard/admin/settings?tab=abuse&saved="),
+            "{location}"
+        );
+        assert!(follow(&router, &cookie, save)
+            .await
+            .contains("Settings saved and applied."));
+        assert_eq!(
+            db.lock()
+                .get_setting("abuse.soft_per_min")
+                .unwrap()
+                .as_deref(),
+            Some("61")
+        );
     }
 
     #[tokio::test]
@@ -1558,10 +2224,22 @@ mod tests {
         let cookie = admin_session_cookie(&router).await;
         let before = monokulo_stored(&db);
 
-        let save = post_settings(&router, &cookie, &[("tab", "payments"), ("payment.confirmations_required", "6")]).await;
+        let save = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "payments"), ("payment.confirmations_required", "6")],
+        )
+        .await;
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
-        assert_eq!(engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"], "6");
-        assert_eq!(monokulo_stored(&db), before, "monokulo's settings weren't touched");
+        assert_eq!(
+            engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"],
+            "6"
+        );
+        assert_eq!(
+            monokulo_stored(&db),
+            before,
+            "monokulo's settings weren't touched"
+        );
     }
 
     /// The Payments tab holds both processes' settings; one Save stores
@@ -1577,16 +2255,40 @@ mod tests {
         let save = post_settings(
             &router,
             &cookie,
-            &[("tab", "payments"), ("payment.confirmations_required", "7"), ("exchange_rate.cache_seconds", "88")],
+            &[
+                ("tab", "payments"),
+                ("payment.confirmations_required", "7"),
+                ("exchange_rate.cache_seconds", "88"),
+            ],
         )
         .await;
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
         assert!(html.contains("Settings saved and applied."), "{html}");
-        assert_eq!(engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"], "7");
-        assert_eq!(db.lock().get_setting("exchange_rate.cache_seconds").unwrap().as_deref(), Some("88"));
-        let page = body_text(get(&router, "/dashboard/admin/settings?tab=payments", Some(&cookie)).await).await;
-        assert!(shows_value(&page, "7") && shows_value(&page, "88"), "one tab shows both: {page}");
+        assert_eq!(
+            engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"],
+            "7"
+        );
+        assert_eq!(
+            db.lock()
+                .get_setting("exchange_rate.cache_seconds")
+                .unwrap()
+                .as_deref(),
+            Some("88")
+        );
+        let page = body_text(
+            get(
+                &router,
+                "/dashboard/admin/settings?tab=payments",
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            shows_value(&page, "7") && shows_value(&page, "88"),
+            "one tab shows both: {page}"
+        );
     }
 
     /// Monokulo's half is checked first; when it's refused, the engine's
@@ -1602,15 +2304,35 @@ mod tests {
         let save = post_settings(
             &router,
             &cookie,
-            &[("tab", "payments"), ("payment.confirmations_required", "8"), ("exchange_rate.cache_seconds", "-5")],
+            &[
+                ("tab", "payments"),
+                ("payment.confirmations_required", "8"),
+                ("exchange_rate.cache_seconds", "-5"),
+            ],
         )
         .await;
-        assert_eq!(save.status(), StatusCode::OK, "a refused save shows the page again");
+        assert_eq!(
+            save.status(),
+            StatusCode::OK,
+            "a refused save shows the page again"
+        );
         let html = unescaped(&body_text(save).await);
-        assert!(html.contains("exchange_rate.cache_seconds: Enter a whole number, 0 or more."), "{html}");
+        assert!(
+            html.contains("exchange_rate.cache_seconds: Enter a whole number, 0 or more."),
+            "{html}"
+        );
         assert!(html.contains(r##"href="/dashboard/admin/settings?tab=payments" fx-action="/dashboard/admin/settings?tab=payments" fx-target="#settings-panel" fx-push-url aria-current="page""##), "shown on the tab holding it: {html}");
-        assert_eq!(engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"], "10", "the engine half wasn't sent");
-        assert_eq!(db.lock().get_setting("exchange_rate.cache_seconds").unwrap(), None);
+        assert_eq!(
+            engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"],
+            "10",
+            "the engine half wasn't sent"
+        );
+        assert_eq!(
+            db.lock()
+                .get_setting("exchange_rate.cache_seconds")
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1632,10 +2354,23 @@ mod tests {
             .unwrap();
         let message = direct["error"].as_str().unwrap();
 
-        let save = post_settings(&router, &cookie, &[("tab", "payments"), ("payment.confirmations_required", "-1")]).await;
+        let save = post_settings(
+            &router,
+            &cookie,
+            &[
+                ("tab", "payments"),
+                ("payment.confirmations_required", "-1"),
+            ],
+        )
+        .await;
         assert_eq!(save.status(), StatusCode::OK);
         let html = unescaped(&body_text(save).await);
-        assert!(html.contains(&format!("The engine refused the change (400 Bad Request): {message}")), "{message} in {html}");
+        assert!(
+            html.contains(&format!(
+                "The engine refused the change (400 Bad Request): {message}"
+            )),
+            "{message} in {html}"
+        );
     }
 
     /// The banners a save brings still show after the redirect: a setting
@@ -1644,7 +2379,9 @@ mod tests {
     #[tokio::test]
     async fn restart_and_unserved_network_notices_still_show() {
         let engine = spawn_configured_scanner(
-            scanner_test_support::TestEngineConfig::new().with_networks(&[monero::Network::Stagenet]).with_live_nodes(),
+            scanner_test_support::TestEngineConfig::new()
+                .with_networks(&[monero::Network::Stagenet])
+                .with_live_nodes(),
         )
         .await;
         let state = test_app_state_connected_to(engine.addr).await;
@@ -1652,22 +2389,49 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         // A store on stagenet, which needs a stagenet node saved first.
-        let first = post_settings(&router, &cookie, &[("tab", "nodes"), ("node_stagenet_0_address", "127.0.0.1:9")]).await;
+        let first = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "nodes"), ("node_stagenet_0_address", "127.0.0.1:9")],
+        )
+        .await;
         assert_eq!(first.status(), StatusCode::SEE_OTHER);
         engine_client
             .create_tenant(stagenet_tenant())
             .await
             .unwrap();
 
-        let restart = post_settings(&router, &cookie, &[("tab", "server"), ("server.worker_threads", "3")]).await;
+        let restart = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "server"), ("server.worker_threads", "3")],
+        )
+        .await;
         let html = unescaped(&follow(&router, &cookie, restart).await);
         assert!(html.contains("Saved. These settings take effect after the engine restarts: server.worker_threads."), "{html}");
 
         // Nothing answers on ports 9 or 10.
-        let unserved = post_settings(&router, &cookie, &[("tab", "nodes"), ("node_stagenet_0_address", "127.0.0.1:10")]).await;
-        assert_eq!(unserved.status(), StatusCode::SEE_OTHER, "an unreachable node is still saved");
+        let unserved = post_settings(
+            &router,
+            &cookie,
+            &[
+                ("tab", "nodes"),
+                ("node_stagenet_0_address", "127.0.0.1:10"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            unserved.status(),
+            StatusCode::SEE_OTHER,
+            "an unreachable node is still saved"
+        );
         let html = unescaped(&follow(&router, &cookie, unserved).await);
-        assert!(html.contains("1 store uses the stagenet network, which no longer has any reachable nodes."), "{html}");
+        assert!(
+            html.contains(
+                "1 store uses the stagenet network, which no longer has any reachable nodes."
+            ),
+            "{html}"
+        );
     }
 
     /// A flash is shown once: reloading the page it led to doesn't bring
@@ -1677,9 +2441,16 @@ mod tests {
         let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let save = post_settings(&router, &cookie, &[("tab", "abuse"), ("abuse.soft_per_min", "62")]).await;
+        let save = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "abuse"), ("abuse.soft_per_min", "62")],
+        )
+        .await;
         let location = save.headers()["location"].to_str().unwrap().to_string();
-        assert!(follow(&router, &cookie, save).await.contains("Settings saved and applied."));
+        assert!(follow(&router, &cookie, save)
+            .await
+            .contains("Settings saved and applied."));
         let again = body_text(get(&router, &location, Some(&cookie)).await).await;
         assert!(!again.contains("Settings saved and applied."), "{again}");
     }
@@ -1696,10 +2467,21 @@ mod tests {
             let response = get(&router, &tab.href(), Some(&cookie)).await;
             assert_eq!(response.status(), StatusCode::OK, "{tab:?}");
             let html = body_text(response).await;
-            assert!(html.contains(&format!(r#"<h2 id="settings-panel-title" tabindex="-1">{}</h2>"#, tab.label())), "{tab:?}: {html}");
+            assert!(
+                html.contains(&format!(
+                    r#"<h2 id="settings-panel-title" tabindex="-1">{}</h2>"#,
+                    tab.label()
+                )),
+                "{tab:?}: {html}"
+            );
         }
-        let unknown = body_text(get(&router, "/dashboard/admin/settings?tab=nope", Some(&cookie)).await).await;
-        assert!(unknown.contains(r#"<h2 id="settings-panel-title" tabindex="-1">General</h2>"#), "{unknown}");
+        let unknown =
+            body_text(get(&router, "/dashboard/admin/settings?tab=nope", Some(&cookie)).await)
+                .await;
+        assert!(
+            unknown.contains(r#"<h2 id="settings-panel-title" tabindex="-1">General</h2>"#),
+            "{unknown}"
+        );
     }
 
     /// Both processes have `logging.otlp_headers`, a secret: on the Logging
@@ -1716,39 +2498,96 @@ mod tests {
         let set = post_settings(
             &router,
             &cookie,
-            &[("tab", "logging"), ("logging.otlp_headers", "x-monokulo=1"), ("engine:logging.otlp_headers", "x-engine=1")],
+            &[
+                ("tab", "logging"),
+                ("logging.otlp_headers", "x-monokulo=1"),
+                ("engine:logging.otlp_headers", "x-engine=1"),
+            ],
         )
         .await;
         assert_eq!(set.status(), StatusCode::SEE_OTHER);
-        assert_eq!(db.lock().get_setting("logging.otlp_headers").unwrap().as_deref(), Some("x-monokulo=1"));
-        assert_eq!(engine_settings(&engine).await["scalars"]["logging.otlp_headers"]["source"], "database");
+        assert_eq!(
+            db.lock()
+                .get_setting("logging.otlp_headers")
+                .unwrap()
+                .as_deref(),
+            Some("x-monokulo=1")
+        );
+        assert_eq!(
+            engine_settings(&engine).await["scalars"]["logging.otlp_headers"]["source"],
+            "database"
+        );
 
-        let page = body_text(get(&router, "/dashboard/admin/settings?tab=logging", Some(&cookie)).await).await;
-        assert!(page.contains(r#"name="clear:logging.otlp_headers""#) && page.contains(r#"name="clear:engine:logging.otlp_headers""#), "{page}");
-        assert!(page.contains(r#"id="setting-engine:logging.level""#) && page.contains(r#"id="setting-logging.level""#), "one id each: {page}");
+        let page = body_text(
+            get(
+                &router,
+                "/dashboard/admin/settings?tab=logging",
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            page.contains(r#"name="clear:logging.otlp_headers""#)
+                && page.contains(r#"name="clear:engine:logging.otlp_headers""#),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"id="setting-engine:logging.level""#)
+                && page.contains(r#"id="setting-logging.level""#),
+            "one id each: {page}"
+        );
 
         // Saved as the page sends it: both empty, so both kept.
         let kept = post_settings(
             &router,
             &cookie,
-            &[("tab", "logging"), ("logging.otlp_headers", ""), ("engine:logging.otlp_headers", ""), ("engine:logging.max_mb", "300")],
+            &[
+                ("tab", "logging"),
+                ("logging.otlp_headers", ""),
+                ("engine:logging.otlp_headers", ""),
+                ("engine:logging.max_mb", "300"),
+            ],
         )
         .await;
         assert_eq!(kept.status(), StatusCode::SEE_OTHER);
-        assert_eq!(db.lock().get_setting("logging.otlp_headers").unwrap().as_deref(), Some("x-monokulo=1"));
+        assert_eq!(
+            db.lock()
+                .get_setting("logging.otlp_headers")
+                .unwrap()
+                .as_deref(),
+            Some("x-monokulo=1")
+        );
         let engine_view = engine_settings(&engine).await;
-        assert_ne!(engine_view["scalars"]["logging.otlp_headers"]["value"], "", "{engine_view}");
+        assert_ne!(
+            engine_view["scalars"]["logging.otlp_headers"]["value"], "",
+            "{engine_view}"
+        );
         assert_eq!(engine_view["scalars"]["logging.max_mb"]["value"], "300");
 
         let cleared = post_settings(
             &router,
             &cookie,
-            &[("tab", "logging"), ("engine:logging.otlp_headers", ""), ("clear:engine:logging.otlp_headers", "on")],
+            &[
+                ("tab", "logging"),
+                ("engine:logging.otlp_headers", ""),
+                ("clear:engine:logging.otlp_headers", "on"),
+            ],
         )
         .await;
         assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
-        assert_eq!(engine_settings(&engine).await["scalars"]["logging.otlp_headers"]["value"], "");
-        assert_eq!(db.lock().get_setting("logging.otlp_headers").unwrap().as_deref(), Some("x-monokulo=1"), "monokulo's own is untouched");
+        assert_eq!(
+            engine_settings(&engine).await["scalars"]["logging.otlp_headers"]["value"],
+            ""
+        );
+        assert_eq!(
+            db.lock()
+                .get_setting("logging.otlp_headers")
+                .unwrap()
+                .as_deref(),
+            Some("x-monokulo=1"),
+            "monokulo's own is untouched"
+        );
     }
 
     // -- The node form (nicer_admin_screen.md step 5) -----------------------
@@ -1773,7 +2612,10 @@ mod tests {
 
     /// The addresses of a network's saved nodes, primary first, as the
     /// engine has them.
-    async fn saved_nodes(engine: &scanner_test_support::TestEngineHandle, network: &str) -> Vec<String> {
+    async fn saved_nodes(
+        engine: &scanner_test_support::TestEngineHandle,
+        network: &str,
+    ) -> Vec<String> {
         let node = engine_settings(engine).await["monero_node"][network].clone();
         if node.is_null() {
             return Vec::new();
@@ -1787,7 +2629,12 @@ mod tests {
     /// The Monero nodes tab's form as a browser without JavaScript sends it:
     /// every row, the blank "Add a node" row, and (for a row button) the
     /// button pressed.
-    fn nodes_form<'a>(network: &str, rows: &[&'a str], add: &'a str, action: Option<&'a str>) -> Vec<(String, String)> {
+    fn nodes_form<'a>(
+        network: &str,
+        rows: &[&'a str],
+        add: &'a str,
+        action: Option<&'a str>,
+    ) -> Vec<(String, String)> {
         let mut fields = vec![("tab".to_string(), "nodes".to_string())];
         for (i, address) in rows.iter().chain(std::iter::once(&add)).enumerate() {
             fields.push((format!("node_{network}_{i}_address"), address.to_string()));
@@ -1799,8 +2646,15 @@ mod tests {
         fields
     }
 
-    async fn post_nodes(router: &Router, cookie: &str, fields: &[(String, String)]) -> axum::response::Response {
-        let fields: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    async fn post_nodes(
+        router: &Router,
+        cookie: &str,
+        fields: &[(String, String)],
+    ) -> axum::response::Response {
+        let fields: Vec<(&str, &str)> = fields
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         post_settings(router, cookie, &fields).await
     }
 
@@ -1810,34 +2664,97 @@ mod tests {
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let (a, b, c) = (spawn_node_on("stagenet").await, spawn_node_on("stagenet").await, spawn_node_on("stagenet").await);
+        let (a, b, c) = (
+            spawn_node_on("stagenet").await,
+            spawn_node_on("stagenet").await,
+            spawn_node_on("stagenet").await,
+        );
         let (a, b, c) = (a.to_string(), b.to_string(), c.to_string());
 
         // Adding: fill in the blank row and save.
         let added = post_nodes(&router, &cookie, &nodes_form("stagenet", &[], &a, None)).await;
         assert_eq!(added.status(), StatusCode::SEE_OTHER);
-        assert_eq!(saved_nodes(&engine, "stagenet").await, std::slice::from_ref(&a));
+        assert_eq!(
+            saved_nodes(&engine, "stagenet").await,
+            std::slice::from_ref(&a)
+        );
         let page = follow(&router, &cookie, added).await;
-        assert!(page.contains(&format!(r#"name="node_stagenet_0_address" id="node-stagenet-0-address" value="{a}""#)), "{page}");
-        assert!(page.contains(r#"name="node_stagenet_1_address" id="node-stagenet-1-address" value="""#), "a fresh blank row: {page}");
+        assert!(
+            page.contains(&format!(
+                r#"name="node_stagenet_0_address" id="node-stagenet-0-address" value="{a}""#
+            )),
+            "{page}"
+        );
+        assert!(
+            page.contains(
+                r#"name="node_stagenet_1_address" id="node-stagenet-1-address" value="""#
+            ),
+            "a fresh blank row: {page}"
+        );
 
         post_nodes(&router, &cookie, &nodes_form("stagenet", &[&a], &b, None)).await;
-        post_nodes(&router, &cookie, &nodes_form("stagenet", &[&a, &b], &c, None)).await;
-        assert_eq!(saved_nodes(&engine, "stagenet").await, [a.clone(), b.clone(), c.clone()]);
+        post_nodes(
+            &router,
+            &cookie,
+            &nodes_form("stagenet", &[&a, &b], &c, None),
+        )
+        .await;
+        assert_eq!(
+            saved_nodes(&engine, "stagenet").await,
+            [a.clone(), b.clone(), c.clone()]
+        );
 
         // Each button is one post, and the saved order reads back.
-        let moved = post_nodes(&router, &cookie, &nodes_form("stagenet", &[&a, &b, &c], "", Some("up:stagenet:2"))).await;
+        let moved = post_nodes(
+            &router,
+            &cookie,
+            &nodes_form("stagenet", &[&a, &b, &c], "", Some("up:stagenet:2")),
+        )
+        .await;
         assert_eq!(moved.status(), StatusCode::SEE_OTHER);
-        assert_eq!(saved_nodes(&engine, "stagenet").await, [a.clone(), c.clone(), b.clone()]);
-        post_nodes(&router, &cookie, &nodes_form("stagenet", &[&a, &c, &b], "", Some("down:stagenet:0"))).await;
-        assert_eq!(saved_nodes(&engine, "stagenet").await, [c.clone(), a.clone(), b.clone()]);
-        post_nodes(&router, &cookie, &nodes_form("stagenet", &[&c, &a, &b], "", Some("remove:stagenet:1"))).await;
-        assert_eq!(saved_nodes(&engine, "stagenet").await, [c.clone(), b.clone()]);
+        assert_eq!(
+            saved_nodes(&engine, "stagenet").await,
+            [a.clone(), c.clone(), b.clone()]
+        );
+        post_nodes(
+            &router,
+            &cookie,
+            &nodes_form("stagenet", &[&a, &c, &b], "", Some("down:stagenet:0")),
+        )
+        .await;
+        assert_eq!(
+            saved_nodes(&engine, "stagenet").await,
+            [c.clone(), a.clone(), b.clone()]
+        );
+        post_nodes(
+            &router,
+            &cookie,
+            &nodes_form("stagenet", &[&c, &a, &b], "", Some("remove:stagenet:1")),
+        )
+        .await;
+        assert_eq!(
+            saved_nodes(&engine, "stagenet").await,
+            [c.clone(), b.clone()]
+        );
 
-        let page = body_text(get(&router, "/dashboard/admin/settings?tab=nodes", Some(&cookie)).await).await;
+        let page = body_text(
+            get(
+                &router,
+                "/dashboard/admin/settings?tab=nodes",
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
         let first = page.find(&format!(r#"value="{c}""#)).expect(&page);
-        assert!(first < page.find(&format!(r#"value="{b}""#)).unwrap(), "the page shows the saved order");
-        assert!(page.contains(r#"<legend class="node-row-name">Primary</legend>"#), "{page}");
+        assert!(
+            first < page.find(&format!(r#"value="{b}""#)).unwrap(),
+            "the page shows the saved order"
+        );
+        assert!(
+            page.contains(r#"<legend class="node-row-name">Primary</legend>"#),
+            "{page}"
+        );
     }
 
     /// A row that can't be a node: nothing is saved, and the page comes
@@ -1853,21 +2770,55 @@ mod tests {
         let mut fields = nodes_form("stagenet", &[&good], "node.example.com", None);
         fields.push(("node_stagenet_1_ssl".to_string(), "on".to_string()));
         let refused = post_nodes(&router, &cookie, &fields).await;
-        assert_eq!(refused.status(), StatusCode::OK, "the page again, not a redirect");
+        assert_eq!(
+            refused.status(),
+            StatusCode::OK,
+            "the page again, not a redirect"
+        );
         let html = body_text(refused).await;
-        assert!(html.contains("Nothing was saved: some node addresses need fixing (marked below)."), "{html}");
-        assert!(html.contains(&format!(r#"name="node_stagenet_0_address" id="node-stagenet-0-address" value="{good}""#)), "{html}");
+        assert!(
+            html.contains("Nothing was saved: some node addresses need fixing (marked below)."),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"name="node_stagenet_0_address" id="node-stagenet-0-address" value="{good}""#
+            )),
+            "{html}"
+        );
         assert!(html.contains(r#"name="node_stagenet_1_address" id="node-stagenet-1-address" value="node.example.com""#), "{html}");
-        assert!(html.contains(r#"name="node_stagenet_1_ssl" id="node-stagenet-1-ssl" value="on" checked"#), "a ticked box stays ticked: {html}");
+        assert!(
+            html.contains(
+                r#"name="node_stagenet_1_ssl" id="node-stagenet-1-ssl" value="on" checked"#
+            ),
+            "a ticked box stays ticked: {html}"
+        );
         assert!(html.contains(r#"<span class="setting-problem" id="node-stagenet-1-error">Add the port, like node.example.com:18081.</span>"#), "{html}");
         assert!(html.contains(r##"href="/dashboard/admin/settings?tab=nodes" fx-action="/dashboard/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
-        assert!(saved_nodes(&engine, "stagenet").await.is_empty(), "not even the good row");
+        assert!(
+            saved_nodes(&engine, "stagenet").await.is_empty(),
+            "not even the good row"
+        );
 
         // With fixi: the panel, 422.
-        let fields: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let refused = router.clone().oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &fields))).await.unwrap();
+        let fields: Vec<(&str, &str)> = fields
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let refused = router
+            .clone()
+            .oneshot(fixi(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &fields,
+            )))
+            .await
+            .unwrap();
         assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(body_text(refused).await.contains(r#"id="node-stagenet-1-error""#));
+        assert!(body_text(refused)
+            .await
+            .contains(r#"id="node-stagenet-1-error""#));
     }
 
     #[tokio::test]
@@ -1878,14 +2829,30 @@ mod tests {
         let cookie = admin_session_cookie(&router).await;
         let mainnet = spawn_node_on("mainnet").await;
 
-        let refused = post_nodes(&router, &cookie, &nodes_form("testnet", &[], &mainnet.to_string(), None)).await;
+        let refused = post_nodes(
+            &router,
+            &cookie,
+            &nodes_form("testnet", &[], &mainnet.to_string(), None),
+        )
+        .await;
         assert_eq!(refused.status(), StatusCode::OK);
         let html = unescaped(&body_text(refused).await);
         let message = format!("127.0.0.1:{} is on mainnet, not testnet.", mainnet.port());
         let block = &html[html.find(r#"data-network="testnet""#).expect(&html)..];
-        assert!(block.contains(&format!(r#"<p class="error" role="alert">{message}</p>"#)), "{block}");
-        assert!(block.contains(&format!(r#"value="{mainnet}""#)), "the submitted row is still there: {block}");
-        assert!(html.contains(&format!("The engine refused the change (400 Bad Request): monero_node.testnet: {message}")), "{html}");
+        assert!(
+            block.contains(&format!(r#"<p class="error" role="alert">{message}</p>"#)),
+            "{block}"
+        );
+        assert!(
+            block.contains(&format!(r#"value="{mainnet}""#)),
+            "the submitted row is still there: {block}"
+        );
+        assert!(
+            html.contains(&format!(
+                "The engine refused the change (400 Bad Request): monero_node.testnet: {message}"
+            )),
+            "{html}"
+        );
         assert!(saved_nodes(&engine, "testnet").await.is_empty());
     }
 
@@ -1894,7 +2861,9 @@ mod tests {
     #[tokio::test]
     async fn clearing_a_network_stores_use_is_saved_and_says_so() {
         let engine = spawn_configured_scanner(
-            scanner_test_support::TestEngineConfig::new().with_networks(&[monero::Network::Stagenet]).with_live_nodes(),
+            scanner_test_support::TestEngineConfig::new()
+                .with_networks(&[monero::Network::Stagenet])
+                .with_live_nodes(),
         )
         .await;
         let state = test_app_state_connected_to(engine.addr).await;
@@ -1903,15 +2872,39 @@ mod tests {
         let cookie = admin_session_cookie(&router).await;
         let node = spawn_node_on("stagenet").await.to_string();
         post_nodes(&router, &cookie, &nodes_form("stagenet", &[], &node, None)).await;
-        engine_client.create_tenant(stagenet_tenant()).await.unwrap();
+        engine_client
+            .create_tenant(stagenet_tenant())
+            .await
+            .unwrap();
 
-        let page = body_text(get(&router, "/dashboard/admin/settings?tab=nodes", Some(&cookie)).await).await;
-        assert!(page.contains(r#"data-network="stagenet" data-tenant-count="1""#), "{page}");
+        let page = body_text(
+            get(
+                &router,
+                "/dashboard/admin/settings?tab=nodes",
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            page.contains(r#"data-network="stagenet" data-tenant-count="1""#),
+            "{page}"
+        );
 
-        let cleared = post_nodes(&router, &cookie, &nodes_form("stagenet", &[&node], "", Some("remove:stagenet:0"))).await;
+        let cleared = post_nodes(
+            &router,
+            &cookie,
+            &nodes_form("stagenet", &[&node], "", Some("remove:stagenet:0")),
+        )
+        .await;
         assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
         let html = unescaped(&follow(&router, &cookie, cleared).await);
-        assert!(html.contains("1 store uses the stagenet network, which no longer has any reachable nodes."), "{html}");
+        assert!(
+            html.contains(
+                "1 store uses the stagenet network, which no longer has any reachable nodes."
+            ),
+            "{html}"
+        );
         assert!(saved_nodes(&engine, "stagenet").await.is_empty());
     }
 
@@ -1920,23 +2913,42 @@ mod tests {
     /// shows at once.
     #[tokio::test]
     async fn a_saved_node_shows_its_status() {
-        let engine = spawn_configured_scanner(scanner_test_support::TestEngineConfig::new().with_live_nodes()).await;
+        let engine = spawn_configured_scanner(
+            scanner_test_support::TestEngineConfig::new().with_live_nodes(),
+        )
+        .await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let page = body_text(get(&router, "/dashboard/admin/settings?tab=nodes", Some(&cookie)).await).await;
-        assert!(!page.contains(r#"class="node-status"#), "no nodes, no status");
+        let page = body_text(
+            get(
+                &router,
+                "/dashboard/admin/settings?tab=nodes",
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            !page.contains(r#"class="node-status"#),
+            "no nodes, no status"
+        );
 
         let node = spawn_node_on("stagenet").await.to_string();
         let saved = post_nodes(&router, &cookie, &nodes_form("stagenet", &[], &node, None)).await;
         let html = follow(&router, &cookie, saved).await;
-        assert!(html.contains(r#"<p class="node-status">Reachable, height 99. In use.</p>"#), "{html}");
+        assert!(
+            html.contains(r#"<p class="node-status">Reachable, height 99. In use.</p>"#),
+            "{html}"
+        );
     }
 
     fn stagenet_tenant() -> crate::engine_client::CreateTenantRequest {
         crate::engine_client::CreateTenantRequest {
-            view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
-            spend_pubkey_hex: "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90".to_string(),
+            view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707"
+                .to_string(),
+            spend_pubkey_hex: "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90"
+                .to_string(),
             network: Some("stagenet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: None,

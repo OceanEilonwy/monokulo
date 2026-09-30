@@ -85,7 +85,13 @@ fn admit_in(seen: &Mutex<HashMap<String, Seen>>, key: &str, now: Instant) -> Opt
             Some(held_back)
         }
         None => {
-            seen.insert(key.to_string(), Seen { last_logged: now, held_back: 0 });
+            seen.insert(
+                key.to_string(),
+                Seen {
+                    last_logged: now,
+                    held_back: 0,
+                },
+            );
             Some(0)
         }
     }
@@ -102,8 +108,14 @@ mod tests {
         assert_eq!(admit_at(key, start), Some(0));
         assert_eq!(admit_at(key, start + Duration::from_secs(1)), None);
         assert_eq!(admit_at(key, start + Duration::from_secs(30)), None);
-        assert_eq!(admit_at(key, start + INTERVAL + Duration::from_secs(1)), Some(2));
-        assert_eq!(admit_at("test:other", start + Duration::from_secs(2)), Some(0));
+        assert_eq!(
+            admit_at(key, start + INTERVAL + Duration::from_secs(1)),
+            Some(2)
+        );
+        assert_eq!(
+            admit_at("test:other", start + Duration::from_secs(2)),
+            Some(0)
+        );
     }
 
     #[test]

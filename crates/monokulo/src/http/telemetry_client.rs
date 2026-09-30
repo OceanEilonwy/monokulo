@@ -39,7 +39,10 @@ struct ClientReport {
 /// Up to `MAX_TEXT` characters, control characters replaced, so a report
 /// can't forge extra lines in the readable output format.
 fn clip(text: &str) -> String {
-    text.chars().take(MAX_TEXT).map(|c| if c.is_control() { ' ' } else { c }).collect()
+    text.chars()
+        .take(MAX_TEXT)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 /// Whether reports from `page` may be kept: `false` for a page about a
@@ -69,7 +72,11 @@ pub async fn client_report(State(state): State<AppState>, body: Bytes) -> Status
         telemetry::trace::set_remote_parent(&span, traceparent);
     }
     let _entered = span.enter();
-    let (kind, page, detail) = (clip(&report.kind), report.page.as_deref().map(clip), report.detail.as_deref().map(clip));
+    let (kind, page, detail) = (
+        clip(&report.kind),
+        report.page.as_deref().map(clip),
+        report.detail.as_deref().map(clip),
+    );
     tracing::warn!(browser.kind = %kind, url.path = page, detail, "{}", clip(&report.message));
     StatusCode::NO_CONTENT
 }
@@ -86,21 +93,39 @@ mod tests {
 
     fn db_with_store() -> Db {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("u1", "a@example.com", "hash", false, 0).unwrap();
-        db.create_store_connection("c1", "u1", "woocommerce", "https://shop.example.com", "pk_1", "sk_1", "http://127.0.0.1:1", 0, "XMR").unwrap();
+        db.create_user("u1", "a@example.com", "hash", false, 0)
+            .unwrap();
+        db.create_store_connection(
+            "c1",
+            "u1",
+            "woocommerce",
+            "https://shop.example.com",
+            "pk_1",
+            "sk_1",
+            "http://127.0.0.1:1",
+            0,
+            "XMR",
+        )
+        .unwrap();
         db
     }
 
     #[test]
     fn pages_about_a_store_report_only_once_it_opted_in() {
         let db = db_with_store();
-        assert!(page_may_report(&db, "/dashboard/admin/logs"), "admin pages always report");
+        assert!(
+            page_may_report(&db, "/dashboard/admin/logs"),
+            "admin pages always report"
+        );
         assert!(page_may_report(&db, "/dashboard"));
         assert!(page_may_report(&db, ""));
         assert!(!page_may_report(&db, "/dashboard/stores/c1/settings"));
         assert!(!page_may_report(&db, "/dashboard/stores/c1/pos"));
         assert!(!page_may_report(&db, "/pay/pk_1/orders/o1"));
-        assert!(!page_may_report(&db, "/dashboard/stores/unknown/orders"), "no store, no reports");
+        assert!(
+            !page_may_report(&db, "/dashboard/stores/unknown/orders"),
+            "no store, no reports"
+        );
         db.set_client_logging("c1", true).unwrap();
         assert!(page_may_report(&db, "/dashboard/stores/c1/settings"));
         assert!(page_may_report(&db, "/pay/pk_1/orders/o1"));
@@ -148,7 +173,12 @@ pub mod plugin {
         trace_id: Option<String>,
     }
 
-    pub async fn forward(State(state): State<AppState>, Path(pk): Path<String>, headers: HeaderMap, Json(logs): Json<PluginLogs>) -> StatusCode {
+    pub async fn forward(
+        State(state): State<AppState>,
+        Path(pk): Path<String>,
+        headers: HeaderMap,
+        Json(logs): Json<PluginLogs>,
+    ) -> StatusCode {
         if store_key::check(&state, &pk, &headers) != KeyCheck::Valid {
             return StatusCode::UNAUTHORIZED;
         }
@@ -166,9 +196,16 @@ pub mod plugin {
         }
         for entry in logs.entries {
             let span = tracing::info_span!(parent: None, "woocommerce report", source = "woocommerce", store.id = %store.id);
-            if let Some(trace_id) = entry.trace_id.as_deref().filter(|t| telemetry::store::api::is_trace_id(t)) {
+            if let Some(trace_id) = entry
+                .trace_id
+                .as_deref()
+                .filter(|t| telemetry::store::api::is_trace_id(t))
+            {
                 // The plugin names only its trace, not a span in it.
-                telemetry::trace::set_remote_parent(&span, &format!("00-{trace_id}-0000000000000001-01"));
+                telemetry::trace::set_remote_parent(
+                    &span,
+                    &format!("00-{trace_id}-0000000000000001-01"),
+                );
             }
             let _entered = span.enter();
             let message = clip(&entry.message);

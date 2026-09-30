@@ -13,7 +13,11 @@
 /// but a resubmitted form is still untrusted input) selects none of them,
 /// same as an unrecognized value would render in a plain `<select>` anyway.
 pub fn network_selected_flags(network: &str) -> (bool, bool, bool) {
-    (network == "mainnet", network == "stagenet", network == "testnet")
+    (
+        network == "mainnet",
+        network == "stagenet",
+        network == "testnet",
+    )
 }
 
 /// A muted placeholder for a field with nothing to show - same
@@ -105,15 +109,25 @@ mod tests {
     fn display_or_dash_shows_the_muted_placeholder_for_none_or_empty() {
         assert_eq!(display_or_dash(Some("real value")), "real value");
         assert_eq!(display_or_dash(None), NO_VALUE);
-        assert_eq!(display_or_dash(Some("")), NO_VALUE, "an empty string is not a real value either");
+        assert_eq!(
+            display_or_dash(Some("")),
+            NO_VALUE,
+            "an empty string is not a real value either"
+        );
     }
 
     #[test]
     fn format_duration_until_matches_the_moment_js_style_examples() {
         let now = 1_700_000_000;
         assert_eq!(format_duration_until(now + 12 * 3600, now), "12h");
-        assert_eq!(format_duration_until(now + 4 * 3600 + 15 * 60, now), "4h 15m");
-        assert_eq!(format_duration_until(now + 2 * 86400 + 4 * 3600, now), "2d 4h");
+        assert_eq!(
+            format_duration_until(now + 4 * 3600 + 15 * 60, now),
+            "4h 15m"
+        );
+        assert_eq!(
+            format_duration_until(now + 2 * 86400 + 4 * 3600, now),
+            "2d 4h"
+        );
     }
 
     #[test]
@@ -128,7 +142,10 @@ mod tests {
     fn format_duration_until_never_shows_more_than_two_parts() {
         let now = 1_700_000_000;
         // 2 days, 4 hours, 30 minutes - minutes is dropped, not appended as a third part.
-        assert_eq!(format_duration_until(now + 2 * 86400 + 4 * 3600 + 30 * 60, now), "2d 4h");
+        assert_eq!(
+            format_duration_until(now + 2 * 86400 + 4 * 3600 + 30 * 60, now),
+            "2d 4h"
+        );
     }
 
     #[test]
@@ -136,7 +153,11 @@ mod tests {
         let now = 1_700_000_000;
         assert_eq!(format_duration_until(now + 30, now), "<1m");
         assert_eq!(format_duration_until(now, now), "any moment");
-        assert_eq!(format_duration_until(now - 100, now), "any moment", "an already-passed target must not show a negative duration");
+        assert_eq!(
+            format_duration_until(now - 100, now),
+            "any moment",
+            "an already-passed target must not show a negative duration"
+        );
     }
 
     // Signup/login page tests moved to `views::auth`'s own test module -

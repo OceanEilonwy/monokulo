@@ -49,8 +49,16 @@ pub use shared::rate_limit::RateLimiter;
 /// rejected downstream by `AuthedTenant`, same as a valid one would be rejected
 /// downstream for an unrelated reason; this middleware only ever answers "is this
 /// key over budget," never "is this key valid."
-pub async fn admin_rate_limit_middleware(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let token = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+pub async fn admin_rate_limit_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let token = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
     let key = match token {
         Some(token) => token.to_string(),
         None => match req.extensions().get::<ConnectInfo<SocketAddr>>() {
@@ -63,7 +71,11 @@ pub async fn admin_rate_limit_middleware(State(state): State<AppState>, req: Req
         },
     };
     if !state.admin_rate_limiter.check(key, super::now_unix()) {
-        return (StatusCode::TOO_MANY_REQUESTS, axum::Json(json!({ "error": "rate limit exceeded" }))).into_response();
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(json!({ "error": "rate limit exceeded" })),
+        )
+            .into_response();
     }
     next.run(req).await
 }

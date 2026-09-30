@@ -18,9 +18,9 @@
 //! addresses can't grow the table without bound (forgetting a client only
 //! ever gives it a fresh budget, never a stricter one).
 
+use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
-use parking_lot::Mutex;
 
 /// How long a solved challenge lets a client through without another one.
 pub const PASS_SECS: i64 = 10 * 60;
@@ -62,7 +62,11 @@ impl Entry {
         if window_start == self.window_start {
             return;
         }
-        self.previous = if window_start - self.window_start == WINDOW_SECS { self.current } else { 0 };
+        self.previous = if window_start - self.window_start == WINDOW_SECS {
+            self.current
+        } else {
+            0
+        };
         self.current = 0;
         self.window_start = window_start;
     }
@@ -96,7 +100,11 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
     pub fn with_capacity(max_clients: usize) -> Self {
         TieredLimiter {
             max_clients,
-            state: Mutex::new(State { entries: HashMap::new(), order: BTreeMap::new(), next_seen: 0 }),
+            state: Mutex::new(State {
+                entries: HashMap::new(),
+                order: BTreeMap::new(),
+                next_seen: 0,
+            }),
         }
     }
 
@@ -113,12 +121,20 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
             entry.seen = seen;
         } else {
             while state.entries.len() >= self.max_clients {
-                let Some((_, oldest)) = state.order.pop_first() else { break };
+                let Some((_, oldest)) = state.order.pop_first() else {
+                    break;
+                };
                 state.entries.remove(&oldest);
             }
             state.entries.insert(
                 client.clone(),
-                Entry { window_start: now - now.rem_euclid(WINDOW_SECS), current: 0, previous: 0, pass_until: 0, seen },
+                Entry {
+                    window_start: now - now.rem_euclid(WINDOW_SECS),
+                    current: 0,
+                    previous: 0,
+                    pass_until: 0,
+                    seen,
+                },
             );
         }
         state.order.insert(seen, client.clone());
@@ -147,7 +163,11 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
     }
 
     pub fn has_pass(&self, client: &K, now: i64) -> bool {
-        self.state.lock().entries.get(client).is_some_and(|entry| entry.pass_until > now)
+        self.state
+            .lock()
+            .entries
+            .get(client)
+            .is_some_and(|entry| entry.pass_until > now)
     }
 
     pub fn tracked(&self) -> usize {
@@ -164,7 +184,10 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
 mod tests {
     use super::*;
 
-    const LIMITS: Limits = Limits { soft_per_min: 3, hard_per_min: 6 };
+    const LIMITS: Limits = Limits {
+        soft_per_min: 3,
+        hard_per_min: 6,
+    };
 
     #[test]
     fn under_soft_is_allowed_past_soft_is_challenged_past_hard_is_blocked() {
@@ -176,8 +199,17 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(limiter.check(&1, LIMITS, false, now), Tier::Challenge);
         }
-        assert_eq!(limiter.check(&1, LIMITS, false, now), Tier::Blocked { retry_after_secs: 40 });
-        assert_eq!(limiter.check(&2, LIMITS, false, now), Tier::Allowed, "another client is unaffected");
+        assert_eq!(
+            limiter.check(&1, LIMITS, false, now),
+            Tier::Blocked {
+                retry_after_secs: 40
+            }
+        );
+        assert_eq!(
+            limiter.check(&2, LIMITS, false, now),
+            Tier::Allowed,
+            "another client is unaffected"
+        );
     }
 
     #[test]
@@ -192,7 +224,10 @@ mod tests {
         assert!(!limiter.has_pass(&1, now + PASS_SECS));
         assert_eq!(limiter.check(&1, LIMITS, false, now), Tier::Allowed);
         assert_eq!(limiter.check(&1, LIMITS, false, now), Tier::Allowed);
-        assert!(matches!(limiter.check(&1, LIMITS, false, now), Tier::Blocked { .. }), "past hard even with a pass");
+        assert!(
+            matches!(limiter.check(&1, LIMITS, false, now), Tier::Blocked { .. }),
+            "past hard even with a pass"
+        );
     }
 
     #[test]
@@ -214,7 +249,10 @@ mod tests {
         // 1.5 + 1 = 2.5, under the soft limit of 3.
         assert_eq!(limiter.check(&1, LIMITS, false, start + 70), Tier::Allowed);
         // 1.5 + 2 = 3.5: challenged.
-        assert_eq!(limiter.check(&1, LIMITS, false, start + 70), Tier::Challenge);
+        assert_eq!(
+            limiter.check(&1, LIMITS, false, start + 70),
+            Tier::Challenge
+        );
         // Two windows later nothing of it remains.
         assert_eq!(limiter.check(&1, LIMITS, false, start + 200), Tier::Allowed);
     }
@@ -234,6 +272,10 @@ mod tests {
         for client in 5..1000 {
             limiter.check(&client, LIMITS, false, now);
         }
-        assert_eq!(limiter.tracked(), 3, "a flood of new clients never grows the table");
+        assert_eq!(
+            limiter.tracked(),
+            3,
+            "a flood of new clients never grows the table"
+        );
     }
 }

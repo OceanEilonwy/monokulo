@@ -19,12 +19,19 @@ use serde::Serialize;
 pub enum SettingKind {
     /// A whole number. `min`/`max` combine the type's own limits with the
     /// setting's `range(..)`, when it has one.
-    Integer { min: Option<i64>, max: Option<i64> },
+    Integer {
+        min: Option<i64>,
+        max: Option<i64>,
+    },
     Bool,
     /// Exactly one of `choices`.
-    Choice { choices: Vec<&'static str> },
+    Choice {
+        choices: Vec<&'static str>,
+    },
     /// Any number of `choices`, comma separated.
-    ChoiceList { choices: Vec<&'static str> },
+    ChoiceList {
+        choices: Vec<&'static str>,
+    },
     /// An absolute `http`/`https` URL.
     Url,
     /// An IP address and port.
@@ -251,10 +258,9 @@ pub struct BindAddr(pub SocketAddr);
 
 impl SettingValue for BindAddr {
     fn parse(raw: &str) -> Result<Self, String> {
-        raw.trim()
-            .parse()
-            .map(BindAddr)
-            .map_err(|_| "Enter an IP address and port, like 127.0.0.1:8443 or [::1]:8443.".to_string())
+        raw.trim().parse().map(BindAddr).map_err(|_| {
+            "Enter an IP address and port, like 127.0.0.1:8443 or [::1]:8443.".to_string()
+        })
     }
 
     fn render(&self) -> String {
@@ -289,7 +295,10 @@ impl HttpUrl {
 
 impl SettingValue for HttpUrl {
     fn parse(raw: &str) -> Result<Self, String> {
-        let problem = || "Enter a full web address starting with http:// or https://, like https://example.com.".to_string();
+        let problem = || {
+            "Enter a full web address starting with http:// or https://, like https://example.com."
+                .to_string()
+        };
         let parsed = url::Url::parse(raw.trim()).map_err(|_| problem())?;
         let has_host = parsed.host_str().is_some_and(|host| !host.is_empty());
         if !matches!(parsed.scheme(), "http" | "https") || !has_host {
@@ -334,7 +343,11 @@ impl<T: SettingValue> SettingValue for CommaList<T> {
     }
 
     fn to_stored(&self) -> String {
-        self.0.iter().map(T::to_stored).collect::<Vec<_>>().join(",")
+        self.0
+            .iter()
+            .map(T::to_stored)
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 
@@ -347,7 +360,8 @@ where
     T: Serialize + DeserializeOwned + Clone + PartialEq + Send + Sync + 'static,
 {
     fn parse(raw: &str) -> Result<Self, String> {
-        let value: T = serde_json::from_str(raw).map_err(|e| format!("This isn't valid for this setting: {e}."))?;
+        let value: T = serde_json::from_str(raw)
+            .map_err(|e| format!("This isn't valid for this setting: {e}."))?;
         // Checked here, so `render` can't fail later on a value that exists.
         serde_json::to_string(&value).map_err(|e| format!("This value can't be saved: {e}."))?;
         Ok(Json(value))

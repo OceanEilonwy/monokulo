@@ -25,9 +25,9 @@
 //! mismatch *before* ever calling `/finish` - see this crate's own tests for
 //! proof this is load-bearing, not just checked-and-ignored.
 
+use parking_lot::Mutex as StdMutex;
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use parking_lot::Mutex as StdMutex;
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -671,9 +671,7 @@ async fn call_finish(
 ) -> Result<FinishedCredentials, ConnectFlowError> {
     let client = reqwest::Client::new();
     let response = client
-        .post(format!(
-            "{monokulo_base_url}/connect/{platform}/finish"
-        ))
+        .post(format!("{monokulo_base_url}/connect/{platform}/finish"))
         .json(&serde_json::json!({ "token": token, "webhook_url": webhook_url }))
         .send()
         .await?;
@@ -756,8 +754,7 @@ async fn callback_handler(
     // `/finish` has handed one back - see `ReceiverState::signing_secret`'s own doc
     // comment for why the receiver couldn't have known this any earlier.
     if let Ok(finished) = &outcome {
-        state.webhook_state.lock().signing_secret =
-            Some(finished.webhook_signing_secret.clone());
+        state.webhook_state.lock().signing_secret = Some(finished.webhook_signing_secret.clone());
     }
 
     let response = match &outcome {
@@ -898,7 +895,8 @@ mod tests {
         // tell that apart from a real success, so every downstream step
         // (login, connect confirm) then fails with a genuinely confusing
         // `401`, far from the actual cause.
-        db.set_setting("signup.mode", "public").expect("failed to set signup.mode for test monokulo db");
+        db.set_setting("signup.mode", "public")
+            .expect("failed to set signup.mode for test monokulo db");
         // Bound before the state is built so monokulo's public address (what
         // `/finish` hands the plugin as `endpoint`) can be this very listener.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -907,7 +905,8 @@ mod tests {
         let addr = listener
             .local_addr()
             .expect("bound listener has no local address");
-        db.set_setting("public_url", &format!("http://{addr}")).expect("failed to set public_url for test monokulo db");
+        db.set_setting("public_url", &format!("http://{addr}"))
+            .expect("failed to set public_url for test monokulo db");
         let state = AppState {
             engine_client: EngineClient::new(format!("http://{engine_addr}")),
             ..AppState::for_tests_with_db(db.into_shared())
@@ -933,7 +932,8 @@ mod tests {
     async fn run_connect_flow_against_a_real_engine_and_monokulo_yields_genuine_working_credentials(
     ) {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let monokulo = spawn_test_monokulo(engine.addr).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
@@ -951,7 +951,10 @@ mod tests {
             "expected a real sk_ value, got: {}",
             credentials.secret_token
         );
-        assert_eq!(credentials.endpoint, monokulo_base_url, "plugins get monokulo's public address, never the engine's");
+        assert_eq!(
+            credentials.endpoint, monokulo_base_url,
+            "plugins get monokulo's public address, never the engine's"
+        );
 
         // Strong proof, not just "starts with sk_": the returned
         // secret_token is genuinely this tenant's working credential against
@@ -1009,14 +1012,18 @@ mod tests {
     #[tokio::test]
     async fn create_order_against_a_real_engine_yields_a_working_checkout_redirect() {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let monokulo = spawn_test_monokulo(engine.addr).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let credentials = run_connect_flow(&monokulo_base_url).await.expect(
             "the connect flow should succeed end to end against a real engine + control plane",
         );
-        assert_eq!(credentials.endpoint, monokulo_base_url, "plugins get monokulo's public address, never the engine's");
+        assert_eq!(
+            credentials.endpoint, monokulo_base_url,
+            "plugins get monokulo's public address, never the engine's"
+        );
 
         let order = create_order(
             &monokulo_base_url,
@@ -1028,10 +1035,7 @@ mod tests {
         .await
         .expect("order creation should succeed against a real monokulo with a configured rate");
 
-        assert!(
-            !order.order_id.is_empty(),
-            "expected a non-empty order_id"
-        );
+        assert!(!order.order_id.is_empty(), "expected a non-empty order_id");
         assert_eq!(
             order.checkout_url,
             format!("{monokulo_base_url}/pay/{}/orders/{}", credentials.public_key, order.order_id),
@@ -1064,7 +1068,8 @@ mod tests {
     #[tokio::test]
     async fn a_callback_with_a_mismatched_nonce_is_rejected_and_never_consumes_the_token() {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let monokulo = spawn_test_monokulo(engine.addr).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
@@ -1194,9 +1199,7 @@ mod tests {
         // server (no nonce involved at that layer at all), must still
         // succeed - which could only be true if it was never consumed above.
         let finish_response = raw_client
-            .post(format!(
-                "{monokulo_base_url}/connect/{platform}/finish"
-            ))
+            .post(format!("{monokulo_base_url}/connect/{platform}/finish"))
             .json(&serde_json::json!({ "token": token }))
             .send()
             .await
@@ -1423,8 +1426,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
         let matched = loop {
             let found = credentials.webhook_receiver.events().into_iter().find(|e| {
-                e.payload.get("order_id").and_then(|v| v.as_str())
-                    == Some(order.order_id.as_str())
+                e.payload.get("order_id").and_then(|v| v.as_str()) == Some(order.order_id.as_str())
             });
             if let Some(found) = found {
                 break Some(found);
@@ -1492,32 +1494,63 @@ mod tests {
         assert_eq!(credentials.endpoint, monokulo_base_url);
 
         // The plugin's order creation, with the key, against the endpoint it was given.
-        let order = create_order(&credentials.endpoint, &credentials.public_key, &credentials.secret_token, "0.5", TEST_CURRENCY)
-            .await
-            .expect("keyed order creation should succeed");
+        let order = create_order(
+            &credentials.endpoint,
+            &credentials.public_key,
+            &credentials.secret_token,
+            "0.5",
+            TEST_CURRENCY,
+        )
+        .await
+        .expect("keyed order creation should succeed");
         assert_eq!(order.xmr_amount_piconero, 500_000_000_000);
-        assert_eq!(order.checkout_url, format!("{monokulo_base_url}/pay/{}/orders/{}", credentials.public_key, order.order_id));
+        assert_eq!(
+            order.checkout_url,
+            format!(
+                "{monokulo_base_url}/pay/{}/orders/{}",
+                credentials.public_key, order.order_id
+            )
+        );
 
         // A wrong key is refused, not silently treated as a browser request.
-        let wrong = create_order(&credentials.endpoint, &credentials.public_key, "sk_wrong", "0.5", TEST_CURRENCY).await;
+        let wrong = create_order(
+            &credentials.endpoint,
+            &credentials.public_key,
+            "sk_wrong",
+            "0.5",
+            TEST_CURRENCY,
+        )
+        .await;
         assert!(
-            matches!(wrong, Err(ConnectFlowError::UnexpectedResponse { status: 401, .. })),
+            matches!(
+                wrong,
+                Err(ConnectFlowError::UnexpectedResponse { status: 401, .. })
+            ),
             "a wrong key must get 401, got: {wrong:?}"
         );
 
         // The customer's browser follows the redirect to monokulo's checkout page.
-        let page = reqwest::get(&order.checkout_url).await.expect("checkout page request failed");
+        let page = reqwest::get(&order.checkout_url)
+            .await
+            .expect("checkout page request failed");
         assert_eq!(page.status(), reqwest::StatusCode::OK);
         let html = page.text().await.unwrap();
-        assert!(html.contains(&order.address), "the checkout page shows the payment address");
+        assert!(
+            html.contains(&order.address),
+            "the checkout page shows the payment address"
+        );
 
         // Paid on the engine; the engine's delivery loop sends the webhook.
-        engine.mark_order_paid(&order.order_id).expect("marking the order paid failed");
+        engine
+            .mark_order_paid(&order.order_id)
+            .expect("marking the order paid failed");
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
         let paid = loop {
             let found = credentials.webhook_receiver.events().into_iter().find(|e| {
-                e.event == "order.paid" && e.payload.get("order_id").and_then(|v| v.as_str()) == Some(order.order_id.as_str())
+                e.event == "order.paid"
+                    && e.payload.get("order_id").and_then(|v| v.as_str())
+                        == Some(order.order_id.as_str())
             });
             if found.is_some() || tokio::time::Instant::now() >= deadline {
                 break found;
@@ -1526,7 +1559,11 @@ mod tests {
         };
         let paid = paid.expect("expected a signed order.paid webhook within the deadline");
         assert_eq!(paid.payload["status"], serde_json::json!("paid"));
-        assert!(shared::webhook_sign::verify_signature(&credentials.webhook_signing_secret, &paid.raw_body, &paid.signature));
+        assert!(shared::webhook_sign::verify_signature(
+            &credentials.webhook_signing_secret,
+            &paid.raw_body,
+            &paid.signature
+        ));
 
         // And monokulo's own status route, which the checkout page polls, agrees.
         let status: serde_json::Value = reqwest::get(format!("{}/status", order.checkout_url))

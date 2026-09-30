@@ -40,7 +40,10 @@ pub struct RequestInviteForm {
 
 fn render_request_invite(state: &AppState, error: Option<&str>, submitted: bool) -> Response {
     let chrome = super::page_chrome(state, None, "/request-invite");
-    let data = RequestInviteViewModel { error: error.map(str::to_string), submitted };
+    let data = RequestInviteViewModel {
+        error: error.map(str::to_string),
+        submitted,
+    };
     views::admin::request_invite_page(&chrome, &data).into_response()
 }
 
@@ -58,18 +61,32 @@ pub async fn request_invite_form(State(state): State<AppState>) -> Response {
 /// already `"invite_only"` (`http::home::landing`), but nothing about the
 /// request-invite flow itself is unsafe to leave reachable in `"public"`
 /// mode too (worst case, an admin gets a request nobody needed to send).
-pub async fn request_invite_submit(State(state): State<AppState>, Form(form): Form<RequestInviteForm>) -> Response {
+pub async fn request_invite_submit(
+    State(state): State<AppState>,
+    Form(form): Form<RequestInviteForm>,
+) -> Response {
     let email = form.email.trim();
     let message = form.message.trim();
     if email.is_empty() || message.is_empty() {
-        return render_request_invite(&state, Some("Please fill in both your email and a short message."), false);
+        return render_request_invite(
+            &state,
+            Some("Please fill in both your email and a short message."),
+            false,
+        );
     }
 
     let request_id = uuid::Uuid::new_v4().to_string();
     let now = now_unix();
     let db = state.db.lock();
-    if db.create_invite_request(&request_id, email, message, now).is_err() {
-        return render_request_invite(&state, Some("Something went wrong. Please try again."), false);
+    if db
+        .create_invite_request(&request_id, email, message, now)
+        .is_err()
+    {
+        return render_request_invite(
+            &state,
+            Some("Something went wrong. Please try again."),
+            false,
+        );
     }
 
     let raw_token = shared::auth::generate_invite_token();
@@ -81,7 +98,14 @@ pub async fn request_invite_submit(State(state): State<AppState>, Form(form): Fo
     // link shown for that row - `InviteRequestRow::invite_token_encrypted`'s
     // own doc comment) rather than losing the request itself, which is the
     // one thing this handler must not silently drop.
-    db.create_invite_link(&link_id, &token_hash, Some(&token_encrypted), Some(&request_id), now).ok();
+    db.create_invite_link(
+        &link_id,
+        &token_hash,
+        Some(&token_encrypted),
+        Some(&request_id),
+        now,
+    )
+    .ok();
 
     render_request_invite(&state, None, true)
 }
@@ -97,7 +121,9 @@ fn mailto_percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -121,8 +147,14 @@ fn build_mailto_href(email: &str, raw_invite_link: &str) -> String {
 /// that call site's doc comment for the reasoning (a reverse proxy in front
 /// of real TLS termination communicates it via `X-Forwarded-Proto`).
 fn base_url(headers: &HeaderMap) -> String {
-    let host = headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let scheme = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
     format!("{scheme}://{host}")
 }
 
@@ -133,7 +165,13 @@ fn invite_signup_url(base_url: &str, raw_token: &str) -> String {
     format!("{base_url}/dashboard/signup?invite={raw_token}")
 }
 
-fn to_row_view(encryption_key: &[u8; 32], base_url: &str, clock: &crate::views::time::Clock, row: InviteRequestRow, just_deleted: bool) -> AdminInviteRequestRow {
+fn to_row_view(
+    encryption_key: &[u8; 32],
+    base_url: &str,
+    clock: &crate::views::time::Clock,
+    row: InviteRequestRow,
+    just_deleted: bool,
+) -> AdminInviteRequestRow {
     let mailto_href = row
         .invite_token_encrypted
         .as_deref()
@@ -194,11 +232,17 @@ fn render_invites_page(
     let total_pages = total.div_ceil(PAGE_SIZE as u32).max(1);
     let page = clamp_page(total_pages, requested_page);
     let offset = (page as i64 - 1) * PAGE_SIZE;
-    let rows = db.list_unactioned_invite_requests(PAGE_SIZE, offset).unwrap_or_default();
-    let row_views = rows.into_iter().map(|r| to_row_view(&state.encryption_key, &base, &clock, r, false)).collect();
+    let rows = db
+        .list_unactioned_invite_requests(PAGE_SIZE, offset)
+        .unwrap_or_default();
+    let row_views = rows
+        .into_iter()
+        .map(|r| to_row_view(&state.encryption_key, &base, &clock, r, false))
+        .collect();
 
-    let just_deleted_row =
-        deleted_id.and_then(|id| db.get_invite_request(id).ok().flatten()).map(|r| to_row_view(&state.encryption_key, &base, &clock, r, true));
+    let just_deleted_row = deleted_id
+        .and_then(|id| db.get_invite_request(id).ok().flatten())
+        .map(|r| to_row_view(&state.encryption_key, &base, &clock, r, true));
 
     let view = AdminInvitesViewModel {
         error,
@@ -215,7 +259,8 @@ fn render_invites_page(
     };
     drop(db);
     if fx.0 {
-        return axum::response::Html(views::admin::invites_section(&view).into_string()).into_response();
+        return axum::response::Html(views::admin::invites_section(&view).into_string())
+            .into_response();
     }
     let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/invites");
     views::admin::admin_invites_page(&chrome, &view).into_response()
@@ -231,19 +276,37 @@ pub async fn invites_page(
     Query(query): Query<InvitesPageQuery>,
 ) -> Response {
     let success = query.cleared.map(cleared_message);
-    render_invites_page(&state, &admin_user, &headers, query.page.unwrap_or(1), query.deleted.as_deref(), None, None, success, fx)
+    render_invites_page(
+        &state,
+        &admin_user,
+        &headers,
+        query.page.unwrap_or(1),
+        query.deleted.as_deref(),
+        None,
+        None,
+        success,
+        fx,
+    )
 }
 
 /// `POST /dashboard/admin/invites/create-link` - the standalone-link
 /// button: a fresh, never-request-linked invite, shown exactly once (see
 /// `AdminInvitesViewModel::created_link`'s own doc comment) and only ever
 /// stored hashed.
-pub async fn create_invite_link(State(state): State<AppState>, AuthedAdmin(admin_user, _): AuthedAdmin, fx: FxRequest, headers: HeaderMap) -> Response {
+pub async fn create_invite_link(
+    State(state): State<AppState>,
+    AuthedAdmin(admin_user, _): AuthedAdmin,
+    fx: FxRequest,
+    headers: HeaderMap,
+) -> Response {
     let raw_token = shared::auth::generate_invite_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
     let link_id = uuid::Uuid::new_v4().to_string();
     let db = state.db.lock();
-    if db.create_invite_link(&link_id, &token_hash, None, None, now_unix()).is_err() {
+    if db
+        .create_invite_link(&link_id, &token_hash, None, None, now_unix())
+        .is_err()
+    {
         drop(db);
         return render_invites_page(
             &state,
@@ -258,7 +321,17 @@ pub async fn create_invite_link(State(state): State<AppState>, AuthedAdmin(admin
         );
     }
     drop(db);
-    render_invites_page(&state, &admin_user, &headers, 1, None, Some(invite_signup_url(&base_url(&headers), &raw_token)), None, None, fx)
+    render_invites_page(
+        &state,
+        &admin_user,
+        &headers,
+        1,
+        None,
+        Some(invite_signup_url(&base_url(&headers), &raw_token)),
+        None,
+        None,
+        fx,
+    )
 }
 
 /// `POST /dashboard/admin/invites/{id}/delete?page=N` - see this module's
@@ -278,9 +351,21 @@ pub async fn delete_invite_request(
     state.db.lock().delete_invite_request(&id, now_unix()).ok();
     let page = query.page.unwrap_or(1);
     if fx.0 {
-        return render_invites_page(&state, &admin_user, &headers, page, Some(&id), None, None, None, fx);
+        return render_invites_page(
+            &state,
+            &admin_user,
+            &headers,
+            page,
+            Some(&id),
+            None,
+            None,
+            None,
+            fx,
+        );
     }
-    redirect_302(&format!("/dashboard/admin/invites?page={page}&deleted={id}"))
+    redirect_302(&format!(
+        "/dashboard/admin/invites?page={page}&deleted={id}"
+    ))
 }
 
 /// `POST /dashboard/admin/invites/delete-all` - clears every currently
@@ -296,9 +381,23 @@ pub async fn delete_all_invite_requests(
     fx: FxRequest,
     headers: HeaderMap,
 ) -> Response {
-    let cleared = state.db.lock().delete_all_unactioned_invite_requests(now_unix()).unwrap_or(0);
+    let cleared = state
+        .db
+        .lock()
+        .delete_all_unactioned_invite_requests(now_unix())
+        .unwrap_or(0);
     if fx.0 {
-        return render_invites_page(&state, &admin_user, &headers, 1, None, None, None, Some(cleared_message(cleared)), fx);
+        return render_invites_page(
+            &state,
+            &admin_user,
+            &headers,
+            1,
+            None,
+            None,
+            None,
+            Some(cleared_message(cleared)),
+            fx,
+        );
     }
     redirect_302(&format!("/dashboard/admin/invites?cleared={cleared}"))
 }
@@ -309,9 +408,9 @@ fn cleared_message(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::Router;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -332,14 +431,30 @@ mod tests {
     }
 
     fn form_request(method: &str, uri: &str, fields: &[(&str, &str)]) -> Request<Body> {
-        let body =
-            fields.iter().map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v))).collect::<Vec<_>>().join("&");
-        Request::builder().method(method).uri(uri).header("content-type", "application/x-www-form-urlencoded").body(Body::from(body)).unwrap()
+        let body = fields
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap()
     }
 
-    fn authed_form_request(method: &str, uri: &str, cookie: &str, fields: &[(&str, &str)]) -> Request<Body> {
-        let body =
-            fields.iter().map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v))).collect::<Vec<_>>().join("&");
+    fn authed_form_request(
+        method: &str,
+        uri: &str,
+        cookie: &str,
+        fields: &[(&str, &str)],
+    ) -> Request<Body> {
+        let body = fields
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
         Request::builder()
             .method(method)
             .uri(uri)
@@ -352,23 +467,51 @@ mod tests {
     async fn admin_session_cookie(router: &Router) -> String {
         let response = router
             .clone()
-            .oneshot(form_request("POST", "/dashboard/login", &[("email", TEST_ADMIN_EMAIL), ("password", TEST_ADMIN_PASSWORD)]))
+            .oneshot(form_request(
+                "POST",
+                "/dashboard/login",
+                &[
+                    ("email", TEST_ADMIN_EMAIL),
+                    ("password", TEST_ADMIN_PASSWORD),
+                ],
+            ))
             .await
             .unwrap();
-        let set_cookie = response.headers().get("set-cookie").expect("expected a session cookie from a correct admin login").to_str().unwrap();
+        let set_cookie = response
+            .headers()
+            .get("set-cookie")
+            .expect("expected a session cookie from a correct admin login")
+            .to_str()
+            .unwrap();
         set_cookie.split(';').next().unwrap().to_string()
     }
 
-    async fn signed_up_session_cookie(router: &Router, email: &str, password: &str, extra_fields: &[(&str, &str)]) -> axum::response::Response {
+    async fn signed_up_session_cookie(
+        router: &Router,
+        email: &str,
+        password: &str,
+        extra_fields: &[(&str, &str)],
+    ) -> axum::response::Response {
         let mut fields = vec![("email", email), ("password", password)];
         fields.extend_from_slice(extra_fields);
-        router.clone().oneshot(form_request("POST", "/dashboard/signup", &fields)).await.unwrap()
+        router
+            .clone()
+            .oneshot(form_request("POST", "/dashboard/signup", &fields))
+            .await
+            .unwrap()
     }
 
     async fn admin_invites_get(router: &Router, cookie: &str) -> axum::response::Response {
         router
             .clone()
-            .oneshot(Request::builder().method("GET").uri("/dashboard/admin/invites").header("cookie", cookie).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/dashboard/admin/invites")
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap()
     }
@@ -380,10 +523,15 @@ mod tests {
     /// HTML-escapes `=` as `&#x3D;` (see `AdminInviteRequestRow::mailto_href`'s
     /// own template usage), so this looks for either form.
     fn extract_invite_token(html: &str) -> String {
-        let marker = html.find("invite=").map(|i| i + "invite=".len()).or_else(|| html.find("invite&#x3D;").map(|i| i + "invite&#x3D;".len()));
+        let marker = html
+            .find("invite=")
+            .map(|i| i + "invite=".len())
+            .or_else(|| html.find("invite&#x3D;").map(|i| i + "invite&#x3D;".len()));
         let start = marker.expect("expected an invite link in the page");
         let rest = &html[start..];
-        let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
         rest[..end].to_string()
     }
 
@@ -396,12 +544,20 @@ mod tests {
         let marker = "/dashboard/admin/invites/";
         let mut search_from = 0;
         loop {
-            let found = html[search_from..].find(marker).expect("expected a row delete form in the page") + search_from;
+            let found = html[search_from..]
+                .find(marker)
+                .expect("expected a row delete form in the page")
+                + search_from;
             let start = found + marker.len();
             let rest = &html[start..];
-            let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).unwrap_or(rest.len());
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .unwrap_or(rest.len());
             let candidate = &rest[..end];
-            if rest[end..].starts_with("/delete") && candidate != "create-link" && candidate != "delete-all" {
+            if rest[end..].starts_with("/delete")
+                && candidate != "create-link"
+                && candidate != "delete-all"
+            {
                 return candidate.to_string();
             }
             search_from = start;
@@ -411,33 +567,60 @@ mod tests {
     #[tokio::test]
     async fn the_request_invite_form_is_reachable_without_a_session() {
         let router = build_router(test_state());
-        let response = router.oneshot(Request::builder().method("GET").uri("/request-invite").body(Body::empty()).unwrap()).await.unwrap();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/request-invite")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
         assert!(html.contains(r#"<form method="post" action="/request-invite">"#));
     }
 
     #[tokio::test]
-    async fn submitting_a_request_invite_form_saves_it_and_an_admin_can_see_it_with_a_real_mailto_link() {
+    async fn submitting_a_request_invite_form_saves_it_and_an_admin_can_see_it_with_a_real_mailto_link(
+    ) {
         let router = build_router(test_state());
 
         let submit = router
             .clone()
-            .oneshot(form_request("POST", "/request-invite", &[("email", "hopeful@example.com"), ("message", "let me in please")]))
+            .oneshot(form_request(
+                "POST",
+                "/request-invite",
+                &[
+                    ("email", "hopeful@example.com"),
+                    ("message", "let me in please"),
+                ],
+            ))
             .await
             .unwrap();
         assert_eq!(submit.status(), StatusCode::OK);
         let html = body_text(submit).await;
-        assert!(html.to_lowercase().contains("thanks"), "expected the thank-you confirmation, got: {html}");
+        assert!(
+            html.to_lowercase().contains("thanks"),
+            "expected the thank-you confirmation, got: {html}"
+        );
 
         let cookie = admin_session_cookie(&router).await;
         let admin_view = admin_invites_get(&router, &cookie).await;
         let html = body_text(admin_view).await;
-        assert!(html.contains("hopeful@example.com"), "expected the request listed, got: {html}");
-        assert!(html.contains("let me in please"));
-        assert!(html.contains("mailto:hopeful%40example.com"), "expected a real mailto link, got: {html}");
         assert!(
-            html.contains("dashboard%2Fsignup%3Finvite") || html.contains("dashboard/signup?invite"),
+            html.contains("hopeful@example.com"),
+            "expected the request listed, got: {html}"
+        );
+        assert!(html.contains("let me in please"));
+        assert!(
+            html.contains("mailto:hopeful%40example.com"),
+            "expected a real mailto link, got: {html}"
+        );
+        assert!(
+            html.contains("dashboard%2Fsignup%3Finvite")
+                || html.contains("dashboard/signup?invite"),
             "expected the mailto body to carry a real invite link, got: {html}"
         );
     }
@@ -445,35 +628,90 @@ mod tests {
     #[tokio::test]
     async fn submitting_an_empty_request_invite_form_is_rejected_and_creates_nothing() {
         let router = build_router(test_state());
-        let response =
-            router.clone().oneshot(form_request("POST", "/request-invite", &[("email", ""), ("message", "")])).await.unwrap();
+        let response = router
+            .clone()
+            .oneshot(form_request(
+                "POST",
+                "/request-invite",
+                &[("email", ""), ("message", "")],
+            ))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains("Please fill in"), "expected a clear validation error, got: {html}");
+        assert!(
+            html.contains("Please fill in"),
+            "expected a clear validation error, got: {html}"
+        );
 
         let cookie = admin_session_cookie(&router).await;
         let admin_view = admin_invites_get(&router, &cookie).await;
-        assert!(body_text(admin_view).await.contains("No pending invite requests"));
+        assert!(body_text(admin_view)
+            .await
+            .contains("No pending invite requests"));
     }
 
     #[tokio::test]
     async fn the_invites_page_is_unauthorized_without_a_session_and_forbidden_for_a_non_admin() {
         let router = build_router(test_state());
 
-        let unauthed =
-            router.clone().oneshot(Request::builder().method("GET").uri("/dashboard/admin/invites").body(Body::empty()).unwrap()).await.unwrap();
-        assert_eq!(unauthed.status(), StatusCode::UNAUTHORIZED);
-
-        router.clone().oneshot(form_request("POST", "/dashboard/signup", &[("email", "merchant@example.com"), ("password", "correct horse battery staple")])).await.unwrap();
-        let login = router
+        let unauthed = router
             .clone()
-            .oneshot(form_request("POST", "/dashboard/login", &[("email", "merchant@example.com"), ("password", "correct horse battery staple")]))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/dashboard/admin/invites")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        let cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
+        assert_eq!(unauthed.status(), StatusCode::UNAUTHORIZED);
+
+        router
+            .clone()
+            .oneshot(form_request(
+                "POST",
+                "/dashboard/signup",
+                &[
+                    ("email", "merchant@example.com"),
+                    ("password", "correct horse battery staple"),
+                ],
+            ))
+            .await
+            .unwrap();
+        let login = router
+            .clone()
+            .oneshot(form_request(
+                "POST",
+                "/dashboard/login",
+                &[
+                    ("email", "merchant@example.com"),
+                    ("password", "correct horse battery staple"),
+                ],
+            ))
+            .await
+            .unwrap();
+        let cookie = login
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
 
         let forbidden = router
-            .oneshot(Request::builder().method("GET").uri("/dashboard/admin/invites").header("cookie", cookie).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/dashboard/admin/invites")
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
@@ -486,7 +724,16 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
-        let create = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/invites/create-link", &cookie, &[])).await.unwrap();
+        let create = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/invites/create-link",
+                &cookie,
+                &[],
+            ))
+            .await
+            .unwrap();
         assert_eq!(create.status(), StatusCode::OK);
         let html = body_text(create).await;
         let token = extract_invite_token(&html);
@@ -494,25 +741,61 @@ mod tests {
         // Switch to invite-only mode to actually prove the token is real -
         // "public" mode (this crate's own test default) would let anyone
         // sign up regardless, which wouldn't prove anything about the token.
-        db.lock().set_setting(crate::settings::SIGNUP_MODE.key, "invite_only").unwrap();
+        db.lock()
+            .set_setting(crate::settings::SIGNUP_MODE.key, "invite_only")
+            .unwrap();
 
-        let signup = signed_up_session_cookie(&router, "newcomer@example.com", "correct horse battery staple", &[("invite", &token)]).await;
-        assert_eq!(signup.status(), StatusCode::FOUND, "a valid invite token must let a real signup through");
-        assert_eq!(signup.headers().get("location").unwrap(), "/dashboard/login");
+        let signup = signed_up_session_cookie(
+            &router,
+            "newcomer@example.com",
+            "correct horse battery staple",
+            &[("invite", &token)],
+        )
+        .await;
+        assert_eq!(
+            signup.status(),
+            StatusCode::FOUND,
+            "a valid invite token must let a real signup through"
+        );
+        assert_eq!(
+            signup.headers().get("location").unwrap(),
+            "/dashboard/login"
+        );
 
         // The real point: it cannot be reused for a second account.
-        let second =
-            signed_up_session_cookie(&router, "another@example.com", "correct horse battery staple", &[("invite", &token)]).await;
-        assert_eq!(second.status(), StatusCode::OK, "a rejected signup re-renders the form, not a redirect");
+        let second = signed_up_session_cookie(
+            &router,
+            "another@example.com",
+            "correct horse battery staple",
+            &[("invite", &token)],
+        )
+        .await;
+        assert_eq!(
+            second.status(),
+            StatusCode::OK,
+            "a rejected signup re-renders the form, not a redirect"
+        );
         let html = body_text(second).await;
-        assert!(html.contains("already been used"), "expected a clear already-used error, got: {html}");
+        assert!(
+            html.contains("already been used"),
+            "expected a clear already-used error, got: {html}"
+        );
     }
 
     #[tokio::test]
-    async fn deleting_a_request_soft_deletes_it_and_shows_it_struck_through_once_then_never_again() {
+    async fn deleting_a_request_soft_deletes_it_and_shows_it_struck_through_once_then_never_again()
+    {
         let router = build_router(test_state());
         let cookie = admin_session_cookie(&router).await;
-        router.clone().oneshot(form_request("POST", "/request-invite", &[("email", "a@example.com"), ("message", "m")])).await.unwrap();
+        router
+            .clone()
+            .oneshot(form_request(
+                "POST",
+                "/request-invite",
+                &[("email", "a@example.com"), ("message", "m")],
+            ))
+            .await
+            .unwrap();
 
         let admin_view = admin_invites_get(&router, &cookie).await;
         let html = body_text(admin_view).await;
@@ -522,22 +805,53 @@ mod tests {
 
         let delete = router
             .clone()
-            .oneshot(authed_form_request("POST", &format!("/dashboard/admin/invites/{real_id}/delete?page=1"), &cookie, &[]))
+            .oneshot(authed_form_request(
+                "POST",
+                &format!("/dashboard/admin/invites/{real_id}/delete?page=1"),
+                &cookie,
+                &[],
+            ))
             .await
             .unwrap();
         assert_eq!(delete.status(), StatusCode::FOUND);
-        let location = delete.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let location = delete
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         assert!(location.contains(&format!("deleted={real_id}")));
 
-        let after_delete = router.clone().oneshot(Request::builder().method("GET").uri(&location).header("cookie", &cookie).body(Body::empty()).unwrap()).await.unwrap();
+        let after_delete = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&location)
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let html = body_text(after_delete).await;
-        assert!(html.contains(r#"class="row-deleted""#), "expected the one-time struck-through row, got: {html}");
-        assert!(html.contains("a@example.com"), "the struck-through row itself should still show the deleted request's data");
+        assert!(
+            html.contains(r#"class="row-deleted""#),
+            "expected the one-time struck-through row, got: {html}"
+        );
+        assert!(
+            html.contains("a@example.com"),
+            "the struck-through row itself should still show the deleted request's data"
+        );
 
         // A later, plain reload must not still show it.
         let reload = admin_invites_get(&router, &cookie).await;
         let html = body_text(reload).await;
-        assert!(!html.contains(r#"class="row-deleted""#), "the struck-through addendum must only ever show once, right after the delete");
+        assert!(
+            !html.contains(r#"class="row-deleted""#),
+            "the struck-through addendum must only ever show once, right after the delete"
+        );
         assert!(!html.contains("a@example.com"));
     }
 
@@ -548,56 +862,132 @@ mod tests {
         for i in 0..3 {
             router
                 .clone()
-                .oneshot(form_request("POST", "/request-invite", &[("email", &format!("user{i}@example.com")), ("message", "m")]))
+                .oneshot(form_request(
+                    "POST",
+                    "/request-invite",
+                    &[("email", &format!("user{i}@example.com")), ("message", "m")],
+                ))
                 .await
                 .unwrap();
         }
 
-        let delete_all =
-            router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/invites/delete-all", &cookie, &[])).await.unwrap();
+        let delete_all = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/invites/delete-all",
+                &cookie,
+                &[],
+            ))
+            .await
+            .unwrap();
         assert_eq!(delete_all.status(), StatusCode::FOUND);
-        let location = delete_all.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let location = delete_all
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
 
-        let after = router.oneshot(Request::builder().method("GET").uri(&location).header("cookie", cookie).body(Body::empty()).unwrap()).await.unwrap();
+        let after = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&location)
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let html = body_text(after).await;
-        assert!(html.contains("3 requests deleted."), "expected a count banner, got: {html}");
+        assert!(
+            html.contains("3 requests deleted."),
+            "expected a count banner, got: {html}"
+        );
         assert!(html.contains("No pending invite requests"));
     }
 
     #[tokio::test]
-    async fn pagination_shows_the_right_page_and_clamps_after_deleting_the_last_row_on_the_last_page() {
+    async fn pagination_shows_the_right_page_and_clamps_after_deleting_the_last_row_on_the_last_page(
+    ) {
         let router = build_router(test_state());
         let cookie = admin_session_cookie(&router).await;
         // PAGE_SIZE is 10 - 11 requests makes a real second page of exactly 1 row.
         for i in 0..11 {
             router
                 .clone()
-                .oneshot(form_request("POST", "/request-invite", &[("email", &format!("user{i:02}@example.com")), ("message", "m")]))
+                .oneshot(form_request(
+                    "POST",
+                    "/request-invite",
+                    &[
+                        ("email", &format!("user{i:02}@example.com")),
+                        ("message", "m"),
+                    ],
+                ))
                 .await
                 .unwrap();
         }
 
         let page2 = router
             .clone()
-            .oneshot(Request::builder().method("GET").uri("/dashboard/admin/invites?page=2").header("cookie", &cookie).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/dashboard/admin/invites?page=2")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let html = body_text(page2).await;
-        assert!(html.contains("Page 2 of 2"), "expected a real second page, got: {html}");
+        assert!(
+            html.contains("Page 2 of 2"),
+            "expected a real second page, got: {html}"
+        );
 
         let last_row_id = extract_first_row_delete_id(&html);
 
         let delete = router
             .clone()
-            .oneshot(authed_form_request("POST", &format!("/dashboard/admin/invites/{last_row_id}/delete?page=2"), &cookie, &[]))
+            .oneshot(authed_form_request(
+                "POST",
+                &format!("/dashboard/admin/invites/{last_row_id}/delete?page=2"),
+                &cookie,
+                &[],
+            ))
             .await
             .unwrap();
-        let location = delete.headers().get("location").unwrap().to_str().unwrap().to_string();
-        assert!(location.starts_with("/dashboard/admin/invites?page=2"), "the redirect itself still targets the page it was deleted from");
+        let location = delete
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            location.starts_with("/dashboard/admin/invites?page=2"),
+            "the redirect itself still targets the page it was deleted from"
+        );
 
-        let after = router.oneshot(Request::builder().method("GET").uri(&location).header("cookie", cookie).body(Body::empty()).unwrap()).await.unwrap();
+        let after = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&location)
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let html = body_text(after).await;
-        assert!(html.contains("Page 1 of 1"), "page 2 no longer exists once its only row is gone - must clamp back to page 1");
+        assert!(
+            html.contains("Page 1 of 1"),
+            "page 2 no longer exists once its only row is gone - must clamp back to page 1"
+        );
     }
 
     /// With fixi, every button on the invites page answers with the page's
@@ -606,17 +996,29 @@ mod tests {
     async fn invites_buttons_answer_fixi_with_the_section() {
         let router = build_router(test_state());
         let cookie = admin_session_cookie(&router).await;
-        let mut create = authed_form_request("POST", "/dashboard/admin/invites/create-link", &cookie, &[]);
-        create.headers_mut().insert("FX-Request", "true".parse().unwrap());
+        let mut create =
+            authed_form_request("POST", "/dashboard/admin/invites/create-link", &cookie, &[]);
+        create
+            .headers_mut()
+            .insert("FX-Request", "true".parse().unwrap());
         let html = body_text(router.clone().oneshot(create).await.unwrap()).await;
         assert!(html.starts_with(r#"<section id="invites">"#), "{html}");
-        assert!(html.contains("Share this link") && html.contains("/dashboard/signup?invite="), "{html}");
+        assert!(
+            html.contains("Share this link") && html.contains("/dashboard/signup?invite="),
+            "{html}"
+        );
 
-        let mut clear = authed_form_request("POST", "/dashboard/admin/invites/delete-all", &cookie, &[]);
-        clear.headers_mut().insert("FX-Request", "true".parse().unwrap());
+        let mut clear =
+            authed_form_request("POST", "/dashboard/admin/invites/delete-all", &cookie, &[]);
+        clear
+            .headers_mut()
+            .insert("FX-Request", "true".parse().unwrap());
         let response = router.clone().oneshot(clear).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains("0 requests deleted.") && !html.contains("<html"), "{html}");
+        assert!(
+            html.contains("0 requests deleted.") && !html.contains("<html"),
+            "{html}"
+        );
     }
 }

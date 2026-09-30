@@ -43,7 +43,8 @@ use tokio::net::TcpStream;
 use tokio_socks::tcp::Socks5Stream;
 
 const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+const TEST_SPEND_PUBKEY_HEX: &str =
+    "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 const ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
 
 /// Small limits so the test needs only a handful of requests over Tor.
@@ -58,7 +59,11 @@ const REACHABLE_TIMEOUT: Duration = Duration::from_secs(420);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 struct Tor {
@@ -91,13 +96,21 @@ fn data_dir() -> PathBuf {
 /// `deploy/tor/torrc.snippet`, with the directory and target port for this
 /// run, plus what the test itself needs.
 fn torrc(dir: &Path, data: &Path, onion_port: u16, socks: u16, control: u16) -> String {
-    let snippet = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/tor/torrc.snippet"))
-        .expect("deploy/tor/torrc.snippet must exist");
+    let snippet = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/tor/torrc.snippet"),
+    )
+    .expect("deploy/tor/torrc.snippet must exist");
     assert!(snippet.contains("HiddenServiceDir /var/lib/tor/monokulo/"));
     assert!(snippet.contains("HiddenServicePort 80 127.0.0.1:8082"));
     let service = snippet
-        .replace("HiddenServiceDir /var/lib/tor/monokulo/", &format!("HiddenServiceDir {}", dir.join("hs").display()))
-        .replace("HiddenServicePort 80 127.0.0.1:8082", &format!("HiddenServicePort 80 127.0.0.1:{onion_port}"));
+        .replace(
+            "HiddenServiceDir /var/lib/tor/monokulo/",
+            &format!("HiddenServiceDir {}", dir.join("hs").display()),
+        )
+        .replace(
+            "HiddenServicePort 80 127.0.0.1:8082",
+            &format!("HiddenServicePort 80 127.0.0.1:{onion_port}"),
+        );
     format!(
         "DataDirectory {data}\nSocksPort 127.0.0.1:{socks}\nControlPort 127.0.0.1:{control}\nCookieAuthentication 1\n\
          Log notice file {log}\n{service}\n",
@@ -119,7 +132,11 @@ async fn start_tor(onion_port: u16) -> Tor {
         }
     }
     let (socks, control) = (free_port(), free_port());
-    std::fs::write(dir.join("torrc"), torrc(&dir, &data, onion_port, socks, control)).unwrap();
+    std::fs::write(
+        dir.join("torrc"),
+        torrc(&dir, &data, onion_port, socks, control),
+    )
+    .unwrap();
     let child = tokio::process::Command::new("tor")
         .arg("-f")
         .arg(dir.join("torrc"))
@@ -128,7 +145,13 @@ async fn start_tor(onion_port: u16) -> Tor {
         .kill_on_drop(true)
         .spawn()
         .expect("could not start `tor` - is it installed and on PATH?");
-    Tor { child, dir, data, socks: ([127, 0, 0, 1], socks).into(), control: ([127, 0, 0, 1], control).into() }
+    Tor {
+        child,
+        dir,
+        data,
+        socks: ([127, 0, 0, 1], socks).into(),
+        control: ([127, 0, 0, 1], control).into(),
+    }
 }
 
 /// One control-port session, authenticated with the cookie.
@@ -144,20 +167,33 @@ impl Control {
                     let _ = e;
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                Err(e) => panic!("tor's control port never opened: {e} (log: {})", tor.dir.join("tor.log").display()),
+                Err(e) => panic!(
+                    "tor's control port never opened: {e} (log: {})",
+                    tor.dir.join("tor.log").display()
+                ),
             }
         };
         let mut control = Control(BufReader::new(stream));
-        let cookie = std::fs::read(tor.data.join("control_auth_cookie")).expect("control_auth_cookie");
-        let reply = control.command(&format!("AUTHENTICATE {}", hex::encode(cookie))).await;
-        assert!(reply.starts_with("250"), "control port refused authentication: {reply}");
+        let cookie =
+            std::fs::read(tor.data.join("control_auth_cookie")).expect("control_auth_cookie");
+        let reply = control
+            .command(&format!("AUTHENTICATE {}", hex::encode(cookie)))
+            .await;
+        assert!(
+            reply.starts_with("250"),
+            "control port refused authentication: {reply}"
+        );
         control
     }
 
     /// Sends one command and returns every reply line up to the final
     /// `250 ` (or error) line.
     async fn command(&mut self, command: &str) -> String {
-        self.0.get_mut().write_all(format!("{command}\r\n").as_bytes()).await.unwrap();
+        self.0
+            .get_mut()
+            .write_all(format!("{command}\r\n").as_bytes())
+            .await
+            .unwrap();
         let mut reply = String::new();
         loop {
             let mut line = String::new();
@@ -196,7 +232,12 @@ impl Visitor {
         loop {
             let attempt = tokio::time::timeout(
                 Duration::from_secs(90),
-                Socks5Stream::connect_with_password(self.socks, (self.onion.as_str(), 80), self.name, "password"),
+                Socks5Stream::connect_with_password(
+                    self.socks,
+                    (self.onion.as_str(), 80),
+                    self.name,
+                    "password",
+                ),
             )
             .await;
             let error = match attempt {
@@ -205,7 +246,10 @@ impl Visitor {
                 Err(_) => "SOCKS connect timed out".to_string(),
             };
             if Instant::now() >= deadline {
-                return Err(std::io::Error::other(format!("{}: {error} (gave up after {CONNECT_TIMEOUT:?})", self.name)));
+                return Err(std::io::Error::other(format!(
+                    "{}: {error} (gave up after {CONNECT_TIMEOUT:?})",
+                    self.name
+                )));
             }
             println!("{}: {error}, retrying", self.name);
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -214,7 +258,10 @@ impl Visitor {
 
     async fn get(&self, path: &str, extra_headers: &str) -> std::io::Result<Reply> {
         let mut stream = self.connect().await?;
-        let request = format!("GET {path} HTTP/1.1\r\nHost: {}\r\n{extra_headers}Connection: close\r\n\r\n", self.onion);
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: {}\r\n{extra_headers}Connection: close\r\n\r\n",
+            self.onion
+        );
         stream.write_all(request.as_bytes()).await?;
         let mut raw = Vec::new();
         tokio::time::timeout(Duration::from_secs(90), stream.read_to_end(&mut raw))
@@ -222,20 +269,38 @@ impl Visitor {
             .map_err(|_| std::io::Error::other("response timed out"))??;
         let text = String::from_utf8_lossy(&raw).to_string();
         let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-        let status = head.split(' ').nth(1).and_then(|code| code.parse().ok()).ok_or_else(|| std::io::Error::other(format!("no HTTP status in {head:?}")))?;
-        Ok(Reply { status, headers: head.to_ascii_lowercase(), body: body.to_string() })
+        let status = head
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .ok_or_else(|| std::io::Error::other(format!("no HTTP status in {head:?}")))?;
+        Ok(Reply {
+            status,
+            headers: head.to_ascii_lowercase(),
+            body: body.to_string(),
+        })
     }
 
     /// Opens a live-update stream and returns its status line's code,
     /// keeping the connection open (returned) when it was accepted.
     async fn open_stream(&self, path: &str) -> (u16, Option<TcpStream>) {
         let mut stream = self.connect().await.expect("SOCKS connect");
-        let request = format!("GET {path} HTTP/1.1\r\nHost: {}\r\nAccept: text/event-stream\r\n\r\n", self.onion);
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: {}\r\nAccept: text/event-stream\r\n\r\n",
+            self.onion
+        );
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut reader = BufReader::new(stream);
         let mut status_line = String::new();
-        tokio::time::timeout(Duration::from_secs(90), reader.read_line(&mut status_line)).await.expect("stream answer timed out").unwrap();
-        let status: u16 = status_line.split(' ').nth(1).and_then(|code| code.parse().ok()).expect("status line");
+        tokio::time::timeout(Duration::from_secs(90), reader.read_line(&mut status_line))
+            .await
+            .expect("stream answer timed out")
+            .unwrap();
+        let status: u16 = status_line
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .expect("status line");
         (status, (status == 200).then(|| reader.into_inner()))
     }
 }
@@ -258,9 +323,13 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
         })
         .await
         .expect("creating the test tenant");
-    let order = engine_client.create_order(&tenant.secret_token, 1_000_000, None, None).await.expect("creating the test order");
+    let order = engine_client
+        .create_order(&tenant.secret_token, 1_000_000, None, None)
+        .await
+        .expect("creating the test order");
     let db = Db::open_in_memory().unwrap();
-    db.create_user("u1", "tor@example.com", "x", false, 0).unwrap();
+    db.create_user("u1", "tor@example.com", "x", false, 0)
+        .unwrap();
     db.create_store_connection(
         "store-1",
         "u1",
@@ -273,20 +342,40 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
         "XMR",
     )
     .unwrap();
-    let config = AbuseConfig { soft_per_min: SOFT, hard_per_min: HARD, stream_cap: STREAM_CAP, challenge_bits: BITS, ..Default::default() };
+    let config = AbuseConfig {
+        soft_per_min: SOFT,
+        hard_per_min: HARD,
+        stream_cap: STREAM_CAP,
+        challenge_bits: BITS,
+        ..Default::default()
+    };
     let state = AppState {
         engine_client,
         encryption_key: ENCRYPTION_KEY,
         abuse: Arc::new(AbuseProtection::new(config)),
         ..AppState::for_tests_with_db(db.into_shared())
     };
-    let listener = OnionListener::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let listener = OnionListener::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
     let addr = listener.bound_address();
     let router = build_router(state.clone());
     tokio::spawn(async move {
-        axum::serve(listener, router.into_make_service_with_connect_info::<OnionPeer>()).await.unwrap();
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<OnionPeer>(),
+        )
+        .await
+        .unwrap();
     });
-    (state, addr, Store { pk: tenant.public_key, order_id: order.order_id })
+    (
+        state,
+        addr,
+        Store {
+            pk: tenant.public_key,
+            order_id: order.order_id,
+        },
+    )
 }
 
 fn circuits(state: &AppState) -> Vec<u32> {
@@ -305,7 +394,8 @@ fn circuits(state: &AppState) -> Vec<u32> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a real tor and the live Tor network; see the module doc comment"]
 async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slowed() {
-    let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+    let engine =
+        scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let (state, onion_listener, store) = start_monokulo(engine.addr).await;
     let tor = start_tor(onion_listener.port()).await;
     println!("tor data and log in {}", tor.dir.display());
@@ -318,7 +408,10 @@ async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slow
         if reply.contains("PROGRESS=100") {
             break;
         }
-        assert!(Instant::now() < deadline, "tor did not finish bootstrapping within {BOOTSTRAP_TIMEOUT:?}: {reply}");
+        assert!(
+            Instant::now() < deadline,
+            "tor did not finish bootstrapping within {BOOTSTRAP_TIMEOUT:?}: {reply}"
+        );
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     println!("tor bootstrapped");
@@ -332,15 +425,36 @@ async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slow
         "HiddenServiceMaxStreams=64",
         "HiddenServiceMaxStreamsCloseCircuit=1",
     ] {
-        assert!(options.contains(expected), "tor did not accept {expected}: {options}");
+        assert!(
+            options.contains(expected),
+            "tor did not accept {expected}: {options}"
+        );
     }
-    let modules = std::process::Command::new("tor").arg("--list-modules").output().unwrap();
-    assert!(String::from_utf8_lossy(&modules.stdout).contains("pow: yes"), "this tor lacks the proof-of-work module");
+    let modules = std::process::Command::new("tor")
+        .arg("--list-modules")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&modules.stdout).contains("pow: yes"),
+        "this tor lacks the proof-of-work module"
+    );
 
-    let hostname = std::fs::read_to_string(tor.dir.join("hs/hostname")).expect("the onion service has a hostname").trim().to_string();
+    let hostname = std::fs::read_to_string(tor.dir.join("hs/hostname"))
+        .expect("the onion service has a hostname")
+        .trim()
+        .to_string();
     println!("onion service: {hostname}");
-    let visitor = |name: &'static str| Visitor { name, socks: tor.socks, onion: hostname.clone() };
-    let (a, b, c, d) = (visitor("visitor-a"), visitor("visitor-b"), visitor("visitor-c"), visitor("visitor-d"));
+    let visitor = |name: &'static str| Visitor {
+        name,
+        socks: tor.socks,
+        onion: hostname.clone(),
+    };
+    let (a, b, c, d) = (
+        visitor("visitor-a"),
+        visitor("visitor-b"),
+        visitor("visitor-c"),
+        visitor("visitor-d"),
+    );
     let status_path = format!("/pay/{}/orders/{}/status", store.pk, store.order_id);
     let events_path = format!("/pay/{}/orders/{}/events", store.pk, store.order_id);
 
@@ -350,7 +464,10 @@ async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slow
         match a.get(&status_path, "").await {
             Ok(reply) => break reply,
             Err(e) => {
-                assert!(Instant::now() < deadline, "the onion service was not reachable within {REACHABLE_TIMEOUT:?}: {e}");
+                assert!(
+                    Instant::now() < deadline,
+                    "the onion service was not reachable within {REACHABLE_TIMEOUT:?}: {e}"
+                );
                 println!("not reachable yet ({e}), retrying");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -378,14 +495,28 @@ async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slow
         assert_eq!(reply.status, 200);
     }
     let challenged = challenged.expect("visitor A is challenged past the soft limit");
-    assert!(challenged.headers.contains("monokulo-challenge:"), "{}", challenged.headers);
+    assert!(
+        challenged.headers.contains("monokulo-challenge:"),
+        "{}",
+        challenged.headers
+    );
     let body: serde_json::Value = serde_json::from_str(&challenged.body).unwrap();
     let challenge = body["challenge"]["challenge"].as_str().unwrap().to_string();
-    assert_eq!(b.get(&status_path, "").await.unwrap().status, 200, "the other visitor is unaffected");
+    assert_eq!(
+        b.get(&status_path, "").await.unwrap().status,
+        200,
+        "the other visitor is unaffected"
+    );
 
     // A solves it (as monokulo-client.js would) and gets through.
-    let proof = format!("{challenge}.{}", monokulo::abuse::challenge::solve(&challenge, BITS));
-    let solved = a.get(&status_path, &format!("Monokulo-Proof: {proof}\r\n")).await.unwrap();
+    let proof = format!(
+        "{challenge}.{}",
+        monokulo::abuse::challenge::solve(&challenge, BITS)
+    );
+    let solved = a
+        .get(&status_path, &format!("Monokulo-Proof: {proof}\r\n"))
+        .await
+        .unwrap();
     assert_eq!(solved.status, 200, "the proof is accepted: {}", solved.body);
 
     // -- past the hard limit only A gets 429 + Retry-After -------------------
@@ -398,9 +529,20 @@ async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slow
         }
     }
     let blocked = blocked.expect("visitor A reaches the hard limit");
-    assert!(blocked.headers.contains("retry-after:"), "{}", blocked.headers);
-    assert!(!blocked.headers.contains("monokulo-challenge:"), "nothing to solve past the hard limit");
-    assert_eq!(b.get(&status_path, "").await.unwrap().status, 200, "the other visitor is still unaffected");
+    assert!(
+        blocked.headers.contains("retry-after:"),
+        "{}",
+        blocked.headers
+    );
+    assert!(
+        !blocked.headers.contains("monokulo-challenge:"),
+        "nothing to solve past the hard limit"
+    );
+    assert_eq!(
+        b.get(&status_path, "").await.unwrap().status,
+        200,
+        "the other visitor is still unaffected"
+    );
 
     // -- open live-update streams are capped per (circuit, store) -----------
     let mut held = Vec::new();
@@ -409,8 +551,16 @@ async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slow
         assert_eq!(status, 200, "stream {n} of visitor C");
         held.push(stream);
     }
-    assert_eq!(c.open_stream(&events_path).await.0, 429, "one stream too many for visitor C's circuit");
-    assert_eq!(d.open_stream(&events_path).await.0, 200, "another circuit has its own allowance");
+    assert_eq!(
+        c.open_stream(&events_path).await.0,
+        429,
+        "one stream too many for visitor C's circuit"
+    );
+    assert_eq!(
+        d.open_stream(&events_path).await.0,
+        200,
+        "another circuit has its own allowance"
+    );
     drop(held);
 
     assert_eq!(circuits(&state).len(), 4, "four visitors, four circuits");

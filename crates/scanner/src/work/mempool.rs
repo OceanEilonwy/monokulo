@@ -90,12 +90,22 @@ impl MempoolState {
     }
 
     fn mark_scanned(&self, txid: &str, tenant_id: &str, generation: u64) {
-        self.inner.lock().scanned.entry(txid.to_string()).or_default().insert(tenant_id.to_string(), generation);
+        self.inner
+            .lock()
+            .scanned
+            .entry(txid.to_string())
+            .or_default()
+            .insert(tenant_id.to_string(), generation);
     }
 
     /// The stores in `tenants` not yet scanned for `txid` with their current
     /// window.
-    fn due<'a>(&self, txid: &str, tenants: &'a [TenantWindow], failed: &HashSet<String>) -> Vec<&'a TenantWindow> {
+    fn due<'a>(
+        &self,
+        txid: &str,
+        tenants: &'a [TenantWindow],
+        failed: &HashSet<String>,
+    ) -> Vec<&'a TenantWindow> {
         let remembered = self.inner.lock();
         let done = remembered.scanned.get(txid);
         tenants
@@ -150,7 +160,10 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         if due.is_empty() {
             continue;
         }
-        let offset = state.next_tenant_offset.fetch_add(TENANTS_PER_TX, Ordering::Relaxed) % due.len();
+        let offset = state
+            .next_tenant_offset
+            .fetch_add(TENANTS_PER_TX, Ordering::Relaxed)
+            % due.len();
         due.rotate_left(offset);
         due.truncate(TENANTS_PER_TX);
         let outcome = scan_and_record(round.state, round.inputs, tx, &txid, &due, None).await;
@@ -190,7 +203,10 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
     let mempool = &state.mempool;
     let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
     mempool.retain_pool(&in_pool);
-    let mut new: Vec<String> = pool_txids.into_iter().filter(|txid| mempool.is_new(txid)).collect();
+    let mut new: Vec<String> = pool_txids
+        .into_iter()
+        .filter(|txid| mempool.is_new(txid))
+        .collect();
     let mut report = FastReport::default();
     if new.is_empty() {
         return Some(report);
@@ -255,7 +271,10 @@ async fn scan_and_record(
     if due.is_empty() {
         return outcome;
     }
-    let generations: HashMap<&str, u64> = due.iter().map(|(id, _, w)| (id.as_str(), w.generation())).collect();
+    let generations: HashMap<&str, u64> = due
+        .iter()
+        .map(|(id, _, w)| (id.as_str(), w.generation()))
+        .collect();
     for (tenant_id, result) in scan_for_tenants(inputs.custody, tx, due).await {
         let scan = match result {
             Ok(scan) => scan,
@@ -267,7 +286,10 @@ async fn scan_and_record(
                 continue;
             }
         };
-        let generation = generations.get(tenant_id.as_str()).copied().unwrap_or_default();
+        let generation = generations
+            .get(tenant_id.as_str())
+            .copied()
+            .unwrap_or_default();
         if scan.matches.is_empty() {
             state.mempool.mark_scanned(txid, &tenant_id, generation);
             continue;
@@ -316,7 +338,8 @@ async fn poll(inputs: &RoundInputs<'_>) -> Option<Vec<String>> {
 /// The round's slice of the pool: transactions no store has been scanned
 /// for yet come first, then a rotating slice of the rest.
 fn select(state: &MempoolState, pool_txids: Vec<String>) -> Vec<String> {
-    let (mut new, mut seen): (Vec<String>, Vec<String>) = pool_txids.into_iter().partition(|txid| state.is_new(txid));
+    let (mut new, mut seen): (Vec<String>, Vec<String>) =
+        pool_txids.into_iter().partition(|txid| state.is_new(txid));
     new.sort_unstable();
     seen.sort_unstable();
     if !seen.is_empty() {
@@ -330,10 +353,18 @@ fn select(state: &MempoolState, pool_txids: Vec<String>) -> Vec<String> {
 
 /// The bodies of `txids`, fetching those not remembered in one call.
 /// Returns the bodies found, in order, and whether the fetch failed.
-async fn bodies(state: &MempoolState, inputs: &RoundInputs<'_>, txids: &[String]) -> (Vec<Arc<Transaction>>, bool) {
+async fn bodies(
+    state: &MempoolState,
+    inputs: &RoundInputs<'_>,
+    txids: &[String],
+) -> (Vec<Arc<Transaction>>, bool) {
     let missing: Vec<String> = {
         let remembered = state.inner.lock();
-        txids.iter().filter(|txid| !remembered.bodies.contains_key(*txid)).cloned().collect()
+        txids
+            .iter()
+            .filter(|txid| !remembered.bodies.contains_key(*txid))
+            .cloned()
+            .collect()
     };
     let mut fetched: HashMap<String, Arc<Transaction>> = HashMap::new();
     let mut fetch_failed = false;
@@ -356,14 +387,28 @@ async fn bodies(state: &MempoolState, inputs: &RoundInputs<'_>, txids: &[String]
         }
     }
     let remembered = state.inner.lock();
-    let pool = txids.iter().filter_map(|txid| remembered.bodies.get(txid).or_else(|| fetched.get(txid)).cloned()).collect();
+    let pool = txids
+        .iter()
+        .filter_map(|txid| {
+            remembered
+                .bodies
+                .get(txid)
+                .or_else(|| fetched.get(txid))
+                .cloned()
+        })
+        .collect();
     (pool, fetch_failed)
 }
 
 /// Keeps a fetched body for later rounds, up to `cap` bodies: past that
 /// (a pool far bigger than any real one) bodies are fetched each time
 /// instead, and memory stays bounded.
-fn remember_body(bodies: &mut HashMap<String, Arc<Transaction>>, txid: &str, tx: &Arc<Transaction>, cap: usize) {
+fn remember_body(
+    bodies: &mut HashMap<String, Arc<Transaction>>,
+    txid: &str,
+    tx: &Arc<Transaction>,
+    cap: usize,
+) {
     if bodies.len() < cap {
         bodies.insert(txid.to_string(), tx.clone());
     }
@@ -377,17 +422,34 @@ async fn tenant_page(round: &Round<'_>) -> Result<Vec<TenantWindow>, ScannerErro
     let after = round.state.mempool.tenant_page_after.lock().clone();
     let (page, next_after) = round
         .db(move |s, network| -> Result<_, ScannerError> {
-            let mut page: Vec<String> = s.active_tenants_page(network, now, grace, &after, TENANT_PAGE)?.into_iter().map(|(id, _)| id).collect();
+            let mut page: Vec<String> = s
+                .active_tenants_page(network, now, grace, &after, TENANT_PAGE)?
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
             let full = page.len() == TENANT_PAGE;
-            let next_after = if full { page.last().cloned().unwrap_or_default() } else { String::new() };
+            let next_after = if full {
+                page.last().cloned().unwrap_or_default()
+            } else {
+                String::new()
+            };
             if !full && !after.is_empty() {
                 // Wrap round: fill the page from the start.
-                page.extend(s.active_tenants_page(network, now, grace, "", TENANT_PAGE - page.len())?.into_iter().map(|(id, _)| id));
+                page.extend(
+                    s.active_tenants_page(network, now, grace, "", TENANT_PAGE - page.len())?
+                        .into_iter()
+                        .map(|(id, _)| id),
+                );
             }
             page.sort_unstable();
             page.dedup();
             let mut windows = s.scan_windows(&page, now, grace)?;
-            Ok((page.into_iter().filter_map(|id| windows.remove(&id).map(|w| (id, w))).collect::<Vec<_>>(), next_after))
+            Ok((
+                page.into_iter()
+                    .filter_map(|id| windows.remove(&id).map(|w| (id, w)))
+                    .collect::<Vec<_>>(),
+                next_after,
+            ))
         })
         .await?;
     *round.state.mempool.tenant_page_after.lock() = next_after;
@@ -396,46 +458,78 @@ async fn tenant_page(round: &Round<'_>) -> Result<Vec<TenantWindow>, ScannerErro
 
 /// Every store with something in scope and its window, reloaded at most
 /// once per `WINDOWS_TTL`, for the fast path.
-async fn all_windows(state: &ScanState, inputs: &RoundInputs<'_>) -> Result<Vec<TenantWindow>, ScannerError> {
-    let cached = state.mempool.windows.lock().as_ref().filter(|(at, _)| at.elapsed() < WINDOWS_TTL).map(|(_, w)| w.clone());
+async fn all_windows(
+    state: &ScanState,
+    inputs: &RoundInputs<'_>,
+) -> Result<Vec<TenantWindow>, ScannerError> {
+    let cached = state
+        .mempool
+        .windows
+        .lock()
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < WINDOWS_TTL)
+        .map(|(_, w)| w.clone());
     let windows = match cached {
         Some(windows) => windows,
         None => {
-            let (network, grace, now) = (crate::network::network_str(inputs.network), inputs.grace_period_seconds, crate::now_unix());
+            let (network, grace, now) = (
+                crate::network::network_str(inputs.network),
+                inputs.grace_period_seconds,
+                crate::now_unix(),
+            );
             let loaded = inputs
                 .db
-                .run(Class::Scanner, move |s| -> Result<Vec<(String, Vec<u32>)>, ScannerError> {
-                    let mut ids = Vec::new();
-                    let mut after = String::new();
-                    loop {
-                        let page = s.active_tenants_page(network, now, grace, &after, TENANT_PAGE)?;
-                        let full = page.len() == TENANT_PAGE;
-                        after = page.last().map(|(id, _)| id.clone()).unwrap_or_default();
-                        ids.extend(page.into_iter().map(|(id, _)| id));
-                        if !full {
-                            break;
+                .run(
+                    Class::Scanner,
+                    move |s| -> Result<Vec<(String, Vec<u32>)>, ScannerError> {
+                        let mut ids = Vec::new();
+                        let mut after = String::new();
+                        loop {
+                            let page =
+                                s.active_tenants_page(network, now, grace, &after, TENANT_PAGE)?;
+                            let full = page.len() == TENANT_PAGE;
+                            after = page.last().map(|(id, _)| id.clone()).unwrap_or_default();
+                            ids.extend(page.into_iter().map(|(id, _)| id));
+                            if !full {
+                                break;
+                            }
                         }
-                    }
-                    let mut windows = s.scan_windows(&ids, now, grace)?;
-                    Ok(ids.into_iter().filter_map(|id| windows.remove(&id).map(|w| (id, w))).collect())
-                })
+                        let mut windows = s.scan_windows(&ids, now, grace)?;
+                        Ok(ids
+                            .into_iter()
+                            .filter_map(|id| windows.remove(&id).map(|w| (id, w)))
+                            .collect())
+                    },
+                )
                 .await?;
             let loaded = Arc::new(loaded);
             *state.mempool.windows.lock() = Some((Instant::now(), loaded.clone()));
             loaded
         }
     };
-    let handles: HashMap<&str, WalletHandle> = inputs.tenants.iter().map(|(id, h)| (id.as_str(), *h)).collect();
+    let handles: HashMap<&str, WalletHandle> = inputs
+        .tenants
+        .iter()
+        .map(|(id, h)| (id.as_str(), *h))
+        .collect();
     Ok(with_handles(state, &handles, &windows))
 }
 
 /// The stores that can be scanned now: keys registered and not waiting out
 /// a retry delay. (Every window listed has something in it.)
-fn with_handles(state: &ScanState, handles: &HashMap<&str, WalletHandle>, windows: &[(String, Vec<u32>)]) -> Vec<TenantWindow> {
+fn with_handles(
+    state: &ScanState,
+    handles: &HashMap<&str, WalletHandle>,
+    windows: &[(String, Vec<u32>)],
+) -> Vec<TenantWindow> {
     windows
         .iter()
         .filter(|(id, _)| !state.backoff.is_waiting(id))
-        .filter_map(|(id, window)| handles.get(id.as_str()).map(|h| (id.clone(), *h, ScanIndices::new(window.clone()))))
+        .filter_map(|(id, window)| {
+            handles
+                .get(id.as_str())
+                .map(|h| (id.clone(), *h, ScanIndices::new(window.clone())))
+        })
         .collect()
 }
 

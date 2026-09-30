@@ -61,27 +61,57 @@ mod tests {
 
     #[test]
     fn the_default_bind_address_is_loopback_only() {
-        let addr = crate::engine_settings::EngineSettings::defaults().runtime.load().bind;
-        assert!(addr.ip().is_loopback(), "the engine must not listen publicly by default");
+        let addr = crate::engine_settings::EngineSettings::defaults()
+            .runtime
+            .load()
+            .bind;
+        assert!(
+            addr.ip().is_loopback(),
+            "the engine must not listen publicly by default"
+        );
         assert!(is_private_bind_address(addr.ip()));
     }
 
     #[test]
     fn bind_addresses_are_classified_as_private_or_public() {
         let private = [
-            "127.0.0.1", "127.8.9.10", "::1", "10.0.0.1", "172.16.0.1", "172.31.255.255",
-            "192.168.1.1", "169.254.10.10", "fc00::1", "fd12:3456::1", "fe80::1", "::ffff:10.1.2.3",
+            "127.0.0.1",
+            "127.8.9.10",
+            "::1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.10.10",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "::ffff:10.1.2.3",
             "::ffff:127.0.0.1",
         ];
         for ip in private {
-            assert!(is_private_bind_address(ip.parse().unwrap()), "{ip} should count as private");
+            assert!(
+                is_private_bind_address(ip.parse().unwrap()),
+                "{ip} should count as private"
+            );
         }
         let public = [
-            "0.0.0.0", "::", "8.8.8.8", "172.32.0.1", "192.169.0.1", "100.64.0.1", "2001:db8::1",
-            "2a00:1450::1", "fec0::1", "::ffff:8.8.8.8",
+            "0.0.0.0",
+            "::",
+            "8.8.8.8",
+            "172.32.0.1",
+            "192.169.0.1",
+            "100.64.0.1",
+            "2001:db8::1",
+            "2a00:1450::1",
+            "fec0::1",
+            "::ffff:8.8.8.8",
         ];
         for ip in public {
-            assert!(!is_private_bind_address(ip.parse().unwrap()), "{ip} should count as public");
+            assert!(
+                !is_private_bind_address(ip.parse().unwrap()),
+                "{ip} should count as public"
+            );
         }
     }
 
@@ -101,8 +131,14 @@ mod tests {
             }],
         };
         let json = serde_json::to_string(&node).unwrap();
-        assert_eq!(serde_json::from_str::<MoneroNodeSetting>(&json).unwrap(), node);
+        assert_eq!(
+            serde_json::from_str::<MoneroNodeSetting>(&json).unwrap(),
+            node
+        );
         let minimal: MoneroNodeSetting = serde_json::from_str(r#"{"host":"n","port":1}"#).unwrap();
-        assert!(!minimal.ssl && minimal.accept_self_signed_certs && minimal.fallbacks.is_empty(), "the documented defaults");
+        assert!(
+            !minimal.ssl && minimal.accept_self_signed_certs && minimal.fallbacks.is_empty(),
+            "the documented defaults"
+        );
     }
 }

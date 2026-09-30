@@ -64,7 +64,9 @@ pub fn encrypt(key: &[u8; 32], plaintext: &str) -> String {
     // Only fails for absurdly large plaintexts (far beyond GCM's ~64GiB
     // limit) - never for anything this module is actually used for (a
     // ~70-byte `sk_...` token).
-    let ciphertext = cipher.encrypt(&nonce, plaintext.as_bytes()).expect("AES-256-GCM encryption failed");
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_bytes())
+        .expect("AES-256-GCM encryption failed");
 
     let mut combined = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     combined.extend_from_slice(nonce.as_ref());
@@ -87,7 +89,9 @@ pub fn decrypt(key: &[u8; 32], encoded: &str) -> Result<String, CryptoError> {
     let nonce = CipherNonce::try_from(nonce_bytes).map_err(|_| CryptoError::Truncated)?;
 
     let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
-    let plaintext_bytes = cipher.decrypt(&nonce, ciphertext).map_err(|_| CryptoError::AuthenticationFailed)?;
+    let plaintext_bytes = cipher
+        .decrypt(&nonce, ciphertext)
+        .map_err(|_| CryptoError::AuthenticationFailed)?;
     String::from_utf8(plaintext_bytes).map_err(|_| CryptoError::InvalidUtf8)
 }
 
@@ -110,7 +114,10 @@ mod tests {
         let plaintext = "sk_same_token_every_time";
         let first = encrypt(&TEST_KEY, plaintext);
         let second = encrypt(&TEST_KEY, plaintext);
-        assert_ne!(first, second, "fresh nonce per call should make the two encodings differ");
+        assert_ne!(
+            first, second,
+            "fresh nonce per call should make the two encodings differ"
+        );
 
         // Both must still independently decrypt back to the same plaintext.
         assert_eq!(decrypt(&TEST_KEY, &first).unwrap(), plaintext);
@@ -129,7 +136,10 @@ mod tests {
         let tampered = hex::encode(bytes);
 
         let result = decrypt(&TEST_KEY, &tampered);
-        assert!(matches!(result, Err(CryptoError::AuthenticationFailed)), "expected an auth failure, got: {result:?}");
+        assert!(
+            matches!(result, Err(CryptoError::AuthenticationFailed)),
+            "expected an auth failure, got: {result:?}"
+        );
     }
 
     #[test]
@@ -139,13 +149,19 @@ mod tests {
         // Cut it down to fewer bytes than even the nonce alone.
         let truncated = &encoded[..NONCE_LEN]; // hex chars, well short of a full nonce's worth of bytes
         let result = decrypt(&TEST_KEY, truncated);
-        assert!(matches!(result, Err(CryptoError::Truncated)), "expected Truncated, got: {result:?}");
+        assert!(
+            matches!(result, Err(CryptoError::Truncated)),
+            "expected Truncated, got: {result:?}"
+        );
     }
 
     #[test]
     fn decrypting_a_non_hex_string_returns_an_error_not_a_panic() {
         let result = decrypt(&TEST_KEY, "not valid hex at all!!");
-        assert!(matches!(result, Err(CryptoError::InvalidEncoding)), "expected InvalidEncoding, got: {result:?}");
+        assert!(
+            matches!(result, Err(CryptoError::InvalidEncoding)),
+            "expected InvalidEncoding, got: {result:?}"
+        );
     }
 
     #[test]
@@ -154,6 +170,9 @@ mod tests {
         let encoded = encrypt(&TEST_KEY, plaintext);
         let wrong_key = [9u8; 32];
         let result = decrypt(&wrong_key, &encoded);
-        assert!(matches!(result, Err(CryptoError::AuthenticationFailed)), "expected an auth failure, got: {result:?}");
+        assert!(
+            matches!(result, Err(CryptoError::AuthenticationFailed)),
+            "expected an auth failure, got: {result:?}"
+        );
     }
 }

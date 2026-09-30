@@ -15,10 +15,10 @@
 //! instead, which degrades to server-side polling at the retry interval rather
 //! than to no updates at all.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,16 +66,32 @@ pub struct OrderSubscription {
 impl LiveHub {
     /// `engine` is the client whose events stream is opened for this store if
     /// nobody is watching it yet; `sk` authenticates it.
-    pub fn subscribe(self: &Arc<Self>, engine: &EngineClient, connection_id: &str, sk: &str, order_id: &str) -> OrderSubscription {
+    pub fn subscribe(
+        self: &Arc<Self>,
+        engine: &EngineClient,
+        connection_id: &str,
+        sk: &str,
+        order_id: &str,
+    ) -> OrderSubscription {
         let mut stores = self.stores.lock();
-        let store = stores.entry(connection_id.to_string()).or_insert_with(|| StoreWatch {
-            orders: HashMap::new(),
-            upstream: tokio::spawn(run_upstream(Arc::downgrade(self), engine.clone(), connection_id.to_string(), sk.to_string())),
-        });
+        let store = stores
+            .entry(connection_id.to_string())
+            .or_insert_with(|| StoreWatch {
+                orders: HashMap::new(),
+                upstream: tokio::spawn(run_upstream(
+                    Arc::downgrade(self),
+                    engine.clone(),
+                    connection_id.to_string(),
+                    sk.to_string(),
+                )),
+            });
         let order = store
             .orders
             .entry(order_id.to_string())
-            .or_insert_with(|| OrderWatch { changed: watch::channel(0).0, watchers: 0 });
+            .or_insert_with(|| OrderWatch {
+                changed: watch::channel(0).0,
+                watchers: 0,
+            });
         order.watchers += 1;
         OrderSubscription {
             hub: self.clone(),
@@ -87,7 +103,9 @@ impl LiveHub {
 
     fn release(&self, connection_id: &str, order_id: &str) {
         let mut stores = self.stores.lock();
-        let Some(store) = stores.get_mut(connection_id) else { return };
+        let Some(store) = stores.get_mut(connection_id) else {
+            return;
+        };
         if let Some(order) = store.orders.get_mut(order_id) {
             order.watchers -= 1;
             if order.watchers == 0 {
@@ -103,7 +121,9 @@ impl LiveHub {
 
     fn wake(&self, connection_id: &str, order_id: Option<&str>) {
         let stores = self.stores.lock();
-        let Some(store) = stores.get(connection_id) else { return };
+        let Some(store) = stores.get(connection_id) else {
+            return;
+        };
         for (id, order) in &store.orders {
             if order_id.is_none_or(|wanted| wanted == id) {
                 order.changed.send_modify(|n| *n = n.wrapping_add(1));
@@ -136,16 +156,22 @@ impl Drop for OrderSubscription {
 
 /// Holds only a weak reference to the hub: the hub owns (and aborts) this
 /// task, so a strong one would keep both alive forever.
-async fn run_upstream(hub: std::sync::Weak<LiveHub>, engine: EngineClient, connection_id: String, sk: String) {
+async fn run_upstream(
+    hub: std::sync::Weak<LiveHub>,
+    engine: EngineClient,
+    connection_id: String,
+    sk: String,
+) {
     let mut delay = Duration::from_secs(1);
     loop {
         if let Ok(mut response) = engine.open_order_events(&sk).await {
             let mut parser = SseParser::default();
             loop {
-                let chunk = match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, response.chunk()).await {
-                    Ok(Ok(Some(chunk))) => chunk,
-                    _ => break,
-                };
+                let chunk =
+                    match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, response.chunk()).await {
+                        Ok(Ok(Some(chunk))) => chunk,
+                        _ => break,
+                    };
                 for (event, data) in parser.push(&chunk) {
                     let Some(hub) = hub.upgrade() else { return };
                     match event.as_str() {
@@ -159,7 +185,11 @@ async fn run_upstream(hub: std::sync::Weak<LiveHub>, engine: EngineClient, conne
                         "order" => {
                             let order_id = serde_json::from_str::<serde_json::Value>(&data)
                                 .ok()
-                                .and_then(|v| v.get("order_id").and_then(|id| id.as_str()).map(str::to_string));
+                                .and_then(|v| {
+                                    v.get("order_id")
+                                        .and_then(|id| id.as_str())
+                                        .map(str::to_string)
+                                });
                             if let Some(order_id) = order_id {
                                 hub.wake(&connection_id, Some(&order_id));
                             }
@@ -198,7 +228,11 @@ impl SseParser {
             let line = line.trim_end_matches(['\r', '\n']);
             if line.is_empty() {
                 if !self.event.is_empty() || !self.data.is_empty() {
-                    let event = if self.event.is_empty() { "message".to_string() } else { std::mem::take(&mut self.event) };
+                    let event = if self.event.is_empty() {
+                        "message".to_string()
+                    } else {
+                        std::mem::take(&mut self.event)
+                    };
                     out.push((event, std::mem::take(&mut self.data)));
                 }
             } else if let Some(value) = line.strip_prefix("event:") {
@@ -245,7 +279,9 @@ pub fn sse<S>(stream: S) -> Response
 where
     S: Stream<Item = Result<Event, Infallible>> + Send + 'static,
 {
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(DOWNSTREAM_KEEP_ALIVE)).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(DOWNSTREAM_KEEP_ALIVE))
+        .into_response()
 }
 
 /// The stream behind [`live_events`], for callers merging several orders
@@ -266,7 +302,13 @@ where
         first: bool,
         done: bool,
     }
-    let state = State { subscription, snapshot, last: None, first: true, done: false };
+    let state = State {
+        subscription,
+        snapshot,
+        last: None,
+        first: true,
+        done: false,
+    };
     let batches = futures_util::stream::unfold(state, move |mut state| async move {
         loop {
             if state.done {
@@ -283,7 +325,9 @@ where
                 }
             }
             state.first = false;
-            let Some(snapshot) = (state.snapshot)().await else { continue };
+            let Some(snapshot) = (state.snapshot)().await else {
+                continue;
+            };
             state.done = snapshot.terminal;
             if state.last.as_deref() != Some(snapshot.fingerprint.as_str()) {
                 state.last = Some(snapshot.fingerprint);
@@ -291,7 +335,9 @@ where
             }
         }
     });
-    futures_util::StreamExt::flat_map(batches, |events| futures_util::stream::iter(events.into_iter().map(Ok)))
+    futures_util::StreamExt::flat_map(batches, |events| {
+        futures_util::stream::iter(events.into_iter().map(Ok))
+    })
 }
 
 /// One snapshot per order for [`batch_snapshot_stream`], keyed by order id.
@@ -320,7 +366,12 @@ where
         last: HashMap<String, String>,
         first: bool,
     }
-    let state = State { subscriptions, snapshot, last: HashMap::new(), first: true };
+    let state = State {
+        subscriptions,
+        snapshot,
+        last: HashMap::new(),
+        first: true,
+    };
     let batches = futures_util::stream::unfold(state, move |mut state| async move {
         loop {
             if state.subscriptions.is_empty() {
@@ -328,7 +379,10 @@ where
             }
             if !state.first {
                 let changes = futures_util::future::select_all(
-                    state.subscriptions.iter_mut().map(|s| Box::pin(s.changed.changed())),
+                    state
+                        .subscriptions
+                        .iter_mut()
+                        .map(|s| Box::pin(s.changed.changed())),
                 );
                 tokio::select! {
                     (changed, _, _) = changes => {
@@ -344,8 +398,14 @@ where
             for subscription in &mut state.subscriptions {
                 subscription.changed.mark_unchanged();
             }
-            let ids = state.subscriptions.iter().map(|s| s.order_id.clone()).collect();
-            let Some(snapshots) = (state.snapshot)(ids).await else { continue };
+            let ids = state
+                .subscriptions
+                .iter()
+                .map(|s| s.order_id.clone())
+                .collect();
+            let Some(snapshots) = (state.snapshot)(ids).await else {
+                continue;
+            };
             let mut events = Vec::new();
             for (order_id, snapshot) in snapshots {
                 if snapshot.terminal {
@@ -361,19 +421,27 @@ where
             }
         }
     });
-    futures_util::StreamExt::flat_map(batches, |events| futures_util::stream::iter(events.into_iter().map(Ok)))
+    futures_util::StreamExt::flat_map(batches, |events| {
+        futures_util::stream::iter(events.into_iter().map(Ok))
+    })
 }
 
 /// Reads SSE frames from `body` until one full event arrives, returning its
 /// `(event, data)` - `None` once the stream has ended.
 #[cfg(test)]
-pub(crate) async fn next_sse_event(body: &mut axum::body::Body, parser_buffer: &mut Vec<(String, String)>, parser: &mut SseTestParser) -> Option<(String, String)> {
+pub(crate) async fn next_sse_event(
+    body: &mut axum::body::Body,
+    parser_buffer: &mut Vec<(String, String)>,
+    parser: &mut SseTestParser,
+) -> Option<(String, String)> {
     use http_body_util::BodyExt;
     loop {
         if !parser_buffer.is_empty() {
             return Some(parser_buffer.remove(0));
         }
-        let frame = tokio::time::timeout(Duration::from_secs(10), body.frame()).await.expect("timed out waiting for an SSE event")?;
+        let frame = tokio::time::timeout(Duration::from_secs(10), body.frame())
+            .await
+            .expect("timed out waiting for an SSE event")?;
         if let Ok(bytes) = frame.unwrap().into_data() {
             parser_buffer.extend(parser.0.push(&bytes));
         }
@@ -392,10 +460,14 @@ mod tests {
     fn parser_handles_split_chunks_comments_and_crlf() {
         let mut parser = SseParser::default();
         assert!(parser.push(b": keep-alive\n\nevent: ord").is_empty());
-        let events = parser.push(b"er\r\ndata: {\"order_id\":\"o1\"}\r\n\r\nevent: ready\ndata: {}\n\n");
+        let events =
+            parser.push(b"er\r\ndata: {\"order_id\":\"o1\"}\r\n\r\nevent: ready\ndata: {}\n\n");
         assert_eq!(
             events,
-            vec![("order".to_string(), "{\"order_id\":\"o1\"}".to_string()), ("ready".to_string(), "{}".to_string())]
+            vec![
+                ("order".to_string(), "{\"order_id\":\"o1\"}".to_string()),
+                ("ready".to_string(), "{}".to_string())
+            ]
         );
     }
 
@@ -427,13 +499,24 @@ mod tests {
     }
     #[tokio::test]
     async fn changing_the_engine_url_ends_live_streams_to_the_old_engine() {
-        let engine = crate::engine_client::EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
+        let engine =
+            crate::engine_client::EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
         let mut subscription = engine.subscribe_order("conn", "sk_test", "order");
         assert_eq!(engine.live_upstream_count(), 1);
         engine.retarget("http://127.0.0.1:2", 1024 * 1024);
-        assert_eq!(engine.live_upstream_count(), 0, "the new hub has no streams yet");
-        let ended = tokio::time::timeout(std::time::Duration::from_secs(2), subscription.changed.changed()).await;
-        assert!(matches!(ended, Ok(Err(_))), "the old stream ends, so the browser reconnects to the new engine");
+        assert_eq!(
+            engine.live_upstream_count(),
+            0,
+            "the new hub has no streams yet"
+        );
+        let ended = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            subscription.changed.changed(),
+        )
+        .await;
+        assert!(
+            matches!(ended, Ok(Err(_))),
+            "the old stream ends, so the browser reconnects to the new engine"
+        );
     }
-
 }

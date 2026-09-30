@@ -20,7 +20,10 @@ use cli_wallet::{WalletCtx, WalletStore};
 const DEFAULT_WALLET_NAME: &str = "spender";
 
 #[derive(Parser)]
-#[command(name = "stagenet-wallet-cli", about = "Inspect and drive the stagenet e2e test wallet by hand")]
+#[command(
+    name = "stagenet-wallet-cli",
+    about = "Inspect and drive the stagenet e2e test wallet by hand"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -140,10 +143,19 @@ async fn run(cli: Cli) -> Result<(), cli_wallet::WalletError> {
 
     match &cli.command {
         Command::Completions { shell } => {
-            clap_complete::generate(*shell, &mut Cli::command(), "stagenet-wallet-cli", &mut std::io::stdout());
+            clap_complete::generate(
+                *shell,
+                &mut Cli::command(),
+                "stagenet-wallet-cli",
+                &mut std::io::stdout(),
+            );
             return Ok(());
         }
-        Command::Wallet(WalletCommand::Add { name, seed, generate }) => {
+        Command::Wallet(WalletCommand::Add {
+            name,
+            seed,
+            generate,
+        }) => {
             let mut store = WalletStore::load(&ctx)?;
             match (seed, generate) {
                 (Some(phrase), false) => store.add_wallet_from_seed(name, phrase)?,
@@ -153,7 +165,9 @@ async fn run(cli: Cli) -> Result<(), cli_wallet::WalletError> {
                     ));
                 }
                 _ => {
-                    return Err(cli_wallet::WalletError::WalletStore("pass exactly one of --seed <phrase> or --generate".to_string()));
+                    return Err(cli_wallet::WalletError::WalletStore(
+                        "pass exactly one of --seed <phrase> or --generate".to_string(),
+                    ));
                 }
             }
             println!("added wallet {name:?} to {}", ctx.wallets_path);
@@ -174,7 +188,11 @@ async fn run(cli: Cli) -> Result<(), cli_wallet::WalletError> {
                 balance.spendable_piconero, balance.spendable_outputs, balance.pending_piconero, balance.pending_outputs,
             );
         }
-        Command::Send { to, piconero, split } => {
+        Command::Send {
+            to,
+            piconero,
+            split,
+        } => {
             let hash = match split {
                 Some(n) => wallet.send_with_change_split(&to, piconero, n).await?,
                 None => wallet.send(&to, piconero).await?,
@@ -189,7 +207,9 @@ async fn run(cli: Cli) -> Result<(), cli_wallet::WalletError> {
             wallet.add_output(&txid).await?;
             println!("added output {txid} (resolved if already confirmed, pending otherwise)");
         }
-        Command::Wallet(WalletCommand::Add { .. }) | Command::Completions { .. } => unreachable!("handled above"),
+        Command::Wallet(WalletCommand::Add { .. }) | Command::Completions { .. } => {
+            unreachable!("handled above")
+        }
     }
     Ok(())
 }

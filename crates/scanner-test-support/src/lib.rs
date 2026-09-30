@@ -28,9 +28,9 @@
 //! dev-dependency is never linked into a normal (non-test, non-dev) build of
 //! whatever depends on it, by cargo's own rules.
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -130,7 +130,11 @@ struct LookupDaemonClient {
 
 impl LookupDaemonClient {
     fn find(&self, txid: &str) -> Option<monero::Transaction> {
-        self.mempool.lock().iter().find(|tx| scanner::scanner::tx_id_hex(tx) == txid).cloned()
+        self.mempool
+            .lock()
+            .iter()
+            .find(|tx| scanner::scanner::tx_id_hex(tx) == txid)
+            .cloned()
     }
 }
 
@@ -148,7 +152,10 @@ impl MoneroDaemonClient for LookupDaemonClient {
         Ok(0)
     }
 
-    async fn get_block_transactions(&self, _height: u64) -> Result<Vec<monero::Transaction>, DaemonError> {
+    async fn get_block_transactions(
+        &self,
+        _height: u64,
+    ) -> Result<Vec<monero::Transaction>, DaemonError> {
         Ok(vec![])
     }
 
@@ -157,14 +164,22 @@ impl MoneroDaemonClient for LookupDaemonClient {
     }
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
-        Ok(if self.find(txid).is_some() { TxLocation::InPool } else { TxLocation::NotFound })
+        Ok(if self.find(txid).is_some() {
+            TxLocation::InPool
+        } else {
+            TxLocation::NotFound
+        })
     }
 
     async fn get_transaction(&self, txid: &str) -> Result<monero::Transaction, DaemonError> {
-        self.find(txid).ok_or_else(|| DaemonError::Request(format!("no such transaction: {txid}")))
+        self.find(txid)
+            .ok_or_else(|| DaemonError::Request(format!("no such transaction: {txid}")))
     }
 
-    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+    async fn is_key_image_spent(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
         Ok(vec![KeyImageStatus::Unspent; key_images.len()])
     }
 }
@@ -280,7 +295,8 @@ impl TestEngineHandle {
     /// ones - for a caller asserting how many engine requests its own work
     /// costs against the engine's per-store rate limit.
     pub fn tenant_request_count(&self) -> usize {
-        self.tenant_requests.load(std::sync::atomic::Ordering::SeqCst)
+        self.tenant_requests
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Pays `order_id` in full, the way a real scan would record it: a
@@ -299,8 +315,13 @@ impl TestEngineHandle {
     pub fn mark_order_paid(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
         let amount = {
             let store = self.store.lock();
-            let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
-            store.get_order(&tenant_id, order_id)?.ok_or(scanner::store::StoreError::NotFound)?.xmr_amount_piconero
+            let tenant_id = store
+                .get_order_tenant_id(order_id)?
+                .ok_or(scanner::store::StoreError::NotFound)?;
+            store
+                .get_order(&tenant_id, order_id)?
+                .ok_or(scanner::store::StoreError::NotFound)?
+                .xmr_amount_piconero
         };
         self.record_order_payment(order_id, amount, Some(101))
     }
@@ -312,9 +333,20 @@ impl TestEngineHandle {
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
         let now = scanner::now_unix();
-        for payment in store.get_all_payments(order_id)?.into_iter().filter(|p| p.block_height.is_none()) {
-            store.record_payment_match(order_id, &payment.txid, payment.output_index, payment.amount_piconero,
-                &payment.key_images_json, payment.first_seen_at, Some(PAYMENT_HEIGHT))?;
+        for payment in store
+            .get_all_payments(order_id)?
+            .into_iter()
+            .filter(|p| p.block_height.is_none())
+        {
+            store.record_payment_match(
+                order_id,
+                &payment.txid,
+                payment.output_index,
+                payment.amount_piconero,
+                &payment.key_images_json,
+                payment.first_seen_at,
+                Some(PAYMENT_HEIGHT),
+            )?;
         }
         scanner::scanner::recompute_and_notify(&store, order_id, PAYMENT_HEIGHT as u64 + 100, now)
             .map_err(|e| match e {
@@ -329,11 +361,19 @@ impl TestEngineHandle {
     /// (height 1000) with the chain tip giving it `n` confirmations. Less
     /// than the order's amount leaves it `partial`. Each call is a separate
     /// transaction.
-    pub fn record_order_payment(&self, order_id: &str, piconero: u64, confirmations: Option<u64>) -> Result<(), scanner::store::StoreError> {
+    pub fn record_order_payment(
+        &self,
+        order_id: &str,
+        piconero: u64,
+        confirmations: Option<u64>,
+    ) -> Result<(), scanner::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
         let now = scanner::now_unix();
-        let existing = store.get_all_payments(order_id).map(|p| p.len()).unwrap_or(0);
+        let existing = store
+            .get_all_payments(order_id)
+            .map(|p| p.len())
+            .unwrap_or(0);
         store.record_payment_match(
             order_id,
             &format!("test-payment-{order_id}-{existing}"),
@@ -344,18 +384,20 @@ impl TestEngineHandle {
             confirmations.map(|_| PAYMENT_HEIGHT),
         )?;
         let tip = PAYMENT_HEIGHT as u64 + confirmations.unwrap_or(1).max(1) - 1;
-        scanner::scanner::recompute_and_notify(&store, order_id, tip, now)
-            .map_err(|e| match e {
-                scanner::scanner::ScannerError::Store(e) => e,
-                other => panic!("recomputing a test order's status failed: {other}"),
-            })
+        scanner::scanner::recompute_and_notify(&store, order_id, tip, now).map_err(|e| match e {
+            scanner::scanner::ScannerError::Store(e) => e,
+            other => panic!("recomputing a test order's status failed: {other}"),
+        })
     }
 }
 
 impl TestEngineHandle {
     /// Flags a double spend of `order_id`'s payment, as the scanner does when
     /// a key image it recorded turns up spent elsewhere.
-    pub fn mark_order_double_spent(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
+    pub fn mark_order_double_spent(
+        &self,
+        order_id: &str,
+    ) -> Result<(), scanner::store::StoreError> {
         let store = self.store.lock();
         store.mark_double_spend_detected(order_id, scanner::now_unix())?;
         Ok(())
@@ -367,8 +409,12 @@ impl TestEngineHandle {
     /// For tests of a customer who never pays.
     pub fn mark_order_expired(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
         let store = self.store.lock();
-        let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
-        let order = store.get_order(&tenant_id, order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
+        let tenant_id = store
+            .get_order_tenant_id(order_id)?
+            .ok_or(scanner::store::StoreError::NotFound)?;
+        let order = store
+            .get_order(&tenant_id, order_id)?
+            .ok_or(scanner::store::StoreError::NotFound)?;
         scanner::scanner::recompute_and_notify(&store, order_id, 1000, order.expires_at + 1)
             .map_err(|e| match e {
                 scanner::scanner::ScannerError::Store(e) => e,
@@ -632,13 +678,15 @@ impl TestEngineConfig {
         let (key_custody, key_custody_backend): (Arc<dyn KeyCustody>, &'static str) =
             match &self.key_custody_socket_path {
                 Some(socket_path) => {
-                    let client = SocketKeyCustody::connect(socket_path).await.unwrap_or_else(|e| {
-                        panic!(
-                            "test engine failed to connect to key-custody-server at \
+                    let client = SocketKeyCustody::connect(socket_path)
+                        .await
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "test engine failed to connect to key-custody-server at \
                              {socket_path}: {e} - with_socket_key_custody requires the server \
                              to already be listening before spawn() is called"
-                        )
-                    });
+                            )
+                        });
                     (Arc::new(client), "socket")
                 }
                 None if self.two_custody_backends => {
@@ -650,10 +698,16 @@ impl TestEngineConfig {
                         None => Arc::new(PlainKeyCustody::default()),
                     };
                     let backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::from([
-                        ("plain".to_string(), Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>),
+                        (
+                            "plain".to_string(),
+                            Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
+                        ),
                         ("socket".to_string(), socket),
                     ]);
-                    (Arc::new(scanner::key_custody::CustodyRouter::new(backends, "plain")), "plain")
+                    (
+                        Arc::new(scanner::key_custody::CustodyRouter::new(backends, "plain")),
+                        "plain",
+                    )
                 }
                 None => (Arc::new(PlainKeyCustody::default()), "plain"),
             };
@@ -666,7 +720,9 @@ impl TestEngineConfig {
             Arc::new(RwLock::new(HashMap::new()));
 
         let lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>> = Arc::default();
-        let admin_rate_limiter = Arc::new(RateLimiter::new(self.rate_limit_per_minute.unwrap_or(10_000)));
+        let admin_rate_limiter = Arc::new(RateLimiter::new(
+            self.rate_limit_per_minute.unwrap_or(10_000),
+        ));
         // Real settings, so the instance-admin settings API works; node
         // settings are saved but not applied (this harness's daemons are
         // fixed fakes) unless `with_live_nodes`. The rate limit keeps this
@@ -679,7 +735,9 @@ impl TestEngineConfig {
                         network,
                         Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
                             label: "lookup-test-daemon".to_string(),
-                            client: Arc::new(LookupDaemonClient { mempool: lookup_mempool.clone() }),
+                            client: Arc::new(LookupDaemonClient {
+                                mempool: lookup_mempool.clone(),
+                            }),
                         }])),
                     )
                 })
@@ -701,15 +759,18 @@ impl TestEngineConfig {
                 })
                 .collect::<HashMap<_, _>>()
         });
-        let engine_settings =
-            scanner::engine_settings::EngineSettings::load_with(
-                store.clone(),
-                self.live_nodes.then(|| scanner::engine_settings::NodesReloadable { daemons: daemons.clone(), strict_tls: false }),
-                Arc::new(RateLimiter::new(1)),
-                live_settings::Env::process(),
-            )
-                .await
-                .expect("test engine settings load from an empty store");
+        let engine_settings = scanner::engine_settings::EngineSettings::load_with(
+            store.clone(),
+            self.live_nodes
+                .then(|| scanner::engine_settings::NodesReloadable {
+                    daemons: daemons.clone(),
+                    strict_tls: false,
+                }),
+            Arc::new(RateLimiter::new(1)),
+            live_settings::Env::process(),
+        )
+        .await
+        .expect("test engine settings load from an empty store");
         let app_state = AppState {
             db: scanner::store::Db::over_shared(store.clone()),
             store: store.clone(),
@@ -1133,8 +1194,10 @@ mod tests {
     /// ceiling` use, copied verbatim (not re-derived) so this test provably
     /// exercises the identical scenario those already-trusted tests do.
     fn fixture_tx() -> monero::Transaction {
-        let raw = hex::decode(include_str!("../../scanner/tests/fixtures/subaddress_tx.hex"))
-            .expect("fixture is valid hex");
+        let raw = hex::decode(include_str!(
+            "../../scanner/tests/fixtures/subaddress_tx.hex"
+        ))
+        .expect("fixture is valid hex");
         monero::consensus::encode::deserialize(&raw).expect("fixture is a valid monero tx")
     }
 
@@ -1186,7 +1249,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        panic!("key-custody-server never became reachable at {}", path.display());
+        panic!(
+            "key-custody-server never became reachable at {}",
+            path.display()
+        );
     }
 
     /// Runs the real order-creation-plus-chain-scan scenario against a freshly
@@ -1212,7 +1278,10 @@ mod tests {
         // own `xmr_amount_piconero: 1`. A too-large amount here would make the
         // order land on `partial` instead of `unconfirmed`, which is exactly what
         // the first version of this test got wrong before this comment was added.
-        let engine = engine_config.with_networks(&[Network::Mainnet]).spawn().await;
+        let engine = engine_config
+            .with_networks(&[Network::Mainnet])
+            .spawn()
+            .await;
         let base_url = format!("http://{}", engine.addr);
         let client = reqwest::Client::new();
 
@@ -1263,8 +1332,13 @@ mod tests {
             .expect("get_order_status response was not valid JSON");
 
         (
-            status["status"].as_str().expect("status field present").to_string(),
-            status["amount_received_piconero"].as_u64().expect("amount_received_piconero field present"),
+            status["status"]
+                .as_str()
+                .expect("status field present")
+                .to_string(),
+            status["amount_received_piconero"]
+                .as_u64()
+                .expect("amount_received_piconero field present"),
         )
     }
 
@@ -1275,7 +1349,9 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("key-custody-server runtime");
         let path = socket_path.to_path_buf();
         runtime.spawn(async move {
-            let server = key_custody_server::server::KeyCustodyServer::new(scanner::key_custody::PlainKeyCustody::default());
+            let server = key_custody_server::server::KeyCustodyServer::new(
+                scanner::key_custody::PlainKeyCustody::default(),
+            );
             if let Err(e) = server.listen(&path).await {
                 eprintln!("test key-custody-server on {}: {e}", path.display());
             }
@@ -1330,8 +1406,15 @@ mod tests {
             .unwrap();
         let secret_token = created["secret_token"].as_str().unwrap().to_string();
         let backend = || async {
-            let me: serde_json::Value =
-                client.get(format!("{base_url}/api/v1/admin/tenant")).bearer_auth(&secret_token).send().await.unwrap().json().await.unwrap();
+            let me: serde_json::Value = client
+                .get(format!("{base_url}/api/v1/admin/tenant"))
+                .bearer_auth(&secret_token)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
             me["key_custody_backend"].as_str().unwrap().to_string()
         };
         assert_eq!(backend().await, "plain", "the default");
@@ -1365,8 +1448,15 @@ mod tests {
         // The key-custody server goes down just as the payment shows up.
         server.shutdown_background();
         let _ = std::fs::remove_file(&socket_path);
-        engine.run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20).await.expect("the tick carries on without that store");
-        assert_eq!(order_status(&base_url, &secret_token, &order_id).await, "pending", "nothing could be scanned for it");
+        engine
+            .run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20)
+            .await
+            .expect("the tick carries on without that store");
+        assert_eq!(
+            order_status(&base_url, &secret_token, &order_id).await,
+            "pending",
+            "nothing could be scanned for it"
+        );
 
         // It comes back, empty. The first scan finds the store's handle
         // unknown, the next registration puts it back, and the payment is
@@ -1376,7 +1466,10 @@ mod tests {
         let mut matched = false;
         for _ in 0..3 {
             engine.register_missing_wallets_now("mainnet").await;
-            engine.run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20).await.unwrap();
+            engine
+                .run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20)
+                .await
+                .unwrap();
             if order_status(&base_url, &secret_token, &order_id).await == "unconfirmed" {
                 matched = true;
                 break;
@@ -1384,7 +1477,10 @@ mod tests {
         }
         server.shutdown_background();
         let _ = std::fs::remove_file(&socket_path);
-        assert!(matched, "the payment made during the outage was matched once the key-custody server was back");
+        assert!(
+            matched,
+            "the payment made during the outage was matched once the key-custody server was back"
+        );
     }
 
     /// WBS 2.1.3's own acceptance bar, quoted directly: "the engine's existing
@@ -1428,7 +1524,8 @@ mod tests {
         wait_for_unix_socket(&socket_path).await;
 
         let socket_result = run_order_creation_and_scan_scenario(
-            TestEngineConfig::new().with_socket_key_custody(socket_path.to_string_lossy().to_string()),
+            TestEngineConfig::new()
+                .with_socket_key_custody(socket_path.to_string_lossy().to_string()),
         )
         .await;
         let _ = std::fs::remove_file(&socket_path);
@@ -1443,6 +1540,9 @@ mod tests {
         // And that shared outcome is the genuine, expected match - not two
         // backends agreeing on a no-op.
         assert_eq!(plain_result.0, "unconfirmed");
-        assert!(plain_result.1 > 0, "the fixture transaction's amount must have been detected");
+        assert!(
+            plain_result.1 > 0,
+            "the fixture transaction's amount must have been detected"
+        );
     }
 }

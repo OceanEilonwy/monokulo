@@ -11,8 +11,8 @@ use crate::key_custody::{KeyCustodyError, SubaddressIndex};
 use crate::store::{NewOrder, Tenant};
 
 use super::{
-    forget_wallet_handle, parse_network, resolve_wallet_handle, AppState, ApiError, AuthedTenant, now_unix,
-    UNKNOWN_WALLET_RETRIES,
+    forget_wallet_handle, now_unix, parse_network, resolve_wallet_handle, ApiError, AppState,
+    AuthedTenant, UNKNOWN_WALLET_RETRIES,
 };
 
 /// XMR-only, per `docs/fx_refactor.md` Phase 3: this process has no concept of fiat
@@ -53,9 +53,15 @@ pub async fn create_order_for_admin(
     create_order_for_tenant(state, tenant, req).await
 }
 
-async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrderRequest) -> Result<Json<CreateOrderResponse>, ApiError> {
+async fn create_order_for_tenant(
+    state: AppState,
+    tenant: Tenant,
+    req: CreateOrderRequest,
+) -> Result<Json<CreateOrderResponse>, ApiError> {
     if req.xmr_amount_piconero == 0 {
-        return Err(ApiError::BadRequest("xmr_amount_piconero must be greater than zero".into()));
+        return Err(ApiError::BadRequest(
+            "xmr_amount_piconero must be greater than zero".into(),
+        ));
     }
     super::admin::validate_confirmations_required(req.confirmations_required)?;
 
@@ -85,10 +91,19 @@ async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrd
     let mut created = None;
     for _ in 0..8 {
         let id = tenant.id.clone();
-        let minor_index = state.write_store(move |s| s.peek_next_minor_index(&id)).await?;
-        let index = SubaddressIndex { major: 0, minor: minor_index };
+        let minor_index = state
+            .write_store(move |s| s.peek_next_minor_index(&id))
+            .await?;
+        let index = SubaddressIndex {
+            major: 0,
+            minor: minor_index,
+        };
         let address = loop {
-            match state.key_custody.derive_subaddress(handle, index, network).await {
+            match state
+                .key_custody
+                .derive_subaddress(handle, index, network)
+                .await
+            {
                 Ok(address) => break address,
                 Err(KeyCustodyError::UnknownWallet) if retries < UNKNOWN_WALLET_RETRIES => {
                     retries += 1;
@@ -99,24 +114,29 @@ async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrd
             }
         };
         let new_order = NewOrder {
-                confirmations_required_override: req.confirmations_required,
-                tenant_id: tenant.id.clone(),
-                merchant_order_id: req.merchant_order_id.clone(),
-                minor_index,
-                address: address.to_string(),
-                xmr_amount_piconero: req.xmr_amount_piconero,
-                description: req.description.clone(),
-                created_at: now,
-                expires_at: now + tenant.order_expiry_seconds,
-            };
-        let order = state.write_store(move |s| s.create_order_claiming_minor_index(minor_index, new_order)).await?;
+            confirmations_required_override: req.confirmations_required,
+            tenant_id: tenant.id.clone(),
+            merchant_order_id: req.merchant_order_id.clone(),
+            minor_index,
+            address: address.to_string(),
+            xmr_amount_piconero: req.xmr_amount_piconero,
+            description: req.description.clone(),
+            created_at: now,
+            expires_at: now + tenant.order_expiry_seconds,
+        };
+        let order = state
+            .write_store(move |s| s.create_order_claiming_minor_index(minor_index, new_order))
+            .await?;
         if let Some(order) = order {
             created = Some(order);
             break;
         }
     }
     let order = created.ok_or_else(|| {
-        ApiError::Internal("could not claim a subaddress index for this order - too much concurrent contention".into())
+        ApiError::Internal(
+            "could not claim a subaddress index for this order - too much concurrent contention"
+                .into(),
+        )
     })?;
 
     Ok(Json(CreateOrderResponse {

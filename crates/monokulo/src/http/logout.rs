@@ -23,7 +23,14 @@ use axum::http::StatusCode;
 
 use super::{ApiError, AppState, AuthedUser};
 
-pub async fn logout(State(state): State<AppState>, AuthedUser(_user, token_hash): AuthedUser) -> Result<StatusCode, ApiError> {
-    state.db.lock().delete_session(&token_hash).map_err(|_| ApiError::Internal)?;
+pub async fn logout(
+    State(state): State<AppState>,
+    AuthedUser(_user, token_hash): AuthedUser,
+) -> Result<StatusCode, ApiError> {
+    state
+        .db
+        .lock()
+        .delete_session(&token_hash)
+        .map_err(|_| ApiError::Internal)?;
     Ok(StatusCode::NO_CONTENT)
 }

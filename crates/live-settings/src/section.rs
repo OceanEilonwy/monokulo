@@ -19,7 +19,10 @@ pub struct FieldError {
 
 impl FieldError {
     pub fn new(key: impl Into<String>, message: impl Into<String>) -> Self {
-        FieldError { key: key.into(), message: message.into() }
+        FieldError {
+            key: key.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -42,11 +45,17 @@ pub struct Warning {
 
 impl Warning {
     pub fn new(message: impl Into<String>) -> Self {
-        Warning { key: None, message: message.into() }
+        Warning {
+            key: None,
+            message: message.into(),
+        }
     }
 
     pub fn for_key(key: impl Into<String>, message: impl Into<String>) -> Self {
-        Warning { key: Some(key.into()), message: message.into() }
+        Warning {
+            key: Some(key.into()),
+            message: message.into(),
+        }
     }
 }
 
@@ -101,7 +110,9 @@ struct LiveInner<T> {
 
 impl<T> Clone for Live<T> {
     fn clone(&self) -> Self {
-        Live { inner: Arc::clone(&self.inner) }
+        Live {
+            inner: Arc::clone(&self.inner),
+        }
     }
 }
 
@@ -116,7 +127,12 @@ impl<T> Live<T> {
     /// for handing fixed settings to code under test.
     pub fn new(value: T) -> Self {
         let (changed, _) = watch::channel(());
-        Live { inner: Arc::new(LiveInner { value: RwLock::new(Arc::new(value)), changed }) }
+        Live {
+            inner: Arc::new(LiveInner {
+                value: RwLock::new(Arc::new(value)),
+                changed,
+            }),
+        }
     }
 
     /// The current value.
@@ -167,7 +183,11 @@ pub trait Reloadable: Send + Sync + 'static {
     /// At boot nothing is installed yet and `old` is the section with every
     /// setting at its default, so an implementation must not skip building
     /// just because `new == old`.
-    async fn prepare(&self, new: &Self::Config, old: &Self::Config) -> Result<(Self::Prepared, Vec<Warning>), FieldError>;
+    async fn prepare(
+        &self,
+        new: &Self::Config,
+        old: &Self::Config,
+    ) -> Result<(Self::Prepared, Vec<Warning>), FieldError>;
 
     /// Swaps the prepared state in. Must not fail. The registry awaits it
     /// while still holding the save mutex, so the next save can't overlap

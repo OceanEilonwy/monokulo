@@ -88,11 +88,19 @@ impl IpNet {
         let ip = ip.to_canonical();
         match (self.network, ip) {
             (IpAddr::V4(net), IpAddr::V4(ip)) => {
-                let mask = if self.prefix == 0 { 0 } else { u32::MAX << (32 - self.prefix) };
+                let mask = if self.prefix == 0 {
+                    0
+                } else {
+                    u32::MAX << (32 - self.prefix)
+                };
                 u32::from(net) & mask == u32::from(ip) & mask
             }
             (IpAddr::V6(net), IpAddr::V6(ip)) => {
-                let mask = if self.prefix == 0 { 0 } else { u128::MAX << (128 - self.prefix) };
+                let mask = if self.prefix == 0 {
+                    0
+                } else {
+                    u128::MAX << (128 - self.prefix)
+                };
                 u128::from(net) & mask == u128::from(ip) & mask
             }
             _ => false,
@@ -109,7 +117,9 @@ impl FromStr for IpNet {
             Some((address, prefix)) => (address, Some(prefix)),
             None => (input, None),
         };
-        let network: IpAddr = address.parse().map_err(|_| format!("{input:?} is not an IP address or CIDR range"))?;
+        let network: IpAddr = address
+            .parse()
+            .map_err(|_| format!("{input:?} is not an IP address or CIDR range"))?;
         let network = network.to_canonical();
         let max = if network.is_ipv4() { 32 } else { 128 };
         let prefix = match prefix {
@@ -156,14 +166,22 @@ impl TrustedProxies {
 /// left-most one is used. A malformed entry ends the walk: everything to its
 /// left was written by someone we don't trust, so the last good address
 /// seen is used, or the peer if there is none.
-pub fn client_address(peer: IpAddr, forwarded_for: Option<&str>, trusted: &TrustedProxies) -> IpAddr {
+pub fn client_address(
+    peer: IpAddr,
+    forwarded_for: Option<&str>,
+    trusted: &TrustedProxies,
+) -> IpAddr {
     if !trusted.contains(peer) {
         return peer;
     }
-    let Some(header) = forwarded_for else { return peer };
+    let Some(header) = forwarded_for else {
+        return peer;
+    };
     let mut chosen = peer;
     for entry in header.rsplit(',') {
-        let Some(address) = parse_forwarded_entry(entry) else { break };
+        let Some(address) = parse_forwarded_entry(entry) else {
+            break;
+        };
         chosen = address;
         if !trusted.contains(address) {
             break;
@@ -182,7 +200,10 @@ fn parse_forwarded_entry(entry: &str) -> Option<IpAddr> {
     if let Ok(socket) = entry.parse::<std::net::SocketAddr>() {
         return Some(socket.ip());
     }
-    entry.strip_prefix('[').and_then(|rest| rest.split_once(']')).and_then(|(ip, _)| ip.parse().ok())
+    entry
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .and_then(|(ip, _)| ip.parse().ok())
 }
 
 #[cfg(test)]
@@ -195,11 +216,26 @@ mod tests {
 
     #[test]
     fn ipv6_clients_are_grouped_by_their_64_and_ipv4_is_kept_whole() {
-        assert_eq!(ClientIdentity::from_address(ip("2001:db8:1:2:aaaa::1")), ClientIdentity::from_address(ip("2001:db8:1:2:bbbb::9")));
-        assert_ne!(ClientIdentity::from_address(ip("2001:db8:1:2::1")), ClientIdentity::from_address(ip("2001:db8:1:3::1")));
-        assert_eq!(ClientIdentity::from_address(ip("192.0.2.7")), ClientIdentity::Address(ip("192.0.2.7")));
-        assert_ne!(ClientIdentity::from_address(ip("192.0.2.7")), ClientIdentity::from_address(ip("192.0.2.8")));
-        assert_eq!(ClientIdentity::from_address(ip("::ffff:192.0.2.7")), ClientIdentity::Address(ip("192.0.2.7")));
+        assert_eq!(
+            ClientIdentity::from_address(ip("2001:db8:1:2:aaaa::1")),
+            ClientIdentity::from_address(ip("2001:db8:1:2:bbbb::9"))
+        );
+        assert_ne!(
+            ClientIdentity::from_address(ip("2001:db8:1:2::1")),
+            ClientIdentity::from_address(ip("2001:db8:1:3::1"))
+        );
+        assert_eq!(
+            ClientIdentity::from_address(ip("192.0.2.7")),
+            ClientIdentity::Address(ip("192.0.2.7"))
+        );
+        assert_ne!(
+            ClientIdentity::from_address(ip("192.0.2.7")),
+            ClientIdentity::from_address(ip("192.0.2.8"))
+        );
+        assert_eq!(
+            ClientIdentity::from_address(ip("::ffff:192.0.2.7")),
+            ClientIdentity::Address(ip("192.0.2.7"))
+        );
     }
 
     #[test]
@@ -210,10 +246,16 @@ mod tests {
         assert!(trusted.contains(ip("10.200.3.4")));
         assert!(trusted.contains(ip("fd12::1")));
         assert!(!trusted.contains(ip("fe80::1")));
-        assert!(trusted.contains(ip("::ffff:10.1.1.1")), "an IPv4-mapped peer matches its IPv4 range");
+        assert!(
+            trusted.contains(ip("::ffff:10.1.1.1")),
+            "an IPv4-mapped peer matches its IPv4 range"
+        );
         assert!(TrustedProxies::parse("").unwrap().is_empty());
         for bad in ["localhost", "10.0.0.0/33", "fd00::/129", "1.2.3"] {
-            assert!(TrustedProxies::parse(bad).is_err(), "{bad} should be refused");
+            assert!(
+                TrustedProxies::parse(bad).is_err(),
+                "{bad} should be refused"
+            );
         }
     }
 
@@ -221,21 +263,52 @@ mod tests {
     fn forwarded_for_is_only_believed_from_a_trusted_proxy() {
         let trusted = TrustedProxies::parse("127.0.0.1").unwrap();
         // An untrusted peer can't claim to be someone else.
-        assert_eq!(client_address(ip("203.0.113.5"), Some("198.51.100.1"), &trusted), ip("203.0.113.5"));
+        assert_eq!(
+            client_address(ip("203.0.113.5"), Some("198.51.100.1"), &trusted),
+            ip("203.0.113.5")
+        );
         // A trusted proxy's forwarded address is used.
-        assert_eq!(client_address(ip("127.0.0.1"), Some("198.51.100.1"), &trusted), ip("198.51.100.1"));
+        assert_eq!(
+            client_address(ip("127.0.0.1"), Some("198.51.100.1"), &trusted),
+            ip("198.51.100.1")
+        );
         // The last untrusted address wins, so a spoofed left-most entry is ignored.
-        assert_eq!(client_address(ip("127.0.0.1"), Some("6.6.6.6, 198.51.100.1"), &trusted), ip("198.51.100.1"));
+        assert_eq!(
+            client_address(ip("127.0.0.1"), Some("6.6.6.6, 198.51.100.1"), &trusted),
+            ip("198.51.100.1")
+        );
         // A chain of trusted proxies is walked through.
         let chain = TrustedProxies::parse("127.0.0.1, 10.0.0.0/8").unwrap();
-        assert_eq!(client_address(ip("127.0.0.1"), Some("6.6.6.6, 198.51.100.1, 10.0.0.2"), &chain), ip("198.51.100.1"));
+        assert_eq!(
+            client_address(
+                ip("127.0.0.1"),
+                Some("6.6.6.6, 198.51.100.1, 10.0.0.2"),
+                &chain
+            ),
+            ip("198.51.100.1")
+        );
         // Ports and brackets are tolerated.
-        assert_eq!(client_address(ip("127.0.0.1"), Some("[2001:db8::1]:443"), &trusted), ip("2001:db8::1"));
-        assert_eq!(client_address(ip("127.0.0.1"), Some("198.51.100.1:5000"), &trusted), ip("198.51.100.1"));
+        assert_eq!(
+            client_address(ip("127.0.0.1"), Some("[2001:db8::1]:443"), &trusted),
+            ip("2001:db8::1")
+        );
+        assert_eq!(
+            client_address(ip("127.0.0.1"), Some("198.51.100.1:5000"), &trusted),
+            ip("198.51.100.1")
+        );
         // No header, or garbage: the peer.
-        assert_eq!(client_address(ip("127.0.0.1"), None, &trusted), ip("127.0.0.1"));
-        assert_eq!(client_address(ip("127.0.0.1"), Some("not-an-ip"), &trusted), ip("127.0.0.1"));
+        assert_eq!(
+            client_address(ip("127.0.0.1"), None, &trusted),
+            ip("127.0.0.1")
+        );
+        assert_eq!(
+            client_address(ip("127.0.0.1"), Some("not-an-ip"), &trusted),
+            ip("127.0.0.1")
+        );
         // Garbage to the left of a good entry stops the walk at the good entry.
-        assert_eq!(client_address(ip("127.0.0.1"), Some("junk, 198.51.100.1"), &trusted), ip("198.51.100.1"));
+        assert_eq!(
+            client_address(ip("127.0.0.1"), Some("junk, 198.51.100.1"), &trusted),
+            ip("198.51.100.1")
+        );
     }
 }

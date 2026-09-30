@@ -50,8 +50,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     DeriveSubaddressRequest, DeriveSubaddressResponse, RegisterWalletRequest,
-    RegisterWalletResponse, RemoveWalletRequest, RemoveWalletResponse, ScanTxOutputsForIndicesRequest,
-    ScanTxOutputsForIndicesResponse, ScanTxOutputsRequest,
+    RegisterWalletResponse, RemoveWalletRequest, RemoveWalletResponse,
+    ScanTxOutputsForIndicesRequest, ScanTxOutputsForIndicesResponse, ScanTxOutputsRequest,
     ScanTxOutputsResponse, SealRequest, SealResponse, UnsealAndRegisterRequest,
     UnsealAndRegisterResponse,
 };
@@ -187,5 +187,7 @@ where
     }
     let mut payload = vec![0u8; len as usize];
     reader.read_exact(&mut payload).await?;
-    serde_json::from_slice(&payload).map_err(FramingError::Decode).map(Some)
+    serde_json::from_slice(&payload)
+        .map_err(FramingError::Decode)
+        .map(Some)
 }

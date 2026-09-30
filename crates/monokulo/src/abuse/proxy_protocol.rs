@@ -71,10 +71,17 @@ pub fn parse_v1_header(line: &str) -> Result<IpAddr, String> {
     let family = parts.next().ok_or("missing protocol family")?;
     let fields: Vec<&str> = parts.collect();
     let [source, destination, source_port, destination_port] = fields[..] else {
-        return Err(format!("expected 4 fields after {family}, got {}", fields.len()));
+        return Err(format!(
+            "expected 4 fields after {family}, got {}",
+            fields.len()
+        ));
     };
-    let source: IpAddr = source.parse().map_err(|_| format!("bad source address {source:?}"))?;
-    let destination: IpAddr = destination.parse().map_err(|_| format!("bad destination address {destination:?}"))?;
+    let source: IpAddr = source
+        .parse()
+        .map_err(|_| format!("bad source address {source:?}"))?;
+    let destination: IpAddr = destination
+        .parse()
+        .map_err(|_| format!("bad destination address {destination:?}"))?;
     let family_matches = match family {
         "TCP4" => source.is_ipv4() && destination.is_ipv4(),
         "TCP6" => source.is_ipv6() && destination.is_ipv6(),
@@ -84,7 +91,8 @@ pub fn parse_v1_header(line: &str) -> Result<IpAddr, String> {
         return Err(format!("addresses don't match {family}"));
     }
     for port in [source_port, destination_port] {
-        port.parse::<u16>().map_err(|_| format!("bad port {port:?}"))?;
+        port.parse::<u16>()
+            .map_err(|_| format!("bad port {port:?}"))?;
     }
     Ok(source)
 }
@@ -94,10 +102,14 @@ pub fn parse_v1_header(line: &str) -> Result<IpAddr, String> {
 async fn read_header(stream: &mut TcpStream) -> Result<IpAddr, String> {
     let mut line = Vec::with_capacity(MAX_HEADER_LEN);
     loop {
-        let byte = stream.read_u8().await.map_err(|e| format!("connection ended before a PROXY header: {e}"))?;
+        let byte = stream
+            .read_u8()
+            .await
+            .map_err(|e| format!("connection ended before a PROXY header: {e}"))?;
         line.push(byte);
         if line.ends_with(b"\r\n") {
-            let text = std::str::from_utf8(&line[..line.len() - 2]).map_err(|_| "PROXY header is not text".to_string())?;
+            let text = std::str::from_utf8(&line[..line.len() - 2])
+                .map_err(|_| "PROXY header is not text".to_string())?;
             return parse_v1_header(text);
         }
         if line.len() >= MAX_HEADER_LEN {
@@ -113,7 +125,9 @@ pub fn validate_onion_listener(value: &str) -> Result<Option<SocketAddr>, String
     if value.is_empty() {
         return Ok(None);
     }
-    let address: SocketAddr = value.parse().map_err(|_| format!("{value:?} is not an address:port, e.g. 127.0.0.1:8082"))?;
+    let address: SocketAddr = value
+        .parse()
+        .map_err(|_| format!("{value:?} is not an address:port, e.g. 127.0.0.1:8082"))?;
     if !address.ip().is_loopback() {
         return Err(format!(
             "{value} is not a loopback address: the onion listener believes the PROXY header tor sends, so only \
@@ -159,8 +173,12 @@ impl OnionListener {
                         Ok(Ok(source)) => {
                             let _ = connection_sender.send((stream, OnionPeer { source })).await;
                         }
-                        Ok(Err(e)) => tracing::info!(client.address = %peer, error = %e, "onion listener: refused a connection"),
-                        Err(_) => tracing::info!(client.address = %peer, timeout = ?HEADER_TIMEOUT, "onion listener: refused a connection: no PROXY header in time"),
+                        Ok(Err(e)) => {
+                            tracing::info!(client.address = %peer, error = %e, "onion listener: refused a connection")
+                        }
+                        Err(_) => {
+                            tracing::info!(client.address = %peer, timeout = ?HEADER_TIMEOUT, "onion listener: refused a connection: no PROXY header in time")
+                        }
                     }
                 });
             }
@@ -183,7 +201,9 @@ impl Listener for OnionListener {
     }
 
     fn local_addr(&self) -> io::Result<Self::Addr> {
-        Ok(OnionPeer { source: self.local_addr.ip() })
+        Ok(OnionPeer {
+            source: self.local_addr.ip(),
+        })
     }
 }
 
@@ -206,7 +226,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_dropped_listener_frees_its_address_without_waiting_for_a_connection() {
-        let first = OnionListener::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let first = OnionListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
         let address = first.bound_address();
         drop(first);
         for _ in 0..20 {
@@ -220,15 +242,26 @@ mod tests {
 
     #[test]
     fn tor_headers_parse_and_carry_the_circuit_in_the_source_address() {
-        let source = parse_v1_header("PROXY TCP6 fc00:dead:beef:4dad::ffff:ffff ::1 65535 42").unwrap();
-        assert_eq!(OnionPeer { source }.identity(), ClientIdentity::Circuit(0xffff_ffff));
-        let source = parse_v1_header("PROXY TCP6 fc00:dead:beef:4dad::aabb:ccdd ::1 65535 42").unwrap();
-        assert_eq!(OnionPeer { source }.identity(), ClientIdentity::Circuit(0xaabb_ccdd));
+        let source =
+            parse_v1_header("PROXY TCP6 fc00:dead:beef:4dad::ffff:ffff ::1 65535 42").unwrap();
+        assert_eq!(
+            OnionPeer { source }.identity(),
+            ClientIdentity::Circuit(0xffff_ffff)
+        );
+        let source =
+            parse_v1_header("PROXY TCP6 fc00:dead:beef:4dad::aabb:ccdd ::1 65535 42").unwrap();
+        assert_eq!(
+            OnionPeer { source }.identity(),
+            ClientIdentity::Circuit(0xaabb_ccdd)
+        );
         let source = parse_v1_header("PROXY TCP6 fc00:dead:beef:4dad::0:29 ::1 65535 42").unwrap();
         assert_eq!(OnionPeer { source }.identity(), ClientIdentity::Circuit(41));
         // A non-tor PROXY sender: its real client address is the identity.
         let source = parse_v1_header("PROXY TCP4 198.51.100.7 127.0.0.1 51000 8082").unwrap();
-        assert_eq!(OnionPeer { source }.identity(), ClientIdentity::Address("198.51.100.7".parse().unwrap()));
+        assert_eq!(
+            OnionPeer { source }.identity(),
+            ClientIdentity::Address("198.51.100.7".parse().unwrap())
+        );
     }
 
     #[test]
@@ -253,7 +286,10 @@ mod tests {
     #[test]
     fn the_onion_listener_must_be_loopback() {
         assert_eq!(validate_onion_listener("").unwrap(), None);
-        assert_eq!(validate_onion_listener("127.0.0.1:8082").unwrap(), Some("127.0.0.1:8082".parse().unwrap()));
+        assert_eq!(
+            validate_onion_listener("127.0.0.1:8082").unwrap(),
+            Some("127.0.0.1:8082".parse().unwrap())
+        );
         assert!(validate_onion_listener("[::1]:8082").unwrap().is_some());
         assert!(validate_onion_listener("0.0.0.0:8082").is_err());
         assert!(validate_onion_listener("192.168.1.2:8082").is_err());

@@ -29,7 +29,11 @@ static RESTARTS: LazyLock<Mutex<HashMap<&'static str, u64>>> = LazyLock::new(Def
 /// How many times each supervised loop has been restarted since the process
 /// started, for status pages. Loops that never failed aren't listed.
 pub fn restart_counts() -> Vec<(&'static str, u64)> {
-    let mut counts: Vec<_> = RESTARTS.lock().iter().map(|(name, count)| (*name, *count)).collect();
+    let mut counts: Vec<_> = RESTARTS
+        .lock()
+        .iter()
+        .map(|(name, count)| (*name, *count))
+        .collect();
     counts.sort();
     counts
 }
@@ -53,7 +57,9 @@ where
         loop {
             let started = tokio::time::Instant::now();
             match tokio::spawn(make_loop()).await {
-                Ok(()) => tracing::error!(task = name, restart_in = ?backoff, "BUG: loop returned; it is not supposed to terminate. Restarting"),
+                Ok(()) => {
+                    tracing::error!(task = name, restart_in = ?backoff, "BUG: loop returned; it is not supposed to terminate. Restarting")
+                }
                 Err(e) if e.is_panic() => {
                     tracing::error!(task = name, error = %e, restart_in = ?backoff, "loop PANICKED. None of its work is happening until it restarts");
                 }
@@ -77,8 +83,11 @@ where
 /// only while something is configured, such as one network's scanner, which
 /// stops when that network's node setting is cleared (admin_settings_v2.md
 /// task 2.1).
-pub fn supervise_until<F, Fut>(name: &'static str, mut stop: tokio::sync::watch::Receiver<bool>, make_loop: F)
-where
+pub fn supervise_until<F, Fut>(
+    name: &'static str,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    make_loop: F,
+) where
     F: Fn() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -148,11 +157,23 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(starts.load(Ordering::SeqCst), 1);
         tokio::time::sleep(Duration::from_secs(5)).await;
-        assert_eq!(starts.load(Ordering::SeqCst), 2, "restarted after the panic");
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            2,
+            "restarted after the panic"
+        );
         tokio::time::sleep(Duration::from_secs(10)).await;
-        assert_eq!(starts.load(Ordering::SeqCst), 3, "restarted after returning, with the backoff doubled");
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            3,
+            "restarted after returning, with the backoff doubled"
+        );
         tokio::time::sleep(Duration::from_secs(60)).await;
-        assert_eq!(starts.load(Ordering::SeqCst), 3, "a loop that keeps running is left alone");
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            3,
+            "a loop that keeps running is left alone"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -166,13 +187,23 @@ mod tests {
         // Starts at 0s, then 5s, 15s, 35s, 75s later.
         for (wait_secs, expected) in [(1, 1), (5, 2), (10, 3), (20, 4), (40, 5)] {
             tokio::time::sleep(Duration::from_secs(wait_secs)).await;
-            assert_eq!(starts.load(Ordering::SeqCst), expected, "after waiting {wait_secs}s more");
+            assert_eq!(
+                starts.load(Ordering::SeqCst),
+                expected,
+                "after waiting {wait_secs}s more"
+            );
         }
-        let restarts = restart_counts().into_iter().find(|(name, _)| *name == "backoff-test").map(|(_, n)| n);
+        let restarts = restart_counts()
+            .into_iter()
+            .find(|(name, _)| *name == "backoff-test")
+            .map(|(_, n)| n);
         assert!(restarts >= Some(4), "got {restarts:?}");
         // Capped: it never waits longer than 5 minutes.
         tokio::time::sleep(Duration::from_secs(60 * 60)).await;
-        assert!(starts.load(Ordering::SeqCst) >= 5 + 11, "at most 5 minutes between restarts once capped");
+        assert!(
+            starts.load(Ordering::SeqCst) >= 5 + 11,
+            "at most 5 minutes between restarts once capped"
+        );
     }
 
     #[tokio::test(start_paused = true)]

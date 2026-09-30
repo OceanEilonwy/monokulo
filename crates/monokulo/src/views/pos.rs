@@ -44,7 +44,13 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
         noscript { p class="error" { "POS requires JavaScript. Use Create an order on the store page instead." } }
         script type="module" src="/static/pos-app.js" {}
     };
-    layout_bare_with_head(chrome, &title, "width=device-width, initial-scale=1, viewport-fit=cover", head, body)
+    layout_bare_with_head(
+        chrome,
+        &title,
+        "width=device-width, initial-scale=1, viewport-fit=cover",
+        head,
+        body,
+    )
 }
 
 #[cfg(test)]
@@ -55,8 +61,12 @@ mod tests {
     fn renders_solid_mount_with_store_config_and_no_site_nav() {
         let chrome = PageChrome::from_user(None, "/dashboard/stores/conn-1/pos");
         let data = PosViewModel {
-            connection_id: "conn-1".into(), public_key: "pk_test".into(), display_name: "example.com".into(),
-            base_currency: "XMR".into(), base_currency_decimals: 12, client_logging: false,
+            connection_id: "conn-1".into(),
+            public_key: "pk_test".into(),
+            display_name: "example.com".into(),
+            base_currency: "XMR".into(),
+            base_currency_decimals: 12,
+            client_logging: false,
         };
         let html = page(&chrome, &data).into_string();
         assert!(html.contains("data-connection-id=\"conn-1\""));
@@ -65,6 +75,11 @@ mod tests {
         assert!(html.contains("/static/pos-app.js"));
         assert!(html.contains("/static/pos-app.css"));
         assert!(!html.contains("<nav class=\"site-nav\""));
-        assert!(html.contains(r#"<div id="pos-site-brand" hidden><a class="pos-brand" href="/dashboard""#), "the POS bar gets the site's mark: {html}");
+        assert!(
+            html.contains(
+                r#"<div id="pos-site-brand" hidden><a class="pos-brand" href="/dashboard""#
+            ),
+            "the POS bar gets the site's mark: {html}"
+        );
     }
 }

@@ -52,7 +52,11 @@ use super::orders::{decrypt_sk, display_name_for, load_owned_connection};
 use super::{ApiError, AppState, AuthedUser};
 
 /// `GET /dashboard/stores/{id}/pos` - the terminal screen itself.
-pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Path(id): Path<String>) -> Response {
+pub async fn pos_page(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -65,7 +69,11 @@ pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): Authed
     // precision (`shared::exchange_rate::parse_xmr_to_piconero`), which a
     // 2-decimal keypad would silently truncate. See this task's own "Decimal
     // entry" decision.
-    let base_currency_decimals: u8 = if row.base_currency.eq_ignore_ascii_case("XMR") { 12 } else { 2 };
+    let base_currency_decimals: u8 = if row.base_currency.eq_ignore_ascii_case("XMR") {
+        12
+    } else {
+        2
+    };
 
     let client_logging = state.db.lock().client_logging(&row.id).unwrap_or(false);
     let view = PosViewModel {
@@ -76,7 +84,11 @@ pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): Authed
         base_currency_decimals,
         client_logging,
     };
-    let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{}/pos", view.connection_id));
+    let chrome = super::page_chrome(
+        &state,
+        Some(&user),
+        format!("/dashboard/stores/{}/pos", view.connection_id),
+    );
     views::pos::page(&chrome, &view).into_response()
 }
 
@@ -152,28 +164,46 @@ pub async fn create_order(
         let existing = { state.db.lock().pos_order_by_request_key(&row.id, key) };
         match existing {
             Ok(Some(existing)) => {
-                let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
-                let detail = match state.engine_client.get_order_detail(&sk, &existing).await { Ok(detail) => detail, Err(_) => return ApiError::Internal.into_response() };
-                let metadata_result = { state.db.lock().get_order_currency_metadata(&row.id, &existing) };
+                let sk = match decrypt_sk(&state, &row) {
+                    Ok(sk) => sk,
+                    Err(()) => return ApiError::Internal.into_response(),
+                };
+                let detail = match state.engine_client.get_order_detail(&sk, &existing).await {
+                    Ok(detail) => detail,
+                    Err(_) => return ApiError::Internal.into_response(),
+                };
+                let metadata_result = {
+                    state
+                        .db
+                        .lock()
+                        .get_order_currency_metadata(&row.id, &existing)
+                };
                 let metadata = match metadata_result {
                     Ok(Some(metadata)) => metadata,
                     _ => return ApiError::Internal.into_response(),
                 };
                 if metadata.amount != req.amount.trim()
-                    || detail.order.merchant_order_id.as_deref().unwrap_or("") != req.merchant_order_id.as_deref().unwrap_or("").trim()
+                    || detail.order.merchant_order_id.as_deref().unwrap_or("")
+                        != req.merchant_order_id.as_deref().unwrap_or("").trim()
                 {
-                    return ApiError::BadRequest("Request key was already used for a different order.".to_string()).into_response();
+                    return ApiError::BadRequest(
+                        "Request key was already used for a different order.".to_string(),
+                    )
+                    .into_response();
                 }
                 return Json(PosCreateOrderResponse {
                     order_id: existing,
                     address: detail.order.address,
-                    xmr_amount: shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero),
+                    xmr_amount: shared::exchange_rate::format_piconero_as_xmr(
+                        detail.order.xmr_amount_piconero,
+                    ),
                     amount: metadata.amount,
                     currency: metadata.currency,
                     confirmations_required: metadata.confirmations_required_applied.unwrap_or(10),
                     expires_at: detail.order.expires_at,
                     merchant_order_id: detail.order.merchant_order_id,
-                }).into_response();
+                })
+                .into_response();
             }
             Ok(None) => {}
             Err(_) => return ApiError::Internal.into_response(),
@@ -185,44 +215,81 @@ pub async fn create_order(
         return ApiError::BadRequest("Enter an amount.".to_string()).into_response();
     }
     let currency = row.base_currency.clone();
-    let merchant_order_id = req.merchant_order_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-    if merchant_order_id.as_ref().is_some_and(|reference| reference.chars().count() > 120) {
-        return ApiError::BadRequest("Reference must be 120 characters or fewer.".to_string()).into_response();
+    let merchant_order_id = req
+        .merchant_order_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if merchant_order_id
+        .as_ref()
+        .is_some_and(|reference| reference.chars().count() > 120)
+    {
+        return ApiError::BadRequest("Reference must be 120 characters or fewer.".to_string())
+            .into_response();
     }
 
-    let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, &currency).await {
+    let (piconero_per_unit, provider) = match state
+        .exchange_rate
+        .piconero_per_unit_for(&row, &currency)
+        .await
+    {
         Ok(Some(result)) => result,
-        Ok(None) => return ApiError::BadRequest(format!("unsupported currency: {currency}")).into_response(),
+        Ok(None) => {
+            return ApiError::BadRequest(format!("unsupported currency: {currency}"))
+                .into_response()
+        }
         Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
-            return ApiError::BadRequest(format!("unsupported currency: {currency}")).into_response();
+            return ApiError::BadRequest(format!("unsupported currency: {currency}"))
+                .into_response();
         }
         Err(e) => {
             tracing::error!(store.id = %row.id, currency = ?currency, error = %e, "exchange rate lookup failed");
             return ApiError::Internal.into_response();
         }
     };
-    let xmr_amount_piconero = match shared::exchange_rate::compute_order_amount(&currency, amount, piconero_per_unit) {
-        Ok(amount) => amount,
-        Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
-    };
+    let xmr_amount_piconero =
+        match shared::exchange_rate::compute_order_amount(&currency, amount, piconero_per_unit) {
+            Ok(amount) => amount,
+            Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
+        };
 
     let sk = match decrypt_sk(&state, &row) {
         Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };
-    let resolution =
-        match crate::confirmation_thresholds::resolve_for_order(&state, &row, &sk, &currency, piconero_per_unit, xmr_amount_piconero).await {
-            Ok(resolution) => resolution,
-            Err(message) => return ApiError::BadRequest(message).into_response(),
-        };
+    let resolution = match crate::confirmation_thresholds::resolve_for_order(
+        &state,
+        &row,
+        &sk,
+        &currency,
+        piconero_per_unit,
+        xmr_amount_piconero,
+    )
+    .await
+    {
+        Ok(resolution) => resolution,
+        Err(message) => return ApiError::BadRequest(message).into_response(),
+    };
 
     match state
         .engine_client
-        .create_order(&sk, xmr_amount_piconero, merchant_order_id.clone(), Some(resolution.confirmations_required))
+        .create_order(
+            &sk,
+            xmr_amount_piconero,
+            merchant_order_id.clone(),
+            Some(resolution.confirmations_required),
+        )
         .await
     {
         Ok(order) => {
-            if let Err(e) = state.db.lock().insert_pos_order(&row.id, &order.order_id, req.request_key.as_deref(), merchant_order_id.as_deref(), crate::now_unix()) {
+            if let Err(e) = state.db.lock().insert_pos_order(
+                &row.id,
+                &order.order_id,
+                req.request_key.as_deref(),
+                merchant_order_id.as_deref(),
+                crate::now_unix(),
+            ) {
                 tracing::error!(order.id = %order.order_id, store.id = %row.id, error = %e, "failed to record a POS order");
                 return ApiError::Internal.into_response();
             }
@@ -248,9 +315,13 @@ pub async fn create_order(
                      response is still correct, but its fiat display on monokulo's own pages will be missing"
                 );
             }
-            let _ = state.db.lock().set_order_source(&row.id, &order.order_id, "pos");
+            let _ = state
+                .db
+                .lock()
+                .set_order_source(&row.id, &order.order_id, "pos");
 
-            let xmr_amount = shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
+            let xmr_amount =
+                shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
 
             Json(PosCreateOrderResponse {
                 order_id: order.order_id,
@@ -264,7 +335,9 @@ pub async fn create_order(
             })
             .into_response()
         }
-        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
+        Err(EngineClientError::EngineError { status, message })
+            if status == reqwest::StatusCode::BAD_REQUEST =>
+        {
             ApiError::BadRequest(message).into_response()
         }
         Err(_) => ApiError::Internal.into_response(),
@@ -325,8 +398,16 @@ pub struct PosOrderData {
     qr_svg: Option<String>,
 }
 
-async fn pos_order_data(state: &AppState, connection_id: &str, sk: &str, row: crate::db::PosOrderRow) -> Result<PosOrderData, EngineClientError> {
-    let detail = state.engine_client.get_order_detail(sk, &row.order_id).await?;
+async fn pos_order_data(
+    state: &AppState,
+    connection_id: &str,
+    sk: &str,
+    row: crate::db::PosOrderRow,
+) -> Result<PosOrderData, EngineClientError> {
+    let detail = state
+        .engine_client
+        .get_order_detail(sk, &row.order_id)
+        .await?;
     let mut data = pos_order_view(state, connection_id, row, &detail.order);
     data.qr_svg = super::checkout::payment_qr_svg(&detail.order).ok();
     Ok(data)
@@ -334,16 +415,37 @@ async fn pos_order_data(state: &AppState, connection_id: &str, sk: &str, row: cr
 
 /// One POS order as the terminal shows it, from its local row and the
 /// engine's view of it (read singly or in a batch).
-fn pos_order_view(state: &AppState, connection_id: &str, row: crate::db::PosOrderRow, order: &OrderView) -> PosOrderData {
-    let metadata = state.db.lock().get_order_currency_metadata(connection_id, &row.order_id).ok().flatten();
-    let confirmations_required = metadata.as_ref().and_then(|m| m.confirmations_required_applied).unwrap_or(10);
+fn pos_order_view(
+    state: &AppState,
+    connection_id: &str,
+    row: crate::db::PosOrderRow,
+    order: &OrderView,
+) -> PosOrderData {
+    let metadata = state
+        .db
+        .lock()
+        .get_order_currency_metadata(connection_id, &row.order_id)
+        .ok()
+        .flatten();
+    let confirmations_required = metadata
+        .as_ref()
+        .and_then(|m| m.confirmations_required_applied)
+        .unwrap_or(10);
     PosOrderData {
         order_id: row.order_id,
         merchant_order_id: order.merchant_order_id.clone(),
         address: order.address.clone(),
         xmr_amount: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
-        amount: metadata.as_ref().map(|m| m.amount.clone()).unwrap_or_else(|| shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero)),
-        currency: metadata.as_ref().map(|m| m.currency.clone()).unwrap_or_else(|| "XMR".to_string()),
+        amount: metadata
+            .as_ref()
+            .map(|m| m.amount.clone())
+            .unwrap_or_else(|| {
+                shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero)
+            }),
+        currency: metadata
+            .as_ref()
+            .map(|m| m.currency.clone())
+            .unwrap_or_else(|| "XMR".to_string()),
         status: order.status.clone(),
         updated_at: order.updated_at,
         confirmations: order.confirmations,
@@ -354,7 +456,11 @@ fn pos_order_view(state: &AppState, connection_id: &str, row: crate::db::PosOrde
         created_at: row.created_at,
         expires_at: order.expires_at,
         received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
-        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero)),
+        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(
+            order
+                .xmr_amount_piconero
+                .saturating_sub(order.amount_received_piconero),
+        ),
         refund_address: order.refund_address.clone(),
         qr_svg: None,
     }
@@ -363,7 +469,11 @@ fn pos_order_view(state: &AppState, connection_id: &str, row: crate::db::PosOrde
 /// The engine's views of `order_ids`, keyed by id, in as few requests as its
 /// per-request cap allows. The engine rate-limits each store, so a terminal
 /// watching many orders must not spend one request per order.
-async fn engine_orders(state: &AppState, sk: &str, order_ids: &[String]) -> Result<HashMap<String, OrderView>, EngineClientError> {
+async fn engine_orders(
+    state: &AppState,
+    sk: &str,
+    order_ids: &[String],
+) -> Result<HashMap<String, OrderView>, EngineClientError> {
     let mut orders = HashMap::with_capacity(order_ids.len());
     for chunk in order_ids.chunks(crate::engine_client::MAX_ORDER_IDS_PER_REQUEST) {
         for order in state.engine_client.list_orders_by_ids(sk, chunk).await? {
@@ -378,7 +488,11 @@ async fn engine_orders(state: &AppState, sk: &str, order_ids: &[String]) -> Resu
 /// is a retryable `503`, not an opaque internal error.
 fn engine_failure(error: &EngineClientError) -> Response {
     match error {
-        EngineClientError::EngineError { status, .. } if *status == reqwest::StatusCode::NOT_FOUND => ApiError::NotFound.into_response(),
+        EngineClientError::EngineError { status, .. }
+            if *status == reqwest::StatusCode::NOT_FOUND =>
+        {
+            ApiError::NotFound.into_response()
+        }
         _ => ApiError::EngineUnavailable.into_response(),
     }
 }
@@ -399,10 +513,17 @@ const OPEN_ORDERS_PAGE: u32 = 200;
 
 /// Every POS order of this store that is still open: the engine's open
 /// orders (web orders included) narrowed to the POS's own, not cancelled.
-async fn active_pos_orders(state: &AppState, connection_id: &str, sk: &str) -> Result<Vec<PosOrderData>, EngineClientError> {
+async fn active_pos_orders(
+    state: &AppState,
+    connection_id: &str,
+    sk: &str,
+) -> Result<Vec<PosOrderData>, EngineClientError> {
     let mut open = Vec::new();
     loop {
-        let page = state.engine_client.list_orders_page(sk, true, None, OPEN_ORDERS_PAGE, open.len() as u32).await?;
+        let page = state
+            .engine_client
+            .list_orders_page(sk, true, None, OPEN_ORDERS_PAGE, open.len() as u32)
+            .await?;
         let short = (page.len() as u32) < OPEN_ORDERS_PAGE;
         open.extend(page);
         if short {
@@ -410,34 +531,65 @@ async fn active_pos_orders(state: &AppState, connection_id: &str, sk: &str) -> R
         }
     }
     let ids: Vec<String> = open.iter().map(|order| order.order_id.clone()).collect();
-    let rows = state.db.lock().get_pos_orders(connection_id, &ids).unwrap_or_default();
-    let mut rows: HashMap<String, crate::db::PosOrderRow> = rows.into_iter().filter(|row| row.cancelled_at.is_none()).map(|row| (row.order_id.clone(), row)).collect();
-    Ok(open.into_iter().filter_map(|order| rows.remove(&order.order_id).map(|row| pos_order_view(state, connection_id, row, &order))).collect())
+    let rows = state
+        .db
+        .lock()
+        .get_pos_orders(connection_id, &ids)
+        .unwrap_or_default();
+    let mut rows: HashMap<String, crate::db::PosOrderRow> = rows
+        .into_iter()
+        .filter(|row| row.cancelled_at.is_none())
+        .map(|row| (row.order_id.clone(), row))
+        .collect();
+    Ok(open
+        .into_iter()
+        .filter_map(|order| {
+            rows.remove(&order.order_id)
+                .map(|row| pos_order_view(state, connection_id, row, &order))
+        })
+        .collect())
 }
 
 pub async fn list_orders(
-    State(state): State<AppState>, AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>, Query(query): Query<PosListQuery>,
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Query(query): Query<PosListQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
-        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(()) => return ApiError::Internal.into_response(),
+        Ok(Some(row)) => row,
+        Ok(None) => return ApiError::NotFound.into_response(),
+        Err(()) => return ApiError::Internal.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return ApiError::Internal.into_response(),
+    };
     if query.state.as_deref() == Some("active") {
         return match active_pos_orders(&state, &id, &sk).await {
-            Ok(orders) => Json(serde_json::json!({"orders": orders, "total": orders.len()})).into_response(),
+            Ok(orders) => {
+                Json(serde_json::json!({"orders": orders, "total": orders.len()})).into_response()
+            }
             Err(error) => engine_failure(&error),
         };
     }
     let offset = query.offset.unwrap_or(0).max(0);
     let limit = query.limit.unwrap_or(40).clamp(1, 100);
-    let search = query.search.as_deref().map(str::trim).filter(|term| !term.is_empty());
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|term| !term.is_empty());
     if search.is_some_and(|term| term.chars().count() > 120) {
         return ApiError::BadRequest("Search is too long.".to_string()).into_response();
     }
     let (rows, total) = match state.db.lock() {
-        db => match (db.list_pos_orders(&id, limit, offset, search), db.count_pos_orders(&id, search)) {
-            (Ok(rows), Ok(total)) => (rows, total), _ => return ApiError::Internal.into_response(),
+        db => match (
+            db.list_pos_orders(&id, limit, offset, search),
+            db.count_pos_orders(&id, search),
+        ) {
+            (Ok(rows), Ok(total)) => (rows, total),
+            _ => return ApiError::Internal.into_response(),
         },
     };
     let ids: Vec<String> = rows.iter().map(|row| row.order_id.clone()).collect();
@@ -446,23 +598,37 @@ pub async fn list_orders(
         Err(error) => return engine_failure(&error),
     };
     // An order the engine no longer knows is left out, as before.
-    let orders: Vec<PosOrderData> = rows.into_iter()
-        .filter_map(|row| views.remove(&row.order_id).map(|view| pos_order_view(&state, &id, row, &view)))
+    let orders: Vec<PosOrderData> = rows
+        .into_iter()
+        .filter_map(|row| {
+            views
+                .remove(&row.order_id)
+                .map(|view| pos_order_view(&state, &id, row, &view))
+        })
         .collect();
-    Json(serde_json::json!({"orders": orders, "total": total, "offset": offset, "limit": limit})).into_response()
+    Json(serde_json::json!({"orders": orders, "total": total, "offset": offset, "limit": limit}))
+        .into_response()
 }
 
 pub async fn order_detail(
-    State(state): State<AppState>, AuthedUser(user, _): AuthedUser,
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(String, String)>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
-        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(()) => return ApiError::Internal.into_response(),
+        Ok(Some(row)) => row,
+        Ok(None) => return ApiError::NotFound.into_response(),
+        Err(()) => return ApiError::Internal.into_response(),
     };
     let pos_row = match state.db.lock().get_pos_order(&id, &order_id) {
-        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(_) => return ApiError::Internal.into_response(),
+        Ok(Some(row)) => row,
+        Ok(None) => return ApiError::NotFound.into_response(),
+        Err(_) => return ApiError::Internal.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return ApiError::Internal.into_response(),
+    };
     match pos_order_data(&state, &id, &sk, pos_row).await {
         Ok(data) => Json(data).into_response(),
         Err(error) => engine_failure(&error),
@@ -470,10 +636,13 @@ pub async fn order_detail(
 }
 
 pub async fn background_order(
-    State(state): State<AppState>, AuthedUser(user, _): AuthedUser,
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(String, String)>,
 ) -> Response {
-    if !matches!(load_owned_connection(&state, &user, &id), Ok(Some(_))) { return ApiError::NotFound.into_response(); }
+    if !matches!(load_owned_connection(&state, &user, &id), Ok(Some(_))) {
+        return ApiError::NotFound.into_response();
+    }
     match state.db.lock().background_pos_order(&id, &order_id) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => ApiError::NotFound.into_response(),
@@ -482,24 +651,39 @@ pub async fn background_order(
 }
 
 pub async fn cancel_order(
-    State(state): State<AppState>, AuthedUser(user, _): AuthedUser,
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(String, String)>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
-        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(()) => return ApiError::Internal.into_response(),
+        Ok(Some(row)) => row,
+        Ok(None) => return ApiError::NotFound.into_response(),
+        Err(()) => return ApiError::Internal.into_response(),
     };
     let pos_row = match state.db.lock().get_pos_order(&id, &order_id) {
-        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(_) => return ApiError::Internal.into_response(),
+        Ok(Some(row)) => row,
+        Ok(None) => return ApiError::NotFound.into_response(),
+        Err(_) => return ApiError::Internal.into_response(),
     };
-    if pos_row.cancelled_at.is_some() { return StatusCode::NO_CONTENT.into_response(); }
-    let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
+    if pos_row.cancelled_at.is_some() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return ApiError::Internal.into_response(),
+    };
     let detail = match state.engine_client.get_order_detail(&sk, &order_id).await {
-        Ok(detail) => detail, Err(error) => return engine_failure(&error),
+        Ok(detail) => detail,
+        Err(error) => return engine_failure(&error),
     };
     if detail.order.amount_received_piconero > 0 || detail.order.status != "pending" {
         return ApiError::BadRequest("This order has payment activity and cannot be cancelled. Background it for review instead.".to_string()).into_response();
     }
-    match state.db.lock().cancel_pos_order(&id, &order_id, crate::now_unix()) {
+    match state
+        .db
+        .lock()
+        .cancel_pos_order(&id, &order_id, crate::now_unix())
+    {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => ApiError::NotFound.into_response(),
         Err(_) => ApiError::Internal.into_response(),
@@ -515,12 +699,26 @@ pub async fn cancel_order(
 /// created directly against the engine, or predating this field) - the same
 /// "a reasonable, safe-side default" posture `http::checkout::render_checkout_page`
 /// already applies to this exact fallback.
-pub(super) async fn resolve_confirmations_required(state: &AppState, connection_id: &str, sk: &str, order_id: &str) -> u64 {
-    let local = state.db.lock().get_order_currency_metadata(connection_id, order_id).unwrap_or_default();
+pub(super) async fn resolve_confirmations_required(
+    state: &AppState,
+    connection_id: &str,
+    sk: &str,
+    order_id: &str,
+) -> u64 {
+    let local = state
+        .db
+        .lock()
+        .get_order_currency_metadata(connection_id, order_id)
+        .unwrap_or_default();
     if let Some(applied) = local.and_then(|m| m.confirmations_required_applied) {
         return applied;
     }
-    state.engine_client.get_tenant(sk).await.map(|t| t.confirmations_required).unwrap_or(10)
+    state
+        .engine_client
+        .get_tenant(sk)
+        .await
+        .map(|t| t.confirmations_required)
+        .unwrap_or(10)
 }
 
 /// Flags exactly the payment outcomes a merchant needs to personally
@@ -534,8 +732,12 @@ pub(super) fn derive_payment_error(order: &OrderView) -> Option<String> {
         return Some("Double-spend detected on this payment. Do not treat it as paid.".to_string());
     }
     match order.status.as_str() {
-        "partial" => Some("Underpaid - the customer sent less than the requested amount.".to_string()),
-        "overpaid" => Some("Overpaid - the customer sent more than the requested amount.".to_string()),
+        "partial" => {
+            Some("Underpaid - the customer sent less than the requested amount.".to_string())
+        }
+        "overpaid" => {
+            Some("Overpaid - the customer sent more than the requested amount.".to_string())
+        }
         "expired" => Some("This payment expired before it was completed.".to_string()),
         _ => None,
     }
@@ -565,8 +767,14 @@ pub async fn order_status(
     }
 }
 
-async fn pos_status(state: &AppState, connection_id: &str, sk: &str, order: &OrderView) -> PosStatusResponse {
-    let confirmations_required = resolve_confirmations_required(state, connection_id, sk, &order.order_id).await;
+async fn pos_status(
+    state: &AppState,
+    connection_id: &str,
+    sk: &str,
+    order: &OrderView,
+) -> PosStatusResponse {
+    let confirmations_required =
+        resolve_confirmations_required(state, connection_id, sk, &order.order_id).await;
     // `order_state`'s own `is_terminal` already accounts for a
     // 0-conf-trusted order: the engine only ever reports `"paid"`
     // once *that order's own* `confirmations_required` (however it
@@ -581,8 +789,16 @@ async fn pos_status(state: &AppState, connection_id: &str, sk: &str, order: &Ord
         is_terminal,
         error: derive_payment_error(order),
         received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
-        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero)),
-        qr_svg: if order.status == "partial" { super::checkout::payment_qr_svg(order).ok() } else { None },
+        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(
+            order
+                .xmr_amount_piconero
+                .saturating_sub(order.amount_received_piconero),
+        ),
+        qr_svg: if order.status == "partial" {
+            super::checkout::payment_qr_svg(order).ok()
+        } else {
+            None
+        },
     }
 }
 
@@ -619,66 +835,100 @@ pub async fn order_events(
         Err(()) => return ApiError::Internal.into_response(),
     };
     let mut order_ids: Vec<String> = Vec::new();
-    for order_id in query.orders.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+    for order_id in query
+        .orders
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
         if !order_ids.iter().any(|seen| seen == order_id) {
             order_ids.push(order_id.to_string());
         }
     }
     if order_ids.is_empty() || order_ids.len() > MAX_WATCHED_ORDERS {
-        return ApiError::BadRequest(format!("orders must list between 1 and {MAX_WATCHED_ORDERS} order ids")).into_response();
+        return ApiError::BadRequest(format!(
+            "orders must list between 1 and {MAX_WATCHED_ORDERS} order ids"
+        ))
+        .into_response();
     }
 
-    let subscriptions = order_ids.iter().map(|order_id| state.engine_client.subscribe_order(&row.id, &sk, order_id)).collect();
+    let subscriptions = order_ids
+        .iter()
+        .map(|order_id| state.engine_client.subscribe_order(&row.id, &sk, order_id))
+        .collect();
     let connection_id = row.id.clone();
     // One engine read per change for every watched order together: the
     // engine rate-limits each store, and a busy counter watches many orders.
-    crate::live::sse(crate::live::batch_snapshot_stream(subscriptions, std::time::Duration::from_secs(60), move |ids| {
-        let (state, connection_id, sk) = (state.clone(), connection_id.clone(), sk.clone());
-        async move {
-            let mut views = engine_orders(&state, &sk, &ids).await.ok()?;
-            let mut snapshots = Vec::with_capacity(ids.len());
-            for order_id in ids {
-                let Some(order) = views.remove(&order_id) else {
-                    // Not this store's order: nothing to watch.
-                    snapshots.push((order_id, crate::live::LiveSnapshot { events: Vec::new(), fingerprint: String::new(), terminal: true }));
-                    continue;
-                };
-                let status = pos_status(&state, &connection_id, &sk, &order).await;
-                let mut json = serde_json::to_value(&status).ok()?;
-                json["order_id"] = serde_json::Value::String(order_id.clone());
-                let data = json.to_string();
-                snapshots.push((order_id, crate::live::LiveSnapshot {
-                    events: vec![axum::response::sse::Event::default().event("status").data(data.clone())],
-                    fingerprint: data,
-                    terminal: status.is_terminal,
-                }));
+    crate::live::sse(crate::live::batch_snapshot_stream(
+        subscriptions,
+        std::time::Duration::from_secs(60),
+        move |ids| {
+            let (state, connection_id, sk) = (state.clone(), connection_id.clone(), sk.clone());
+            async move {
+                let mut views = engine_orders(&state, &sk, &ids).await.ok()?;
+                let mut snapshots = Vec::with_capacity(ids.len());
+                for order_id in ids {
+                    let Some(order) = views.remove(&order_id) else {
+                        // Not this store's order: nothing to watch.
+                        snapshots.push((
+                            order_id,
+                            crate::live::LiveSnapshot {
+                                events: Vec::new(),
+                                fingerprint: String::new(),
+                                terminal: true,
+                            },
+                        ));
+                        continue;
+                    };
+                    let status = pos_status(&state, &connection_id, &sk, &order).await;
+                    let mut json = serde_json::to_value(&status).ok()?;
+                    json["order_id"] = serde_json::Value::String(order_id.clone());
+                    let data = json.to_string();
+                    snapshots.push((
+                        order_id,
+                        crate::live::LiveSnapshot {
+                            events: vec![axum::response::sse::Event::default()
+                                .event("status")
+                                .data(data.clone())],
+                            fingerprint: data,
+                            terminal: status.is_terminal,
+                        },
+                    ));
+                }
+                Some(snapshots)
             }
-            Some(snapshots)
-        }
-    }))
+        },
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::Router;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use crate::engine_client::EngineClient;
 
-    use super::super::{AppState, build_router};
+    use super::super::{build_router, AppState};
 
-    const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+    const TEST_VIEW_KEY_HEX: &str =
+        "0707070707070707070707070707070707070707070707070707070707070707";
+    const TEST_SPEND_PUBKEY_HEX: &str =
+        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
     async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
         test_state_with_engine(scanner_test_support::TestEngineConfig::new()).await
     }
 
-    async fn test_state_with_engine(config: scanner_test_support::TestEngineConfig) -> (AppState, scanner_test_support::TestEngineHandle) {
-        let engine = config.with_networks(&[monero::Network::Mainnet]).spawn().await;
+    async fn test_state_with_engine(
+        config: scanner_test_support::TestEngineConfig,
+    ) -> (AppState, scanner_test_support::TestEngineHandle) {
+        let engine = config
+            .with_networks(&[monero::Network::Mainnet])
+            .spawn()
+            .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
             engine_client,
@@ -697,7 +947,11 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
-    async fn signed_up_and_logged_in_session_token(router: &Router, email: &str, password: &str) -> String {
+    async fn signed_up_and_logged_in_session_token(
+        router: &Router,
+        email: &str,
+        password: &str,
+    ) -> String {
         let signup = router
             .clone()
             .oneshot(
@@ -705,7 +959,9 @@ mod tests {
                     .method("POST")
                     .uri("/signup")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "email": email, "password": password }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -719,16 +975,30 @@ mod tests {
                     .method("POST")
                     .uri("/login")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "email": email, "password": password }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(login.status(), StatusCode::OK);
-        body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string()
+        body_json(login)
+            .await
+            .as_object()
+            .unwrap()
+            .get("session_token")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
-    async fn create_connection_with_base_currency(router: &Router, session_token: &str, base_currency: &str) -> String {
+    async fn create_connection_with_base_currency(
+        router: &Router,
+        session_token: &str,
+        base_currency: &str,
+    ) -> String {
         let body = serde_json::json!({
             "platform": "custom",
             "site_url": "https://shop.example.com",
@@ -752,50 +1022,167 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
-        body_json(response).await.as_object().unwrap().get("connection_id").unwrap().as_str().unwrap().to_string()
+        body_json(response)
+            .await
+            .as_object()
+            .unwrap()
+            .get("connection_id")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     #[tokio::test]
     async fn pending_order_can_be_backgrounded_listed_reopened_and_cancelled() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-        let owner = signed_up_and_logged_in_session_token(&router, "pos-flow@example.com", "correct horse battery staple").await;
-        let other = signed_up_and_logged_in_session_token(&router, "pos-flow-other@example.com", "correct horse battery staple").await;
+        let owner = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-flow@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let other = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-flow-other@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &owner, "XMR").await;
         let base = format!("/dashboard/stores/{id}/pos/orders");
         let create_body = serde_json::json!({"amount":"0.010000000000","merchant_order_id":"Mia coffee","request_key":"retry-key"}).to_string();
-        let create = |token: &str, body: String| Request::builder().method("POST").uri(&base)
-            .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
-            .body(Body::from(body)).unwrap();
-        let first = router.clone().oneshot(create(&owner, create_body.clone())).await.unwrap();
+        let create = |token: &str, body: String| {
+            Request::builder()
+                .method("POST")
+                .uri(&base)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let first = router
+            .clone()
+            .oneshot(create(&owner, create_body.clone()))
+            .await
+            .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
-        let first_id = body_json(first).await["order_id"].as_str().unwrap().to_string();
-        let retry = router.clone().oneshot(create(&owner, create_body)).await.unwrap();
+        let first_id = body_json(first).await["order_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let retry = router
+            .clone()
+            .oneshot(create(&owner, create_body))
+            .await
+            .unwrap();
         assert_eq!(body_json(retry).await["order_id"], first_id);
         let changed = router.clone().oneshot(create(&owner, serde_json::json!({"amount":"0.020000000000","merchant_order_id":"Mia coffee","request_key":"retry-key"}).to_string())).await.unwrap();
         assert_eq!(changed.status(), StatusCode::BAD_REQUEST);
         let order_url = format!("{base}/{first_id}");
-        let other_list = router.clone().oneshot(Request::builder().uri(&base).header("authorization", format!("Bearer {other}")).body(Body::empty()).unwrap()).await.unwrap();
+        let other_list = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&base)
+                    .header("authorization", format!("Bearer {other}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(other_list.status(), StatusCode::NOT_FOUND);
-        let background = router.clone().oneshot(Request::builder().method("POST").uri(format!("{order_url}/background")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        let background = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("{order_url}/background"))
+                    .header("authorization", format!("Bearer {owner}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(background.status(), StatusCode::NO_CONTENT);
-        let list = router.clone().oneshot(Request::builder().uri(format!("{base}?limit=1&offset=0")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        let list = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{base}?limit=1&offset=0"))
+                    .header("authorization", format!("Bearer {owner}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let list = body_json(list).await;
         assert_eq!(list["total"], 1);
         assert_eq!(list["orders"][0]["order_id"], first_id);
         assert_eq!(list["orders"][0]["backgrounded"], true);
         assert_eq!(list["orders"][0]["status"], "pending");
-        let search_list = router.clone().oneshot(Request::builder().uri(format!("{base}?search=mia")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        let search_list = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{base}?search=mia"))
+                    .header("authorization", format!("Bearer {owner}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(body_json(search_list).await["total"], 1);
-        let other_detail = router.clone().oneshot(Request::builder().uri(&order_url).header("authorization", format!("Bearer {other}")).body(Body::empty()).unwrap()).await.unwrap();
+        let other_detail = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&order_url)
+                    .header("authorization", format!("Bearer {other}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(other_detail.status(), StatusCode::NOT_FOUND);
-        let cancel = router.clone().oneshot(Request::builder().method("POST").uri(format!("{order_url}/cancel")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        let cancel = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("{order_url}/cancel"))
+                    .header("authorization", format!("Bearer {owner}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(cancel.status(), StatusCode::NO_CONTENT);
-        let detail = router.clone().oneshot(Request::builder().uri(&order_url).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        let detail = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&order_url)
+                    .header("authorization", format!("Bearer {owner}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let detail = body_json(detail).await;
         assert!(detail["cancelled_at"].as_i64().is_some());
         assert_eq!(detail["merchant_order_id"], "Mia coffee");
-        let repeated = router.oneshot(Request::builder().method("POST").uri(format!("{order_url}/cancel")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        let repeated = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("{order_url}/cancel"))
+                    .header("authorization", format!("Bearer {owner}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(repeated.status(), StatusCode::NO_CONTENT);
     }
 
@@ -804,10 +1191,22 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
         for (path, mime, marker) in [
-            ("/static/pos-app.js", "text/javascript; charset=utf-8", "pos-root"),
-            ("/static/pos-app.css", "text/css; charset=utf-8", ".pos-stack-card"),
+            (
+                "/static/pos-app.js",
+                "text/javascript; charset=utf-8",
+                "pos-root",
+            ),
+            (
+                "/static/pos-app.css",
+                "text/css; charset=utf-8",
+                ".pos-stack-card",
+            ),
         ] {
-            let response = router.clone().oneshot(Request::builder().uri(path).body(Body::empty()).unwrap()).await.unwrap();
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response.headers()[axum::http::header::CONTENT_TYPE], mime);
             assert!(body_text(response).await.contains(marker));
@@ -819,7 +1218,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-page@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-page@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let response = router
@@ -835,7 +1239,10 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains("XMR"), "expected the store's own base currency shown, got: {html}");
+        assert!(
+            html.contains("XMR"),
+            "expected the store's own base currency shown, got: {html}"
+        );
     }
 
     #[tokio::test]
@@ -843,7 +1250,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-page-404@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-page-404@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let response = router
             .oneshot(
@@ -864,10 +1276,20 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let owner_token = signed_up_and_logged_in_session_token(&router, "pos-owner@example.com", "correct horse battery staple").await;
+        let owner_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-owner@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &owner_token, "XMR").await;
 
-        let other_token = signed_up_and_logged_in_session_token(&router, "pos-other@example.com", "correct horse battery staple").await;
+        let other_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-other@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let response = router
             .oneshot(
@@ -880,7 +1302,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "a connection owned by someone else must 404, not leak that it exists");
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "a connection owned by someone else must 404, not leak that it exists"
+        );
     }
 
     #[tokio::test]
@@ -888,23 +1314,39 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-unauth@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-unauth@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let response = router
-            .oneshot(Request::builder().method("GET").uri(format!("/dashboard/stores/{id}/pos")).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/stores/{id}/pos"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn creating_a_pos_order_uses_the_stores_own_base_currency_and_is_visible_on_the_dashboard() {
+    async fn creating_a_pos_order_uses_the_stores_own_base_currency_and_is_visible_on_the_dashboard(
+    ) {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "pos-create@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-create@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let response = router
@@ -915,7 +1357,9 @@ mod tests {
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "1.5" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "1.5" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -946,10 +1390,18 @@ mod tests {
             .unwrap();
         assert_eq!(orders_list.status(), StatusCode::OK);
         let html = body_text(orders_list).await;
-        assert!(html.contains(&order_id), "expected the POS-created order to show up in the dashboard's own orders list");
+        assert!(
+            html.contains(&order_id),
+            "expected the POS-created order to show up in the dashboard's own orders list"
+        );
 
         // Created by the merchant's own session: recorded as trusted as the key.
-        let metadata = state.db.lock().get_order_currency_metadata(&id, &order_id).unwrap().unwrap();
+        let metadata = state
+            .db
+            .lock()
+            .get_order_currency_metadata(&id, &order_id)
+            .unwrap()
+            .unwrap();
         assert!(metadata.created_with_key);
     }
 
@@ -963,7 +1415,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-note@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-note@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let response = router
@@ -974,7 +1431,10 @@ mod tests {
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "1.0", "merchant_order_id": "Jane Doe" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "1.0", "merchant_order_id": "Jane Doe" })
+                            .to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -997,7 +1457,10 @@ mod tests {
             .unwrap();
         assert_eq!(detail_response.status(), StatusCode::OK);
         let html = body_text(detail_response).await;
-        assert!(html.contains("Jane Doe"), "expected the real note shown as this order's merchant order id, got: {html}");
+        assert!(
+            html.contains("Jane Doe"),
+            "expected the real note shown as this order's merchant order id, got: {html}"
+        );
     }
 
     #[tokio::test]
@@ -1009,7 +1472,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-blank-note@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-blank-note@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let response = router
@@ -1019,14 +1487,20 @@ mod tests {
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "1.0", "merchant_order_id": "   " }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "1.0", "merchant_order_id": "   " })
+                            .to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
-        assert!(body["merchant_order_id"].is_null(), "a whitespace-only note must not become a stored merchant_order_id, got: {body}");
+        assert!(
+            body["merchant_order_id"].is_null(),
+            "a whitespace-only note must not become a stored merchant_order_id, got: {body}"
+        );
     }
 
     #[tokio::test]
@@ -1034,8 +1508,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "pos-empty-amount@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-empty-amount@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let response = router
@@ -1058,8 +1536,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "pos-bad-amount@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-bad-amount@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let response = router
@@ -1069,7 +1551,9 @@ mod tests {
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "not-a-number" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "not-a-number" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -1082,9 +1566,19 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let owner_token = signed_up_and_logged_in_session_token(&router, "pos-create-owner@example.com", "correct horse battery staple").await;
+        let owner_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-create-owner@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &owner_token, "XMR").await;
-        let other_token = signed_up_and_logged_in_session_token(&router, "pos-create-other@example.com", "correct horse battery staple").await;
+        let other_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-create-other@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let response = router
             .oneshot(
@@ -1093,7 +1587,9 @@ mod tests {
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {other_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "1.0" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "1.0" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -1106,7 +1602,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-status@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-status@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let create = router
@@ -1117,18 +1618,25 @@ mod tests {
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "2.0" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "2.0" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
-        let order_id = body_json(create).await["order_id"].as_str().unwrap().to_string();
+        let order_id = body_json(create).await["order_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let status = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders/{order_id}/status"))
+                    .uri(format!(
+                        "/dashboard/stores/{id}/pos/orders/{order_id}/status"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1140,14 +1648,22 @@ mod tests {
         assert_eq!(body["status"], "pending");
         assert_eq!(body["confirmations"], 0);
         assert_eq!(body["is_terminal"], false);
-        assert!(body["error"].is_null(), "a plain pending order must carry no error, got: {body}");
+        assert!(
+            body["error"].is_null(),
+            "a plain pending order must carry no error, got: {body}"
+        );
     }
 
     #[tokio::test]
     async fn the_events_stream_reports_every_watched_order_and_pushes_changes() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-events@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-events@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
         let mut order_ids = Vec::new();
         for _ in 0..2 {
@@ -1159,36 +1675,58 @@ mod tests {
                         .uri(format!("/dashboard/stores/{id}/pos/orders"))
                         .header("content-type", "application/json")
                         .header("authorization", format!("Bearer {session_token}"))
-                        .body(Body::from(serde_json::json!({ "amount": "2.0" }).to_string()))
+                        .body(Body::from(
+                            serde_json::json!({ "amount": "2.0" }).to_string(),
+                        ))
                         .unwrap(),
                 )
                 .await
                 .unwrap();
-            order_ids.push(body_json(create).await["order_id"].as_str().unwrap().to_string());
+            order_ids.push(
+                body_json(create).await["order_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            );
         }
 
         let events_request = |query: String, token: Option<&str>| {
-            let mut builder = Request::builder().uri(format!("/dashboard/stores/{id}/pos/events?orders={query}"));
+            let mut builder =
+                Request::builder().uri(format!("/dashboard/stores/{id}/pos/events?orders={query}"));
             if let Some(token) = token {
                 builder = builder.header("authorization", format!("Bearer {token}"));
             }
             builder.body(Body::empty()).unwrap()
         };
-        let unauthenticated = router.clone().oneshot(events_request(order_ids[0].clone(), None)).await.unwrap();
+        let unauthenticated = router
+            .clone()
+            .oneshot(events_request(order_ids[0].clone(), None))
+            .await
+            .unwrap();
         assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
-        let empty = router.clone().oneshot(events_request(String::new(), Some(&session_token))).await.unwrap();
+        let empty = router
+            .clone()
+            .oneshot(events_request(String::new(), Some(&session_token)))
+            .await
+            .unwrap();
         assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
 
         // An id that isn't this store's is simply never reported.
         let query = format!("{},{},pay_not_ours", order_ids[0], order_ids[1]);
-        let response = router.clone().oneshot(events_request(query, Some(&session_token))).await.unwrap();
+        let response = router
+            .clone()
+            .oneshot(events_request(query, Some(&session_token)))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let mut body = response.into_body();
         let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
 
         let mut seen = Vec::new();
         for _ in 0..2 {
-            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+                .await
+                .unwrap();
             assert_eq!(event, "status");
             let data: serde_json::Value = serde_json::from_str(&data).unwrap();
             assert_eq!(data["status"], "pending");
@@ -1200,24 +1738,57 @@ mod tests {
         expected.sort();
         assert_eq!(seen, expected);
 
-        assert!(engine.store().lock().mark_double_spend_detected(&order_ids[1], crate::now_unix()).unwrap());
-        let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        assert!(engine
+            .store()
+            .lock()
+            .mark_double_spend_detected(&order_ids[1], crate::now_unix())
+            .unwrap());
+        let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
         assert_eq!(event, "status");
         let data: serde_json::Value = serde_json::from_str(&data).unwrap();
         assert_eq!(data["order_id"], order_ids[1].as_str());
-        assert!(data["error"].as_str().unwrap().to_lowercase().contains("double-spend"), "got: {data}");
+        assert!(
+            data["error"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("double-spend"),
+            "got: {data}"
+        );
     }
 
-    async fn create_pos_orders(router: &Router, session_token: &str, id: &str, count: usize) -> Vec<String> {
+    async fn create_pos_orders(
+        router: &Router,
+        session_token: &str,
+        id: &str,
+        count: usize,
+    ) -> Vec<String> {
         let mut order_ids = Vec::with_capacity(count);
         for _ in 0..count {
-            let create = router.clone().oneshot(
-                Request::builder().method("POST").uri(format!("/dashboard/stores/{id}/pos/orders"))
-                    .header("content-type", "application/json").header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "2.0" }).to_string())).unwrap(),
-            ).await.unwrap();
+            let create = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {session_token}"))
+                        .body(Body::from(
+                            serde_json::json!({ "amount": "2.0" }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(create.status(), StatusCode::OK);
-            order_ids.push(body_json(create).await["order_id"].as_str().unwrap().to_string());
+            order_ids.push(
+                body_json(create).await["order_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            );
         }
         order_ids
     }
@@ -1231,30 +1802,61 @@ mod tests {
     async fn the_order_list_and_events_stream_read_many_orders_in_one_engine_request() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-batch@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-batch@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
         let order_ids = create_pos_orders(&router, &session_token, &id, 30).await;
 
         let before = engine.tenant_request_count();
-        let list = router.clone().oneshot(
-            Request::builder().uri(format!("/dashboard/stores/{id}/pos/orders?limit=40"))
-                .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap(),
-        ).await.unwrap();
+        let list = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/dashboard/stores/{id}/pos/orders?limit=40"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(list.status(), StatusCode::OK);
-        assert_eq!(body_json(list).await["orders"].as_array().unwrap().len(), 30);
-        assert_eq!(engine.tenant_request_count() - before, 1, "listing 30 orders reads them in one engine request");
+        assert_eq!(
+            body_json(list).await["orders"].as_array().unwrap().len(),
+            30
+        );
+        assert_eq!(
+            engine.tenant_request_count() - before,
+            1,
+            "listing 30 orders reads them in one engine request"
+        );
 
         let before = engine.tenant_request_count();
-        let events = router.clone().oneshot(
-            Request::builder().uri(format!("/dashboard/stores/{id}/pos/events?orders={}", order_ids.join(",")))
-                .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap(),
-        ).await.unwrap();
+        let events = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/dashboard/stores/{id}/pos/events?orders={}",
+                        order_ids.join(",")
+                    ))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(events.status(), StatusCode::OK);
         let mut body = events.into_body();
         let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
         let mut seen = std::collections::HashSet::new();
         while seen.len() < order_ids.len() {
-            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+                .await
+                .unwrap();
             assert_eq!(event, "status");
             let data: serde_json::Value = serde_json::from_str(&data).unwrap();
             seen.insert(data["order_id"].as_str().unwrap().to_string());
@@ -1262,7 +1864,10 @@ mod tests {
         // One read for all 30 snapshots, and at most the store's one shared
         // upstream event stream plus its first resync read beside it.
         let spent = engine.tenant_request_count() - before;
-        assert!(spent <= 3, "watching 30 orders cost {spent} engine requests");
+        assert!(
+            spent <= 3,
+            "watching 30 orders cost {spent} engine requests"
+        );
     }
 
     /// The terminal's Active tab and background stack come from
@@ -1273,48 +1878,119 @@ mod tests {
     async fn the_active_list_has_every_open_pos_order_however_many_newer_ones_finished() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-active@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-active@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
-        let waiting = create_pos_orders(&router, &session_token, &id, 1).await.remove(0);
+        let waiting = create_pos_orders(&router, &session_token, &id, 1)
+            .await
+            .remove(0);
         for paid in create_pos_orders(&router, &session_token, &id, 45).await {
             engine.mark_order_paid(&paid).unwrap();
         }
-        let cancelled = create_pos_orders(&router, &session_token, &id, 1).await.remove(0);
-        let cancel = router.clone().oneshot(Request::builder().method("POST").uri(format!("/dashboard/stores/{id}/pos/orders/{cancelled}/cancel"))
-            .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap()).await.unwrap();
+        let cancelled = create_pos_orders(&router, &session_token, &id, 1)
+            .await
+            .remove(0);
+        let cancel = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/dashboard/stores/{id}/pos/orders/{cancelled}/cancel"
+                    ))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(cancel.status(), StatusCode::NO_CONTENT);
         // An order from somewhere else (the store's website), still open.
-        let pk = state.db.lock().get_store_connection_by_id(&id).unwrap().unwrap().tenant_public_key;
-        let web = router.clone().oneshot(Request::builder().method("POST").uri(format!("/pay/{pk}/orders"))
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::json!({ "amount": "1.0", "currency": "XMR" }).to_string())).unwrap()).await.unwrap();
+        let pk = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&id)
+            .unwrap()
+            .unwrap()
+            .tenant_public_key;
+        let web = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pay/{pk}/orders"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "1.0", "currency": "XMR" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(web.status(), StatusCode::OK);
 
-        let response = router.oneshot(Request::builder().uri(format!("/dashboard/stores/{id}/pos/orders?state=active"))
-            .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap()).await.unwrap();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/dashboard/stores/{id}/pos/orders?state=active"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let ids: Vec<String> = body_json(response).await["orders"].as_array().unwrap().iter().map(|o| o["order_id"].as_str().unwrap().to_string()).collect();
+        let ids: Vec<String> = body_json(response).await["orders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["order_id"].as_str().unwrap().to_string())
+            .collect();
         assert_eq!(ids, vec![waiting]);
     }
 
     #[tokio::test]
     async fn a_rate_limited_engine_is_a_retryable_503_not_an_internal_error() {
-        let (state, _engine) = test_state_with_engine(scanner_test_support::TestEngineConfig::new().with_rate_limit(20)).await;
+        let (state, _engine) = test_state_with_engine(
+            scanner_test_support::TestEngineConfig::new().with_rate_limit(20),
+        )
+        .await;
         let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-limited@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-limited@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
-        let order_id = create_pos_orders(&router, &session_token, &id, 1).await.remove(0);
+        let order_id = create_pos_orders(&router, &session_token, &id, 1)
+            .await
+            .remove(0);
 
         for _ in 0..40 {
-            let response = router.clone().oneshot(
-                Request::builder().uri(format!("/dashboard/stores/{id}/pos/orders/{order_id}"))
-                    .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap(),
-            ).await.unwrap();
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/dashboard/stores/{id}/pos/orders/{order_id}"))
+                        .header("authorization", format!("Bearer {session_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             if response.status() == StatusCode::OK {
                 continue;
             }
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-            let error = body_json(response).await["error"].as_str().unwrap().to_string();
+            let error = body_json(response).await["error"]
+                .as_str()
+                .unwrap()
+                .to_string();
             assert!(error.contains("busy"), "got: {error}");
             return;
         }
@@ -1326,14 +2002,21 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-status-404@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-status-404@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders/nonexistent/status"))
+                    .uri(format!(
+                        "/dashboard/stores/{id}/pos/orders/nonexistent/status"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1348,7 +2031,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let owner_token = signed_up_and_logged_in_session_token(&router, "pos-status-owner@example.com", "correct horse battery staple").await;
+        let owner_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-status-owner@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &owner_token, "XMR").await;
         let create = router
             .clone()
@@ -1358,19 +2046,31 @@ mod tests {
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {owner_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "1.0" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "1.0" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
-        let order_id = body_json(create).await["order_id"].as_str().unwrap().to_string();
+        let order_id = body_json(create).await["order_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
-        let other_token = signed_up_and_logged_in_session_token(&router, "pos-status-other@example.com", "correct horse battery staple").await;
+        let other_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-status-other@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders/{order_id}/status"))
+                    .uri(format!(
+                        "/dashboard/stores/{id}/pos/orders/{order_id}/status"
+                    ))
                     .header("authorization", format!("Bearer {other_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1381,7 +2081,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pos_order_created_against_a_fiat_base_currency_is_rejected_with_no_priced_provider_configured() {
+    async fn a_pos_order_created_against_a_fiat_base_currency_is_rejected_with_no_priced_provider_configured(
+    ) {
         // This test instance's `exchange_rate` is XMR-only
         // (`test_exchange_rate_provider`) - a store whose `base_currency` is
         // a fiat currency simply can't be priced on it, the same
@@ -1391,7 +2092,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(&router, "pos-fiat@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pos-fiat@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let id = create_connection_with_base_currency(&router, &session_token, "USD").await;
 
         let response = router
@@ -1401,7 +2107,9 @@ mod tests {
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "10.00" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "10.00" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -1446,7 +2154,11 @@ mod pure_logic_tests {
     #[test]
     fn a_pending_unconfirmed_or_confirming_order_has_no_error() {
         for status in ["pending", "unconfirmed", "confirming"] {
-            assert_eq!(derive_payment_error(&order_with_status(status)), None, "status {status:?} must not be an error");
+            assert_eq!(
+                derive_payment_error(&order_with_status(status)),
+                None,
+                "status {status:?} must not be an error"
+            );
         }
     }
 
@@ -1457,19 +2169,22 @@ mod pure_logic_tests {
 
     #[test]
     fn a_partial_payment_is_flagged_as_underpaid() {
-        let error = derive_payment_error(&order_with_status("partial")).expect("partial must be flagged");
+        let error =
+            derive_payment_error(&order_with_status("partial")).expect("partial must be flagged");
         assert!(error.to_lowercase().contains("underpaid"), "got: {error}");
     }
 
     #[test]
     fn an_overpaid_order_is_flagged() {
-        let error = derive_payment_error(&order_with_status("overpaid")).expect("overpaid must be flagged");
+        let error =
+            derive_payment_error(&order_with_status("overpaid")).expect("overpaid must be flagged");
         assert!(error.to_lowercase().contains("overpaid"), "got: {error}");
     }
 
     #[test]
     fn an_expired_order_is_flagged() {
-        let error = derive_payment_error(&order_with_status("expired")).expect("expired must be flagged");
+        let error =
+            derive_payment_error(&order_with_status("expired")).expect("expired must be flagged");
         assert!(error.to_lowercase().contains("expired"), "got: {error}");
     }
 
@@ -1483,8 +2198,12 @@ mod pure_logic_tests {
         for status in ["unconfirmed", "confirming", "paid", "partial"] {
             let mut order = order_with_status(status);
             order.double_spend_detected_at = Some(123);
-            let error = derive_payment_error(&order).expect("a double-spend must always be flagged");
-            assert!(error.to_lowercase().contains("double-spend"), "got: {error}");
+            let error =
+                derive_payment_error(&order).expect("a double-spend must always be flagged");
+            assert!(
+                error.to_lowercase().contains("double-spend"),
+                "got: {error}"
+            );
         }
     }
 }

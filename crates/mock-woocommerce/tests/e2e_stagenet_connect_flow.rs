@@ -171,7 +171,8 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
     // Same "signup defaults to invite-only" fix `mock_woocommerce::spawn_test_monokulo`
     // (`src/lib.rs`) needs - see that call site's own comment.
-    db.set_setting("signup.mode", "public").expect("failed to set signup.mode for test monokulo db");
+    db.set_setting("signup.mode", "public")
+        .expect("failed to set signup.mode for test monokulo db");
     // Bound first so monokulo's public address (`/finish`'s `endpoint`) can
     // be this very listener - see `mock_woocommerce`'s own `spawn_test_monokulo`.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -180,7 +181,8 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     let addr = listener
         .local_addr()
         .expect("bound listener has no local address");
-    db.set_setting("public_url", &format!("http://{addr}")).expect("failed to set public_url for test monokulo db");
+    db.set_setting("public_url", &format!("http://{addr}"))
+        .expect("failed to set public_url for test monokulo db");
     let state = AppState {
         engine_client: EngineClient::new(format!("http://{engine_addr}")),
         ..AppState::for_tests_with_db(db.into_shared())
@@ -218,10 +220,15 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // Same standard `e2e/*` layout every real suite in this repo uses - run
     // from the repository root, same as this file's own doc comment says.
     let ctx = cli_wallet::WalletCtx::default();
-    let wallets = cli_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
+    let wallets = cli_wallet::WalletStore::load(&ctx)
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
 
-    let merchant = wallets.wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
-    let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
+    let merchant = wallets
+        .wallet("merchant")
+        .unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
+    let spender = wallets
+        .wallet("spender")
+        .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
     // Deliberately not one `RpcDaemonClient` held for the test's whole duration -
     // this specific public node enforces a real, consistent (not flaky) modest
@@ -259,9 +266,14 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // cache, not a live fetch - see `cli-wallet`'s own doc
     // comment), so there's no real cost to a second one, and `send_payment`
     // does its own connect internally regardless.
-    let balance_wallet = retry(5, Duration::from_secs(5), || spender.connect()).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
+    let balance_wallet = retry(5, Duration::from_secs(5), || spender.connect())
+        .await
+        .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     const MIN_SPENDABLE_PICONERO: u64 = 10_000_000_000; // 0.01 XMR - comfortably above one test payment + fee.
-    let balance = balance_wallet.balance().await.unwrap_or_else(|e| panic!("failed to check spender wallet balance: {e}"));
+    let balance = balance_wallet
+        .balance()
+        .await
+        .unwrap_or_else(|e| panic!("failed to check spender wallet balance: {e}"));
     if balance.spendable_piconero < MIN_SPENDABLE_PICONERO {
         panic!(
             "\n\nspender wallet has only {} piconero spendable across {} output(s) (needs at least \
@@ -343,8 +355,9 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // crate's own doc comment) replaces this file's local `retry` helper for this
     // one call - the ledger write-back (this run's own new change output) happens
     // internally too, no separate record-keeping call needed here any more.
-    let tx_hash =
-        cli_wallet::send_payment(spender, &address, amount_piconero, None).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
+    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
+        .await
+        .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
     println!("sent real stagenet payment, tx {tx_hash_hex}");
 
@@ -413,9 +426,9 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         // Monokulo's public status route - what the customer's checkout page polls.
         let order_status: Result<Value, _> = async {
             reqwest::get(format!("{}/status", order.checkout_url))
-            .await?
-            .json()
-            .await
+                .await?
+                .json()
+                .await
         }
         .await;
         eprintln!(

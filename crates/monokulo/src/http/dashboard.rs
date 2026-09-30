@@ -17,21 +17,21 @@
 //! JSON - hence `axum::extract::Form` here instead of `axum::extract::Json`.
 
 use axum::extract::{Form, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
+use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 
 use crate::db::{Theme, UserRow};
 use crate::templates::network_selected_flags;
 use crate::views;
 
-use super::AppState;
-use super::AuthedUser;
 use super::connections::{self, CreateConnectionError, CreateConnectionFields};
 use super::login::{self, LoginError};
 use super::signup::{self, CreateAccountError};
+use super::AppState;
+use super::AuthedUser;
 
 #[derive(Deserialize)]
 pub struct SignupForm {
@@ -148,17 +148,25 @@ pub struct ConnectForm {
 /// session, so showing the sign-up/log-in links regardless of any existing
 /// one is the reasonable default (see `views::auth`'s own doc comment).
 fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> Response {
-    let invite_required =
-        crate::settings::signup_mode(&state.db.lock()) == crate::settings::SignupMode::InviteOnly && invite_token.trim().is_empty();
+    let invite_required = crate::settings::signup_mode(&state.db.lock())
+        == crate::settings::SignupMode::InviteOnly
+        && invite_token.trim().is_empty();
     let chrome = super::page_chrome(state, None, "");
-    let data = views::auth::SignupViewModel { error: error.map(str::to_string), invite_required, invite_token: invite_token.to_string() };
+    let data = views::auth::SignupViewModel {
+        error: error.map(str::to_string),
+        invite_required,
+        invite_token: invite_token.to_string(),
+    };
     views::auth::signup_page(&chrome, &data).into_response()
 }
 
 /// Same `chrome.logged_in == false` reasoning as `render_signup` above.
 fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Response {
     let chrome = super::page_chrome(state, None, "");
-    let data = views::auth::LoginViewModel { error: error.map(str::to_string), next: next.map(str::to_string) };
+    let data = views::auth::LoginViewModel {
+        error: error.map(str::to_string),
+        next: next.map(str::to_string),
+    };
     views::auth::login_page(&chrome, &data).into_response()
 }
 
@@ -169,11 +177,17 @@ fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Re
 /// `ConnectViewModel`'s own doc comment for why that's the right call here
 /// (these are plain-text inputs already, not password fields - echoing
 /// doesn't change what was ever visible on the merchant's own screen).
-fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&ConnectForm>, user: &UserRow) -> Response {
+fn render_connect_form(
+    state: &AppState,
+    error: Option<&str>,
+    resubmit: Option<&ConnectForm>,
+    user: &UserRow,
+) -> Response {
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
     let selected_currency = resubmit.map(|f| f.base_currency.as_str()).unwrap_or("XMR");
-    let currency_options = crate::currencies::currency_options(&state.db.lock(), selected_currency).unwrap_or_default();
+    let currency_options = crate::currencies::currency_options(&state.db.lock(), selected_currency)
+        .unwrap_or_default();
     let chrome = super::page_chrome(state, Some(user), "/dashboard/connect");
     let data = views::connect::ConnectViewModel {
         error: error.map(str::to_string),
@@ -182,17 +196,27 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
         public_url: None,
         site_url: resubmit.map(|f| f.site_url.clone()).unwrap_or_default(),
         view_key_hex: resubmit.map(|f| f.view_key_hex.clone()).unwrap_or_default(),
-        spend_pubkey_hex: resubmit.map(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
+        spend_pubkey_hex: resubmit
+            .map(|f| f.spend_pubkey_hex.clone())
+            .unwrap_or_default(),
         network_mainnet_selected,
         network_stagenet_selected,
         network_testnet_selected,
         currency_options,
-        custody_choices: super::status_page::custody_choice_views(state, resubmit.and_then(|f| f.key_custody_backend.as_deref())),
+        custody_choices: super::status_page::custody_choice_views(
+            state,
+            resubmit.and_then(|f| f.key_custody_backend.as_deref()),
+        ),
     };
     views::connect::page(&chrome, &data).into_response()
 }
 
-fn render_connect_success(state: &AppState, connection_id: &str, public_key: &str, user: &UserRow) -> Response {
+fn render_connect_success(
+    state: &AppState,
+    connection_id: &str,
+    public_key: &str,
+    user: &UserRow,
+) -> Response {
     let chrome = super::page_chrome(state, Some(user), "/dashboard/connect");
     let data = views::connect::ConnectViewModel {
         error: None,
@@ -226,23 +250,39 @@ pub(crate) fn redirect_303(location: &str) -> Response {
     (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response()
 }
 
-pub async fn signup_form(State(state): State<AppState>, Query(query): Query<SignupQuery>) -> Response {
+pub async fn signup_form(
+    State(state): State<AppState>,
+    Query(query): Query<SignupQuery>,
+) -> Response {
     render_signup(&state, None, query.invite.as_deref().unwrap_or(""))
 }
 
-pub async fn signup_submit(State(state): State<AppState>, Form(form): Form<SignupForm>) -> Response {
-    match signup::create_account(&state, &form.email, &form.password, false, Some(&form.invite)) {
+pub async fn signup_submit(
+    State(state): State<AppState>,
+    Form(form): Form<SignupForm>,
+) -> Response {
+    match signup::create_account(
+        &state,
+        &form.email,
+        &form.password,
+        false,
+        Some(&form.invite),
+    ) {
         // Simplest reasonable post-signup behavior: send the new user to the
         // login page rather than also logging them in here - it reuses
         // `login_submit`'s own cookie-setting path instead of duplicating it,
         // at the cost of one extra form submission for the user.
         Ok(_user_id) => redirect_302("/dashboard/login"),
-        Err(CreateAccountError::DuplicateEmail) => {
-            render_signup(&state, Some("That email is already registered. Try logging in instead."), &form.invite)
-        }
-        Err(CreateAccountError::Internal) => {
-            render_signup(&state, Some("Something went wrong. Please try again."), &form.invite)
-        }
+        Err(CreateAccountError::DuplicateEmail) => render_signup(
+            &state,
+            Some("That email is already registered. Try logging in instead."),
+            &form.invite,
+        ),
+        Err(CreateAccountError::Internal) => render_signup(
+            &state,
+            Some("Something went wrong. Please try again."),
+            &form.invite,
+        ),
         Err(CreateAccountError::InviteRequired) => render_signup(&state, None, ""),
         Err(CreateAccountError::InvalidOrUsedInvite) => render_signup(
             &state,
@@ -252,7 +292,10 @@ pub async fn signup_submit(State(state): State<AppState>, Form(form): Form<Signu
     }
 }
 
-pub async fn login_form(State(state): State<AppState>, Query(query): Query<LoginQuery>) -> Response {
+pub async fn login_form(
+    State(state): State<AppState>,
+    Query(query): Query<LoginQuery>,
+) -> Response {
     render_login(&state, None, query.next.as_deref())
 }
 
@@ -268,7 +311,10 @@ pub async fn login_form(State(state): State<AppState>, Query(query): Query<Login
 /// next request, then redirects to `/` - a human clicking "log out" expects
 /// a real page back, not `logout::logout`'s bare `204` (which is correct
 /// for the JSON API, wrong for a browser form submission).
-pub async fn logout_submit(State(state): State<AppState>, AuthedUser(_user, token_hash): AuthedUser) -> Response {
+pub async fn logout_submit(
+    State(state): State<AppState>,
+    AuthedUser(_user, token_hash): AuthedUser,
+) -> Response {
     state.db.lock().delete_session(&token_hash).ok();
     let cookie = Cookie::build((super::SESSION_COOKIE_NAME, ""))
         .http_only(true)
@@ -299,12 +345,20 @@ pub struct TimezoneForm {
 
 /// `POST /dashboard/timezone`: the zone dates and times are shown in. An
 /// unknown name is ignored rather than saved.
-pub async fn timezone_submit(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Form(form): Form<TimezoneForm>) -> Response {
+pub async fn timezone_submit(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Form(form): Form<TimezoneForm>,
+) -> Response {
     let chosen = form.timezone.trim();
     if chosen.is_empty() {
         state.db.lock().update_user_timezone(&user.id, None).ok();
     } else if jiff::tz::TimeZone::get(chosen).is_ok() {
-        state.db.lock().update_user_timezone(&user.id, Some(chosen)).ok();
+        state
+            .db
+            .lock()
+            .update_user_timezone(&user.id, Some(chosen))
+            .ok();
     }
     redirect_302("/dashboard#timezone")
 }
@@ -324,10 +378,18 @@ fn selected_theme(current: Theme, submitted: Option<&str>) -> Theme {
     }
 }
 
-pub async fn theme_submit(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Form(form): Form<ThemeForm>) -> Response {
+pub async fn theme_submit(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Form(form): Form<ThemeForm>,
+) -> Response {
     let next_theme = selected_theme(user.theme, form.theme.as_deref());
     state.db.lock().update_user_theme(&user.id, next_theme).ok();
-    let target = form.next.as_deref().filter(|next| is_safe_redirect_path(next)).unwrap_or("/dashboard");
+    let target = form
+        .next
+        .as_deref()
+        .filter(|next| is_safe_redirect_path(next))
+        .unwrap_or("/dashboard");
     redirect_302(target)
 }
 
@@ -379,7 +441,11 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
 
             // A validated `next` wins over the default confirmation - see
             // this function's own doc comment and [`is_safe_redirect_path`].
-            if let Some(next) = form.next.as_deref().filter(|next| is_safe_redirect_path(next)) {
+            if let Some(next) = form
+                .next
+                .as_deref()
+                .filter(|next| is_safe_redirect_path(next))
+            {
                 return (jar, redirect_302(next)).into_response();
             }
 
@@ -388,10 +454,16 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
             // "you're logged in, here's your stuff" flow.
             (jar, redirect_302("/dashboard")).into_response()
         }
-        Err(LoginError::Unauthorized) => render_login(&state, Some("Invalid email or password."), form.next.as_deref()),
-        Err(LoginError::Internal) => {
-            render_login(&state, Some("Something went wrong. Please try again."), form.next.as_deref())
-        }
+        Err(LoginError::Unauthorized) => render_login(
+            &state,
+            Some("Invalid email or password."),
+            form.next.as_deref(),
+        ),
+        Err(LoginError::Internal) => render_login(
+            &state,
+            Some("Something went wrong. Please try again."),
+            form.next.as_deref(),
+        ),
     }
 }
 
@@ -401,7 +473,10 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
 /// `/connections` included) - no redirect-on-401 behavior exists anywhere in
 /// the dashboard yet, so a bare `401` here is the consistent choice rather
 /// than inventing new behavior for just this one route.
-pub async fn connect_form(State(state): State<AppState>, AuthedUser(user, _token_hash): AuthedUser) -> Response {
+pub async fn connect_form(
+    State(state): State<AppState>,
+    AuthedUser(user, _token_hash): AuthedUser,
+) -> Response {
     render_connect_form(&state, None, None, &user)
 }
 
@@ -442,13 +517,18 @@ pub async fn connect_submit(
     };
 
     match connections::create_connection_for_user(&state, &user, fields).await {
-        Ok(outcome) => render_connect_success(&state, &outcome.connection_id, &outcome.public_key, &user),
+        Ok(outcome) => {
+            render_connect_success(&state, &outcome.connection_id, &outcome.public_key, &user)
+        }
         Err(CreateConnectionError::BadRequest(message)) => {
             render_connect_form(&state, Some(&message), Some(&form), &user)
         }
-        Err(CreateConnectionError::Internal) => {
-            render_connect_form(&state, Some("Something went wrong. Please try again."), Some(&form), &user)
-        }
+        Err(CreateConnectionError::Internal) => render_connect_form(
+            &state,
+            Some("Something went wrong. Please try again."),
+            Some(&form),
+            &user,
+        ),
     }
 }
 
@@ -494,7 +574,9 @@ mod tests {
     #[test]
     fn a_genuine_relative_path_is_accepted() {
         assert!(is_safe_redirect_path("/connect/woocommerce"));
-        assert!(is_safe_redirect_path("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc"));
+        assert!(is_safe_redirect_path(
+            "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc"
+        ));
         assert!(is_safe_redirect_path("/dashboard/connect"));
     }
 
@@ -509,44 +591,119 @@ mod tests {
         use http_body_util::BodyExt;
         use tower::ServiceExt;
 
-        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let engine =
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let state = crate::http::AppState {
-            engine_client: crate::engine_client::EngineClient::new(format!("http://{}", engine.addr)),
+            engine_client: crate::engine_client::EngineClient::new(format!(
+                "http://{}",
+                engine.addr
+            )),
             ..crate::http::AppState::for_tests()
         };
         let router = crate::http::build_router(state);
-        let json = |uri: &str, body: serde_json::Value| Request::builder().method("POST").uri(uri)
-            .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+        let json = |uri: &str, body: serde_json::Value| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
         let credentials = serde_json::json!({ "email": "theme@example.com", "password": "correct horse battery staple" });
-        assert_eq!(router.clone().oneshot(json("/signup", credentials.clone())).await.unwrap().status(), StatusCode::CREATED);
-        let login = router.clone().oneshot(json("/login", credentials)).await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(json("/signup", credentials.clone()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED
+        );
+        let login = router
+            .clone()
+            .oneshot(json("/login", credentials))
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
         let session = body["session_token"].as_str().unwrap().to_string();
 
-        let pick = |theme: &str, next: &str| Request::builder().method("POST").uri("/dashboard/theme")
-            .header("authorization", format!("Bearer {session}")).header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from(format!("theme={theme}&next={}", next.replace('/', "%2F").replace(':', "%3A")))).unwrap();
+        let pick = |theme: &str, next: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/theme")
+                .header("authorization", format!("Bearer {session}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "theme={theme}&next={}",
+                    next.replace('/', "%2F").replace(':', "%3A")
+                )))
+                .unwrap()
+        };
         let page_theme = |router: axum::Router| {
             let session = session.clone();
             async move {
-                let response = router.oneshot(Request::builder().uri("/dashboard").header("authorization", format!("Bearer {session}"))
-                    .body(Body::empty()).unwrap()).await.unwrap();
-                let html = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
-                html.split("<html").nth(1).unwrap().split('>').next().unwrap().to_string()
+                let response = router
+                    .oneshot(
+                        Request::builder()
+                            .uri("/dashboard")
+                            .header("authorization", format!("Bearer {session}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let html = String::from_utf8(
+                    response
+                        .into_body()
+                        .collect()
+                        .await
+                        .unwrap()
+                        .to_bytes()
+                        .to_vec(),
+                )
+                .unwrap();
+                html.split("<html")
+                    .nth(1)
+                    .unwrap()
+                    .split('>')
+                    .next()
+                    .unwrap()
+                    .to_string()
             }
         };
 
-        for (theme, attribute) in [("dark", Some("data-theme=\"dark\"")), ("light", Some("data-theme=\"light\"")), ("system", None)] {
-            let response = router.clone().oneshot(pick(theme, "/dashboard/stores")).await.unwrap();
+        for (theme, attribute) in [
+            ("dark", Some("data-theme=\"dark\"")),
+            ("light", Some("data-theme=\"light\"")),
+            ("system", None),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(pick(theme, "/dashboard/stores"))
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::FOUND);
-            assert_eq!(response.headers()["location"], "/dashboard/stores", "{theme}: back to the page it was picked on");
+            assert_eq!(
+                response.headers()["location"],
+                "/dashboard/stores",
+                "{theme}: back to the page it was picked on"
+            );
             let html_tag = page_theme(router.clone()).await;
             match attribute {
                 Some(attribute) => assert!(html_tag.contains(attribute), "{theme}: {html_tag}"),
-                None => assert!(!html_tag.contains("data-theme"), "system follows the device: {html_tag}"),
+                None => assert!(
+                    !html_tag.contains("data-theme"),
+                    "system follows the device: {html_tag}"
+                ),
             }
         }
-        let response = router.clone().oneshot(pick("dark", "https://evil.example/phish")).await.unwrap();
+        let response = router
+            .clone()
+            .oneshot(pick("dark", "https://evil.example/phish"))
+            .await
+            .unwrap();
         assert_eq!(response.headers()["location"], "/dashboard");
     }
 
@@ -558,43 +715,102 @@ mod tests {
         use tower::ServiceExt;
 
         let router = crate::http::build_router(crate::http::AppState::for_tests());
-        let json = |uri: &str, body: serde_json::Value| Request::builder().method("POST").uri(uri)
-            .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+        let json = |uri: &str, body: serde_json::Value| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
         let credentials = serde_json::json!({ "email": "zone@example.com", "password": "correct horse battery staple" });
-        assert_eq!(router.clone().oneshot(json("/signup", credentials.clone())).await.unwrap().status(), StatusCode::CREATED);
-        let login = router.clone().oneshot(json("/login", credentials)).await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(json("/signup", credentials.clone()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED
+        );
+        let login = router
+            .clone()
+            .oneshot(json("/login", credentials))
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
         let session = body["session_token"].as_str().unwrap().to_string();
 
-        let pick = |zone: &str| Request::builder().method("POST").uri("/dashboard/timezone")
-            .header("authorization", format!("Bearer {session}")).header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from(format!("timezone={}", zone.replace('/', "%2F")))).unwrap();
+        let pick = |zone: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/timezone")
+                .header("authorization", format!("Bearer {session}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("timezone={}", zone.replace('/', "%2F"))))
+                .unwrap()
+        };
         let dashboard = |cookie: Option<&str>| {
-            let mut request = Request::builder().uri("/dashboard").header("authorization", format!("Bearer {session}"));
+            let mut request = Request::builder()
+                .uri("/dashboard")
+                .header("authorization", format!("Bearer {session}"));
             if let Some(cookie) = cookie {
                 request = request.header("cookie", cookie.to_string());
             }
             let router = router.clone();
             async move {
-                let response = router.oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
-                String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+                let response = router
+                    .oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                String::from_utf8(
+                    response
+                        .into_body()
+                        .collect()
+                        .await
+                        .unwrap()
+                        .to_bytes()
+                        .to_vec(),
+                )
+                .unwrap()
             }
         };
 
         // Automatic: the browser's zone, else UTC.
         assert!(dashboard(None).await.contains(">tz: utc</a>"));
         let html = dashboard(Some("tz=Australia%2FPerth")).await;
-        assert!(html.contains(r##"<a href="/dashboard#timezone" class="nav-tz-link""##) && html.contains(">tz: perth</a>"), "{html}");
-        assert!(html.contains("Automatic (this browser: Australia/Perth)"), "{html}");
+        assert!(
+            html.contains(r##"<a href="/dashboard#timezone" class="nav-tz-link""##)
+                && html.contains(">tz: perth</a>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("Automatic (this browser: Australia/Perth)"),
+            "{html}"
+        );
 
         // A picked zone wins over the browser's; one that doesn't exist is ignored.
-        let response = router.clone().oneshot(pick("America/New_York")).await.unwrap();
-        assert_eq!((response.status(), &response.headers()["location"]), (StatusCode::FOUND, &"/dashboard#timezone".parse().unwrap()));
+        let response = router
+            .clone()
+            .oneshot(pick("America/New_York"))
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.status(), &response.headers()["location"]),
+            (StatusCode::FOUND, &"/dashboard#timezone".parse().unwrap())
+        );
         let html = dashboard(Some("tz=Australia%2FPerth")).await;
-        assert!(html.contains(">tz: new york</a>") && html.contains(r#"<option value="America/New_York" selected>"#), "{html}");
+        assert!(
+            html.contains(">tz: new york</a>")
+                && html.contains(r#"<option value="America/New_York" selected>"#),
+            "{html}"
+        );
         router.clone().oneshot(pick("Not/AZone")).await.unwrap();
         assert!(dashboard(None).await.contains(">tz: new york</a>"));
         router.clone().oneshot(pick("")).await.unwrap();
-        assert!(dashboard(Some("tz=Asia%2FTokyo")).await.contains(">tz: tokyo</a>"));
+        assert!(dashboard(Some("tz=Asia%2FTokyo"))
+            .await
+            .contains(">tz: tokyo</a>"));
     }
 }

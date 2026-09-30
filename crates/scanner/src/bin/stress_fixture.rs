@@ -23,8 +23,8 @@ use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::engine_settings::{Daemons, EngineSettings};
 use scanner::http::{build_router, rate_limit::RateLimiter, AppState};
 use scanner::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, PlainKeyCustody, ScanIndices, SubaddressIndex, WalletHandle,
-    WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, PlainKeyCustody, ScanIndices, SubaddressIndex,
+    WalletHandle, WalletMaterial,
 };
 use scanner::scanner_status::new_scanner_status_map;
 use scanner::store::{Db, NewOrder, NewTenant, ReadStorePool, Store};
@@ -80,7 +80,11 @@ impl MoneroDaemonClient for FixtureDaemon {
     }
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         self.rpc().await?;
-        Ok(if height == 0 { vec![] } else { vec![self.tx.clone()] })
+        Ok(if height == 0 {
+            vec![]
+        } else {
+            vec![self.tx.clone()]
+        })
     }
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
         self.rpc().await?;
@@ -88,7 +92,11 @@ impl MoneroDaemonClient for FixtureDaemon {
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         self.rpc().await?;
-        Ok(if txid == self.txid { TxLocation::InBlock(1) } else { TxLocation::NotFound })
+        Ok(if txid == self.txid {
+            TxLocation::InBlock(1)
+        } else {
+            TxLocation::NotFound
+        })
     }
     async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
         self.rpc().await?;
@@ -98,7 +106,10 @@ impl MoneroDaemonClient for FixtureDaemon {
             Err(DaemonError::Request("unknown fixture tx".into()))
         }
     }
-    async fn is_key_image_spent(&self, images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+    async fn is_key_image_spent(
+        &self,
+        images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
         self.rpc().await?;
         Ok(vec![KeyImageStatus::Unspent; images.len()])
     }
@@ -117,16 +128,23 @@ struct SaturatedCustody {
 impl SaturatedCustody {
     async fn acquire(&self) -> Result<tokio::sync::SemaphorePermit<'_>, KeyCustodyError> {
         let started = Instant::now();
-        let permit =
-            self.slots.acquire().await.map_err(|error| KeyCustodyError::BackendUnavailable(error.to_string()))?;
-        self.max_wait_us.fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        let permit = self
+            .slots
+            .acquire()
+            .await
+            .map_err(|error| KeyCustodyError::BackendUnavailable(error.to_string()))?;
+        self.max_wait_us
+            .fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
         Ok(permit)
     }
 }
 
 #[async_trait::async_trait]
 impl KeyCustody for SaturatedCustody {
-    async fn register_wallet(&self, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+    async fn register_wallet(
+        &self,
+        material: WalletMaterial,
+    ) -> Result<WalletHandle, KeyCustodyError> {
         self.inner.register_wallet(material).await
     }
     async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
@@ -155,7 +173,10 @@ impl KeyCustody for SaturatedCustody {
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
         let _permit = self.acquire().await?;
         tokio::time::sleep(self.delay).await;
-        let found = self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await;
+        let found = self
+            .inner
+            .scan_tx_outputs(handle, tx, major_range, minor_range)
+            .await;
         self.completed.fetch_add(1, Ordering::Relaxed);
         found
     }
@@ -167,7 +188,10 @@ impl KeyCustody for SaturatedCustody {
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
         let _permit = self.acquire().await?;
         tokio::time::sleep(self.delay).await;
-        let found = self.inner.scan_tx_outputs_for_indices(handle, tx, indices).await;
+        let found = self
+            .inner
+            .scan_tx_outputs_for_indices(handle, tx, indices)
+            .await;
         self.completed.fetch_add(1, Ordering::Relaxed);
         found
     }
@@ -178,7 +202,8 @@ fn material(seed: u64, index: usize) -> Result<WalletMaterial, Box<dyn Error>> {
     // real match to record.
     if index == 0 {
         let view = hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")?;
-        let spend = hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907")?;
+        let spend =
+            hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907")?;
         let private_spend = PrivateKey::from_slice(&spend)?;
         return Ok(WalletMaterial::new(
             PrivateKey::from_slice(&view)?.to_bytes(),
@@ -186,27 +211,43 @@ fn material(seed: u64, index: usize) -> Result<WalletMaterial, Box<dyn Error>> {
         ));
     }
     let key = |label: &[u8]| {
-        let mut bytes =
-            Sha256::digest([seed.to_le_bytes().as_slice(), &(index as u64).to_le_bytes(), label].concat()).to_vec();
+        let mut bytes = Sha256::digest(
+            [
+                seed.to_le_bytes().as_slice(),
+                &(index as u64).to_le_bytes(),
+                label,
+            ]
+            .concat(),
+        )
+        .to_vec();
         bytes[31] &= 0x0f; // below the curve order, so a valid scalar
         bytes
     };
     let private_view = PrivateKey::from_slice(&key(b"view"))?;
     let private_spend = PrivateKey::from_slice(&key(b"spend"))?;
-    Ok(WalletMaterial::new(private_view.to_bytes(), PublicKey::from_private_key(&private_spend).to_bytes()))
+    Ok(WalletMaterial::new(
+        private_view.to_bytes(),
+        PublicKey::from_private_key(&private_spend).to_bytes(),
+    ))
 }
 
 struct Args(Vec<String>);
 
 impl Args {
     fn value(&self, name: &str) -> Option<&str> {
-        self.0.windows(2).find(|pair| pair[0] == name).map(|pair| pair[1].as_str())
+        self.0
+            .windows(2)
+            .find(|pair| pair[0] == name)
+            .map(|pair| pair[1].as_str())
     }
     fn required<T: std::str::FromStr>(&self, name: &str) -> Result<T, Box<dyn Error>>
     where
         T::Err: Error + 'static,
     {
-        Ok(self.value(name).ok_or_else(|| format!("missing {name}"))?.parse()?)
+        Ok(self
+            .value(name)
+            .ok_or_else(|| format!("missing {name}"))?
+            .parse()?)
     }
     fn optional(&self, name: &str) -> Result<u64, Box<dyn Error>> {
         Ok(self.value(name).map(str::parse).transpose()?.unwrap_or(0))
@@ -253,10 +294,18 @@ impl Engine {
     async fn tick(&self) -> Result<(), String> {
         match self.driver {
             Driver::Scheduler => {
-                let (memory, db, custody, daemon) =
-                    (self.memory.clone(), self.db.clone(), self.custody.clone(), self.daemon.clone());
-                let tenants: Vec<(String, WalletHandle)> =
-                    self.handles.read().iter().map(|(id, handle)| (id.clone(), *handle)).collect();
+                let (memory, db, custody, daemon) = (
+                    self.memory.clone(),
+                    self.db.clone(),
+                    self.custody.clone(),
+                    self.daemon.clone(),
+                );
+                let tenants: Vec<(String, WalletHandle)> = self
+                    .handles
+                    .read()
+                    .iter()
+                    .map(|(id, handle)| (id.clone(), *handle))
+                    .collect();
                 let scan = EngineSettings::defaults().scan.load();
                 tokio::spawn(async move {
                     let inputs = scanner::work::RoundInputs {
@@ -269,7 +318,9 @@ impl Engine {
                         grace_period_seconds: scan.expired_order_grace_period_seconds,
                         scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
                     };
-                    scanner::work::run_round(&memory, &inputs, scanner::work::ROUND_BUDGET).await.into_result()
+                    scanner::work::run_round(&memory, &inputs, scanner::work::ROUND_BUDGET)
+                        .await
+                        .into_result()
                 })
                 .await
                 .map_err(|error| format!("tick task failed: {error}"))?
@@ -302,7 +353,12 @@ fn progress(conn: &rusqlite::Connection, progressed_through: u64) -> rusqlite::R
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     let count = |n: i64| n.max(0) as u64;
-    Ok(Progress { highwater: count(highwater), lagging: count(lagging), min_cursor: count(min_cursor), progressed: count(progressed) })
+    Ok(Progress {
+        highwater: count(highwater),
+        lagging: count(lagging),
+        min_cursor: count(min_cursor),
+        progressed: count(progressed),
+    })
 }
 
 async fn fixture() -> Result<(), Box<dyn Error>> {
@@ -345,15 +401,19 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             completed: AtomicU64::new(0),
         })
     });
-    let custody: Arc<dyn KeyCustody> =
-        custody_probe.as_ref().map(|probe| probe.clone() as Arc<dyn KeyCustody>).unwrap_or(plain_custody);
+    let custody: Arc<dyn KeyCustody> = custody_probe
+        .as_ref()
+        .map(|probe| probe.clone() as Arc<dyn KeyCustody>)
+        .unwrap_or(plain_custody);
     let mut handles = HashMap::with_capacity(tenants);
     let now = scanner::now_unix();
     for index in 0..tenants {
         let keys = material(seed, index)?;
         let handle = custody.register_wallet(keys.clone()).await?;
         let sealed = custody.seal(&keys).await?;
-        let address = custody.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await?;
+        let address = custody
+            .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
+            .await?;
         let created = store.create_tenant(
             NewTenant {
                 key_custody_backend: "plain".into(),
@@ -366,13 +426,25 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             now - 10,
         )?;
         let id = format!("tn_stress_{index:08}");
-        fixture_sql.execute("UPDATE tenants SET id = ?1 WHERE id = ?2", (&id, &created.tenant.id))?;
+        fixture_sql.execute(
+            "UPDATE tenants SET id = ?1 WHERE id = ?2",
+            (&id, &created.tenant.id),
+        )?;
         handles.insert(id.clone(), handle);
-        let tenant_orders = if index == 0 { orders.max(large_window_orders) } else { orders };
+        let tenant_orders = if index == 0 {
+            orders.max(large_window_orders)
+        } else {
+            orders
+        };
         for order_index in 0..tenant_orders {
             let minor = store.allocate_minor_index(&id)?;
-            let subaddress =
-                custody.derive_subaddress(handle, SubaddressIndex { major: 0, minor }, Network::Mainnet).await?;
+            let subaddress = custody
+                .derive_subaddress(
+                    handle,
+                    SubaddressIndex { major: 0, minor },
+                    Network::Mainnet,
+                )
+                .await?;
             let created_order = store.create_order(NewOrder {
                 confirmations_required_override: None,
                 tenant_id: id.clone(),
@@ -385,11 +457,16 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
                 expires_at: now + 3600,
             })?;
             let order_id = format!("order_stress_{index:08}_{order_index:04}");
-            fixture_sql.execute("UPDATE orders SET id = ?1 WHERE id = ?2", (&order_id, &created_order.id))?;
+            fixture_sql.execute(
+                "UPDATE orders SET id = ?1 WHERE id = ?2",
+                (&order_id, &created_order.id),
+            )?;
         }
     }
     drop(fixture_sql);
-    let tx: Transaction = deserialize(&hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex").trim())?)?;
+    let tx: Transaction = deserialize(&hex::decode(
+        include_str!("../../tests/fixtures/subaddress_tx.hex").trim(),
+    )?)?;
     let daemon = Arc::new(FixtureDaemon {
         height: AtomicU64::new(0),
         txid: scanner::scanner::tx_id_hex(&tx),
@@ -414,8 +491,12 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     let write_max_us = Arc::new(AtomicU64::new(0));
     let mut background_tasks = Vec::new();
     for _ in 0..background_readers {
-        let (pool, stop, completed, maximum) =
-            (reader_pool.clone(), background_stop.clone(), reads_done.clone(), read_max_us.clone());
+        let (pool, stop, completed, maximum) = (
+            reader_pool.clone(),
+            background_stop.clone(),
+            reads_done.clone(),
+            read_max_us.clone(),
+        );
         background_tasks.push(tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
                 let started = Instant::now();
@@ -430,14 +511,23 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     // Admin setting writes take the same path an API write does: the
     // database worker's admin queue.
     for worker in 0..background_writers {
-        let (db, stop, completed, maximum) = (db.clone(), background_stop.clone(), writes_done.clone(), write_max_us.clone());
+        let (db, stop, completed, maximum) = (
+            db.clone(),
+            background_stop.clone(),
+            writes_done.clone(),
+            write_max_us.clone(),
+        );
         background_tasks.push(tokio::spawn(async move {
             let mut sequence = 0u64;
             while !stop.load(Ordering::Relaxed) {
                 sequence += 1;
                 let started = Instant::now();
                 let (key, value) = (format!("stress.admin.{worker}"), sequence.to_string());
-                let written = db.run(scanner::store::db::Class::Admin, move |s| s.set_setting(&key, &value)).await;
+                let written = db
+                    .run(scanner::store::db::Class::Admin, move |s| {
+                        s.set_setting(&key, &value)
+                    })
+                    .await;
                 if written.is_ok() {
                     completed.fetch_add(1, Ordering::Relaxed);
                 }
@@ -457,7 +547,10 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         admin_rate_limiter: Arc::new(RateLimiter::new(100_000)),
         daemons: Daemons::fixed(HashMap::from([(
             Network::Mainnet,
-            Arc::new(FallbackDaemonClient::new(vec![FallbackNode { label: "fixture".into(), client: daemon.clone() }])),
+            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                label: "fixture".into(),
+                client: daemon.clone(),
+            }])),
         )])),
         scanner_status: new_scanner_status_map(),
         log_store: None,
@@ -467,13 +560,25 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     let http_done = Arc::new(AtomicU64::new(0));
     let http_max_us = Arc::new(AtomicU64::new(0));
     for _ in 0..background_http_readers {
-        let (router, stop, completed, maximum) =
-            (http.clone(), background_stop.clone(), http_done.clone(), http_max_us.clone());
+        let (router, stop, completed, maximum) = (
+            http.clone(),
+            background_stop.clone(),
+            http_done.clone(),
+            http_max_us.clone(),
+        );
         background_tasks.push(tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
                 let started = Instant::now();
-                let request = Request::builder().uri("/status").body(Body::empty()).expect("static request");
-                if router.clone().oneshot(request).await.is_ok_and(|response| response.status().is_success()) {
+                let request = Request::builder()
+                    .uri("/status")
+                    .body(Body::empty())
+                    .expect("static request");
+                if router
+                    .clone()
+                    .oneshot(request)
+                    .await
+                    .is_ok_and(|response| response.status().is_success())
+                {
                     completed.fetch_add(1, Ordering::Relaxed);
                 }
                 maximum.fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -490,7 +595,12 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             while !stop.load(Ordering::Relaxed) {
                 let deadline = Instant::now() + Duration::from_millis(10);
                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-                max_delay.fetch_max(Instant::now().saturating_duration_since(deadline).as_micros() as u64, Ordering::Relaxed);
+                max_delay.fetch_max(
+                    Instant::now()
+                        .saturating_duration_since(deadline)
+                        .as_micros() as u64,
+                    Ordering::Relaxed,
+                );
             }
         })
     };
@@ -503,7 +613,10 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         handles,
         memory: Arc::new(scanner::work::ScanState::default()),
     };
-    let observer = rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let observer = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
     observer.busy_timeout(Duration::from_secs(5))?;
     let total = warmup + measured + drain;
     let mut points = Vec::new();
@@ -523,7 +636,9 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         let started = Instant::now();
         let outcome = engine.tick().await;
         if let Some(blocker) = blocker {
-            blocker.join().map_err(|_| std::io::Error::other("database contention thread panicked"))??;
+            blocker
+                .join()
+                .map_err(|_| std::io::Error::other("database contention thread panicked"))??;
         }
         let elapsed_ms = started.elapsed().as_millis() as u64;
         let now = progress(&observer, 2)?;
@@ -545,12 +660,19 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     for task in background_tasks {
         let _ = task.await;
     }
-    let measured_ms: u64 =
-        points.iter().filter(|p| p["phase"] == "measured").filter_map(|p| p["duration_ms"].as_u64()).sum();
-    let wal_bytes = std::fs::metadata(format!("{db_path}-wal")).map(|m| m.len()).unwrap_or(0);
+    let measured_ms: u64 = points
+        .iter()
+        .filter(|p| p["phase"] == "measured")
+        .filter_map(|p| p["duration_ms"].as_u64())
+        .sum();
+    let wal_bytes = std::fs::metadata(format!("{db_path}-wal"))
+        .map(|m| m.len())
+        .unwrap_or(0);
     let checkpoint = rusqlite::Connection::open(&db_path)?;
-    let (checkpoint_busy, wal_log_pages, wal_checkpointed_pages): (i64, i64, i64) =
-        checkpoint.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    let (checkpoint_busy, wal_log_pages, wal_checkpointed_pages): (i64, i64, i64) = checkpoint
+        .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
     let db_metrics = db.metrics();
     let result = json!({"schema_version":SCHEMA_VERSION,
         "db_write_queue_wait_max_us":db_metrics.max_queue_wait_us,"db_write_query_max_us":db_metrics.max_run_us,
@@ -587,7 +709,10 @@ fn main() {
     }
     // Two workers, as `server.worker_threads` defaults to; the xtask pins
     // the whole process to one CPU.
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build();
     let result = match runtime {
         Ok(runtime) => runtime.block_on(fixture()),
         Err(error) => Err(error.into()),
