@@ -400,7 +400,7 @@ async fn build_checkout_view(
         _ => ("—".to_string(), "".to_string()),
     };
 
-    let (status_text, status_class, is_terminal) = crate::views::order_state(&detail.order.status);
+    let (status_text, status_class, is_terminal) = crate::views::order_state(detail.order.status);
     // A subtle, progressive color shift as expiry nears (research on real
     // crypto-checkout UIs: a big alarming red countdown creates anxiety: a
     // quiet color change at 5 minutes, then 2, communicates urgency without
@@ -616,7 +616,7 @@ pub async fn checkout_status(
             )
             .await;
             let error = checkout_payment_message(&detail.order);
-            let (_, _, is_terminal) = crate::views::order_state(&detail.order.status);
+            let (_, _, is_terminal) = crate::views::order_state(detail.order.status);
             Json(CheckoutStatusResponse {
                 status: detail.order.status.into(),
                 confirmations: detail.order.confirmations,
@@ -892,7 +892,7 @@ mod tests {
             address: "address".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 200_000_000_000,
-            status: shared::order_status::OrderStatus::Partial.into(),
+            status: shared::order_status::OrderStatus::Partial,
             confirmations: 0,
             double_spend_detected_at: None,
             refund_address: None,
@@ -908,7 +908,7 @@ mod tests {
             Some("0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below.")
         );
 
-        order.status = shared::order_status::OrderStatus::Overpaid.into();
+        order.status = shared::order_status::OrderStatus::Overpaid;
         order.amount_received_piconero = 600_000_000_000;
         assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount."));
 

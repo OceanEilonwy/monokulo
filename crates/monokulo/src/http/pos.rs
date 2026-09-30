@@ -866,7 +866,7 @@ async fn pos_status(
     // once *that order's own* `confirmations_required` (however it
     // was resolved at creation - possibly `0`) has actually been
     // met, so there's no separate threshold check to fold in here.
-    let (_, _, is_terminal) = crate::views::order_state(&order.status);
+    let (_, _, is_terminal) = crate::views::order_state(order.status);
     PosStatusResponse {
         status: order.status.into(),
         updated_at: order.updated_at,

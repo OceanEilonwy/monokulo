@@ -54,7 +54,7 @@ pub fn orders_table(
                         td class="card-title" { a class="order-id" href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::order_id_short(&order.order_id)) } }
                         td class="card-meta" { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } }
                         td class="card-meta" { (order.source) }
-                        td class="card-status" { (super::state_badge(&order.status)) }
+                        td class="card-status" { (super::state_badge(order.status)) }
                         td class="card-amount nowrap" { (super::display_amount(&order.amount, &order.currency)) }
                         td class="card-when" { (clock.time(order.created_at)) }
                     }
@@ -307,7 +307,7 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
                 tr { th { "Rate provider" } td { (order.rate_provider) } }
                 tr { th { "XMR amount (piconero)" } td { (order.xmr_amount_piconero) } }
                 tr { th { "Amount received (piconero)" } td { (order.amount_received_piconero) } }
-                tr { th { "Status" } td { (super::state_badge(&order.status)) } }
+                tr { th { "Status" } td { (super::state_badge(order.status)) } }
                 tr { th { "Confirmations" } td { (order.confirmations) } }
                 tr { th { "Confirmations required" } td { (order.confirmations_required_display) } }
                 tr { th { "Store base currency (at order creation)" } td { (order.base_currency_display) } }

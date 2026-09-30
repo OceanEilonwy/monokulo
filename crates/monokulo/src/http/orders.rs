@@ -520,7 +520,7 @@ pub async fn order_detail_events(
                 let order = order_detail_data(&state, &row, &sk, &order_id, payment_link)
                     .await
                     .ok()??;
-                let (_, _, terminal) = crate::views::order_state(&order.status);
+                let (_, _, terminal) = crate::views::order_state(order.status);
                 let html = views::orders::live_fragment(&order, &clock).into_string();
                 let mut events = vec![axum::response::sse::Event::default()
                     .event(r##"{"target":"#order-live","swap":"outerHTML"}"##)

@@ -101,7 +101,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                                             (super::order_id_short(&order.order_id))
                                         }
                                     }
-                                    td { (super::state_badge(&order.status)) }
+                                    td { (super::state_badge(order.status)) }
                                     td class="nowrap" { (super::display_amount(&order.amount, &order.currency)) }
                                     td class="col-optional" { (chrome.clock.time(order.created_at)) }
                                 }
