@@ -623,7 +623,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             ("--drain", scenario["fault_drain_ticks"].to_string()),
         ]
         .into_iter()
-        .chain(extra.into_iter())
+        .chain(extra)
         {
             args.push(flag.into());
             args.push(value);
