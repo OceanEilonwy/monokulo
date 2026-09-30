@@ -2,7 +2,8 @@
 //! general-purpose Monero wallet, and never meant to become one. Built to
 //! replace `scanner::e2e_wallet::StagenetSpendWallet` as the thing this
 //! repo's real-stagenet e2e suites use to pay a real order with a real,
-//! signed, broadcast transaction.
+//! signed, broadcast transaction, and driven by hand through the
+//! `stagenet-wallet-cli` binary, whose commands follow `monero-wallet-cli`.
 //!
 //! # Why this exists
 //!
@@ -26,25 +27,23 @@
 //! narrows scope:
 //!
 //! - **No chain scanning for output discovery.** This wallet is *told*
-//!   about its own outputs directly - see [`Ledger`] - rather than
-//!   rediscovering them by asking the chain "what's mine?" on every run.
-//!   Once an output has been resolved once (`resolve_pending`, below), its
-//!   entire [`monero_wallet::WalletOutput`] is serialized and committed to
-//!   source (`WalletOutput::serialize`/`::read` - a real, public
-//!   round-trip the library itself provides), so every later run reads it
-//!   straight off disk with zero RPC calls at all.
+//!   about its own outputs directly - a txid added as pending, whose one
+//!   block is then scanned once it confirms - rather than rediscovering
+//!   them by asking the chain "what's mine?" on every run. Once resolved,
+//!   an output's entire [`monero_wallet::WalletOutput`] is serialized into
+//!   the wallet's own JSON file ([`file::WalletData`]) and committed, so
+//!   every later run reads it straight off disk with zero RPC calls.
 //! - **Decoy selection still runs the real, correct algorithm** (still
 //!   picks genuine, unlocked, on-chain outputs - a node will reject
 //!   anything less, stagenet or not) but is fed from a *cached, committed*
 //!   output-distribution snapshot instead of a live fetch every time - see
 //!   [`DecoyCache`]'s own doc comment for why this is provably safe, not
 //!   just fast.
-//! - **No live spent-status checks.** This wallet is the only spender of
-//!   its own keys (a committed, single-writer test fixture, never a real
-//!   multi-client wallet) - it marks an output `spent` in the ledger the
-//!   moment it successfully builds a transaction spending it, and trusts
-//!   that record on every later run rather than asking the chain to
-//!   confirm it again.
+//! - **No live spent-status checks by default.** Each wallet is the only
+//!   spender of its own keys - it marks an output `spent` the moment it
+//!   successfully broadcasts a transaction spending it, and trusts that
+//!   record on every later run. `rescan_spent` checks it against the chain
+//!   (one key-image query, still no scanning) when asked.
 //!
 //! What's *not* narrowed: the actual transaction construction and signing
 //! (`monero_wallet::send::SignableTransaction`, real CLSAG + Bulletproofs+)
@@ -52,18 +51,22 @@
 //! crate builds is exactly as real and exactly as valid as any other Monero
 //! wallet's.
 
+pub mod amount;
+pub mod file;
+pub mod meta;
+mod wallet;
+
 use std::ops::RangeBounds;
+use std::path::{Path, PathBuf};
 
 use monero_daemon_rpc::{prelude::*, HttpTransport, MoneroDaemon};
 use monero_seed::{Language as ElectrumLanguage, Seed as ElectrumSeed};
 use monero_wallet::{
-    address::{MoneroAddress, Network},
+    address::Network,
     ed25519::{Point, Scalar},
     interface::ProvidesUnvalidatedDecoys,
-    ringct::RctType,
-    send::{Change, SendError, SignableTransaction},
-    transaction::Transaction,
-    OutputWithDecoys, Scanner, ViewPair, WalletOutput,
+    send::SendError,
+    ViewPair, WalletOutput,
 };
 use polyseed::{Language as PolyseedLanguage, Polyseed};
 use rand_core::OsRng;
@@ -71,14 +74,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zeroize::Zeroizing;
 
+pub use file::{WalletData, WalletFile};
+pub use monero_wallet::interface::FeePriority;
+pub use wallet::{
+    CommittedTransfer, DaemonVersion, OwnedOutput, PreparedTransfer, SweepSelect, TransferKind,
+    TransferRequest, Wallet, WalletBalance, WalletKeys, MAX_OUTPUTS,
+};
+
 /// The ring size required for the `ClsagBulletproofPlus` RCT type this
 /// module always signs with - the standard type on every live Monero
 /// network today. Mirrors `scanner::e2e_wallet`'s own constant.
-const RING_LEN: u8 = 16;
+pub const RING_LEN: u8 = 16;
 
 /// Monero requires this many confirmations on any output before it's
 /// spendable - `CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE`, a real consensus rule.
-const SPENDABLE_AGE: u64 = 10;
+pub const SPENDABLE_AGE: u64 = 10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WalletError {
@@ -86,14 +96,13 @@ pub enum WalletError {
     DaemonUnreachable { url: String, source: InterfaceError },
     #[error(
         "insufficient funds: this payment needs {needed} piconero, but only {available} \
-         piconero of spendable ledger entries were found (an entry needs {SPENDABLE_AGE} \
+         piconero of spendable outputs were found (an output needs {SPENDABLE_AGE} \
          confirmations before it's spendable - if a recent send's change is still that young, \
          this is expected; wait and retry).\n\
          Otherwise, fund the wallet from the stagenet faucet:\n\
          1. open https://stagenet-faucet.xmr-tw.org/\n\
          2. send to: {address}\n\
-         3. add a new ledger entry for the faucet's txid (height/serialized_output_hex left\n\
-         null; resolve_pending fills them in on the next send)"
+         3. record the faucet's txid: stagenet-wallet-cli add_output <txid>"
     )]
     InsufficientFunds {
         needed: u64,
@@ -106,10 +115,18 @@ pub enum WalletError {
     Broadcast(#[source] PublishTransactionError),
     #[error("daemon RPC call failed: {0}")]
     Rpc(String),
-    #[error("ledger error: {0}")]
-    Ledger(String),
-    #[error("wallet store error: {0}")]
-    WalletStore(String),
+    #[error("wallet file error: {0}")]
+    WalletFile(String),
+    /// Someone else held the wallet file's lock and the caller chose not to
+    /// wait (see [`file::WalletFile::lock_with`]).
+    #[error("{0}; cancelled")]
+    Locked(String),
+    #[error("decoy distribution error: {0}")]
+    Decoys(String),
+    /// A request that can't be carried out as asked (a bad address, an
+    /// impossible fee split) - the message says why.
+    #[error("{0}")]
+    Invalid(String),
 }
 
 /// `monero-daemon-rpc`'s `HttpTransport` over a plain `reqwest::Client` -
@@ -210,195 +227,25 @@ impl ProvidesUnvalidatedDecoys for DecoyCache {
     }
 }
 
-/// One output this wallet knows about - either already resolved (spendable
-/// once old enough) or still `Pending` (a just-broadcast send's own change
-/// output, not yet confirmed). See this crate's own module doc comment for
-/// the full "informed, not scanned" model this implements.
-///
-/// One transaction can pay this wallet several outputs (a `split`, a send
-/// whose change is split), so several entries can share a `txid`; a
-/// resolved entry's output index (read from `serialized_output_hex`) tells
-/// them apart.
+/// A wallet's key material: what a new wallet file starts from, and how
+/// the old shared `stagenet-wallets.json` recorded each wallet (hence the
+/// serde names).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LedgerEntry {
-    pub txid: String,
-    /// `None` until `resolve_pending` has located this txid on-chain and
-    /// scanned that one block - after that, always `Some` and never
-    /// re-resolved.
-    pub height: Option<u64>,
-    /// Hex-encoded `WalletOutput::serialize()` - `None` exactly when
-    /// `height` is `None` (the two are always resolved together, by
-    /// `resolve_pending`). Once `Some`, every later run reads this
-    /// directly via `WalletOutput::read`, never re-scanning the chain for
-    /// it - the fast path this whole crate exists for.
-    pub serialized_output_hex: Option<String>,
-    pub amount_piconero: u64,
-    pub spent: bool,
-}
-
-/// The committed, source-controlled ledger of everything this wallet has
-/// ever been told about its own outputs - see this crate's own module doc
-/// comment. A plain JSON array on disk (`{"entries": [...]}`), read fresh
-/// and written back atomically (temp-file-then-rename, same convention
-/// every other credentials-adjacent file in this repo already follows) so
-/// two overlapping runs, or a crash mid-write, can't corrupt it.
-pub struct Ledger {
-    path: String,
-    entries: Vec<LedgerEntry>,
-}
-
-#[derive(Serialize, Deserialize, Default)]
-struct LedgerFile {
-    entries: Vec<LedgerEntry>,
-}
-
-impl Ledger {
-    pub fn load(path: &str) -> Result<Self, WalletError> {
-        let entries = match std::fs::read_to_string(path) {
-            Ok(contents) => {
-                serde_json::from_str::<LedgerFile>(&contents)
-                    .map_err(|e| WalletError::Ledger(format!("failed to parse {path}: {e}")))?
-                    .entries
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(WalletError::Ledger(format!("failed to read {path}: {e}"))),
-        };
-        Ok(Self {
-            path: path.to_string(),
-            entries,
-        })
-    }
-
-    fn save(&self) -> Result<(), WalletError> {
-        let file = LedgerFile {
-            entries: self.entries.clone(),
-        };
-        let tmp_path = format!("{}.tmp", self.path);
-        std::fs::write(
-            &tmp_path,
-            serde_json::to_string_pretty(&file).unwrap() + "\n",
-        )
-        .map_err(|e| WalletError::Ledger(format!("failed to write {tmp_path}: {e}")))?;
-        std::fs::rename(&tmp_path, &self.path).map_err(|e| {
-            WalletError::Ledger(format!(
-                "failed to move {tmp_path} into place over {}: {e}",
-                self.path
-            ))
-        })
-    }
-
-    /// Whether the ledger already has a resolved entry for output
-    /// `index_in_transaction` of `txid`. One transaction can pay this wallet
-    /// several outputs (a `split`, a send's split change), each its own
-    /// entry, so a txid alone doesn't identify an output.
-    fn has_output(&self, txid: &str, index_in_transaction: u64) -> bool {
-        self.entries
-            .iter()
-            .any(|e| e.txid == txid && entry_output_index(e) == Some(index_in_transaction))
-    }
-
-    /// Records every output of confirmed transaction `txid` (at `height`)
-    /// that pays this wallet, one entry each: the first new one fills in a
-    /// still-pending entry for `txid` if there is one, the rest are added.
-    /// Outputs already recorded are skipped, so calling this again for the
-    /// same transaction changes nothing. Returns how many outputs were
-    /// newly recorded. Doesn't save.
-    fn record_transaction_outputs(
-        &mut self,
-        txid: &str,
-        height: u64,
-        outputs: &[WalletOutput],
-    ) -> usize {
-        let mut recorded = 0;
-        for output in outputs {
-            if self.has_output(txid, output.index_in_transaction()) {
-                continue;
-            }
-            let entry = resolved_entry(txid, height, output);
-            match self
-                .entries
-                .iter_mut()
-                .find(|e| e.txid == txid && e.height.is_none())
-            {
-                Some(pending) => {
-                    *pending = LedgerEntry {
-                        spent: pending.spent,
-                        ..entry
-                    }
-                }
-                None => self.entries.push(entry),
-            }
-            recorded += 1;
-        }
-        recorded
-    }
-
-    /// Marks exactly the given outputs (`(txid, output index)`) spent,
-    /// leaving any other outputs of the same transactions untouched.
-    /// Doesn't save.
-    fn mark_spent(&mut self, spent: &[(String, u64)]) {
-        for entry in self.entries.iter_mut() {
-            if let Some(index) = entry_output_index(entry) {
-                if spent
-                    .iter()
-                    .any(|(txid, spent_index)| *txid == entry.txid && *spent_index == index)
-                {
-                    entry.spent = true;
-                }
-            }
-        }
-    }
-
-    /// Adds a `Pending` entry for a transaction this wallet just broadcast
-    /// itself - `resolve_pending` fills in `height`/`serialized_output_hex`
-    /// the next time this ledger is used, once it's had a chance to
-    /// confirm.
-    pub fn record_pending(&mut self, txid: &str, amount_piconero: u64) -> Result<(), WalletError> {
-        if !self.entries.iter().any(|e| e.txid == txid) {
-            self.entries.push(LedgerEntry {
-                txid: txid.to_string(),
-                height: None,
-                serialized_output_hex: None,
-                amount_piconero,
-                spent: false,
-            });
-        }
-        self.save()
-    }
-}
-
-/// Full key material for one wallet this crate can act as - what
-/// [`Wallet::connect`] needs, loaded from (and, via
-/// [`WalletStore::add_wallet`]/[`WalletStore::add_wallet_from_seed`],
-/// written back to) the committed `stagenet-wallets.json` fixture by name.
-/// Serde field names match that file's own (`private_spend_key`, not
-/// `_hex`) so this reads it as-is.
-#[derive(Clone, Serialize, Deserialize)]
 pub struct WalletCredentials {
     pub address: String,
     #[serde(rename = "private_spend_key")]
     pub private_spend_key_hex: String,
     #[serde(rename = "private_view_key")]
     pub private_view_key_hex: String,
-}
-
-/// The private keys never show in `Debug` output.
-impl std::fmt::Debug for WalletCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WalletCredentials")
-            .field("address", &self.address)
-            .field("private_spend_key_hex", &"<redacted>")
-            .field("private_view_key_hex", &"<redacted>")
-            .finish()
-    }
+    /// The seed phrase these keys came from, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mnemonic: Option<String>,
 }
 
 /// Every path/network setting a real caller needs to talk to the e2e
-/// fixtures, in one place - `WalletStore::load`, `Ledger::load`, and
-/// `Wallet::connect`/`send_payment` each need one piece of this,
-/// and every real caller in this repo wants the same standard `e2e/*`
-/// layout, so `WalletCtx::default()` is the one thing most callers need to
-/// name at all.
+/// fixtures, in one place. Every real caller in this repo wants the same
+/// standard `e2e/*` layout, so `WalletCtx::default()` is the one thing most
+/// callers need to name at all.
 #[derive(Debug, Clone)]
 pub struct WalletCtx {
     /// Stagenet nodes to use, in order of preference. A node that can't be
@@ -408,26 +255,12 @@ pub struct WalletCtx {
     /// [`ResolvedWallet::connect`] and [`send_payment`].
     pub node_urls: Vec<String>,
     pub accept_invalid_certs: bool,
-    pub wallets_path: String,
+    /// Where wallet files live: a wallet named `spender` is
+    /// `<wallet_dir>/spender.json`.
+    pub wallet_dir: PathBuf,
     pub decoy_distribution_path: String,
-    pub ledger_path: String,
 }
 
-/// The repository's own `e2e/` directory, anchored to *this crate's* own
-/// compile-time location (`crates/cli-wallet/`) rather than
-/// whatever the process's current directory happens to be at runtime.
-/// Deliberate: `cargo test` sets a test binary's working directory to its
-/// *own package's* manifest directory - not the repository root, and not
-/// wherever `cargo test` itself was invoked from - so a caller-relative
-/// path like `"e2e/..."` or `"../e2e/..."` is only ever correct for
-/// whichever one crate happened to inspire it, and silently wrong for
-/// every other crate's tests (confirmed the hard way: this bit both
-/// `crates/scanner`'s and `crates/mock-woocommerce`'s real e2e tests,
-/// under their own documented `cargo test` invocations, before this fix).
-/// `CARGO_MANIFEST_DIR` is fixed at compile time to wherever *this* crate's
-/// `Cargo.toml` lives, regardless of which downstream crate's test
-/// ultimately calls `WalletCtx::default()` or what cwd that process has -
-/// so this is correct everywhere, always, by construction.
 /// `nodes` in the order a connection attempt tries them: starting at index
 /// `start` (wrapping around), each without a trailing `/`.
 fn nodes_in_order(nodes: &[String], start: usize) -> Vec<String> {
@@ -447,6 +280,17 @@ pub const DEFAULT_STAGENET_NODES: [&str; 3] = [
     "http://node3.monerodevs.org:38089",
 ];
 
+/// The repository's own `e2e/` directory, anchored to *this crate's* own
+/// compile-time location (`crates/cli-wallet/`) rather than whatever the
+/// process's current directory happens to be at runtime. Deliberate:
+/// `cargo test` sets a test binary's working directory to its *own
+/// package's* manifest directory, so a caller-relative path like `"e2e/..."`
+/// is only ever correct for whichever one crate happened to inspire it, and
+/// silently wrong for every other crate's tests (confirmed the hard way:
+/// this bit both `crates/scanner`'s and `crates/mock-woocommerce`'s real
+/// e2e tests before this fix). `CARGO_MANIFEST_DIR` is fixed at compile
+/// time to wherever *this* crate's `Cargo.toml` lives, so this is correct
+/// everywhere, always, by construction.
 macro_rules! e2e_path {
     ($file:literal) => {
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../e2e/", $file)
@@ -466,18 +310,32 @@ impl Default for WalletCtx {
                 .map(|url| url.to_string())
                 .collect(),
             accept_invalid_certs: true,
-            wallets_path: e2e_path!("stagenet-wallets.json").to_string(),
+            wallet_dir: PathBuf::from(e2e_path!("wallets")),
             decoy_distribution_path: e2e_path!("stagenet-decoy-distribution.json").to_string(),
-            ledger_path: e2e_path!("stagenet-known-outputs.json").to_string(),
         }
     }
 }
 
-/// A named wallet's key material plus enough of its [`WalletStore`]'s own
-/// [`WalletCtx`] to connect to it directly - what [`WalletStore::wallet`]
-/// actually returns, and everything [`Self::connect`]/[`send_payment`] need.
-#[derive(Clone)]
+impl WalletCtx {
+    /// A `--wallet-file` argument as a path: a bare name (`spender`) is
+    /// `<wallet_dir>/<name>.json`; anything that looks like a path is used
+    /// as given.
+    pub fn wallet_path(&self, name_or_path: &str) -> PathBuf {
+        if name_or_path.contains(std::path::MAIN_SEPARATOR) || name_or_path.ends_with(".json") {
+            PathBuf::from(name_or_path)
+        } else {
+            self.wallet_dir.join(format!("{name_or_path}.json"))
+        }
+    }
+}
+
+/// A wallet file's key material plus enough of a [`WalletCtx`] to connect
+/// to it - what [`WalletStore::wallet`] returns, and everything
+/// [`Self::connect`]/[`send_payment`] need.
+#[derive(Debug, Clone)]
 pub struct ResolvedWallet {
+    /// The wallet file.
+    pub path: PathBuf,
     pub address: String,
     pub private_spend_key_hex: String,
     pub private_view_key_hex: String,
@@ -485,25 +343,23 @@ pub struct ResolvedWallet {
     pub node_urls: Vec<String>,
     pub accept_invalid_certs: bool,
     pub decoy_distribution_path: String,
-    pub ledger_path: String,
-}
-
-/// The private keys never show in `Debug` output.
-impl std::fmt::Debug for ResolvedWallet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResolvedWallet")
-            .field("address", &self.address)
-            .field("private_spend_key_hex", &"<redacted>")
-            .field("private_view_key_hex", &"<redacted>")
-            .field("node_urls", &self.node_urls)
-            .field("accept_invalid_certs", &self.accept_invalid_certs)
-            .field("decoy_distribution_path", &self.decoy_distribution_path)
-            .field("ledger_path", &self.ledger_path)
-            .finish()
-    }
 }
 
 impl ResolvedWallet {
+    /// Reads the wallet file at `path`, with `ctx`'s node settings.
+    pub fn open(ctx: &WalletCtx, path: impl AsRef<Path>) -> Result<Self, WalletError> {
+        let file = WalletFile::load(path.as_ref())?;
+        Ok(ResolvedWallet {
+            path: path.as_ref().to_path_buf(),
+            address: file.data.address,
+            private_spend_key_hex: file.data.private_spend_key,
+            private_view_key_hex: file.data.private_view_key,
+            node_urls: ctx.node_urls.clone(),
+            accept_invalid_certs: ctx.accept_invalid_certs,
+            decoy_distribution_path: ctx.decoy_distribution_path.clone(),
+        })
+    }
+
     /// This wallet's *public* spend key, hex-encoded - derived locally from
     /// `self.private_spend_key_hex`, never the private key itself. For
     /// handing to something that must never see a private key even for a
@@ -519,11 +375,22 @@ impl ResolvedWallet {
         hex::encode(public_spend.compress().to_bytes())
     }
 
-    /// Connects to `self.node_url`, deriving keys from `self`'s own hex-encoded
-    /// private spend/view keys and asserting the derived address matches
-    /// `self.address` (the same self-check `scanner::e2e_wallet::
-    /// StagenetSpendWallet::connect` already made), and loads the cached
-    /// decoy-distribution snapshot at `self.decoy_distribution_path`.
+    /// Everything that works without a node. Derives keys from `self`'s own
+    /// hex-encoded private spend/view keys and asserts the derived address
+    /// matches `self.address`.
+    pub fn keys(&self) -> WalletKeys {
+        let data = WalletData::new(WalletCredentials {
+            address: self.address.clone(),
+            private_spend_key_hex: self.private_spend_key_hex.clone(),
+            private_view_key_hex: self.private_view_key_hex.clone(),
+            mnemonic: None,
+        });
+        WalletKeys::from_data(&data, self.path.clone())
+    }
+
+    /// Connects to the first of `self.node_urls` that answers and loads
+    /// the cached decoy-distribution snapshot at
+    /// `self.decoy_distribution_path`.
     pub async fn connect(&self) -> Result<Wallet, WalletError> {
         self.connect_starting_at(0).await
     }
@@ -534,20 +401,7 @@ impl ResolvedWallet {
     /// accepts a connection but then fails the payment isn't tried first
     /// every time.
     pub async fn connect_starting_at(&self, start: usize) -> Result<Wallet, WalletError> {
-        let spend_key = scalar_from_hex(&self.private_spend_key_hex);
-        let view_key = scalar_from_hex(&self.private_view_key_hex);
-        let spend_key_dalek: Zeroizing<curve25519_dalek::Scalar> =
-            Zeroizing::new((*spend_key).into());
-        let public_spend =
-            Point::from(&*spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
-        let view_pair = ViewPair::new(public_spend, view_key)
-            .expect("torsioned spend key in stagenet-wallets.json");
-        let address = view_pair.legacy_address(Network::Stagenet);
-        assert_eq!(
-            address.to_string(),
-            self.address,
-            "derived address doesn't match the expected address - private_spend_key/private_view_key don't match that address"
-        );
+        let keys = self.keys();
 
         let http_client = reqwest::Client::builder()
             .danger_accept_invalid_certs(self.accept_invalid_certs)
@@ -587,140 +441,40 @@ impl ResolvedWallet {
         };
 
         Ok(Wallet {
-            view_pair,
-            spend_key,
-            address,
+            keys,
             rpc,
             decoy_cache,
             http_client,
             node_url,
-            ledger_path: self.ledger_path.clone(),
         })
     }
 }
 
-/// The committed, source-controlled `stagenet-wallets.json` fixture - every
-/// named wallet's key material this crate can spend from or add to, keyed
-/// by name (e.g. `"spender"`). Callers never touch the JSON directly -
-/// [`WalletStore::wallet`] is the only way in, [`WalletStore::add_wallet`]/
-/// [`WalletStore::add_wallet_from_seed`] the only way to add one; this type
-/// is free to change its on-disk representation later without any caller
-/// noticing.
-///
-/// Deliberately backed by a raw `serde_json::Map`, not a fixed struct: the
-/// file also carries bookkeeping this crate doesn't own (`faucet_used`,
-/// `network`, ...) that must round-trip untouched. Same atomic
-/// write-then-rename convention as [`Ledger::save`].
+/// The e2e suites' way in: named wallets in [`WalletCtx::wallet_dir`].
 pub struct WalletStore {
     ctx: WalletCtx,
-    file: serde_json::Map<String, Value>,
 }
 
 impl WalletStore {
     pub fn load(ctx: &WalletCtx) -> Result<Self, WalletError> {
-        let path = &ctx.wallets_path;
-        let file = match std::fs::read_to_string(path) {
-            Ok(contents) => match serde_json::from_str::<Value>(&contents)
-                .map_err(|e| WalletError::WalletStore(format!("failed to parse {path}: {e}")))?
-            {
-                Value::Object(map) => map,
-                _ => {
-                    return Err(WalletError::WalletStore(format!(
-                        "{path} isn't a JSON object"
-                    )))
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
-            Err(e) => {
-                return Err(WalletError::WalletStore(format!(
-                    "failed to read {path}: {e}"
-                )))
-            }
-        };
-        Ok(Self {
-            ctx: ctx.clone(),
-            file,
-        })
+        if !ctx.wallet_dir.is_dir() {
+            return Err(WalletError::WalletFile(format!(
+                "wallet directory {} doesn't exist",
+                ctx.wallet_dir.display()
+            )));
+        }
+        Ok(Self { ctx: ctx.clone() })
     }
 
-    fn save(&self) -> Result<(), WalletError> {
-        let path = &self.ctx.wallets_path;
-        let tmp_path = format!("{path}.tmp");
-        std::fs::write(
-            &tmp_path,
-            serde_json::to_string_pretty(&self.file).unwrap() + "\n",
-        )
-        .map_err(|e| WalletError::WalletStore(format!("failed to write {tmp_path}: {e}")))?;
-        std::fs::rename(&tmp_path, path).map_err(|e| {
-            WalletError::WalletStore(format!(
-                "failed to move {tmp_path} into place over {path}: {e}"
-            ))
-        })
-    }
-
-    fn entry(&self, name: &str) -> Result<&Value, WalletError> {
-        self.file.get(name).ok_or_else(|| {
-            WalletError::WalletStore(format!(
-                "no wallet named {name:?} in {} (have: {:?})",
-                self.ctx.wallets_path,
-                self.file.keys().collect::<Vec<_>>()
-            ))
-        })
-    }
-
-    /// `name`'s key material, plus this store's own [`WalletCtx`] settings -
-    /// together, everything [`Wallet::connect`] needs. Errors if `name`
-    /// isn't in the file or has no `private_spend_key` recorded. Every
-    /// wallet this crate manages is a worthless stagenet fixture, so there's
-    /// no reason to withhold a spend key from any of them - even
-    /// moneropay's own tenant (`merchant`) has one recorded, for full
-    /// recoverability/CLI use; only the *public* half
-    /// ([`ResolvedWallet::spend_public_key_hex`]) is ever actually handed to
-    /// moneropay's real connect API, so the e2e tests still exercise it
-    /// exactly as a genuinely watch-only tenant would be.
+    /// The wallet named `name` (`<wallet_dir>/<name>.json`). Every wallet
+    /// this crate manages is a worthless stagenet fixture, so every one has
+    /// its spend key recorded - even moneropay's own tenant (`merchant`);
+    /// only the *public* half ([`ResolvedWallet::spend_public_key_hex`]) is
+    /// ever actually handed to moneropay's real connect API, so the e2e
+    /// tests still exercise it exactly as a genuinely watch-only tenant
+    /// would be.
     pub fn wallet(&self, name: &str) -> Result<ResolvedWallet, WalletError> {
-        let credentials: WalletCredentials = serde_json::from_value(self.entry(name)?.clone())
-            .map_err(|e| {
-                WalletError::WalletStore(format!(
-                    "wallet {name:?} has no usable spend key material: {e}"
-                ))
-            })?;
-        Ok(ResolvedWallet {
-            address: credentials.address,
-            private_spend_key_hex: credentials.private_spend_key_hex,
-            private_view_key_hex: credentials.private_view_key_hex,
-            node_urls: self.ctx.node_urls.clone(),
-            accept_invalid_certs: self.ctx.accept_invalid_certs,
-            decoy_distribution_path: self.ctx.decoy_distribution_path.clone(),
-            ledger_path: self.ctx.ledger_path.clone(),
-        })
-    }
-
-    /// Adds (or overwrites) `name`'s key material and commits the file.
-    pub fn add_wallet(
-        &mut self,
-        name: &str,
-        credentials: WalletCredentials,
-    ) -> Result<(), WalletError> {
-        self.file.insert(
-            name.to_string(),
-            serde_json::to_value(credentials).expect("WalletCredentials always serializes"),
-        );
-        self.save()
-    }
-
-    /// Derives a wallet's key material from a real Monero seed phrase -
-    /// either a 16-word Polyseed or a 24/25-word legacy Electrum-style
-    /// seed, tried against every language each format supports (neither
-    /// crate autodetects language from the words alone) - and adds it
-    /// under `name`.
-    pub fn add_wallet_from_seed(
-        &mut self,
-        name: &str,
-        seed_phrase: &str,
-    ) -> Result<(), WalletError> {
-        let credentials = wallet_credentials_from_seed(seed_phrase)?;
-        self.add_wallet(name, credentials)
+        ResolvedWallet::open(&self.ctx, self.ctx.wallet_path(name))
     }
 }
 
@@ -753,13 +507,45 @@ const ELECTRUM_LANGUAGES: [ElectrumLanguage; 13] = [
     ElectrumLanguage::DeprecatedEnglish,
 ];
 
+/// `--mnemonic-language` names (the reference wallet's English names) for
+/// the legacy 25-word seeds this crate generates and prints, in
+/// [`ELECTRUM_LANGUAGES`] order.
+pub const SEED_LANGUAGE_NAMES: [&str; 12] = [
+    "English",
+    "Chinese",
+    "Dutch",
+    "French",
+    "Spanish",
+    "German",
+    "Italian",
+    "Portuguese",
+    "Japanese",
+    "Russian",
+    "Esperanto",
+    "Lojban",
+];
+
+fn seed_language(name: &str) -> Result<ElectrumLanguage, WalletError> {
+    SEED_LANGUAGE_NAMES
+        .iter()
+        .position(|known| known.eq_ignore_ascii_case(name))
+        .map(|i| ELECTRUM_LANGUAGES[i])
+        .ok_or_else(|| {
+            WalletError::Invalid(format!(
+                "unknown mnemonic language {name:?} - one of {SEED_LANGUAGE_NAMES:?}"
+            ))
+        })
+}
+
 /// Derives `WalletCredentials` (address + hex-encoded spend/view keys) from
-/// a real spend key the same way [`Wallet::connect`] validates
-/// stored key material - by deriving the matching view key deterministically
-/// (`view = Hs(spend)`, exactly [`Scalar::hash`]'s own documented
-/// definition) and the address from both, rather than trusting a
+/// a real spend key - the view key deterministically (`view = Hs(spend)`,
+/// exactly [`Scalar::hash`]'s own documented definition, as every Monero
+/// wallet derives it) and the address from both, rather than trusting a
 /// caller-supplied pair.
-fn credentials_from_spend_key(spend_key: Zeroizing<Scalar>) -> WalletCredentials {
+fn credentials_from_spend_key(
+    spend_key: Zeroizing<Scalar>,
+    mnemonic: Option<String>,
+) -> WalletCredentials {
     let view_key = Zeroizing::new(Scalar::hash(<[u8; 32]>::from(*spend_key)));
     let spend_key_dalek: Zeroizing<curve25519_dalek::Scalar> = Zeroizing::new((*spend_key).into());
     let public_spend =
@@ -771,10 +557,44 @@ fn credentials_from_spend_key(spend_key: Zeroizing<Scalar>) -> WalletCredentials
         address: address.to_string(),
         private_spend_key_hex: hex::encode(<[u8; 32]>::from(*spend_key)),
         private_view_key_hex: hex::encode(<[u8; 32]>::from(*view_key)),
+        mnemonic,
     }
 }
 
-fn wallet_credentials_from_seed(phrase: &str) -> Result<WalletCredentials, WalletError> {
+/// `--generate-new-wallet`: fresh random keys, recorded with their 25-word
+/// seed in `language`.
+pub fn generate_credentials(language: &str) -> Result<WalletCredentials, WalletError> {
+    let seed = ElectrumSeed::new(&mut OsRng, seed_language(language)?);
+    let spend_key = Zeroizing::new(
+        Scalar::read(&mut &seed.entropy()[..])
+            .expect("a generated legacy Seed's own entropy is always a canonical scalar"),
+    );
+    Ok(credentials_from_spend_key(
+        spend_key,
+        Some(seed.to_string().to_string()),
+    ))
+}
+
+/// `--generate-from-spend-key`: the wallet a hex private spend key belongs
+/// to.
+pub fn credentials_from_spend_key_hex(
+    spend_key_hex: &str,
+) -> Result<WalletCredentials, WalletError> {
+    let bytes: [u8; 32] = hex::decode(spend_key_hex.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| WalletError::Invalid("failed to parse spend key secret key".to_string()))?;
+    let spend_key = Scalar::read(&mut &bytes[..]).map_err(|_| {
+        WalletError::Invalid("spend key isn't a canonical ed25519 scalar".to_string())
+    })?;
+    Ok(credentials_from_spend_key(Zeroizing::new(spend_key), None))
+}
+
+/// `--restore-deterministic-wallet`: the wallet a real Monero seed phrase
+/// restores - either a 16-word Polyseed or a 24/25-word legacy
+/// Electrum-style seed, tried against every language each format supports
+/// (neither crate autodetects language from the words alone).
+pub fn credentials_from_seed(phrase: &str) -> Result<WalletCredentials, WalletError> {
     let phrase = Zeroizing::new(phrase.split_whitespace().collect::<Vec<_>>().join(" "));
     let word_count = phrase.split_whitespace().count();
 
@@ -784,10 +604,13 @@ fn wallet_credentials_from_seed(phrase: &str) -> Result<WalletCredentials, Walle
                 let spend_key = Zeroizing::new(Scalar::from(
                     curve25519_dalek::Scalar::from_bytes_mod_order(*seed.key()),
                 ));
-                return Ok(credentials_from_spend_key(spend_key));
+                return Ok(credentials_from_spend_key(
+                    spend_key,
+                    Some(phrase.to_string()),
+                ));
             }
         }
-        return Err(WalletError::WalletStore(
+        return Err(WalletError::Invalid(
             "16-word phrase didn't parse as a Polyseed in any supported language".to_string(),
         ));
     }
@@ -800,178 +623,43 @@ fn wallet_credentials_from_seed(phrase: &str) -> Result<WalletCredentials, Walle
                     Scalar::read(&mut &entropy[..])
                         .expect("a parsed legacy Seed's own entropy is always a canonical scalar"),
                 );
-                return Ok(credentials_from_spend_key(spend_key));
+                return Ok(credentials_from_spend_key(
+                    spend_key,
+                    Some(phrase.to_string()),
+                ));
             }
         }
-        return Err(WalletError::WalletStore(format!(
-            "{word_count}-word phrase didn't parse as a legacy Electrum-style seed in any supported language"
-        )));
+        return Err(WalletError::Invalid(format!("{word_count}-word phrase didn't parse as a legacy Electrum-style seed in any supported language")));
     }
 
-    Err(WalletError::WalletStore(format!("seed phrase has {word_count} words - expected 16 (Polyseed) or 24/25 (legacy Electrum-style)")))
+    Err(WalletError::Invalid(format!("seed phrase has {word_count} words - expected 16 (Polyseed) or 24/25 (legacy Electrum-style)")))
 }
 
-/// A resolved, unspent ledger entry for one output this wallet received.
-fn resolved_entry(txid: &str, height: u64, output: &WalletOutput) -> LedgerEntry {
-    LedgerEntry {
-        txid: txid.to_string(),
-        height: Some(height),
-        serialized_output_hex: Some(hex::encode(output.serialize())),
-        amount_piconero: output.commitment().amount,
-        spent: false,
-    }
+/// The 25-word seed that restores `spend_key_hex`, in `language` - what
+/// `seed` prints for a wallet with no recorded mnemonic.
+pub fn legacy_seed_for(spend_key_hex: &str, language: &str) -> Result<String, WalletError> {
+    let seed = ElectrumSeed::from_entropy(
+        seed_language(language)?,
+        Zeroizing::new(hex32(spend_key_hex)),
+    )
+    .ok_or_else(|| WalletError::Invalid("spend key has no 25-word seed".to_string()))?;
+    Ok(seed.to_string().to_string())
 }
 
-/// Which output of its transaction a resolved entry is, read from the
-/// serialized output itself (`None` while the entry is still pending).
-fn entry_output_index(entry: &LedgerEntry) -> Option<u64> {
-    let bytes = hex::decode(entry.serialized_output_hex.as_ref()?).ok()?;
-    WalletOutput::read(&mut &bytes[..])
-        .ok()
-        .map(|output| output.index_in_transaction())
-}
-
-impl Wallet {
-    /// Resolves every still-`Pending` ledger entry it can (locates the
-    /// txid's block height over a plain `/get_transactions` call, scans
-    /// *that one block* - deliberately not the whole chain - for the real
-    /// `WalletOutput`, and serializes it into the entry), persisting each
-    /// resolution immediately. A txid not yet confirmed (still in the
-    /// mempool) is left `Pending` for a later run to pick up - not an
-    /// error.
-    pub async fn resolve_pending(&self, ledger: &mut Ledger) -> Result<(), WalletError> {
-        let pending_txids: Vec<String> = ledger
-            .entries
-            .iter()
-            .filter(|e| !e.spent && e.height.is_none())
-            .map(|e| e.txid.clone())
-            .collect();
-        if pending_txids.is_empty() {
-            return Ok(());
-        }
-        for txid in pending_txids {
-            let Some((height, outputs)) = self.scan_transaction(&txid).await? else {
-                continue;
-            };
-            // A split, or a send whose change was split, pays this wallet
-            // several outputs in one transaction: each gets its own entry.
-            ledger.record_transaction_outputs(&txid, height, &outputs);
-            ledger.save()?;
-        }
-        Ok(())
-    }
-
-    /// Locates `txid`'s block and returns every output in it that pays this
-    /// wallet, in output order - `None` while it's still unconfirmed (or
-    /// pays this wallet nothing, which is logged).
-    async fn scan_transaction(
-        &self,
-        txid: &str,
-    ) -> Result<Option<(u64, Vec<WalletOutput>)>, WalletError> {
-        let Some(height) = locate_height(&self.http_client, &self.node_url, txid).await? else {
-            return Ok(None);
-        };
-        let block = self
-            .rpc
-            .block_by_number(height as usize)
-            .await
-            .map_err(|e| WalletError::Rpc(e.to_string()))?;
-        let scannable = self
-            .rpc
-            .expand_to_scannable_block(block)
-            .await
-            .map_err(|e| WalletError::Rpc(e.to_string()))?;
-        let mut scanner = Scanner::new(self.view_pair.clone());
-        let found = scanner
-            .scan(scannable)
-            .map_err(|e| WalletError::Rpc(e.to_string()))?
-            .not_additionally_locked();
-        let mut outputs: Vec<WalletOutput> = found
-            .into_iter()
-            .filter(|o| hex::encode(o.transaction()) == txid)
-            .collect();
-        if outputs.is_empty() {
-            // Genuinely shouldn't happen (we only ever add our own txids),
-            // but a wrong/stale ledger entry is a data problem, not a
-            // reason to crash the whole run.
-            eprintln!("cli-wallet: txid {txid} confirmed at height {height} but no output of it pays this wallet - leaving it unresolved");
-            return Ok(None);
-        }
-        outputs.sort_by_key(|o| o.index_in_transaction());
-        Ok(Some((height, outputs)))
-    }
-
-    /// Adds entries for any outputs of an already-recorded, confirmed
-    /// `txid` that pay this wallet but are missing from the ledger. Earlier
-    /// versions recorded only one output per transaction, so a `split`'s
-    /// other pieces went untracked (still this wallet's on chain, just
-    /// unknown to the ledger); this finds them again. Returns how many were
-    /// added.
-    async fn recover_outputs(&self, ledger: &mut Ledger, txid: &str) -> Result<usize, WalletError> {
-        let Some((height, outputs)) = self.scan_transaction(txid).await? else {
-            return Ok(0);
-        };
-        let added = ledger.record_transaction_outputs(txid, height, &outputs);
-        if added > 0 {
-            ledger.save()?;
-        }
-        Ok(added)
-    }
-
-    /// Every currently-spendable `WalletOutput` this ledger already knows
-    /// about - old enough (`SPENDABLE_AGE`) and not marked `spent`. Purely
-    /// local: deserializes each qualifying entry's own committed bytes, no
-    /// RPC calls at all beyond the one `latest_block_number` needed for the
-    /// age check.
-    fn spendable_from_ledger(
-        &self,
-        ledger: &Ledger,
-        latest_height: u64,
-    ) -> Result<Vec<(String, WalletOutput)>, WalletError> {
-        let mut spendable = Vec::new();
-        for entry in &ledger.entries {
-            if entry.spent {
-                continue;
-            }
-            let (Some(height), Some(hex_bytes)) = (entry.height, &entry.serialized_output_hex)
-            else {
-                continue;
-            };
-            if latest_height.saturating_sub(height) < SPENDABLE_AGE {
-                continue;
-            }
-            let bytes = hex::decode(hex_bytes).map_err(|e| {
-                WalletError::Ledger(format!(
-                    "entry {} has invalid serialized_output_hex: {e}",
-                    entry.txid
-                ))
-            })?;
-            let output = WalletOutput::read(&mut &bytes[..]).map_err(|e| {
-                WalletError::Ledger(format!("entry {} failed to deserialize: {e}", entry.txid))
-            })?;
-            spendable.push((entry.txid.clone(), output));
-        }
-        Ok(spendable)
-    }
-}
-
-pub struct Wallet {
-    view_pair: ViewPair,
-    spend_key: Zeroizing<Scalar>,
-    address: MoneroAddress,
-    rpc: MoneroDaemon<ReqwestTransport>,
-    decoy_cache: DecoyCache,
-    http_client: reqwest::Client,
-    node_url: String,
-    /// Where this wallet's ledger lives - carried over from the
-    /// [`ResolvedWallet`] this was connected from, so every method below
-    /// loads/saves it on its own; nothing outside this type ever touches a
-    /// [`Ledger`] directly once a [`Wallet`] exists.
-    ledger_path: String,
+/// Reads back an output stored as hex-encoded `WalletOutput::serialize()`.
+pub(crate) fn decode_output(txid: &str, hex_bytes: &str) -> Result<WalletOutput, WalletError> {
+    let bytes = hex::decode(hex_bytes).map_err(|e| {
+        WalletError::WalletFile(format!(
+            "output of {txid} has invalid serialized_output_hex: {e}"
+        ))
+    })?;
+    WalletOutput::read(&mut &bytes[..]).map_err(|e| {
+        WalletError::WalletFile(format!("output of {txid} failed to deserialize: {e}"))
+    })
 }
 
 fn hex32(hex_str: &str) -> [u8; 32] {
-    let bytes = hex::decode(hex_str).expect("invalid hex in stagenet-wallets.json key material");
+    let bytes = hex::decode(hex_str).expect("invalid hex in wallet file key material");
     bytes
         .try_into()
         .expect("key material must be exactly 32 bytes")
@@ -980,7 +668,7 @@ fn hex32(hex_str: &str) -> [u8; 32] {
 fn scalar_from_hex(hex_str: &str) -> Zeroizing<Scalar> {
     Zeroizing::new(
         Scalar::read(&mut &hex32(hex_str)[..])
-            .expect("stagenet-wallets.json private key isn't a canonical ed25519 scalar"),
+            .expect("wallet file private key isn't a canonical ed25519 scalar"),
     )
 }
 
@@ -989,11 +677,10 @@ fn scalar_from_hex(hex_str: &str) -> Zeroizing<Scalar> {
 /// `DecoyCache` - see that type's own doc comment for why a cached snapshot
 /// is a fully valid input, not an approximation.
 fn load_decoy_distribution(path: &str) -> Result<Vec<u64>, WalletError> {
-    let contents = std::fs::read_to_string(path).map_err(|e| {
-        WalletError::Ledger(format!("failed to read decoy distribution {path}: {e}"))
-    })?;
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| WalletError::Decoys(format!("failed to read {path}: {e}")))?;
     serde_json::from_str(&contents)
-        .map_err(|e| WalletError::Ledger(format!("failed to parse decoy distribution {path}: {e}")))
+        .map_err(|e| WalletError::Decoys(format!("failed to parse {path}: {e}")))
 }
 
 /// Fetches one real `ringct_output_distribution` snapshot over `from..=to`
@@ -1028,7 +715,7 @@ pub async fn refresh_decoy_distribution(
         .await
         .map_err(|e| WalletError::Rpc(e.to_string()))?;
     std::fs::write(out_path, serde_json::to_string(&distribution).unwrap())
-        .map_err(|e| WalletError::Ledger(format!("failed to write {out_path}: {e}")))?;
+        .map_err(|e| WalletError::Decoys(format!("failed to write {out_path}: {e}")))?;
     Ok(distribution.len())
 }
 
@@ -1037,10 +724,8 @@ pub async fn refresh_decoy_distribution(
 /// `monero-daemon-rpc`'s own typed transaction-fetching (which
 /// deserializes the full transaction body, work this only needs metadata
 /// for) or `scanner`'s equivalent (this crate has no dependency on
-/// `scanner` at all, by design - see this crate's own module doc comment).
-/// `Ok(None)` means "not confirmed yet" (still in the mempool, or genuinely
-/// unknown) - not distinguished further, since `resolve_pending`'s own
-/// caller treats both the same way (leave it `Pending`, try again later).
+/// `scanner` at all, by design). `Ok(None)` means "not confirmed yet"
+/// (still in the mempool, or genuinely unknown) - both are left pending.
 async fn locate_height(
     client: &reqwest::Client,
     node_url: &str,
@@ -1061,275 +746,9 @@ async fn locate_height(
         .and_then(|tx| tx["block_height"].as_u64()))
 }
 
-impl Wallet {
-    pub fn address(&self) -> String {
-        self.address.to_string()
-    }
-
-    /// Resolves any pending ledger entries, builds/signs/broadcasts a
-    /// transaction sending `amount` piconero to `to` from the ledger's own
-    /// already-spendable outputs, records the new change output as a
-    /// pending entry, and marks whichever entries were actually spent.
-    /// Returns the new transaction's hash on success.
-    /// Loads this wallet's own ledger (`self.ledger_path`) fresh - callers
-    /// never hold onto a [`Ledger`] themselves, so there's never a stale
-    /// in-memory copy to worry about; disk stays the single source of
-    /// truth, same as every write path already assumed.
-    pub async fn send(&self, to: &str, amount: u64) -> Result<[u8; 32], WalletError> {
-        let mut ledger = Ledger::load(&self.ledger_path)?;
-        self.send_impl(&mut ledger, Some(to), amount, None).await
-    }
-
-    /// Same as [`Self::send`], but splits whatever's left over after
-    /// `amount` + fee into `split_change_into` explicit self-addressed
-    /// outputs instead of one opaque `Change` output - so an ordinary
-    /// payment also grows the pool of independently-aged spendable outputs
-    /// a later `send`/`split` can draw on, at no extra RPC cost (same tx,
-    /// more outputs). `split_change_into < 2` behaves exactly like `send`.
-    pub async fn send_with_change_split(
-        &self,
-        to: &str,
-        amount: u64,
-        split_change_into: usize,
-    ) -> Result<[u8; 32], WalletError> {
-        let mut ledger = Ledger::load(&self.ledger_path)?;
-        self.send_impl(&mut ledger, Some(to), amount, Some(split_change_into))
-            .await
-    }
-
-    /// Splits this wallet's spendable balance into `into` roughly-equal
-    /// self-addressed outputs - in practice, its single largest spendable
-    /// entry, via the same largest-first selection `send` itself uses.
-    /// Existing outputs aren't touched until this tx actually confirms;
-    /// each new piece needs its own `SPENDABLE_AGE` confirmations before
-    /// it's usable, same as any other change output.
-    pub async fn split(&self, into: usize) -> Result<[u8; 32], WalletError> {
-        assert!(into >= 2, "split needs at least 2 pieces, got {into}");
-        let mut ledger = Ledger::load(&self.ledger_path)?;
-        self.send_impl(&mut ledger, None, 0, Some(into)).await
-    }
-
-    /// The shared implementation behind `send`/`send_with_change_split`/
-    /// `split`: `to` is the one real external destination (`None` for a
-    /// pure self-split), `split_change_into` (`Some(n)`, `n >= 2`) asks for
-    /// the leftover beyond `amount` to be divided into `n` explicit
-    /// self-addressed outputs rather than left as a single `Change` output.
-    /// Destinations are recomputed on every loop iteration against the
-    /// inputs gathered *so far*, so the split naturally reflects whatever
-    /// input set the loop finally settles on - no separate fee-estimation
-    /// pass needed.
-    async fn send_impl(
-        &self,
-        ledger: &mut Ledger,
-        to: Option<&str>,
-        amount: u64,
-        split_change_into: Option<usize>,
-    ) -> Result<[u8; 32], WalletError> {
-        self.resolve_pending(ledger).await?;
-
-        let latest_height = self
-            .rpc
-            .latest_block_number()
-            .await
-            .map_err(|e| WalletError::Rpc(e.to_string()))? as u64;
-        let mut spendable = self.spendable_from_ledger(ledger, latest_height)?;
-        // Largest-first, same reasoning `scanner::e2e_wallet` already
-        // documents: most payments are covered by a single existing
-        // output, so trying the biggest first keeps the common case to one
-        // `OutputWithDecoys::new` call instead of paying that cost
-        // regardless of need.
-        spendable.sort_unstable_by_key(|(_, o)| std::cmp::Reverse(o.commitment().amount));
-
-        let to_address = to.map(|to| {
-            MoneroAddress::from_str(Network::Stagenet, to).expect("invalid destination address")
-        });
-
-        // One block of lag margin for decoy selection, not the tip itself -
-        // mirrors `scanner::e2e_wallet`'s own reasoning (a pooled public
-        // endpoint's backends can genuinely disagree by one block).
-        let decoy_block_number = (latest_height.saturating_sub(1)) as usize;
-        const MAX_FEE_PER_WEIGHT: u64 = 1_000_000;
-        let fee_rate = self
-            .rpc
-            .fee_rate(
-                monero_wallet::interface::FeePriority::Unimportant,
-                MAX_FEE_PER_WEIGHT,
-            )
-            .await
-            .map_err(|e| WalletError::Rpc(e.to_string()))?;
-
-        let mut inputs = Vec::new();
-        let mut spent_txids: Vec<(String, u64)> = Vec::new();
-        let mut last_necessary_fee: Option<u64> = None;
-        let mut remaining = spendable.into_iter();
-        let signable = loop {
-            let Some((txid, output)) = remaining.next() else {
-                return Err(WalletError::InsufficientFunds {
-                    needed: amount + last_necessary_fee.unwrap_or(0),
-                    available: inputs
-                        .iter()
-                        .map(|i: &OutputWithDecoys| i.commitment().amount)
-                        .sum(),
-                    address: self.address(),
-                });
-            };
-            // (txid, output index): one transaction can pay this wallet
-            // several outputs, and only this one is being spent.
-            spent_txids.push((txid, output.index_in_transaction()));
-            inputs.push(
-                OutputWithDecoys::new(
-                    &mut OsRng,
-                    &self.decoy_cache,
-                    RING_LEN,
-                    decoy_block_number,
-                    output,
-                )
-                .await
-                .map_err(|e| WalletError::Rpc(e.to_string()))?,
-            );
-
-            // Recomputed every iteration against `inputs` as it grows -
-            // once big enough to also cover the split pieces' own share of
-            // the fee, `SignableTransaction::new` below succeeds and this
-            // is the destination set that actually gets signed.
-            let mut destinations = Vec::new();
-            if let Some(to_address) = to_address {
-                destinations.push((to_address, amount));
-            }
-            if let Some(n) = split_change_into.filter(|&n| n >= 2) {
-                let total_in: u64 = inputs.iter().map(|i| i.commitment().amount).sum();
-                if let Some(leftover) = total_in.checked_sub(amount) {
-                    let piece = leftover / n as u64;
-                    if piece > 0 {
-                        destinations.extend(std::iter::repeat_n((self.address, piece), n - 1));
-                    }
-                }
-            }
-
-            let mut outgoing_view_key = Zeroizing::new([0u8; 32]);
-            use rand_core::RngCore;
-            OsRng.fill_bytes(outgoing_view_key.as_mut());
-            match SignableTransaction::new(
-                RctType::ClsagBulletproofPlus,
-                outgoing_view_key,
-                inputs.clone(),
-                destinations,
-                Change::new(self.view_pair.clone(), None),
-                vec![],
-                fee_rate,
-            ) {
-                Ok(signable) => break signable,
-                Err(SendError::NotEnoughFunds { necessary_fee, .. }) => {
-                    last_necessary_fee = necessary_fee;
-                    continue;
-                }
-                Err(SendError::NoInputs) => continue,
-                Err(e) => return Err(e.into()),
-            }
-        };
-
-        let tx: Transaction = signable.sign(&mut OsRng, &self.spend_key)?;
-        let hash = tx.hash();
-        self.rpc
-            .publish_transaction(&tx)
-            .await
-            .map_err(WalletError::Broadcast)?;
-
-        // Only now, after a successful broadcast, mutate the ledger - a
-        // failure anywhere above must leave it exactly as it was, so a
-        // caller's own retry sees the same spendable set again.
-        ledger.mark_spent(&spent_txids);
-        // `0` here is a placeholder, not load-bearing: `amount_piconero` on a
-        // still-`Pending` entry is purely informational (shown in a future
-        // `InsufficientFunds` message) - the real, authoritative amount
-        // comes from the output's own `commitment().amount` once
-        // `resolve_pending` scans and serializes it for real, on a later
-        // call.
-        ledger.record_pending(&hex::encode(hash), 0)?;
-        Ok(hash)
-    }
-
-    /// Adds a ledger entry for a transaction this wallet didn't sign itself
-    /// (a faucet payout, funds sent in from elsewhere) and resolves it
-    /// immediately if it's already confirmed - `wallet add-output <txid>`
-    /// on the CLI. Thin wrapper: [`Ledger::record_pending`] plus
-    /// [`Self::resolve_pending`] already do all the real work.
-    pub async fn add_output(&self, txid: &str) -> Result<(), WalletError> {
-        let mut ledger = Ledger::load(&self.ledger_path)?;
-        let known = ledger
-            .entries
-            .iter()
-            .any(|e| e.txid == txid && e.height.is_some());
-        ledger.record_pending(txid, 0)?;
-        self.resolve_pending(&mut ledger).await?;
-        if known {
-            // Already recorded: pick up any of its outputs the ledger is
-            // missing (see `recover_outputs`).
-            let added = self.recover_outputs(&mut ledger, txid).await?;
-            if added > 0 {
-                eprintln!("cli-wallet: recovered {added} untracked output(s) of {txid}");
-            }
-        }
-        Ok(())
-    }
-
-    /// A cheap, real pre-flight check for callers that want to fail fast
-    /// with a clear, actionable message before doing anything else (an
-    /// expensive setup sequence, a whole connect-flow test) rather than
-    /// discovering an empty wallet deep inside `send`'s own error. Resolves
-    /// any pending entries first, so this reports the ledger's real,
-    /// current state, not a stale snapshot.
-    pub async fn balance(&self) -> Result<WalletBalance, WalletError> {
-        let mut ledger = Ledger::load(&self.ledger_path)?;
-        self.resolve_pending(&mut ledger).await?;
-        let latest_height = self
-            .rpc
-            .latest_block_number()
-            .await
-            .map_err(|e| WalletError::Rpc(e.to_string()))? as u64;
-        let mut balance = WalletBalance::default();
-        for entry in &ledger.entries {
-            if entry.spent {
-                continue;
-            }
-            let (Some(height), Some(hex_bytes)) = (entry.height, &entry.serialized_output_hex)
-            else {
-                continue;
-            };
-            let bytes = hex::decode(hex_bytes).map_err(|e| {
-                WalletError::Ledger(format!(
-                    "entry {} has invalid serialized_output_hex: {e}",
-                    entry.txid
-                ))
-            })?;
-            let output = WalletOutput::read(&mut &bytes[..]).map_err(|e| {
-                WalletError::Ledger(format!("entry {} failed to deserialize: {e}", entry.txid))
-            })?;
-            let amount = output.commitment().amount;
-            if latest_height.saturating_sub(height) >= SPENDABLE_AGE {
-                balance.spendable_piconero += amount;
-                balance.spendable_outputs += 1;
-            } else {
-                balance.pending_piconero += amount;
-                balance.pending_outputs += 1;
-            }
-        }
-        Ok(balance)
-    }
-}
-
-/// See [`Wallet::balance`].
-#[derive(Debug, Clone, Copy, Default, Serialize)]
-pub struct WalletBalance {
-    pub spendable_piconero: u64,
-    pub spendable_outputs: usize,
-    pub pending_piconero: u64,
-    pub pending_outputs: usize,
-}
-
-/// Connects, resolves any pending ledger entries, and sends `amount`
-/// piconero to `to`, retrying the *whole* connect-then-send sequence from
-/// scratch (up to `ATTEMPTS` times, `RETRY_DELAY` apart) on any error except
+/// Connects, resolves anything pending, and sends `amount` piconero to
+/// `to`, retrying the *whole* connect-then-send sequence from scratch (up
+/// to `ATTEMPTS` times, `RETRY_DELAY` apart) on any error except
 /// [`WalletError::Broadcast`] - a broadcast was actually attempted and its
 /// outcome is genuinely unknown, so that one is never retried (a real
 /// double-send risk); every other variant fails strictly before anything is
@@ -1344,7 +763,7 @@ pub struct WalletBalance {
 /// "a robust library is sufficient" actually means in practice.
 ///
 /// `split_change_into` forwards to [`Wallet::send_with_change_split`]
-/// when `Some` (`None` keeps today's single-`Change`-output behavior).
+/// when `Some` (`None` keeps the single-`Change`-output behavior).
 pub async fn send_payment(
     wallet: ResolvedWallet,
     to: &str,
@@ -1381,16 +800,8 @@ pub async fn send_payment(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn entry(txid: &str, height: Option<u64>, spent: bool) -> LedgerEntry {
-        LedgerEntry {
-            txid: txid.to_string(),
-            height,
-            serialized_output_hex: None,
-            amount_piconero: 1,
-            spent,
-        }
-    }
+    use crate::file::{migrate_legacy, OutputRecord};
+    use crate::wallet::record_resolved;
 
     #[test]
     fn each_retry_starts_from_the_next_node_and_still_tries_them_all() {
@@ -1422,7 +833,7 @@ mod tests {
     }
 
     /// Three real outputs of one stagenet split transaction
-    /// (`testdata/split_transaction_outputs.json`).
+    /// (`testdata/split_transaction_outputs.json`), all paying `spender`.
     fn split_transaction() -> (String, u64, Vec<WalletOutput>) {
         let fixture: Value =
             serde_json::from_str(include_str!("../testdata/split_transaction_outputs.json"))
@@ -1443,157 +854,322 @@ mod tests {
         )
     }
 
-    fn temp_ledger(name: &str) -> Ledger {
-        let dir = std::env::temp_dir().join(format!("cli-wallet-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("ledger.json");
-        let _ = std::fs::remove_file(&path);
-        Ledger::load(path.to_str().unwrap()).unwrap()
+    fn committed_wallet(name: &str) -> WalletData {
+        WalletFile::load(WalletCtx::default().wallet_path(name))
+            .unwrap()
+            .data
+    }
+
+    /// A fresh copy of a committed wallet's keys, with no outputs, in its
+    /// own temp file.
+    fn temp_wallet(test: &str, name: &str) -> (PathBuf, WalletData) {
+        let dir = std::env::temp_dir().join(format!("cli-wallet-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let committed = committed_wallet(name);
+        let data = WalletData::new(WalletCredentials {
+            address: committed.address,
+            private_spend_key_hex: committed.private_spend_key,
+            private_view_key_hex: committed.private_view_key,
+            mnemonic: None,
+        });
+        let path = dir.join(format!("{name}.json"));
+        WalletFile::create(&path, data.clone()).unwrap();
+        (path, data)
+    }
+
+    fn output_index(record: &OutputRecord) -> u64 {
+        decode_output(&record.txid, &record.serialized_output_hex)
+            .unwrap()
+            .index_in_transaction()
     }
 
     /// Regression: a split pays this wallet many outputs in one
     /// transaction, and the ledger used to keep only the first, silently
-    /// losing track of the rest (still the wallet's on chain, but never
-    /// spendable by these tools).
+    /// losing track of the rest.
     #[test]
-    fn every_output_a_transaction_pays_the_wallet_gets_its_own_entry() {
+    fn every_output_a_transaction_pays_the_wallet_gets_its_own_record() {
         let (txid, height, outputs) = split_transaction();
-        let indexes: std::collections::BTreeSet<u64> =
-            outputs.iter().map(|o| o.index_in_transaction()).collect();
-        assert_eq!(
-            indexes.len(),
-            3,
-            "the fixture holds three distinct outputs of one transaction"
-        );
+        let (_, mut data) = temp_wallet("record-all", "spender");
+        data.add_pending(&txid, 0);
 
-        let mut ledger = temp_ledger("record-all");
-        ledger.record_pending(&txid, 0).unwrap();
         assert_eq!(
-            ledger.record_transaction_outputs(&txid, height, &outputs),
+            record_resolved(&mut data, &txid, height, Some(1_700_000_000), &outputs),
             3
         );
-
-        assert_eq!(
-            ledger.entries.len(),
-            3,
-            "the pending entry is filled in and the other outputs added, not dropped"
-        );
-        let recorded: std::collections::BTreeSet<u64> = ledger
-            .entries
-            .iter()
-            .map(|e| entry_output_index(e).unwrap())
-            .collect();
-        assert_eq!(recorded, indexes);
-        assert!(ledger
-            .entries
-            .iter()
-            .all(|e| e.txid == txid && e.height == Some(height) && !e.spent));
         assert!(
-            ledger.entries.iter().all(|e| e.amount_piconero > 0),
-            "each entry carries its real amount"
+            data.pending.is_empty(),
+            "resolving takes the txid off the pending list"
         );
+        let recorded: std::collections::BTreeSet<u64> =
+            data.outputs.iter().map(output_index).collect();
+        assert_eq!(recorded.len(), 3);
+        assert!(data
+            .outputs
+            .iter()
+            .all(|o| o.txid == txid && o.height == height && !o.spent && o.amount_piconero > 0));
 
-        // Recording the same transaction again (a re-scan, `output add` of a
-        // known txid) adds nothing.
-        assert_eq!(
-            ledger.record_transaction_outputs(&txid, height, &outputs),
-            0
-        );
-        assert_eq!(ledger.entries.len(), 3);
+        // Recording the same transaction again adds nothing.
+        assert_eq!(record_resolved(&mut data, &txid, height, None, &outputs), 0);
+        assert_eq!(data.outputs.len(), 3);
     }
 
-    /// Regression: recovery of outputs a transaction's earlier resolution
-    /// missed adds exactly the missing ones.
+    /// Resolving a transaction this wallet sent dates its sent record, so
+    /// `show_transfers` can place it.
     #[test]
-    fn outputs_missing_from_an_already_recorded_transaction_are_recovered() {
+    fn resolving_a_send_dates_its_sent_record() {
         let (txid, height, outputs) = split_transaction();
-        let mut ledger = temp_ledger("recover");
-        // How the old code left it: only the first output recorded.
+        let (_, mut data) = temp_wallet("date-sent", "spender");
+        data.sent.push(file::SentRecord {
+            txid: txid.clone(),
+            account: 0,
+            destinations: vec![],
+            fee_piconero: 1,
+            change_piconero: 2,
+            height: None,
+            timestamp: None,
+        });
+        record_resolved(&mut data, &txid, height, Some(42), &outputs);
         assert_eq!(
-            ledger.record_transaction_outputs(&txid, height, &outputs[..1]),
-            1
+            (data.sent[0].height, data.sent[0].timestamp),
+            (Some(height), Some(42))
         );
-        assert_eq!(
-            ledger.record_transaction_outputs(&txid, height, &outputs),
-            2
-        );
-        assert_eq!(ledger.entries.len(), 3);
     }
 
-    /// Regression: spending one output of a transaction must not mark its
-    /// sibling outputs spent (spent-marking used to go by txid alone).
+    /// The ownership check is what splits the old shared ledger between
+    /// wallets: each output belongs to exactly the wallet that received it.
     #[test]
-    fn spending_one_output_leaves_its_siblings_unspent() {
+    fn outputs_belong_to_the_wallet_that_received_them_only() {
+        let (_, _, outputs) = split_transaction();
+        let (spender_path, spender) = temp_wallet("owns-spender", "spender");
+        let (merchant_path, merchant) = temp_wallet("owns-merchant", "merchant");
+        let spender = WalletKeys::from_data(&spender, spender_path);
+        let merchant = WalletKeys::from_data(&merchant, merchant_path);
+        assert!(outputs.iter().all(|o| spender.owns(o)));
+        assert!(outputs.iter().all(|o| !merchant.owns(o)));
+    }
+
+    /// Key images are what `freeze`/`sweep_single` name outputs by, so
+    /// distinct outputs must get distinct, stable ones.
+    #[test]
+    fn key_images_are_stable_and_distinct() {
+        let (_, _, outputs) = split_transaction();
+        let (path, data) = temp_wallet("key-images", "spender");
+        let keys = WalletKeys::from_data(&data, path);
+        let images: std::collections::BTreeSet<[u8; 32]> =
+            outputs.iter().map(|o| keys.key_image(o)).collect();
+        assert_eq!(images.len(), outputs.len());
+        assert_eq!(keys.key_image(&outputs[0]), keys.key_image(&outputs[0]));
+    }
+
+    #[tokio::test]
+    async fn freezing_and_marking_spent_change_exactly_one_output() {
         let (txid, height, outputs) = split_transaction();
-        let mut ledger = temp_ledger("spend-one");
-        ledger.record_transaction_outputs(&txid, height, &outputs);
-        let spent_index = outputs[1].index_in_transaction();
+        let (path, data) = temp_wallet("freeze", "spender");
+        let keys = WalletKeys::from_data(&data, path.clone());
+        keys.update(|data| Ok(record_resolved(data, &txid, height, None, &outputs)))
+            .await
+            .unwrap();
 
-        ledger.mark_spent(&[(txid.clone(), spent_index)]);
+        let image = keys.key_image(&outputs[1]);
+        assert!(keys.set_frozen(image, true).await.unwrap());
+        assert!(
+            !keys.set_frozen([7; 32], true).await.unwrap(),
+            "unknown key image"
+        );
+        assert!(keys
+            .set_spent(outputs[2].index_on_blockchain(), true)
+            .await
+            .unwrap());
 
-        for entry in &ledger.entries {
-            let index = entry_output_index(entry).unwrap();
-            assert_eq!(entry.spent, index == spent_index, "output {index}");
+        let reloaded = keys
+            .outputs(&WalletFile::load(&path).unwrap().data)
+            .unwrap();
+        for output in reloaded {
+            let index = output.output.index_in_transaction();
+            assert_eq!(
+                output.frozen,
+                index == outputs[1].index_in_transaction(),
+                "frozen flag of output {index}"
+            );
+            assert_eq!(
+                output.spent,
+                index == outputs[2].index_in_transaction(),
+                "spent flag of output {index}"
+            );
         }
     }
 
     #[test]
-    fn ledger_round_trips_through_a_real_file() {
-        let dir = std::env::temp_dir().join(format!("cli-wallet-ledger-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("ledger.json");
-        let path_str = path.to_str().unwrap();
-
-        let mut ledger = Ledger::load(path_str).unwrap();
+    fn a_wallet_file_refuses_to_be_created_twice_and_round_trips() {
+        let (path, data) = temp_wallet("round-trip", "spender");
         assert!(
-            ledger.entries.is_empty(),
-            "a missing file must load as an empty ledger, not error"
+            WalletFile::create(&path, data.clone()).is_err(),
+            "an existing wallet file is never replaced"
         );
-
-        ledger.record_pending("abc123", 500).unwrap();
-        let reloaded = Ledger::load(path_str).unwrap();
-        assert_eq!(reloaded.entries.len(), 1);
-        assert_eq!(reloaded.entries[0].txid, "abc123");
-        assert_eq!(reloaded.entries[0].height, None);
-        assert!(!reloaded.entries[0].spent);
-
-        // Recording the same txid again must not duplicate it.
-        let mut ledger = reloaded;
-        ledger.record_pending("abc123", 500).unwrap();
+        let reloaded = WalletFile::load(&path).unwrap().data;
+        assert_eq!(reloaded.address, data.address);
         assert_eq!(
-            Ledger::load(path_str).unwrap().entries.len(),
-            1,
-            "recording the same txid twice must not duplicate the entry"
+            serde_json::to_value(&reloaded).unwrap(),
+            serde_json::to_value(&data).unwrap()
         );
+    }
 
-        std::fs::remove_dir_all(&dir).ok();
+    /// Concurrent read-modify-writes from many tasks each land - the lock
+    /// is what stops one silently overwriting another.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_updates_are_never_lost() {
+        let (path, _) = temp_wallet("concurrent", "spender");
+        let tasks: Vec<_> = (0..16)
+            .map(|i| {
+                let path = path.clone();
+                tokio::spawn(async move {
+                    WalletFile::update(&path, |data| {
+                        data.add_pending(&format!("tx{i}"), 0);
+                        Ok(())
+                    })
+                    .await
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+        assert_eq!(WalletFile::load(&path).unwrap().data.pending.len(), 16);
+    }
+
+    /// A held lock is reported with who holds it, and the busy handler's
+    /// choice is followed: retry asks again, cancel fails, wait blocks until
+    /// the holder lets go.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_held_lock_names_its_holder_and_lets_the_caller_choose() {
+        use crate::file::{BusyChoice, BusyHandler, LockHolder};
+        use std::sync::{Arc, Mutex};
+
+        let (path, _) = temp_wallet("busy", "spender");
+        let held = WalletFile::lock(&path).await.unwrap();
+
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let answers = Arc::new(Mutex::new(vec![BusyChoice::Cancel, BusyChoice::Retry]));
+        let handler: BusyHandler = {
+            let seen = seen.clone();
+            Arc::new(move |holder: &LockHolder| {
+                seen.lock().unwrap().push(holder.to_string());
+                answers.lock().unwrap().pop().unwrap()
+            })
+        };
+        let error = WalletFile::lock_with(&path, &handler)
+            .await
+            .err()
+            .expect("cancelled");
+        assert!(matches!(error, WalletError::Locked(_)), "{error}");
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "retry asks again while it's still held");
+        assert!(
+            seen[0].contains(&format!("pid {}", std::process::id())),
+            "names the holder: {}",
+            seen[0]
+        );
+        assert!(seen[0].contains("spender.json is locked by"), "{}", seen[0]);
+
+        let wait: BusyHandler = Arc::new(|_: &LockHolder| BusyChoice::Wait);
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(held);
+        });
+        WalletFile::lock_with(&path, &wait)
+            .await
+            .expect("waiting gets the lock once it's released");
+        release.await.unwrap();
+    }
+
+    /// The old shared layout splits into one file per wallet, each output
+    /// going to its owner, pending txids to the sender.
+    #[test]
+    fn legacy_shared_files_split_into_one_file_per_wallet() {
+        let (txid, height, outputs) = split_transaction();
+        let dir = std::env::temp_dir().join(format!("cli-wallet-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let credentials = |name: &str| {
+            let data = committed_wallet(name);
+            serde_json::json!({ "address": data.address, "private_spend_key": data.private_spend_key, "private_view_key": data.private_view_key, "role": name })
+        };
+        let wallets = serde_json::json!({
+            "_comment": "stagenet only",
+            "spender": credentials("spender"),
+            "merchant": credentials("merchant"),
+            "faucet_used": "https://stagenet-faucet.xmr-tw.org/",
+        });
+        let mut entries: Vec<Value> = outputs
+            .iter()
+            .map(|o| serde_json::json!({ "txid": txid, "height": height, "serialized_output_hex": hex::encode(o.serialize()), "amount_piconero": 0, "spent": false }))
+            .collect();
+        entries.push(serde_json::json!({ "txid": "ab".repeat(32), "height": null, "serialized_output_hex": null, "amount_piconero": 5, "spent": false }));
+        std::fs::write(dir.join("wallets.json"), wallets.to_string()).unwrap();
+        std::fs::write(
+            dir.join("ledger.json"),
+            serde_json::json!({ "entries": entries }).to_string(),
+        )
+        .unwrap();
+
+        let out = dir.join("wallets");
+        let report = migrate_legacy(
+            &dir.join("wallets.json"),
+            &dir.join("ledger.json"),
+            &out,
+            "spender",
+        )
+        .unwrap();
+        assert!(report.unowned_outputs.is_empty());
+
+        let spender = WalletFile::load(out.join("spender.json")).unwrap().data;
+        let merchant = WalletFile::load(out.join("merchant.json")).unwrap().data;
+        assert_eq!(spender.outputs.len(), 3);
+        assert!(
+            spender.outputs.iter().all(|o| o.amount_piconero > 0),
+            "amounts come from the outputs themselves"
+        );
+        assert_eq!(spender.pending.len(), 1);
+        assert_eq!(
+            spender.extra["faucet_used"],
+            "https://stagenet-faucet.xmr-tw.org/"
+        );
+        assert_eq!(spender.extra["_comment"], "stagenet only");
+        assert!(merchant.outputs.is_empty() && merchant.pending.is_empty());
+        assert_eq!(merchant.extra["role"], "merchant");
+        assert!(!merchant.extra.contains_key("faucet_used"));
+        assert!(
+            migrate_legacy(
+                &dir.join("wallets.json"),
+                &dir.join("ledger.json"),
+                &out,
+                "spender"
+            )
+            .is_err(),
+            "never overwrites"
+        );
     }
 
     #[test]
-    fn spendable_age_and_spent_status_are_pure_local_filters() {
-        // Mirrors `scanner::e2e_wallet`'s own `partition_by_age`/`filter_unspent`
-        // tests, but against this crate's ledger-based model instead of a live
-        // RPC call - both the age rule and the spent flag are decided
-        // entirely from local data, no network involved.
-        let ledger = LedgerFile {
-            entries: vec![
-                entry("old-unspent", Some(100), false), // spendable at height 120
-                entry("too-young", Some(115), false),   // not yet spendable at height 120
-                entry("old-but-spent", Some(50), true), // excluded regardless of age
-                entry("unresolved", None, false),       // excluded - no height yet
-            ],
-        };
-        let latest_height = 120u64;
-        let spendable: Vec<&str> = ledger
-            .entries
-            .iter()
-            .filter(|e| !e.spent)
-            .filter(|e| {
-                e.height
-                    .is_some_and(|h| latest_height.saturating_sub(h) >= SPENDABLE_AGE)
-            })
-            .map(|e| e.txid.as_str())
-            .collect();
-        assert_eq!(spendable, vec!["old-unspent"]);
+    fn seeds_restore_the_keys_they_came_from() {
+        let generated = generate_credentials("English").unwrap();
+        let phrase = generated.mnemonic.clone().unwrap();
+        assert_eq!(phrase.split_whitespace().count(), 25);
+        assert_eq!(
+            credentials_from_seed(&phrase).unwrap().address,
+            generated.address
+        );
+        assert_eq!(
+            legacy_seed_for(&generated.private_spend_key_hex, "English").unwrap(),
+            phrase
+        );
+        assert_eq!(
+            credentials_from_spend_key_hex(&generated.private_spend_key_hex)
+                .unwrap()
+                .address,
+            generated.address
+        );
+        assert!(generate_credentials("Klingon").is_err());
     }
 }

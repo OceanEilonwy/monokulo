@@ -21,8 +21,8 @@
 //! cargo test --test e2e_stagenet -- --ignored --nocapture
 //! ```
 //!
-//! Run from the repository root - `stagenet-wallets.json` below is read relative
-//! to `cargo test`'s working directory (the package root). See `e2e/README.md`
+//! Wallet files (`e2e/wallets/`) are found relative to the `cli-wallet` crate,
+//! whatever `cargo test`'s working directory is. See `e2e/README.md`
 //! for the full picture.
 
 mod support;
@@ -103,7 +103,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
 
     let ctx = cli_wallet::WalletCtx::default();
     let spender = cli_wallet::WalletStore::load(&ctx)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallet_dir.display()))
         .wallet("spender")
         .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 

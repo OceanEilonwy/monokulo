@@ -11,3 +11,8 @@ moneropay.db-wal
 # processes' SQLite databases, a locally-generated dev
 # CONTROL_PLANE_ENCRYPTION_KEY) - see that script's own header comment.
 /.dev-run/
+
+# cli-wallet wallet files: the lock taken around every change, and the
+# temp file an atomic save writes before renaming it into place.
+/e2e/wallets/*.json.lock
+/e2e/wallets/*.json.tmp

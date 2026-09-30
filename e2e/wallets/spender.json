@@ -1,192 +1,198 @@
 {
-  "entries": [
+  "version": 1,
+  "network": "stagenet",
+  "address": "5648a3A1PX6Fz3L3bSop2LXLKjmrxi1sCCvVdM15AQYL4RoHE4TqSiQ6d6qXt6cwG7a4GLQfA6LbYBoM8XPFEVvNMYeUDF3",
+  "private_spend_key": "df97ded57234e9cfb41c2a1e338721162109db0326239e056fe7ea8228c4f30e",
+  "private_view_key": "551e88e5bfeb84e1b1aa06a48048396d8023335e73d789167d325b614082b90d",
+  "mnemonic": "affair cube ablaze cynical lurk gather arises last oatmeal guide sniff tufts lyrics wounded zigzags deftly tapestry tipsy pests ingested vain feast cottage duration wounded",
+  "outputs": [
     {
       "txid": "098e6e358b7d66a9e85a211d6917d1b8d720e74c6ae267d4d9b10ed422819bb2",
       "height": 2210331,
       "serialized_output_hex": "098e6e358b7d66a9e85a211d6917d1b8d720e74c6ae267d4d9b10ed422819bb200000000000000009c3f9900000000005930241d11ee6a39bc710f8732812c32e5ca0e8ae573520ac14d3ac0be0a9d6f95376b0d889829af7664b3f48b97299440c981d8fff571d9156319223933ac0bae4ce7fd1b81b15de126ba5b5ed2a5eeedd36049b64985677df6cf3b4cf64c04c440ea3904000000000001014011a647c556cd4800",
-      "amount_piconero": 0,
+      "amount_piconero": 18151522500,
       "spent": true
     },
     {
       "txid": "ba4f011a328a9fdf3dea1a6ce82ad6f06848589834c3cc6e7400ead287eb5729",
       "height": 2210341,
       "serialized_output_hex": "ba4f011a328a9fdf3dea1a6ce82ad6f06848589834c3cc6e7400ead287eb57290100000000000000b33f990000000000b9739f6f06fc8b51b2975b74a6dae73259ed1815791c9c48367ab93f2819d70cc6fb304aeebea0b3b7dd3415ea2681f47bd1be3d2a562abd2c33ad9b478cc00d15dc4f39a0072bbea33661f32879dc5f719dbc0962a073105f4335b2b7d5e300e3dce24d0400000000000101e2b80ada1fda046100",
-      "amount_piconero": 0,
+      "amount_piconero": 18486582499,
       "spent": true
     },
     {
       "txid": "aa324ff4f445ba86700ae4036a0e39d2d4917fc3fb0a95cafe912a6b44a75dd4",
       "height": 2210347,
       "serialized_output_hex": "aa324ff4f445ba86700ae4036a0e39d2d4917fc3fb0a95cafe912a6b44a75dd40000000000000000c03f990000000000cfec73aeeea345d817dfaa9dff60b0c5b1a853ad414d99c29c4b1154d73ebada6f6337f7e19eee7fc53f3cf657e55b7744ee33f0634db7f82f319d866b321807ab6aafa06fc97e4e84e6c94e4f267c0bf387841422f3ead39f5f91d045b35e0583f2e14d0400000000000101af8af4607522c89300",
-      "amount_piconero": 0,
+      "amount_piconero": 18486522499,
       "spent": true
     },
     {
       "txid": "3568482b1ecb0f68e582a7e1cffa5104a7379dff9d7f01775c84e8e9abc6556f",
       "height": 2210358,
       "serialized_output_hex": "3568482b1ecb0f68e582a7e1cffa5104a7379dff9d7f01775c84e8e9abc6556f0100000000000000d63f99000000000057cb200488e4645ff82473e4695efb8c098b59a04ce8e1095ef8ab722e188d4e5fa0ec30ce1b65a728157595582290ebbbe39ad8136abbff83619b6535b32105d77748522d3ed61cfc31c67e2aeea741787c6f4a6bf005897a064b0b4f804203234d1b3804000000000001011ac8ff928c8b231300",
-      "amount_piconero": 0,
+      "amount_piconero": 18121182499,
       "spent": true
     },
     {
       "txid": "41d9299e502b00f01789a842117bda126ba3dfb70813fc5e77730f61fe023ee4",
       "height": 2210358,
       "serialized_output_hex": "41d9299e502b00f01789a842117bda126ba3dfb70813fc5e77730f61fe023ee40100000000000000dc3f99000000000075fb939c05e46883fed43f57b3c8aa567a7b7b4dbf8f139fd7b31f6db124860c683c9873a8da7b8961d9ffddf082bc125922c766605ff791047b3c4f3040f10e05aad65455c3b0dd9be149d89d3f7bba79b23b2adf482638425f64e6fa86c703432a1938040000000000010145ca637164f5dd5f00",
-      "amount_piconero": 0,
+      "amount_piconero": 18121042499,
       "spent": true
     },
     {
       "txid": "0cd5f366e7a0af66a35e99d7bfc43baf4a1eb87b9cf6fbb52174ef28d7835db5",
       "height": 2210362,
       "serialized_output_hex": "0cd5f366e7a0af66a35e99d7bfc43baf4a1eb87b9cf6fbb52174ef28d7835db50100000000000000ea3f9900000000008f23616daf1f61337f73fa2e37a58966ee60d601538f0bf964ba4c80d03286f125ab4f8bd56164ecffd270965fb0a5e3cd02924134eb20c1db9acb251a16580b62c3bcade06ae29f288dc5551226ba9ef4578c6e6916c0d172ee98cfd7e8b10f444d2324040000000000010120eb7c05d799081500",
-      "amount_piconero": 0,
+      "amount_piconero": 17786162500,
       "spent": true
     },
     {
       "txid": "f98c78ef4ce3d7755e21b0fc5d5600364d85cb7bcc2e2329d0ca401c945210e8",
       "height": 2210729,
       "serialized_output_hex": "f98c78ef4ce3d7755e21b0fc5d5600364d85cb7bcc2e2329d0ca401c945210e80000000000000000bc42990000000000f931efec82a807054ce7731b417dfa6002eab09e4930144a5334e44fde0eca03a5631636704d92dba1ce764842e7eaabbd6b43c785838113325b744d42e8870727f84b2410f2844e557fafa4e94c0918d6549b4341b2516e92d0a26e94f15a0ae384522204000000000001015dca2bdbfd4fc0be00",
-      "amount_piconero": 0,
+      "amount_piconero": 17755702499,
       "spent": true
     },
     {
       "txid": "64a1281309c581c757c378fbdf4bc8111c53caaaa79a260d61f99166661c7b29",
       "height": 2210730,
       "serialized_output_hex": "64a1281309c581c757c378fbdf4bc8111c53caaaa79a260d61f99166661c7b290100000000000000c44299000000000007f59a471384e4e3d5373e329bc89f169c110065664122e88430e949da6cfd5e4c818dfac38fee19d479f04207fce83d18a7a77965256e6807d9263ede9fad09dc8ff542ec8862fef3cc1dcbad0e111eb027f1970fed6a7c26adce040b302a00c336522204000000000001014d618aabb168ae6d00",
-      "amount_piconero": 0,
+      "amount_piconero": 17755682499,
       "spent": true
     },
     {
       "txid": "7d9004368c67e9bf07f309702de0ccde4c8204753ac3904148171188b2c847c6",
       "height": 2210732,
       "serialized_output_hex": "7d9004368c67e9bf07f309702de0ccde4c8204753ac3904148171188b2c847c60000000000000000c9429900000000008bc46d47bb71a6f96ecda4cffdcd4dafe708e1052918c963730d2a07d05c73985b50f5993ce2fe636bc06c901ed4095a104849df71edebbfddbda5421716e801acbf960eef8d37ecb192eb68f240bd9d805d54780502a30ab97a2f3bd09ce50c04855a0e0400000000000101f8f7b7cbf690ee0c00",
-      "amount_piconero": 0,
+      "amount_piconero": 17420682500,
       "spent": true
     },
     {
       "txid": "f6a215fe29eb9e01a96e47e9c80c28567fdac958391b0552e5ec5c3e1ed176f5",
       "height": 2210743,
       "serialized_output_hex": "f6a215fe29eb9e01a96e47e9c80c28567fdac958391b0552e5ec5c3e1ed176f50000000000000000da429900000000009c56914383e88ccdb89f0266f1b178e67462ff9835333aeb4a6ce08f8ed968a4f11d4b4778cfc7495ede75984c7f05d4f5457c01541468c19cde862a0a272605392133e1827733f6bc9bd3232e1ba0579e816fa3c3ca739802b52aa0d6fd5604836e890c0400000000000101ba0a8dce0260253700",
-      "amount_piconero": 0,
+      "amount_piconero": 17390202499,
       "spent": true
     },
     {
       "txid": "b0b4efaab72bb176ab68214c1de14e92af6e889c2b34c222caafa1c815f84553",
       "height": 2210744,
       "serialized_output_hex": "b0b4efaab72bb176ab68214c1de14e92af6e889c2b34c222caafa1c815f845530100000000000000e042990000000000aa4f2eda9a757dc7ecc5f702a11f2fb5d4491037c0133db80762735d253ce50b0843dbbc91530fd8eab04b10fba78ceafc71d219318f54154c4c09c8e447720ce55b556a68edaaad03e25aea62057e778c7a6043262d9e98ee19ffb66a2dab0d03a78a0c0400000000000101f3f3cc8e2caf641700",
-      "amount_piconero": 0,
+      "amount_piconero": 17390282499,
       "spent": true
     },
     {
       "txid": "3a4ba8570ff1a6ff640c06d2142a33997deae0ecab848ab2f2a0e7ca11dc841a",
       "height": 2214589,
       "serialized_output_hex": "3a4ba8570ff1a6ff640c06d2142a33997deae0ecab848ab2f2a0e7ca11dc841a01000000000000002368990000000000f4fa2c8695c9c4d8add0f1b4a6c8f9aadea299d1a4e2c30771154f28fcb80d3c1f82a0d41e9d36e5c54728ae853587742415975bd6429fa4f3731c040d4bbe0e4a8f81eb8b993931f3810c1f88aef4ccc9812a61455f8fc9908035a3d1edae05a46e91f80300000000000101e934c11befc5f7c300",
-      "amount_piconero": 0,
+      "amount_piconero": 17055182500,
       "spent": true
     },
     {
       "txid": "6daa5e860a580705c413a66d0d282367eee78bf34d5dc542227984fdbf44502c",
       "height": 2214590,
       "serialized_output_hex": "6daa5e860a580705c413a66d0d282367eee78bf34d5dc542227984fdbf44502c00000000000000002b68990000000000ded721b72251f6f2be569d4f41cf424c4d684b0784042310460f723bf811f32bada99b9d85322a1442248e880abb7db4bde6c429fc0809452063711ae214bc05097485f4cc64b18346c838e8e3a7cda3e00fa2cbc7d2a6041b93364e258128038342c1f60300000000000101eef3cc0f4ad9778f00",
-      "amount_piconero": 0,
+      "amount_piconero": 17024762499,
       "spent": true
     },
     {
       "txid": "49cf8b1f53b1b0ae85fd8f4ea790904a88340f9db5a73ba214518b09887d10be",
       "height": 2214591,
       "serialized_output_hex": "49cf8b1f53b1b0ae85fd8f4ea790904a88340f9db5a73ba214518b09887d10be010000000000000035689900000000008b7dc23f3d7292801322a95364d49a2de24f6a18987e8d5f19f5a2e29154a66891ec371a23dd50aca098e37835536d6e561b8dcbf8144df1aacb126b2c3c360116d3ca05410663064b4e311be464d3e78de1b13b64197c72b99ca0fc087ff007a390c1f60300000000000101beeb51984260155200",
-      "amount_piconero": 0,
+      "amount_piconero": 17024782499,
       "spent": true
     },
     {
       "txid": "536e363b707a55f835f00a49bfec118e7a0904b127cf9bdde70213735415a315",
       "height": 2214601,
       "serialized_output_hex": "536e363b707a55f835f00a49bfec118e7a0904b127cf9bdde70213735415a31501000000000000004d68990000000000aff20ddf810c322ba2aad9fb1ff02967fafea1c6152c8116377189fefd1f7dce40f993ff591a6cbe0c7913b66ea5c7da106c830f51bc6b60c9746f47be2c9f0bbb90f7628fe00a5dd78f092b54151bd7741e7334ae1d6ef8a938bf8f3725760dc490c9e20300000000000101361565393215445c00",
-      "amount_piconero": 0,
+      "amount_piconero": 16689762500,
       "spent": true
     },
     {
       "txid": "b7f432024b8890041ae08fe389c63c665d6ab31da92628ed3cadac1492e232c3",
       "height": 2214602,
       "serialized_output_hex": "b7f432024b8890041ae08fe389c63c665d6ab31da92628ed3cadac1492e232c30000000000000000516899000000000060ee15c3b1e95c0849514f55882a4b617ce86977fe3b3e39205836bb385fef89b3dca9c293c505e5f8fab02170697d5c1a1445ec6f27687bb81e950a68d9e50b19d770c30c7b1090deaa2985be87bc59c7d92d4998f18945bed26e0bdce10a0563c8f8e00300000000000101ef63f126db2f88be00",
-      "amount_piconero": 0,
+      "amount_piconero": 16659302499,
       "spent": true
     },
     {
       "txid": "904f36bbab989f08c9cbbc5d79342c4d00bb5ec4eba7167c83bf50c174db64b5",
       "height": 2214602,
       "serialized_output_hex": "904f36bbab989f08c9cbbc5d79342c4d00bb5ec4eba7167c83bf50c174db64b5010000000000000054689900000000001bbc8da2da620404d0b01a7e1b784fe0adc5e6d76ad517b59bef5bb75c9166402b8ba0f5461bfa59a5d829cce75632053f34f944e8df906fafaf6787538b7004ce46c7df9a6a1e1161930fc83a5b23127061c6de0a5e3dc08ae2ce18e995d3042386e9e003000000000001010f5a9d9e44546a2c00",
-      "amount_piconero": 0,
+      "amount_piconero": 16658302499,
       "spent": true
     },
     {
       "txid": "d351a5ff110b5dded5736442429dee8467a666ec06b8ca6c1e81c99a7c77c591",
       "height": 2214734,
       "serialized_output_hex": "d351a5ff110b5dded5736442429dee8467a666ec06b8ca6c1e81c99a7c77c5910100000000000000a26999000000000083a3f707eaeb9b7327e33ba340d946a3770d258b437d7f1d6c6e34f118100b4a8d162ca34b137a51660ae58f13ecc1368286678a0f6a4b33a85959ebd07e11088995d637f48de664b9165a61b3ce89b5a041faacad8abca121f739b37d5ca30284c800cd03000000000001012cce22d4de869b9700",
-      "amount_piconero": 0,
+      "amount_piconero": 16324282500,
       "spent": true
     },
     {
       "txid": "c2798f740920fa8a12edb2973f152d0e3ab5514c06a5be92804b6912c564f04f",
       "height": 2214734,
       "serialized_output_hex": "c2798f740920fa8a12edb2973f152d0e3ab5514c06a5be92804b6912c564f04f0000000000000000a36999000000000043aadae80d8996e18fdec1c8e608314dbb217180fbb3572af45982bd0af64bbdedfc28e434f9f2c6fea0ce007962e96aea1dfec3d550f2e28e711e9b1ff56d0167064e9aaf0e9c0718f53aa6c53ca1ef85b4cb6e3bc150b33e52ab88ca18ee00e3632fcb0300000000000101f6b2353f94bf303800",
-      "amount_piconero": 0,
+      "amount_piconero": 16293782499,
       "spent": true
     },
     {
       "txid": "ebe371cba0fad78c6744aebc69f8c0b435be80c9cbacfbcdef7fc67ed4937653",
       "height": 2214736,
       "serialized_output_hex": "ebe371cba0fad78c6744aebc69f8c0b435be80c9cbacfbcdef7fc67ed49376530000000000000000a769990000000000dfbab031b69222d1689bc54e80791581f1ee18f4d4e6a857bba7b60ed0cecf978953ade30d1e47f46fa279997f23d5bcd241524e9d7b0b9f1111e37771331005ee838d2cb32652ff3d7978ae4bb68a75079b1ad8c1cc31325c2d760d43f7180ba32120cb030000000000010109a48b79786aed4700",
-      "amount_piconero": 0,
+      "amount_piconero": 16292782499,
       "spent": true
     },
     {
       "txid": "6e858024a0e7811bdcef506ff6300c9c87cc45186874d0c3abc7bfeb2bad789b",
       "height": 2214751,
       "serialized_output_hex": "6e858024a0e7811bdcef506ff6300c9c87cc45186874d0c3abc7bfeb2bad789b0000000000000000046a9900000000006dc6c7975d18a7672d211df259433dc695a41bd386bfb5225904e5b727d92b58078d1a830f1a033e9157d66b66d2e29c83d667aae10a0c6a966dcebef7b7650bdd549171e773b65fe0945772134a1fdce53e211aa98c7610c23c20d129154506c43839b70300000000000101836d3cedff90c91e00",
-      "amount_piconero": 0,
+      "amount_piconero": 15958882500,
       "spent": true
     },
     {
       "txid": "28462cba964fe192ecdf3ede8db95defc66485958e2e027460ce91fa570adec7",
       "height": 2214976,
       "serialized_output_hex": "28462cba964fe192ecdf3ede8db95defc66485958e2e027460ce91fa570adec70100000000000000776c9900000000007532d38bf8ea26eef017e271e374f67c505a3431bf39e0da4e66e8d0036e4ba08797fc2e13d16a7e1ea553881d913da7b4baf9c2b8c5f6ac54f552b50ae60109ddf162ca4e945f148fd1edff0cf267e609e45dea358f8a4f22b8147ca774040e23d467b50300000000000101ff43f86d4ae3a93800",
-      "amount_piconero": 0,
+      "amount_piconero": 15928382499,
       "spent": true
     },
     {
       "txid": "cde2113f5f1bb959facb74074e608b87715c886be7803e579be595e8637ce290",
       "height": 2214976,
       "serialized_output_hex": "cde2113f5f1bb959facb74074e608b87715c886be7803e579be595e8637ce2900000000000000000786c9900000000006ae0c252fb7f4ffb363e6a5e0d5d06431cb4fc861a1e809687059bd1233cf514899e627c78e68f45ee841e5cfa45daa3240002905d6cd154e8bb66eb9cacba00b9eedcbb982ec0c33780c8de6d0101340ca8af4eb20d0d6eb9d5673e58a74e07c39d49b50300000000000101cb14593a8941708300",
-      "amount_piconero": 0,
+      "amount_piconero": 15926402499,
       "spent": true
     },
     {
       "txid": "814e9dc5a59e1754ab554a7c8ede61fcaaf8c8f9833cd52be6a51130eb7e8c58",
       "height": 2215900,
       "serialized_output_hex": "814e9dc5a59e1754ab554a7c8ede61fcaaf8c8f9833cd52be6a51130eb7e8c5800000000000000008b7999000000000037310972322d60f550305c7876b0c1f2fb497c7b5805723aebb0c6e6ff2dcf22e900cfb6d49ab85af40370e8296a04eab5404c70b6e50b1d567a168b69c6b90681122250ff5776a8d596d6be59b7ace5a78f3cff1a3548dfc4c1df391e48ab08905e14340000000000000000",
-      "amount_piconero": 0,
+      "amount_piconero": 873750160,
       "spent": false
     },
     {
       "txid": "dbc1e1619fe34d263bb41d8be49b535d0b5df63c584775833596cb86d51b443f",
       "height": 2215901,
       "serialized_output_hex": "dbc1e1619fe34d263bb41d8be49b535d0b5df63c584775833596cb86d51b443f00000000000000009c799900000000003d2553c0390af0d0cda5a85a6304f72dac680340726781cac6948d28afe5184dc1a279d54063429628e69de2d69606dd0af5bb9bd77f6d1df15f387d254b1b00e1bca66c6daeb15dd3208dbcf0f76d2de0b64e04e87b9a5dc8e19c9d8dd6150d427d563b0000000000000000",
-      "amount_piconero": 0,
+      "amount_piconero": 995523906,
       "spent": false
     },
     {
       "txid": "83b12bfaeea6627500b8b88371ccb68e3186fa6f913f0d990dc7a719fdbf3dac",
       "height": 2215905,
       "serialized_output_hex": "83b12bfaeea6627500b8b88371ccb68e3186fa6f913f0d990dc7a719fdbf3dac0000000000000000b57999000000000011604cbc9c77ae45a05b5c2bfbbd579e6107a30cfcd90bee47df842bb8228df395e6686eb597d7adb41f137a63f72b4d06132ca7fd35b011d53ecd3b54e07f040ae66cc71609e2edd98a7076a45a04d5242d689eca073a8a7f63ebe114aaf900dc99543b0000000000000000",
-      "amount_piconero": 0,
+      "amount_piconero": 995400156,
       "spent": false
     },
     {
       "txid": "cda9b71d7a7dc7568b30e7a02a8f09c54232db940be63fcc948b89752afa13e0",
       "height": 2216121,
       "serialized_output_hex": "cda9b71d7a7dc7568b30e7a02a8f09c54232db940be63fcc948b89752afa13e00100000000000000947c990000000000fd4a77c6c64dcfc077af747cd75c18670f73ad1aa64582a183411d609e16ada9df79a115a74df749f79c195200146746e3c452436920f1abe6c353e228d6730f2f00405fd57a7297fe200284e0b77c9e0bc46049929470268fd2017fadfcee0800e876481700000000000101000000000000000000",
-      "amount_piconero": 0,
+      "amount_piconero": 100000000000,
       "spent": true
     },
     {
@@ -607,7 +613,7 @@
       "height": 2216135,
       "serialized_output_hex": "3598a029d01484c17b14177811058f7ac240c7d0820206c8729a82858413566b0000000000000000cd7c9900000000000cd31609e498cddddc942545bdbc18731f2cf7c8236133ed1b1b65c40bf7057664bb19583fd1fcd408e283a7ed4037ae24a4a80bc17fca004e129a3d5b3a09088f50b4c48b7f0bb51ddafb4d598ec5ee5562d2244b1920e43fad89ecb694eb01806e87740100000000000000",
       "amount_piconero": 6250000000,
-      "spent": false
+      "spent": true
     },
     {
       "txid": "7ef7f43ff119f2c8ef76e531da06bd7d8d96649e2f0bc6b9c88d1ce45fb581d4",
@@ -684,7 +690,7 @@
       "height": 2216135,
       "serialized_output_hex": "3598a029d01484c17b14177811058f7ac240c7d0820206c8729a82858413566b0900000000000000d67c990000000000ed6b721bde97642de8c1f047d45a057bc393b7dce1522457523eb9708545a66a76c193a52675eed12e95ddfc0a06bf0848220d811597eef5ab92dff86887830f7eb7e82ca94b27e6159729050a981014f155ab0b99abaca041b5718b7884ae08806e87740100000000000000",
       "amount_piconero": 6250000000,
-      "spent": false
+      "spent": true
     },
     {
       "txid": "3598a029d01484c17b14177811058f7ac240c7d0820206c8729a82858413566b",
@@ -775,14 +781,14 @@
       "height": 2216135,
       "serialized_output_hex": "7ef7f43ff119f2c8ef76e531da06bd7d8d96649e2f0bc6b9c88d1ce45fb581d40700000000000000e87c990000000000e8c53b6456ae3926bf9c3c367c046a5915ca36c9285313d165740bbacfd8a9b1603a18ab4045b03451fd20566c5614537bea4b29cd03b9d7eb16329ff5823e0e80b99613a5e8cca40a4046f5960bab7d6ce96d4486af895380a9566b3a4f9e09806e87740100000000000000",
       "amount_piconero": 6250000000,
-      "spent": false
+      "spent": true
     },
     {
       "txid": "7ef7f43ff119f2c8ef76e531da06bd7d8d96649e2f0bc6b9c88d1ce45fb581d4",
       "height": 2216135,
       "serialized_output_hex": "7ef7f43ff119f2c8ef76e531da06bd7d8d96649e2f0bc6b9c88d1ce45fb581d40800000000000000e97c990000000000d1011795a5ca222482efeef533fb968dcdfaf7a8073b6263a996c3acdfb1b3dcc336ad3344532c6c5c1a6d1cf76e9b21dd1f957252429bfb1cbe682f8a6eee07025d66e365a48bf009bd753ae2ec6e1dd6822296c39bcb302aa652f099bea707806e87740100000000000000",
       "amount_piconero": 6250000000,
-      "spent": false
+      "spent": true
     },
     {
       "txid": "7ef7f43ff119f2c8ef76e531da06bd7d8d96649e2f0bc6b9c88d1ce45fb581d4",
@@ -810,7 +816,7 @@
       "height": 2216135,
       "serialized_output_hex": "7ef7f43ff119f2c8ef76e531da06bd7d8d96649e2f0bc6b9c88d1ce45fb581d40c00000000000000ed7c9900000000007ef1187d7cfae854ab61b9bccd886e7f8ed554daa07dd6b89ca3b29c390545ffc4882aee36045ee7e5e07bd44aa1fa270452a914511094da4737a40e2c692302e7a3bd4b2fd67fb20bd7c6e2a6120bac3601945f7bb1d1487aabdf46ef60de0b806e87740100000000000000",
       "amount_piconero": 6250000000,
-      "spent": false
+      "spent": true
     },
     {
       "txid": "7ef7f43ff119f2c8ef76e531da06bd7d8d96649e2f0bc6b9c88d1ce45fb581d4",
@@ -824,7 +830,7 @@
       "height": 2216135,
       "serialized_output_hex": "7ef7f43ff119f2c8ef76e531da06bd7d8d96649e2f0bc6b9c88d1ce45fb581d40e00000000000000ef7c990000000000eb4c7fde58586991ba1714054642c212af6fa400a06f788b850ad99f31a8947e46505fef2de8ddce4456dd501742ce37f29750fe7ac0436251d42c8e8b1be80eb620bc0b124bca9db3bea872fe885c3054f362099fc1d36bbbde1d932bdf670d806e87740100000000000000",
       "amount_piconero": 6250000000,
-      "spent": false
+      "spent": true
     },
     {
       "txid": "7ef7f43ff119f2c8ef76e531da06bd7d8d96649e2f0bc6b9c88d1ce45fb581d4",
@@ -1010,17 +1016,94 @@
     },
     {
       "txid": "cbaae1029689d42bf9cb8539bd6e081c53e118c573a0cbafdb92d9bccf5f8362",
-      "height": null,
-      "serialized_output_hex": null,
-      "amount_piconero": 0,
+      "height": 2217434,
+      "serialized_output_hex": "cbaae1029689d42bf9cb8539bd6e081c53e118c573a0cbafdb92d9bccf5f8362010000000000000004a299000000000044666602eb6469c30eec7298c8861b2a0395ff1345398bbc1b2786d4728a9eb10bead6d1636c2a40d846b6ad7161ba8d034d43b3395f9ec4fb1d8e83c321cb0b6f9a973c710c5055d09ad3c800e1744195661a230e089b079394daa3777cb505c06dbd5e0100000000000101a566111457b7646500",
+      "amount_piconero": 5884440000,
       "spent": false
     },
     {
       "txid": "74441679ba454bb2c87b1e7a572861fb106e54c9defd51e4651fcb8ce55f5269",
-      "height": null,
-      "serialized_output_hex": null,
-      "amount_piconero": 0,
+      "height": 2217434,
+      "serialized_output_hex": "74441679ba454bb2c87b1e7a572861fb106e54c9defd51e4651fcb8ce55f5269000000000000000007a2990000000000ba759601f87897667a6156e03d4812ef2c911cbaef7af5329cf8745730286831e59af6103120cdc1d95235eac26df70d0c227aac8ef45e7dba821feaf09fd90f2aba2536a32df0f019d33058f8fd8adb271e1c2fe7d6702f95e1a46fbca3500920b2af5e01000000000001015303b4deb71940d000",
+      "amount_piconero": 5883540000,
+      "spent": false
+    },
+    {
+      "txid": "f255459517964fbfb714d70129a92a4899c3e80c27673eaa68a8b7ad7d62bd0a",
+      "height": 2218250,
+      "serialized_output_hex": "f255459517964fbfb714d70129a92a4899c3e80c27673eaa68a8b7ad7d62bd0a0000000000000000f6b0990000000000bc4f063ce33b227a70d64c36d49e153249a0fa0baea722c1412b81abe223a55464dc9f33c7c2289d67bc8784a340787ffe284c8f464a326fd7dedd72db9c2607d201ac72d7f69e127360f58267c97629304a0ce4fae79fc9495f5f1e0201010770f8b4720100000000000101de19d555d01c0fca00",
+      "amount_piconero": 6219430000,
+      "spent": false
+    },
+    {
+      "txid": "45b6ebdb6734e5d2867ce027f158248c726b9c75a100adcd22586c89db03fb5e",
+      "height": 2218250,
+      "serialized_output_hex": "45b6ebdb6734e5d2867ce027f158248c726b9c75a100adcd22586c89db03fb5e010000000000000003b199000000000065021d0cee1aa46d461fd73f48e535dfb90e7cc185d5431f4a2225ce1db4a93a920f9cd5ab591f94f34c87cd633e46f8d1b5578c1c9890176282d12f62f3b708f825f2359f7b6402a4640278476973dcec983afb0f83c6c705be91c9e3bd560aa06db57201000000000001010bdcd232de9d10a000",
+      "amount_piconero": 6219460000,
+      "spent": false
+    },
+    {
+      "txid": "9d9b50658b43c376b487824d9f8a1a87da822a754e620104d6a00f5163600256",
+      "height": 2218257,
+      "serialized_output_hex": "9d9b50658b43c376b487824d9f8a1a87da822a754e620104d6a00f516360025600000000000000000db1990000000000d7e101ab3f8086ee3ee762624da268bb671e49bfe1b4a28cfb9849a1c43c885e7d407d8d35a090c961e889039ace6e93748dea202f1d462d042e2c81424949094766ec0499133ec8ee2834bc71d8203f3ab4f1cde72b88cae6b2dc647881fc01f030b6720100000000000101375ef2c805fb95f100",
+      "amount_piconero": 6219510000,
+      "spent": false
+    },
+    {
+      "txid": "9b27c13b94ffc50d21eeaba044c26d7cef45475c9ad1d78ab5ea68954f5d6625",
+      "height": 2218257,
+      "serialized_output_hex": "9b27c13b94ffc50d21eeaba044c26d7cef45475c9ad1d78ab5ea68954f5d6625010000000000000010b1990000000000efc2ba247d8222c64799b69ad6ca8ac3eb745249284b9b8fd987d6097d969050794a970da68ab5b4f13d9f3b664deca92d7ce317f6997d9731faabba30d9610706e153c345189437503f1ce031455caf35fd92779a51ddde54480ccd8b5adb0ea2f29c7101000000000001014b72fb1871e55fb800",
+      "amount_piconero": 6201078434,
+      "spent": false
+    },
+    {
+      "txid": "89145a82b580628700d9b25d066c39786664ecf68936da5429cfb347a8cabf91",
+      "height": 2218276,
+      "timestamp": 1790687615,
+      "serialized_output_hex": "89145a82b580628700d9b25d066c39786664ecf68936da5429cfb347a8cabf91000000000000000030b1990000000000cb4b973061d95d9487a162ea3baa0f661a1d961553d4960b6bc8802a810bd3157ccf7d5839cc07d36b73cb67dc82d10884f3029803295eb67d0c73831e9bdf09af3e187d253e14d498168c2fdf26175f8e0e475d990fb0cc79cc079155015301ab21817001000000000001011e6b79ce66bb596600",
+      "amount_piconero": 6182478251,
+      "spent": false
+    },
+    {
+      "txid": "552358a550593cda75ab24491bcd4576d29d70d7d2d0ed78d422e9b9c609f12d",
+      "height": 2218616,
+      "timestamp": 1790726158,
+      "serialized_output_hex": "552358a550593cda75ab24491bcd4576d29d70d7d2d0ed78d422e9b9c609f12d000000000000000076b4990000000000edc5bc17e3e74113f14fff7f051dac197098a3aeca6dd9f40d153ebca7ff7b27dc73c437bb02e37f1877562cc852dd45ef44de5779edecc1e016a1f895132a01b07b5f90d51c201c257e784ab227f9ebc9475b4efa54971107fdfd1a07e83d0fa0fdc16c0100000000000101000000000000000000",
+      "amount_piconero": 6119620000,
+      "spent": false
+    },
+    {
+      "txid": "552358a550593cda75ab24491bcd4576d29d70d7d2d0ed78d422e9b9c609f12d",
+      "height": 2218616,
+      "timestamp": 1790726158,
+      "serialized_output_hex": "552358a550593cda75ab24491bcd4576d29d70d7d2d0ed78d422e9b9c609f12d010000000000000077b4990000000000d63266d135ae8f993a14921499769d0fed30203bec5bd7aad0c0d60640c307567f642faf3d73db9d798e8ea61a2ce0e71560160b34d6ae3c5e8caa92723bef0b88045135b47cc07f1360960945314ac2fb0ba317ca59cea942c3d06830bf080600e1f5050000000000000101000000000000000000",
+      "amount_piconero": 100000000,
       "spent": false
     }
-  ]
+  ],
+  "pending": [],
+  "sent": [
+    {
+      "txid": "552358a550593cda75ab24491bcd4576d29d70d7d2d0ed78d422e9b9c609f12d",
+      "account": 0,
+      "destinations": [
+        {
+          "address": "5648a3A1PX6Fz3L3bSop2LXLKjmrxi1sCCvVdM15AQYL4RoHE4TqSiQ6d6qXt6cwG7a4GLQfA6LbYBoM8XPFEVvNMYeUDF3",
+          "amount_piconero": 100000000
+        }
+      ],
+      "fee_piconero": 30380000,
+      "change_piconero": 6119620000,
+      "height": 2218616,
+      "timestamp": 1790726158
+    }
+  ],
+  "extra": {
+    "_comment": "Stagenet test fixtures only - stagenet XMR has no monetary value, so persisting these keys here is safe and deliberate (it lets the E2E test in e2e/README.md be re-run without regenerating wallets or re-funding from the faucet every time). Never do this with mainnet keys.",
+    "faucet_funding_txid": "7984250a50f528ba470e3bd35bbb4b675a057d2f00a27339de786206f2698d37",
+    "faucet_funding_txid_2": "ea63496da0ba8b508cbb67d1877fd514396da7f6095e475a0c0382f3bacd8538",
+    "faucet_used": "https://stagenet-faucet.xmr-tw.org/",
+    "role": "The payer - needs full spend capability to receive faucet funds and send the test payment to whatever address moneropay derives for an order. The e2e suites use private_spend_key/private_view_key directly (via the monero-wallet crate, through cli-wallet::WalletStore) to scan for its own received outputs and sign a real spend, with no external wallet-rpc process involved. private_spend_key/private_view_key were extracted once via `monero-wallet-rpc`'s query_key RPC (run in --offline mode, since a wedge was observed when query_key raced an online wallet-rpc's automatic post-restore refresh); the mnemonic is kept only as a human-recoverable backup of the same key material. Renamed from `customer` once cli-wallet grew a general-purpose `WalletStore`/CLI, not just this e2e suite's own fixture - the old `known_txids` list (a leftover from the pre-ledger predecessor wallet, dead since cli-wallet's own ledger took over) was dropped in the same pass, confirmed unread by any current code.",
+    "stagenet_node_used_for_wallet_sync": "http://node.monerodevs.org:38089"
+  }
 }

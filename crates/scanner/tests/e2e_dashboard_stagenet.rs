@@ -148,7 +148,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
 
     let ctx = cli_wallet::WalletCtx::default();
     let spender = cli_wallet::WalletStore::load(&ctx)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallet_dir.display()))
         .wallet("spender")
         .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 

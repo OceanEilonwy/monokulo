@@ -2,7 +2,7 @@
 //! everything WBS 1.4.1-1.4.4 built, wired together for real: a fresh
 //! monokulo account signs up, runs the *real* connect flow
 //! (`mock_woocommerce::run_connect_flow_with_wallet`) using the real stagenet
-//! **merchant** wallet's view key/spend pubkey from `e2e/stagenet-wallets.json`
+//! **merchant** wallet's view key/spend pubkey from `e2e/wallets/merchant.json`
 //! against a real, stagenet-configured engine, creates a real order, pays it
 //! with a real, signed stagenet transaction sent from the **customer** wallet
 //! (`cli_wallet::send_payment` - the exact same fast, no-scanning,
@@ -221,7 +221,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // from the repository root, same as this file's own doc comment says.
     let ctx = cli_wallet::WalletCtx::default();
     let wallets = cli_wallet::WalletStore::load(&ctx)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallet_dir.display()));
 
     let merchant = wallets
         .wallet("merchant")
@@ -278,9 +278,10 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         panic!(
             "\n\nspender wallet has only {} piconero spendable across {} output(s) (needs at least \
              {MIN_SPENDABLE_PICONERO}) - fund it from the stagenet faucet \
-             (https://stagenet-faucet.xmr-tw.org/, send to {}), add a new ledger entry for the \
-             resulting txid in {}, then wait ~20 minutes for it to mature.\n",
-            balance.spendable_piconero, balance.spendable_outputs, spender.address, ctx.ledger_path,
+             (https://stagenet-faucet.xmr-tw.org/, send to {}), record the resulting txid \
+             (stagenet-wallet-cli --wallet-file {} add_output <txid>), then wait ~20 minutes \
+             for it to mature.\n",
+            balance.spendable_piconero, balance.spendable_outputs, spender.address, spender.path.display(),
         );
     }
     println!("spender wallet balance check passed: {balance:?}");

@@ -43,10 +43,12 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
   `crates/scanner/tests/support/mod.rs`'s `e2e_fixture` constants.
 - **Faucet**: https://stagenet-faucet.xmr-tw.org/ - funded the spender wallet
   below.
-- **`stagenet-wallets.json`**: persists the keys for every named wallet the
-  suites need, loaded through `cli-wallet::WalletStore` (never
-  parsed by hand anymore - see below):
-  - `merchant` - moneropay's own tenant, bootstrapped into
+- **`wallets/<name>.json`**: one file per wallet, holding *everything* about
+  it - keys and seed, `monero-wallet-cli`-style settings (accounts,
+  subaddress labels, address book, description), and its own record of every
+  output it has received, every transaction it has sent, and anything still
+  waiting to confirm. Loaded through `cli-wallet` (never parsed by hand):
+  - `merchant.json` - moneropay's own tenant, bootstrapped into
     `moneropay-stagenet.toml` with its view key + spend *public* key only
     (never the private spend key). Its full spend key is recorded too, like
     every other fixture here (there's no reason to withhold it - worthless
@@ -55,69 +57,69 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
     ever goes to moneropay's real connect API
     (`ResolvedWallet::spend_public_key_hex`), so the e2e tests still exercise
     it exactly as a genuinely watch-only tenant would be.
-  - `spender` - an ordinary wallet that received faucet funds and is used to
-    *send* test payments to orders, via its private spend/view keys. Never
-    given to moneropay - it plays the role of "the person paying an invoice."
-    (Renamed from `customer` once `cli-wallet` grew a
-    general-purpose wallet store/CLI rather than remaining this one suite's
-    private fixture.)
+  - `spender.json` - an ordinary wallet that received faucet funds and is
+    used to *send* test payments to orders. Never given to moneropay - it
+    plays the role of "the person paying an invoice."
 
-  This file contains real (if worthless - stagenet has no exchange value)
-  private keys. Treat it like any other credentials file.
-- **`stagenet-known-outputs.json`**: the spender wallet's ledger - every
-  output it's ever known to control (original faucet payouts, plus every test
-  run's own change output), each with its spent/unspent status and, once
-  resolved, its height and raw serialized bytes. `crates/cli-wallet`
-  is deliberately *not* a chain-scanning wallet: it trusts this file as the
-  source of truth for what it owns, rather than re-deriving it from the chain
-  on every run, and writes back to it after each successful send (marking the
-  spent output spent, and adding a new pending entry for the change output).
-  That write-back is expected - commit it.
+  `crates/cli-wallet` is deliberately *not* a chain-scanning wallet: it
+  trusts each wallet's file as the source of truth for what it owns, rather
+  than re-deriving it from the chain on every run, and writes back to it
+  after each successful send (marking the spent outputs spent, recording the
+  send, and adding its change as pending). That write-back is expected -
+  commit it. Changes happen under a `<name>.json.lock` file lock, so
+  parallel runs can't lose each other's updates (the lock files are
+  gitignored).
+
+  These files contain real (if worthless - stagenet has no exchange value)
+  private keys. Treat them like any other credentials file.
 - **`stagenet-decoy-distribution.json`**: a cached snapshot of the RingCT
   output distribution, refreshed periodically via `cli-wallet`'s own
   `refresh-decoy-pool` bin (see that crate's doc comment) rather than fetched
-  live on every send - the main reason these tests are fast.
+  live on every send - the main reason these tests are fast. Shared by every
+  wallet: it's chain data, not wallet data.
 
-## Inspecting/driving the spender wallet by hand
+## Inspecting/driving a wallet by hand
 
-`cli-wallet` ships a general CLI over the same `WalletStore`/
-`StagenetTestWallet` the suites use as a library - useful for checking on the
-fixture between runs or topping up the pool of spendable outputs, without
-writing a one-off script:
+`stagenet-wallet-cli` speaks `monero-wallet-cli`'s commands over the same
+wallet files the suites use. Open a wallet and type commands at its prompt,
+as with the reference wallet:
 
 ```sh
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --help
-
-# check what's there
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- address
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- balance
-
-# a real, tiny stagenet payment
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- send <address> <piconero>
-
-# split the spendable balance into 4 smaller, independently-aged outputs -
-# run this ahead of a test session (each piece still needs its own
-# SPENDABLE_AGE confirmations, ~20 minutes, before it matures), not inline
-# in CI
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- split 4
-
-# a real payment that also splits its own change into pieces, so ordinary
-# test traffic keeps the pool topped up for free
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- send <address> <piconero> --split 3
-
-# record an output this wallet received but didn't send itself (e.g. a
-# fresh faucet payout)
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- output add <txid>
-
-# import a wallet from a real seed phrase (16-word Polyseed or 24/25-word
-# legacy Electrum-style) under a new name
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- wallet add <name> --seed "<phrase>"
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender
+[wallet 5648a3]: balance
+[wallet 5648a3]: show_transfers
+[wallet 5648a3]: transfer <address> 0.001
+[wallet 5648a3]: exit
 ```
 
-Every subcommand defaults to acting as the `spender` wallet against the
-standard `e2e/*` fixture paths above (`--wallet`/`--wallets-path`/
-`--ledger-path`/`--decoy-distribution-path`/`--node-url` override any of
-that). Shell completions: `stagenet-wallet-cli completions <bash|zsh|fish|...>`.
+or run one command and exit:
+
+```sh
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender balance
+```
+
+Amounts are in XMR, as in the reference wallet (`set unit` changes that).
+`help` lists every command, `help <command>` shows one; the full list of
+supported reference commands, and why the rest aren't, is in
+[`crates/cli-wallet/README.md`](../crates/cli-wallet/README.md). Two
+commands aren't in the reference wallet:
+
+```sh
+# split the largest spendable output into 16 equal outputs - see "Keeping
+# enough outputs" below
+[wallet 5648a3]: pocketchange
+
+# record a payment this wallet received but didn't send itself (e.g. a
+# fresh faucet payout); it resolves once it confirms
+[wallet 5648a3]: add_output <txid>
+```
+
+New wallets: `--generate-new-wallet <name>` (fresh keys), plus
+`--restore-deterministic-wallet [--electrum-seed "<phrase>"]` to restore a
+16-word Polyseed or 25-word seed, or `--generate-from-spend-key <name>`.
+`--wallet-file` defaults to `spender`; `--daemon-address` picks another
+node, `--do-not-relay` signs without broadcasting. Shell completions:
+`stagenet-wallet-cli completions <bash|zsh|fish|...>`.
 
 ## One-time setup
 
@@ -178,25 +180,52 @@ database; delete it to start over with a fresh bootstrap.
 
 Monero requires 10 confirmations (~20 minutes on stagenet) before a received or
 change output becomes spendable. `cli-wallet`'s own `send` already
-accounts for this (it filters the ledger by age, not just spent-status) and
-greedily picks only as many outputs as needed - so as long as *some* ledger
-entry is old enough and unspent, a run succeeds without help. If every known
+accounts for this (it filters outputs by age, not just spent-status) and
+greedily picks only as many outputs as needed - so as long as *some* output
+is old enough and unspent, a run succeeds without help. If every known
 output is either too young or already spent, the send fails fast with a clear
 `InsufficientFunds` error, rather than hanging or false-passing.
 
+### Keeping enough outputs: `pocketchange`
+
+Every test payment spends one output and leaves its change locked for the
+next 10 blocks, so the suites run fast only while the spender has plenty of
+separate mature outputs - one per payment a session makes, at least.
+`pocketchange` makes them: it splits the wallet's largest unlocked output
+into 16 equal outputs of its own, the most one transaction can hold (the
+change output is one of the 16):
+
+```sh
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- pocketchange
+# Splitting 0.006250000000 from 1 output(s) into 16 outputs of 0.000382893750 each ...
+```
+
+- `pocketchange 8` splits into fewer, bigger pieces (2 to 16).
+- `pocketchange inputs=3` merges the 3 largest outputs first, for bigger
+  pieces from smaller outputs.
+- Each piece has to cover one test payment plus its fee - about 0.00037 XMR
+  for `e2e_stagenet.rs`'s 0.000335 XMR order - or it can't pay a test on its
+  own. The confirmation line shows the piece size before anything is sent;
+  merge more inputs, or split into fewer pieces, if it's too small.
+- Run it ahead of a test session, not inline in CI: the new outputs need
+  their own 10 confirmations (~20 minutes) before they're spendable.
+- Check what's there with `unspent_outputs` (sizes and a height histogram)
+  or `balance detail` (how many outputs).
+
 ## Reproducing from scratch (new faucet funds)
 
-If `stagenet-known-outputs.json`'s tracked outputs ever run dry (everything
-spent, and change too small/young to help):
+If `wallets/spender.json`'s outputs ever run dry (everything spent, and
+change too small/young to help):
 
-1. Open https://stagenet-faucet.xmr-tw.org/ and send funds to
-   `stagenet-wallets.json`'s existing `spender.address` (no need to generate a
-   new wallet - the same address can receive any number of faucet payouts).
+1. Open https://stagenet-faucet.xmr-tw.org/ and send funds to the spender's
+   address (`stagenet-wallet-cli address`; no need to generate a new wallet -
+   the same address can receive any number of faucet payouts).
 2. Record the faucet's txid: `cargo run -p cli-wallet --bin
-   stagenet-wallet-cli -- output add <txid>` (or add the entry by hand -
-   `txid`, `amount_piconero`, `spent: false`, `height`/`serialized_output_hex`
-   left `null` until the next run resolves them - see `Ledger`'s own doc
-   comment in `crates/cli-wallet/src/lib.rs`).
+   stagenet-wallet-cli -- add_output <txid>`. It stays pending until it
+   confirms, then resolves on the next `refresh` (or send).
+3. Once it's spendable (10 confirmations), turn the one big faucet output
+   into many test-sized ones: `pocketchange` (see above). Repeat on the
+   resulting outputs if one round isn't enough.
 
 
 # Real Tor end-to-end test
