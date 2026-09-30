@@ -161,7 +161,9 @@ chain tier to open a reorg job, instead of asking for the block again.
 only the stored hash at `min(high-water, node tip)` with the node. If they
 match, nothing below can differ. If they don't, a binary search over the
 stored window finds the first divergent height in O(log depth) calls. Every
-call is stateless, so a failure is simply retried.
+call is stateless, so a failure is simply retried. The node gives its tip's
+id along with its height, so while the recorded chain ends at the tip the
+comparison costs no call at all (`docs/node_rpc_efficiency.md`).
 
 **Reconciliation is a durable job** (`reorg_jobs` + `reorg_work`, one per
 network):
@@ -363,7 +365,8 @@ A pool that can't be read is reported as unreadable, never as empty.
 - **One call for a block's identity and contents.** `get_chain_blocks`
   returns hash, parent hash and transactions together, so a block's
   contents can't come from a different node or fork than its hash.
-- **Polling, not ZMQ, for the pool.** A 250 ms poll of txids gives
+- **Polling, not ZMQ, for the pool.** A 250 ms poll (of what changed in
+  the pool since the last one: `docs/node_rpc_efficiency.md`) gives
   near-instant detection with the existing RPC client; ZMQ push would need
   `libzmq`, a C dependency the design avoids (`docs/DESIGN.md`). It remains
   a possible opt-in later.

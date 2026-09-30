@@ -22,12 +22,11 @@
 //! on, and a previously-failed node earlier in priority order is naturally retried
 //! again once the chain of calls wraps back around to it.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use monero::Transaction;
-
-use crate::daemon::ChainBlock;
+use crate::daemon::{ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer};
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
@@ -234,7 +233,8 @@ pub struct PinnedDaemon<'a> {
 }
 
 impl PinnedDaemon<'_> {
-    pub fn node_index(&self) -> usize {
+    #[cfg(test)]
+    fn node_index(&self) -> usize {
         self.idx
     }
 
@@ -265,21 +265,11 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.one(|c| c.get_height()).await
     }
+    async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
+        self.one(|c| c.get_tip()).await
+    }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.one(|c| c.get_block_hash(height)).await
-    }
-    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
-        self.one(|c| c.get_block_timestamp(height)).await
-    }
-    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
-        self.one(|c| c.get_block_transactions(height)).await
-    }
-    async fn get_blocks_range(
-        &self,
-        start_height: u64,
-        count: u64,
-    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        self.one(|c| c.get_blocks_range(start_height, count)).await
     }
     async fn get_chain_blocks(
         &self,
@@ -288,20 +278,52 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     ) -> Result<Vec<ChainBlock>, DaemonError> {
         self.one(|c| c.get_chain_blocks(start_height, count)).await
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.one(|c| c.get_mempool_transactions()).await
+    async fn get_chain_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainHeader>, DaemonError> {
+        self.one(|c| c.get_chain_headers(start_height, count)).await
+    }
+    /// The pinned node's two answers. It is judged by the tip's.
+    async fn get_tip_and_mempool(&self) -> (Result<ChainTip, DaemonError>, PoolAnswer) {
+        let both = self
+            .one(|c| async move {
+                let (tip, pool) = c.get_tip_and_mempool().await;
+                tip.map(|tip| (tip, pool))
+            })
+            .await;
+        match both {
+            Ok((tip, pool)) => (Ok(tip), pool),
+            Err(error) => {
+                let pool = Err(DaemonError::Request(error.to_string()));
+                (Err(error), pool)
+            }
+        }
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.one(|c| c.get_mempool_txids()).await
     }
-    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
-        self.one(|c| c.get_transactions(txids)).await
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<FetchedTx>, DaemonError> {
+        self.one(|c| c.get_transactions_with_ids(txids)).await
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         self.one(|c| c.locate_transaction(txid)).await
     }
-    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
-        self.one(|c| c.get_transaction(txid)).await
+    async fn locate_transactions(
+        &self,
+        txids: &[String],
+    ) -> Result<HashMap<String, TxLocation>, DaemonError> {
+        self.one(|c| c.locate_transactions(txids)).await
+    }
+    async fn find_transaction(
+        &self,
+        txid: &str,
+    ) -> Result<Option<(FetchedTx, TxLocation)>, DaemonError> {
+        self.one(|c| c.find_transaction(txid)).await
     }
     async fn is_key_image_spent(
         &self,
@@ -325,25 +347,12 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         self.failover(|c| c.get_height()).await
     }
 
+    async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
+        self.failover(|c| c.get_tip()).await
+    }
+
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.failover(|c| c.get_block_hash(height)).await
-    }
-
-    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
-        self.failover(|c| c.get_block_timestamp(height)).await
-    }
-
-    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
-        self.failover(|c| c.get_block_transactions(height)).await
-    }
-
-    async fn get_blocks_range(
-        &self,
-        start_height: u64,
-        count: u64,
-    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        self.failover(|c| c.get_blocks_range(start_height, count))
-            .await
     }
 
     /// One node answers for the whole range: a block's contents and id never
@@ -357,24 +366,59 @@ impl MoneroDaemonClient for FallbackDaemonClient {
             .await
     }
 
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.failover(|c| c.get_mempool_transactions()).await
+    async fn get_chain_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainHeader>, DaemonError> {
+        self.failover(|c| c.get_chain_headers(start_height, count))
+            .await
+    }
+
+    /// One node answers both where it can: the first that gives its tip.
+    /// A pool that node couldn't give (or every node's tip failing) is
+    /// asked for on its own, from whichever node answers.
+    async fn get_tip_and_mempool(&self) -> (Result<ChainTip, DaemonError>, PoolAnswer) {
+        let both = self
+            .failover(|c| async move {
+                let (tip, pool) = c.get_tip_and_mempool().await;
+                tip.map(|tip| (tip, pool))
+            })
+            .await;
+        match both {
+            Ok((tip, Ok(pool))) => (Ok(tip), Ok(pool)),
+            Ok((tip, Err(_))) => (Ok(tip), self.get_mempool_txids().await),
+            Err(error) => (Err(error), self.get_mempool_txids().await),
+        }
     }
 
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.failover(|c| c.get_mempool_txids()).await
     }
 
-    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
-        self.failover(|c| c.get_transactions(txids)).await
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<FetchedTx>, DaemonError> {
+        self.failover(|c| c.get_transactions_with_ids(txids)).await
     }
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         self.failover(|c| c.locate_transaction(txid)).await
     }
 
-    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
-        self.failover(|c| c.get_transaction(txid)).await
+    async fn locate_transactions(
+        &self,
+        txids: &[String],
+    ) -> Result<HashMap<String, TxLocation>, DaemonError> {
+        self.failover(|c| c.locate_transactions(txids)).await
+    }
+
+    async fn find_transaction(
+        &self,
+        txid: &str,
+    ) -> Result<Option<(FetchedTx, TxLocation)>, DaemonError> {
+        self.failover(|c| c.find_transaction(txid)).await
     }
 
     async fn is_key_image_spent(
@@ -416,9 +460,17 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         &self,
         key_images: &[String],
     ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+        // Every node at once: the answer waits for the slowest node, not
+        // for each in turn.
+        let answers = futures_util::future::join_all(
+            self.nodes
+                .iter()
+                .map(|node| node.client.is_key_image_spent(key_images)),
+        )
+        .await;
         let mut responses: Vec<Vec<KeyImageStatus>> = Vec::new();
-        for node in &self.nodes {
-            match node.client.is_key_image_spent(key_images).await {
+        for (node, answer) in self.nodes.iter().zip(answers) {
+            match answer {
                 Ok(statuses) if statuses.len() == key_images.len() => responses.push(statuses),
                 Ok(wrong_length) => tracing::warn!(
                     node = %node.label,
@@ -508,25 +560,26 @@ mod tests {
             unimplemented!("not exercised by these tests")
         }
 
-        async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
 
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            _height: u64,
-        ) -> Result<Vec<Transaction>, DaemonError> {
+            _start_height: u64,
+            _count: u64,
+        ) -> Result<Vec<ChainBlock>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
 
-        async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        async fn get_transactions_with_ids(
+            &self,
+            _txids: &[String],
+        ) -> Result<Vec<FetchedTx>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
 
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
-            unimplemented!("not exercised by these tests")
-        }
-        async fn get_transaction(&self, _txid: &str) -> Result<Transaction, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
 
@@ -664,22 +717,25 @@ mod tests {
         async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
-        async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            _height: u64,
-        ) -> Result<Vec<Transaction>, DaemonError> {
+            _start_height: u64,
+            _count: u64,
+        ) -> Result<Vec<ChainBlock>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
-        async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+
+        async fn get_transactions_with_ids(
+            &self,
+            _txids: &[String],
+        ) -> Result<Vec<FetchedTx>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
+
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
-            unimplemented!("not exercised by these tests")
-        }
-        async fn get_transaction(&self, _txid: &str) -> Result<Transaction, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
         async fn is_key_image_spent(
@@ -887,22 +943,25 @@ mod tests {
         async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
             std::future::pending().await
         }
-        async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
             std::future::pending().await
         }
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            _height: u64,
-        ) -> Result<Vec<Transaction>, DaemonError> {
+            _start_height: u64,
+            _count: u64,
+        ) -> Result<Vec<ChainBlock>, DaemonError> {
             std::future::pending().await
         }
-        async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+
+        async fn get_transactions_with_ids(
+            &self,
+            _txids: &[String],
+        ) -> Result<Vec<FetchedTx>, DaemonError> {
             std::future::pending().await
         }
+
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
-            std::future::pending().await
-        }
-        async fn get_transaction(&self, _txid: &str) -> Result<Transaction, DaemonError> {
             std::future::pending().await
         }
         async fn is_key_image_spent(

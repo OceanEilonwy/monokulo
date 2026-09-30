@@ -796,8 +796,9 @@ pub struct LookupPaymentRequest {
 
 /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B's own direct replacement
 /// for the manual chain-rescan feature above: no block-range walk, no
-/// background job, no per-tenant "one at a time" guardrail to enforce - two
-/// daemon calls (`locate_transaction`, `get_transaction`) and the same
+/// background job, no per-tenant "one at a time" guardrail to enforce - one
+/// daemon call for the transaction and where it is (`find_transaction`), one
+/// for the chain height if it pays an order, and the same
 /// `scan_transaction`/`record_scan_match` primitives the live scanner already
 /// uses, narrowed to nothing (this scans the tenant's *whole* address range,
 /// not one order's `minor_index` - see below for why).
@@ -859,20 +860,19 @@ pub async fn lookup_payment(
         ))
     })?;
 
-    let location = daemon
-        .locate_transaction(&txid)
+    // The transaction and where it is, in one answer. It may come pruned
+    // (all a scan reads), which is why its id is passed along with it.
+    let found = daemon
+        .find_transaction(&txid)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let block_height = match location {
-        crate::daemon::TxLocation::NotFound => return Ok(Json(PaymentLookupView::NotFoundOnChain)),
-        crate::daemon::TxLocation::InPool => None,
-        crate::daemon::TxLocation::InBlock(h) => Some(h),
+    let (tx, block_height) = match found {
+        None | Some((_, crate::daemon::TxLocation::NotFound)) => {
+            return Ok(Json(PaymentLookupView::NotFoundOnChain))
+        }
+        Some((fetched, crate::daemon::TxLocation::InPool)) => (fetched.tx, None),
+        Some((fetched, crate::daemon::TxLocation::InBlock(h))) => (fetched.tx, Some(h)),
     };
-
-    let tx = daemon
-        .get_transaction(&txid)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let mut handle = resolve_wallet_handle(&state, &tenant).await?;
     let now = now_unix();
 
@@ -882,9 +882,10 @@ pub async fn lookup_payment(
     // await-spanning call holding the store's lock.
     let mut retries = 0;
     let scan = loop {
-        match crate::scanner::scan_transaction(
+        match crate::scanner::scan_transaction_as(
             state.custody.backends.as_ref(),
             handle,
+            &txid,
             &tx,
             0..tenant.next_minor_index,
         )

@@ -13,7 +13,9 @@ use std::collections::HashSet;
 
 use tokio::time::Instant;
 
-use crate::scanner::{check_vanished_candidates, recompute_and_notify, ScannerError};
+use crate::scanner::{
+    check_vanished_candidates, recompute_and_notify, vanished_hints, ScannerError,
+};
 use crate::store::position::VanishedPayments;
 
 use super::{Progress, Round, Wait};
@@ -27,6 +29,11 @@ const VANISHED_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_se
 #[derive(Default)]
 pub(crate) struct SettlementState {
     obligations_after: parking_lot::Mutex<String>,
+    /// Payments (by id) whose transaction is nowhere and isn't proven
+    /// double-spent: looked at again at once, then at lengthening
+    /// intervals up to a minute, instead of every round for as long as
+    /// they stay that way.
+    unresolved: super::Backoff<i64>,
 }
 
 #[derive(Default)]
@@ -66,6 +73,12 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
 /// on a round whose mempool poll succeeded (never "we couldn't look" read
 /// as "it's gone"). A failed row stays eligible on the next circuit; the
 /// position moves past it so the others make progress.
+///
+/// The node is asked about the whole page at once where it can answer that
+/// way (`scanner::vanished_hints`): where the transactions are in one round
+/// trip, and the key images of those that are nowhere in another. A payment
+/// that stays nowhere and unproven (dropped, evicted) is then looked at
+/// less and less often, up to once a minute.
 async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(), ScannerError> {
     let Some(txids) = round.pool_txids.clone() else {
         return Ok(());
@@ -90,6 +103,35 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
     if page.is_empty() {
         return Ok(());
     }
+    let unresolved = &round.state.settlement.unresolved;
+    // (Also forgets payments that stopped being looked at long ago.)
+    let waiting: HashSet<i64> = unresolved.waiting().into_iter().collect();
+    let hints = {
+        let due: Vec<_> = page
+            .iter()
+            .map(|(_, payment)| payment)
+            .filter(|payment| !waiting.contains(&payment.id))
+            .collect();
+        tokio::time::timeout(
+            VANISHED_CALL_DEADLINE,
+            vanished_hints(round.inputs.daemon, &txids, &due),
+        )
+        .await
+    };
+    let hints = match hints {
+        Ok(Ok(hints)) => hints,
+        Ok(Err(error)) => {
+            tracing::warn!(network = crate::network::network_str(network), error = %error, "checking a vanished mempool payment failed (retried)");
+            return Ok(());
+        }
+        Err(_) => {
+            tracing::warn!(
+                network = crate::network::network_str(network),
+                "checking a vanished mempool payment took too long (retried)"
+            );
+            return Ok(());
+        }
+    };
     // Until the time runs out (at least one), or the node fails: a node that
     // fails or hangs for one payment would for the next. Its failures are
     // retried, not reported; a storage failure is.
@@ -99,6 +141,11 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
         if last.is_some() && Instant::now() >= until {
             break;
         }
+        if waiting.contains(&payment.id) {
+            last = Some(id);
+            continue;
+        }
+        let payment_id = payment.id;
         let checked = tokio::time::timeout(
             VANISHED_CALL_DEADLINE,
             check_vanished_candidates(
@@ -108,11 +155,19 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
                 tip,
                 round.now,
                 vec![payment],
+                &hints,
             ),
         )
         .await;
         match checked {
-            Ok(Ok(_)) => last = Some(id),
+            Ok(Ok(report)) => {
+                if report.unresolved.contains(&payment_id) {
+                    unresolved.failed(&payment_id);
+                } else {
+                    unresolved.succeeded(&payment_id);
+                }
+                last = Some(id)
+            }
             Ok(Err(ScannerError::Daemon(error))) => {
                 tracing::warn!(network = crate::network::network_str(network), error = %error, "checking a vanished mempool payment failed (retried)");
                 break;

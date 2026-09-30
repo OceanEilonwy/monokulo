@@ -18,7 +18,9 @@ use axum::{body::Body, http::Request};
 use monero::consensus::encode::deserialize;
 use monero::{Network, PrivateKey, PublicKey, Transaction};
 use parking_lot::RwLock;
-use scanner::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
+use scanner::daemon::{
+    ChainBlock, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
+};
 use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::engine_settings::{Daemons, EngineSettings};
 use scanner::http::{build_router, rate_limit::RateLimiter, AppState};
@@ -74,21 +76,55 @@ impl MoneroDaemonClient for FixtureDaemon {
         self.rpc().await?;
         Ok(format!("stress-block-{height}"))
     }
-    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+    /// One round trip for the run of blocks, as the real client makes.
+    /// Every block but the first holds the fixture's transaction.
+    async fn get_chain_blocks(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainBlock>, DaemonError> {
         self.rpc().await?;
-        Ok(1_700_000_000 + height * 120)
+        let tip = self.height.load(Ordering::Relaxed);
+        Ok((start_height..start_height.saturating_add(count))
+            .take_while(|height| *height <= tip)
+            .map(|height| ChainBlock {
+                height,
+                hash: format!("stress-block-{height}"),
+                prev_hash: height
+                    .checked_sub(1)
+                    .map(|parent| format!("stress-block-{parent}"))
+                    .unwrap_or_default(),
+                timestamp: 1_700_000_000 + height * 120,
+                txs: if height == 0 {
+                    vec![]
+                } else {
+                    vec![self.tx.clone()]
+                },
+                txids: if height == 0 {
+                    vec![]
+                } else {
+                    vec![self.txid.clone()]
+                },
+            })
+            .collect())
     }
-    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
-        self.rpc().await?;
-        Ok(if height == 0 {
-            vec![]
-        } else {
-            vec![self.tx.clone()]
-        })
-    }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.rpc().await?;
         Ok(vec![])
+    }
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<FetchedTx>, DaemonError> {
+        self.rpc().await?;
+        Ok(if txids.contains(&self.txid) {
+            vec![FetchedTx {
+                txid: self.txid.clone(),
+                tx: self.tx.clone(),
+            }]
+        } else {
+            vec![]
+        })
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         self.rpc().await?;
@@ -97,14 +133,6 @@ impl MoneroDaemonClient for FixtureDaemon {
         } else {
             TxLocation::NotFound
         })
-    }
-    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
-        self.rpc().await?;
-        if txid == self.txid {
-            Ok(self.tx.clone())
-        } else {
-            Err(DaemonError::Request("unknown fixture tx".into()))
-        }
     }
     async fn is_key_image_spent(
         &self,
@@ -466,7 +494,10 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     )?)?;
     let daemon = Arc::new(FixtureDaemon {
         height: AtomicU64::new(0),
-        txid: scanner::scanner::tx_id_hex(&tx),
+        txid: {
+            use monero::cryptonote::hash::Hashable;
+            hex::encode(tx.hash().to_bytes())
+        },
         tx,
         rpc_delay_ms,
         rpc_fail_until_height,

@@ -352,8 +352,10 @@ of a live node:
 pub trait MoneroDaemonClient: Send + Sync {
     async fn get_height(&self) -> Result<u64, DaemonError>;
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError>;
-    async fn get_block_transactions(&self, height: u64) -> Result<Vec<monero::Transaction>, DaemonError>;
-    async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError>;
+    async fn get_chain_blocks(&self, start_height: u64, count: u64) -> Result<Vec<ChainBlock>, DaemonError>;
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError>;
+    async fn get_transactions_with_ids(&self, txids: &[String]) -> Result<Vec<FetchedTx>, DaemonError>;
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
     async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError>;
 }
 ```
@@ -378,8 +380,9 @@ adding a fallback actually costs.
 
 ### 7.2 0-conf and confirmed detection
 
-- **Mempool**: poll `get_mempool_transactions` on a fixed interval (config
-  `mempool_poll_interval_ms`, default ~1000ms). Every returned transaction is run
+- **Mempool**: poll `get_mempool_txids` on a fixed interval (config
+  `mempool_poll_interval_ms`, default ~1000ms) and fetch the transactions
+  not seen before. Every one is run
   through `scan_tx_outputs` for every tenant currently on the active watchlist (§7.3).
 - **Blocks**: poll `get_height`; on increase, fetch and scan each new block's
   transactions the same way, and record `(height, block_hash)` into `scanned_blocks`.
@@ -668,10 +671,10 @@ recovery.
 
 **Two layers of defense, not one:**
 
-1. **A default grace period** — `active_tenant_ids`/`non_terminal_order_ids`
-   (`store.rs`) both widen their in-scope predicate with `OR (status = 'expired' AND
-   expires_at >= now - expired_order_grace_period_minutes)`. Automatic, no merchant
-   action, default 6h — catches the common case (paid moments late) for free. No other
+1. **A default grace period** — the scan window (`store.rs`'s `tenant_in_scope` and
+   `scan_window_orders`, read through `active_tenants_page` and `scan_windows`) holds
+   an order that closed no earlier than `now - expired_order_grace_period_minutes` as
+   well as every open one. Automatic, no merchant action, default 6h — catches the common case (paid moments late) for free. No other
    scanner-core change was needed to make a late match against an already-`expired`
    order settle correctly: `record_scan_match`'s `touched` set already gets unioned
    into every tick's recompute sweep regardless of status.

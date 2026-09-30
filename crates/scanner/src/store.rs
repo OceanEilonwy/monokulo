@@ -1214,127 +1214,6 @@ impl Store {
         Ok(rows)
     }
 
-    /// The tenant ids the chain scanner should actually spend scalar-multiplication
-    /// effort on this tick: those with at least one order still capable of
-    /// receiving a *new* detected payment. See `docs/DESIGN.md` §7.3 for the
-    /// motivation (Monero's stealth addresses make scanning cost per-tenant, so a
-    /// tenant with nothing pending should cost the scanner nothing) and this
-    /// method's own module-level discussion in `scanner.rs` for why this is a
-    /// fresh query every tick rather than an incrementally-maintained cache: with
-    /// every order mutation already serialized through the single
-    /// `Arc<Mutex<Store>>`, a fresh read is both simpler and race-free by
-    /// construction, and cheap enough (see `orders_status_tenant_idx`) that there's
-    /// no real performance case for a cache that could instead drift out of sync.
-    ///
-    /// `Paid`/`Overpaid`/`Expired` are excluded on purpose: once every order for a
-    /// tenant reaches one of those, there is nothing further for *new-match*
-    /// scanning to find. This does not weaken double-spend protection for an
-    /// already-`Paid` order - reorg reconciliation (`scanner::check_for_reorg_and_reconcile`)
-    /// re-examines already-recorded payments directly via
-    /// `find_payments_at_or_after_height`, entirely independent of tenant
-    /// watchlist membership, so a `Paid` order can still be correctly walked back
-    /// to `Partial` by a later-discovered double-spend even though its tenant left
-    /// this list.
-    /// Scoped by network as well as status: a multi-network instance (§DESIGN.md
-    /// §7) scans each network with its own daemon client on its own tick, so the
-    /// watchlist for "this tick, this network" must not include a tenant that
-    /// happens to be active but belongs to a different chain - it has nothing to
-    /// do with the daemon this call is about to use.
-    /// `now`/`grace_period_seconds` widen the watchlist to also include a
-    /// tenant whose only remaining activity is an order that went `Expired`
-    /// within the last `grace_period_seconds` (`docs/order_rescan_wbs.md`
-    /// Phase 4 - `config.payment.expired_order_grace_period_minutes`) - the
-    /// automatic, no-merchant-action-needed first line of defense for a
-    /// payment that lands just after an order's own deadline, distinct from
-    /// the manual rescan (`scanner::rescan_order`) which exists for after
-    /// this window has already elapsed.
-    pub fn active_tenant_ids(
-        &self,
-        network: monero::Network,
-        now: i64,
-        grace_period_seconds: i64,
-    ) -> Result<Vec<TenantId>> {
-        let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT t.id FROM tenants t WHERE t.network = :network AND t.disabled_at_utc IS NULL AND {}",
-            tenant_in_scope("t.id")
-        ))?;
-        let rows = stmt
-            .query_map(
-                rusqlite::named_params! { ":since_minus_grace": now - grace_period_seconds, ":network": shared::network::SqlNetwork(network) },
-                |row| row.get::<_, TenantId>(0),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// The minor indices of `tenant_id`'s orders in its scan window as of
-    /// `since` (task 7.3, decision D10): open, or closed no earlier than
-    /// `since` minus the grace period. The live scan passes now; catch-up
-    /// passes the time of the tenant's cursor block, so orders that closed
-    /// during its gap are still looked for.
-    pub fn scan_window(
-        &self,
-        tenant_id: &TenantId,
-        since: i64,
-        grace_period_seconds: i64,
-    ) -> Result<Vec<u32>> {
-        let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT minor_index FROM orders WHERE id IN ({}) ORDER BY minor_index",
-            scan_window_orders("o.tenant_id = :tenant")
-        ))?;
-        let rows = stmt
-            .query_map(
-                rusqlite::named_params! { ":tenant": tenant_id, ":since_minus_grace": since - grace_period_seconds },
-                |row| Ok(row.get::<_, i64>(0)? as u32),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// Every order on `network` still in a non-terminal status - the same four
-    /// statuses `active_tenant_ids` treats as active, one level down (orders rather
-    /// than their tenants), served by the same `orders_status_tenant_idx (status,
-    /// tenant_id)` index as a handful of index-range probes.
-    ///
-    /// The scanner needs this because an order's status is a function of the *current
-    /// chain height*, not only of its payments: confirmations are derived as
-    /// `current_height - block_height + 1` at recompute time and stored nowhere, and
-    /// expiry is a function of wall-clock time. So an order whose payments haven't
-    /// changed at all still needs recomputing every tick - otherwise a fully-paid
-    /// order is recomputed exactly once, at one confirmation, and stays `confirming`
-    /// forever, and an unpaid order sails past `expires_at` without ever becoming
-    /// `expired`. Both were live bugs when the scanner recomputed only the orders
-    /// whose transactions it matched during that same tick.
-    /// `now`/`grace_period_seconds` - see `active_tenant_ids`'s own doc
-    /// comment (the same widening, one level down).
-    pub fn non_terminal_order_ids(
-        &self,
-        network: monero::Network,
-        now: i64,
-        grace_period_seconds: i64,
-    ) -> Result<Vec<OrderId>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT o.id FROM orders o
-             JOIN tenants t ON t.id = o.tenant_id
-             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at_utc >= ?6)) AND t.network = ?7",
-        )?;
-        let rows = stmt
-            .query_map(
-                params![
-                    status_to_str(OrderStatus::Pending),
-                    status_to_str(OrderStatus::Unconfirmed),
-                    status_to_str(OrderStatus::Confirming),
-                    status_to_str(OrderStatus::Partial),
-                    status_to_str(OrderStatus::Expired),
-                    now - grace_period_seconds,
-                    shared::network::SqlNetwork(network),
-                ],
-                |row| row.get::<_, OrderId>(0),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
     /// Payment changes whose status/webhook transaction has not committed yet.
     /// Unlike the live scan window this includes old, closed orders.
     pub fn pending_payment_recomputes(&self, network: monero::Network) -> Result<Vec<OrderId>> {
@@ -1603,7 +1482,7 @@ impl Store {
     /// with `block_height = NULL` before it is ever seen in a block; `DO NOTHING`
     /// then silently discarded the `Some(height)` the block scan supplied moments
     /// later, permanently stranding the payment at zero confirmations and invisible
-    /// to `find_payments_at_or_after_height` (which filters on `block_height >= ?`).
+    /// to reorg reconciliation's collection by height (`collect_reorg_candidates`).
     /// `COALESCE` makes the update one-way - a later mempool re-sighting of an
     /// already-mined transaction can never null out a height that is already known -
     /// and the `WHERE` guard stops a duplicate insert from resurrecting a payment
@@ -1766,142 +1645,6 @@ impl Store {
         })
     }
 
-    /// Every non-voided payment on the given network that a reorg detected at
-    /// `min_height` needs to re-evaluate: those recorded at or above that height,
-    /// *plus* those with no height at all. Scoped by network (via a join through
-    /// `orders`/`tenants`), not just height: heights are only comparable within one
-    /// chain, so without this a reorg on one network would incorrectly re-examine
-    /// payments belonging to a completely unrelated chain that happens to share the
-    /// same numbers.
-    ///
-    /// The `block_height IS NULL` half is not an optimisation-avoidance nicety, it
-    /// closes a one-way trapdoor. A `NULL` height means "seen, not in any block" -
-    /// which is exactly what reconciliation itself writes when `locate_transaction`
-    /// reports `InPool`. Filtering on `block_height >= ?` alone (SQL three-valued
-    /// logic makes `NULL >= n` false, never true) meant that the moment a reorg
-    /// pushed a payment back into the mempool, no later reconciliation pass could
-    /// ever see that row again: its transaction could subsequently be proven
-    /// double-spent and it would still never be voided, silently propping up an
-    /// order's received total forever. Unconfirmed payments are inherently "above"
-    /// any block height, so re-examining them is also just the correct reading of
-    /// the question this query asks.
-    pub fn find_payments_at_or_after_height(
-        &self,
-        network: monero::Network,
-        min_height: u64,
-    ) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT op.* FROM order_payments op
-             JOIN orders o ON o.id = op.order_id
-             JOIN tenants t ON t.id = o.tenant_id
-             WHERE op.voided_at_utc IS NULL
-               AND (op.block_height >= ?1 OR op.block_height IS NULL)
-               AND t.network = ?2",
-        )?;
-        let rows = stmt
-            .query_map(
-                params![min_height as i64, shared::network::SqlNetwork(network)],
-                Self::row_to_payment,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// The voided counterpart of `find_payments_at_or_after_height`: payments a
-    /// previous reconciliation pass wrote off, whose recorded height falls in the
-    /// range a newly-detected reorg has just invalidated. Voiding is not evidence
-    /// that stays true forever - the replacement transaction that proved the
-    /// double-spend can itself be reorged out, putting the original back on the
-    /// canonical chain - so these rows have to be re-examined rather than treated as
-    /// permanently settled. Kept as a separate query from the non-voided one because
-    /// the two get genuinely different treatment (re-locate and possibly un-void, vs.
-    /// re-locate and possibly void). Includes `block_height IS NULL` rows for the
-    /// same reason its non-voided counterpart does - see that method's doc comment.
-    pub fn find_voided_payments_at_or_after_height(
-        &self,
-        network: monero::Network,
-        min_height: u64,
-    ) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT op.* FROM order_payments op
-             JOIN orders o ON o.id = op.order_id
-             JOIN tenants t ON t.id = o.tenant_id
-             WHERE op.voided_at_utc IS NOT NULL
-               AND (op.block_height >= ?1 OR op.block_height IS NULL)
-               AND t.network = ?2",
-        )?;
-        let rows = stmt
-            .query_map(
-                params![min_height as i64, shared::network::SqlNetwork(network)],
-                Self::row_to_payment,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// Every voided payment on `network` whose void happened at or after `cutoff`
-    /// (compared against `voided_at`, a unix timestamp - not a block height, unlike
-    /// this method's reorg-driven siblings above) - the candidate set for
-    /// the upkeep tier's bounded void recheck (`work::upkeep`). A
-    /// caller passes `cutoff = now - window_secs` so the result is bounded by how
-    /// many voids happened *recently*, not by the network's entire history - see
-    /// that function's own doc comment for why an old void is not worth rechecking
-    /// forever. Scoped by network for the same reason every sibling query here is.
-    pub fn find_payments_voided_since(
-        &self,
-        network: monero::Network,
-        cutoff: i64,
-    ) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT op.* FROM order_payments op
-             JOIN orders o ON o.id = op.order_id
-             JOIN tenants t ON t.id = o.tenant_id
-             WHERE op.voided_at_utc IS NOT NULL
-               AND op.voided_at_utc >= ?1
-               AND t.network = ?2",
-        )?;
-        let rows = stmt
-            .query_map(
-                params![cutoff, shared::network::SqlNetwork(network)],
-                Self::row_to_payment,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// Every non-voided payment on `network` that is still mempool-only - matched
-    /// from a transaction the scanner has never seen in a block. These are the rows
-    /// a plain (reorg-free) double-spend attacks: the customer's transaction is
-    /// broadcast, matched at zero confirmations, and then simply never mined because
-    /// a *different* transaction spending the same inputs won instead. No block hash
-    /// ever changes in that story, so reorg detection never fires and
-    /// `find_payments_at_or_after_height` is never called - which is why these rows
-    /// need their own sweep (`scanner::check_vanished_mempool_payments`) rather than
-    /// riding along with reorg reconciliation.
-    ///
-    /// Scoped by network for the same reason its height-based counterparts are: one
-    /// network's daemon must never be asked about another chain's transactions.
-    pub fn find_unconfirmed_payments(
-        &self,
-        network: monero::Network,
-    ) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT op.* FROM order_payments op
-             JOIN orders o ON o.id = op.order_id
-             JOIN tenants t ON t.id = o.tenant_id
-             WHERE op.voided_at_utc IS NULL
-               AND op.block_height IS NULL
-               AND t.network = ?1",
-        )?;
-        let rows = stmt
-            .query_map(
-                params![shared::network::SqlNetwork(network)],
-                Self::row_to_payment,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
     /// A bounded page for the routine vanished-mempool sweep. The rowid is a
     /// stable keyset cursor for the life of a payment row; callers wrap to zero
     /// at the end so transactions still absent from the pool are revisited.
@@ -1940,20 +1683,6 @@ impl Store {
                 params![order_id, raw],
             )
             .unwrap();
-    }
-
-    pub fn find_payment_by_key_image(&self, key_image_hex: &str) -> Result<Vec<OrderPaymentRow>> {
-        // key_images_json is a small JSON array (typically 1-2 entries); a LIKE scan
-        // is adequate at v1 scale and avoids a separate normalized table for what is
-        // purely reorg-bookkeeping metadata (see docs/DESIGN.md §8.1).
-        let pattern = format!("%\"{key_image_hex}\"%");
-        let mut stmt = self.conn.prepare(
-            "SELECT * FROM order_payments WHERE key_images_json LIKE ?1 AND voided_at_utc IS NULL",
-        )?;
-        let rows = stmt
-            .query_map(params![pattern], Self::row_to_payment)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
     }
 
     /// Recomputes `status`, `confirmations`, and `amount_received_piconero` from the
@@ -2319,9 +2048,8 @@ impl Store {
 
     // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) -------
 
-    /// Bumps every one of `tenant_id`'s currently-in-scope orders (the exact same
-    /// widened predicate `active_tenant_ids`/`non_terminal_order_ids` use, Phase 4's
-    /// grace window included) to `height` - one bulk `UPDATE`, not a per-order loop.
+    /// Bumps every one of `tenant_id`'s currently-in-scope orders (the scan
+    /// window's predicate, `IN_SCAN_WINDOW`, grace period included) to `height` - one bulk `UPDATE`, not a per-order loop.
     /// Called once per active tenant per scan tick (`scanner::run_scan_tick`), after
     /// its block-scanning pass. `first_scanned_height` only moves via `COALESCE`
     /// (set once, on an order's first tick, and never again) - `last_scanned_height`
@@ -3788,117 +3516,6 @@ mod tests {
     }
 
     #[test]
-    fn active_tenant_ids_includes_every_non_terminal_status_and_excludes_terminal_ones() {
-        let store = Store::open_in_memory().unwrap();
-
-        // One tenant per status, so each row's own status is the only variable.
-        let mut tenants_by_status = std::collections::HashMap::new();
-        for (i, status) in [
-            OrderStatus::Pending,
-            OrderStatus::Unconfirmed,
-            OrderStatus::Confirming,
-            OrderStatus::Partial,
-            OrderStatus::Paid,
-            OrderStatus::Overpaid,
-            OrderStatus::Expired,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let tenant = new_tenant(&store);
-            let order = new_order(&store, tenant.tenant.id.as_str(), i as u32 + 1);
-            store
-                .conn
-                .execute(
-                    "UPDATE orders SET status = ?2 WHERE id = ?1",
-                    params![order.id, status_to_str(status)],
-                )
-                .unwrap();
-            tenants_by_status.insert(status, tenant.tenant.id);
-        }
-
-        let active: std::collections::HashSet<TenantId> = store
-            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
-            .unwrap()
-            .into_iter()
-            .collect();
-
-        for status in [
-            OrderStatus::Pending,
-            OrderStatus::Unconfirmed,
-            OrderStatus::Confirming,
-            OrderStatus::Partial,
-        ] {
-            assert!(
-                active.contains(&tenants_by_status[&status]),
-                "{status} must be active"
-            );
-        }
-        for status in [
-            OrderStatus::Paid,
-            OrderStatus::Overpaid,
-            OrderStatus::Expired,
-        ] {
-            assert!(
-                !active.contains(&tenants_by_status[&status]),
-                "{status} must not be active"
-            );
-        }
-    }
-
-    #[test]
-    fn an_expired_order_is_active_within_its_grace_period_and_not_once_it_elapses() {
-        // `docs/order_rescan_wbs.md` Phase 4 - both `active_tenant_ids` and
-        // `non_terminal_order_ids` get the identical widened predicate, tested
-        // together here since they share the exact same boundary condition.
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        let order = new_order(&store, tenant.tenant.id.as_str(), 1); // expires_at = 2000
-                                                                     // Closed at its deadline, as `recompute_order_status` records it.
-        store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![order.id]).unwrap();
-
-        // Exactly at the boundary (`expires_at >= now - grace`) - inclusive.
-        assert!(store
-            .active_tenant_ids(monero::Network::Mainnet, 2000, 0)
-            .unwrap()
-            .contains(&tenant.tenant.id));
-        assert!(store
-            .non_terminal_order_ids(monero::Network::Mainnet, 2000, 0)
-            .unwrap()
-            .contains(&order.id));
-
-        // One second past, with no grace at all - excluded.
-        assert!(!store
-            .active_tenant_ids(monero::Network::Mainnet, 2001, 0)
-            .unwrap()
-            .contains(&tenant.tenant.id));
-        assert!(!store
-            .non_terminal_order_ids(monero::Network::Mainnet, 2001, 0)
-            .unwrap()
-            .contains(&order.id));
-
-        // A real grace window: still within it.
-        assert!(store
-            .active_tenant_ids(monero::Network::Mainnet, 2500, 600)
-            .unwrap()
-            .contains(&tenant.tenant.id));
-        assert!(store
-            .non_terminal_order_ids(monero::Network::Mainnet, 2500, 600)
-            .unwrap()
-            .contains(&order.id));
-
-        // Past even the grace window - excluded again.
-        assert!(!store
-            .active_tenant_ids(monero::Network::Mainnet, 2601, 600)
-            .unwrap()
-            .contains(&tenant.tenant.id));
-        assert!(!store
-            .non_terminal_order_ids(monero::Network::Mainnet, 2601, 600)
-            .unwrap()
-            .contains(&order.id));
-    }
-
-    #[test]
     fn is_order_currently_scanning_covers_every_real_lifecycle_point() {
         // `docs/txid_lookup_and_scan_chunking_wbs.md` Part C.2 - now that the
         // manual rescan feature is gone, `currently_scanning` reflects exactly
@@ -3931,78 +3548,6 @@ mod tests {
                 .is_order_currently_scanning(&expired_past_grace.id, 2601, 600)
                 .unwrap(),
             "an expired order past its grace window must not be currently scanning"
-        );
-    }
-
-    #[test]
-    fn tenant_with_no_orders_at_all_is_not_active() {
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        assert!(!store
-            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
-            .unwrap()
-            .contains(&tenant.tenant.id));
-    }
-
-    #[test]
-    fn tenant_becomes_inactive_once_its_only_order_settles_then_active_again_on_a_fresh_order() {
-        // The exact scenario the scanner's watchlist must get right without a
-        // stale-cache race: a tenant drops off, then a brand-new order brings it
-        // straight back - proving there's no "sticky exclusion" once a tenant has
-        // ever gone fully terminal. Query-fresh-every-tick (rather than an
-        // incrementally add/removed cache) makes this automatic - there's no
-        // cached "inactive" state that a new order needs to invalidate.
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        let order_a = new_order(&store, tenant.tenant.id.as_str(), 1);
-
-        assert!(store
-            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
-            .unwrap()
-            .contains(&tenant.tenant.id));
-
-        store
-            .record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50))
-            .unwrap();
-        let (_, status) = store.recompute_order_status(&order_a.id, 59, 1600).unwrap();
-        assert_eq!(status, OrderStatus::Paid);
-        assert!(
-            !store
-                .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
-                .unwrap()
-                .contains(&tenant.tenant.id),
-            "tenant must drop off once its only order is fully settled"
-        );
-
-        let order_b = new_order(&store, tenant.tenant.id.as_str(), 2);
-        assert!(
-            store
-                .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
-                .unwrap()
-                .contains(&tenant.tenant.id),
-            "a fresh order must bring the tenant straight back onto the watchlist"
-        );
-        let _ = order_b;
-    }
-
-    #[test]
-    fn tenant_stays_active_while_any_one_of_several_orders_remains_pending() {
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        let order_a = new_order(&store, tenant.tenant.id.as_str(), 1);
-        let _order_b = new_order(&store, tenant.tenant.id.as_str(), 2);
-
-        store
-            .record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50))
-            .unwrap();
-        store.recompute_order_status(&order_a.id, 59, 1600).unwrap();
-
-        assert!(
-            store
-                .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
-                .unwrap()
-                .contains(&tenant.tenant.id),
-            "order_b is still pending, so the tenant must stay active even though order_a settled"
         );
     }
 
@@ -4228,103 +3773,7 @@ mod tests {
     }
 
     #[test]
-    fn active_tenant_ids_is_scoped_by_network() {
-        let store = Store::open_in_memory().unwrap();
-        let mainnet_tenant = new_tenant(&store); // new_tenant() always uses "mainnet"
-        new_order(&store, mainnet_tenant.tenant.id.as_str(), 1);
-
-        let stagenet_tenant = store
-            .create_tenant(
-                NewTenant {
-                    key_custody_backend: "plain".into(),
-                    sealed_key_material: vec![],
-                    primary_address: "5stagenet".into(),
-                    network: "stagenet".into(),
-                    confirmations_required: None,
-                    order_expiry_seconds: None,
-                },
-                1000,
-            )
-            .unwrap();
-        new_order(&store, stagenet_tenant.tenant.id.as_str(), 1);
-
-        let mainnet_active = store
-            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
-            .unwrap();
-        assert!(mainnet_active.contains(&mainnet_tenant.tenant.id));
-        assert!(
-            !mainnet_active.contains(&stagenet_tenant.tenant.id),
-            "a stagenet tenant must never appear in a mainnet query"
-        );
-
-        let stagenet_active = store
-            .active_tenant_ids(monero::Network::Stagenet, i64::MAX, 0)
-            .unwrap();
-        assert!(stagenet_active.contains(&stagenet_tenant.tenant.id));
-        assert!(!stagenet_active.contains(&mainnet_tenant.tenant.id));
-    }
-
-    #[test]
-    fn find_payments_at_or_after_height_is_scoped_by_network() {
-        // Two tenants on different networks, each with a payment recorded at the
-        // *same* height - a reorg reconciliation pass on one network must never
-        // pick up the other's payment just because the numeric heights coincide.
-        let store = Store::open_in_memory().unwrap();
-        let mainnet_tenant = new_tenant(&store);
-        let mainnet_order = new_order(&store, mainnet_tenant.tenant.id.as_str(), 1);
-        store
-            .record_payment_match(
-                &mainnet_order.id,
-                "tx_mainnet",
-                0,
-                100,
-                "[]",
-                1500,
-                Some(50),
-            )
-            .unwrap();
-
-        let stagenet_tenant = store
-            .create_tenant(
-                NewTenant {
-                    key_custody_backend: "plain".into(),
-                    sealed_key_material: vec![],
-                    primary_address: "5stagenet".into(),
-                    network: "stagenet".into(),
-                    confirmations_required: None,
-                    order_expiry_seconds: None,
-                },
-                1000,
-            )
-            .unwrap();
-        let stagenet_order = new_order(&store, stagenet_tenant.tenant.id.as_str(), 1);
-        store
-            .record_payment_match(
-                &stagenet_order.id,
-                "tx_stagenet",
-                0,
-                100,
-                "[]",
-                1500,
-                Some(50),
-            )
-            .unwrap();
-
-        let mainnet_affected = store
-            .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
-            .unwrap();
-        assert_eq!(mainnet_affected.len(), 1);
-        assert_eq!(mainnet_affected[0].txid, "tx_mainnet");
-
-        let stagenet_affected = store
-            .find_payments_at_or_after_height(monero::Network::Stagenet, 50)
-            .unwrap();
-        assert_eq!(stagenet_affected.len(), 1);
-        assert_eq!(stagenet_affected[0].txid, "tx_stagenet");
-    }
-
-    #[test]
-    fn find_unconfirmed_payments_returns_only_live_mempool_only_rows_of_one_network() {
+    fn the_unconfirmed_payments_page_holds_only_live_mempool_only_rows_of_one_network() {
         // The sweep that catches a plain (reorg-free) zero-conf double-spend runs off
         // this query, so what it must *not* return matters as much as what it does: a
         // mined payment (already anchored to a block), an already-voided one (nothing
@@ -4375,30 +3824,24 @@ mod tests {
             .unwrap();
 
         let found = store
-            .find_unconfirmed_payments(monero::Network::Mainnet)
+            .unconfirmed_payments_page(monero::Network::Mainnet, 0, 10)
             .unwrap();
         assert_eq!(
             found.len(),
             1,
             "only the live mempool-only mainnet row: {found:?}"
         );
-        assert_eq!(found[0].txid, "tx_pool");
-
-        let first_page = store
-            .unconfirmed_payments_page(monero::Network::Mainnet, 0, 1)
-            .unwrap();
-        assert_eq!(first_page.len(), 1);
-        assert_eq!(first_page[0].1.txid, "tx_pool");
+        assert_eq!(found[0].1.txid, "tx_pool");
         assert!(store
-            .unconfirmed_payments_page(monero::Network::Mainnet, first_page[0].0, 1)
+            .unconfirmed_payments_page(monero::Network::Mainnet, found[0].0, 10)
             .unwrap()
             .is_empty());
 
         let stagenet_found = store
-            .find_unconfirmed_payments(monero::Network::Stagenet)
+            .unconfirmed_payments_page(monero::Network::Stagenet, 0, 10)
             .unwrap();
         assert_eq!(stagenet_found.len(), 1);
-        assert_eq!(stagenet_found[0].txid, "tx_stagenet_pool");
+        assert_eq!(stagenet_found[0].1.txid, "tx_stagenet_pool");
     }
 
     #[test]
@@ -4446,7 +3889,7 @@ mod tests {
         // roughly every second, essentially *every* real payment arrives in that
         // order, so essentially every real payment was permanently stuck at zero
         // confirmations - never advancing past `unconfirmed`, and invisible to
-        // `find_payments_at_or_after_height` (and therefore to reorg reconciliation).
+        // reorg reconciliation, which collects mined payments by their height.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
@@ -4471,15 +3914,12 @@ mod tests {
         );
         assert_eq!(payments[0].block_height, Some(50));
 
-        // And with a height known, the payment is now reachable by reorg
-        // reconciliation, which filters on `block_height >= ?`.
-        assert_eq!(
-            store
-                .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
-                .unwrap()
-                .len(),
-            1
-        );
+        // And with a height known it is a mined payment: no longer one the
+        // vanished-payment sweep looks for in the pool.
+        assert!(store
+            .unconfirmed_payments_page(monero::Network::Mainnet, 0, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -4591,90 +4031,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(refetched.double_spend_detected_at, Some(1600));
-    }
-
-    #[test]
-    fn non_terminal_order_ids_covers_exactly_the_recomputable_statuses_and_one_network() {
-        // The query behind the scanner's per-tick "recompute everything still in
-        // flight" pass. It must include every status whose correct value can change
-        // without any new payment (confirmations grow with the chain, `pending`
-        // expires with the clock) and exclude the settled ones, and must not reach
-        // across networks - heights on another chain are unrelated numbers.
-        let store = Store::open_in_memory().unwrap();
-        let mut ids_by_status = std::collections::HashMap::new();
-        for (i, status) in [
-            OrderStatus::Pending,
-            OrderStatus::Unconfirmed,
-            OrderStatus::Confirming,
-            OrderStatus::Partial,
-            OrderStatus::Paid,
-            OrderStatus::Overpaid,
-            OrderStatus::Expired,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let tenant = new_tenant(&store);
-            let order = new_order(&store, tenant.tenant.id.as_str(), i as u32 + 1);
-            store
-                .conn
-                .execute(
-                    "UPDATE orders SET status = ?2 WHERE id = ?1",
-                    params![order.id, status_to_str(status)],
-                )
-                .unwrap();
-            ids_by_status.insert(status, order.id);
-        }
-
-        let ids: std::collections::HashSet<OrderId> = store
-            .non_terminal_order_ids(monero::Network::Mainnet, i64::MAX, 0)
-            .unwrap()
-            .into_iter()
-            .collect();
-        for status in [
-            OrderStatus::Pending,
-            OrderStatus::Unconfirmed,
-            OrderStatus::Confirming,
-            OrderStatus::Partial,
-        ] {
-            assert!(
-                ids.contains(&ids_by_status[&status]),
-                "{status} orders must be recomputed every tick"
-            );
-        }
-        for status in [
-            OrderStatus::Paid,
-            OrderStatus::Overpaid,
-            OrderStatus::Expired,
-        ] {
-            assert!(
-                !ids.contains(&ids_by_status[&status]),
-                "{status} is terminal - nothing left to recompute"
-            );
-        }
-
-        let stagenet = store
-            .create_tenant(
-                NewTenant {
-                    key_custody_backend: "plain".into(),
-                    sealed_key_material: vec![],
-                    primary_address: "5stagenet".into(),
-                    network: "stagenet".into(),
-                    confirmations_required: None,
-                    order_expiry_seconds: None,
-                },
-                1000,
-            )
-            .unwrap();
-        let stagenet_order = new_order(&store, stagenet.tenant.id.as_str(), 1);
-        assert!(!store
-            .non_terminal_order_ids(monero::Network::Mainnet, i64::MAX, 0)
-            .unwrap()
-            .contains(&stagenet_order.id));
-        assert!(store
-            .non_terminal_order_ids(monero::Network::Stagenet, i64::MAX, 0)
-            .unwrap()
-            .contains(&stagenet_order.id));
     }
 
     #[test]
@@ -5013,112 +4369,6 @@ mod tests {
     }
 
     #[test]
-    fn a_payment_a_reorg_pushed_back_into_the_mempool_stays_visible_to_reconciliation() {
-        // `block_height IS NULL` is exactly what reorg reconciliation writes when the
-        // daemon reports a payment's transaction back in the pool - and SQL's
-        // three-valued logic makes `NULL >= n` false, so filtering on `block_height >=
-        // ?` alone made that row invisible to every subsequent reconciliation pass.
-        // The payment could then be proven double-spent and would still never be
-        // voided, propping up the order's received total forever.
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
-        store
-            .record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))
-            .unwrap();
-        assert_eq!(
-            store
-                .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
-                .unwrap()
-                .len(),
-            1
-        );
-
-        // A reorg drops it back to the mempool.
-        store
-            .update_payment_block_height(&order.id, "tx_a", 0, None)
-            .unwrap();
-        let still_visible = store
-            .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
-            .unwrap();
-        assert_eq!(
-            still_visible.len(),
-            1,
-            "an unconfirmed payment is above every block height, not below all of them"
-        );
-        assert_eq!(still_visible[0].block_height, None);
-
-        // The same applies to the voided half of the pair, which un-voiding depends on.
-        store.void_payment(&order.id, "tx_a", 0, 1600).unwrap();
-        assert!(store
-            .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
-            .unwrap()
-            .is_empty());
-        assert_eq!(
-            store
-                .find_voided_payments_at_or_after_height(monero::Network::Mainnet, 50)
-                .unwrap()
-                .len(),
-            1
-        );
-
-        // And a network scope violation is still impossible either way.
-        assert!(store
-            .find_payments_at_or_after_height(monero::Network::Stagenet, 50)
-            .unwrap()
-            .is_empty());
-        assert!(store
-            .find_voided_payments_at_or_after_height(monero::Network::Stagenet, 50)
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
-    fn find_payments_voided_since_is_bounded_by_recency_not_by_every_void_ever() {
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
-        store
-            .record_payment_match(&order.id, "tx_old", 0, 100, "[]", 1000, Some(50))
-            .unwrap();
-        store
-            .record_payment_match(&order.id, "tx_recent", 1, 100, "[]", 1000, Some(50))
-            .unwrap();
-        store.void_payment(&order.id, "tx_old", 0, 1000).unwrap();
-        store.void_payment(&order.id, "tx_recent", 1, 5000).unwrap();
-
-        let recent_only = store
-            .find_payments_voided_since(monero::Network::Mainnet, 3000)
-            .unwrap();
-        assert_eq!(recent_only.len(), 1);
-        assert_eq!(recent_only[0].txid, "tx_recent");
-
-        let both = store
-            .find_payments_voided_since(monero::Network::Mainnet, 0)
-            .unwrap();
-        assert_eq!(
-            both.len(),
-            2,
-            "a cutoff at or before every void returns all of them"
-        );
-
-        assert!(
-            store
-                .find_payments_voided_since(monero::Network::Mainnet, 5001)
-                .unwrap()
-                .is_empty(),
-            "a cutoff after every void returns nothing"
-        );
-        assert!(
-            store
-                .find_payments_voided_since(monero::Network::Stagenet, 0)
-                .unwrap()
-                .is_empty(),
-            "network scope violation must still be impossible"
-        );
-    }
-
-    #[test]
     fn clear_double_spend_flag_only_reports_a_real_change_and_is_idempotent() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
@@ -5213,32 +4463,5 @@ mod tests {
             Some("stagenet_hash".to_string()),
             "another network's window at the same height must be untouched"
         );
-    }
-
-    #[test]
-    fn find_payment_by_key_image_locates_the_owning_row() {
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
-        store
-            .record_payment_match(
-                &order.id,
-                "tx_a",
-                0,
-                60,
-                "[\"deadbeef\",\"cafef00d\"]",
-                1500,
-                None,
-            )
-            .unwrap();
-
-        let found = store.find_payment_by_key_image("cafef00d").unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].txid, "tx_a");
-
-        assert!(store
-            .find_payment_by_key_image("not_present")
-            .unwrap()
-            .is_empty());
     }
 }

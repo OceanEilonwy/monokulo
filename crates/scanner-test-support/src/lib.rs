@@ -36,7 +36,9 @@ use std::time::Duration;
 
 use key_custody_service::client::SocketKeyCustody;
 use monero::Network;
-use scanner::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
+use scanner::daemon::{
+    ChainBlock, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
+};
 use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::http::rate_limit::RateLimiter;
 use scanner::http::{build_router, AppState};
@@ -71,11 +73,33 @@ const BACKGROUND_LOOP_INTERVAL: Duration = Duration::from_millis(150);
 /// advancing, never disagreeing with itself between calls - so `run_scan_tick`'s
 /// reorg-reconciliation logic never has anything to react to. Every block/mempool
 /// query returns empty. None of this matters for `run_scan_tick`'s expiry sweep
-/// (`non_terminal_order_ids`/`recompute_and_notify`), which is driven by wall-clock
+/// (`due_order_ids`/`recompute_and_notify`), which is driven by wall-clock
 /// time and the store alone, not by anything this daemon reports - see
 /// `TestEngineConfig::with_background_loops`'s own doc comment for the full
 /// reasoning on why an inert daemon is sufficient here.
 struct NoopDaemonClient;
+
+/// The id of a whole transaction.
+fn tx_id_hex(tx: &monero::Transaction) -> String {
+    use monero::cryptonote::hash::Hashable;
+    hex::encode(tx.hash().to_bytes())
+}
+
+/// The block of a chain that is its genesis block alone, named
+/// `{prefix}-0` and empty, if the run asked for starts there.
+fn empty_blocks(prefix: &str, start_height: u64, count: u64) -> Vec<ChainBlock> {
+    if start_height != 0 || count == 0 {
+        return Vec::new();
+    }
+    vec![ChainBlock {
+        height: 0,
+        hash: format!("{prefix}-0"),
+        prev_hash: String::new(),
+        timestamp: 0,
+        txs: vec![],
+        txids: vec![],
+    }]
+}
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for NoopDaemonClient {
@@ -87,27 +111,27 @@ impl MoneroDaemonClient for NoopDaemonClient {
         Ok(format!("noop-block-{height}"))
     }
 
-    async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
-        Ok(0)
+    async fn get_chain_blocks(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainBlock>, DaemonError> {
+        Ok(empty_blocks("noop-block", start_height, count))
     }
 
-    async fn get_block_transactions(
-        &self,
-        _height: u64,
-    ) -> Result<Vec<monero::Transaction>, DaemonError> {
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         Ok(vec![])
     }
 
-    async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError> {
+    async fn get_transactions_with_ids(
+        &self,
+        _txids: &[String],
+    ) -> Result<Vec<FetchedTx>, DaemonError> {
         Ok(vec![])
     }
 
     async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
         Ok(TxLocation::NotFound)
-    }
-
-    async fn get_transaction(&self, txid: &str) -> Result<monero::Transaction, DaemonError> {
-        Err(DaemonError::Request(format!("no such transaction: {txid}")))
     }
 
     async fn is_key_image_spent(
@@ -133,7 +157,7 @@ impl LookupDaemonClient {
         self.mempool
             .lock()
             .iter()
-            .find(|tx| scanner::scanner::tx_id_hex(tx) == txid)
+            .find(|tx| tx_id_hex(tx) == txid)
             .cloned()
     }
 }
@@ -148,19 +172,31 @@ impl MoneroDaemonClient for LookupDaemonClient {
         Ok(format!("lookup-block-{height}"))
     }
 
-    async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
-        Ok(0)
-    }
-
-    async fn get_block_transactions(
+    async fn get_chain_blocks(
         &self,
-        _height: u64,
-    ) -> Result<Vec<monero::Transaction>, DaemonError> {
-        Ok(vec![])
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainBlock>, DaemonError> {
+        Ok(empty_blocks("lookup-block", start_height, count))
     }
 
-    async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError> {
-        Ok(self.mempool.lock().clone())
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        Ok(self.mempool.lock().iter().map(tx_id_hex).collect())
+    }
+
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<FetchedTx>, DaemonError> {
+        Ok(txids
+            .iter()
+            .filter_map(|txid| {
+                self.find(txid).map(|tx| FetchedTx {
+                    txid: txid.clone(),
+                    tx,
+                })
+            })
+            .collect())
     }
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -169,11 +205,6 @@ impl MoneroDaemonClient for LookupDaemonClient {
         } else {
             TxLocation::NotFound
         })
-    }
-
-    async fn get_transaction(&self, txid: &str) -> Result<monero::Transaction, DaemonError> {
-        self.find(txid)
-            .ok_or_else(|| DaemonError::Request(format!("no such transaction: {txid}")))
     }
 
     async fn is_key_image_spent(
@@ -1183,27 +1214,48 @@ mod tests {
             Ok("h1".to_string())
         }
 
-        async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
-            Ok(0)
-        }
-
-        async fn get_block_transactions(
+        /// Blocks 0 and 1, both empty.
+        async fn get_chain_blocks(
             &self,
-            _height: u64,
-        ) -> Result<Vec<monero::Transaction>, DaemonError> {
-            Ok(vec![])
+            start_height: u64,
+            count: u64,
+        ) -> Result<Vec<ChainBlock>, DaemonError> {
+            Ok((start_height..start_height.saturating_add(count))
+                .take_while(|height| *height <= 1)
+                .map(|height| ChainBlock {
+                    height,
+                    hash: "h1".to_string(),
+                    prev_hash: if height == 0 {
+                        String::new()
+                    } else {
+                        "h1".to_string()
+                    },
+                    timestamp: 0,
+                    txs: vec![],
+                    txids: vec![],
+                })
+                .collect())
         }
 
-        async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError> {
-            Ok(vec![fixture_tx()])
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+            Ok(vec![tx_id_hex(&fixture_tx())])
+        }
+
+        async fn get_transactions_with_ids(
+            &self,
+            txids: &[String],
+        ) -> Result<Vec<FetchedTx>, DaemonError> {
+            let tx = fixture_tx();
+            let txid = tx_id_hex(&tx);
+            Ok(if txids.contains(&txid) {
+                vec![FetchedTx { txid, tx }]
+            } else {
+                vec![]
+            })
         }
 
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
             Ok(TxLocation::NotFound)
-        }
-
-        async fn get_transaction(&self, _txid: &str) -> Result<monero::Transaction, DaemonError> {
-            Ok(fixture_tx())
         }
 
         async fn is_key_image_spent(

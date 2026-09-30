@@ -696,9 +696,13 @@ impl Store {
         )
     }
 
-    /// The scan windows of several tenants at once (see `scan_window`), in
-    /// one query: minor indices by tenant, each list ascending and never
-    /// empty. A tenant with nothing in scope is absent.
+    /// The scan windows of several tenants at once, in one query: the minor
+    /// indices of each tenant's orders that are open, or closed no earlier
+    /// than `since` minus the grace period (task 7.3, decision D10). The live
+    /// scan passes now; catch-up passes the time of the tenants' cursor
+    /// block, so orders that closed during their gap are still looked for.
+    /// Each list is ascending and never empty: a tenant with nothing in
+    /// scope is absent.
     pub fn scan_windows(
         &self,
         tenant_ids: &[TenantId],
@@ -1782,6 +1786,272 @@ mod tests {
             ),
             "no job"
         );
+    }
+
+    // -- What is scanned for, and what is looked at again: the tests of the
+    // queries these pages replaced, held to the pages themselves. -----------
+
+    fn tenant_id(id: &str) -> TenantId {
+        TenantId::new(id.to_string())
+    }
+
+    fn order_id(id: &str) -> OrderId {
+        OrderId::new(id.to_string())
+    }
+
+    /// The stores in scope on `network`, by id.
+    fn in_scope(store: &Store, network: monero::Network, now: i64, grace: i64) -> Vec<String> {
+        store
+            .active_tenants_page(network, now, grace, "", 1000)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id.into_string())
+            .collect()
+    }
+
+    fn set_status(store: &Store, order: &str, status: &str) {
+        store
+            .conn
+            .execute(
+                "UPDATE orders SET status = ?2 WHERE id = ?1",
+                params![order, status],
+            )
+            .unwrap();
+    }
+
+    /// A store is scanned for while it has an order that can still receive
+    /// a payment: in any open status, and in none of the settled ones. One
+    /// store per status, so its order's status is the only variable.
+    #[test]
+    fn a_store_is_in_scope_for_each_open_order_status_and_no_settled_one() {
+        let store = Store::open_in_memory().unwrap();
+        let mut stores = Vec::new();
+        for (status, open) in [
+            ("pending", true),
+            ("unconfirmed", true),
+            ("confirming", true),
+            ("partial", true),
+            ("paid", false),
+            ("overpaid", false),
+            ("expired", false),
+        ] {
+            let tenant = tenant(&store, "mainnet");
+            let order = order(&store, &tenant, 2_000);
+            set_status(&store, &order, status);
+            stores.push((status, open, tenant));
+        }
+        let active = in_scope(&store, monero::Network::Mainnet, i64::MAX, 0);
+        for (status, open, tenant) in &stores {
+            assert_eq!(active.contains(tenant), *open, "{status}");
+        }
+    }
+
+    /// An order that expired keeps its store in scope, and stays in the
+    /// store's scan window, for the grace period after it closed and no
+    /// longer: a payment that lands just after the deadline is still found.
+    #[test]
+    fn an_expired_order_stays_in_scope_for_the_grace_period_and_no_longer() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = tenant(&store, "mainnet");
+        let order = order(&store, &tenant, 2_000);
+        // Closed at its deadline, as `recompute_order_status` records it.
+        store
+            .conn
+            .execute(
+                "UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1",
+                params![order],
+            )
+            .unwrap();
+        let minor: u32 = store
+            .conn
+            .query_row(
+                "SELECT minor_index FROM orders WHERE id = ?1",
+                params![order],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // The store's page and its window say the same.
+        let scanned_for = |now: i64, grace: i64| {
+            let listed = in_scope(&store, monero::Network::Mainnet, now, grace).contains(&tenant);
+            let windows = store
+                .scan_windows(&[tenant_id(&tenant)], now, grace)
+                .unwrap();
+            match windows.get(&tenant_id(&tenant)) {
+                Some(window) => assert_eq!(window, &vec![minor]),
+                None => assert!(windows.is_empty()),
+            }
+            assert_eq!(
+                listed,
+                !windows.is_empty(),
+                "at {now} with {grace}s of grace"
+            );
+            listed
+        };
+        // Exactly at the boundary (closed at `now - grace`): inclusive.
+        assert!(scanned_for(2_000, 0));
+        // One second past, with no grace at all.
+        assert!(!scanned_for(2_001, 0));
+        // A real grace window: still within it, then past it.
+        assert!(scanned_for(2_500, 600));
+        assert!(!scanned_for(2_601, 600));
+    }
+
+    /// A store with no orders isn't scanned for. One drops out once its
+    /// only order settles, and a fresh order brings it straight back: the
+    /// page is read fresh each time, so there is no "inactive" left over to
+    /// undo. One of several orders still open keeps it in.
+    #[test]
+    fn a_store_leaves_scope_when_its_orders_settle_and_returns_with_a_new_one() {
+        let store = Store::open_in_memory().unwrap();
+        let active = |tenant: &String| {
+            in_scope(&store, monero::Network::Mainnet, i64::MAX, 0).contains(tenant)
+        };
+        let settle = |order: &str, txid: &str| {
+            store
+                .record_payment_match(&order_id(order), txid, 0, 100, "[]", 1_500, Some(50))
+                .unwrap();
+            let (_, status) = store
+                .recompute_order_status(&order_id(order), 59, 1_600)
+                .unwrap();
+            assert_eq!(status, crate::status::OrderStatus::Paid);
+        };
+
+        let tenant_a = tenant(&store, "mainnet");
+        assert!(!active(&tenant_a), "no orders at all");
+        let first = order(&store, &tenant_a, 100_000);
+        assert!(active(&tenant_a));
+        settle(&first, "tx_a");
+        assert!(!active(&tenant_a), "its only order is settled");
+        order(&store, &tenant_a, 100_000);
+        assert!(active(&tenant_a), "a fresh order");
+
+        let tenant_b = tenant(&store, "mainnet");
+        let settled = order(&store, &tenant_b, 100_000);
+        order(&store, &tenant_b, 100_000);
+        settle(&settled, "tx_b");
+        assert!(active(&tenant_b), "its other order is still open");
+    }
+
+    /// Each network's scan sees its own stores and orders only: another
+    /// chain's heights and transactions are unrelated to it.
+    #[test]
+    fn stores_in_scope_and_due_orders_are_those_of_one_network() {
+        let store = Store::open_in_memory().unwrap();
+        let main_tenant = tenant(&store, "mainnet");
+        let stage_tenant = tenant(&store, "stagenet");
+        let main_order = order(&store, &main_tenant, 5_000);
+        let stage_order = order(&store, &stage_tenant, 5_000);
+
+        assert_eq!(
+            in_scope(&store, monero::Network::Mainnet, i64::MAX, 0),
+            vec![main_tenant]
+        );
+        assert_eq!(
+            in_scope(&store, monero::Network::Stagenet, i64::MAX, 0),
+            vec![stage_tenant]
+        );
+        // Both orders reach their deadline at once; each is due on its own
+        // network.
+        let due = |network| {
+            store
+                .due_order_ids(network, 5_000, 0, 10)
+                .unwrap()
+                .into_iter()
+                .map(|id| id.into_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(due(monero::Network::Mainnet), vec![main_order]);
+        assert_eq!(due(monero::Network::Stagenet), vec![stage_order]);
+    }
+
+    /// A payment a reorg pushed back into the pool has no height, and SQL
+    /// makes `NULL >= n` false: collecting by height alone would never look
+    /// at it again, and it could be proven double-spent and still never be
+    /// voided. It is collected, as something above every height. So is a
+    /// voided payment, mined or not: the transaction that proved it
+    /// double-spent can itself be reorged out, and un-voiding depends on
+    /// looking again. Never another network's.
+    #[test]
+    fn a_reorg_collects_payments_back_in_the_pool_and_voided_ones() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = tenant(&store, "mainnet");
+        let order = order(&store, &tenant, 100_000);
+        let other_tenant = self::tenant(&store, "stagenet");
+        let other_order = self::order(&store, &other_tenant, 100_000);
+
+        let below = pay(&store, &order, "below", Some(49));
+        let pooled_again = pay(&store, &order, "pooled_again", Some(50));
+        store
+            .update_payment_block_height(&order_id(&order), "pooled_again", 0, None)
+            .unwrap();
+        let voided_mined = pay(&store, &order, "voided_mined", Some(60));
+        let voided_pooled = pay(&store, &order, "voided_pooled", None);
+        for txid in ["voided_mined", "voided_pooled"] {
+            store
+                .void_payment(&order_id(&order), txid, 0, 1_600)
+                .unwrap();
+        }
+        pay(&store, &other_order, "other_mined", Some(60));
+        pay(&store, &other_order, "other_pooled", None);
+
+        store
+            .open_reorg_job(monero::Network::Mainnet, 50, 2_000)
+            .unwrap();
+        while store
+            .collect_reorg_candidates(monero::Network::Mainnet, 2, 2_001)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
+        let mut collected = work(&store, "mainnet");
+        collected.sort();
+        let mut expected = vec![pooled_again, voided_mined, voided_pooled];
+        expected.sort();
+        assert_eq!(collected, expected);
+        assert!(!collected.contains(&below));
+        assert!(work(&store, "stagenet").is_empty());
+    }
+
+    /// The recheck of voided payments reads them from a cutoff: bounded by
+    /// how recently a payment was voided, not by every void ever. Pages move
+    /// on by payment id, and keep to their network.
+    #[test]
+    fn voided_payments_are_paged_from_a_cutoff_on_their_own_network() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = tenant(&store, "mainnet");
+        let order = order(&store, &tenant, 100_000);
+        let old = pay(&store, &order, "tx_old", Some(50));
+        let recent = pay(&store, &order, "tx_recent", Some(50));
+        pay(&store, &order, "tx_never_voided", Some(50));
+        store
+            .void_payment(&order_id(&order), "tx_old", 0, 1_000)
+            .unwrap();
+        store
+            .void_payment(&order_id(&order), "tx_recent", 0, 5_000)
+            .unwrap();
+        let page = |network, cutoff: i64, after: i64, limit: usize| {
+            store
+                .voided_payments_page(network, cutoff, after, limit)
+                .unwrap()
+                .into_iter()
+                .map(|payment| payment.id)
+                .collect::<Vec<_>>()
+        };
+        let mainnet = monero::Network::Mainnet;
+        assert_eq!(page(mainnet, 3_000, 0, 10), vec![recent]);
+        assert_eq!(
+            page(mainnet, 0, 0, 10),
+            vec![old, recent],
+            "a cutoff at or before every void returns all of them"
+        );
+        assert!(
+            page(mainnet, 5_001, 0, 10).is_empty(),
+            "a cutoff after every void returns nothing"
+        );
+        // One at a time, each page after the last payment of the one before.
+        assert_eq!(page(mainnet, 0, 0, 1), vec![old]);
+        assert_eq!(page(mainnet, 0, old, 1), vec![recent]);
+        assert!(page(mainnet, 0, recent, 1).is_empty());
+        assert!(page(monero::Network::Stagenet, 0, 0, 10).is_empty());
     }
 
     /// (store, mainnet order, stagenet order, mainnet tenant)

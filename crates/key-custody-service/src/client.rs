@@ -238,12 +238,6 @@ impl SocketKeyCustody {
         let pick = (NEXT.fetch_add(1, Ordering::Relaxed) as usize) % slots.len();
         slots[pick].clone().lock_owned().await
     }
-
-    /// How many times this client has found the server to have lost its
-    /// wallets. See `KeyCustody::check_state`.
-    pub fn state_epoch(&self) -> u64 {
-        self.epoch.load(Ordering::Relaxed)
-    }
 }
 
 async fn open(path: &Path) -> Result<UnixStream, KeyCustodyError> {

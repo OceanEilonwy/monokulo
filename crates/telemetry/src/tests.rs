@@ -548,8 +548,30 @@ mod otlp_export {
         assert!(otlp::check_endpoint(&"".to_string()).is_ok());
         assert!(otlp::check_endpoint(&"http://127.0.0.1:4318".to_string()).is_ok());
         assert!(otlp::check_endpoint(&"127.0.0.1:4318".to_string()).is_err());
-        assert!(otlp::check_headers(&"authorization=Bearer x, x-team=ops".to_string()).is_ok());
-        assert!(otlp::check_headers(&"just-a-name".to_string()).is_err());
+        let headers = |raw: &str| otlp::check_headers(&live_settings::Secret::new(raw));
+        for fine in [
+            "",
+            "authorization=Bearer x, x-team=ops",
+            // A value may hold `=` (base64 padding); an empty pair is skipped.
+            "authorization=Basic dXNlcjpwYXNz==,,x_team=ops",
+        ] {
+            assert_eq!(headers(fine), Ok(()), "{fine:?}");
+        }
+        // What an operator pastes by mistake is the key itself: it is
+        // refused, and the message names the pair, not what was typed.
+        for (wrong, pair) in [
+            ("sk-live-abc123", "Pair 1 isn't name=value"),
+            ("x-team=ops,sk-live-abc123", "Pair 2 isn't name=value"),
+            ("=sk-live-abc123", "Pair 1's name isn't a header name"),
+            (
+                "api key=sk-live-abc123",
+                "Pair 1's name isn't a header name",
+            ),
+        ] {
+            let error = headers(wrong).unwrap_err();
+            assert!(error.contains(pair), "{wrong:?}: {error}");
+            assert!(!error.contains("sk-live-abc123"), "{error}");
+        }
         let config = otlp::OtlpConfig::from_settings("http://c:4318/", "a=1, b = 2").unwrap();
         assert_eq!(config.endpoint, "http://c:4318");
         assert_eq!(

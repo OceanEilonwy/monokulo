@@ -251,10 +251,13 @@ where
 {
     match tokio::time::timeout(CALL_DEADLINE, call).await {
         Ok(result) => result.map_err(ScannerError::from),
-        Err(_) => Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
-            format!("no answer within {CALL_DEADLINE:?}"),
-        ))),
+        Err(_) => Err(ScannerError::Daemon(no_answer())),
     }
+}
+
+/// What a call that outlasted [`CALL_DEADLINE`] failed with.
+fn no_answer() -> crate::daemon::DaemonError {
+    crate::daemon::DaemonError::Request(format!("no answer within {CALL_DEADLINE:?}"))
 }
 
 /// Retry delays for keys whose work keeps failing (a key-custody backend
@@ -365,6 +368,9 @@ pub(crate) struct Round<'a> {
     /// The node's chain height. `None` if it couldn't be read: nothing that
     /// depends on the chain runs this round.
     pub tip: Option<u64>,
+    /// The tip block's id, when the node gave it with the height: reorg
+    /// detection then costs no lookup while the recorded chain ends there.
+    pub tip_hash: Option<String>,
     pub handles: HashMap<&'a str, WalletHandle>,
     /// The mempool's transaction ids, when this round's poll succeeded. The
     /// vanished-payment check only runs on a real answer, never on "we
@@ -425,8 +431,20 @@ pub async fn run_round(
 ) -> RoundReport {
     let started = Instant::now();
     let round_end = started + budget;
-    let (tip, tip_error) = match bounded(inputs.daemon.get_height()).await {
-        Ok(tip) => (Some(tip), None),
+    let now = crate::now_unix();
+    // A round that will look at the pool asks for the tip and the pool
+    // together: one request while the chain hasn't moved.
+    let watching = mempool::watching(inputs, now).await;
+    let (tip_answer, polled) = if matches!(watching, Ok(true)) {
+        match tokio::time::timeout(CALL_DEADLINE, inputs.daemon.get_tip_and_mempool()).await {
+            Ok((tip, pool)) => (tip.map_err(ScannerError::from), Some(pool)),
+            Err(_) => (Err(no_answer().into()), Some(Err(no_answer()))),
+        }
+    } else {
+        (bounded(inputs.daemon.get_tip()).await, None)
+    };
+    let (tip, tip_hash, tip_error) = match tip_answer {
+        Ok(tip) => (Some(tip.height), tip.hash, None),
         Err(error) => {
             shared::throttled!(
                 format!("round-height:{:?}", inputs.network),
@@ -435,7 +453,7 @@ pub async fn run_round(
                 error = %error,
                 "reading the chain height failed - only the mempool is scanned this round"
             );
-            (None, Some(error))
+            (None, None, Some(error))
         }
     };
     if let Some(tip) = tip {
@@ -447,8 +465,9 @@ pub async fn run_round(
     let mut round = Round {
         inputs,
         state,
-        now: crate::now_unix(),
+        now,
         tip,
+        tip_hash,
         handles: inputs
             .tenants
             .iter()
@@ -457,7 +476,7 @@ pub async fn run_round(
         pool_txids: None,
         chain: Default::default(),
         blocks: Default::default(),
-        mempool: Default::default(),
+        mempool: mempool::MempoolRound::starting(watching, polled),
         settlement: Default::default(),
         upkeep: Default::default(),
     };

@@ -18,6 +18,15 @@
 //!   A failed scan isn't remembered, so it is retried.
 //!
 //! Entries go when their transaction leaves the pool.
+//!
+//! The pool is only looked at while there is something to look for: a store
+//! with an order in scope, or (for the round's tier, whose poll the
+//! vanished-payment check reads) a payment not yet in a block. Otherwise no
+//! request is made at all, and what was remembered is dropped. And bodies are
+//! only fetched when there is a store to scan them for.
+//!
+//! A round that will look at the pool asks for it with the chain's tip, at
+//! its start ([`watching`], `run_round`): one request for both.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -28,7 +37,7 @@ use monero::Transaction;
 use tokio::time::Instant;
 
 use crate::key_custody::{ScanIndices, WalletHandle};
-use crate::scanner::{record_scan_match, scan_for_tenants, tx_id_hex, ScannerError};
+use crate::scanner::{record_scan_match, scan_for_tenants, ScannerError};
 use crate::store::db::Class;
 
 use super::{bounded, Progress, Round, RoundInputs, ScanState, Wait};
@@ -84,6 +93,13 @@ impl MempoolState {
         remembered.scanned.retain(|txid, _| in_pool.contains(txid));
     }
 
+    /// Drops everything remembered: the pool isn't being watched.
+    fn forget(&self) {
+        let mut remembered = self.inner.lock();
+        remembered.bodies = HashMap::new();
+        remembered.scanned = HashMap::new();
+    }
+
     /// Whether any store has been scanned for this transaction yet.
     fn is_new(&self, txid: &str) -> bool {
         !self.inner.lock().scanned.contains_key(txid)
@@ -116,9 +132,42 @@ impl MempoolState {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct MempoolRound {
     done: bool,
+    /// Whether there is anything to look for in the pool ([`watching`]),
+    /// as decided when the round started.
+    watching: Option<Result<bool, ScannerError>>,
+    /// The pool's transaction ids as asked for with the round's tip, when
+    /// they were.
+    polled: Option<crate::daemon::PoolAnswer>,
+}
+
+impl MempoolRound {
+    pub(super) fn starting(
+        watching: Result<bool, ScannerError>,
+        polled: Option<crate::daemon::PoolAnswer>,
+    ) -> Self {
+        Self {
+            done: false,
+            watching: Some(watching),
+            polled,
+        }
+    }
+}
+
+/// Whether there is anything to look for in the pool: a store with an
+/// order in scope, or a payment waiting for a block.
+pub(super) async fn watching(inputs: &RoundInputs<'_>, now: i64) -> Result<bool, ScannerError> {
+    let (network, grace) = (inputs.network, inputs.grace_period_seconds);
+    inputs
+        .db
+        .run(Class::Scanner, move |s| -> Result<bool, ScannerError> {
+            Ok(!s
+                .active_tenants_page(network, now, grace, "", 1)?
+                .is_empty()
+                || !s.unconfirmed_payments_page(network, 0, 1)?.is_empty())
+        })
+        .await
 }
 
 /// The round's mempool tier: one unit per round.
@@ -129,7 +178,22 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     round.mempool.done = true;
     let network = round.network();
     let state = &round.state.mempool;
-    let Some(pool_txids) = poll(round.inputs).await else {
+    // Nothing to look for in the pool: no store has an order in scope and
+    // no payment is waiting for a block. The node isn't asked.
+    match round.mempool.watching.take() {
+        Some(Ok(true)) => {}
+        Some(Ok(false)) | None => {
+            state.forget();
+            return Progress::Idle;
+        }
+        Some(Err(error)) => return Progress::Failed(error),
+    }
+    // The pool was asked for with the round's tip.
+    let answer = match round.mempool.polled.take() {
+        Some(answer) => answer.map_err(ScannerError::from),
+        None => bounded(round.inputs.daemon.get_mempool_txids()).await,
+    };
+    let Some(pool_txids) = readable(round.inputs, answer) else {
         return Progress::Blocked(Wait::MempoolUnreadable);
     };
     let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
@@ -138,25 +202,28 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     if pool_txids.is_empty() {
         return Progress::Advanced;
     }
-    let selected = select(state, pool_txids);
-    let (pool, fetch_failed) = bodies(state, round.inputs, &selected).await;
-
     let tenants = match tenant_page(round).await {
         Ok(tenants) => tenants,
         Err(error) => return Progress::Failed(error),
     };
+    // Nobody to scan for (the poll was for the vanished-payment check, or
+    // no store's keys are registered): no bodies are fetched.
+    if tenants.is_empty() {
+        return Progress::Advanced;
+    }
     let state = &round.state.mempool;
+    let selected = select(state, pool_txids);
+    let (pool, fetch_failed) = bodies(state, round.inputs, &selected).await;
     // A tenant that fails is retried next round, not once per transaction:
     // one unresponsive backend mustn't spend the round on deadlines.
     let mut failed: HashSet<crate::store::TenantId> = HashSet::new();
     let mut attempted = 0;
-    for tx in &pool {
+    for (txid, tx) in &pool {
         if attempted > 0 && Instant::now() >= until {
             break;
         }
         attempted += 1;
-        let txid = tx_id_hex(tx);
-        let mut due = state.due(&txid, &tenants, &failed);
+        let mut due = state.due(txid, &tenants, &failed);
         if due.is_empty() {
             continue;
         }
@@ -166,7 +233,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
             % due.len();
         due.rotate_left(offset);
         due.truncate(TENANTS_PER_TX);
-        let outcome = scan_and_record(round.state, round.inputs, tx, &txid, &due, None).await;
+        let outcome = scan_and_record(round.state, round.inputs, tx, txid, &due, None).await;
         failed.extend(outcome.failed);
         if let Some(error) = outcome.store_error {
             tracing::warn!(network = crate::network::network_str(network), error = %error, "recording a mempool match failed (retried next round)");
@@ -199,18 +266,9 @@ pub struct FastReport {
 /// scope, and records and settles what they pay, straight away (see the
 /// module doc). Returns `None` if the pool couldn't be read.
 pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<FastReport> {
-    let pool_txids = poll(inputs).await?;
-    let mempool = &state.mempool;
-    let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
-    mempool.retain_pool(&in_pool);
-    let mut new: Vec<String> = pool_txids
-        .into_iter()
-        .filter(|txid| mempool.is_new(txid))
-        .collect();
     let mut report = FastReport::default();
-    if new.is_empty() {
-        return Some(report);
-    }
+    // Who to scan for comes first: with no store to scan for, the pool
+    // isn't asked about at all (several times a second, otherwise).
     let tenants = match all_windows(state, inputs).await {
         Ok(tenants) => tenants,
         Err(error) => {
@@ -219,6 +277,17 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
         }
     };
     if tenants.is_empty() {
+        return Some(report);
+    }
+    let pool_txids = readable(inputs, bounded(inputs.daemon.get_mempool_txids()).await)?;
+    let mempool = &state.mempool;
+    let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
+    mempool.retain_pool(&in_pool);
+    let mut new: Vec<String> = pool_txids
+        .into_iter()
+        .filter(|txid| mempool.is_new(txid))
+        .collect();
+    if new.is_empty() {
         return Some(report);
     }
     // As many new transactions as the scan budget covers for every store.
@@ -232,10 +301,9 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
         tip => Some(tip),
     };
     let mut failed = HashSet::new();
-    for tx in &pool {
-        let txid = tx_id_hex(tx);
-        let due = mempool.due(&txid, &tenants, &failed);
-        let outcome = scan_and_record(state, inputs, tx, &txid, &due, tip).await;
+    for (txid, tx) in &pool {
+        let due = mempool.due(txid, &tenants, &failed);
+        let outcome = scan_and_record(state, inputs, tx, txid, &due, tip).await;
         report.scanned += 1;
         report.paid_orders += outcome.touched;
         failed.extend(outcome.failed);
@@ -275,7 +343,7 @@ async fn scan_and_record(
         .iter()
         .map(|(id, _, w)| (id.as_str(), w.generation()))
         .collect();
-    for (tenant_id, result) in scan_for_tenants(inputs.custody, tx, due).await {
+    for (tenant_id, result) in scan_for_tenants(inputs.custody, txid, tx, due).await {
         let scan = match result {
             Ok(scan) => scan,
             Err(error) => {
@@ -324,8 +392,11 @@ async fn scan_and_record(
 
 /// The pool's transaction ids, or `None` (logged) if the node couldn't say:
 /// never "we couldn't look" read as "the pool is empty".
-async fn poll(inputs: &RoundInputs<'_>) -> Option<Vec<String>> {
-    match bounded(inputs.daemon.get_mempool_txids()).await {
+fn readable(
+    inputs: &RoundInputs<'_>,
+    answer: Result<Vec<String>, ScannerError>,
+) -> Option<Vec<String>> {
+    match answer {
         Ok(txids) => Some(txids),
         Err(error) => {
             shared::throttled!(format!("mempool-poll:{:?}", inputs.network), warn, network = ?inputs.network, error = %error,
@@ -352,12 +423,13 @@ fn select(state: &MempoolState, pool_txids: Vec<String>) -> Vec<String> {
 }
 
 /// The bodies of `txids`, fetching those not remembered in one call.
-/// Returns the bodies found, in order, and whether the fetch failed.
+/// Returns the bodies found (each with its id: a body may be pruned, and
+/// then doesn't hash to it), in order, and whether the fetch failed.
 async fn bodies(
     state: &MempoolState,
     inputs: &RoundInputs<'_>,
     txids: &[String],
-) -> (Vec<Arc<Transaction>>, bool) {
+) -> (Vec<(String, Arc<Transaction>)>, bool) {
     let missing: Vec<String> = {
         let remembered = state.inner.lock();
         txids
@@ -369,12 +441,11 @@ async fn bodies(
     let mut fetched: HashMap<String, Arc<Transaction>> = HashMap::new();
     let mut fetch_failed = false;
     if !missing.is_empty() {
-        match bounded(inputs.daemon.get_transactions(&missing)).await {
+        match bounded(inputs.daemon.get_transactions_with_ids(&missing)).await {
             Ok(txs) => {
                 let mut remembered = state.inner.lock();
-                for tx in txs {
+                for crate::daemon::FetchedTx { txid, tx } in txs {
                     let tx = Arc::new(tx);
-                    let txid = tx_id_hex(&tx);
                     remember_body(&mut remembered.bodies, &txid, &tx, MAX_BODIES);
                     fetched.insert(txid, tx);
                 }
@@ -394,7 +465,7 @@ async fn bodies(
                 .bodies
                 .get(txid)
                 .or_else(|| fetched.get(txid))
-                .cloned()
+                .map(|tx| (txid.clone(), tx.clone()))
         })
         .collect();
     (pool, fetch_failed)

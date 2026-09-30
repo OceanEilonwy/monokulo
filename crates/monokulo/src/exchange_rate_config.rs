@@ -1,8 +1,8 @@
-//! monokulo's own exchange-rate configuration surface, plus the small
-//! dispatcher (`ExchangeRateProviders`) that picks the right provider for a
-//! given order - environment-variable-driven, same as every other piece of
-//! monokulo config today (`main.rs`'s own `encryption_key_from_env`):
-//! no TOML config file exists here yet.
+//! monokulo's own exchange-rate configuration, plus the small dispatcher
+//! (`ExchangeRateProviders`) that picks the right provider for a given
+//! order. The configuration is a section of monokulo's settings
+//! (`settings.rs`: saved on the admin page, or set by the environment
+//! variables below).
 //!
 //! **Dispatch is by currency first, store second.** An order priced in
 //! `"XMR"` always uses `shared::exchange_rate::XmrIdentityProvider` - a
@@ -63,12 +63,6 @@
 //! Coingecko itself (`supported_currencies_cached`), so any currency
 //! Coingecko actually prices XMR in just works, with no config-time
 //! enumeration step.
-//!
-//! `parse` takes a plain lookup function rather than reading
-//! `std::env::var` directly, specifically so it's unit-testable without the
-//! well-known hazard of mutating real process environment variables from
-//! parallel test threads (`std::env::set_var` is not itself synchronized
-//! against concurrent reads elsewhere in the same test binary).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,27 +73,10 @@ use shared::haveno::HavenoRateProvider;
 
 use crate::db::StoreConnectionRow;
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum ExchangeRateConfigError {
-    #[error("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED must be \"true\" or \"false\", got {0:?}")]
-    InvalidCoingeckoEnabled(String),
-    #[error(
-        "MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED must be \"true\" or \"false\", got {0:?}"
-    )]
-    InvalidCoinMarketCapEnabled(String),
-    #[error("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED must be \"true\" or \"false\", got {0:?}")]
-    InvalidHavenoEnabled(String),
-    #[error("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS must be a positive integer, got {0:?}")]
-    InvalidCacheSeconds(String),
-}
-
 const DEFAULT_CACHE_SECONDS: u64 = 30;
-const DEFAULT_COINGECKO_BASE_URL: &str = "https://api.coingecko.com";
-const DEFAULT_COINMARKETCAP_BASE_URL: &str = "https://pro-api.coinmarketcap.com/public-api";
-const DEFAULT_HAVENO_BASE_URL: &str = "https://haveno.markets";
 
-/// Already-validated, ready-to-build configuration - `main.rs` calls
-/// `ExchangeRateProviders::build` on this once, at boot.
+/// Already-validated, ready-to-build configuration, read from the settings
+/// (`settings.rs`'s `Section` for it, where the defaults are).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExchangeRateConfig {
     pub coingecko_enabled: bool,
@@ -109,77 +86,6 @@ pub struct ExchangeRateConfig {
     pub haveno_enabled: bool,
     pub haveno_base_url: String,
     pub cache_seconds: u64,
-}
-
-fn parse_enabled(
-    raw: Option<String>,
-    default: bool,
-    invalid: fn(String) -> ExchangeRateConfigError,
-) -> Result<bool, ExchangeRateConfigError> {
-    match raw {
-        None => Ok(default),
-        Some(raw) => match raw.as_str() {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            _ => Err(invalid(raw)),
-        },
-    }
-}
-
-/// Parses the exchange-rate config from a plain key -> value lookup (a real
-/// `std::env::var` wrapper in production, an in-memory map in tests - see
-/// this module's own doc comment for why).
-pub fn parse<F: Fn(&str) -> Option<String>>(
-    get_env: F,
-) -> Result<ExchangeRateConfig, ExchangeRateConfigError> {
-    let coingecko_enabled = parse_enabled(
-        get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED"),
-        true,
-        ExchangeRateConfigError::InvalidCoingeckoEnabled,
-    )?;
-    let coingecko_base_url = get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL")
-        .unwrap_or_else(|| DEFAULT_COINGECKO_BASE_URL.to_string());
-
-    let coinmarketcap_enabled = parse_enabled(
-        get_env("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED"),
-        true,
-        ExchangeRateConfigError::InvalidCoinMarketCapEnabled,
-    )?;
-    let coinmarketcap_base_url = get_env("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_BASE_URL")
-        .unwrap_or_else(|| DEFAULT_COINMARKETCAP_BASE_URL.to_string());
-
-    // Off by default, unlike the two above: it prices from a thin
-    // peer-to-peer order book rather than an index (see `shared::haveno`), so
-    // an operator opts in.
-    let haveno_enabled = parse_enabled(
-        get_env("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED"),
-        false,
-        ExchangeRateConfigError::InvalidHavenoEnabled,
-    )?;
-    let haveno_base_url = get_env("MONOKULO_EXCHANGE_RATE_HAVENO_BASE_URL")
-        .unwrap_or_else(|| DEFAULT_HAVENO_BASE_URL.to_string());
-
-    let cache_seconds = match get_env("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS") {
-        None => DEFAULT_CACHE_SECONDS,
-        Some(raw) => raw
-            .parse::<u64>()
-            .map_err(|_| ExchangeRateConfigError::InvalidCacheSeconds(raw))?,
-    };
-
-    Ok(ExchangeRateConfig {
-        coingecko_enabled,
-        coingecko_base_url,
-        coinmarketcap_enabled,
-        coinmarketcap_base_url,
-        haveno_enabled,
-        haveno_base_url,
-        cache_seconds,
-    })
-}
-
-/// Real `main.rs` entry point - reads the actual process environment.
-pub fn from_real_env() -> Result<ExchangeRateConfig, ExchangeRateConfigError> {
-    parse(|key| std::env::var(key).ok())
 }
 
 /// A store's providers name nothing this instance has enabled (a provider the
@@ -556,14 +462,6 @@ impl ExchangeRateProviders {
 mod tests {
     use super::*;
     use crate::fx_provider_settings::{FxProviderSettings, HavenoSettings};
-    use std::collections::HashMap;
-
-    fn env_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
 
     fn test_store(fx_providers: &[&str]) -> StoreConnectionRow {
         StoreConnectionRow {
@@ -579,75 +477,6 @@ mod tests {
             base_currency: "XMR".to_string(),
             fx_provider_settings: FxProviderSettings::default(),
         }
-    }
-
-    #[test]
-    fn no_env_vars_at_all_defaults_to_coingecko_enabled() {
-        let config = parse(|_| None).unwrap();
-        assert_eq!(
-            config,
-            ExchangeRateConfig {
-                coingecko_enabled: true,
-                coingecko_base_url: DEFAULT_COINGECKO_BASE_URL.to_string(),
-                coinmarketcap_enabled: true,
-                coinmarketcap_base_url: DEFAULT_COINMARKETCAP_BASE_URL.to_string(),
-                haveno_enabled: false,
-                haveno_base_url: DEFAULT_HAVENO_BASE_URL.to_string(),
-                cache_seconds: DEFAULT_CACHE_SECONDS,
-            }
-        );
-    }
-
-    #[test]
-    fn coingecko_enabled_parses_true_and_false() {
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", "true")]);
-        assert!(parse(|k| env.get(k).cloned()).unwrap().coingecko_enabled);
-
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", "false")]);
-        assert!(!parse(|k| env.get(k).cloned()).unwrap().coingecko_enabled);
-    }
-
-    #[test]
-    fn an_invalid_coingecko_enabled_value_is_a_clear_error() {
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", "yes")]);
-        let err = parse(|k| env.get(k).cloned()).unwrap_err();
-        assert_eq!(
-            err,
-            ExchangeRateConfigError::InvalidCoingeckoEnabled("yes".to_string())
-        );
-    }
-
-    #[test]
-    fn coingecko_base_url_overrides_the_real_default() {
-        let env = env_map(&[(
-            "MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL",
-            "http://127.0.0.1:9999",
-        )]);
-        let config = parse(|k| env.get(k).cloned()).unwrap();
-        assert_eq!(config.coingecko_base_url, "http://127.0.0.1:9999");
-    }
-
-    #[test]
-    fn cache_seconds_defaults_when_unset() {
-        let config = parse(|_| None).unwrap();
-        assert_eq!(config.cache_seconds, DEFAULT_CACHE_SECONDS);
-    }
-
-    #[test]
-    fn cache_seconds_parses_a_real_override() {
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS", "45")]);
-        let config = parse(|k| env.get(k).cloned()).unwrap();
-        assert_eq!(config.cache_seconds, 45);
-    }
-
-    #[test]
-    fn an_invalid_cache_seconds_value_is_a_clear_error() {
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS", "not_a_number")]);
-        let err = parse(|k| env.get(k).cloned()).unwrap_err();
-        assert_eq!(
-            err,
-            ExchangeRateConfigError::InvalidCacheSeconds("not_a_number".to_string())
-        );
     }
 
     #[tokio::test]
@@ -897,38 +726,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn coinmarketcap_env_defaults_and_validation() {
-        let config = parse(|_| None).unwrap();
-        assert!(config.coinmarketcap_enabled);
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED", "false")]);
-        assert!(
-            !parse(|k| env.get(k).cloned())
-                .unwrap()
-                .coinmarketcap_enabled
-        );
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED", "maybe")]);
-        assert_eq!(
-            parse(|k| env.get(k).cloned()).unwrap_err(),
-            ExchangeRateConfigError::InvalidCoinMarketCapEnabled("maybe".to_string())
-        );
-    }
-
     const HAVENO_PATH: &str = "/api/v1/tickers";
     // Midpoint 100.0 USD per XMR -> 1e10 piconero per USD. EUR has no ask.
     const HAVENO_TICKERS: &str = r#"{"USD":{"pair":"XMR_USD","highest_bid":99.0,"lowest_ask":101.0},"EUR":{"pair":"XMR_EUR","highest_bid":90.0,"lowest_ask":null}}"#;
-
-    #[test]
-    fn haveno_is_off_by_default_and_env_switchable() {
-        assert!(!parse(|_| None).unwrap().haveno_enabled);
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED", "true")]);
-        assert!(parse(|k| env.get(k).cloned()).unwrap().haveno_enabled);
-        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED", "1")]);
-        assert_eq!(
-            parse(|k| env.get(k).cloned()).unwrap_err(),
-            ExchangeRateConfigError::InvalidHavenoEnabled("1".to_string())
-        );
-    }
 
     #[tokio::test]
     async fn haveno_prices_from_its_book_and_a_one_sided_book_hands_over_to_the_next() {

@@ -1875,6 +1875,12 @@ mod tests {
                 "not a url",
                 "Enter this instance's public address",
             ),
+            // The key pasted on its own, where name=value pairs go.
+            (
+                "logging.otlp_headers",
+                "sk-live-abc123",
+                "Pair 1 isn't name=value",
+            ),
         ] {
             let save = router
                 .clone()
@@ -1902,6 +1908,11 @@ mod tests {
                     .next()
                     .unwrap_or("")
             );
+            // A secret that was refused isn't shown back, in the message or
+            // in its field.
+            if key == "logging.otlp_headers" {
+                assert!(!html.contains(value), "the refused secret is on the page");
+            }
         }
     }
 

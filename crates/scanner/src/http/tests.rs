@@ -1720,6 +1720,45 @@ async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
     );
 }
 
+/// The collector's headers are `name=value` pairs. A value that isn't (an
+/// API key pasted on its own) would be left out of every request to the
+/// collector without a word, so it is refused: by the pair's position, not
+/// by showing back the secret that was typed.
+#[tokio::test]
+async fn otlp_headers_that_are_not_name_value_pairs_are_refused_without_being_shown_back() {
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+    let save = |headers: &str| {
+        router.clone().oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "scalars": { "logging.otlp_headers": headers } })),
+        ))
+    };
+
+    let refused = save("x-team=ops,sk-live-abc123").await.unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await.to_string();
+    assert!(body.contains("Pair 2 isn't name=value"), "{body}");
+    assert!(!body.contains("sk-live-abc123"), "{body}");
+    let get = router
+        .clone()
+        .oneshot(settings_request("GET", Some("admin_test_token"), None))
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(get).await["scalars"]["logging.otlp_headers"]["source"],
+        "default",
+        "nothing was saved"
+    );
+
+    let saved = save("authorization=Bearer sk-live-abc123,x-team=ops")
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
