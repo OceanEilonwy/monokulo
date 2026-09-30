@@ -8,7 +8,8 @@ telemetry = { path = "../telemetry" }
 live-settings = { path = "../live-settings" }
 parking_lot = "0.12.5"
 async-trait = "0.1.92"
-axum = { version = "0.8.9", features = ["macros"] }
+# Defaults less `tower-log` (see crates/scanner/Cargo.toml).
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing", "macros"] }
 # WBS 2.1.3: lets a spawned test engine be configured to use `SocketKeyCustody`
 # instead of the default in-process `PlainKeyCustody` - see
 # `TestEngineConfig::with_socket_key_custody`. A normal (not dev) dependency

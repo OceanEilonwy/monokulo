@@ -49,6 +49,12 @@ pub struct ScannedBlock {
 }
 
 impl ScannedBlock {
+    /// A proof without a scan, for the store's own tests.
+    #[cfg(test)]
+    pub(crate) fn for_test(tenant_id: &str, height: u64) -> Self {
+        Self { tenant_id: tenant_id.to_string(), height, scans: Vec::new() }
+    }
+
     pub(crate) fn tenant_id(&self) -> &str {
         &self.tenant_id
     }
@@ -133,25 +139,26 @@ impl Default for BlockCache {
 }
 
 impl BlockCache {
-    fn insert(&mut self, block: ChainBlock, bytes: usize) {
-        if let Some((_, old)) = self.blocks.insert(block.height, (Arc::new(block), bytes)) {
+    fn insert(&mut self, block: ChainBlock, bytes: usize) -> Arc<ChainBlock> {
+        let block = Arc::new(block);
+        if let Some((_, old)) = self.blocks.insert(block.height, (block.clone(), bytes)) {
             self.bytes -= old;
         }
         self.bytes += bytes;
+        block
     }
 
     /// Evicts the blocks farthest from `keep` until within `budget`; `keep`
     /// itself always stays.
     fn trim(&mut self, keep: u64, budget: usize) {
-        while self.bytes > budget && self.blocks.len() > 1 {
-            let (Some(&low), Some(&high)) = (self.blocks.keys().next(), self.blocks.keys().next_back()) else { break };
-            let farthest = if keep.abs_diff(low) >= keep.abs_diff(high) { low } else { high };
-            if farthest == keep {
+        // Farthest first; of two as far, the lower (already scanned past).
+        let mut victims: Vec<u64> = self.blocks.keys().copied().filter(|&height| height != keep).collect();
+        victims.sort_by_key(|&height| std::cmp::Reverse(height.abs_diff(keep)));
+        for height in victims {
+            if self.bytes <= budget {
                 break;
             }
-            if let Some((_, bytes)) = self.blocks.remove(&farthest) {
-                self.bytes -= bytes;
-            }
+            self.bytes -= self.blocks.remove(&height).map_or(0, |(_, bytes)| bytes);
         }
     }
 }
@@ -439,6 +446,11 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
         .filter_map(|(id, window)| round.handles.get(id.as_str()).map(|handle| (id, *handle, ScanIndices::new(window))))
         .collect();
     if scannable.is_empty() && group == Group::CatchUp {
+        // Nobody here can be scanned now. Those with nothing that could
+        // have been paid from this block on (every order closed before its
+        // time) needn't wait: straight to the high-water mark. The others
+        // wait for their keys.
+        round.db(move |s, network| s.advance_idle_cursors(network, parent, high_water, since, grace)).await?;
         return Ok(BlockOutcome::NobodyToScan);
     }
 
@@ -505,8 +517,10 @@ impl BlockScan {
         let next_tx = scannable
             .iter()
             .map(|(id, _, _)| {
+                // A block's hash names it, height and all: a checkpoint
+                // for any other block is stale.
                 let resume = match checkpoints.get(id) {
-                    Some(c) if c.height == block.height && c.hash == block.hash => c.next_tx.min(block.txs.len()),
+                    Some(c) if c.hash == block.hash => c.next_tx.min(block.txs.len()),
                     _ => 0,
                 };
                 (id.clone(), resume)
@@ -622,7 +636,7 @@ fn commit(s: &Store, network: &str, block: &CommitBlock, scanned: Vec<ScannedBlo
             // for a chain it no longer stands on). Only tenants that have one
             // are asked.
             let staged = if block.checkpointed.contains(scanned.tenant_id()) {
-                s.take_staged_payments(network, scanned.tenant_id(), height, &block.hash)?
+                s.take_staged_payments(network, scanned.tenant_id(), &block.hash)?
             } else {
                 Vec::new()
             };
@@ -663,18 +677,23 @@ fn prefetch_range(round: &Round<'_>, next: u64, end: u64) -> Option<(u64, u64)> 
 
 impl BlockCache {
     /// Adds a fetched run of blocks, keeping within the memory budget
-    /// around `keep`.
-    fn add_chunk(&mut self, chunk: Vec<ChainBlock>, keep: u64, budget_mb: u32) {
+    /// around `keep`. Returns block `keep`, if the run had it.
+    fn add_chunk(&mut self, chunk: Vec<ChainBlock>, keep: u64, budget_mb: u32) -> Option<Arc<ChainBlock>> {
         if chunk.is_empty() {
-            return;
+            return None;
         }
         let sizes: Vec<usize> =
             chunk.iter().map(|b| b.txs.iter().map(|tx| monero::consensus::encode::serialize(tx).len()).sum()).collect();
         self.avg_bytes_per_block = crate::scanner::update_avg_bytes_per_block(self.avg_bytes_per_block, sizes.iter().sum(), chunk.len());
+        let mut kept = None;
         for (block, bytes) in chunk.into_iter().zip(sizes) {
-            self.insert(block, bytes);
+            let block = self.insert(block, bytes);
+            if block.height == keep {
+                kept = Some(block);
+            }
         }
         self.trim(keep, usize::try_from(budget_mb).unwrap_or(usize::MAX).saturating_mul(1024 * 1024));
+        kept
     }
 }
 
@@ -687,17 +706,12 @@ async fn block(round: &mut Round<'_>, height: u64, end: u64) -> Result<Arc<Chain
     let budget = u64::from(round.inputs.scan_chunk_memory_budget_mb).saturating_mul(1024 * 1024);
     let count = crate::scanner::next_scan_chunk_size(budget, round.blocks.cache.avg_bytes_per_block, end.saturating_sub(height) + 1);
     let chunk = bounded(round.inputs.daemon.get_chain_blocks(height, count)).await?;
-    if chunk.first().map(|b| b.height) != Some(height) {
-        return Err(ScannerError::Internal(format!("the node returned no block at height {height}")));
-    }
-    round.blocks.cache.add_chunk(chunk, height, round.inputs.scan_chunk_memory_budget_mb);
+    // The block asked for is never evicted by its own fetch.
     round
         .blocks
         .cache
-        .blocks
-        .get(&height)
-        .map(|(block, _)| block.clone())
-        .ok_or_else(|| ScannerError::Internal(format!("block {height} was evicted as it was fetched")))
+        .add_chunk(chunk, height, round.inputs.scan_chunk_memory_budget_mb)
+        .ok_or_else(|| ScannerError::Daemon(crate::daemon::DaemonError::Request(format!("the node returned no block at height {height}"))))
 }
 
 #[cfg(test)]

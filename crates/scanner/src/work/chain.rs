@@ -231,11 +231,14 @@ impl<'a> Chain<'a> {
                             height != payment.block_height
                         }
                         Decision::Restore(height) => {
+                            // Already restored since it was read (the void
+                            // recheck got there first) or not, the node
+                            // has it in this block: its height is recorded
+                            // either way.
                             let restored = s.unvoid_payment(&order_id, &txid, output)?;
-                            if restored {
-                                s.update_payment_block_height(&order_id, &txid, output, Some(crate::store::sql_height(height)?))?;
-                            }
-                            restored
+                            let height = Some(crate::store::sql_height(height)?);
+                            s.update_payment_block_height(&order_id, &txid, output, height)?;
+                            restored || height != payment.block_height
                         }
                         Decision::Void => {
                             void_and_notify_in_tx(s, &order_id, &txid, output, tip, now)?;

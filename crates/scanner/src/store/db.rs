@@ -30,8 +30,6 @@ pub enum Class {
 }
 
 impl Class {
-    const ALL: [Class; 3] = [Class::Scanner, Class::Webhook, Class::Admin];
-
     fn index(self) -> usize {
         self as usize
     }
@@ -40,9 +38,16 @@ impl Class {
 /// Longest an inline job waits for the shared store's lock.
 const INLINE_LOCK_WAIT: Duration = if cfg!(test) { Duration::from_millis(200) } else { Duration::from_secs(30) };
 
-/// Tests only: makes the worker's loop panic once, between jobs.
-#[cfg(test)]
-static PANIC_LOOP_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Faults a test injects into one worker; production starts with none.
+#[derive(Clone, Copy, Default)]
+struct Faults {
+    /// The thread can't be started (asks for an impossible stack).
+    fail_spawn: bool,
+    /// The loop panics once, between jobs.
+    panic_loop_once: bool,
+    /// The loop ends at once, as if every handle had gone.
+    exit_loop: bool,
+}
 
 /// Jobs queued per class before callers wait for room.
 const QUEUE_CAPACITY: usize = 64;
@@ -87,7 +92,7 @@ impl Db {
     /// sharing `store`'s order-change notifications (so a subscriber sees
     /// changes made through either).
     pub fn open(path: &str, store: &Store) -> Result<Self> {
-        Self::start(store.connect_again(path)?)
+        Self::start(store.connect_again(path)?, Faults::default())
     }
 
     /// Runs each job on the calling task, on `store`, locked for the job:
@@ -99,32 +104,35 @@ impl Db {
         Db { inner: Inner::Inline(store), counters: Arc::new(Counters::default()) }
     }
 
-    fn start(store: Store) -> Result<Self> {
-        let mut senders = Vec::new();
+    fn start(store: Store, faults: Faults) -> Result<Self> {
         let mut receivers = Vec::new();
-        for _ in Class::ALL {
+        let senders: [tokio::sync::mpsc::Sender<Job>; 3] = std::array::from_fn(|_| {
             let (sender, receiver) = tokio::sync::mpsc::channel(QUEUE_CAPACITY);
-            senders.push(sender);
             receivers.push(receiver);
-        }
+            sender
+        });
         // A token per submitted job, at most one waiting: the worker sleeps
         // on this when every queue is empty.
         let (wake, woken) = std::sync::mpsc::sync_channel::<()>(1);
         let counters = Arc::new(Counters::default());
-                std::thread::Builder::new()
-            .name("scanner-db".into())
+        let mut builder = std::thread::Builder::new().name("scanner-db".into());
+        if faults.fail_spawn {
+            builder = builder.stack_size(usize::MAX);
+        }
+        builder
             .spawn(move || {
                 let mut receivers = receivers;
+                let mut faults = faults;
                 // Jobs catch their own panics; this only restarts the loop
                 // itself if it ever panics, so the worker never silently dies
                 // with its queues open.
-                while let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&store, &mut receivers, &woken))) {
+                while let Err(panic) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&store, &mut receivers, &woken, &mut faults)))
+                {
                     tracing::error!(panic = ?panic.downcast_ref::<&str>(), "the database worker's loop panicked; restarting it");
                 }
             })
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
-        let senders: [tokio::sync::mpsc::Sender<Job>; 3] =
-            senders.try_into().map_err(|_| StoreError::WorkerUnavailable("queue setup".into()))?;
         Ok(Db { inner: Inner::Worker { senders: Arc::new(senders), wake }, counters })
     }
 
@@ -186,9 +194,12 @@ fn record(counters: &Counters, queued_at: Instant, started: Instant) {
     counters.completed.fetch_add(1, Ordering::Relaxed);
 }
 
-fn serve(store: &Store, receivers: &mut [tokio::sync::mpsc::Receiver<Job>], woken: &std::sync::mpsc::Receiver<()>) {
+fn serve(store: &Store, receivers: &mut [tokio::sync::mpsc::Receiver<Job>], woken: &std::sync::mpsc::Receiver<()>, faults: &mut Faults) {
     let mut next = 0;
     loop {
+        if faults.exit_loop {
+            return;
+        }
         // Round-robin: the first non-empty queue after the last one served.
         let mut taken = None;
         let mut open = 0;
@@ -213,10 +224,9 @@ fn serve(store: &Store, receivers: &mut [tokio::sync::mpsc::Receiver<Job>], woke
             continue;
         };
         next = (index + 1) % receivers.len();
-        #[cfg(test)]
-        if PANIC_LOOP_ONCE.swap(false, Ordering::SeqCst) {
-            // Put the job back first, as a real bug's panic would not; the
-            // test checks the worker carries on serving.
+        if std::mem::take(&mut faults.panic_loop_once) {
+            // The job runs first, as a real bug's panic might not let it;
+            // the test checks the worker carries on serving.
             job(store);
             panic!("injected worker loop panic");
         }
@@ -249,11 +259,43 @@ mod tests {
     #[tokio::test]
     async fn the_worker_loop_restarts_after_a_panic() {
         let (store, path) = file_store();
-        let db = Db::open(&path, &store).unwrap();
-        PANIC_LOOP_ONCE.store(true, Ordering::SeqCst);
+        let faults = Faults { panic_loop_once: true, ..Faults::default() };
+        let db = Db::start(store.connect_again(&path).unwrap(), faults).unwrap();
         db.run(Class::Admin, |s| s.set_setting("first", "1")).await.unwrap();
         db.run(Class::Admin, |s| s.set_setting("second", "2")).await.unwrap();
         assert_eq!(store.get_setting("second").unwrap().as_deref(), Some("2"));
+        drop(db);
+        cleanup(&path);
+    }
+
+    /// A worker thread that can't be started is an error at startup, not a
+    /// handle whose jobs never run.
+    #[test]
+    fn a_worker_that_cannot_start_is_an_error() {
+        let (store, path) = file_store();
+        let faults = Faults { fail_spawn: true, ..Faults::default() };
+        let result = Db::start(store.connect_again(&path).unwrap(), faults);
+        assert!(matches!(result, Err(StoreError::WorkerUnavailable(_))));
+        cleanup(&path);
+    }
+
+    /// A worker that has stopped fails each job at once, rather than leaving
+    /// its caller waiting forever.
+    #[tokio::test]
+    async fn a_stopped_worker_fails_jobs_instead_of_hanging() {
+        let (store, path) = file_store();
+        let faults = Faults { exit_loop: true, ..Faults::default() };
+        let db = Db::start(store.connect_again(&path).unwrap(), faults).unwrap();
+        // The loop exits and its queues close; give it a moment.
+        let mut result = Ok(0);
+        for _ in 0..100 {
+            result = db.run(Class::Admin, |s| s.count_tenants()).await;
+            if result.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(matches!(result, Err(StoreError::WorkerUnavailable(_))), "{result:?}");
         drop(db);
         cleanup(&path);
     }

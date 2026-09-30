@@ -2,6 +2,7 @@
 //! resumes across rounds and restarts, failures are isolated and backed
 //! off, and reorg detection stays cheap.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -403,6 +404,7 @@ impl MoneroDaemonClient for CannotLocate<'_> {
 /// mempool is still scanned and orders still expire.
 #[tokio::test]
 async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expiry() {
+    let (_guard, logs) = crate::test_log::capture();
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
     let now = crate::now_unix();
@@ -432,6 +434,8 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
     assert_eq!(store.lock().get_all_payments(&open_order).unwrap().len(), 1, "the mempool was still scanned");
     assert_eq!(order_status(&store, &open_order), OrderStatus::Unconfirmed);
     assert_eq!(order_status(&store, &overdue_order), OrderStatus::Expired, "and orders still expire");
+    assert_eq!(report.outcome(Tier::Chain), TierOutcome::Blocked(Wait::NodeFailed), "a node failure is waited out");
+    assert_eq!(logs.count("reorg work stopped: the node failed"), 1, "{}", logs.text());
 }
 
 /// A deeper reorg arriving while one is being reconciled widens the open
@@ -968,13 +972,14 @@ async fn the_fast_path_reports_an_unreadable_pool() {
 // moved without its matches, a job half-open or a webhook sent twice shows
 // up as a difference.
 
-/// One run of the sweep's story: a payment seen in the pool, mined, reorged
-/// out and back in, then confirmed.
+/// One run of a sweep's story: a tenant with one order, a chain and a pool
+/// that each step of the story changes before its round.
 struct Story {
     store: SharedStore,
     custody: FlakyKeyCustody,
     daemon: FakeDaemonClient,
     tenants: Vec<(String, WalletHandle)>,
+    order: String,
     state: ScanState,
 }
 
@@ -982,43 +987,19 @@ impl Story {
     async fn new() -> Self {
         let store = Store::open_in_memory().unwrap();
         let custody = FlakyKeyCustody::default();
-        let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         store.create_webhook(&tenant, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
-        Self { store: store.into_shared(), custody, daemon, tenants: vec![(tenant, handle)], state: ScanState::default() }
+        Self { store: store.into_shared(), custody, daemon, tenants: vec![(tenant, handle)], order, state: ScanState::default() }
     }
 
-    /// Sets up the chain and pool for step `step`, before its round.
-    fn stage(&self, step: usize) {
-        let tx = fixture_tx();
-        match step {
-            0 => {}
-            1 => self.daemon.set_mempool(vec![tx, unrelated_tx(3)]),
-            2 => {
-                self.daemon.set_mempool(vec![]);
-                self.daemon.push_block("b3", vec![tx, unrelated_tx(4)]);
-            }
-            3 => {
-                // Reorged out: back in the pool, the block replaced.
-                self.daemon.reorg_from(3, vec![("b3x", vec![unrelated_tx(5)]), ("b4x", vec![])]);
-                self.daemon.set_mempool(vec![tx]);
-            }
-            4 => {
-                self.daemon.set_mempool(vec![]);
-                self.daemon.push_block("b5", vec![tx]);
-            }
-            5 => {
-                for i in 0..10 {
-                    self.daemon.push_block(&format!("c{i}"), vec![]);
-                }
-            }
-            _ => unreachable!(),
+    fn confirm(&self) {
+        for i in 0..10 {
+            self.daemon.push_block(&format!("c{i}"), vec![]);
         }
     }
-
-    const STEPS: usize = 6;
 
     async fn round(&self) -> RoundReport {
         let db = Db::over_shared(self.store.clone());
@@ -1070,13 +1051,56 @@ impl Story {
     }
 }
 
+/// A story's steps: each sets up the chain and pool before its round.
+type Steps = [fn(&Story)];
+
+/// A payment seen in the pool, mined, reorged out and back in, then
+/// confirmed.
+const PAID: &Steps = &[
+    |_| {},
+    |story| story.daemon.set_mempool(vec![fixture_tx(), unrelated_tx(3)]),
+    |story| {
+        story.daemon.set_mempool(vec![]);
+        story.daemon.push_block("b3", vec![fixture_tx(), unrelated_tx(4)]);
+    },
+    |story| {
+        // Reorged out: back in the pool, the block replaced.
+        story.daemon.reorg_from(3, vec![("b3x", vec![unrelated_tx(5)]), ("b4x", vec![])]);
+        story.daemon.set_mempool(vec![fixture_tx()]);
+    },
+    |story| {
+        story.daemon.set_mempool(vec![]);
+        story.daemon.push_block("b5", vec![fixture_tx()]);
+    },
+    Story::confirm,
+];
+
+/// A payment seen in the pool that leaves it because a conflicting
+/// transaction spending the same inputs was mined: voided, and the merchant
+/// told.
+const DOUBLE_SPENT: &Steps = &[
+    |_| {},
+    |story| story.daemon.set_mempool(vec![fixture_tx()]),
+    |story| {
+        story.daemon.drop_from_mempool(&fixture_tx());
+        story.daemon.push_block("b3", vec![crate::scanner::tests::conflicting_tx(11)]);
+        let payments = story.store.lock().get_all_payments(&story.order).unwrap();
+        for payment in payments {
+            for image in serde_json::from_str::<Vec<String>>(&payment.key_images_json).unwrap() {
+                story.daemon.set_key_image_status(&image, KeyImageStatus::SpentInBlockchain);
+            }
+        }
+    },
+    Story::confirm,
+];
+
 /// The story with a fault at SQL access `fault` during step `faulted`'s
 /// round. Returns the outcome and whether the fault was reached.
-async fn run_story(faulted: Option<(usize, usize)>) -> (String, bool) {
+async fn run_story(steps: &Steps, faulted: Option<(usize, usize)>) -> (String, bool) {
     let story = Story::new().await;
     let mut reached = faulted.is_none();
-    for step in 0..Story::STEPS {
-        story.stage(step);
+    for (step, stage) in steps.iter().enumerate() {
+        stage(&story);
         match faulted {
             Some((at, fault)) if at == step => {
                 let seen = story.store.lock().fail_nth_access(Some(fault));
@@ -1095,13 +1119,16 @@ async fn run_story(faulted: Option<(usize, usize)>) -> (String, bool) {
     (story.outcome(), reached)
 }
 
-/// Fails every SQL statement of step `step`'s round in turn.
-async fn sweep_step(step: usize) {
-    let (expected, _) = run_story(None).await;
-    assert!(expected.contains("orders [\"overpaid|7000000000|0\"]"), "the story ends paid: {expected}");
+/// Fails every SQL statement of step `step`'s round in turn; the story must
+/// end where it ends without a fault, whose orders are `ending`.
+async fn sweep_step(steps: &Steps, step: usize, ending: &str) {
+    // Every event enabled, so the failure paths' log lines run too.
+    let (_logs, _) = crate::test_log::capture();
+    let (expected, _) = run_story(steps, None).await;
+    assert!(expected.contains(ending), "the story ends {ending}: {expected}");
     let mut faults = 0;
     for fault in 0.. {
-        let (outcome, reached) = run_story(Some((step, fault))).await;
+        let (outcome, reached) = run_story(steps, Some((step, fault))).await;
         if !reached {
             break;
         }
@@ -1111,35 +1138,38 @@ async fn sweep_step(step: usize) {
     assert!(faults > 10, "the sweep reached only {faults} statements");
 }
 
+const PAID_ENDING: &str = "orders [\"overpaid|7000000000|0\"]";
+const VOIDED_ENDING: &str = "orders [\"pending|0|1\"]";
+
 // One test per step, so they run side by side.
 #[tokio::test]
 async fn every_sql_failure_while_seeding_is_recovered_from() {
-    sweep_step(0).await;
+    sweep_step(PAID, 0, PAID_ENDING).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_while_a_payment_is_in_the_pool_is_recovered_from() {
-    sweep_step(1).await;
+    sweep_step(PAID, 1, PAID_ENDING).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_while_a_payment_is_mined_is_recovered_from() {
-    sweep_step(2).await;
+    sweep_step(PAID, 2, PAID_ENDING).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_during_a_reorg_is_recovered_from() {
-    sweep_step(3).await;
+    sweep_step(PAID, 3, PAID_ENDING).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_while_a_payment_is_mined_again_is_recovered_from() {
-    sweep_step(4).await;
+    sweep_step(PAID, 4, PAID_ENDING).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_while_a_payment_confirms_is_recovered_from() {
-    sweep_step(5).await;
+    sweep_step(PAID, 5, PAID_ENDING).await;
 }
 
 /// A node that fails block-hash lookups (the chain tier's fork check) but
@@ -1213,4 +1243,944 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     }
     let s = store.lock();
     assert_eq!(s.scanned_blocks_between("mainnet", 5, 6).unwrap(), vec![(5, "b5".to_string()), (6, "b6".to_string())]);
+}
+
+/// A call the node never answers fails at the deadline, as a node failure.
+#[tokio::test(start_paused = true)]
+async fn a_call_the_node_never_answers_fails_at_the_deadline() {
+    let never = std::future::pending::<Result<(), DaemonError>>();
+    let started = tokio::time::Instant::now();
+    let result = bounded(never).await;
+    assert!(matches!(result, Err(ScannerError::Daemon(DaemonError::Request(ref m))) if m.contains("no answer within")), "{result:?}");
+    assert_eq!(started.elapsed(), CALL_DEADLINE);
+}
+
+/// Tiers and wait reasons read as words in logs and reports, each its own.
+#[test]
+fn tiers_and_wait_reasons_display_distinctly() {
+    let tiers: Vec<String> = Tier::ALL.iter().map(ToString::to_string).collect();
+    assert_eq!(tiers, ["chain", "blocks", "mempool", "settlement", "upkeep"]);
+    let waits = [
+        Wait::ChainHeightUnknown,
+        Wait::ReorgBeingReconciled,
+        Wait::RewoundThisRound,
+        Wait::NodeFailed,
+        Wait::NodeCannotServeTip,
+        Wait::MempoolUnreadable,
+        Wait::ReorgCandidatesRetrying,
+        Wait::ChainDiverged,
+    ];
+    let texts: std::collections::HashSet<String> = waits.iter().map(ToString::to_string).collect();
+    assert_eq!(texts.len(), waits.len());
+    assert!(texts.iter().all(|t| !t.is_empty()));
+}
+
+/// A round that can't read the chain height reports it (once a minute in
+/// the log) and still scans the mempool.
+#[tokio::test]
+async fn a_round_without_the_chain_height_reports_it_and_scans_the_pool() {
+    let (_guard, logs) = crate::test_log::capture();
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let custody = FlakyKeyCustody::default();
+    let fake = FakeDaemonClient::new();
+    fake.set_online(false);
+    let db = Db::over_shared(store.clone());
+    let report = run_round(&ScanState::default(), &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await;
+    assert!(matches!(report.error, Some(ScannerError::Daemon(_))), "{:?}", report.error);
+    assert_eq!(report.outcome(Tier::Blocks), TierOutcome::Blocked(Wait::ChainHeightUnknown));
+    assert_eq!(logs.count("reading the chain height failed"), 1, "{}", logs.text());
+    run_round(&ScanState::default(), &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await;
+    assert_eq!(logs.count("reading the chain height failed"), 1, "throttled: {}", logs.text());
+}
+
+// -- Reorg job edge cases, at the chain tier's own level ----------------------
+
+/// A node that runs `hook` on each transaction lookup before answering it:
+/// for changing the database in the middle of a reorg page.
+struct OnLocate<'a> {
+    inner: &'a FakeDaemonClient,
+    hook: Box<dyn Fn(&str) + Send + Sync + 'a>,
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for OnLocate<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.inner.get_height().await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        self.inner.get_block_hash(height).await
+    }
+    async fn get_chain_blocks(&self, start: u64, count: u64) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        self.inner.get_chain_blocks(start, count).await
+    }
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_block_transactions(height).await
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_mempool_transactions().await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        (self.hook)(txid);
+        self.inner.locate_transaction(txid).await
+    }
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        self.inner.get_transaction(txid).await
+    }
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.inner.is_key_image_spent(key_images).await
+    }
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        self.inner.get_block_timestamp(height).await
+    }
+}
+
+/// Blocks a1..a10 on the node and recorded, one order per payment, each
+/// payment `(txid, height)` recorded, and a reorg job open at 9.
+async fn open_reorg_with(payments: &[(&str, u64)]) -> (SharedStore, FakeDaemonClient, Vec<String>) {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let now = crate::now_unix();
+    let fake = FakeDaemonClient::new();
+    for h in 1..=10 {
+        let height = fake.push_block(&format!("a{h}"), vec![]);
+        store.set_scanned_block("mainnet", height, &format!("a{h}")).unwrap();
+    }
+    let mut orders = Vec::new();
+    for (txid, height) in payments {
+        let (_, _, order) = fixture_tenant(&store, &custody, now + 3600).await;
+        store.record_payment_match(&order, txid, 0, 1, "[\"ki\"]", now, Some(*height as i64)).unwrap();
+        orders.push(order);
+    }
+    store.execute_raw_for_test("UPDATE tenants SET scanned_through_height = 10").unwrap();
+    store.open_reorg_job("mainnet", 9, now).unwrap();
+    (store.into_shared(), fake, orders)
+}
+
+/// Runs the job one unit at a time, at `now`, until it rewinds; returns the
+/// steps it took.
+async fn run_job(chain: &chain::Chain<'_>) -> Vec<&'static str> {
+    let mut steps = Vec::new();
+    loop {
+        let step = chain.advance_job(10, &mut HashSet::new(), tokio::time::Instant::now() + ROUND_BUDGET).await.unwrap();
+        steps.push(match step {
+            None => panic!("no job"),
+            Some(chain::JobStep::Collected) => "collected",
+            Some(chain::JobStep::Processed { failure: None, .. }) => "processed",
+            Some(chain::JobStep::Processed { failure: Some(_), .. }) => "failed",
+            Some(chain::JobStep::Waiting) => "waiting",
+            Some(chain::JobStep::Rewound) => return steps,
+        });
+        assert!(steps.len() < 64, "the job never finished: {steps:?}");
+    }
+}
+
+/// A payment the node never answers about is retried with growing delays,
+/// then given up on after `MAX_CANDIDATE_ATTEMPTS`: left as recorded, so
+/// the job, and settlement behind it, can't be held up forever.
+#[tokio::test]
+async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
+    let (_guard, logs) = crate::test_log::capture();
+    let stuck = "ab".repeat(32);
+    let (store, fake, orders) = open_reorg_with(&[(&stuck, 9)]).await;
+    let daemon = CannotLocate { inner: &fake, txid: stuck };
+    let db = Db::over_shared(store.clone());
+    let mut now = crate::now_unix();
+    let mut failed = 0;
+    loop {
+        // Far enough on for any retry delay to have passed.
+        now += 1000;
+        let chain = chain::Chain::new(&db, &daemon, monero::Network::Mainnet, 20, now);
+        match chain.advance_job(10, &mut HashSet::new(), tokio::time::Instant::now() + ROUND_BUDGET).await.unwrap() {
+            Some(chain::JobStep::Processed { failure: Some(_), .. }) => failed += 1,
+            Some(chain::JobStep::Rewound) => break,
+            Some(_) => {}
+            None => panic!("the job vanished"),
+        }
+        assert!(failed < 20, "never given up on");
+    }
+    assert_eq!(failed, 11, "eleven failures retried, the twelfth given up on");
+    assert_eq!(logs.count("giving up re-examining a payment"), 1, "{}", logs.text());
+    let payment = &store.lock().get_all_payments(&orders[0]).unwrap()[0];
+    assert_eq!((payment.block_height, payment.voided_at), (Some(9), None), "left as recorded");
+    assert!(store.lock().reorg_job("mainnet").unwrap().is_none());
+}
+
+/// A candidate whose payment is deleted (its order removed) between the
+/// page being read and its turn is simply done.
+#[tokio::test]
+async fn a_candidate_deleted_mid_page_is_skipped() {
+    let tx = fixture_tx();
+    let txid = crate::scanner::tx_id_hex(&tx);
+    let gone = "cd".repeat(32);
+    let (store, fake, orders) = open_reorg_with(&[(&txid, 9), (&gone, 9)]).await;
+    fake.reorg_from(9, vec![("b9", vec![tx]), ("b10", vec![])]);
+    let deleted = orders[1].clone();
+    let daemon = OnLocate {
+        inner: &fake,
+        hook: Box::new(|_| {
+            let _ = store.lock().execute_raw_for_test(&format!("DELETE FROM order_payments WHERE order_id = '{deleted}'"));
+        }),
+    };
+    let db = Db::over_shared(store.clone());
+    let chain = chain::Chain::new(&db, &daemon, monero::Network::Mainnet, 20, crate::now_unix());
+    let steps = run_job(&chain).await;
+    assert_eq!(steps, ["collected", "collected", "processed"], "both handled in one page, neither failed");
+    assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap()[0].block_height, Some(9));
+}
+
+/// A voided payment the void recheck restores while the reorg job is
+/// re-examining it: the job doesn't restore it twice, and still records
+/// the block the node now has it in.
+#[tokio::test]
+async fn a_void_restored_meanwhile_still_gets_its_new_height() {
+    let tx = fixture_tx();
+    let txid = crate::scanner::tx_id_hex(&tx);
+    let (store, fake, orders) = open_reorg_with(&[(&txid, 9)]).await;
+    store.lock().void_payment(&orders[0], &txid, 0, crate::now_unix()).unwrap();
+    // Mined again, one block later, on the new chain.
+    fake.reorg_from(9, vec![("b9", vec![]), ("b10", vec![tx])]);
+    let order = orders[0].clone();
+    let daemon = OnLocate {
+        inner: &fake,
+        hook: Box::new(|txid| {
+            store.lock().unvoid_payment(&order, txid, 0).unwrap();
+        }),
+    };
+    let db = Db::over_shared(store.clone());
+    let chain = chain::Chain::new(&db, &daemon, monero::Network::Mainnet, 20, crate::now_unix());
+    run_job(&chain).await;
+    let payment = &store.lock().get_all_payments(&orders[0]).unwrap()[0];
+    assert_eq!((payment.block_height, payment.voided_at), (Some(10), None));
+}
+
+/// A page with no time left re-examines one candidate and stops.
+#[tokio::test]
+async fn a_reorg_page_with_no_time_left_does_one_candidate() {
+    let tx = fixture_tx();
+    let txid = crate::scanner::tx_id_hex(&tx);
+    let other = "ef".repeat(32);
+    let (store, fake, _) = open_reorg_with(&[(&txid, 9), (&other, 9)]).await;
+    fake.reorg_from(9, vec![("b9", vec![tx]), ("b10", vec![])]);
+    let db = Db::over_shared(store.clone());
+    let chain = chain::Chain::new(&db, &fake, monero::Network::Mainnet, 20, crate::now_unix());
+    let mut skip = HashSet::new();
+    let far = tokio::time::Instant::now() + ROUND_BUDGET;
+    assert!(matches!(chain.advance_job(10, &mut skip, far).await.unwrap(), Some(chain::JobStep::Collected)));
+    assert!(matches!(chain.advance_job(10, &mut skip, far).await.unwrap(), Some(chain::JobStep::Collected)));
+    let spent = tokio::time::Instant::now();
+    let (processed, _, failure) = chain.process_page(10, &mut skip, spent).await.unwrap();
+    assert_eq!((processed, failure.is_none()), (1, true));
+    assert_eq!(store.lock().reorg_work_remaining("mainnet").unwrap().0, 1);
+}
+
+// -- Block tier edge cases ----------------------------------------------------
+
+/// A node whose answers a test can change: block hashes can fail, block
+/// fetches can run a hook first or come back empty.
+struct Hooked<'a> {
+    inner: &'a FakeDaemonClient,
+    fail_hashes: bool,
+    empty_blocks: bool,
+    no_bodies: bool,
+    locate: LocateBehaviour,
+    on_blocks: Box<dyn Fn(u64) + Send + Sync + 'a>,
+}
+
+/// How a [`Hooked`] node answers transaction lookups.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LocateBehaviour {
+    Answer,
+    Fail,
+    /// Never answers (until the test's clock runs far past any deadline).
+    Stall,
+}
+
+impl<'a> Hooked<'a> {
+    fn new(inner: &'a FakeDaemonClient) -> Self {
+        Self { inner, fail_hashes: false, empty_blocks: false, no_bodies: false, locate: LocateBehaviour::Answer, on_blocks: Box::new(|_| {}) }
+    }
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for Hooked<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.inner.get_height().await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        if self.fail_hashes {
+            return Err(DaemonError::Request("hash lookups are failing".into()));
+        }
+        self.inner.get_block_hash(height).await
+    }
+    async fn get_chain_blocks(&self, start: u64, count: u64) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        (self.on_blocks)(start);
+        if self.empty_blocks {
+            return Ok(Vec::new());
+        }
+        self.inner.get_chain_blocks(start, count).await
+    }
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_block_transactions(height).await
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_mempool_transactions().await
+    }
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        if self.no_bodies {
+            return Ok(Vec::new());
+        }
+        self.inner.get_transactions(txids).await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        match self.locate {
+            LocateBehaviour::Answer => self.inner.locate_transaction(txid).await,
+            LocateBehaviour::Fail => Err(DaemonError::Request("lookups are failing".into())),
+            LocateBehaviour::Stall => {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                self.inner.locate_transaction(txid).await
+            }
+        }
+    }
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        self.inner.get_transaction(txid).await
+    }
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.inner.is_key_image_spent(key_images).await
+    }
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        self.inner.get_block_timestamp(height).await
+    }
+}
+
+/// A network seeded at 20 (blocks 19 and 20 recorded), with `tenants` fixture
+/// tenants whose cursors are at `cursor`.
+async fn seeded_network(tenants: usize, cursor: u64) -> (SharedStore, FlakyKeyCustody, FakeDaemonClient, Vec<(String, WalletHandle)>, Vec<String>) {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let fake = FakeDaemonClient::new();
+    for h in 1..=20 {
+        fake.push_block(&format!("a{h}"), vec![]);
+    }
+    let mut handles = Vec::new();
+    let mut orders = Vec::new();
+    for _ in 0..tenants {
+        let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        handles.push((tenant, handle));
+        orders.push(order);
+    }
+    let store = store.into_shared();
+    let db = Db::over_shared(store.clone());
+    run_round(&ScanState::default(), &inputs(&db, &custody, &fake, &handles), ROUND_BUDGET).await.into_result().unwrap();
+    assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(20));
+    store.lock().execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = {cursor}")).unwrap();
+    (store, custody, fake, handles, orders)
+}
+
+/// A checkpoint for a block the node has since replaced is stale: the
+/// replacement is scanned from its start, the stale block's staged matches
+/// are dropped, and the payment is recorded once, from the block that is
+/// on the chain.
+#[tokio::test]
+async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanned_whole() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    let tenant = tenants[0].0.clone();
+    let mut txs = vec![fixture_tx()];
+    txs.extend((0..24u8).map(|i| unrelated_tx(100 + i)));
+    fake.push_block("big", txs);
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    let stale = store.lock().block_checkpoint("mainnet", &tenant).unwrap().expect("checkpointed partway");
+    assert_eq!(stale.hash, "big");
+
+    // Replaced before it committed: the payment is now further in.
+    let mut replacement: Vec<Transaction> = (0..5u8).map(|i| unrelated_tx(150 + i)).collect();
+    replacement.push(fixture_tx());
+    fake.reorg_from(21, vec![("big2", replacement)]);
+    for _ in 0..3 {
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    }
+    assert_eq!(cursor_of(&store, &tenant), Some(21));
+    let payments = store.lock().get_all_payments(&orders[0]).unwrap();
+    assert_eq!(payments.len(), 1, "once, not once per version of the block");
+    assert_eq!(payments[0].block_height, Some(21));
+    assert_eq!(store.lock().get_scanned_block_hash("mainnet", 21).unwrap().as_deref(), Some("big2"));
+    assert_eq!(store.lock().block_checkpoint("mainnet", &tenant).unwrap(), None);
+}
+
+/// More stores in a group than one scan batch, with no time: the first
+/// batch is checkpointed, the rest haven't started. A store that failed is
+/// left out of the checkpoint; next round it starts from the beginning while
+/// the others resume, and every store ends with its payment exactly once.
+#[tokio::test]
+async fn a_big_group_resumes_each_store_from_its_own_place() {
+    let (_guard, logs) = crate::test_log::capture();
+    let count = crate::scanner::SCAN_CONCURRENCY + 1;
+    let (store, custody, fake, tenants, orders) = seeded_network(count, 20).await;
+    let failing = tenants[0].1;
+    custody.fail(failing);
+    let mut txs = vec![fixture_tx()];
+    txs.extend((0..4u8).map(|i| unrelated_tx(100 + i)));
+    fake.push_block("big", txs);
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    let checkpointed = tenants.iter().filter(|(id, _)| store.lock().block_checkpoint("mainnet", id).unwrap().is_some()).count();
+    assert!(checkpointed > 0 && checkpointed < count, "{checkpointed} of {count} got anywhere");
+    assert_eq!(store.lock().block_checkpoint("mainnet", &tenants[0].0).unwrap(), None, "the failed store has no checkpoint");
+    assert!(logs.count("scanning a block failed for this store") >= 1, "{}", logs.text());
+
+    custody.recover(failing);
+    for _ in 0..6 {
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    }
+    for ((tenant, _), order) in tenants.iter().zip(&orders) {
+        assert_eq!(cursor_of(&store, tenant), Some(21));
+        assert_eq!(store.lock().get_all_payments(order).unwrap().len(), 1);
+    }
+}
+
+/// Catching up onto a recorded block the node no longer has (a fork the
+/// chain tier couldn't look at this round): the group stays where it is.
+#[tokio::test]
+async fn catching_up_onto_a_replaced_recorded_block_waits() {
+    let (store, custody, fake, tenants, _) = seeded_network(1, 18).await;
+    fake.reorg_from(19, vec![("b19", vec![]), ("b20", vec![])]);
+    let mut daemon = Hooked::new(&fake);
+    daemon.fail_hashes = true;
+    let db = Db::over_shared(store.clone());
+    let report = run_round(&ScanState::default(), &inputs(&db, &custody, &daemon, &tenants), ROUND_BUDGET).await;
+    assert!(report.error.is_none(), "{:?}", report.error);
+    assert_eq!(cursor_of(&store, &tenants[0].0), Some(18), "no block recorded against the old chain");
+    assert_eq!(store.lock().get_scanned_block_hash("mainnet", 19).unwrap().as_deref(), Some("a19"));
+}
+
+/// A rewind (or anything else) that changes the recorded chain while a
+/// block is being scanned stops the commit: nothing is written for it.
+#[tokio::test]
+async fn a_recorded_chain_changed_mid_scan_stops_the_commit() {
+    // The recorded block itself changes, then (next case) its parent.
+    for (cursor, changed) in [(18u64, 19u64), (19, 19)] {
+        let (store, custody, fake, tenants, _) = seeded_network(1, cursor).await;
+        let block = cursor + 1;
+        fake.seed_block_at(block, &format!("a{block}"), vec![unrelated_tx(1)]);
+        let hook_store = store.clone();
+        custody.on_next_scan(move || {
+            hook_store.lock().execute_raw_for_test(&format!("UPDATE scanned_blocks SET block_hash = 'zzz' WHERE height = {changed}")).unwrap();
+        });
+        let db = Db::over_shared(store.clone());
+        run_round(&ScanState::default(), &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+        assert_eq!(store.lock().get_scanned_block_hash("mainnet", changed).unwrap().as_deref(), Some("zzz"), "the hook ran");
+        assert_eq!(cursor_of(&store, &tenants[0].0), Some(cursor), "cursor {cursor}: nothing committed");
+    }
+}
+
+/// A store catching up from below the recorded history (older than the
+/// retained window) scans those blocks without recording them for the
+/// network: the network's record only grows at its tip.
+#[tokio::test]
+async fn catching_up_below_the_recorded_history_records_nothing_for_the_network() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 10).await;
+    fake.seed_block_at(12, "a12", vec![fixture_tx()]);
+    let db = Db::over_shared(store.clone());
+    for _ in 0..3 {
+        run_round(&ScanState::default(), &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    }
+    assert_eq!(cursor_of(&store, &tenants[0].0), Some(20));
+    assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap()[0].block_height, Some(12));
+    assert_eq!(store.lock().get_scanned_block_hash("mainnet", 12).unwrap(), None, "only the tip grows the record");
+}
+
+/// A node that answers a block fetch with nothing is a node failure: the
+/// tier waits (and says so), and nothing is recorded.
+#[tokio::test]
+async fn a_node_that_returns_no_block_is_waited_out() {
+    let (_guard, logs) = crate::test_log::capture();
+    let (store, custody, fake, tenants, _) = seeded_network(1, 20).await;
+    fake.push_block("a21", vec![]);
+    let mut daemon = Hooked::new(&fake);
+    daemon.empty_blocks = true;
+    let db = Db::over_shared(store.clone());
+    let report = run_round(&ScanState::default(), &inputs(&db, &custody, &daemon, &tenants), ROUND_BUDGET).await;
+    assert_eq!(report.outcome(Tier::Blocks), TierOutcome::Blocked(Wait::NodeFailed));
+    assert!(report.error.is_none());
+    assert_eq!(cursor_of(&store, &tenants[0].0), Some(20));
+    assert_eq!(logs.count("block scanning stopped: the node failed"), 1, "{}", logs.text());
+}
+
+/// A store catching up whose every order closed long before the blocks it
+/// is behind on has nothing to find in them: it moves straight on, rather
+/// than waiting at the first of them (and fetching it) round after round.
+#[tokio::test]
+async fn a_store_whose_orders_all_closed_before_the_gap_moves_straight_on() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 10).await;
+    store
+        .lock()
+        .execute_raw_for_test(&format!("UPDATE orders SET status = 'expired', closed_at_utc = 1 WHERE id = '{}'", orders[0]))
+        .unwrap();
+    let db = Db::over_shared(store.clone());
+    run_round(&ScanState::default(), &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    assert_eq!(cursor_of(&store, &tenants[0].0), Some(20));
+}
+
+// -- Mempool tier edge cases --------------------------------------------------
+
+/// Transactions that left the pool between the listing and the body fetch
+/// (the node returns none of them) are moved past, not asked for again and
+/// again.
+#[tokio::test]
+async fn pool_transactions_gone_before_their_bodies_came_are_moved_past() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    fake.set_mempool(vec![fixture_tx()]);
+    let mut daemon = Hooked::new(&fake);
+    daemon.no_bodies = true;
+    let db = Db::over_shared(store.clone());
+    let report = run_round(&ScanState::default(), &inputs(&db, &custody, &daemon, &tenants), ROUND_BUDGET).await;
+    assert!(report.error.is_none(), "{:?}", report.error);
+    assert!(store.lock().get_all_payments(&orders[0]).unwrap().is_empty());
+}
+
+/// A fast pass that can't load the scan windows (a storage failure) scans
+/// nothing, says so, and the next pass tries again.
+#[tokio::test]
+async fn a_fast_pass_that_cannot_load_windows_tries_again_next_pass() {
+    let (_guard, logs) = crate::test_log::capture();
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    fake.set_mempool(vec![fixture_tx()]);
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    store.lock().fail_nth_access(Some(0));
+    let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants)).await.unwrap();
+    store.lock().fail_nth_access(None);
+    assert_eq!(report, FastReport::default());
+    assert_eq!(logs.count("loading scan windows for the mempool failed"), 1, "{}", logs.text());
+    let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants)).await.unwrap();
+    assert_eq!(report.paid_orders, 1);
+    assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap().len(), 1);
+}
+
+/// With no store to scan for, a fast pass does nothing (and costs no scan).
+#[tokio::test]
+async fn a_fast_pass_with_no_store_in_scope_does_nothing() {
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let custody = FlakyKeyCustody::default();
+    let fake = FakeDaemonClient::new();
+    fake.set_mempool(vec![fixture_tx()]);
+    let db = Db::over_shared(store.clone());
+    assert_eq!(fast_pass(&ScanState::default(), &inputs(&db, &custody, &fake, &[])).await, Some(FastReport::default()));
+}
+
+/// After a round, the fast path settles against the round's chain height
+/// rather than asking the node again.
+#[tokio::test]
+async fn the_fast_path_uses_the_last_rounds_chain_height() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    fake.set_mempool(vec![fixture_tx()]);
+    fake.set_online(false);
+    // The pool is read through a node that answers only for the pool.
+    let pool_only = PoolOnly(&fake);
+    let report = fast_pass(&state, &inputs(&db, &custody, &pool_only, &tenants)).await.unwrap();
+    assert_eq!(report.paid_orders, 1);
+    assert_eq!(order_status(&store, &orders[0]), OrderStatus::Unconfirmed, "recomputed with the round's height");
+}
+
+/// A node that serves the pool while everything else about it fails.
+struct PoolOnly<'a>(&'a FakeDaemonClient);
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for PoolOnly<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        Err(DaemonError::Request("down".into()))
+    }
+    async fn get_block_hash(&self, _: u64) -> Result<String, DaemonError> {
+        Err(DaemonError::Request("down".into()))
+    }
+    async fn get_block_transactions(&self, _: u64) -> Result<Vec<Transaction>, DaemonError> {
+        Err(DaemonError::Request("down".into()))
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.0.set_online(true);
+        let pool = self.0.get_mempool_transactions().await;
+        self.0.set_online(false);
+        pool
+    }
+    async fn locate_transaction(&self, _: &str) -> Result<TxLocation, DaemonError> {
+        Err(DaemonError::Request("down".into()))
+    }
+    async fn get_transaction(&self, _: &str) -> Result<Transaction, DaemonError> {
+        Err(DaemonError::Request("down".into()))
+    }
+    async fn is_key_image_spent(&self, _: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        Err(DaemonError::Request("down".into()))
+    }
+    async fn get_block_timestamp(&self, _: u64) -> Result<u64, DaemonError> {
+        Err(DaemonError::Request("down".into()))
+    }
+}
+
+/// A store whose scan fails is tried once per pass, not once per
+/// transaction, and the failure is reported; after repeated failures it
+/// waits out a delay and the pool isn't scanned for it meanwhile.
+#[tokio::test]
+async fn a_failing_store_is_tried_once_per_pass_then_waits() {
+    let (_guard, logs) = crate::test_log::capture();
+    let (store, custody, fake, tenants, _) = seeded_network(1, 20).await;
+    let handle = tenants[0].1;
+    custody.fail(handle);
+    fake.set_mempool(vec![unrelated_tx(1), unrelated_tx(2)]);
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants)).await.unwrap();
+    assert_eq!((report.scanned, report.paid_orders), (2, 0));
+    assert_eq!(custody.attempts.lock().get(&handle).copied(), Some(1), "once for the pass");
+    assert_eq!(logs.count("scanning a mempool transaction failed"), 1, "{}", logs.text());
+
+    // Past its free retries, the store waits: the rotation doesn't scan the
+    // pool for it.
+    state.backoff.failed(&tenants[0].0);
+    state.backoff.failed(&tenants[0].0);
+    let before = custody.attempts.lock().get(&handle).copied();
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    assert_eq!(custody.attempts.lock().get(&handle).copied(), before);
+}
+
+/// More stores than one page: the rotation's pages wrap round and the fast
+/// path loads every page, so every store's payment is found.
+#[tokio::test]
+async fn every_store_is_scanned_when_there_are_more_than_a_page() {
+    let count = 257;
+    let (store, custody, fake, tenants, orders) = seeded_network(count, 20).await;
+    fake.set_mempool(vec![fixture_tx()]);
+    let db = Db::over_shared(store.clone());
+
+    // The fast path, in one pass.
+    let report = fast_pass(&ScanState::default(), &inputs(&db, &custody, &fake, &tenants)).await.unwrap();
+    assert_eq!(report.paid_orders, count);
+    store.lock().execute_raw_for_test("DELETE FROM order_payments").unwrap();
+
+    // The rotation, a slice a round.
+    let state = ScanState::default();
+    for _ in 0..12 {
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    }
+    for order in &orders {
+        assert_eq!(store.lock().get_all_payments(order).unwrap().len(), 1, "order {order}");
+    }
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_double_spent_payment_is_in_the_pool_is_recovered_from() {
+    sweep_step(DOUBLE_SPENT, 1, VOIDED_ENDING).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_double_spend_is_found_is_recovered_from() {
+    sweep_step(DOUBLE_SPENT, 2, VOIDED_ENDING).await;
+}
+
+// -- Settlement tier edge cases -----------------------------------------------
+
+/// Records an unconfirmed payment with this txid on the order.
+fn unconfirmed(store: &SharedStore, order: &str, txid: &str) {
+    store.lock().record_payment_match(order, txid, 0, 1, "[\"ki\"]", crate::now_unix(), None).unwrap();
+}
+
+/// A node that fails or hangs while a vanished payment is checked is waited
+/// out: the round isn't failed, the payment is untouched, and the rotation
+/// doesn't move past it.
+#[tokio::test(start_paused = true)]
+async fn a_vanished_check_the_node_fails_or_stalls_is_retried() {
+    for stall in [false, true] {
+        let (_guard, logs) = crate::test_log::capture();
+        let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+        unconfirmed(&store, &orders[0], &"ab".repeat(32));
+        let mut daemon = Hooked::new(&fake);
+        daemon.locate = if stall { LocateBehaviour::Stall } else { LocateBehaviour::Fail };
+        let position = || store.lock().scheduler_position::<crate::store::position::VanishedPayments>("mainnet").unwrap();
+        let before = position();
+        let db = Db::over_shared(store.clone());
+        let report = run_round(&ScanState::default(), &inputs(&db, &custody, &daemon, &tenants), ROUND_BUDGET).await;
+        assert!(report.error.is_none(), "{:?}", report.error);
+        let message = if stall { "took too long" } else { "checking a vanished mempool payment failed" };
+        assert_eq!(logs.count(message), 1, "{}", logs.text());
+        let payment = &store.lock().get_all_payments(&orders[0]).unwrap()[0];
+        assert_eq!((payment.block_height, payment.voided_at), (None, None));
+        assert_eq!(position(), before, "the rotation waits at it");
+    }
+}
+
+/// With no time to spare, one vanished payment is checked a round, and the
+/// rotation moves on to the next.
+#[tokio::test]
+async fn vanished_payments_are_checked_one_a_round_with_no_time_to_spare() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    unconfirmed(&store, &orders[0], &"ab".repeat(32));
+    unconfirmed(&store, &orders[0], &"cd".repeat(32));
+    let ids: Vec<i64> = store.lock().unconfirmed_payments_page("mainnet", 0, 10).unwrap().into_iter().map(|(id, _)| id).collect();
+    let db = Db::over_shared(store.clone());
+    let state = ScanState::default();
+    let position = || store.lock().scheduler_position::<crate::store::position::VanishedPayments>("mainnet").unwrap();
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    assert_eq!(position(), Some(ids[0]));
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    assert_eq!(position(), Some(ids[1]));
+}
+
+/// A payment seen in the pool and mined before the next pool snapshot is
+/// given its height by the vanished check, without waiting for the block
+/// scan; one back in the node's own pool is left alone.
+#[tokio::test]
+async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool_is_left() {
+    let (store, _, fake, _, orders) = seeded_network(2, 20).await;
+    let mined = fixture_tx();
+    let pooled = unrelated_tx(9);
+    let (mined_id, pooled_id) = (crate::scanner::tx_id_hex(&mined), crate::scanner::tx_id_hex(&pooled));
+    unconfirmed(&store, &orders[0], &mined_id);
+    unconfirmed(&store, &orders[1], &pooled_id);
+    let height = fake.push_block("m", vec![mined]);
+    fake.set_mempool(vec![pooled]);
+    let candidates: Vec<_> = store.lock().unconfirmed_payments_page("mainnet", 0, 10).unwrap().into_iter().map(|(_, p)| p).collect();
+    let db = Db::over_shared(store.clone());
+    // The snapshot was taken before either moved: neither is in it.
+    let report = crate::scanner::check_vanished_candidates(&db, &fake, &HashSet::new(), height, crate::now_unix(), candidates).await.unwrap();
+    assert_eq!(report.dirty_orders, vec![orders[0].clone()]);
+    assert!(report.double_spent_orders.is_empty());
+    assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap()[0].block_height, Some(height as i64));
+    assert_eq!(store.lock().get_all_payments(&orders[1]).unwrap()[0].block_height, None);
+}
+
+// -- Upkeep tier edge cases ---------------------------------------------------
+
+/// `count` voided payments on `order`, each with a well-formed key image the
+/// fake node calls unspent: every one a false accusation the recheck
+/// restores.
+fn voided_payments(store: &SharedStore, order: &str, count: u8) {
+    let s = store.lock();
+    let now = crate::now_unix();
+    for i in 0..count {
+        let txid = format!("{i:02x}").repeat(32);
+        let image = format!("{:02x}", 0x80 + i).repeat(32);
+        s.record_payment_match(order, &txid, 0, 1, &format!("[\"{image}\"]"), now, Some(15)).unwrap();
+        s.void_payment(order, &txid, 0, now).unwrap();
+    }
+    s.mark_double_spend_detected(order, now).unwrap();
+}
+
+/// Makes a void recheck pass due now.
+fn void_recheck_due(store: &SharedStore) {
+    let s = store.lock();
+    s.set_scheduler_position::<crate::store::position::VoidRecheckPassStarted>("mainnet", &i64::MIN).unwrap();
+    s.set_scheduler_position::<crate::store::position::VoidRecheck>("mainnet", &0).unwrap();
+}
+
+/// More recent voids than a page, and no time to spare: each round rechecks
+/// one, the pass carries on from where it stopped, and ends once the last is
+/// done.
+#[tokio::test]
+async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    voided_payments(&store, &orders[0], 18);
+    void_recheck_due(&store);
+    let db = Db::over_shared(store.clone());
+    let state = ScanState::default();
+    let voided = || store.lock().get_all_payments(&orders[0]).unwrap().iter().filter(|p| p.voided_at.is_some()).count();
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    assert_eq!(voided(), 17, "one a round with no time to spare");
+    let position = || store.lock().scheduler_position::<crate::store::position::VoidRecheck>("mainnet").unwrap();
+    assert_ne!(position(), Some(0), "the pass is still going");
+    for _ in 0..17 {
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    }
+    assert_eq!(voided(), 0);
+    assert_eq!(position(), Some(0), "and the pass is over");
+}
+
+/// Every SQL statement of a void recheck failed in turn: the void is
+/// restored once, whichever failed, and the merchant told once.
+#[tokio::test]
+async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
+    let (_logs, _) = crate::test_log::capture();
+    let mut faults = 0;
+    for fault in 0.. {
+        let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+        store.lock().create_webhook(&tenants[0].0, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        voided_payments(&store, &orders[0], 1);
+        void_recheck_due(&store);
+        let db = Db::over_shared(store.clone());
+        let state = ScanState::default();
+        let seen = store.lock().fail_nth_access(Some(fault));
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await;
+        store.lock().fail_nth_access(None);
+        if seen.load(Ordering::Relaxed) <= fault {
+            break;
+        }
+        faults += 1;
+        void_recheck_due(&store);
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+        let payment = &store.lock().get_all_payments(&orders[0]).unwrap()[0];
+        assert_eq!(payment.voided_at, None, "fault {fault}");
+        let reversed = store
+            .lock()
+            .due_webhook_deliveries(i64::MAX / 2, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.event_type == "order.double_spend_reversed")
+            .count();
+        assert_eq!(reversed, 1, "fault {fault}: told {reversed} times");
+    }
+    assert!(faults > 10, "reached {faults}");
+}
+
+// -- More edge cases: settlement pages, block commits, job failures -----------
+
+/// More orders owed a recompute than a page: the settlement tier works
+/// through them page by page, wrapping round, until none is owed.
+#[tokio::test]
+async fn more_recomputes_owed_than_a_page_are_all_done() {
+    let (store, custody, fake, tenants, _) = seeded_network(1, 20).await;
+    let tenant = tenants[0].0.clone();
+    let now = crate::now_unix();
+    let mut orders = Vec::new();
+    {
+        let s = store.lock();
+        for i in 0..70 {
+            let index = s.allocate_minor_index(&tenant).unwrap();
+            let order = s
+                .create_order(crate::store::NewOrder {
+                    confirmations_required_override: None,
+                    tenant_id: tenant.clone(),
+                    merchant_order_id: None,
+                    minor_index: index,
+                    address: format!("addr{i}"),
+                    xmr_amount_piconero: 1,
+                    description: None,
+                    created_at: now,
+                    expires_at: now + 3600,
+                })
+                .unwrap();
+            s.record_payment_match(&order.id, &format!("{i:064x}"), 0, 1, "[]", now, None).unwrap();
+            orders.push(order.id);
+        }
+    }
+    let db = Db::over_shared(store.clone());
+    let state = ScanState::default();
+    for _ in 0..3 {
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    }
+    for order in &orders {
+        assert_eq!(order_status(&store, order), OrderStatus::Unconfirmed, "{order}");
+    }
+}
+
+/// A store whose scan fails partway through a block is left behind for that
+/// block (and caught up later); the others commit it, and it isn't asked
+/// again for the block's later transactions.
+#[tokio::test]
+async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_again() {
+    let (store, custody, fake, tenants, orders) = seeded_network(2, 20).await;
+    let failing = tenants[1].1;
+    custody.fail(failing);
+    fake.push_block("b21", vec![unrelated_tx(1), fixture_tx(), unrelated_tx(2)]);
+    let db = Db::over_shared(store.clone());
+    let state = ScanState::default();
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    assert_eq!(cursor_of(&store, &tenants[0].0), Some(21));
+    assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap().len(), 1);
+    assert_eq!(cursor_of(&store, &tenants[1].0), Some(20), "left behind");
+    // Once by the frontier, once more when catch-up retries it: never once
+    // per transaction (three).
+    assert_eq!(custody.attempts.lock().get(&failing).copied(), Some(2), "asked once per scan of the block, not per transaction");
+
+    custody.recover(failing);
+    for _ in 0..3 {
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    }
+    assert_eq!(cursor_of(&store, &tenants[1].0), Some(21));
+    assert_eq!(store.lock().get_all_payments(&orders[1]).unwrap().len(), 1, "and caught up");
+}
+
+/// A store whose cursor is moved while its block is being scanned (a
+/// rescan, a rewind) gets nothing recorded from that scan: its cursor stays
+/// where it was put.
+#[tokio::test]
+async fn a_cursor_moved_mid_scan_keeps_what_moved_it() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    fake.push_block("b21", vec![fixture_tx()]);
+    let hook_store = store.clone();
+    let tenant = tenants[0].0.clone();
+    custody.on_next_scan(move || {
+        hook_store.lock().execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = 19 WHERE id = '{tenant}'")).unwrap();
+    });
+    let db = Db::over_shared(store.clone());
+    run_round(&ScanState::default(), &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    // The moved cursor was caught up again from 19, and the payment found
+    // then, once.
+    assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap().len(), 1);
+    assert_eq!(cursor_of(&store, &tenants[0].0), Some(21));
+}
+
+/// Every SQL statement of the round that commits a checkpointed block,
+/// failed in turn: the payment is recorded once, at the block's height.
+#[tokio::test]
+async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
+    let (_logs, _) = crate::test_log::capture();
+    let mut faults = 0;
+    for fault in 0.. {
+        let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+        let mut txs = vec![fixture_tx()];
+        txs.extend((0..6u8).map(|i| unrelated_tx(100 + i)));
+        fake.push_block("big", txs);
+        let db = Db::over_shared(store.clone());
+        let state = ScanState::default();
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+        assert!(store.lock().block_checkpoint("mainnet", &tenants[0].0).unwrap().is_some());
+        let seen = store.lock().fail_nth_access(Some(fault));
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await;
+        store.lock().fail_nth_access(None);
+        if seen.load(Ordering::Relaxed) <= fault {
+            break;
+        }
+        faults += 1;
+        for _ in 0..3 {
+            run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+        }
+        let payments = store.lock().get_all_payments(&orders[0]).unwrap();
+        assert_eq!(payments.len(), 1, "fault {fault}");
+        assert_eq!(payments[0].block_height, Some(21), "fault {fault}");
+        assert_eq!(cursor_of(&store, &tenants[0].0), Some(21), "fault {fault}");
+    }
+    assert!(faults > 10, "reached {faults}");
+}
+
+/// Every SQL statement of a round working an open reorg job, failed in
+/// turn: the job still finishes, with the payment where the node has it.
+#[tokio::test]
+async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
+    let (_logs, _) = crate::test_log::capture();
+    let tx = fixture_tx();
+    let txid = crate::scanner::tx_id_hex(&tx);
+    let mut faults = 0;
+    for fault in 0.. {
+        let (store, fake, orders) = open_reorg_with(&[(&txid, 9)]).await;
+        fake.reorg_from(9, vec![("b9", vec![]), ("b10", vec![tx.clone()])]);
+        let custody = FlakyKeyCustody::default();
+        let db = Db::over_shared(store.clone());
+        let state = ScanState::default();
+        let seen = store.lock().fail_nth_access(Some(fault));
+        run_round(&state, &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await;
+        store.lock().fail_nth_access(None);
+        if seen.load(Ordering::Relaxed) <= fault {
+            break;
+        }
+        faults += 1;
+        for _ in 0..4 {
+            run_round(&state, &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await;
+        }
+        assert!(store.lock().reorg_job("mainnet").unwrap().is_none(), "fault {fault}: the job finished");
+        assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap()[0].block_height, Some(10), "fault {fault}");
+    }
+    assert!(faults > 5, "reached {faults}");
 }

@@ -359,7 +359,7 @@ pub(crate) async fn check_vanished_candidates(
             TxLocation::InBlock(new_height) => {
                 let (order_id, txid, output) = (payment.order_id.clone(), payment.txid.clone(), payment.output_index);
                 db.run(crate::store::db::Class::Scanner, move |s| {
-                    s.update_payment_block_height(&order_id, &txid, output, Some(new_height as i64))
+                    s.update_payment_block_height(&order_id, &txid, output, Some(crate::store::sql_height(new_height)?))
                 })
                 .await?;
                 dirty_orders.insert(payment.order_id.clone());
@@ -1583,16 +1583,16 @@ pub(crate) mod tests {
         assert_eq!(store.block_checkpoint("mainnet", &tenant_id).unwrap(), Some(checkpoint("old_hash")));
         assert!(store.get_all_payments(&order_id).unwrap().is_empty(), "an unfinished block must not announce payment");
         assert!(
-            store.take_staged_payments("mainnet", &tenant_id, 10, "new_hash").unwrap().is_empty(),
+            store.take_staged_payments("mainnet", &tenant_id, "new_hash").unwrap().is_empty(),
             "the old fork's matches are dropped"
         );
         assert_eq!(store.block_checkpoint("mainnet", &tenant_id).unwrap(), None);
 
         stage("old_hash");
         stage("new_hash");
-        let staged = store.take_staged_payments("mainnet", &tenant_id, 10, "new_hash").unwrap();
+        let staged = store.take_staged_payments("mainnet", &tenant_id, "new_hash").unwrap();
         assert_eq!(staged.iter().map(|p| p.order_id.clone()).collect::<Vec<_>>(), vec![order_id.clone()]);
-        assert!(store.take_staged_payments("mainnet", &tenant_id, 10, "new_hash").unwrap().is_empty(), "taken once");
+        assert!(store.take_staged_payments("mainnet", &tenant_id, "new_hash").unwrap().is_empty(), "taken once");
     }
 
     #[tokio::test]
@@ -3190,7 +3190,7 @@ pub(crate) mod tests {
     /// attacker's side of a Monero double-spend, which is always "same key images,
     /// different transaction" (there is no replace-by-fee to express it any other
     /// way).
-    fn conflicting_tx(seed: u64) -> Transaction {
+    pub(crate) fn conflicting_tx(seed: u64) -> Transaction {
         let mut tx = fixture_tx_variant(seed);
         tx.prefix.outputs.clear();
         tx
@@ -3732,6 +3732,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_failed_recheck_leaves_its_payment_voided_and_the_next_pass_retries_it() {
+        let (_guard, logs) = crate::test_log::capture();
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let first = fixture_tx();
         let second = independent_payment_tx(5);
@@ -3751,6 +3752,7 @@ pub(crate) mod tests {
         let recheck_daemon = DaemonFailingOneKeyImageCall::new(FakeDaemonClient::new(), 0);
         round_with_void_recheck_due(&store, &recheck_daemon).await.unwrap();
         assert_eq!(voided(&store, &order_id), vec![true, true], "the failed recheck restored nothing");
+        assert_eq!(logs.count("rechecking a voided payment failed"), 1, "{}", logs.text());
 
         // The next pass retries from the start and reverses both.
         round_with_void_recheck_due(&store, &recheck_daemon).await.unwrap();
@@ -5182,9 +5184,14 @@ pub(crate) mod tests {
         failing: parking_lot::Mutex<HashSet<WalletHandle>>,
         /// Scan calls made for each handle, failed or not.
         pub(crate) attempts: parking_lot::Mutex<HashMap<WalletHandle, u32>>,
+        /// Run once, at the next scan call: for changing the world mid-scan.
+        on_next_scan: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl FlakyKeyCustody {
+        pub(crate) fn on_next_scan(&self, hook: impl FnOnce() + Send + 'static) {
+            *self.on_next_scan.lock() = Some(Box::new(hook));
+        }
         pub(crate) fn fail(&self, handle: WalletHandle) {
             self.failing.lock().insert(handle);
         }
@@ -5223,6 +5230,10 @@ pub(crate) mod tests {
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
             *self.attempts.lock().entry(handle).or_default() += 1;
+            let hook = self.on_next_scan.lock().take();
+            if let Some(hook) = hook {
+                hook();
+            }
             if self.failing.lock().contains(&handle) {
                 return Err(KeyCustodyError::BackendUnavailable("simulated backend outage".into()));
             }

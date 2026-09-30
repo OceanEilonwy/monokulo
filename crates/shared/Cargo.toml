@@ -60,4 +60,5 @@ tokio = { version = "1.53.1", features = ["full", "test-util"] }
 # `exchange_rate`'s own `coingecko` test module spins up a real local HTTP
 # server standing in for Coingecko (`spawn_price_server`) - needs a real
 # router, test-only (the runtime itself is now a real dependency above).
-axum = "0.8.9"
+# Defaults less `tower-log` (see crates/scanner/Cargo.toml).
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing"] }

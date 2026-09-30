@@ -344,9 +344,7 @@ async fn bodies(state: &MempoolState, inputs: &RoundInputs<'_>, txids: &[String]
                 for tx in txs {
                     let tx = Arc::new(tx);
                     let txid = tx_id_hex(&tx);
-                    if remembered.bodies.len() < MAX_BODIES {
-                        remembered.bodies.insert(txid.clone(), tx.clone());
-                    }
+                    remember_body(&mut remembered.bodies, &txid, &tx, MAX_BODIES);
                     fetched.insert(txid, tx);
                 }
             }
@@ -360,6 +358,15 @@ async fn bodies(state: &MempoolState, inputs: &RoundInputs<'_>, txids: &[String]
     let remembered = state.inner.lock();
     let pool = txids.iter().filter_map(|txid| remembered.bodies.get(txid).or_else(|| fetched.get(txid)).cloned()).collect();
     (pool, fetch_failed)
+}
+
+/// Keeps a fetched body for later rounds, up to `cap` bodies: past that
+/// (a pool far bigger than any real one) bodies are fetched each time
+/// instead, and memory stays bounded.
+fn remember_body(bodies: &mut HashMap<String, Arc<Transaction>>, txid: &str, tx: &Arc<Transaction>, cap: usize) {
+    if bodies.len() < cap {
+        bodies.insert(txid.to_string(), tx.clone());
+    }
 }
 
 /// The next page of stores with something in scope, with their scan windows
@@ -422,12 +429,12 @@ async fn all_windows(state: &ScanState, inputs: &RoundInputs<'_>) -> Result<Vec<
     Ok(with_handles(state, &handles, &windows))
 }
 
-/// The stores that can be scanned now: keys registered, not waiting out a
-/// retry delay, with something in their window.
+/// The stores that can be scanned now: keys registered and not waiting out
+/// a retry delay. (Every window listed has something in it.)
 fn with_handles(state: &ScanState, handles: &HashMap<&str, WalletHandle>, windows: &[(String, Vec<u32>)]) -> Vec<TenantWindow> {
     windows
         .iter()
-        .filter(|(id, window)| !window.is_empty() && !state.backoff.is_waiting(id))
+        .filter(|(id, _)| !state.backoff.is_waiting(id))
         .filter_map(|(id, window)| handles.get(id.as_str()).map(|h| (id.clone(), *h, ScanIndices::new(window.clone()))))
         .collect()
 }
@@ -436,6 +443,19 @@ fn with_handles(state: &ScanState, handles: &HashMap<&str, WalletHandle>, window
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// Past the cap, bodies are used but not kept.
+    #[test]
+    fn remembered_bodies_stop_at_the_cap() {
+        let mut bodies = HashMap::new();
+        let tx = Arc::new(crate::scanner::tests::fixture_tx());
+        remember_body(&mut bodies, "a", &tx, 2);
+        remember_body(&mut bodies, "b", &tx, 2);
+        remember_body(&mut bodies, "c", &tx, 2);
+        let mut kept: Vec<&String> = bodies.keys().collect();
+        kept.sort();
+        assert_eq!(kept, ["a", "b"]);
+    }
 
     /// New transactions (no store scanned for them yet) come before the
     /// rotation, which then rotates through the rest.

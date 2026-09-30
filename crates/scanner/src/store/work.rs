@@ -36,6 +36,11 @@ pub fn sql_height(height: u64) -> Result<i64> {
     i64::try_from(height).map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))
 }
 
+/// A list of ids as a JSON array, for `json_each` in SQL.
+fn json_array<S: AsRef<str>>(ids: &[S]) -> String {
+    serde_json::Value::from(ids.iter().map(|id| id.as_ref()).collect::<Vec<&str>>()).to_string()
+}
+
 /// Reads an unsigned column.
 fn unsigned<T: TryFrom<i64>>(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<T> {
     Ok(row.get::<_, Unsigned<T>>(index)?.0)
@@ -158,6 +163,16 @@ fn phase_from_row(phase: &str, after_height: u64, after_id: i64) -> rusqlite::Re
 }
 
 impl Store {
+    /// Every row `sql` returns for `params`, each read by `read`. One place
+    /// for a query's three ways to fail: the statement (a broken schema), its
+    /// parameters (a value out of SQLite's range) and a row (a corrupted
+    /// value).
+    fn rows<T, P: rusqlite::Params>(&self, sql: &str, params: P, read: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>) -> Result<Vec<T>> {
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let rows = stmt.query_map(params, read)?.collect::<rusqlite::Result<Vec<T>>>()?;
+        Ok(rows)
+    }
+
     pub fn reorg_job(&self, network: &str) -> Result<Option<ReorgJob>> {
         self.conn
             .query_row(
@@ -217,22 +232,16 @@ impl Store {
             let job = s.reorg_job(network)?.ok_or(StoreError::NotFound)?;
             let (ids, next) = match job.phase {
                 ReorgPhase::CollectConfirmed { after_height, after_id } => {
-                    let rows: Vec<(i64, u64)> = s
-                        .conn
-                        .prepare(
-                            "SELECT op.id, op.block_height FROM order_payments op
-                             JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
-                             WHERE op.block_height IS NOT NULL AND op.block_height >= ?2
-                               AND (op.block_height > ?3 OR (op.block_height = ?3 AND op.id > ?4))
-                               AND op.id <= ?5 AND t.network = ?1
-                             ORDER BY op.block_height, op.id LIMIT ?6",
-                        )?
-                        .query_map(
-                            params![network, Unsigned(job.fork_height), Unsigned(after_height), after_id,
-                                job.candidate_max_id, Unsigned(limit)],
-                            |row| Ok((row.get(0)?, unsigned(row, 1)?)),
-                        )?
-                        .collect::<rusqlite::Result<_>>()?;
+                    let rows: Vec<(i64, u64)> = s.rows(
+                        "SELECT op.id, op.block_height FROM order_payments op
+                         JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
+                         WHERE op.block_height IS NOT NULL AND op.block_height >= ?2
+                           AND (op.block_height > ?3 OR (op.block_height = ?3 AND op.id > ?4))
+                           AND op.id <= ?5 AND t.network = ?1
+                         ORDER BY op.block_height, op.id LIMIT ?6",
+                        params![network, Unsigned(job.fork_height), Unsigned(after_height), after_id, job.candidate_max_id, Unsigned(limit)],
+                        |row| Ok((row.get(0)?, unsigned(row, 1)?)),
+                    )?;
                     let next = match rows.last() {
                         Some(&(id, height)) if rows.len() == limit => {
                             ReorgPhase::CollectConfirmed { after_height: height, after_id: id }
@@ -242,16 +251,14 @@ impl Store {
                     (rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>(), next)
                 }
                 ReorgPhase::CollectUnconfirmed { after_id } => {
-                    let ids: Vec<i64> = s
-                        .conn
-                        .prepare(
-                            "SELECT op.id FROM order_payments op
-                             JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
-                             WHERE op.block_height IS NULL AND op.id > ?2 AND op.id <= ?3 AND t.network = ?1
-                             ORDER BY op.id LIMIT ?4",
-                        )?
-                        .query_map(params![network, after_id, job.candidate_max_id, Unsigned(limit)], |row| row.get(0))?
-                        .collect::<rusqlite::Result<_>>()?;
+                    let ids: Vec<i64> = s.rows(
+                        "SELECT op.id FROM order_payments op
+                         JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
+                         WHERE op.block_height IS NULL AND op.id > ?2 AND op.id <= ?3 AND t.network = ?1
+                         ORDER BY op.id LIMIT ?4",
+                        params![network, after_id, job.candidate_max_id, Unsigned(limit)],
+                        |row| row.get(0),
+                    )?;
                     let next = match ids.last() {
                         Some(&id) if ids.len() == limit => ReorgPhase::CollectUnconfirmed { after_id: id },
                         _ => ReorgPhase::Process,
@@ -282,21 +289,14 @@ impl Store {
 
     /// Up to `limit` candidates whose retry time has come, oldest retry first.
     pub fn due_reorg_candidates(&self, network: &str, now: i64, limit: usize) -> Result<Vec<ReorgCandidate>> {
-        let mut stmt = self.conn.prepare_cached(
+        self.rows(
             "SELECT op.*, w.attempts AS reorg_attempts FROM reorg_work w
              JOIN order_payments op ON op.id = w.payment_id
              WHERE w.network = ?1 AND w.next_attempt_at_utc <= ?2
              ORDER BY w.next_attempt_at_utc, w.payment_id LIMIT ?3",
-        )?;
-        let rows = stmt
-            .query_map(params![network, now, Unsigned(limit)], |row| {
-                Ok(ReorgCandidate {
-                    payment: Self::row_to_payment(row)?,
-                    attempts: row.get::<_, Unsigned<u32>>("reorg_attempts")?.0,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+            params![network, now, Unsigned(limit)],
+            |row| Ok(ReorgCandidate { payment: Self::row_to_payment(row)?, attempts: row.get::<_, Unsigned<u32>>("reorg_attempts")?.0 }),
+        )
     }
 
     /// How many candidates are left, and when the soonest one is due.
@@ -385,15 +385,11 @@ impl Store {
     /// Stored block hashes on `network` from `from` to `to` inclusive,
     /// lowest first. Bounded by the retained window.
     pub fn scanned_blocks_between(&self, network: &str, from: u64, to: u64) -> Result<Vec<(u64, String)>> {
-        let mut stmt = self.conn.prepare_cached(
+        self.rows(
             "SELECT height, block_hash FROM scanned_blocks WHERE network = ?1 AND height BETWEEN ?2 AND ?3 ORDER BY height",
-        )?;
-        let rows = stmt
-            .query_map(params![network, Unsigned(from), Unsigned(to)], |row| {
-                Ok((unsigned(row, 0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+            params![network, Unsigned(from), Unsigned(to)],
+            |row| Ok((unsigned(row, 0)?, row.get::<_, String>(1)?)),
+        )
     }
 
     /// Up to `limit` orders on `network` whose status may have changed with
@@ -416,11 +412,7 @@ impl Store {
                 tip,
             ),
         ] {
-            let mut stmt = self.conn.prepare_cached(sql)?;
-            let rows = stmt
-                .query_map(params![network, due, Unsigned(limit)], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for id in rows {
+            for id in self.rows(sql, params![network, due, Unsigned(limit)], |row| row.get::<_, String>(0))? {
                 if ids.len() < limit && !ids.contains(&id) {
                     ids.push(id);
                 }
@@ -471,16 +463,14 @@ impl Store {
     /// after payment id `after`, in id order: one page of the slow recheck
     /// for false double-spend accusations.
     pub fn voided_payments_page(&self, network: &str, cutoff: i64, after: i64, limit: usize) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare_cached(
+        self.rows(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
              WHERE op.voided_at_utc IS NOT NULL AND op.voided_at_utc >= ?2 AND op.id > ?3 AND t.network = ?1
              ORDER BY op.id LIMIT ?4",
-        )?;
-        let rows = stmt
-            .query_map(params![network, cutoff, after, Unsigned(limit)], Self::row_to_payment)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+            params![network, cutoff, after, Unsigned(limit)],
+            Self::row_to_payment,
+        )
     }
 }
 
@@ -523,13 +513,12 @@ impl Store {
     }
 
     /// Records how far a tenant's scan of a block got. A checkpoint for any
-    /// other block (a different height or hash) is replaced, with its staged
-    /// matches. Call in the transaction that stages this block's matches.
+    /// other block (another hash: a block's hash names its height too) is
+    /// replaced, with its staged matches. Call in the transaction that stages
+    /// this block's matches.
     pub fn save_block_checkpoint(&self, network: &str, tenant_id: &str, checkpoint: &BlockCheckpoint) -> Result<()> {
-        if let Some(old) = self.block_checkpoint(network, tenant_id)? {
-            if old.height != checkpoint.height || old.hash != checkpoint.hash {
-                self.clear_partial_block(network, tenant_id)?;
-            }
+        if self.block_checkpoint(network, tenant_id)?.is_some_and(|old| old.hash != checkpoint.hash) {
+            self.clear_partial_block(network, tenant_id)?;
         }
         self.conn.execute(
             "INSERT INTO partial_block_progress (network, tenant_id, height, block_hash, window_generation, next_tx_index)
@@ -542,16 +531,15 @@ impl Store {
     }
 
     /// Removes a tenant's checkpoint and returns its staged matches if it was
-    /// for this block (height and hash); a stale one is dropped.
-    pub fn take_staged_payments(&self, network: &str, tenant_id: &str, height: u64, hash: &str) -> Result<Vec<StagedPayment>> {
-        let current = self.block_checkpoint(network, tenant_id)?.is_some_and(|c| c.height == height && c.hash == hash);
+    /// for the block with this hash; a stale one is dropped.
+    pub fn take_staged_payments(&self, network: &str, tenant_id: &str, hash: &str) -> Result<Vec<StagedPayment>> {
+        let current = self.block_checkpoint(network, tenant_id)?.is_some_and(|c| c.hash == hash);
         let staged = if current {
-            let mut stmt = self.conn.prepare_cached(
+            self.rows(
                 "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc
                  FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
-            )?;
-            let rows = stmt
-                .query_map(params![network, tenant_id], |row| {
+                params![network, tenant_id],
+                |row| {
                     Ok(StagedPayment {
                         order_id: row.get(0)?,
                         txid: row.get(1)?,
@@ -560,9 +548,8 @@ impl Store {
                         key_images_json: row.get(4)?,
                         seen_at: row.get(5)?,
                     })
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows
+                },
+            )?
         } else {
             Vec::new()
         };
@@ -574,58 +561,48 @@ impl Store {
     /// tenants on `network`, after `after` (all, from the lowest, for
     /// `None`): the catch-up groups, in rotation order.
     pub fn scan_group_cursors(&self, network: &str, below: u64, after: Option<u64>, limit: usize) -> Result<Vec<u64>> {
-        let mut stmt = self.conn.prepare_cached(
+        self.rows(
             "SELECT DISTINCT scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height IS NOT NULL
                AND scanned_through_height < ?2 AND scanned_through_height >= ?3
              ORDER BY scanned_through_height LIMIT ?4",
-        )?;
-        let rows = stmt
-            .query_map(
-                params![network, Unsigned(below), Unsigned(after.map_or(0, |a| a.saturating_add(1))), Unsigned(limit)],
-                |row| unsigned(row, 0),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+            params![network, Unsigned(below), Unsigned(after.map_or(0, |a| a.saturating_add(1))), Unsigned(limit)],
+            |row| unsigned(row, 0),
+        )
     }
 
     /// Up to `limit` enabled tenants on `network` whose cursor is `cursor`,
     /// leaving out `excluding` (tenants waiting out a retry delay), in id
     /// order.
     pub fn tenants_at_cursor(&self, network: &str, cursor: u64, excluding: &[String], limit: usize) -> Result<Vec<String>> {
-        let excluding = serde_json::to_string(excluding)
-            .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
-        let mut stmt = self.conn.prepare_cached(
+        let excluding = json_array(excluding);
+        self.rows(
             "SELECT id FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height = ?2
                AND id NOT IN (SELECT value FROM json_each(?3))
              ORDER BY id LIMIT ?4",
-        )?;
-        let rows = stmt
-            .query_map(params![network, Unsigned(cursor), excluding, Unsigned(limit)], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+            params![network, Unsigned(cursor), excluding, Unsigned(limit)],
+            |row| row.get::<_, String>(0),
+        )
     }
 
     /// The scan windows of several tenants at once (see `scan_window`), in
-    /// one query: minor indices by tenant, each list ascending. A tenant with
-    /// nothing in scope is absent.
+    /// one query: minor indices by tenant, each list ascending and never
+    /// empty. A tenant with nothing in scope is absent.
     pub fn scan_windows(
         &self, tenant_ids: &[String], since: i64, grace_period_seconds: i64,
     ) -> Result<std::collections::HashMap<String, Vec<u32>>> {
-        let ids = serde_json::to_string(tenant_ids)
-            .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
-        let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT tenant_id, minor_index FROM orders WHERE id IN ({}) ORDER BY tenant_id, minor_index",
-            super::scan_window_orders("o.tenant_id IN (SELECT value FROM json_each(:ids))")
-        ))?;
-        let mut windows: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
-        let rows = stmt.query_map(
+        let ids = json_array(tenant_ids);
+        let rows = self.rows(
+            &format!(
+                "SELECT tenant_id, minor_index FROM orders WHERE id IN ({}) ORDER BY tenant_id, minor_index",
+                super::scan_window_orders("o.tenant_id IN (SELECT value FROM json_each(:ids))")
+            ),
             rusqlite::named_params! { ":ids": ids, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
-            |row| Ok((row.get::<_, String>(0)?, unsigned(row, 1)?)),
+            |row| Ok((row.get::<_, String>(0)?, unsigned::<u32>(row, 1)?)),
         )?;
-        for row in rows {
-            let (tenant_id, minor) = row?;
+        let mut windows: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
+        for (tenant_id, minor) in rows {
             windows.entry(tenant_id).or_default().push(minor);
         }
         Ok(windows)
@@ -667,17 +644,15 @@ impl Store {
         if ids.is_empty() {
             return Ok(Default::default());
         }
-        let ids = serde_json::to_string(&ids)
-            .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
-        let mut stmt = self.conn.prepare_cached(
+        let ids = json_array(&ids);
+        let moved = self.rows(
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND scanned_through_height = ?2 - 1 AND id IN (SELECT value FROM json_each(?3))
              RETURNING id",
+            params![network, Unsigned(height), ids],
+            |row| row.get::<_, String>(0),
         )?;
-        let moved = stmt
-            .query_map(params![network, Unsigned(height), ids], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(moved)
+        Ok(moved.into_iter().collect())
     }
 
     /// Up to `limit` enabled tenants on `network` with an order in scope,
@@ -686,24 +661,21 @@ impl Store {
     pub fn active_tenants_page(
         &self, network: &str, now: i64, grace_period_seconds: i64, after: &str, limit: usize,
     ) -> Result<Vec<(String, Option<u64>)>> {
-        let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT t.id, t.scanned_through_height FROM tenants t
-             WHERE t.network = :network AND t.disabled_at_utc IS NULL AND t.id > :after AND {}
-             ORDER BY t.id LIMIT :limit",
-            super::tenant_in_scope("t.id")
-        ))?;
-        let rows = stmt
-            .query_map(
-                rusqlite::named_params! {
-                    ":network": network,
-                    ":after": after,
-                    ":limit": Unsigned(limit),
-                    ":since_minus_grace": now - grace_period_seconds,
-                },
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Unsigned<u64>>>(1)?.map(|h| h.0))),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        self.rows(
+            &format!(
+                "SELECT t.id, t.scanned_through_height FROM tenants t
+                 WHERE t.network = :network AND t.disabled_at_utc IS NULL AND t.id > :after AND {}
+                 ORDER BY t.id LIMIT :limit",
+                super::tenant_in_scope("t.id")
+            ),
+            rusqlite::named_params! {
+                ":network": network,
+                ":after": after,
+                ":limit": Unsigned(limit),
+                ":since_minus_grace": now - grace_period_seconds,
+            },
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Unsigned<u64>>>(1)?.map(|h| h.0))),
+        )
     }
 }
 
@@ -1007,6 +979,160 @@ mod tests {
         assert_eq!(s.scheduler_position::<CatchUpGroup>("mainnet").unwrap(), None);
         drop(s);
         cleanup(&path);
+    }
+
+    /// Runs `op` with each of its SQL statements failed in turn: every
+    /// failure is reported (never a panic, never swallowed) and leaves the
+    /// database exactly as it was; then `op` runs clean, and its result is
+    /// returned. An operation its callers run inside their transaction is
+    /// given one here too.
+    fn sweep<T>(store: &Store, op: impl Fn(&Store) -> Result<T>) -> T {
+        for fault in 0.. {
+            let before = store.dump_for_test();
+            let seen = store.fail_nth_access(Some(fault));
+            let result = op(store);
+            store.fail_nth_access(None);
+            if seen.load(std::sync::atomic::Ordering::Relaxed) <= fault {
+                return result.unwrap();
+            }
+            assert!(result.is_err(), "the failure of statement {fault} was swallowed");
+            assert_eq!(store.dump_for_test(), before, "the failure of statement {fault} left a partial write");
+        }
+        unreachable!()
+    }
+
+    /// Every durable operation of the scheduler, failed statement by
+    /// statement, along one reorg's life and a block scan's.
+    #[test]
+    fn every_store_operation_fails_whole_and_then_works() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant_id = tenant(&store, "mainnet");
+        let other = tenant(&store, "mainnet");
+        let order_id = order(&store, &tenant_id, 10_000);
+        // `other` has no order: nothing in scope, ever.
+        for h in 1..=12u64 {
+            store.set_scanned_block("mainnet", h, &format!("a{h}")).unwrap();
+        }
+        store.execute_raw_for_test("UPDATE tenants SET scanned_through_height = 12").unwrap();
+        store.record_payment_match(&order_id, "tx_confirmed", 0, 50, "[\"ki1\"]", 150, Some(11)).unwrap();
+        store.record_payment_match(&order_id, "tx_pool", 0, 50, "[\"ki2\"]", 150, None).unwrap();
+        store.record_payment_match(&order_id, "tx_voided", 0, 50, "[\"ki3\"]", 150, Some(10)).unwrap();
+        store.void_payment(&order_id, "tx_voided", 0, 160).unwrap();
+        let voided_id = store.get_all_payments(&order_id).unwrap().iter().find(|p| p.txid == "tx_voided").unwrap().id;
+
+        // A reorg's life.
+        sweep(&store, |s| s.open_reorg_job("mainnet", 11, 200));
+        assert!(sweep(&store, |s| s.settlement_frozen("mainnet")));
+        assert_eq!(sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200)), ReorgPhase::CollectConfirmed { after_height: 11, after_id: 1 });
+        sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200));
+        sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200));
+        assert_eq!(sweep(&store, |s| s.collect_reorg_candidates("mainnet", 64, 200)), ReorgPhase::Process);
+        let due = sweep(&store, |s| s.due_reorg_candidates("mainnet", 200, 10));
+        assert_eq!(due.len(), 2);
+        sweep(&store, |s| s.defer_reorg_candidate("mainnet", due[0].payment.id, 200));
+        assert_eq!(sweep(&store, |s| s.reorg_work_remaining("mainnet")).0, 2);
+        sweep(&store, |s| s.complete_reorg_candidate("mainnet", due[0].payment.id));
+        sweep(&store, |s| s.complete_reorg_candidate("mainnet", due[1].payment.id));
+        sweep(&store, |s| s.finish_reorg("mainnet", 11, Some((10, "a10"))));
+        assert!(sweep(&store, |s| s.reorg_job("mainnet")).is_none());
+
+        // Positions, pages and lookups.
+        sweep(&store, |s| s.set_scheduler_position::<position::VoidRecheck>("mainnet", &5));
+        assert_eq!(sweep(&store, |s| s.scheduler_position::<position::VoidRecheck>("mainnet")), Some(5));
+        assert_eq!(sweep(&store, |s| s.scanned_blocks_between("mainnet", 9, 10)).len(), 2);
+        sweep(&store, |s| s.due_order_ids("mainnet", 20_000, 12, 10));
+        assert_eq!(sweep(&store, |s| s.voided_payments_page("mainnet", 0, 0, 10)).len(), 1);
+        assert!(sweep(&store, |s| s.payment_by_id(voided_id)).is_some());
+        assert_eq!(sweep(&store, |s| s.scan_group_cursors("mainnet", 20, None, 10)), vec![10]);
+        assert_eq!(sweep(&store, |s| s.tenants_at_cursor("mainnet", 10, &[], 10)).len(), 2);
+        assert_eq!(sweep(&store, |s| s.scan_windows(&[tenant_id.clone(), other.clone()], 150, 0)).len(), 1);
+        assert_eq!(sweep(&store, |s| s.active_tenants_page("mainnet", 150, 0, "", 10)).len(), 1);
+
+        // A block scan: checkpointed, staged, replaced, taken, committed.
+        let checkpoint = BlockCheckpoint { height: 11, hash: "b11".into(), next_tx: 3 };
+        sweep(&store, |s| s.in_transaction(|s| s.save_block_checkpoint("mainnet", &tenant_id, &checkpoint)));
+        sweep(&store, |s| {
+            s.stage_partial_match(crate::store::StagedMatch {
+                network: "mainnet",
+                tenant_id: &tenant_id,
+                order_id: &order_id,
+                txid: "tx_staged",
+                output_index: 0,
+                amount: 70,
+                key_images_json: "[]",
+                seen_at: 170,
+            })
+        });
+        let replaced = BlockCheckpoint { height: 11, hash: "c11".into(), next_tx: 1 };
+        sweep(&store, |s| s.in_transaction(|s| s.save_block_checkpoint("mainnet", &tenant_id, &replaced)));
+        assert!(
+            sweep(&store, |s| s.in_transaction(|s| s.take_staged_payments("mainnet", &tenant_id, "c11"))).is_empty(),
+            "the staged match went with the old block"
+        );
+        assert_eq!(sweep(&store, |s| s.block_checkpoint("mainnet", &tenant_id)), None);
+        let scanned = [crate::work::ScannedBlock::for_test(&tenant_id, 11)];
+        assert_eq!(sweep(&store, |s| s.advance_scanned_cursors("mainnet", 11, &scanned)).len(), 1);
+        assert_eq!(sweep(&store, |s| s.advance_idle_cursors("mainnet", 10, 11, i64::MAX / 2, 0)), 1);
+    }
+
+    /// A value past SQLite's range is refused before it reaches the query,
+    /// and a corrupted row fails its page: both errors, never a wrapped
+    /// number read as a height.
+    #[test]
+    fn out_of_range_values_and_corrupt_rows_are_errors() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant_id = tenant(&store, "mainnet");
+        assert!(matches!(
+            store.scan_group_cursors("mainnet", u64::MAX, None, 10),
+            Err(StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(_)))
+        ));
+        let order_id = order(&store, &tenant_id, 10_000);
+        store.record_payment_match(&order_id, "tx", 0, 1, "[]", 100, Some(7)).unwrap();
+        store.open_reorg_job("mainnet", 5, 100).unwrap();
+        while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
+        store.execute_raw_for_test("UPDATE reorg_work SET attempts = -3").unwrap();
+        assert!(matches!(
+            store.due_reorg_candidates("mainnet", 100, 10),
+            Err(StoreError::Sqlite(rusqlite::Error::IntegralValueOutOfRange(_, -3)))
+        ));
+    }
+
+    /// A job row whose phase isn't one this build knows (a hand-edited or
+    /// newer row) is an error, not a guess.
+    #[test]
+    fn an_unknown_reorg_phase_is_an_error() {
+        let store = Store::open_in_memory().unwrap();
+        store.open_reorg_job("mainnet", 5, 100).unwrap();
+        store.execute_raw_for_test("PRAGMA ignore_check_constraints = ON; UPDATE reorg_jobs SET phase = 'later'; PRAGMA ignore_check_constraints = OFF").unwrap();
+        let error = store.reorg_job("mainnet").unwrap_err();
+        assert!(error.to_string().contains("unknown reorg phase"), "{error}");
+    }
+
+    /// Collecting for a job that has finished collecting changes nothing;
+    /// deferring a candidate that is already gone changes nothing.
+    #[test]
+    fn late_collects_and_defers_are_no_ops() {
+        let store = Store::open_in_memory().unwrap();
+        store.open_reorg_job("mainnet", 5, 100).unwrap();
+        while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
+        let before = store.dump_for_test();
+        assert_eq!(store.collect_reorg_candidates("mainnet", 10, 100).unwrap(), ReorgPhase::Process);
+        store.defer_reorg_candidate("mainnet", 12345, 100).unwrap();
+        assert_eq!(store.dump_for_test(), before);
+    }
+
+    /// An order due by both time and height is listed once, and the list
+    /// stops at the limit.
+    #[test]
+    fn due_orders_are_listed_once_up_to_the_limit() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant_id = tenant(&store, "mainnet");
+        let orders: Vec<String> = (0..3).map(|_| order(&store, &tenant_id, 10_000)).collect();
+        store.execute_raw_for_test("UPDATE orders SET next_due_at_utc = 50, next_due_height = 7").unwrap();
+        let due = store.due_order_ids("mainnet", 100, 10, 10).unwrap();
+        assert_eq!(due.len(), 3, "each once: {due:?}");
+        assert!(orders.iter().all(|o| due.contains(o)));
+        assert_eq!(store.due_order_ids("mainnet", 100, 10, 2).unwrap().len(), 2);
     }
 
     /// (store, mainnet order, stagenet order, mainnet tenant)

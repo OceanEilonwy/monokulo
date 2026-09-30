@@ -7,7 +7,10 @@ edition = "2021"
 parking_lot = "0.12.5"
 live-settings = { path = "../live-settings" }
 async-trait = "0.1.92"
-axum = { version = "0.8.9", features = ["macros"] }
+# Axum's defaults less `tower-log`, which turns on `tracing`'s `log` fallback:
+# every event's fields compiled twice, the fallback never taken once a
+# subscriber is set, so coverage reports every multi-line log call as missed.
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing", "macros"] }
 handlebars = "6.4.4"
 hex = "0.4.3"
 hmac = "0.13.0"

@@ -61,15 +61,15 @@ pub(super) async fn step(round: &mut Round<'_>, until: tokio::time::Instant) -> 
     round.upkeep.first_done = true;
     // Every piece runs even if an earlier one failed; the first failure is
     // the one reported.
+    // (The ranges aren't done: a first unit hasn't started them, and a later
+    // one only runs while they aren't.)
     let mut outcomes = Vec::new();
     if first {
         outcomes.push(prune(round).await);
         outcomes.push(checkpoint(round).await);
         outcomes.push(recheck_voids(round, until).await);
     }
-    if !round.upkeep.ranges_done {
-        outcomes.push(scanned_ranges(round).await);
-    }
+    outcomes.push(scanned_ranges(round).await);
     let result: Result<(), ScannerError> = outcomes.into_iter().collect();
     match result {
         Ok(()) => Progress::Advanced,
