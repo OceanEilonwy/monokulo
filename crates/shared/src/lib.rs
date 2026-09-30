@@ -19,6 +19,7 @@ pub mod ids;
 pub mod key_custody;
 pub mod log;
 pub mod migrations;
+pub mod monero_tx;
 pub mod network;
 pub mod order_status;
 pub mod password;

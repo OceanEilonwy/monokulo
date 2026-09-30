@@ -72,7 +72,7 @@ pub mod protocol;
 
 use std::ops::Range;
 
-use monero::consensus::encode::{deserialize, serialize};
+use monero::consensus::encode::serialize;
 use monero::{Address, Transaction};
 use serde::{Deserialize, Serialize};
 use shared::key_custody::{
@@ -513,7 +513,10 @@ impl TryFrom<&TransactionWire> for Transaction {
     fn try_from(wire: &TransactionWire) -> Result<Self, Self::Error> {
         let bytes = hex::decode(&wire.bytes_hex)
             .map_err(|e| WireConversionError::InvalidHex(e.to_string()))?;
-        deserialize(&bytes).map_err(|e| WireConversionError::InvalidTransaction(e.to_string()))
+        // Whole or pruned: the engine sends transactions as its node gave
+        // them, and a scan reads nothing a pruned one lacks.
+        shared::monero_tx::decode_any(&bytes)
+            .map_err(|e| WireConversionError::InvalidTransaction(e.to_string()))
     }
 }
 
@@ -607,6 +610,7 @@ pub type ScanTxOutputsForIndicesResponse = Result<Vec<MatchedOutputWire>, KeyCus
 #[cfg(test)]
 mod tests {
     use super::*;
+    use monero::consensus::encode::deserialize;
 
     /// Same real fixture transaction used by `src/scanner.rs`'s and
     /// `src/key_custody/plain.rs`'s own tests - a genuine RingCT transaction with
@@ -884,6 +888,21 @@ mod tests {
         let decoded: TransactionWire = serde_json::from_str(&json).unwrap();
         let restored = Transaction::try_from(&decoded).unwrap();
         assert_eq!(original, restored);
+    }
+
+    /// The engine sends transactions pruned, as its node gave them: the
+    /// prefix and RingCT base a scan reads, without the signatures.
+    #[test]
+    fn a_pruned_transaction_round_trips_as_a_pruned_one() {
+        let whole = fixture_tx();
+        let mut blob = serialize(&whole.prefix);
+        blob.extend(serialize(whole.rct_signatures.sig.as_ref().unwrap()));
+        let pruned = shared::monero_tx::decode_pruned(&blob).unwrap();
+        let wire = TransactionWire::from(&pruned);
+        assert_eq!(wire.bytes_hex, hex::encode(&blob));
+        let restored = Transaction::try_from(&wire).unwrap();
+        assert_eq!(restored, pruned);
+        assert_eq!(restored.prefix, whole.prefix);
     }
 
     #[test]

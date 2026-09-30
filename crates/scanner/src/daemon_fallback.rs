@@ -22,12 +22,13 @@
 //! on, and a previously-failed node earlier in priority order is naturally retried
 //! again once the chain of calls wraps back around to it.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use monero::Transaction;
 
-use crate::daemon::ChainBlock;
+use crate::daemon::{ChainBlock, ChainHeader, ChainTip, FetchedTx};
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
@@ -62,9 +63,15 @@ struct NodeHealth {
     cooldown_until: Option<Instant>,
 }
 
+/// How long a height a node reported to the scanner stands in for asking
+/// it again ([`FallbackDaemonClient::recent_height`]).
+pub const RECENT_HEIGHT_MAX_AGE: Duration = Duration::from_secs(15);
+
 pub struct FallbackDaemonClient {
     nodes: Vec<FallbackNode>,
     health: Vec<Mutex<NodeHealth>>,
+    /// The height each node last reported through this client, and when.
+    heights: Vec<Mutex<Option<(u64, Instant)>>>,
     /// Index into `nodes` of whichever node most recently answered successfully -
     /// where the *next* call starts trying from. Relaxed ordering is enough: this is
     /// an optimization (skip nodes already known-bad) rather than a correctness
@@ -82,10 +89,26 @@ impl FallbackDaemonClient {
             .iter()
             .map(|_| Mutex::new(NodeHealth::default()))
             .collect();
+        let heights = nodes.iter().map(|_| Mutex::new(None)).collect();
         Self {
             nodes,
             health,
+            heights,
             current: AtomicUsize::new(0),
+        }
+    }
+
+    /// The height node `idx` reported to the scanner within
+    /// [`RECENT_HEIGHT_MAX_AGE`], if it did: the scanner asks its node every
+    /// round, so a status page needn't ask that node again.
+    pub fn recent_height(&self, idx: usize) -> Option<u64> {
+        let seen = (*self.heights.get(idx)?.lock())?;
+        (seen.1.elapsed() < RECENT_HEIGHT_MAX_AGE).then_some(seen.0)
+    }
+
+    fn note_height(&self, idx: usize, height: u64) {
+        if let Some(slot) = self.heights.get(idx) {
+            *slot.lock() = Some((height, Instant::now()));
         }
     }
 
@@ -187,6 +210,15 @@ impl FallbackDaemonClient {
         F: Fn(&'a dyn MoneroDaemonClient) -> Fut,
         Fut: std::future::Future<Output = Result<T, DaemonError>> + 'a,
     {
+        self.failover_from(call).await.map(|(_, value)| value)
+    }
+
+    /// [`Self::failover`], also saying which node answered.
+    async fn failover_from<'a, T, F, Fut>(&'a self, call: F) -> Result<(usize, T), DaemonError>
+    where
+        F: Fn(&'a dyn MoneroDaemonClient) -> Fut,
+        Fut: std::future::Future<Output = Result<T, DaemonError>> + 'a,
+    {
         let deadline = Instant::now() + CALL_DEADLINE;
         let mut last_err = None;
         let order = self.attempt_order();
@@ -214,7 +246,7 @@ impl FallbackDaemonClient {
             match outcome {
                 Ok(v) => {
                     self.note_success(idx);
-                    return Ok(v);
+                    return Ok((idx, v));
                 }
                 Err(e) => {
                     self.note_failure(idx, &e);
@@ -263,7 +295,14 @@ impl PinnedDaemon<'_> {
 #[async_trait::async_trait]
 impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_height(&self) -> Result<u64, DaemonError> {
-        self.one(|c| c.get_height()).await
+        let height = self.one(|c| c.get_height()).await?;
+        self.inner.note_height(self.idx, height);
+        Ok(height)
+    }
+    async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
+        let tip = self.one(|c| c.get_tip()).await?;
+        self.inner.note_height(self.idx, tip.height);
+        Ok(tip)
     }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.one(|c| c.get_block_hash(height)).await
@@ -288,6 +327,13 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     ) -> Result<Vec<ChainBlock>, DaemonError> {
         self.one(|c| c.get_chain_blocks(start_height, count)).await
     }
+    async fn get_chain_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainHeader>, DaemonError> {
+        self.one(|c| c.get_chain_headers(start_height, count)).await
+    }
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
         self.one(|c| c.get_mempool_transactions()).await
     }
@@ -297,8 +343,26 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
         self.one(|c| c.get_transactions(txids)).await
     }
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<FetchedTx>, DaemonError> {
+        self.one(|c| c.get_transactions_with_ids(txids)).await
+    }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         self.one(|c| c.locate_transaction(txid)).await
+    }
+    async fn locate_transactions(
+        &self,
+        txids: &[String],
+    ) -> Result<HashMap<String, TxLocation>, DaemonError> {
+        self.one(|c| c.locate_transactions(txids)).await
+    }
+    async fn find_transaction(
+        &self,
+        txid: &str,
+    ) -> Result<Option<(FetchedTx, TxLocation)>, DaemonError> {
+        self.one(|c| c.find_transaction(txid)).await
     }
     async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
         self.one(|c| c.get_transaction(txid)).await
@@ -322,7 +386,15 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
 #[async_trait::async_trait]
 impl MoneroDaemonClient for FallbackDaemonClient {
     async fn get_height(&self) -> Result<u64, DaemonError> {
-        self.failover(|c| c.get_height()).await
+        let (idx, height) = self.failover_from(|c| c.get_height()).await?;
+        self.note_height(idx, height);
+        Ok(height)
+    }
+
+    async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
+        let (idx, tip) = self.failover_from(|c| c.get_tip()).await?;
+        self.note_height(idx, tip.height);
+        Ok(tip)
     }
 
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
@@ -357,6 +429,15 @@ impl MoneroDaemonClient for FallbackDaemonClient {
             .await
     }
 
+    async fn get_chain_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainHeader>, DaemonError> {
+        self.failover(|c| c.get_chain_headers(start_height, count))
+            .await
+    }
+
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
         self.failover(|c| c.get_mempool_transactions()).await
     }
@@ -369,8 +450,29 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         self.failover(|c| c.get_transactions(txids)).await
     }
 
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<FetchedTx>, DaemonError> {
+        self.failover(|c| c.get_transactions_with_ids(txids)).await
+    }
+
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         self.failover(|c| c.locate_transaction(txid)).await
+    }
+
+    async fn locate_transactions(
+        &self,
+        txids: &[String],
+    ) -> Result<HashMap<String, TxLocation>, DaemonError> {
+        self.failover(|c| c.locate_transactions(txids)).await
+    }
+
+    async fn find_transaction(
+        &self,
+        txid: &str,
+    ) -> Result<Option<(FetchedTx, TxLocation)>, DaemonError> {
+        self.failover(|c| c.find_transaction(txid)).await
     }
 
     async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
@@ -416,9 +518,17 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         &self,
         key_images: &[String],
     ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+        // Every node at once: the answer waits for the slowest node, not
+        // for each in turn.
+        let answers = futures_util::future::join_all(
+            self.nodes
+                .iter()
+                .map(|node| node.client.is_key_image_spent(key_images)),
+        )
+        .await;
         let mut responses: Vec<Vec<KeyImageStatus>> = Vec::new();
-        for node in &self.nodes {
-            match node.client.is_key_image_spent(key_images).await {
+        for (node, answer) in self.nodes.iter().zip(answers) {
+            match answer {
                 Ok(statuses) if statuses.len() == key_images.len() => responses.push(statuses),
                 Ok(wrong_length) => tracing::warn!(
                     node = %node.label,

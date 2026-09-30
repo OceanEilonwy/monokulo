@@ -365,6 +365,9 @@ pub(crate) struct Round<'a> {
     /// The node's chain height. `None` if it couldn't be read: nothing that
     /// depends on the chain runs this round.
     pub tip: Option<u64>,
+    /// The tip block's id, when the node gave it with the height: reorg
+    /// detection then costs no lookup while the recorded chain ends there.
+    pub tip_hash: Option<String>,
     pub handles: HashMap<&'a str, WalletHandle>,
     /// The mempool's transaction ids, when this round's poll succeeded. The
     /// vanished-payment check only runs on a real answer, never on "we
@@ -425,8 +428,8 @@ pub async fn run_round(
 ) -> RoundReport {
     let started = Instant::now();
     let round_end = started + budget;
-    let (tip, tip_error) = match bounded(inputs.daemon.get_height()).await {
-        Ok(tip) => (Some(tip), None),
+    let (tip, tip_hash, tip_error) = match bounded(inputs.daemon.get_tip()).await {
+        Ok(tip) => (Some(tip.height), tip.hash, None),
         Err(error) => {
             shared::throttled!(
                 format!("round-height:{:?}", inputs.network),
@@ -435,7 +438,7 @@ pub async fn run_round(
                 error = %error,
                 "reading the chain height failed - only the mempool is scanned this round"
             );
-            (None, Some(error))
+            (None, None, Some(error))
         }
     };
     if let Some(tip) = tip {
@@ -449,6 +452,7 @@ pub async fn run_round(
         state,
         now: crate::now_unix(),
         tip,
+        tip_hash,
         handles: inputs
             .tenants
             .iter()

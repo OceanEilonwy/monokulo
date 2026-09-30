@@ -571,6 +571,9 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &block);
     let mut progressed = !must_progress;
     for (index, tx) in block.txs.iter().enumerate() {
+        let txid = block.txid(index).ok_or_else(|| {
+            ScannerError::Internal(format!("block {height} has no id for transaction {index}"))
+        })?;
         for batch in scan.due(&scannable, index).chunks(SCAN_CONCURRENCY) {
             if progressed && Instant::now() >= until {
                 let (progress, hash, now) = (scan.into_checkpoint(), block.hash.clone(), round.now);
@@ -579,7 +582,9 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
                     .await?;
                 return Ok(BlockOutcome::Interrupted);
             }
-            for (tenant_id, result) in scan_for_tenants(round.inputs.custody, tx, batch).await {
+            for (tenant_id, result) in
+                scan_for_tenants(round.inputs.custody, &txid, tx, batch).await
+            {
                 match result {
                     Ok(found) => scan.scanned(tenant_id, index, found),
                     Err(error) => {
@@ -926,6 +931,7 @@ mod tests {
             prev_hash: format!("h{}", height - 1),
             timestamp: 0,
             txs: vec![],
+            txids: None,
         }
     }
 

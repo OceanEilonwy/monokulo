@@ -28,7 +28,7 @@ use monero::Transaction;
 use tokio::time::Instant;
 
 use crate::key_custody::{ScanIndices, WalletHandle};
-use crate::scanner::{record_scan_match, scan_for_tenants, tx_id_hex, ScannerError};
+use crate::scanner::{record_scan_match, scan_for_tenants, ScannerError};
 use crate::store::db::Class;
 
 use super::{bounded, Progress, Round, RoundInputs, ScanState, Wait};
@@ -150,13 +150,12 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     // one unresponsive backend mustn't spend the round on deadlines.
     let mut failed: HashSet<crate::store::TenantId> = HashSet::new();
     let mut attempted = 0;
-    for tx in &pool {
+    for (txid, tx) in &pool {
         if attempted > 0 && Instant::now() >= until {
             break;
         }
         attempted += 1;
-        let txid = tx_id_hex(tx);
-        let mut due = state.due(&txid, &tenants, &failed);
+        let mut due = state.due(txid, &tenants, &failed);
         if due.is_empty() {
             continue;
         }
@@ -166,7 +165,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
             % due.len();
         due.rotate_left(offset);
         due.truncate(TENANTS_PER_TX);
-        let outcome = scan_and_record(round.state, round.inputs, tx, &txid, &due, None).await;
+        let outcome = scan_and_record(round.state, round.inputs, tx, txid, &due, None).await;
         failed.extend(outcome.failed);
         if let Some(error) = outcome.store_error {
             tracing::warn!(network = crate::network::network_str(network), error = %error, "recording a mempool match failed (retried next round)");
@@ -232,10 +231,9 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
         tip => Some(tip),
     };
     let mut failed = HashSet::new();
-    for tx in &pool {
-        let txid = tx_id_hex(tx);
-        let due = mempool.due(&txid, &tenants, &failed);
-        let outcome = scan_and_record(state, inputs, tx, &txid, &due, tip).await;
+    for (txid, tx) in &pool {
+        let due = mempool.due(txid, &tenants, &failed);
+        let outcome = scan_and_record(state, inputs, tx, txid, &due, tip).await;
         report.scanned += 1;
         report.paid_orders += outcome.touched;
         failed.extend(outcome.failed);
@@ -275,7 +273,7 @@ async fn scan_and_record(
         .iter()
         .map(|(id, _, w)| (id.as_str(), w.generation()))
         .collect();
-    for (tenant_id, result) in scan_for_tenants(inputs.custody, tx, due).await {
+    for (tenant_id, result) in scan_for_tenants(inputs.custody, txid, tx, due).await {
         let scan = match result {
             Ok(scan) => scan,
             Err(error) => {
@@ -352,12 +350,13 @@ fn select(state: &MempoolState, pool_txids: Vec<String>) -> Vec<String> {
 }
 
 /// The bodies of `txids`, fetching those not remembered in one call.
-/// Returns the bodies found, in order, and whether the fetch failed.
+/// Returns the bodies found (each with its id: a body may be pruned, and
+/// then doesn't hash to it), in order, and whether the fetch failed.
 async fn bodies(
     state: &MempoolState,
     inputs: &RoundInputs<'_>,
     txids: &[String],
-) -> (Vec<Arc<Transaction>>, bool) {
+) -> (Vec<(String, Arc<Transaction>)>, bool) {
     let missing: Vec<String> = {
         let remembered = state.inner.lock();
         txids
@@ -369,12 +368,11 @@ async fn bodies(
     let mut fetched: HashMap<String, Arc<Transaction>> = HashMap::new();
     let mut fetch_failed = false;
     if !missing.is_empty() {
-        match bounded(inputs.daemon.get_transactions(&missing)).await {
+        match bounded(inputs.daemon.get_transactions_with_ids(&missing)).await {
             Ok(txs) => {
                 let mut remembered = state.inner.lock();
-                for tx in txs {
+                for crate::daemon::FetchedTx { txid, tx } in txs {
                     let tx = Arc::new(tx);
-                    let txid = tx_id_hex(&tx);
                     remember_body(&mut remembered.bodies, &txid, &tx, MAX_BODIES);
                     fetched.insert(txid, tx);
                 }
@@ -394,7 +392,7 @@ async fn bodies(
                 .bodies
                 .get(txid)
                 .or_else(|| fetched.get(txid))
-                .cloned()
+                .map(|tx| (txid.clone(), tx.clone()))
         })
         .collect();
     (pool, fetch_failed)

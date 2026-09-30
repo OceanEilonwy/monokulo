@@ -5,20 +5,33 @@
 //! against `monero-rs`'s own source rather than assumed from memory - see the
 //! `#[ignore]`d tests at the bottom of this file for the live proof.
 //!
-//! Two RPC surfaces are in play: the JSON-RPC envelope at `/json_rpc` (used for
-//! `get_block`), and monerod's "other" plain-JSON endpoints (`/get_height`,
-//! `/get_transaction_pool`, `/get_transactions`, `/is_key_image_spent`) which are
-//! not wrapped in a `jsonrpc`/`result` envelope at all.
+//! Three RPC surfaces are in play: the JSON-RPC envelope at `/json_rpc` (block
+//! hashes and headers, `get_info`), monerod's "other" plain-JSON endpoints
+//! (`/get_height`, `/get_transaction_pool_hashes`, `/get_transactions`,
+//! `/is_key_image_spent`) which are not wrapped in a `jsonrpc`/`result`
+//! envelope at all, and the binary (epee) `/get_blocks.bin`, for blocks and
+//! for changes to the mempool.
+//!
+//! What is asked for is kept small (docs/node_rpc_efficiency.md):
+//! transactions come pruned (the prefix and RingCT base a scan reads, about a
+//! sixth of the bytes), a block's id comes from the block itself, a lone hash
+//! or header is asked for as just that, and the mempool is followed by its
+//! changes rather than re-listed. [`RpcDaemonClient::stats`] counts every
+//! request and its bytes, by endpoint.
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use monero::consensus::encode::deserialize;
+use monero::cryptonote::hash::Hashable;
 use monero::Transaction;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::time::Instant;
 
 use crate::daemon::{
-    ChainBlock, DaemonError, DaemonInfo, KeyImageStatus, MoneroDaemonClient, TxLocation,
+    ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, FetchedTx, KeyImageStatus,
+    MoneroDaemonClient, TxLocation,
 };
 
 pub struct RpcDaemonClient {
@@ -27,6 +40,24 @@ pub struct RpcDaemonClient {
     /// Largest response body accepted (task 7.6). A node that sends more is
     /// treated as failing rather than being allowed to exhaust memory.
     max_response_bytes: usize,
+    stats: parking_lot::Mutex<HashMap<String, EndpointStats>>,
+    /// The mempool as this node last described it. An async lock: one poll
+    /// at a time, held across its round trip, so two loops polling at once
+    /// can't apply the same changes out of order.
+    pool: tokio::sync::Mutex<PoolView>,
+}
+
+/// Requests made to one endpoint of a node (a path, or a JSON-RPC method),
+/// and the bytes they cost: [`RpcDaemonClient::stats`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct EndpointStats {
+    pub endpoint: String,
+    /// Requests sent, answered or not.
+    pub requests: u64,
+    /// Request body bytes.
+    pub bytes_sent: u64,
+    /// Response body bytes read.
+    pub bytes_received: u64,
 }
 
 /// Default cap on one response body: comfortably above a full mempool under
@@ -93,7 +124,58 @@ impl RpcDaemonClient {
             client,
             base_url: format!("{scheme}://{host}:{port}"),
             max_response_bytes: MAX_RESPONSE_BYTES,
+            stats: Default::default(),
+            pool: Default::default(),
         })
+    }
+
+    /// Every endpoint asked since this client was built, busiest (by bytes
+    /// received) first.
+    pub fn stats(&self) -> Vec<EndpointStats> {
+        let mut stats: Vec<EndpointStats> = self.stats.lock().values().cloned().collect();
+        stats.sort_by(|a, b| {
+            b.bytes_received
+                .cmp(&a.bytes_received)
+                .then_with(|| a.endpoint.cmp(&b.endpoint))
+        });
+        stats
+    }
+
+    /// Sends one request body to `path` and reads the (capped) response,
+    /// counting both under `endpoint`.
+    async fn post(
+        &self,
+        endpoint: &str,
+        path: &str,
+        body: Vec<u8>,
+        json: bool,
+    ) -> Result<Vec<u8>, DaemonError> {
+        let sent = body.len() as u64;
+        {
+            let mut stats = self.stats.lock();
+            let entry = stats
+                .entry(endpoint.to_string())
+                .or_insert_with(|| EndpointStats {
+                    endpoint: endpoint.to_string(),
+                    ..Default::default()
+                });
+            entry.requests += 1;
+            entry.bytes_sent += sent;
+        }
+        let mut request = self.client.post(format!("{}{path}", self.base_url));
+        if json {
+            request = request.header(reqwest::header::CONTENT_TYPE, "application/json");
+        }
+        let response = request
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| DaemonError::Request(e.to_string()))?;
+        let bytes = read_capped(response, self.max_response_bytes, endpoint).await?;
+        if let Some(entry) = self.stats.lock().get_mut(endpoint) {
+            entry.bytes_received += bytes.len() as u64;
+        }
+        Ok(bytes)
     }
 
     /// Lowers the response size cap, for tests.
@@ -108,14 +190,9 @@ impl RpcDaemonClient {
         params: Value,
     ) -> Result<T, DaemonError> {
         let body = json!({ "jsonrpc": "2.0", "id": "0", "method": method, "params": params });
-        let response = self
-            .client
-            .post(format!("{}/json_rpc", self.base_url))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| DaemonError::Request(e.to_string()))?;
-        let bytes = read_capped(response, self.max_response_bytes, method).await?;
+        let bytes = self
+            .post(method, "/json_rpc", body.to_string().into_bytes(), true)
+            .await?;
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|e| DaemonError::Request(format!("invalid JSON response: {e}")))?;
         if let Some(err) = value.get("error") {
@@ -135,14 +212,9 @@ impl RpcDaemonClient {
         path: &str,
         body: Value,
     ) -> Result<T, DaemonError> {
-        let response = self
-            .client
-            .post(format!("{}{path}", self.base_url))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| DaemonError::Request(e.to_string()))?;
-        let bytes = read_capped(response, self.max_response_bytes, path).await?;
+        let bytes = self
+            .post(path, path, body.to_string().into_bytes(), true)
+            .await?;
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|e| DaemonError::Request(format!("invalid JSON response from {path}: {e}")))?;
         if let Some(status) = value.get("status").and_then(|s| s.as_str()) {
@@ -188,55 +260,80 @@ impl RpcDaemonClient {
     /// cap: a timeout alone doesn't bound size, since a fast node can send a
     /// lot in 15s.
     async fn post_bin(&self, path: &str, body: Vec<u8>) -> Result<Vec<u8>, DaemonError> {
-        let response = self
-            .client
-            .post(format!("{}{path}", self.base_url))
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| DaemonError::Request(e.to_string()))?;
-        read_capped(response, self.max_response_bytes, path).await
+        self.post(path, path, body, false).await
+    }
+
+    /// `/get_transactions` for `hashes`: whole transactions, or (`prune`)
+    /// each one's prefix and RingCT base with the hash of the rest.
+    async fn request_transactions(
+        &self,
+        hashes: &[String],
+        prune: bool,
+    ) -> Result<GetTransactionsResponse, DaemonError> {
+        let mut body = json!({ "txs_hashes": hashes, "decode_as_json": false });
+        if prune {
+            body["prune"] = json!(true);
+        }
+        self.post_plain("/get_transactions", body).await
     }
 
     async fn fetch_transactions(&self, hashes: &[String]) -> Result<Vec<Transaction>, DaemonError> {
         if hashes.is_empty() {
             return Ok(vec![]);
         }
-        let resp: GetTransactionsResponse = self
-            .post_plain(
-                "/get_transactions",
-                json!({ "txs_hashes": hashes, "decode_as_json": false }),
-            )
-            .await?;
+        let resp = self.request_transactions(hashes, false).await?;
         decode_all_or_fail(hashes, resp)
     }
 
     /// The real `get_blocks.bin` call, always with `start_height >= 1` (the
     /// public `get_blocks_range` override handles the height-0 special case
-    /// before ever calling this). Builds the request, posts it, parses the
-    /// response - see `get_blocks_bin_request`/`parse_get_blocks_bin_response`'s
-    /// own doc comments for the wire format itself.
+    /// before ever calling this). Whole transactions: its callers hash them.
     async fn get_blocks_bin_range(
         &self,
         start_height: u64,
         max_block_count: u64,
     ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        Ok(self
-            .get_blocks_bin(start_height, max_block_count)
+        self.get_blocks_bin(start_height, max_block_count, false)
             .await?
             .into_iter()
-            .map(|block| block.txs)
-            .collect())
+            .map(|block| {
+                block
+                    .txs
+                    .iter()
+                    .map(|tx| {
+                        deserialize(&tx.blob).map_err(|e| {
+                            DaemonError::Request(format!(
+                                "failed to parse a transaction blob from get_blocks.bin: {e}"
+                            ))
+                        })
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     async fn get_blocks_bin(
         &self,
         start_height: u64,
         max_block_count: u64,
+        prune: bool,
     ) -> Result<Vec<BinBlock>, DaemonError> {
-        let request = get_blocks_bin_request(start_height, max_block_count);
+        let request = get_blocks_bin_request(start_height, max_block_count, prune);
         let response = self.post_bin("/get_blocks.bin", request).await?;
         parse_get_blocks_bin_response(&response)
+    }
+
+    /// One header by height (`get_block_header_by_height`): about a
+    /// kilobyte, where `get_block` sends the whole block's hashes too.
+    async fn block_header(&self, height: u64) -> Result<BlockHeader, DaemonError> {
+        #[derive(Deserialize)]
+        struct HeaderResult {
+            block_header: BlockHeader,
+        }
+        let result: HeaderResult = self
+            .post_json_rpc("get_block_header_by_height", json!({ "height": height }))
+            .await?;
+        Ok(result.block_header)
     }
 }
 
@@ -389,85 +486,112 @@ fn decode_tx_hex(hex_str: &str) -> Result<Transaction, DaemonError> {
         .map_err(|e| DaemonError::Request(format!("failed to parse transaction blob: {e}")))
 }
 
-/// Builds an epee-encoded `get_blocks.bin` request body: a flat object with
-/// exactly three fields, `prune` (bool), `start_height` (uint64), and
-/// `max_block_count` (uint64) - matching the real request shape monerod
-/// expects for this endpoint (confirmed against `monero-daemon-rpc`'s own,
-/// separately-published implementation of the same call, `bin_rpc/blocks_bin.
-/// rs`'s `fetch_contiguous_blocks` - see `get_blocks_range`'s own doc comment).
-///
-/// `prune` is always `false` here, unlike that reference implementation
-/// (which always requests `true`): this client needs full transactions,
-/// since `monero::consensus::encode::deserialize` below - the same decoder
-/// `get_block_transactions`/`get_mempool_transactions` already use - has only
-/// ever been exercised against full (non-pruned) blobs. A pruned blob is a
-/// genuinely different wire shape (the prunable RingCT signature data is
-/// dropped, not just zeroed), so parsing one with a decoder never verified
-/// against that shape is a real, avoidable risk this client doesn't need to
-/// take: amount-decryption during scanning doesn't touch the prunable
-/// section either way, so nothing here is actually lost by asking for full
-/// blocks instead - it costs some bandwidth, not correctness.
-///
-/// The epee encoding itself: an 8-byte magic header, a 1-byte version, then
-/// each object as a compact-varint field count followed by `(1-byte name
-/// length, name bytes, 1-byte type tag, value)` per field - see
-/// `monero_epee`'s own module docs for the full format. A fixed 3-field
-/// object's count always fits the varint's 1-byte form (`3 << 2`), so this
-/// never needs the format's multi-byte varint case.
-fn get_blocks_bin_request(start_height: u64, max_block_count: u64) -> Vec<u8> {
-    #[allow(
-        clippy::expect_used,
-        reason = "only called with short field-name literals"
-    )]
-    fn push_field_name(buf: &mut Vec<u8>, name: &str) {
-        buf.push(u8::try_from(name.len()).expect("field name literal longer than 255 bytes"));
-        buf.extend_from_slice(name.as_bytes());
-    }
+/// One field of an epee request object.
+enum EpeeField {
+    Bool(bool),
+    U8(u8),
+    U64(u64),
+}
 
-    let mut request = Vec::with_capacity(64);
+/// An epee-encoded request: a flat object of `fields`, in order.
+///
+/// The encoding: an 8-byte magic header, a 1-byte version, then the object
+/// as a compact-varint field count followed by `(1-byte name length, name
+/// bytes, 1-byte type tag, value)` per field - see `monero_epee`'s own
+/// module docs for the full format. A count under 64 fits the varint's
+/// 1-byte form (`count << 2`), which is all this ever needs.
+#[allow(
+    clippy::expect_used,
+    reason = "only called with a few short field-name literals"
+)]
+fn epee_request(fields: &[(&str, EpeeField)]) -> Vec<u8> {
+    let mut request = Vec::with_capacity(96);
     request.extend_from_slice(&monero_epee::HEADER);
     request.push(monero_epee::VERSION);
-    request.push(3 << 2); // 3 top-level fields
-
-    push_field_name(&mut request, "prune");
-    #[expect(clippy::as_conversions)]
-    request.push(monero_epee::Type::Bool as u8);
-    request.push(0); // false - see this function's own doc comment
-
-    push_field_name(&mut request, "start_height");
-    #[expect(clippy::as_conversions)]
-    request.push(monero_epee::Type::Uint64 as u8);
-    request.extend_from_slice(&start_height.to_le_bytes());
-
-    push_field_name(&mut request, "max_block_count");
-    #[expect(clippy::as_conversions)]
-    request.push(monero_epee::Type::Uint64 as u8);
-    request.extend_from_slice(&max_block_count.to_le_bytes());
-
+    let count = u8::try_from(fields.len()).expect("more request fields than fit a u8");
+    assert!(count < 64, "more request fields than the 1-byte varint holds");
+    request.push(count << 2);
+    for (name, value) in fields {
+        request.push(u8::try_from(name.len()).expect("field name literal longer than 255 bytes"));
+        request.extend_from_slice(name.as_bytes());
+        #[expect(clippy::as_conversions)]
+        match value {
+            EpeeField::Bool(value) => {
+                request.push(monero_epee::Type::Bool as u8);
+                request.push(u8::from(*value));
+            }
+            EpeeField::U8(value) => {
+                request.push(monero_epee::Type::Uint8 as u8);
+                request.push(*value);
+            }
+            EpeeField::U64(value) => {
+                request.push(monero_epee::Type::Uint64 as u8);
+                request.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
     request
 }
 
-/// Parses a `get_blocks.bin` response into one `Vec<Transaction>` per block, in
-/// the order monerod returned them (ascending height, since the request asked
-/// for a contiguous range starting at a fixed height). Deliberately ignores
-/// each block entry's own `block` field (the block header + miner/coinbase
-/// transaction, epee-encoded Monero block bytes) entirely - a coinbase
-/// transaction's outputs go to the miner, never to a merchant subaddress, and
-/// `get_block_transactions`'s own existing per-block path already excludes it
-/// the same way (`tx_hashes` from `get_block`'s JSON-RPC response never
-/// includes the coinbase hash) - so this stays behaviorally identical to it,
-/// just batched. Un-consumed fields (`block` itself, `prunable_hash`, `pruned`,
-/// `block_weight`, `output_indices`) are skipped automatically by
-/// `monero_epee`'s own `Drop`-based cursor advance - see its own module docs.
+/// A `get_blocks.bin` request for blocks: `prune` (bool), `start_height`
+/// (uint64) and `max_block_count` (uint64) - the request shape monerod
+/// expects for this endpoint (confirmed against `monero-daemon-rpc`'s own,
+/// separately-published implementation of the same call, `bin_rpc/blocks_bin.
+/// rs`'s `fetch_contiguous_blocks`, and against live nodes).
+///
+/// With `prune`, each transaction comes as its prefix and RingCT base (what
+/// a scan reads) with the hash of the rest, from which its id is checked
+/// against the block's own list (`BinBlock::into_chain_block`).
+fn get_blocks_bin_request(start_height: u64, max_block_count: u64, prune: bool) -> Vec<u8> {
+    epee_request(&[
+        ("prune", EpeeField::Bool(prune)),
+        ("start_height", EpeeField::U64(start_height)),
+        ("max_block_count", EpeeField::U64(max_block_count)),
+    ])
+}
+
+/// `get_blocks.bin`'s `requested_info` for "the pool only, no blocks".
+const REQUESTED_INFO_POOL_ONLY: u8 = 2;
+/// `pool_info_extent` values: every pool transaction, or only the changes
+/// since `pool_info_since`. (0, or no field at all: the node said nothing
+/// about the pool - one too old to know the request.)
+const POOL_INFO_INCREMENTAL: u8 = 1;
+const POOL_INFO_FULL: u8 = 2;
+
+/// A `get_blocks.bin` request for what changed in the pool since `since`
+/// (a `daemon_time` from an earlier answer; 0 for the whole pool), with
+/// the added transactions pruned. The request wallets poll with.
+fn pool_changes_request(since: u64) -> Vec<u8> {
+    epee_request(&[
+        ("requested_info", EpeeField::U8(REQUESTED_INFO_POOL_ONLY)),
+        ("pool_info_since", EpeeField::U64(since)),
+        ("prune", EpeeField::Bool(true)),
+    ])
+}
+
+/// One transaction of a `get_blocks.bin` block entry, undecoded.
+struct BinTx {
+    blob: Vec<u8>,
+    /// The hash of the part a pruned blob leaves out, when the node sent it.
+    prunable_hash: Option<[u8; 32]>,
+}
+
 /// One entry of a `get_blocks.bin` response: the block blob (header, miner
 /// transaction and transaction hashes) and the transactions themselves.
 struct BinBlock {
     block: Option<Vec<u8>>,
-    txs: Vec<Transaction>,
+    txs: Vec<BinTx>,
 }
 
 impl BinBlock {
-    /// The block's identity from its own blob, with its transactions.
+    /// The block's identity from its own blob, with its transactions and
+    /// their ids.
+    ///
+    /// Everything is checked against the blob, whose hash is the block's id:
+    /// the height (the coinbase names it), so a node answering from another
+    /// height is refused rather than its blocks scanned as the ones asked
+    /// for; and each transaction's id against the block's own list, so what
+    /// is scanned is what the block holds.
     fn into_chain_block(self, height: u64) -> Result<ChainBlock, DaemonError> {
         let blob = self.block.ok_or_else(|| {
             DaemonError::Request(format!("get_blocks.bin: block {height} had no block blob"))
@@ -477,6 +601,20 @@ impl BinBlock {
                 "get_blocks.bin: block {height} could not be decoded: {e}"
             ))
         })?;
+        match block.miner_tx.prefix.inputs.first() {
+            Some(monero::blockdata::transaction::TxIn::Gen { height: own }) if own.0 == height => {}
+            Some(monero::blockdata::transaction::TxIn::Gen { height: own }) => {
+                return Err(DaemonError::Request(format!(
+                    "get_blocks.bin: asked for block {height}, the node sent block {}",
+                    own.0
+                )))
+            }
+            _ => {
+                return Err(DaemonError::Request(format!(
+                    "get_blocks.bin: block {height} has no coinbase input"
+                )))
+            }
+        }
         if block.tx_hashes.len() != self.txs.len() {
             return Err(DaemonError::Request(format!(
                 "get_blocks.bin: block {height} lists {} transactions but {} came with it",
@@ -484,20 +622,88 @@ impl BinBlock {
                 self.txs.len()
             )));
         }
+        let mut txs = Vec::with_capacity(self.txs.len());
+        let mut txids = Vec::with_capacity(self.txs.len());
+        for (entry, listed) in self.txs.iter().zip(&block.tx_hashes) {
+            let txid = hex::encode(listed.0);
+            let tx = decode_tx_blob(&entry.blob, entry.prunable_hash.as_ref(), Some(&txid))
+                .map_err(|e| {
+                    DaemonError::Request(format!("get_blocks.bin: block {height}: {e}"))
+                })?;
+            txs.push(tx.tx);
+            txids.push(txid);
+        }
         Ok(ChainBlock {
             height,
             hash: hex::encode(block.id().0),
             prev_hash: hex::encode(block.header.prev_id.0),
             timestamp: block.header.timestamp.0,
-            txs: self.txs,
+            txs,
+            txids: Some(txids),
         })
     }
 }
 
-fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonError> {
-    fn epee_err(e: monero_epee::EpeeError) -> DaemonError {
-        DaemonError::Request(format!("invalid get_blocks.bin response: {e:?}"))
+/// A transaction blob, whole or pruned, as a transaction with its id.
+///
+/// The id is computed wherever it can be: a whole transaction hashes to it,
+/// and a pruned version 2 one does together with `prunable_hash`. If the
+/// node (or the block the transaction came in) `claimed` an id, a computed
+/// one that differs is an error: the transaction isn't the one named. Only
+/// where nothing can be computed (a pruned version 1 transaction, or no
+/// prunable hash sent) is the claimed id taken as given.
+fn decode_tx_blob(
+    blob: &[u8],
+    prunable_hash: Option<&[u8; 32]>,
+    claimed: Option<&str>,
+) -> Result<FetchedTx, String> {
+    let tx = shared::monero_tx::decode_any(blob)
+        .map_err(|e| format!("failed to parse a transaction blob: {e}"))?;
+    let computed = if shared::monero_tx::is_pruned(&tx) {
+        // An all-zero hash is a node saying it has none, not a hash.
+        prunable_hash
+            .filter(|hash| **hash != [0; 32])
+            .and_then(|hash| shared::monero_tx::pruned_txid(&tx, hash))
+    } else {
+        Some(tx.hash())
     }
+    .map(|hash| hex::encode(hash.to_bytes()));
+    let txid = match (computed, claimed) {
+        (Some(computed), Some(claimed)) if computed != claimed => {
+            return Err(format!(
+                "a transaction sent as {claimed} hashes to {computed}"
+            ))
+        }
+        (Some(computed), _) => computed,
+        (None, Some(claimed)) if is_txid(claimed) => claimed.to_string(),
+        (None, _) => return Err("a pruned transaction came without an id".to_string()),
+    };
+    Ok(FetchedTx { txid, tx })
+}
+
+/// Whether `s` has the shape of a transaction id: 64 lowercase hex digits.
+fn is_txid(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A 32-byte value from an epee string field, if it is one.
+fn hash32(bytes: &[u8]) -> Option<[u8; 32]> {
+    bytes.try_into().ok()
+}
+
+fn epee_err(what: &str, e: monero_epee::EpeeError) -> DaemonError {
+    DaemonError::Request(format!("invalid {what} response: {e:?}"))
+}
+
+/// Parses a `get_blocks.bin` response into its block entries, in the order
+/// monerod returned them (ascending height, since the request asked for a
+/// contiguous range starting at a fixed height). Nothing is decoded here:
+/// each entry keeps its block blob and its transaction blobs. Un-consumed
+/// fields (`pruned`, `block_weight`, `output_indices`, ...) are skipped
+/// automatically by `monero_epee`'s own `Drop`-based cursor advance - see its
+/// own module docs.
+fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonError> {
+    let epee_err = |e| epee_err("get_blocks.bin", e);
 
     let mut epee = monero_epee::Epee::new(bytes).map_err(epee_err)?;
     let mut fields = epee.entry().map_err(epee_err)?.fields().map_err(epee_err)?;
@@ -533,44 +739,58 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonEr
                             }
                             _ => continue,
                         }
-                        // `txs`' own element shape genuinely differs by monerod
-                        // version, confirmed against a real response, not assumed:
-                        // a plain `Array<String>` (each element the raw tx blob
-                        // directly) on the node this was verified against, but
-                        // `monero-daemon-rpc`'s own reference implementation
-                        // (`bin_rpc/blocks_bin.rs`) handles a newer
-                        // `Array<Object{blob, prunable_hash}>` shape instead - so
-                        // both are handled here, dispatched on the array's actual
-                        // declared element type rather than assuming either.
+                        // `txs`' own element shape differs, confirmed against
+                        // real responses: a plain `Array<String>` (each element
+                        // the raw tx blob) for whole transactions, and
+                        // `Array<Object{blob, prunable_hash}>` for pruned ones
+                        // (older nodes: strings there too) - so both are
+                        // handled, dispatched on the array's declared element
+                        // type rather than assuming either.
                         let element_kind = field_value.kind();
                         let mut tx_entries = field_value.iterate().map_err(epee_err)?;
                         while let Some(tx_entry) = tx_entries.next() {
                             let tx_entry = tx_entry.map_err(epee_err)?;
-                            let blob = match element_kind {
-                                monero_epee::Type::String => {
-                                    tx_entry.to_str().map_err(epee_err)?.consume().to_vec()
-                                }
+                            let tx = match element_kind {
+                                monero_epee::Type::String => BinTx {
+                                    blob: tx_entry.to_str().map_err(epee_err)?.consume().to_vec(),
+                                    prunable_hash: None,
+                                },
                                 monero_epee::Type::Object => {
                                     let mut tx_fields = tx_entry.fields().map_err(epee_err)?;
                                     let mut blob: Option<Vec<u8>> = None;
+                                    let mut prunable_hash = None;
                                     while let Some(tx_field) = tx_fields.next() {
                                         let (tx_field_key, tx_field_value) =
                                             tx_field.map_err(epee_err)?;
-                                        if tx_field_key.consume() == b"blob" {
-                                            blob = Some(
-                                                tx_field_value
-                                                    .to_str()
-                                                    .map_err(epee_err)?
-                                                    .consume()
-                                                    .to_vec(),
-                                            );
+                                        match tx_field_key.consume() {
+                                            b"blob" => {
+                                                blob = Some(
+                                                    tx_field_value
+                                                        .to_str()
+                                                        .map_err(epee_err)?
+                                                        .consume()
+                                                        .to_vec(),
+                                                );
+                                            }
+                                            b"prunable_hash" => {
+                                                prunable_hash = hash32(
+                                                    tx_field_value
+                                                        .to_str()
+                                                        .map_err(epee_err)?
+                                                        .consume(),
+                                                );
+                                            }
+                                            _ => {}
                                         }
                                     }
-                                    blob.ok_or_else(|| {
-                                        DaemonError::Request(
-                                            "get_blocks.bin: a tx entry (object form) had no blob field".to_string(),
-                                        )
-                                    })?
+                                    BinTx {
+                                        blob: blob.ok_or_else(|| {
+                                            DaemonError::Request(
+                                                "get_blocks.bin: a tx entry (object form) had no blob field".to_string(),
+                                            )
+                                        })?,
+                                        prunable_hash,
+                                    }
                                 }
                                 other => {
                                     return Err(DaemonError::Request(format!(
@@ -578,11 +798,7 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonEr
                                     )));
                                 }
                             };
-                            txs.push(deserialize(&blob).map_err(|e| {
-                                DaemonError::Request(format!(
-                                    "failed to parse a transaction blob from get_blocks.bin: {e}"
-                                ))
-                            })?);
+                            txs.push(tx);
                         }
                     }
                     out.push(BinBlock {
@@ -616,14 +832,179 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonEr
     })
 }
 
+/// What a node said changed in its pool (`get_blocks.bin` with
+/// `requested_info` = pool only).
+#[derive(Debug, Default, PartialEq)]
+struct PoolChanges {
+    /// Every pool transaction (`true`), or only what changed since the
+    /// request's `pool_info_since`.
+    full: bool,
+    /// The node's clock at the answer: the next request's
+    /// `pool_info_since`.
+    daemon_time: u64,
+    /// Transactions that entered the pool, with their (pruned) bodies.
+    added: Vec<(String, Vec<u8>)>,
+    /// Transactions that entered the pool, ids only (a restricted node
+    /// sends at most 100 bodies per answer).
+    added_ids: Vec<String>,
+    removed: Vec<String>,
+}
+
+/// Parses a pool-only `get_blocks.bin` response. `Ok(None)` when the node
+/// answered without describing its pool: one that doesn't know the request
+/// (older than monerod 0.18.3), to be asked the old way instead.
+fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> {
+    let epee_err = |e| epee_err("pool get_blocks.bin", e);
+    fn ids(blob: &[u8]) -> Vec<String> {
+        blob.chunks_exact(32).map(hex::encode).collect()
+    }
+
+    let mut epee = monero_epee::Epee::new(bytes).map_err(epee_err)?;
+    let mut fields = epee.entry().map_err(epee_err)?.fields().map_err(epee_err)?;
+    let mut status: Option<Vec<u8>> = None;
+    let mut extent: Option<u8> = None;
+    let mut daemon_time: Option<u64> = None;
+    let mut changes = PoolChanges::default();
+    while let Some(entry) = fields.next() {
+        let (key, value) = entry.map_err(epee_err)?;
+        match key.consume() {
+            b"status" => status = Some(value.to_str().map_err(epee_err)?.consume().to_vec()),
+            b"pool_info_extent" => extent = Some(value.to_u8().map_err(epee_err)?),
+            b"daemon_time" => daemon_time = Some(value.to_u64().map_err(epee_err)?),
+            b"remaining_added_pool_txids" => {
+                changes.added_ids = ids(value.to_str().map_err(epee_err)?.consume());
+            }
+            b"removed_pool_txids" => {
+                changes.removed = ids(value.to_str().map_err(epee_err)?.consume());
+            }
+            b"added_pool_txs" => {
+                let mut entries = value.iterate().map_err(epee_err)?;
+                while let Some(entry) = entries.next() {
+                    let mut tx_fields = entry.map_err(epee_err)?.fields().map_err(epee_err)?;
+                    let (mut txid, mut blob) = (None, None);
+                    while let Some(field) = tx_fields.next() {
+                        let (field_key, field_value) = field.map_err(epee_err)?;
+                        match field_key.consume() {
+                            b"tx_hash" => {
+                                txid = hash32(field_value.to_str().map_err(epee_err)?.consume())
+                                    .map(hex::encode);
+                            }
+                            b"tx_blob" => {
+                                blob = Some(
+                                    field_value.to_str().map_err(epee_err)?.consume().to_vec(),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    match (txid, blob) {
+                        (Some(txid), Some(blob)) => changes.added.push((txid, blob)),
+                        // Known to be in the pool, fetched like any other.
+                        (Some(txid), None) => changes.added_ids.push(txid),
+                        (None, _) => {
+                            return Err(DaemonError::Request(
+                                "pool get_blocks.bin: an added transaction had no id".to_string(),
+                            ))
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if status.as_deref() != Some(b"OK") {
+        return Ok(None);
+    }
+    changes.full = match extent {
+        Some(POOL_INFO_FULL) => true,
+        Some(POOL_INFO_INCREMENTAL) => false,
+        _ => return Ok(None),
+    };
+    let Some(daemon_time) = daemon_time else {
+        return Ok(None);
+    };
+    changes.daemon_time = daemon_time;
+    Ok(Some(changes))
+}
+
+/// How long one answer about the pool stands in for asking again. The fast
+/// mempool loop and the round's tier poll the same node a fraction of a
+/// second apart; a second poll this soon after the first gets its answer.
+const POOL_REUSE: Duration = Duration::from_millis(100);
+/// How often the pool as followed by its changes is checked against the
+/// node's plain list of ids, so a missed change (a node restarted, a load
+/// balancer's backends disagreeing) is corrected within this long.
+const POOL_RESYNC_INTERVAL: Duration = Duration::from_secs(60);
+/// How long a node that didn't describe its pool is asked the old way
+/// before it is tried again (it may have been upgraded).
+const POOL_CHANGES_RETRY: Duration = Duration::from_secs(10 * 60);
+/// Most transaction bodies that arrived with pool changes kept until they
+/// are asked for. Past this (a flood) they are fetched on demand instead.
+const POOL_BODIES_MAX: usize = 5_000;
+
+/// The pool as one node last described it, kept between polls so each poll
+/// asks only for what changed.
+#[derive(Default)]
+struct PoolView {
+    /// Whether the node answers requests for pool changes: not yet known,
+    /// yes, or no (asked the old way until `retry_changes_at`).
+    follows_changes: Option<bool>,
+    retry_changes_at: Option<Instant>,
+    /// The node's clock at its last answer.
+    since: u64,
+    txids: HashSet<String>,
+    /// Bodies that arrived with the changes and haven't been asked for yet.
+    bodies: HashMap<String, Transaction>,
+    polled_at: Option<Instant>,
+    resynced_at: Option<Instant>,
+}
+
+impl PoolView {
+    fn apply(&mut self, changes: PoolChanges) {
+        if changes.full {
+            self.txids.clear();
+            self.bodies.clear();
+        }
+        for (txid, blob) in changes.added {
+            // A body that doesn't decode is left to be fetched (and
+            // reported) by whoever asks for it.
+            if self.bodies.len() < POOL_BODIES_MAX {
+                if let Ok(tx) = shared::monero_tx::decode_any(&blob) {
+                    self.bodies.insert(txid.clone(), tx);
+                }
+            }
+            self.txids.insert(txid);
+        }
+        self.txids.extend(changes.added_ids);
+        for txid in &changes.removed {
+            self.txids.remove(txid);
+            self.bodies.remove(txid);
+        }
+        self.since = changes.daemon_time;
+    }
+
+    /// Replaces the ids with the node's plain list, keeping the bodies of
+    /// those still there.
+    fn resync(&mut self, txids: Vec<String>) {
+        self.txids = txids.into_iter().collect();
+        let txids = &self.txids;
+        self.bodies.retain(|txid, _| txids.contains(txid));
+    }
+
+    fn list(&self) -> Vec<String> {
+        self.txids.iter().cloned().collect()
+    }
+}
+
 /// Matches `COMMAND_RPC_GET_HEIGHT::response_t`: `uint64_t height`, plain
-/// `KV_SERIALIZE` (always present). The real struct also always-serializes a
-/// `hash` field (the tip block's hash) this client doesn't read, since
-/// `get_block_hash` fetches it separately when needed - no correctness
-/// implication, just unused.
+/// `KV_SERIALIZE` (always present), and `hash`, the tip block's id, read in
+/// the same instant (optional here: something in front of a node may drop
+/// it, and the height alone is still an answer).
 #[derive(Deserialize)]
 struct GetHeightResponse {
     height: u64,
+    #[serde(default)]
+    hash: Option<String>,
 }
 
 /// `get_info`'s network fields. Newer monerod says `nettype` outright;
@@ -631,6 +1012,10 @@ struct GetHeightResponse {
 /// Every field is optional: a node that sends none of them is "unknown".
 #[derive(Deserialize)]
 struct GetInfoResult {
+    /// The block count, as `/get_height` has it: one more than the tip's
+    /// height.
+    #[serde(default)]
+    height: Option<u64>,
     #[serde(default)]
     nettype: Option<String>,
     #[serde(default)]
@@ -661,6 +1046,29 @@ impl GetInfoResult {
 struct BlockHeader {
     hash: String,
     timestamp: u64,
+    /// Absent from nothing real; optional so `get_block` answers written
+    /// before this field was read here still parse in tests.
+    #[serde(default)]
+    height: Option<u64>,
+    #[serde(default)]
+    prev_hash: String,
+}
+
+impl BlockHeader {
+    /// The header as the chain tier and block recorder use it. The genesis
+    /// block's parent is the empty string here, not monerod's 64 zeros.
+    fn into_chain_header(self, height: u64) -> ChainHeader {
+        ChainHeader {
+            height,
+            hash: self.hash,
+            prev_hash: if height == 0 {
+                String::new()
+            } else {
+                self.prev_hash
+            },
+            timestamp: self.timestamp,
+        }
+    }
 }
 
 /// Matches `COMMAND_RPC_GET_BLOCK::response_t`: `block_header` and `tx_hashes` are
@@ -734,11 +1142,62 @@ struct GetTransactionsResponse {
 /// fields of type exactly `Option<T>` - a missing key deserializes to `None`
 /// automatically, independent of `#[serde(default)]`. Pinned, not just asserted,
 /// by `an_in_pool_entry_with_no_block_height_key_at_all_deserializes_as_none` below.
-#[derive(Deserialize)]
+///
+/// With `prune` requested, `as_hex` is empty and the transaction comes as
+/// `pruned_as_hex` (its prefix and RingCT base) with `prunable_hash` (the hash
+/// of the rest); `tx_hash` names it either way.
+#[derive(Deserialize, Default)]
 struct TxEntry {
+    #[serde(default)]
     as_hex: String,
+    #[serde(default)]
+    pruned_as_hex: String,
+    #[serde(default)]
+    prunable_hash: String,
+    #[serde(default)]
+    tx_hash: String,
     in_pool: bool,
     block_height: Option<u64>,
+}
+
+impl TxEntry {
+    /// Where the node places this transaction, if the entry says: in the
+    /// pool, or in a block at a height. `None` is a non-answer (confirmed,
+    /// with no height), never "not found".
+    fn location(&self) -> Option<TxLocation> {
+        match (self.in_pool, self.block_height) {
+            (true, _) => Some(TxLocation::InPool),
+            (false, Some(height)) => Some(TxLocation::InBlock(height)),
+            (false, None) => None,
+        }
+    }
+
+    /// The transaction with its id, from whichever form the node sent.
+    fn fetched(&self) -> Result<FetchedTx, DaemonError> {
+        let hex_blob = if self.pruned_as_hex.is_empty() {
+            &self.as_hex
+        } else {
+            &self.pruned_as_hex
+        };
+        if hex_blob.is_empty() {
+            return Err(DaemonError::Request(format!(
+                "transaction {} came with no data",
+                self.tx_hash
+            )));
+        }
+        let blob = hex::decode(hex_blob)
+            .map_err(|e| DaemonError::Request(format!("invalid tx hex: {e}")))?;
+        let prunable_hash = hex::decode(&self.prunable_hash)
+            .ok()
+            .and_then(|bytes| hash32(&bytes));
+        let claimed = self.tx_hash.to_ascii_lowercase();
+        decode_tx_blob(
+            &blob,
+            prunable_hash.as_ref(),
+            Some(claimed.as_str()).filter(|claimed| !claimed.is_empty()),
+        )
+        .map_err(DaemonError::Request)
+    }
 }
 
 /// The real field is `std::vector<int> spent_status` (`COMMAND_RPC_IS_KEY_IMAGE_SPENT::response_t`) -
@@ -758,6 +1217,32 @@ struct TxEntry {
 struct IsKeyImageSpentResponse {
     #[serde(default)]
     spent_status: Vec<i32>,
+}
+
+/// Most transactions asked for in one `/get_transactions` request (a
+/// restricted node refuses more than 100).
+const TXS_PER_REQUEST: usize = 100;
+/// Most headers asked for in one `get_block_headers_range` request (a
+/// restricted node refuses more than 1000).
+const MAX_HEADERS_PER_REQUEST: u64 = 500;
+/// The name pool-change polls are counted under in [`RpcDaemonClient::stats`]:
+/// the same path as block fetches, a different request.
+const POOL_CHANGES_ENDPOINT: &str = "/get_blocks.bin (pool changes)";
+
+impl RpcDaemonClient {
+    /// The pool's transaction ids, the whole list
+    /// (`/get_transaction_pool_hashes`).
+    async fn pool_hashes(&self) -> Result<Vec<String>, DaemonError> {
+        #[derive(Deserialize)]
+        struct PoolHashes {
+            #[serde(default)]
+            tx_hashes: Vec<String>,
+        }
+        let resp: PoolHashes = self
+            .post_plain("/get_transaction_pool_hashes", json!({}))
+            .await?;
+        Ok(resp.tx_hashes)
+    }
 }
 
 #[async_trait::async_trait]
@@ -784,20 +1269,43 @@ impl MoneroDaemonClient for RpcDaemonClient {
         Ok(resp.height.saturating_sub(1))
     }
 
+    /// `/get_height` again, keeping the tip block's id it carries: the
+    /// height and the id are read under one lock in monerod, so they name
+    /// the same block. An id of the wrong shape is dropped, not trusted.
+    async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
+        let resp: GetHeightResponse = self.post_plain("/get_height", json!({})).await?;
+        Ok(ChainTip {
+            height: resp.height.saturating_sub(1),
+            hash: resp
+                .hash
+                .map(|hash| hash.to_ascii_lowercase())
+                .filter(|hash| is_txid(hash) && resp.height > 0),
+        })
+    }
+
     /// monerod's JSON-RPC `get_info`, through the same client (and so the
     /// same 15s timeout and response cap) as every other call.
     async fn get_info(&self) -> Result<DaemonInfo, DaemonError> {
         let result: GetInfoResult = self.post_json_rpc("get_info", json!({})).await?;
         Ok(DaemonInfo {
             nettype: result.nettype(),
+            height: result.height.and_then(|count| count.checked_sub(1)),
         })
     }
 
+    /// `on_get_block_hash`: the hash and nothing else (about a hundred
+    /// bytes, where `get_block` sends the whole block to read it from).
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
-        let resp: GetBlockResult = self
-            .post_json_rpc("get_block", json!({ "height": height }))
+        let hash: String = self
+            .post_json_rpc("on_get_block_hash", json!([height]))
             .await?;
-        Ok(resp.block_header.hash)
+        let hash = hash.to_ascii_lowercase();
+        if !is_txid(&hash) {
+            return Err(DaemonError::Request(format!(
+                "on_get_block_hash returned something that is not a block hash for height {height}"
+            )));
+        }
+        Ok(hash)
     }
 
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
@@ -858,21 +1366,25 @@ impl MoneroDaemonClient for RpcDaemonClient {
         let mut out = Vec::new();
         let mut from = start_height;
         if start_height == 0 {
-            let hash = self.get_block_hash(0).await?;
-            let timestamp = self.get_block_timestamp(0).await?;
-            let txs = self.get_block_transactions(0).await?;
+            // One `get_block` names the genesis block, dates it and lists
+            // its transactions.
+            let block: GetBlockResult = self
+                .post_json_rpc("get_block", json!({ "height": 0 }))
+                .await?;
+            let txs = self.fetch_transactions(&block.tx_hashes).await?;
             out.push(ChainBlock {
                 height: 0,
-                hash,
+                hash: block.block_header.hash,
                 prev_hash: String::new(),
-                timestamp,
+                timestamp: block.block_header.timestamp,
                 txs,
+                txids: None,
             });
             from = 1;
         }
         let wanted = count - out.len() as u64;
         if wanted > 0 {
-            let blocks = self.get_blocks_bin(from, wanted).await?;
+            let blocks = self.get_blocks_bin(from, wanted, true).await?;
             for (offset, block) in blocks.into_iter().take(wanted as usize).enumerate() {
                 out.push(block.into_chain_block(from + offset as u64)?);
             }
@@ -885,11 +1397,57 @@ impl MoneroDaemonClient for RpcDaemonClient {
         Ok(out)
     }
 
+    /// `get_block_headers_range`: about a kilobyte a block. monerod refuses
+    /// a range that runs past its tip, so a refused range is asked again as
+    /// its first header alone: the caller gets fewer than it asked for, as
+    /// from `get_chain_blocks`.
+    async fn get_chain_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainHeader>, DaemonError> {
+        #[derive(Deserialize)]
+        struct Headers {
+            #[serde(default)]
+            headers: Vec<BlockHeader>,
+        }
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let count = count.min(MAX_HEADERS_PER_REQUEST);
+        if count > 1 {
+            let range = json!({
+                "start_height": start_height,
+                "end_height": start_height.saturating_add(count - 1),
+            });
+            if let Ok(Headers { headers }) =
+                self.post_json_rpc("get_block_headers_range", range).await
+            {
+                let mut out = Vec::with_capacity(headers.len());
+                for (height, header) in (start_height..).zip(headers) {
+                    if header.height.is_some_and(|own| own != height) {
+                        return Err(DaemonError::Request(format!(
+                            "get_block_headers_range: asked for block {height}, the node sent another"
+                        )));
+                    }
+                    out.push(header.into_chain_header(height));
+                }
+                if !out.is_empty() {
+                    return Ok(out);
+                }
+            }
+        }
+        let header = self.block_header(start_height).await?;
+        if header.height.is_some_and(|own| own != start_height) {
+            return Err(DaemonError::Request(format!(
+                "get_block_header_by_height: asked for block {start_height}, the node sent another"
+            )));
+        }
+        Ok(vec![header.into_chain_header(start_height)])
+    }
+
     async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
-        let resp: GetBlockResult = self
-            .post_json_rpc("get_block", json!({ "height": height }))
-            .await?;
-        Ok(resp.block_header.timestamp)
+        Ok(self.block_header(height).await?.timestamp)
     }
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
@@ -898,16 +1456,78 @@ impl MoneroDaemonClient for RpcDaemonClient {
         Ok(decode_pool_best_effort(&resp.transactions))
     }
 
+    /// The pool's transaction ids, followed by its changes where the node
+    /// can say them: one small `get_blocks.bin` answer naming what entered
+    /// and left since the last poll (with the new transactions' bodies,
+    /// pruned), instead of the whole list every time. Every
+    /// `POOL_RESYNC_INTERVAL` the node's plain list replaces what was
+    /// followed, so a missed change doesn't last. A node that can't say
+    /// changes is asked for the plain list each time, as before.
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
-        #[derive(Deserialize)]
-        struct PoolHashes {
-            #[serde(default)]
-            tx_hashes: Vec<String>,
+        let mut pool = self.pool.lock().await;
+        let now = Instant::now();
+        if pool.follows_changes == Some(false)
+            && pool.retry_changes_at.is_some_and(|at| now >= at)
+        {
+            pool.follows_changes = None;
         }
-        let resp: PoolHashes = self
-            .post_plain("/get_transaction_pool_hashes", json!({}))
+        if pool.follows_changes == Some(false) {
+            return self.pool_hashes().await;
+        }
+        if pool.follows_changes == Some(true) {
+            if pool
+                .polled_at
+                .is_some_and(|at| now.saturating_duration_since(at) < POOL_REUSE)
+            {
+                return Ok(pool.list());
+            }
+            if pool
+                .resynced_at
+                .is_none_or(|at| now.saturating_duration_since(at) >= POOL_RESYNC_INTERVAL)
+            {
+                let txids = self.pool_hashes().await?;
+                pool.resync(txids);
+                pool.resynced_at = Some(now);
+                pool.polled_at = Some(now);
+                return Ok(pool.list());
+            }
+        }
+        let response = self
+            .post(
+                POOL_CHANGES_ENDPOINT,
+                "/get_blocks.bin",
+                pool_changes_request(pool.since),
+                false,
+            )
             .await?;
-        Ok(resp.tx_hashes)
+        // An answer that isn't a description of the pool (or isn't epee at
+        // all) is a node that doesn't know the request.
+        match parse_pool_changes(&response).ok().flatten() {
+            Some(changes) => {
+                if changes.full {
+                    // A whole pool is as good as a resync.
+                    pool.resynced_at = Some(now);
+                }
+                pool.apply(changes);
+                pool.follows_changes = Some(true);
+                pool.polled_at = Some(now);
+                Ok(pool.list())
+            }
+            None => {
+                if pool.follows_changes == Some(true) {
+                    tracing::warn!(
+                        node = %self.base_url,
+                        "the node stopped answering requests for mempool changes - asking for the whole list instead"
+                    );
+                }
+                *pool = PoolView {
+                    follows_changes: Some(false),
+                    retry_changes_at: Some(now + POOL_CHANGES_RETRY),
+                    ..PoolView::default()
+                };
+                self.pool_hashes().await
+            }
+        }
     }
 
     async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
@@ -919,14 +1539,124 @@ impl MoneroDaemonClient for RpcDaemonClient {
         Ok(out)
     }
 
+    /// Pruned, each with the id the node names it by (checked against the
+    /// body: `TxEntry::fetched`). Bodies that arrived with the pool's
+    /// changes are handed over without asking. A transaction the node no
+    /// longer has is left out; one that can't be decoded is left out and
+    /// logged, since it can't be matched against a wallet however often it
+    /// is fetched.
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<FetchedTx>, DaemonError> {
+        let mut out = Vec::with_capacity(txids.len());
+        let mut missing = Vec::new();
+        {
+            let mut pool = self.pool.lock().await;
+            for txid in txids {
+                match pool.bodies.remove(txid) {
+                    Some(tx) => out.push(FetchedTx {
+                        txid: txid.clone(),
+                        tx,
+                    }),
+                    None => missing.push(txid.clone()),
+                }
+            }
+        }
+        // In batches, so one request never carries an unbounded list.
+        for batch in missing.chunks(TXS_PER_REQUEST) {
+            let wanted: HashSet<&String> = batch.iter().collect();
+            let resp = self.request_transactions(batch, true).await?;
+            for entry in resp.txs.unwrap_or_default() {
+                match entry.fetched() {
+                    Ok(fetched) if wanted.contains(&fetched.txid) => out.push(fetched),
+                    Ok(fetched) => {
+                        return Err(DaemonError::Request(format!(
+                            "daemon sent transaction {}, which was not asked for",
+                            fetched.txid
+                        )))
+                    }
+                    Err(e) => shared::throttled!(
+                        format!("undecodable-tx:{}", self.base_url),
+                        warn,
+                        error = %e,
+                        "skipping a transaction that can't be read - it can't be matched against any wallet either way"
+                    ),
+                }
+            }
+        }
+        Ok(out)
+    }
+
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
-        let resp: GetTransactionsResponse = self
-            .post_plain(
-                "/get_transactions",
-                json!({ "txs_hashes": [txid], "decode_as_json": false }),
-            )
+        let resp = self
+            .request_transactions(std::slice::from_ref(&txid.to_string()), true)
             .await?;
         classify_located_transaction(txid, resp)
+    }
+
+    /// One `/get_transactions` (pruned: only the locations are read) for up
+    /// to `TXS_PER_REQUEST` transactions at a time. Only an affirmative
+    /// answer is given for a transaction: the node named it as missed
+    /// (`NotFound`) or sent an entry that places it. Anything else is left
+    /// out, for `locate_transaction` to ask about (and refuse a non-answer).
+    async fn locate_transactions(
+        &self,
+        txids: &[String],
+    ) -> Result<HashMap<String, TxLocation>, DaemonError> {
+        let mut out = HashMap::with_capacity(txids.len());
+        for batch in txids.chunks(TXS_PER_REQUEST) {
+            let wanted: HashSet<&str> = batch.iter().map(String::as_str).collect();
+            let resp = self.request_transactions(batch, true).await?;
+            for missed in &resp.missed_tx {
+                if let Some(txid) = wanted.get(missed.as_str()) {
+                    out.insert(txid.to_string(), TxLocation::NotFound);
+                }
+            }
+            for entry in resp.txs.unwrap_or_default() {
+                let (Some(txid), Some(location)) =
+                    (wanted.get(entry.tx_hash.as_str()), entry.location())
+                else {
+                    continue;
+                };
+                // Named both as missed and as found: no answer at all.
+                if out.insert(txid.to_string(), location).is_some() {
+                    out.remove(*txid);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// One `/get_transactions` for both the transaction (pruned) and where
+    /// it is.
+    async fn find_transaction(
+        &self,
+        txid: &str,
+    ) -> Result<Option<(FetchedTx, TxLocation)>, DaemonError> {
+        let resp = self
+            .request_transactions(std::slice::from_ref(&txid.to_string()), true)
+            .await?;
+        let fetched = resp
+            .txs
+            .as_ref()
+            .and_then(|txs| txs.first())
+            .map(TxEntry::fetched)
+            .transpose();
+        let location = classify_located_transaction(txid, resp)?;
+        if location == TxLocation::NotFound {
+            return Ok(None);
+        }
+        let fetched = fetched?.ok_or_else(|| {
+            DaemonError::Request(format!("daemon placed {txid} but sent no transaction"))
+        })?;
+        if fetched.txid != txid {
+            return Err(DaemonError::Request(format!(
+                "asked for transaction {txid}, the node sent {}",
+                fetched.txid
+            )));
+        }
+        Ok(Some((fetched, location)))
     }
 
     async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
@@ -996,13 +1726,27 @@ mod tests {
     fn a_get_blocks_bin_entry_carries_its_own_block_identity() {
         let blob = hex::decode(COINBASE_ONLY_BLOCK_HEX).unwrap();
         let decoded: monero::Block = deserialize(&blob).unwrap();
+        // The coinbase names the block's height.
+        let height = match &decoded.miner_tx.prefix.inputs[0] {
+            monero::blockdata::transaction::TxIn::Gen { height } => height.0,
+            _ => unreachable!("a coinbase input"),
+        };
         let block = BinBlock {
             block: Some(blob.clone()),
             txs: vec![],
         }
-        .into_chain_block(1_000)
+        .into_chain_block(height)
         .unwrap();
-        assert_eq!(block.height, 1_000);
+        assert_eq!(block.height, height);
+        // A node answering from another height is refused, not recorded as
+        // the block asked for.
+        let error = BinBlock {
+            block: Some(blob.clone()),
+            txs: vec![],
+        }
+        .into_chain_block(height + 1)
+        .unwrap_err();
+        assert!(error.to_string().contains("the node sent block"), "{error}");
         assert_eq!(block.hash, hex::encode(decoded.id().0));
         assert_eq!(
             block.prev_hash,
@@ -1011,24 +1755,26 @@ mod tests {
         assert_eq!(block.timestamp, decoded.header.timestamp.0);
         assert!(block.txs.is_empty());
 
-        let tx: Transaction = deserialize(&hex::decode(FIXTURE_TX_HEX.trim()).unwrap()).unwrap();
         let extra = BinBlock {
             block: Some(blob),
-            txs: vec![tx],
+            txs: vec![BinTx {
+                blob: hex::decode(FIXTURE_TX_HEX.trim()).unwrap(),
+                prunable_hash: None,
+            }],
         }
-        .into_chain_block(1_000);
+        .into_chain_block(height);
         assert!(extra.is_err(), "a transaction the block doesn't list");
         assert!(BinBlock {
             block: None,
             txs: vec![]
         }
-        .into_chain_block(1_000)
+        .into_chain_block(height)
         .is_err());
         assert!(BinBlock {
             block: Some(vec![1, 2, 3]),
             txs: vec![]
         }
-        .into_chain_block(1_000)
+        .into_chain_block(height)
         .is_err());
     }
 
@@ -1037,6 +1783,7 @@ mod tests {
             as_hex: as_hex.to_string(),
             in_pool: false,
             block_height: Some(1),
+            ..Default::default()
         }
     }
 
@@ -1063,6 +1810,7 @@ mod tests {
         assert_eq!(nettype(json!({ "height": 5 })), "unknown");
         let info = |nettype: &str| DaemonInfo {
             nettype: nettype.to_string(),
+            height: None,
         };
         assert_eq!(info("testnet").network(), Some(monero::Network::Testnet));
         assert_eq!(
@@ -1202,7 +1950,8 @@ mod tests {
                     txs: Some(vec![TxEntry {
                         as_hex: String::new(),
                         in_pool: false,
-                        block_height: Some(3_755_690)
+                        block_height: Some(3_755_690),
+                        ..Default::default()
                     }]),
                     missed_tx: vec![],
                 }
@@ -1217,7 +1966,8 @@ mod tests {
                     txs: Some(vec![TxEntry {
                         as_hex: String::new(),
                         in_pool: true,
-                        block_height: None
+                        block_height: None,
+                        ..Default::default()
                     }]),
                     missed_tx: vec![],
                 }
@@ -1269,6 +2019,7 @@ mod tests {
                     as_hex: String::new(),
                     in_pool: false,
                     block_height: None,
+                    ..Default::default()
                 }]),
                 missed_tx: vec![],
             },

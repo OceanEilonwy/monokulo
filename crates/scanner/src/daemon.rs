@@ -40,6 +40,10 @@ pub struct DaemonInfo {
     /// `"mainnet"`, `"stagenet"`, `"testnet"`, `"fakechain"`, or
     /// [`DaemonInfo::UNKNOWN`] when the node didn't say.
     pub nettype: String,
+    /// The height of the node's tip block, when it said: the same value
+    /// as [`MoneroDaemonClient::get_height`], from the same answer, so a
+    /// caller that wants both asks once.
+    pub height: Option<u64>,
 }
 
 impl DaemonInfo {
@@ -48,6 +52,7 @@ impl DaemonInfo {
     pub fn unknown() -> Self {
         DaemonInfo {
             nettype: Self::UNKNOWN.to_string(),
+            height: None,
         }
     }
 
@@ -78,11 +83,80 @@ pub struct ChainBlock {
     pub timestamp: u64,
     /// The block's transactions, without the coinbase.
     pub txs: Vec<Transaction>,
+    /// The id of each of `txs`, in order, when they came pruned: a pruned
+    /// transaction can't be hashed to its id (`shared::monero_tx`). `None`
+    /// when `txs` are whole and hash to their own ids. Read through
+    /// [`ChainBlock::txid`].
+    pub txids: Option<Vec<String>>,
+}
+
+impl ChainBlock {
+    /// The id of transaction `index` (lowercase hex).
+    pub fn txid(&self, index: usize) -> Option<String> {
+        match &self.txids {
+            Some(txids) => txids.get(index).cloned(),
+            None => self.txs.get(index).map(txid_of_whole),
+        }
+    }
+
+    pub fn header(&self) -> ChainHeader {
+        ChainHeader {
+            height: self.height,
+            hash: self.hash.clone(),
+            prev_hash: self.prev_hash.clone(),
+            timestamp: self.timestamp,
+        }
+    }
+}
+
+/// The id of a whole transaction. Wrong for a pruned one.
+fn txid_of_whole(tx: &Transaction) -> String {
+    use monero::cryptonote::hash::Hashable;
+    hex::encode(tx.hash().to_bytes())
+}
+
+/// A block's identity without its contents
+/// ([`MoneroDaemonClient::get_chain_headers`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainHeader {
+    pub height: u64,
+    pub hash: String,
+    /// The parent block's id; empty for the genesis block.
+    pub prev_hash: String,
+    pub timestamp: u64,
+}
+
+/// The node's tip ([`MoneroDaemonClient::get_tip`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainTip {
+    pub height: u64,
+    /// The tip block's id, when the node gave it with the height.
+    pub hash: Option<String>,
+}
+
+/// A transaction with its id, as a node gave it
+/// ([`MoneroDaemonClient::get_transactions_with_ids`]). The transaction may
+/// be pruned, which is why the id comes with it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FetchedTx {
+    pub txid: String,
+    pub tx: Transaction,
 }
 
 #[async_trait::async_trait]
 pub trait MoneroDaemonClient: Send + Sync {
     async fn get_height(&self) -> Result<u64, DaemonError>;
+
+    /// The tip's height and, when the node gives both in one answer, its
+    /// id: with it, reorg detection needs no lookup while the recorded
+    /// chain ends at the node's tip. The default knows only the height;
+    /// `RpcDaemonClient` reads both from monerod's `/get_height`.
+    async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
+        Ok(ChainTip {
+            height: self.get_height().await?,
+            hash: None,
+        })
+    }
 
     /// What the node says about itself. The default says nothing
     /// ([`DaemonInfo::unknown`]), which every test double gets for free;
@@ -170,10 +244,32 @@ pub trait MoneroDaemonClient: Send + Sync {
                 prev_hash,
                 timestamp,
                 txs,
+                txids: None,
             });
             prev_hash = hash;
         }
         Ok(out)
+    }
+
+    /// Up to `count` block headers from `start_height`, in height order:
+    /// what [`Self::get_chain_blocks`] says about each block's identity,
+    /// without its transactions. For recording blocks nobody needs scanned.
+    /// May be shorter than `count`; empty only if nothing at `start_height`
+    /// is available.
+    ///
+    /// The default reads whole blocks and drops their contents;
+    /// `RpcDaemonClient` asks monerod for headers only.
+    async fn get_chain_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainHeader>, DaemonError> {
+        Ok(self
+            .get_chain_blocks(start_height, count)
+            .await?
+            .iter()
+            .map(ChainBlock::header)
+            .collect())
     }
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError>;
@@ -207,7 +303,60 @@ pub trait MoneroDaemonClient: Send + Sync {
             .collect())
     }
 
+    /// [`Self::get_transactions`], each with its id, for a caller that must
+    /// not hash what it gets: `RpcDaemonClient` fetches them pruned. The
+    /// default's are whole, and hashed here.
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<FetchedTx>, DaemonError> {
+        Ok(self
+            .get_transactions(txids)
+            .await?
+            .into_iter()
+            .map(|tx| FetchedTx {
+                txid: txid_of_whole(&tx),
+                tx,
+            })
+            .collect())
+    }
+
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
+
+    /// Where several transactions are, in one round trip, for a client that
+    /// can: a hint. A transaction missing from the answer (the client can't
+    /// batch, or the node's answer didn't settle that one) is asked about
+    /// with [`Self::locate_transaction`], which is where a non-answer becomes
+    /// an error. The default can't batch and answers nothing, so every test
+    /// double is asked one transaction at a time, as before.
+    async fn locate_transactions(
+        &self,
+        _txids: &[String],
+    ) -> Result<std::collections::HashMap<String, TxLocation>, DaemonError> {
+        Ok(std::collections::HashMap::new())
+    }
+
+    /// A transaction and where it is, or `None` if the node has no record of
+    /// it: [`Self::locate_transaction`] and [`Self::get_transaction`] at
+    /// once. The transaction may be pruned. The default asks twice;
+    /// `RpcDaemonClient` once.
+    async fn find_transaction(
+        &self,
+        txid: &str,
+    ) -> Result<Option<(FetchedTx, TxLocation)>, DaemonError> {
+        let location = self.locate_transaction(txid).await?;
+        if location == TxLocation::NotFound {
+            return Ok(None);
+        }
+        let tx = self.get_transaction(txid).await?;
+        Ok(Some((
+            FetchedTx {
+                txid: txid.to_string(),
+                tx,
+            },
+            location,
+        )))
+    }
     /// Fetches one transaction by its hash - `docs/txid_lookup_and_scan_
     /// chunking_wbs.md` Part B's own "look up a payment by txid" action, the
     /// direct replacement for the manual chain-rescan feature this trait's own
@@ -544,6 +693,19 @@ pub mod fake {
             Ok(state.height_override.unwrap_or(state.height))
         }
 
+        /// The height and the tip block's id under one lock, as a real
+        /// node's single answer. No id while the reported height has no
+        /// block behind it (`height_override`).
+        async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
+            self.require_online()?;
+            let state = self.state.lock();
+            let height = state.height_override.unwrap_or(state.height);
+            Ok(ChainTip {
+                height,
+                hash: state.blocks.get(&height).map(|b| b.hash.clone()),
+            })
+        }
+
         async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
             self.require_online()?;
             self.state
@@ -593,6 +755,7 @@ pub mod fake {
                     prev_hash,
                     timestamp: block.timestamp,
                     txs: block.txs.clone(),
+                    txids: None,
                 });
             }
             if out.is_empty() {

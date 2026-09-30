@@ -53,7 +53,14 @@ pub(crate) fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
     Ok(images)
 }
 
+/// The id of a whole transaction. A pruned one (as the node client fetches
+/// them) doesn't hash to its id: those come with it
+/// (`daemon::FetchedTx`, `daemon::ChainBlock::txid`).
 pub fn tx_id_hex(tx: &Transaction) -> String {
+    debug_assert!(
+        !shared::monero_tx::is_pruned(tx),
+        "a pruned transaction's id can't be computed from it"
+    );
     hex::encode(tx.hash().to_bytes())
 }
 
@@ -95,12 +102,24 @@ pub async fn scan_transaction(
     tx: &Transaction,
     minor_range: Range<u32>,
 ) -> Result<ScanResult> {
+    scan_transaction_as(key_custody, handle, &tx_id_hex(tx), tx, minor_range).await
+}
+
+/// `scan_transaction` for a transaction whose id came with it (it may be
+/// pruned, and then can't be hashed to its id).
+pub async fn scan_transaction_as(
+    key_custody: &dyn KeyCustody,
+    handle: WalletHandle,
+    txid: &str,
+    tx: &Transaction,
+    minor_range: Range<u32>,
+) -> Result<ScanResult> {
     let matches = key_custody
         .scan_tx_outputs(handle, tx, 0..1, minor_range)
         .await?;
     Ok(ScanResult {
         matches,
-        txid: tx_id_hex(tx),
+        txid: txid.to_string(),
         key_images_json: serde_json::Value::from(key_images_of(tx)).to_string(),
     })
 }
@@ -110,6 +129,7 @@ pub async fn scan_transaction(
 pub async fn scan_transaction_in_window(
     key_custody: &dyn KeyCustody,
     handle: WalletHandle,
+    txid: &str,
     tx: &Transaction,
     window: &ScanIndices,
 ) -> Result<ScanResult> {
@@ -118,7 +138,7 @@ pub async fn scan_transaction_in_window(
         .await?;
     Ok(ScanResult {
         matches,
-        txid: tx_id_hex(tx),
+        txid: txid.to_string(),
         key_images_json: serde_json::Value::from(key_images_of(tx)).to_string(),
     })
 }
@@ -137,6 +157,7 @@ pub(crate) const SCAN_CONCURRENCY: usize = 32;
 /// doesn't hold up the others. Results come back in the order given.
 pub(crate) async fn scan_for_tenants(
     key_custody: &dyn KeyCustody,
+    txid: &str,
     tx: &Transaction,
     tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
 ) -> Vec<(crate::store::TenantId, Result<ScanResult>)> {
@@ -151,7 +172,7 @@ pub(crate) async fn scan_for_tenants(
                 async move {
                     let result = match tokio::time::timeout(
                         SCAN_CALL_DEADLINE,
-                        scan_transaction_in_window(key_custody, *handle, tx, window),
+                        scan_transaction_in_window(key_custody, *handle, txid, tx, window),
                     )
                     .await
                     {
@@ -325,11 +346,15 @@ pub async fn check_for_reorg_and_reconcile(
     now: i64,
 ) -> Result<ReconcileReport> {
     use crate::work::chain::{Chain, JobStep};
-    let tip = daemon.get_height().await?;
+    let crate::daemon::ChainTip {
+        height: tip,
+        hash: tip_hash,
+    } = daemon.get_tip().await?;
     let db = crate::store::Db::over_shared(store.clone());
     let parsed = crate::network::parse_network(network)
         .map_err(|e| ScannerError::Internal(e.to_string()))?;
-    let chain = Chain::new(&db, daemon, parsed, reorg_check_depth, now);
+    let chain =
+        Chain::new(&db, daemon, parsed, reorg_check_depth, now).with_tip_hash(tip_hash);
     if let Some(fork) = chain.detect(tip).await? {
         chain.open(fork).await?;
     }
@@ -1934,7 +1959,13 @@ pub(crate) mod tests {
     async fn a_block_checkpoint_stages_matches_until_commit_and_a_changed_hash_drops_them() {
         let (store, custody, handle, tenant_id, order_id) = setup().await;
         let window = ScanIndices::new([1]);
-        let scan = scan_transaction_in_window(&custody, handle, &fixture_tx(), &window)
+        let scan = scan_transaction_in_window(
+            &custody,
+            handle,
+            &tx_id_hex(&fixture_tx()),
+            &fixture_tx(),
+            &window,
+        )
             .await
             .unwrap();
         assert!(!scan.matches.is_empty());
@@ -10702,7 +10733,7 @@ pub(crate) mod tests {
         socket.remove_wallet(handle).await.unwrap();
         let tx = unrelated_tx(1);
         let window = ScanIndices::range(0..1);
-        assert!(scan_transaction_in_window(&router, handle, &tx, &window)
+        assert!(scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
             .await
             .is_err());
         assert_eq!(
@@ -10717,7 +10748,7 @@ pub(crate) mod tests {
             1
         );
         let handle = handles.read()[&tenant.id];
-        assert!(scan_transaction_in_window(&router, handle, &tx, &window)
+        assert!(scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
             .await
             .is_ok());
 
@@ -10747,7 +10778,7 @@ pub(crate) mod tests {
             .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
             .await
             .is_ok());
-        assert!(scan_transaction_in_window(&router, handle, &tx, &window)
+        assert!(scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
             .await
             .is_ok());
     }

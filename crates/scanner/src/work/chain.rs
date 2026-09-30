@@ -75,6 +75,8 @@ pub(crate) struct Chain<'a> {
     network: monero::Network,
     reorg_check_depth: u64,
     now: i64,
+    /// The id of the node's tip block, if it came with the tip's height.
+    tip_hash: Option<String>,
 }
 
 impl<'a> Chain<'a> {
@@ -91,7 +93,16 @@ impl<'a> Chain<'a> {
             network,
             reorg_check_depth,
             now,
+            tip_hash: None,
         }
+    }
+
+    /// With the id the node gave for its tip block along with the height
+    /// passed to [`Self::detect`]: a comparison at that height then needs
+    /// no lookup.
+    pub fn with_tip_hash(mut self, tip_hash: Option<String>) -> Self {
+        self.tip_hash = tip_hash;
+        self
     }
 
     /// Runs `f` on the database worker, with this network. `f` may fail
@@ -116,7 +127,9 @@ impl<'a> Chain<'a> {
     /// Block hashes chain: if the stored hash at the highest height both
     /// sides have matches the node's, every block below matches too. So one
     /// comparison settles the common case; a mismatch is narrowed down by
-    /// binary search over the stored window, O(log depth) lookups.
+    /// binary search over the stored window, O(log depth) lookups. When the
+    /// recorded chain ends at the node's tip and the node gave the tip's id
+    /// with its height, that one comparison costs no lookup at all.
     pub async fn detect(&self, tip: u64) -> Result<Option<u64>, ScannerError> {
         let depth = self.reorg_check_depth;
         let rows = self
@@ -131,7 +144,15 @@ impl<'a> Chain<'a> {
         let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
             return Ok(None);
         };
-        if self.node_agrees(last).await? {
+        let at_tip = match &self.tip_hash {
+            Some(tip_hash) if last.0 == tip => Some(*tip_hash == last.1),
+            _ => None,
+        };
+        let agrees = match at_tip {
+            Some(agrees) => agrees,
+            None => self.node_agrees(last).await?,
+        };
+        if agrees {
             return Ok(None);
         }
         if !self.node_agrees(first).await? {
@@ -485,7 +506,8 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
         round.inputs.network,
         round.inputs.reorg_check_depth,
         round.now,
-    );
+    )
+    .with_tip_hash(round.tip_hash.clone());
     // Detection and a step of the job share one unit: even a round with no
     // time to spare moves an open job forward.
     if !round.chain.detected {
