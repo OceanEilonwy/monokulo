@@ -40,6 +40,40 @@ never open one. Amounts are in XMR unless `set unit` says otherwise.
 `transfer` and the sweeps ask "Is this okay?" at a terminal (not when input
 is piped, and not after `set always-confirm-transfers 0`).
 
+### At the prompt
+
+At a terminal the prompt is a full line editor
+([reedline](https://github.com/nushell/reedline)); piped input is read
+plainly, so scripts behave the same as ever.
+
+| Keys | Does |
+|---|---|
+| Tab / Shift+Tab | Completion menu, with a description beside each candidate: commands, their sub-words and options, and the wallet's own txids, key images (with amounts), outputs, address book and accounts |
+| → (at the end of the line) | Accept the grey hint: the rest of a matching history entry, or of a command name |
+| ↑ / ↓, Ctrl+R | History (kept across sessions in `~/.local/state/stagenet-wallet-cli/history`; start a line with a space to keep it out) and reverse search |
+| Alt+← / Alt+→ (or Ctrl) | Jump a word |
+| Shift+arrows, Alt+Shift+← / →, Shift+Home / End, Alt+A | Select a character, a word, to either end, everything; typing or Backspace replaces the selection |
+| Alt+Backspace / Alt+Delete, Ctrl+W | Delete a word |
+| Ctrl+Shift+X / C / V | Cut, copy, paste with the system clipboard |
+| Ctrl+A / Ctrl+E, Ctrl+U / Ctrl+K | Line start / end, delete to start / end (Emacs keys) |
+| Ctrl+C / Ctrl+D | Clear the line / leave |
+
+Once a command is typed, its usage shows in grey italics after the cursor,
+narrowed to the forms that fit what's typed (`account switch ` shows
+`account switch <index>`). The command word is green when it's a known
+command, red when not; the current account shows on the right.
+
+Mouse: clicking in the line moves the cursor in terminals that send
+shell-integration click events (kitty, WezTerm, Ghostty). Dragging selects
+and copies with the terminal's own selection, everywhere; a line editor
+can't take over drag-selection without also taking over the terminal's
+scrollback and copy.
+
+If another process has the wallet file locked (another prompt mid-transfer,
+an e2e run), the prompt says who and asks `[R]etry, [w]ait for it,
+[c]ancel?`. Scripts and the e2e suites print a warning and wait. A lock
+never outlives the process holding it, even if it crashes.
+
 ### What's supported
 
 The limits applied: a JSON file per wallet as the only wallet state, and no

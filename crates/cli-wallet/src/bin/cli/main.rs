@@ -14,16 +14,20 @@
 
 mod args;
 mod commands;
+mod editor;
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 
 use clap::{CommandFactory, Parser, Subcommand};
 use cli_wallet::file::{migrate_legacy, WalletData, WalletFile};
 use cli_wallet::{credentials_from_seed, credentials_from_spend_key_hex, generate_credentials, WalletCtx, SEED_LANGUAGE_NAMES};
 
 use commands::{CliError, Command, Session};
+use reedline::Signal;
 
 /// The wallet every e2e suite spends from - see `e2e/README.md`.
 const DEFAULT_WALLET: &str = "spender";
@@ -240,50 +244,89 @@ async fn run(cli: Cli) -> Result<(), CliError> {
 
 /// The interactive prompt: one command per line until `exit` or end of
 /// input. A failing command prints its error and the prompt carries on.
+///
+/// At a terminal, lines come from the full line editor (history, completion
+/// menu, hints, selection - see [`editor`]); piped input (scripts, tests)
+/// is read plainly, line by line.
 async fn repl(session: &mut Session) {
     let address = session.keys.address();
     println!("Opened wallet: {address}");
-    println!("Type \"help\" for the list of commands, \"exit\" to leave.");
-    let prompt = format!("[wallet {}]: ", &address[..6]);
-    let stdin = std::io::stdin();
-    loop {
-        print!("{prompt}");
-        std::io::stdout().flush().ok();
-        let mut line = String::new();
-        match stdin.lock().read_line(&mut line) {
-            Ok(0) => {
-                println!();
-                break;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Error: failed to read input: {e}");
-                break;
-            }
-        }
-        let words = match args::split_line(&line) {
-            Ok(words) => words,
-            Err(e) => {
-                eprintln!("Error: {e}");
-                continue;
-            }
-        };
-        match words.first().map(String::as_str) {
-            None => continue,
-            Some("exit" | "quit" | "q") => break,
-            _ => {}
-        }
-        match PromptLine::try_parse_from(&words) {
-            Ok(PromptLine { command }) => {
-                if let Err(e) = commands::run(session, command).await {
-                    eprintln!("Error: {e}");
+    let prompt_left = format!("[wallet {}]", &address[..6]);
+    if std::io::stdin().is_terminal() {
+        println!("Type \"help\" for the list of commands, Tab to complete, \u{2191} for history, Ctrl+R to search it, \"exit\" to leave.");
+        let data = Arc::new(Mutex::new(editor::CompletionData::default()));
+        data.lock().expect("completion data lock").refresh(&session.keys);
+        let mut line_editor = editor::line_editor(data.clone());
+        let prompt = editor::WalletPrompt { left: prompt_left, data: data.clone() };
+        loop {
+            match line_editor.read_line(&prompt) {
+                Ok(Signal::Success(line)) => {
+                    if run_line(session, &line).await.is_break() {
+                        break;
+                    }
+                    data.lock().expect("completion data lock").refresh(&session.keys);
+                }
+                // Ctrl+C clears the line, as in a shell; Ctrl+D leaves.
+                Ok(Signal::CtrlC) => continue,
+                Ok(Signal::CtrlD) => break,
+                Ok(_) => continue,
+                Err(e) => {
+                    eprintln!("Error: the line editor failed: {e}");
+                    break;
                 }
             }
-            // Includes `help` and `help <command>`, which clap reports as
-            // "errors" that print the help text.
-            Err(e) => {
-                let _ = e.print();
+        }
+    } else {
+        println!("Type \"help\" for the list of commands, \"exit\" to leave.");
+        let stdin = std::io::stdin();
+        loop {
+            print!("{prompt_left}: ");
+            std::io::stdout().flush().ok();
+            let mut line = String::new();
+            match stdin.lock().read_line(&mut line) {
+                Ok(0) => {
+                    println!();
+                    break;
+                }
+                Ok(_) => {
+                    if run_line(session, &line).await.is_break() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: failed to read input: {e}");
+                    break;
+                }
             }
         }
     }
+}
+
+/// Runs one prompt line. `Break` means leave the prompt.
+async fn run_line(session: &mut Session, line: &str) -> ControlFlow<()> {
+    let words = match args::split_line(line) {
+        Ok(words) => words,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return ControlFlow::Continue(());
+        }
+    };
+    match words.first().map(String::as_str) {
+        None => return ControlFlow::Continue(()),
+        Some("exit" | "quit" | "q") => return ControlFlow::Break(()),
+        _ => {}
+    }
+    match PromptLine::try_parse_from(&words) {
+        Ok(PromptLine { command }) => {
+            if let Err(e) = commands::run(session, command).await {
+                eprintln!("Error: {e}");
+            }
+        }
+        // Includes `help` and `help <command>`, which clap reports as
+        // "errors" that print the help text.
+        Err(e) => {
+            let _ = e.print();
+        }
+    }
+    ControlFlow::Continue(())
 }

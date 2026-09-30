@@ -55,6 +55,8 @@ polyseed = { git = "https://github.com/kayabaNerve/monero-wallet-util", branch =
 # derive macros, worth the dependency for a CLI meant to stick around.
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
+reedline = "0.49.0"
+nu-ansi-term = "0.50"
 
 # The CLI restores the default SIGPIPE action, so `stagenet-wallet-cli
 # show_transfers | head` exits quietly instead of panicking.
