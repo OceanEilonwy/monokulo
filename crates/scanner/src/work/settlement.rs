@@ -34,19 +34,26 @@ pub(crate) struct SettlementRound {
     recomputed: HashSet<String>,
 }
 
+/// One unit: the round's vanished-payment page (first unit only), then a
+/// page of recomputes. Both in one unit, so even a round with no time to
+/// spare recomputes something.
 pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     let Some(tip) = round.tip else { return Progress::Blocked("chain height unknown") };
+    let mut failure = None;
     if !round.settlement.vanished_done {
         round.settlement.vanished_done = true;
-        return match vanished(round, tip, until).await {
-            Ok(()) => Progress::Advanced,
-            Err(error) => Progress::Failed(error),
-        };
+        if let Err(error) = vanished(round, tip, until).await {
+            failure = Some(error);
+        }
     }
-    match recompute_page(round, tip) {
-        Ok(0) => Progress::Idle,
-        Ok(_) => Progress::Advanced,
-        Err(error) => Progress::Failed(error),
+    let recomputed = match recompute_page(round, tip) {
+        Ok(count) => count,
+        Err(error) => return Progress::Failed(error),
+    };
+    match (failure, recomputed) {
+        (Some(error), _) => Progress::Failed(error),
+        (None, 0) => Progress::Idle,
+        (None, _) => Progress::Advanced,
     }
 }
 
@@ -70,8 +77,8 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
         return Ok(());
     }
     let mut failure = None;
-    for (id, payment) in page {
-        if Instant::now() >= until && failure.is_some() {
+    for (checked, (id, payment)) in page.into_iter().enumerate() {
+        if checked > 0 && Instant::now() >= until {
             break;
         }
         let checked = tokio::time::timeout(

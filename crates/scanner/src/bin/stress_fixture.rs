@@ -213,24 +213,25 @@ impl Args {
     }
 }
 
-/// Which engine code runs each tick. `legacy` is the phase-by-phase
-/// `run_scan_tick_with`; later drivers run the same workload through other
-/// entry points so their reports compare like for like.
+/// Which engine code runs each tick. `scheduler` is one scheduler round
+/// (`scanner::work::run_round`, docs/scanner_microtasks.md), as the
+/// production loop runs it. The phase-by-phase tick it replaced was
+/// measured as `legacy`; its results are kept in `docs/stress/`.
 #[derive(Clone, Copy)]
 enum Driver {
-    Legacy,
+    Scheduler,
 }
 
 impl Driver {
     fn parse(name: &str) -> Result<Self, Box<dyn Error>> {
         match name {
-            "legacy" => Ok(Self::Legacy),
+            "scheduler" => Ok(Self::Scheduler),
             other => Err(format!("unknown driver {other}").into()),
         }
     }
     fn name(self) -> &'static str {
         match self {
-            Self::Legacy => "legacy",
+            Self::Scheduler => "scheduler",
         }
     }
 }
@@ -251,7 +252,7 @@ impl Engine {
     /// and memory budget.
     async fn tick(&self) -> Result<(), String> {
         match self.driver {
-            Driver::Legacy => {
+            Driver::Scheduler => {
                 let (memory, store, custody, daemon) =
                     (self.memory.clone(), self.store.clone(), self.custody.clone(), self.daemon.clone());
                 let tenants: Vec<(String, WalletHandle)> =
@@ -310,7 +311,7 @@ fn progress(conn: &rusqlite::Connection, progressed_through: u64) -> rusqlite::R
 async fn fixture() -> Result<(), Box<dyn Error>> {
     let args = Args(std::env::args().collect());
     let db_path: String = args.required("--db")?;
-    let driver = Driver::parse(args.value("--driver").unwrap_or("legacy"))?;
+    let driver = Driver::parse(args.value("--driver").unwrap_or("scheduler"))?;
     let tenants: usize = args.required("--tenants")?;
     let orders: usize = args.required("--orders")?;
     let large_window_orders: usize = args.required("--large-window-orders")?;

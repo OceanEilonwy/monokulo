@@ -976,7 +976,7 @@ pub struct Registration {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     //! Scenario coverage checklist for the scanner.
     //!
     //! Reorgs, double-spends and hostile or broken nodes are rare in production and
@@ -1375,7 +1375,7 @@ mod tests {
     /// `src/key_custody/plain.rs`'s tests - it pays subaddress 0/1. Reused here so
     /// scanner-level tests exercise real crypto end to end, not a stub that assumes
     /// matching works.
-    fn fixture_tx() -> Transaction {
+    pub(crate) fn fixture_tx() -> Transaction {
         let raw_tx = hex::decode(include_str!("../tests/fixtures/subaddress_tx.hex")).unwrap();
         deserialize(&raw_tx).unwrap()
     }
@@ -5154,7 +5154,7 @@ mod tests {
     /// replaced, so no wallet's derivation matches its outputs, and a txid of
     /// its own. Gap blocks need real transactions in them: a tenant is only
     /// found to be failing when there is something to scan for it.
-    fn unrelated_tx(seed: u8) -> Transaction {
+    pub(crate) fn unrelated_tx(seed: u8) -> Transaction {
         let mut tx = fixture_tx();
         let mut key_bytes = [seed.wrapping_add(7); 32];
         key_bytes[31] &= 0x0f;
@@ -5183,16 +5183,18 @@ mod tests {
     /// `failing`, the way a key-custody backend that is down fails for the
     /// stores whose keys it holds, while other stores keep working.
     #[derive(Default)]
-    struct FlakyKeyCustody {
+    pub(crate) struct FlakyKeyCustody {
         inner: PlainKeyCustody,
         failing: parking_lot::Mutex<HashSet<WalletHandle>>,
+        /// Scan calls made for each handle, failed or not.
+        pub(crate) attempts: parking_lot::Mutex<HashMap<WalletHandle, u32>>,
     }
 
     impl FlakyKeyCustody {
-        fn fail(&self, handle: WalletHandle) {
+        pub(crate) fn fail(&self, handle: WalletHandle) {
             self.failing.lock().insert(handle);
         }
-        fn recover(&self, handle: WalletHandle) {
+        pub(crate) fn recover(&self, handle: WalletHandle) {
             self.failing.lock().remove(&handle);
         }
     }
@@ -5226,6 +5228,7 @@ mod tests {
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
+            *self.attempts.lock().entry(handle).or_default() += 1;
             if self.failing.lock().contains(&handle) {
                 return Err(KeyCustodyError::BackendUnavailable("simulated backend outage".into()));
             }
@@ -5236,7 +5239,7 @@ mod tests {
     /// A tenant on the fixture wallet with one order at minor index 1, which
     /// `fixture_tx` pays. Several of these can share one store: each gets its
     /// own payment row from the same transaction.
-    async fn fixture_tenant(store: &Store, key_custody: &dyn KeyCustody, expires_at: i64) -> (String, WalletHandle, String) {
+    pub(crate) async fn fixture_tenant(store: &Store, key_custody: &dyn KeyCustody, expires_at: i64) -> (String, WalletHandle, String) {
         let handle = key_custody.register_wallet(WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey())).await.unwrap();
         let tenant = store
             .create_tenant(
@@ -5269,11 +5272,11 @@ mod tests {
         (tenant.tenant.id, handle, order.id)
     }
 
-    fn cursor_of(store: &crate::store::SharedStore, tenant_id: &str) -> Option<u64> {
+    pub(crate) fn cursor_of(store: &crate::store::SharedStore, tenant_id: &str) -> Option<u64> {
         store.lock().get_tenant_by_id(tenant_id).unwrap().unwrap().scanned_through_height
     }
 
-    fn order_status(store: &crate::store::SharedStore, order_id: &str) -> OrderStatus {
+    pub(crate) fn order_status(store: &crate::store::SharedStore, order_id: &str) -> OrderStatus {
         let s = store.lock();
         let tenant_id = s.get_order_tenant_id(order_id).unwrap().unwrap();
         s.get_order(&tenant_id, order_id).unwrap().unwrap().status

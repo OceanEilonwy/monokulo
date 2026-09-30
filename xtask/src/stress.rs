@@ -10,7 +10,7 @@ use std::{
 use crate::{escape_html, root};
 
 /// The engine the report measures when no driver is named.
-pub const DEFAULT_DRIVER: &str = "legacy";
+pub const DEFAULT_DRIVER: &str = "scheduler";
 
 fn read(path: &str) -> String {
     fs::read_to_string(path)

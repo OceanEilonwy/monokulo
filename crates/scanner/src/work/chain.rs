@@ -281,6 +281,8 @@ async fn run(round: &mut Round<'_>) -> Progress {
         reorg_check_depth: round.inputs.reorg_check_depth,
         now: round.now,
     };
+    // Detection and a step of the job share one unit: even a round with no
+    // time to spare moves an open job forward.
     if !round.chain.detected {
         round.chain.detected = true;
         match chain.detect(tip).await {
@@ -288,7 +290,6 @@ async fn run(round: &mut Round<'_>) -> Progress {
                 if let Err(error) = chain.open(fork) {
                     return Progress::Failed(error);
                 }
-                return Progress::Advanced;
             }
             Ok(None) => {}
             Err(error) => return Progress::Failed(error),

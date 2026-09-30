@@ -51,11 +51,16 @@ impl ScannedBlock {
     }
 }
 
+/// Kept across rounds: whose turn it is while the frontier is behind. Across
+/// rounds, not per round, so a round with time for one unit alternates too.
+#[derive(Default)]
+pub(crate) struct BlockState {
+    catch_up_turn: std::sync::atomic::AtomicBool,
+}
+
 pub(crate) struct BlocksRound {
     repaired: bool,
     frontier_done: bool,
-    /// Whose turn it is while the frontier is behind.
-    catch_up_turn: bool,
     /// Catch-up groups served this round; a group seen again means the
     /// rotation has come full circle.
     visited: HashSet<u64>,
@@ -70,7 +75,6 @@ impl Default for BlocksRound {
         Self {
             repaired: false,
             frontier_done: false,
-            catch_up_turn: false,
             visited: HashSet::new(),
             last_group: None,
             block_times: HashMap::new(),
@@ -147,13 +151,15 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
         round.blocks.repaired = true;
     }
 
+    use std::sync::atomic::Ordering::Relaxed;
     let frontier_behind = !round.blocks.frontier_done && high_water < tip;
-    if frontier_behind && !round.blocks.catch_up_turn {
-        round.blocks.catch_up_turn = true;
+    let turn = &round.state.blocks.catch_up_turn;
+    if frontier_behind && !turn.load(Relaxed) {
+        turn.store(true, Relaxed);
         advance_group(round, Group::Frontier, high_water, tip, until).await?;
         return Ok(Progress::Advanced);
     }
-    round.blocks.catch_up_turn = false;
+    turn.store(false, Relaxed);
     if let Some(cursor) = next_catch_up_group(round, high_water)? {
         // Tenants with nothing that could ever have been paid need no block
         // read to decide: straight to the high-water mark.

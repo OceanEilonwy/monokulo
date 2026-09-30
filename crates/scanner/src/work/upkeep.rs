@@ -24,23 +24,27 @@ const VOID_RECHECK_INTERVAL_SECS: i64 = 5 * 60;
 
 #[derive(Default)]
 pub(crate) struct UpkeepRound {
-    pruned: bool,
+    first_done: bool,
     ranges_done: bool,
-    voids_done: bool,
 }
 
+/// The first unit of a round prunes, rechecks a page of voids and brings a
+/// page of scanned ranges up to date; later units only continue the ranges.
+/// So every kind of upkeep advances every round, however little time is left.
 pub(super) async fn step(round: &mut Round<'_>) -> Progress {
-    let result = if !round.upkeep.pruned {
-        round.upkeep.pruned = true;
-        prune(round)
-    } else if !round.upkeep.ranges_done {
-        scanned_ranges(round)
-    } else if !round.upkeep.voids_done {
-        round.upkeep.voids_done = true;
-        recheck_voids(round).await
-    } else {
+    if round.upkeep.first_done && round.upkeep.ranges_done {
         return Progress::Idle;
-    };
+    }
+    let first = !round.upkeep.first_done;
+    round.upkeep.first_done = true;
+    let mut result = Ok(());
+    if first {
+        result = prune(round).and(result);
+        result = recheck_voids(round).await.and(result);
+    }
+    if !round.upkeep.ranges_done {
+        result = scanned_ranges(round).and(result);
+    }
     match result {
         Ok(()) => Progress::Advanced,
         Err(error) => Progress::Failed(error),

@@ -215,6 +215,7 @@ impl Backoff {
 #[derive(Default)]
 pub struct ScanState {
     mempool: mempool::MempoolState,
+    blocks: blocks::BlockState,
     settlement: settlement::SettlementState,
     backoff: Backoff,
 }
@@ -330,3 +331,6 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
     }
     report
 }
+
+#[cfg(test)]
+mod tests;
