@@ -257,20 +257,16 @@ async fn run(action: Action) {
             std::process::exit(1)
         });
 
+    let read_pool = scanner::store::ReadStorePool::open(
+        &cli::database_path().to_string_lossy(),
+        live_settings::read_sync::<RuntimeConfig>(&StoreSettings(store.clone())).read_connections,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("failed to open database read pool: {e}");
+        std::process::exit(1)
+    });
     let app_state = AppState {
-        db: db.clone(),
-        store: store.clone(),
-        read_pool: Some(
-            scanner::store::ReadStorePool::open(
-                &cli::database_path().to_string_lossy(),
-                live_settings::read_sync::<RuntimeConfig>(&StoreSettings(store.clone()))
-                    .read_connections,
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("failed to open database read pool: {e}");
-                std::process::exit(1)
-            }),
-        ),
+        db: scanner::store::Database::from_parts(db.clone(), read_pool, &store.lock()),
         key_custody: key_custody.clone(),
         key_custody_backend,
         wallet_handles: wallet_handles.clone(),

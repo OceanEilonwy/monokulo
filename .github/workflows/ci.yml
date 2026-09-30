@@ -78,8 +78,9 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         # Clippy's lints are denied in Cargo.toml; -D warnings adds the
-        # compiler's own.
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        # compiler's own. Every feature, so the e2e targets (built only with
+        # `e2e`) are checked too.
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   tests:
     name: tests (${{ matrix.os }})

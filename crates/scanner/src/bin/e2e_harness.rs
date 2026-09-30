@@ -260,9 +260,7 @@ async fn main() {
         Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
-        db: scanner::store::Db::over_shared(store.clone().clone()),
-        store: store.clone(),
-        read_pool: None,
+        db: scanner::store::Database::inline(store.clone()),
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
         wallet_handles: wallet_handles.clone(),
@@ -294,7 +292,7 @@ async fn main() {
     // browser needs a real socket to navigate to, unlike `e2e_dashboard_stagenet.rs`'s
     // own in-process-only `oneshot` driving ----
     let cp_state = ControlPlaneAppState {
-        db: Db::open_in_memory().unwrap().into_shared(),
+        db: monokulo::db::Database::inline(Db::open_in_memory().unwrap().into_shared()),
         engine_client: EngineClient::new(engine_base_url.clone()),
         encryption_key: [7u8; 32],
         status_cache: monokulo::http::status_page::new_status_cache(),

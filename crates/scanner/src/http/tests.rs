@@ -130,7 +130,7 @@ async fn create_tenant_then_create_order_happy_path() {
 #[tokio::test]
 async fn creating_an_order_with_a_confirmations_required_override_persists_it() {
     let state = AppState::for_tests();
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -161,7 +161,7 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
 #[tokio::test]
 async fn creating_an_order_with_no_confirmations_required_override_leaves_it_unset() {
     let state = AppState::for_tests();
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -214,7 +214,7 @@ async fn creating_an_order_with_an_out_of_range_confirmations_required_is_reject
 #[tokio::test]
 async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
     let state = AppState::for_tests();
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -327,7 +327,7 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
     // not skip indices along the way (a skipped index means an address was derived,
     // counted, and never issued to anyone).
     let state = AppState::for_tests();
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -1548,10 +1548,7 @@ fn settings_request(
 #[tokio::test]
 async fn instance_admin_settings_requires_a_bearer_token_at_all() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let response = router
         .oneshot(settings_request("GET", None, None))
@@ -1563,10 +1560,7 @@ async fn instance_admin_settings_requires_a_bearer_token_at_all() {
 #[tokio::test]
 async fn a_tenants_own_secret_token_cannot_authenticate_as_the_instance_admin() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
     let response = router
@@ -1583,10 +1577,7 @@ async fn a_tenants_own_secret_token_cannot_authenticate_as_the_instance_admin() 
 #[tokio::test]
 async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let response = router
         .oneshot(settings_request("GET", Some("admin_test_token"), None))
@@ -1612,10 +1603,7 @@ async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
 #[tokio::test]
 async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1656,10 +1644,7 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
         "99",
     )]))
     .await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1696,10 +1681,7 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
 #[tokio::test]
 async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     // `0` is a legal value now (native 0-conf) - `1000` (over the 720 cap) is the
@@ -1729,10 +1711,7 @@ async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
 #[tokio::test]
 async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1765,10 +1744,7 @@ async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
 #[tokio::test]
 async fn enabling_the_socket_key_custody_backend_without_a_socket_path_is_rejected() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1785,10 +1761,7 @@ async fn enabling_the_socket_key_custody_backend_without_a_socket_path_is_reject
 #[tokio::test]
 async fn enabling_the_socket_key_custody_backend_with_a_socket_path_in_the_same_request_succeeds() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1834,10 +1807,7 @@ async fn enabling_the_socket_key_custody_backend_using_an_already_saved_socket_p
     // request's own body - a caller enabling "socket" in a request
     // that doesn't also repeat an already-saved `socket_path` must still succeed.
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     router
@@ -1869,10 +1839,7 @@ async fn enabling_the_socket_key_custody_backend_using_an_already_saved_socket_p
 #[tokio::test]
 async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let node = serde_json::json!({
@@ -1911,10 +1878,7 @@ async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
 #[tokio::test]
 async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let node = serde_json::json!({ "host": "primary.example", "port": 18081, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
@@ -1966,7 +1930,7 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
         settings,
         ..AppState::for_tests_with_store(store)
     };
-    let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.store.lock());
+    let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.db.lock());
     assert_eq!(second_call, None, "a token that already exists must never be silently regenerated (that would invalidate the first one)");
 
     let router = build_router(state, 1_000_000);
@@ -2120,7 +2084,7 @@ async fn lookup_payment_reports_no_matching_order_for_a_real_but_unrelated_tx() 
 #[tokio::test]
 async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     let (state, daemon) = test_app_state_with_real_daemon().await;
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_fixture_tenant(&router).await;
 
@@ -2369,7 +2333,7 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
 #[tokio::test]
 async fn listing_orders_can_page_search_and_keep_to_open_orders() {
     let state = AppState::for_tests();
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 44).await;
     let mut ids = Vec::new();
@@ -3056,7 +3020,7 @@ async fn a_new_store_can_not_use_a_backend_that_is_not_enabled() {
 async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_old_registration() {
     let (state, plain, socket) = test_app_state_with_two_custody_backends();
     let wallet_handles = state.wallet_handles.clone();
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
     assert_eq!(
@@ -3132,7 +3096,7 @@ async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_
 #[tokio::test]
 async fn moving_a_store_needs_the_keys_of_its_own_wallet() {
     let (state, _, _) = test_app_state_with_two_custody_backends();
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -3349,7 +3313,7 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
 #[tokio::test]
 async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is() {
     let state = AppState::for_tests();
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     store
         .lock()
         .set_scanned_block("mainnet", 100, "h100")
@@ -3409,7 +3373,7 @@ async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_t
     let mut state = AppState::for_tests();
     state.key_custody = custody.clone();
     let wallet_handles = state.wallet_handles.clone();
-    let store = state.store.clone();
+    let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
     for _ in 0..10 {
@@ -3508,10 +3472,7 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
     }
 
     let mut state = AppState::for_tests();
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     state.log_store = Some(log_store);
     let router = build_router(state, 1_000_000);
     let get = |uri: String, token: Option<&str>| {
@@ -3609,10 +3570,7 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
 #[tokio::test]
 async fn without_a_log_store_the_log_api_says_so() {
     let state = AppState::for_tests();
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let request = Request::builder()
         .uri("/api/v1/admin/logs")
@@ -3661,10 +3619,7 @@ fn node_json(addr: std::net::SocketAddr, fallbacks: &[std::net::SocketAddr]) -> 
 
 async fn settings_router() -> Router {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(
-        &state.store.lock(),
-        "admin_test_token",
-    );
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     build_router(state, 1_000_000)
 }
 

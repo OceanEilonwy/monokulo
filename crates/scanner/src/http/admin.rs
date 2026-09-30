@@ -721,13 +721,18 @@ pub async fn create_webhook(
         .extra_headers
         .map(|v| v.to_string())
         .unwrap_or_else(|| "{}".to_string());
-    let webhook = state.store.lock().create_webhook(
-        &tenant.id,
-        &req.url,
-        &extra_headers_json,
-        &secret,
-        now_unix(),
-    )?;
+    let (tenant_id, url, signing_secret) = (tenant.id.clone(), req.url.clone(), secret.clone());
+    let webhook = state
+        .write_store(move |store| {
+            store.create_webhook(
+                &tenant_id,
+                &url,
+                &extra_headers_json,
+                &signing_secret,
+                now_unix(),
+            )
+        })
+        .await?;
     Ok(Json(CreateWebhookResponse {
         webhook_id: webhook.id,
         signing_secret: secret,
@@ -947,7 +952,7 @@ pub async fn order_events(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio::sync::broadcast::error::RecvError;
 
-    let receiver = state.store.lock().subscribe_order_changes();
+    let receiver = state.db.subscribe_order_changes();
     let ready =
         futures_util::stream::once(async { Ok(Event::default().event("ready").data("{}")) });
     let changes = futures_util::stream::unfold(

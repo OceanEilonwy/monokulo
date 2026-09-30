@@ -50,17 +50,16 @@ use tower_http::limit::RequestBodyLimitLayer;
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
 use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
-use crate::store::{ReadStorePool, SharedStore, Store, StoreError, Tenant};
+use crate::store::{Store, StoreError, Tenant};
 
 use rate_limit::{admin_rate_limit_middleware, RateLimiter};
 
 #[derive(Clone)]
 pub struct AppState {
-    /// The database worker: API writes run there (the `Admin` class), off
-    /// the async runtime and in turn with the scanner's and webhooks' work.
-    pub db: crate::store::Db,
-    pub store: SharedStore,
-    pub read_pool: Option<ReadStorePool>,
+    /// The database: reads on the read pool, writes on the database worker
+    /// (the `Admin` class, in turn with the scanner's and webhooks' work),
+    /// and order-change notifications. Handlers never hold the shared store.
+    pub db: crate::store::Database,
     pub key_custody: Arc<dyn KeyCustody>,
     /// The `[key_custody].backend` value that produced `key_custody` above -
     /// `"plain"` or `"socket"` - so `admin::create_tenant` can record which
@@ -116,7 +115,7 @@ impl AppState {
 
     /// [`AppState::for_tests`] around a store the test prepared itself (for
     /// example to load real settings from it first).
-    pub fn for_tests_with_store(store: SharedStore) -> Self {
+    pub fn for_tests_with_store(store: crate::store::SharedStore) -> Self {
         let mainnet_daemon = Arc::new(crate::daemon_fallback::FallbackDaemonClient::new(vec![
             crate::daemon_fallback::FallbackNode {
                 label: "fake-node:18081".to_string(),
@@ -124,9 +123,7 @@ impl AppState {
             },
         ]));
         AppState {
-            db: crate::store::Db::over_shared(store.clone()),
-            store,
-            read_pool: None,
+            db: crate::store::Database::inline(store),
             key_custody: Arc::new(crate::key_custody::PlainKeyCustody::default()),
             key_custody_backend: "plain".to_string(),
             wallet_handles: Arc::default(),
@@ -155,26 +152,17 @@ impl AppState {
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
     {
-        self.db.run(crate::store::db::Class::Admin, f).await
+        self.db
+            .writer()
+            .run(crate::store::db::Class::Admin, f)
+            .await
     }
 
     pub async fn read_store<T: Send + 'static>(
         &self,
         f: impl FnOnce(&Store) -> Result<T, StoreError> + Send + 'static,
     ) -> Result<T, StoreError> {
-        if let Some(pool) = &self.read_pool {
-            pool.query(f).await
-        } else {
-            let store = self.store.clone();
-            // Refusing writes, as the pool's connections do, so a read that
-            // writes fails in tests too.
-            tokio::task::spawn_blocking(move || {
-                let store = store.lock();
-                store.read_only(|| f(&store))
-            })
-            .await
-            .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?
-        }
+        self.db.read(f).await
     }
 }
 

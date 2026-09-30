@@ -181,9 +181,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
-        db: scanner::store::Db::over_shared(store.clone().clone()),
-        store: store.clone(),
-        read_pool: None,
+        db: scanner::store::Database::inline(store.clone()),
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
         wallet_handles: wallet_handles.clone(),
@@ -218,7 +216,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     // own router is driven via oneshot below), pointed at the real engine above ----
     let cp_db = Db::open_in_memory().unwrap().into_shared();
     let cp_state = ControlPlaneAppState {
-        db: cp_db,
+        db: monokulo::db::Database::inline(cp_db),
         engine_client: EngineClient::new(engine_base_url.clone()),
         encryption_key: [7u8; 32],
         status_cache: monokulo::http::status_page::new_status_cache(),

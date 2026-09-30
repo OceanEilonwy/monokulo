@@ -538,9 +538,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     }
     let handles = Arc::new(RwLock::new(handles));
     let app_state = AppState {
-        db: db.clone(),
-        store: store.clone(),
-        read_pool: Some(reader_pool.clone()),
+        db: scanner::store::Database::from_parts(db.clone(), reader_pool.clone(), &store.lock()),
         key_custody: custody.clone(),
         key_custody_backend: "plain".into(),
         wallet_handles: handles.clone(),

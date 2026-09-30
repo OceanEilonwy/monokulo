@@ -161,11 +161,96 @@ impl ReadStorePool {
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))
     }
 
+    /// Reads on the caller, on `store`, with writes refused as on a pool
+    /// connection: for in-memory databases and tests.
+    pub fn inline(store: SharedStore) -> Self {
+        ReadStorePool(shared::sqlite::Pool::Inline(store))
+    }
+
     pub async fn query<T: Send + 'static>(
         &self,
         f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        self.0.run(f).await
+        match &self.0 {
+            shared::sqlite::Pool::Inline(_) => {
+                self.0.run(move |store| store.read_only(|| f(store))).await
+            }
+            shared::sqlite::Pool::Threads { .. } => self.0.run(f).await,
+        }
+    }
+}
+
+/// How the engine's HTTP handlers reach the database: reads on the read
+/// pool, writes on the database worker ([`Db`]), and the order-change
+/// notifications its writes publish. No handler holds the shared store.
+#[derive(Clone)]
+pub struct Database {
+    writes: Db,
+    reads: ReadStorePool,
+    changes: tokio::sync::broadcast::Sender<OrderChange>,
+    /// The test's shared store, for [`Database::lock`].
+    #[cfg(test)]
+    inline: Option<SharedStore>,
+}
+
+impl Database {
+    /// The worker and read pool (both over the database file), sharing
+    /// `store`'s order-change notifications - the store the worker was
+    /// opened from ([`Db::open`]), so its commits reach subscribers.
+    pub fn from_parts(writes: Db, reads: ReadStorePool, store: &Store) -> Self {
+        Database {
+            writes,
+            reads,
+            changes: store.order_changes.clone(),
+            #[cfg(test)]
+            inline: None,
+        }
+    }
+
+    /// Everything on the caller, on `store`: for in-memory databases and
+    /// tests. Reads still can't write.
+    pub fn inline(store: SharedStore) -> Self {
+        let changes = store.lock().order_changes.clone();
+        Database {
+            writes: Db::over_shared(store.clone()),
+            reads: ReadStorePool::inline(store.clone()),
+            changes,
+            #[cfg(test)]
+            inline: Some(store),
+        }
+    }
+
+    /// Runs `f` on a read-only connection.
+    pub async fn read<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.reads.query(f).await
+    }
+
+    /// The database worker, for writes (`Db::run` with the caller's class).
+    pub fn writer(&self) -> &Db {
+        &self.writes
+    }
+
+    /// Every [`OrderChange`] committed from now on.
+    pub fn subscribe_order_changes(&self) -> tokio::sync::broadcast::Receiver<OrderChange> {
+        self.changes.subscribe()
+    }
+
+    /// The test's shared store, for setting up and checking state directly.
+    /// Only for an inline database; production code can't call it.
+    #[cfg(test)]
+    pub fn lock(&self) -> parking_lot::MutexGuard<'_, Store> {
+        self.shared_store_for_test().lock()
+    }
+
+    /// The test's shared store itself, for code under test that takes one.
+    #[cfg(test)]
+    pub fn shared_store_for_test(&self) -> &SharedStore {
+        self.inline
+            .as_ref()
+            .expect("only an inline test database has a shared store")
     }
 }
 

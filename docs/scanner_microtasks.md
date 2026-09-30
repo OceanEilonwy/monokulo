@@ -236,6 +236,11 @@ No SQLite call runs on a Tokio worker thread in production:
   (`db::Database`: `read` on its pool, `write` on one writing connection).
 - **Key registration** lists stores through the worker too; the loops no
   longer hold the shared store at all.
+- **Handlers reach the database only through `AppState::db`**
+  (`store::Database`: the read pool, the worker and order-change
+  subscriptions). There is no shared store in `AppState`; tests run the same
+  handle inline on one in-memory store (reads still read-only), with a
+  test-only `Database::lock` for setting up and checking state.
 - **Connections** are tuned once: a 5 s busy timeout, a 128-statement cache
   (every hot query is `prepare_cached`), and a journal size limit. Upkeep
   runs a passive WAL checkpoint every ten minutes. Migration 0020 adds the
@@ -423,9 +428,6 @@ These are observations for this workload and machine, not capacity limits.
 
 ## Follow-ups
 
-- `SharedStore` is still in `AppState` (reads, and many tests and harnesses
-  construct it directly), though every production write goes through the
-  worker.
 - The stress fixture doesn't yet inject reorgs, process kills or slow disk
   commands. The engine's tests cover the first two (restart mid-job,
   mid-block, the kill-anywhere test); slow disk is untested.

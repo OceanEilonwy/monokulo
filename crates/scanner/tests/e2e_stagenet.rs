@@ -159,9 +159,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     )])));
 
     let app_state = AppState {
-        db: scanner::store::Db::over_shared(store.clone().clone()),
-        store: store.clone(),
-        read_pool: None,
+        db: scanner::store::Database::inline(store.clone()),
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
         wallet_handles,

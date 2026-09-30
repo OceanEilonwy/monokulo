@@ -772,9 +772,7 @@ impl TestEngineConfig {
         .await
         .expect("test engine settings load from an empty store");
         let app_state = AppState {
-            db: scanner::store::Db::over_shared(store.clone()),
-            store: store.clone(),
-            read_pool: None,
+            db: scanner::store::Database::inline(store.clone()),
             key_custody: key_custody.clone(),
             key_custody_backend: key_custody_backend.to_string(),
             wallet_handles: wallet_handles.clone(),
