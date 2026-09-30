@@ -799,10 +799,14 @@ impl TestEngineConfig {
         .expect("test engine settings load from an empty store");
         let app_state = AppState {
             db: scanner::store::Database::inline(store.clone()),
-            key_custody: key_custody.clone(),
-            key_custody_backend: key_custody_backend.to_string(),
-            wallet_handles: wallet_handles.clone(),
             admin_rate_limiter: admin_rate_limiter.clone(),
+            log_store: self.log_store.clone(),
+            settings: engine_settings,
+            custody: scanner::http::Custody {
+                backends: key_custody.clone(),
+                default_backend: key_custody_backend.to_string(),
+                wallet_handles: wallet_handles.clone(),
+            },
             // This harness's own background scan loop (below) talks to a
             // bare `NoopDaemonClient` directly, never through
             // `AppState::daemons` - no caller of this crate exercises the
@@ -815,10 +819,10 @@ impl TestEngineConfig {
             // directly, never through `AppState::daemons` - see
             // [`TestEngineConfig::with_admin_lookup_daemon`] for the opt-in
             // that wires a lookup fake in instead.
-            daemons,
-            scanner_status: scanner::scanner_status::new_scanner_status_map(),
-            log_store: self.log_store.clone(),
-            settings: engine_settings,
+            networks: scanner::http::Networks {
+                daemons,
+                scanner_status: scanner::scanner_status::new_scanner_status_map(),
+            },
         };
         let tenant_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = tenant_requests.clone();

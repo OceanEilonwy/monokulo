@@ -100,7 +100,8 @@ async fn create_order_for_tenant(
         };
         let address = loop {
             match state
-                .key_custody
+                .custody
+                .backends
                 .derive_subaddress(handle, index, network)
                 .await
             {

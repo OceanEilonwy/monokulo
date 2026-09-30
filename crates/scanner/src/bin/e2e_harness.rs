@@ -261,17 +261,21 @@ async fn main() {
 
     let engine_state = EngineAppState {
         db: scanner::store::Database::inline(store.clone()),
-        key_custody: key_custody.clone(),
-        key_custody_backend: "plain".to_string(),
-        wallet_handles: wallet_handles.clone(),
         admin_rate_limiter: Arc::new(RateLimiter::new(1_000_000)),
-        daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(
-            Network::Stagenet,
-            fallback_daemon.clone(),
-        )])),
-        scanner_status: new_scanner_status_map(),
         log_store: None,
         settings: scanner::engine_settings::EngineSettings::defaults(),
+        custody: scanner::http::Custody {
+            backends: key_custody.clone(),
+            default_backend: "plain".to_string(),
+            wallet_handles: wallet_handles.clone(),
+        },
+        networks: scanner::http::Networks {
+            daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(
+                Network::Stagenet,
+                fallback_daemon.clone(),
+            )])),
+            scanner_status: new_scanner_status_map(),
+        },
     };
     let engine_router = build_engine_router(engine_state, 1_000_000);
     let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0")

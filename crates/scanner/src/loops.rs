@@ -501,14 +501,18 @@ mod tests {
         let status = scanner_status::new_scanner_status_map();
         let state = crate::http::AppState {
             db: crate::store::Database::inline(store.clone()),
-            key_custody: key_custody.clone(),
-            key_custody_backend: "plain".to_string(),
-            wallet_handles: wallet_handles.clone(),
             admin_rate_limiter: rate_limiter,
-            daemons: daemons.clone(),
-            scanner_status: status.clone(),
             log_store: None,
             settings: settings.clone(),
+            custody: crate::http::Custody {
+                backends: key_custody.clone(),
+                default_backend: "plain".to_string(),
+                wallet_handles: wallet_handles.clone(),
+            },
+            networks: crate::http::Networks {
+                daemons: daemons.clone(),
+                scanner_status: status.clone(),
+            },
         };
         let router = crate::http::build_router(state, 1 << 20);
         let db = Db::over_shared(store.clone());

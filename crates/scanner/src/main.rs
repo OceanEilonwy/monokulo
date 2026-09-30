@@ -268,14 +268,18 @@ async fn run(action: Action) {
     });
     let app_state = AppState {
         db: scanner::store::Database::from_parts(db.clone(), read_pool, &store.lock()),
-        key_custody: key_custody.clone(),
-        key_custody_backend,
-        wallet_handles: wallet_handles.clone(),
         admin_rate_limiter,
-        daemons: daemons.clone(),
-        scanner_status: scanner_status.clone(),
         log_store: log_store.clone(),
         settings: engine_settings.clone(),
+        custody: scanner::http::Custody {
+            backends: key_custody.clone(),
+            default_backend: key_custody_backend,
+            wallet_handles: wallet_handles.clone(),
+        },
+        networks: scanner::http::Networks {
+            daemons: daemons.clone(),
+            scanner_status: scanner_status.clone(),
+        },
     };
 
     let delivery_db = db.clone();

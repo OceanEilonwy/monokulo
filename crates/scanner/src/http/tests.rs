@@ -1391,7 +1391,7 @@ async fn status_endpoint_shows_an_offline_node_as_an_error_not_a_silent_gap() {
         label: "dead-node:18081".to_string(),
         client: Arc::new(FakeDaemonClient::default()), // starts offline (see FakeDaemonClient::new vs. Default)
     }]));
-    state.daemons =
+    state.networks.daemons =
         crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Mainnet, offline_daemon)]));
     let router = build_router(state, 1_000_000);
     let body = get_status_json(router).await;
@@ -1414,7 +1414,7 @@ async fn status_endpoint_shows_an_offline_node_as_an_error_not_a_silent_gap() {
 async fn status_endpoint_reflects_a_healthy_recent_scan_tick() {
     let state = AppState::for_tests();
     crate::scanner_status::record_tick(
-        &state.scanner_status,
+        &state.networks.scanner_status,
         Network::Mainnet,
         crate::now_unix(),
         crate::now_unix(),
@@ -1440,7 +1440,7 @@ async fn status_endpoint_reflects_a_healthy_recent_scan_tick() {
 async fn status_endpoint_reflects_a_failing_scan_tick_with_its_real_error() {
     let state = AppState::for_tests();
     crate::scanner_status::record_tick(
-        &state.scanner_status,
+        &state.networks.scanner_status,
         Network::Mainnet,
         crate::now_unix(),
         crate::now_unix(),
@@ -1467,7 +1467,7 @@ async fn status_endpoint_reflects_a_stale_scanner_that_has_stopped_ticking() {
     // the thing that's actually broken here (stopped ticking at all), which
     // must read differently from a merely-failing-but-alive tick.
     crate::scanner_status::record_tick(
-        &state.scanner_status,
+        &state.networks.scanner_status,
         Network::Mainnet,
         1,
         1,
@@ -1486,7 +1486,7 @@ async fn status_endpoint_reflects_a_stale_scanner_that_has_stopped_ticking() {
 #[tokio::test]
 async fn status_endpoint_with_no_configured_networks_says_so_plainly() {
     let mut state = AppState::for_tests();
-    state.daemons = crate::engine_settings::Daemons::fixed(HashMap::new());
+    state.networks.daemons = crate::engine_settings::Daemons::fixed(HashMap::new());
     let router = build_router(state, 1_000_000);
     let body = get_status_json(router).await;
     assert_eq!(body["networks"].as_array().unwrap().len(), 0);
@@ -1515,10 +1515,6 @@ async fn test_app_state_with_real_daemon_and_env(
         client: fake_daemon.clone(),
     }]));
     let state = AppState {
-        daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(
-            Network::Mainnet,
-            mainnet_daemon,
-        )])),
         settings: crate::engine_settings::EngineSettings::load_with(
             store.clone(),
             None,
@@ -1527,6 +1523,13 @@ async fn test_app_state_with_real_daemon_and_env(
         )
         .await
         .unwrap(),
+        networks: crate::http::Networks {
+            daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(
+                Network::Mainnet,
+                mainnet_daemon,
+            )])),
+            scanner_status: crate::scanner_status::new_scanner_status_map(),
+        },
         ..AppState::for_tests_with_store(store)
     };
     (state, fake_daemon)
@@ -1935,8 +1938,11 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
     .await
     .unwrap();
     let state = AppState {
-        daemons: crate::engine_settings::Daemons::fixed(HashMap::new()),
         settings,
+        networks: crate::http::Networks {
+            daemons: crate::engine_settings::Daemons::fixed(HashMap::new()),
+            scanner_status: crate::scanner_status::new_scanner_status_map(),
+        },
         ..AppState::for_tests_with_store(store)
     };
     let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.db.lock());
@@ -2614,8 +2620,11 @@ async fn engine_that_applies_node_settings() -> (
     .unwrap();
     let state = AppState {
         admin_rate_limiter: rate_limiter.clone(),
-        daemons: daemons.clone(),
         settings,
+        networks: crate::http::Networks {
+            daemons: daemons.clone(),
+            scanner_status: crate::scanner_status::new_scanner_status_map(),
+        },
         ..AppState::for_tests_with_store(store)
     };
     (build_router(state, 16 * 1024 * 1024), daemons, rate_limiter)
@@ -2930,7 +2939,7 @@ fn test_app_state_with_two_custody_backends() -> (AppState, Arc<dyn KeyCustody>,
         "plain",
     );
     let mut state = AppState::for_tests();
-    state.key_custody = Arc::new(router);
+    state.custody.backends = Arc::new(router);
     (state, plain, socket)
 }
 
@@ -3040,7 +3049,7 @@ async fn a_new_store_can_not_use_a_backend_that_is_not_enabled() {
 #[tokio::test]
 async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_old_registration() {
     let (state, plain, socket) = test_app_state_with_two_custody_backends();
-    let wallet_handles = state.wallet_handles.clone();
+    let wallet_handles = state.custody.wallet_handles.clone();
     let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
@@ -3159,7 +3168,7 @@ async fn an_order_made_while_the_backend_has_just_lost_the_store_still_succeeds(
     // The backend restarted and forgot every wallet, but the engine's map
     // still has the old handle: the order re-registers and goes through.
     let (state, plain, _) = test_app_state_with_two_custody_backends();
-    let wallet_handles = state.wallet_handles.clone();
+    let wallet_handles = state.custody.wallet_handles.clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
     let handle = wallet_handles.read().values().copied().next().unwrap();
@@ -3274,7 +3283,7 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
         "plain",
     ));
     let mut state = AppState::for_tests();
-    state.key_custody = router_custody.clone();
+    state.custody.backends = router_custody.clone();
     let router = build_router(state, 1_000_000);
 
     let on_plain = create_tenant(&router, 1).await;
@@ -3392,8 +3401,8 @@ async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_t
         "plain",
     ));
     let mut state = AppState::for_tests();
-    state.key_custody = custody.clone();
-    let wallet_handles = state.wallet_handles.clone();
+    state.custody.backends = custody.clone();
+    let wallet_handles = state.custody.wallet_handles.clone();
     let store = state.db.shared_store_for_test().clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
@@ -3785,7 +3794,7 @@ async fn status_says_which_network_each_node_is_on() {
             client: Arc::new(FakeDaemonClient::new()),
         },
     ]));
-    state.daemons =
+    state.networks.daemons =
         crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Stagenet, daemon)]));
     let body = get_status_json(build_router(state, 1_000_000)).await;
     let nodes = &body["networks"][0]["nodes"];

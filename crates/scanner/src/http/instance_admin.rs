@@ -427,7 +427,7 @@ pub async fn update_settings(
                 let Ok(parsed) = crate::network::parse_network(&network) else {
                     continue;
                 };
-                let reachable = match state.daemons.get(parsed) {
+                let reachable = match state.networks.daemons.get(parsed) {
                     None => false,
                     Some(_) if !saved_networks.contains(&network.as_str()) => true,
                     Some(daemon) => {

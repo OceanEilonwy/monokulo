@@ -160,26 +160,30 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
 
     let app_state = AppState {
         db: scanner::store::Database::inline(store.clone()),
-        key_custody: key_custody.clone(),
-        key_custody_backend: "plain".to_string(),
-        wallet_handles,
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        settings: scanner::engine_settings::EngineSettings::defaults(),
+        log_store: None,
+        custody: scanner::http::Custody {
+            backends: key_custody.clone(),
+            default_backend: "plain".to_string(),
+            wallet_handles,
+        },
         // This test drives scanning directly via `run_scan_tick` below (not
         // through `AppState` at all - see that call site's own comment), so
         // these three exist only to satisfy `AppState`'s shape, not because
         // this test's own logic reads them. Still wired to the same real
         // `daemon` this test already built, rather than a disconnected
         // placeholder, so `AppState` stays internally honest.
-        daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(
-            Network::Stagenet,
-            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT),
-                client: daemon.clone(),
-            }])),
-        )])),
-        scanner_status: scanner::scanner_status::new_scanner_status_map(),
-        settings: scanner::engine_settings::EngineSettings::defaults(),
-        log_store: None,
+        networks: scanner::http::Networks {
+            daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(
+                Network::Stagenet,
+                Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                    label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT),
+                    client: daemon.clone(),
+                }])),
+            )])),
+            scanner_status: scanner::scanner_status::new_scanner_status_map(),
+        },
     };
     let router = build_router(app_state, 1_000_000);
 

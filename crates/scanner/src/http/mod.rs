@@ -54,44 +54,50 @@ use crate::store::{Store, StoreError, Tenant};
 
 use rate_limit::{admin_rate_limit_middleware, RateLimiter};
 
+/// Key custody as the API uses it.
+#[derive(Clone)]
+pub struct Custody {
+    pub backends: Arc<dyn KeyCustody>,
+    /// The `[key_custody].backend` value new tenants' keys are sealed in, so
+    /// `admin::create_tenant` records which backend actually holds a new
+    /// tenant's keys (`tenants.key_custody_backend`). Configured, not
+    /// derived: nothing about `Arc<dyn KeyCustody>` says which
+    /// implementation it is, by design.
+    pub default_backend: String,
+    /// Each registered tenant's wallet handle.
+    pub wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+}
+
+/// The networks the engine serves.
+#[derive(Clone)]
+pub struct Networks {
+    /// One `FallbackDaemonClient` per configured network, swapped whole when
+    /// node settings are saved (admin_settings_v2.md task 2.1). A network is
+    /// "configured" exactly when it has a client here: a tenant can only be
+    /// created for one (`admin::create_tenant`), otherwise its address would
+    /// be derived but never scanned. The same clients the scan loops use, so
+    /// `GET /status` reports on the nodes scanning really uses.
+    pub daemons: crate::engine_settings::Daemons,
+    /// Live scan-tick history per network, updated by the scan loop after
+    /// every tick - see `scanner_status`'s own module doc comment.
+    pub scanner_status: ScannerStatusMap,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     /// The database: reads on the read pool, writes on the database worker
     /// (the `Admin` class, in turn with the scanner's and webhooks' work),
     /// and order-change notifications. Handlers never hold the shared store.
     pub db: crate::store::Database,
-    pub key_custody: Arc<dyn KeyCustody>,
-    /// The `[key_custody].backend` value that produced `key_custody` above -
-    /// `"plain"` or `"socket"` - so `admin::create_tenant` can record which
-    /// backend actually sealed a *newly created* tenant's key material in
-    /// `tenants.key_custody_backend` (see that column's own comment in
-    /// `migrations/0001_init.sql`) instead of the pre-WBS-2.1.3 hardcoded
-    /// `"plain"` literal, which would otherwise misrepresent every tenant
-    /// created while this instance is running with `backend = "socket"`
-    /// configured. A plain `String`, not a re-derivation from `key_custody`'s
-    /// own concrete type: nothing about `Arc<dyn KeyCustody>` lets a caller ask
-    /// "which implementation is this," by design (see `key_custody`'s own module
-    /// doc comment) - `main.rs` already knows the answer from `Config` at boot,
-    /// so it hands it down alongside the trait object rather than reconstructing
-    /// it via some new downcast/introspection surface this boundary was
-    /// deliberately never given.
-    pub key_custody_backend: String,
-    pub wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+    /// Key custody: the backends, which one new stores use, and the
+    /// wallet handles registered so far.
+    pub custody: Custody,
     /// Per-`sk_`-token budget for every route (falling back to the caller's
     /// address for a request without a token) - see `http::rate_limit`'s own
     /// module doc comment for why token-keying is the right shape here.
     pub admin_rate_limiter: Arc<RateLimiter<String>>,
-    /// One `FallbackDaemonClient` per configured network, swapped whole when
-    /// node settings are saved (admin_settings_v2.md task 2.1). A network
-    /// is "configured" exactly when it has a client here: a tenant can only
-    /// be created for one (`admin::create_tenant`), otherwise its address
-    /// would be derived but never scanned. The same clients the scan loops
-    /// use, so `GET /status` reports on the nodes scanning really uses.
-    pub daemons: crate::engine_settings::Daemons,
-    /// Live scan-tick history per network, updated by `main.rs`'s own scan
-    /// loop after every tick - see `scanner_status`'s own module doc
-    /// comment.
-    pub scanner_status: ScannerStatusMap,
+    /// The nodes of each network and the scanner's status on them.
+    pub networks: Networks,
     /// Every engine setting, live (admin_settings_v2.md part 1): handlers
     /// and loops read the current value of what they need on each use.
     pub settings: Arc<crate::engine_settings::EngineSettings>,
@@ -124,17 +130,21 @@ impl AppState {
         ]));
         AppState {
             db: crate::store::Database::inline(store),
-            key_custody: Arc::new(crate::key_custody::PlainKeyCustody::default()),
-            key_custody_backend: "plain".to_string(),
-            wallet_handles: Arc::default(),
             admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
-            daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(
-                monero::Network::Mainnet,
-                mainnet_daemon,
-            )])),
-            scanner_status: crate::scanner_status::new_scanner_status_map(),
             settings: crate::engine_settings::EngineSettings::defaults(),
             log_store: None,
+            custody: crate::http::Custody {
+                backends: Arc::new(crate::key_custody::PlainKeyCustody::default()),
+                default_backend: "plain".to_string(),
+                wallet_handles: Arc::default(),
+            },
+            networks: crate::http::Networks {
+                daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(
+                    monero::Network::Mainnet,
+                    mainnet_daemon,
+                )])),
+                scanner_status: crate::scanner_status::new_scanner_status_map(),
+            },
         }
     }
 }
@@ -497,9 +507,9 @@ pub async fn resolve_wallet_handle(
     state: &AppState,
     tenant: &Tenant,
 ) -> Result<WalletHandle, ApiError> {
-    let known = state.wallet_handles.read().get(&tenant.id).copied();
+    let known = state.custody.wallet_handles.read().get(&tenant.id).copied();
     match known {
-        Some(handle) if state.key_custody.handle_is_live(handle) => return Ok(handle),
+        Some(handle) if state.custody.backends.handle_is_live(handle) => return Ok(handle),
         // Its backend lost it (restarted, or was disabled): register again.
         Some(handle) => forget_wallet_handle(state, &tenant.id, handle),
         None => {}
@@ -521,7 +531,7 @@ pub async fn resolve_wallet_handle(
     // refuses, so a disabled backend's store isn't quietly brought back.
     let handle = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        state.key_custody.unseal_and_register_in_idempotent(
+        state.custody.backends.unseal_and_register_in_idempotent(
             &tenant.key_custody_backend,
             &tenant.sealed_key_material,
             tenant.id.as_str(),
@@ -530,11 +540,11 @@ pub async fn resolve_wallet_handle(
     .await
     .map_err(|_| ApiError::Internal("key custody registration timed out".into()))??;
     let winner = {
-        let mut handles = state.wallet_handles.write();
+        let mut handles = state.custody.wallet_handles.write();
         *handles.entry(tenant.id.clone()).or_insert(handle)
     };
     if winner != handle {
-        let _ = state.key_custody.remove_wallet(handle).await;
+        let _ = state.custody.backends.remove_wallet(handle).await;
     }
     Ok(winner)
 }
@@ -546,7 +556,7 @@ pub fn forget_wallet_handle(
     tenant_id: &crate::store::TenantId,
     handle: WalletHandle,
 ) {
-    let mut handles = state.wallet_handles.write();
+    let mut handles = state.custody.wallet_handles.write();
     if handles.get(tenant_id) == Some(&handle) {
         handles.remove(tenant_id);
     }

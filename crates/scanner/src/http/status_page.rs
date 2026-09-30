@@ -166,6 +166,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
     let now = crate::now_unix();
 
     let mut networks: Vec<(Network, _)> = state
+        .networks
         .daemons
         .snapshot()
         .iter()
@@ -212,7 +213,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
             });
         }
 
-        let scan_status = state.scanner_status.read().get(&network).cloned();
+        let scan_status = state.networks.scanner_status.read().get(&network).cloned();
         let scanner = match scan_status {
             None => ScannerStatusView {
                 ever_ticked: false,
@@ -270,7 +271,8 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         .await
         .unwrap_or((0, None));
     let key_custody: Vec<CustodyBackendStatus> = state
-        .key_custody
+        .custody
+        .backends
         .backend_health()
         .await
         .into_iter()

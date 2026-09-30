@@ -539,20 +539,24 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     let handles = Arc::new(RwLock::new(handles));
     let app_state = AppState {
         db: scanner::store::Database::from_parts(db.clone(), reader_pool.clone(), &store.lock()),
-        key_custody: custody.clone(),
-        key_custody_backend: "plain".into(),
-        wallet_handles: handles.clone(),
         admin_rate_limiter: Arc::new(RateLimiter::new(100_000)),
-        daemons: Daemons::fixed(HashMap::from([(
-            Network::Mainnet,
-            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                label: "fixture".into(),
-                client: daemon.clone(),
-            }])),
-        )])),
-        scanner_status: new_scanner_status_map(),
         log_store: None,
         settings: EngineSettings::defaults(),
+        custody: scanner::http::Custody {
+            backends: custody.clone(),
+            default_backend: "plain".into(),
+            wallet_handles: handles.clone(),
+        },
+        networks: scanner::http::Networks {
+            daemons: Daemons::fixed(HashMap::from([(
+                Network::Mainnet,
+                Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                    label: "fixture".into(),
+                    client: daemon.clone(),
+                }])),
+            )])),
+            scanner_status: new_scanner_status_map(),
+        },
     };
     let http = build_router(app_state, 1_000_000);
     let http_done = Arc::new(AtomicU64::new(0));

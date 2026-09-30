@@ -53,12 +53,12 @@ pub struct CreateTenantRequest {
 /// The backend a new or moving store's keys go to: `requested`, or the
 /// default. Refused if it isn't enabled.
 fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<String, ApiError> {
-    let enabled = state.key_custody.enabled_backends();
+    let enabled = state.custody.backends.enabled_backends();
     if enabled.is_empty() {
         // A single backend, not a router (some tests): it is the only one.
         return Ok(requested
             .map(str::to_string)
-            .unwrap_or_else(|| state.key_custody_backend.clone()));
+            .unwrap_or_else(|| state.custody.default_backend.clone()));
     }
     let backend = requested
         .map(str::to_string)
@@ -87,7 +87,7 @@ pub async fn create_tenant(
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let network = parse_network(req.network.as_deref().unwrap_or("mainnet"))
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    if !state.daemons.is_configured(network) {
+    if !state.networks.daemons.is_configured(network) {
         return Err(ApiError::BadRequest(format!(
             "no monero_node is configured for network {:?} on this instance",
             network_str(network)
@@ -98,19 +98,21 @@ pub async fn create_tenant(
     let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
 
     let handle = state
-        .key_custody
+        .custody
+        .backends
         .register_wallet_in(&backend, material.clone())
         .await
         .map_err(key_custody_error_for_new_tenant)?;
     let primary_address = state
-        .key_custody
+        .custody
+        .backends
         .derive_subaddress(handle, SubaddressIndex::default(), network)
         .await
         .map_err(key_custody_error_for_new_tenant)?;
-    let sealed = match state.key_custody.seal_in(&backend, &material).await {
+    let sealed = match state.custody.backends.seal_in(&backend, &material).await {
         Ok(sealed) => sealed,
         Err(e) => {
-            let _ = state.key_custody.remove_wallet(handle).await;
+            let _ = state.custody.backends.remove_wallet(handle).await;
             return Err(key_custody_error_for_new_tenant(e));
         }
     };
@@ -142,12 +144,13 @@ pub async fn create_tenant(
     let created = match created {
         Ok(created) => created,
         Err(e) => {
-            let _ = state.key_custody.remove_wallet(handle).await;
+            let _ = state.custody.backends.remove_wallet(handle).await;
             return Err(e.into());
         }
     };
 
     state
+        .custody
         .wallet_handles
         .write()
         .insert(created.tenant.id.clone(), handle);
@@ -290,14 +293,15 @@ pub async fn switch_key_custody(
     let _switching = SWITCHING.lock().await;
 
     let handle = state
-        .key_custody
+        .custody
+        .backends
         .register_wallet_in(&backend, material.clone())
         .await
         .map_err(ApiError::from)?;
-    let sealed = match state.key_custody.seal_in(&backend, &material).await {
+    let sealed = match state.custody.backends.seal_in(&backend, &material).await {
         Ok(sealed) => sealed,
         Err(e) => {
-            let _ = state.key_custody.remove_wallet(handle).await;
+            let _ = state.custody.backends.remove_wallet(handle).await;
             return Err(e.into());
         }
     };
@@ -306,15 +310,16 @@ pub async fn switch_key_custody(
         .write_store(move |s| s.update_tenant_key_custody(&id, &chosen, &sealed))
         .await;
     if let Err(e) = updated {
-        let _ = state.key_custody.remove_wallet(handle).await;
+        let _ = state.custody.backends.remove_wallet(handle).await;
         return Err(e.into());
     }
     let previous = state
+        .custody
         .wallet_handles
         .write()
         .insert(tenant.id.clone(), handle);
     if let Some(previous) = previous.filter(|p| *p != handle) {
-        if let Err(e) = state.key_custody.remove_wallet(previous).await {
+        if let Err(e) = state.custody.backends.remove_wallet(previous).await {
             // The old backend is down: it loses the copy when it restarts.
             tracing::warn!(store.id = %tenant.id, error = %e, "moved a store's keys, but removing them from its old key custody backend failed");
         }
@@ -351,9 +356,9 @@ fn backend_description(name: &str) -> &'static str {
 /// and the default (task 5.4). Not secret: any caller that reaches the
 /// private engine API may ask.
 pub async fn key_custody_options(State(state): State<AppState>) -> Json<KeyCustodyView> {
-    let mut enabled_names = state.key_custody.enabled_backends();
+    let mut enabled_names = state.custody.backends.enabled_backends();
     if enabled_names.is_empty() {
-        enabled_names.push(state.key_custody_backend.clone());
+        enabled_names.push(state.custody.default_backend.clone());
     }
     let enabled = enabled_names
         .iter()
@@ -369,8 +374,8 @@ pub async fn key_custody_options(State(state): State<AppState>) -> Json<KeyCusto
             _ => None,
         })
         .collect();
-    let default = match state.key_custody.enabled_backends().is_empty() {
-        true => state.key_custody_backend.clone(),
+    let default = match state.custody.backends.enabled_backends().is_empty() {
+        true => state.custody.default_backend.clone(),
         false => state.settings.custody.load().default.as_str().to_string(),
     };
     Json(KeyCustodyView { enabled, default })
@@ -429,10 +434,10 @@ pub async fn delete_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
 ) -> Result<StatusCode, ApiError> {
-    let removed_handle = state.wallet_handles.write().remove(&tenant.id);
+    let removed_handle = state.custody.wallet_handles.write().remove(&tenant.id);
     if let Some(handle) = removed_handle {
         // Best-effort: an already-unknown handle is not an error worth surfacing here.
-        let _ = state.key_custody.remove_wallet(handle).await;
+        let _ = state.custody.backends.remove_wallet(handle).await;
     }
     let id = tenant.id.clone();
     state
@@ -824,7 +829,7 @@ pub enum PaymentLookupView {
 /// reason: a real match is a real match regardless of the order's current
 /// status.
 ///
-/// Uses `state.daemons` (the live scanner's own pool), not a separate one:
+/// Uses `state.networks.daemons` (the live scanner's own pool), not a separate one:
 /// this is two quick calls, not a bulk historical walk, so it poses none of
 /// the sustained-request-volume contention `AppState::rescan_daemons` exists
 /// to prevent - see that field's own doc comment for the class of problem
@@ -847,7 +852,7 @@ pub async fn lookup_payment(
             tenant.network
         ))
     })?;
-    let daemon = state.daemons.get(network).ok_or_else(|| {
+    let daemon = state.networks.daemons.get(network).ok_or_else(|| {
         ApiError::Unavailable(format!(
             "no Monero node is configured for network {network:?}"
         ))
@@ -877,7 +882,7 @@ pub async fn lookup_payment(
     let mut retries = 0;
     let scan = loop {
         match crate::scanner::scan_transaction(
-            state.key_custody.as_ref(),
+            state.custody.backends.as_ref(),
             handle,
             &tx,
             0..tenant.next_minor_index,
