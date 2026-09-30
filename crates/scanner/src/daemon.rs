@@ -62,6 +62,22 @@ impl DaemonInfo {
     }
 }
 
+/// One block as the node has it, contents and identity together
+/// ([`MoneroDaemonClient::get_chain_blocks`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChainBlock {
+    pub height: u64,
+    /// The block's id, as `get_block_hash` reports it (lowercase hex).
+    pub hash: String,
+    /// The parent block's id; empty for the genesis block.
+    pub prev_hash: String,
+    /// The miner's timestamp (unix seconds). Consensus lets it run up to two
+    /// hours ahead of real time.
+    pub timestamp: u64,
+    /// The block's transactions, without the coinbase.
+    pub txs: Vec<Transaction>,
+}
+
 #[async_trait::async_trait]
 pub trait MoneroDaemonClient: Send + Sync {
     async fn get_height(&self) -> Result<u64, DaemonError>;
@@ -101,6 +117,43 @@ pub trait MoneroDaemonClient: Send + Sync {
         let mut out = Vec::new();
         for height in start_height..start_height.saturating_add(count) {
             out.push(self.get_block_transactions(height).await?);
+        }
+        Ok(out)
+    }
+
+    /// Up to `count` whole blocks from `start_height`, in height order: each
+    /// with its id, its parent's id, its timestamp and its transactions (the
+    /// coinbase excluded), all from the same block. May be shorter than
+    /// `count` (the node's tip, or its batch limit); empty only if nothing at
+    /// `start_height` is available.
+    ///
+    /// Pairing a block's contents with its own id is the point: a scanner that
+    /// reads a hash and the contents separately can record one block's
+    /// payments under another block's hash if the chain moves in between.
+    ///
+    /// The default composes per-height calls (for test doubles); it re-reads
+    /// each hash after reading the contents and refuses a block that changed
+    /// meanwhile. `RpcDaemonClient` decodes the headers `get_blocks.bin`
+    /// already returns with the transactions, in one round trip.
+    async fn get_chain_blocks(&self, start_height: u64, count: u64) -> Result<Vec<ChainBlock>, DaemonError> {
+        let mut out: Vec<ChainBlock> = Vec::new();
+        let mut prev_hash = match start_height.checked_sub(1) {
+            Some(parent) => self.get_block_hash(parent).await?,
+            None => String::new(),
+        };
+        for height in start_height..start_height.saturating_add(count) {
+            let hash = match self.get_block_hash(height).await {
+                Ok(hash) => hash,
+                Err(error) if out.is_empty() => return Err(error),
+                Err(_) => break,
+            };
+            let timestamp = self.get_block_timestamp(height).await?;
+            let txs = self.get_block_transactions(height).await?;
+            if self.get_block_hash(height).await? != hash {
+                return Err(DaemonError::Request(format!("block {height} changed while it was read")));
+            }
+            out.push(ChainBlock { height, hash: hash.clone(), prev_hash, timestamp, txs });
+            prev_hash = hash;
         }
         Ok(out)
     }
@@ -447,6 +500,23 @@ pub mod fake {
                 .get(&height)
                 .map(|b| b.txs.clone())
                 .unwrap_or_default())
+        }
+
+        /// A consistent snapshot: every block and its parent's id under one
+        /// lock, as a real node's single `get_blocks.bin` answer would be.
+        async fn get_chain_blocks(&self, start_height: u64, count: u64) -> Result<Vec<ChainBlock>, DaemonError> {
+            self.require_online()?;
+            let state = self.state.lock();
+            let mut out = Vec::new();
+            for height in start_height..start_height.saturating_add(count) {
+                let Some(block) = state.blocks.get(&height) else { break };
+                let prev_hash = height.checked_sub(1).and_then(|p| state.blocks.get(&p)).map(|b| b.hash.clone()).unwrap_or_default();
+                out.push(ChainBlock { height, hash: block.hash.clone(), prev_hash, timestamp: block.timestamp, txs: block.txs.clone() });
+            }
+            if out.is_empty() {
+                return Err(DaemonError::Request(format!("no block at height {start_height}")));
+            }
+            Ok(out)
         }
 
         async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {

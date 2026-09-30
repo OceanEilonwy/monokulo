@@ -70,7 +70,7 @@ pub struct Db {
 #[derive(Clone)]
 enum Inner {
     /// A worker thread with its own connection.
-    Worker { senders: Arc<[tokio::sync::mpsc::Sender<(Instant, Job)>; 3]>, wake: std::sync::mpsc::SyncSender<()> },
+    Worker { senders: Arc<[tokio::sync::mpsc::Sender<Job>; 3]>, wake: std::sync::mpsc::SyncSender<()> },
     /// Jobs run on the caller, on the store everything else shares.
     Inline(SharedStore),
 }
@@ -104,12 +104,11 @@ impl Db {
         // on this when every queue is empty.
         let (wake, woken) = std::sync::mpsc::sync_channel::<()>(1);
         let counters = Arc::new(Counters::default());
-        let worker_counters = counters.clone();
-        std::thread::Builder::new()
+                std::thread::Builder::new()
             .name("scanner-db".into())
-            .spawn(move || serve(store, receivers, woken, worker_counters))
+            .spawn(move || serve(store, receivers, woken))
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
-        let senders: [tokio::sync::mpsc::Sender<(Instant, Job)>; 3] =
+        let senders: [tokio::sync::mpsc::Sender<Job>; 3] =
             senders.try_into().map_err(|_| StoreError::WorkerUnavailable("queue setup".into()))?;
         Ok(Db { inner: Inner::Worker { senders: Arc::new(senders), wake }, counters })
     }
@@ -132,11 +131,17 @@ impl Db {
             Inner::Worker { senders, wake } => (senders, wake),
         };
         let (reply, answer) = tokio::sync::oneshot::channel();
+        let (counters, queued_at) = (self.counters.clone(), Instant::now());
+        // The job records its own timing before it replies, so a caller that
+        // has its answer also sees it in the metrics.
         let job: Job = Box::new(move |store| {
-            let _ = reply.send(f(store));
+            let started = Instant::now();
+            let result = f(store);
+            record(&counters, queued_at, started);
+            let _ = reply.send(result);
         });
         senders[class.index()]
-            .send((Instant::now(), job))
+            .send(job)
             .await
             .map_err(|_| StoreError::WorkerUnavailable("the database worker stopped".into()))?;
         let _ = wake.try_send(());
@@ -160,9 +165,8 @@ fn record(counters: &Counters, queued_at: Instant, started: Instant) {
 
 fn serve(
     store: Store,
-    mut receivers: Vec<tokio::sync::mpsc::Receiver<(Instant, Job)>>,
+    mut receivers: Vec<tokio::sync::mpsc::Receiver<Job>>,
     woken: std::sync::mpsc::Receiver<()>,
-    counters: Arc<Counters>,
 ) {
     let mut next = 0;
     loop {
@@ -180,7 +184,7 @@ fn serve(
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {}
             }
         }
-        let Some((index, (queued_at, job))) = taken else {
+        let Some((index, job)) = taken else {
             if open == 0 {
                 return; // every handle dropped and every queue drained
             }
@@ -190,11 +194,9 @@ fn serve(
             continue;
         };
         next = (index + 1) % receivers.len();
-        let started = Instant::now();
         // A panicking job loses its own reply (its caller gets an error), not
         // the worker.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&store)));
-        record(&counters, queued_at, started);
     }
 }
 

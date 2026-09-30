@@ -479,7 +479,16 @@ async fn void_if_double_spend_proven(
     current_height: u64,
     now: i64,
 ) -> Result<bool> {
-    let key_images = parse_payment_key_images(&payment.key_images_json)?;
+    // Invalid stored evidence is never proof, and never an error that would
+    // stop the check for every other payment: log it and leave the payment.
+    let key_images = match parse_payment_key_images(&payment.key_images_json) {
+        Ok(images) => images,
+        Err(error) => {
+            tracing::warn!(payment.id = payment.id, order.id = %payment.order_id, error = %error,
+                "a vanished payment's stored key images are invalid - never voiding it on that");
+            return Ok(false);
+        }
+    };
     // Corroborated, not the bare call: this is the one place a false accusation
     // permanently voids real money, so a `daemon` that knows about more than one
     // node (`daemon_fallback::FallbackDaemonClient`) cross-checks them here rather
@@ -1243,6 +1252,9 @@ pub(crate) mod tests {
         /// what lets a test assert "the chunked scan loop issued N real batched
         /// calls," not just "N blocks were eventually fetched somehow."
         BlocksRange,
+        /// Counts calls to `get_chain_blocks`, the block scan's one fetch for a
+        /// run of blocks with their ids.
+        ChainBlocks,
         /// Counts calls to `get_block_hash` - proves the deliberate scope limit
         /// (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A's own "why the
         /// target moved" section): block-hash fetching for `scanned_blocks`
@@ -1347,6 +1359,21 @@ pub(crate) mod tests {
             let mut out = Vec::new();
             for height in start_height..start_height.saturating_add(count) {
                 out.push(self.get_block_transactions(height).await?);
+            }
+            Ok(out)
+        }
+        /// Straight to the inner node (its blocks are one consistent snapshot),
+        /// unless a test injects failures into individual transaction fetches:
+        /// then composed from this wrapper's own calls, so that gate applies.
+        async fn get_chain_blocks(&self, start_height: u64, count: u64) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+            self.gate(DaemonCall::ChainBlocks).await?;
+            if self.method != DaemonCall::BlockTransactions {
+                return self.inner.get_chain_blocks(start_height, count).await;
+            }
+            let mut out = Vec::new();
+            for block in self.inner.get_chain_blocks(start_height, count).await? {
+                let txs = self.get_block_transactions(block.height).await?;
+                out.push(crate::daemon::ChainBlock { txs, ..block });
             }
             Ok(out)
         }
@@ -4093,7 +4120,7 @@ pub(crate) mod tests {
             for i in 0..NEW_BLOCK_COUNT {
                 fake.push_block(&format!("h{}", i + 2), vec![]); // small, empty blocks - cheap to batch heavily
             }
-            let daemon = DaemonFailingFrom::counting(fake, DaemonCall::BlocksRange);
+            let daemon = DaemonFailingFrom::counting(fake, DaemonCall::ChainBlocks);
 
             for _ in 0..5 {
                 run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
@@ -4107,7 +4134,7 @@ pub(crate) mod tests {
             );
             assert!(
                 daemon.call_count() < NEW_BLOCK_COUNT,
-                "expected far fewer than {NEW_BLOCK_COUNT} get_blocks_range calls for {NEW_BLOCK_COUNT} small \
+                "expected far fewer than {NEW_BLOCK_COUNT} get_chain_blocks calls for {NEW_BLOCK_COUNT} small \
                  blocks under the default memory budget, got {}",
                 daemon.call_count()
             );
@@ -4135,22 +4162,17 @@ pub(crate) mod tests {
             }
             let daemon = DaemonFailingFrom::counting(fake, DaemonCall::BlockHash);
 
+            let mut rounds = 0;
             for _ in 0..5 {
+                rounds += 1;
                 run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 0, 0).await.unwrap();
                 if store.lock().max_scanned_height("mainnet").unwrap() == Some(NEW_BLOCK_COUNT + 1) { break; }
             }
 
-            assert_eq!(
-                daemon.call_count(),
-                // One more than the number of newly-arrived blocks: even with
-                // `reorg_check_depth = 0`, `check_for_reorg_and_reconcile`
-                // (unconditionally called at the end of every tick, unrelated to
-                // this change) still re-checks the current tip's own hash -
-                // `>= tip - 0` includes the tip itself. A real, pre-existing
-                // extra call, not batching leaking through.
-                NEW_BLOCK_COUNT * 2 + 1,
-                "each block hash is checked before and after scanning, plus reconciliation's tip check"
-            );
+            // A block's id comes with its contents (`get_chain_blocks`), so the
+            // scan makes no hash lookups of its own: the only ones are reorg
+            // detection's, one per round when the chain agrees.
+            assert_eq!(daemon.call_count(), rounds, "one detection lookup per round, none per block");
         }
     }
 
@@ -4495,6 +4517,9 @@ pub(crate) mod tests {
         store.lock().set_scanned_block("mainnet", 50, "a_50").unwrap();
 
         let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        // The fallback shares block 50 (so its 51 extends the recorded chain)
+        // and has its own, different 51.
+        fallback.seed_block_at(50, "a_50", vec![]);
         fallback.seed_block_at(51, "b_51", vec![]);
 
         // `get_block_transactions(51)` succeeds normally against the primary; only
@@ -5595,7 +5620,7 @@ pub(crate) mod tests {
             tenants.push((id, handle));
         }
         let store = store.into_shared();
-        let daemon = DaemonFailingFrom::counting(FakeDaemonClient::new(), DaemonCall::BlocksRange);
+        let daemon = DaemonFailingFrom::counting(FakeDaemonClient::new(), DaemonCall::ChainBlocks);
         daemon.inner.push_block("h1", vec![]);
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
 

@@ -26,6 +26,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use monero::Transaction;
+
+use crate::daemon::ChainBlock;
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
@@ -250,6 +252,9 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
         self.one(|c| c.get_blocks_range(start_height, count)).await
     }
+    async fn get_chain_blocks(&self, start_height: u64, count: u64) -> Result<Vec<ChainBlock>, DaemonError> {
+        self.one(|c| c.get_chain_blocks(start_height, count)).await
+    }
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
         self.one(|c| c.get_mempool_transactions()).await
     }
@@ -295,6 +300,12 @@ impl MoneroDaemonClient for FallbackDaemonClient {
 
     async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
         self.failover(|c| c.get_blocks_range(start_height, count)).await
+    }
+
+    /// One node answers for the whole range: a block's contents and id never
+    /// come from two nodes.
+    async fn get_chain_blocks(&self, start_height: u64, count: u64) -> Result<Vec<ChainBlock>, DaemonError> {
+        self.failover(|c| c.get_chain_blocks(start_height, count)).await
     }
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {

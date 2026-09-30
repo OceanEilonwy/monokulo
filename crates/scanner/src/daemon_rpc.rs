@@ -17,7 +17,7 @@ use monero::Transaction;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::daemon::{DaemonError, DaemonInfo, KeyImageStatus, MoneroDaemonClient, TxLocation};
+use crate::daemon::{ChainBlock, DaemonError, DaemonInfo, KeyImageStatus, MoneroDaemonClient, TxLocation};
 
 pub struct RpcDaemonClient {
     client: reqwest::Client,
@@ -165,6 +165,10 @@ impl RpcDaemonClient {
     /// response - see `get_blocks_bin_request`/`parse_get_blocks_bin_response`'s
     /// own doc comments for the wire format itself.
     async fn get_blocks_bin_range(&self, start_height: u64, max_block_count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+        Ok(self.get_blocks_bin(start_height, max_block_count).await?.into_iter().map(|block| block.txs).collect())
+    }
+
+    async fn get_blocks_bin(&self, start_height: u64, max_block_count: u64) -> Result<Vec<BinBlock>, DaemonError> {
         let request = get_blocks_bin_request(start_height, max_block_count);
         let response = self.post_bin("/get_blocks.bin", request).await?;
         parse_get_blocks_bin_response(&response)
@@ -382,7 +386,37 @@ fn get_blocks_bin_request(start_height: u64, max_block_count: u64) -> Vec<u8> {
 /// just batched. Un-consumed fields (`block` itself, `prunable_hash`, `pruned`,
 /// `block_weight`, `output_indices`) are skipped automatically by
 /// `monero_epee`'s own `Drop`-based cursor advance - see its own module docs.
-fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+/// One entry of a `get_blocks.bin` response: the block blob (header, miner
+/// transaction and transaction hashes) and the transactions themselves.
+struct BinBlock {
+    block: Option<Vec<u8>>,
+    txs: Vec<Transaction>,
+}
+
+impl BinBlock {
+    /// The block's identity from its own blob, with its transactions.
+    fn into_chain_block(self, height: u64) -> Result<ChainBlock, DaemonError> {
+        let blob = self.block.ok_or_else(|| DaemonError::Request(format!("get_blocks.bin: block {height} had no block blob")))?;
+        let block: monero::Block = deserialize(&blob)
+            .map_err(|e| DaemonError::Request(format!("get_blocks.bin: block {height} could not be decoded: {e}")))?;
+        if block.tx_hashes.len() != self.txs.len() {
+            return Err(DaemonError::Request(format!(
+                "get_blocks.bin: block {height} lists {} transactions but {} came with it",
+                block.tx_hashes.len(),
+                self.txs.len()
+            )));
+        }
+        Ok(ChainBlock {
+            height,
+            hash: hex::encode(block.id().0),
+            prev_hash: hex::encode(block.header.prev_id.0),
+            timestamp: block.header.timestamp.0,
+            txs: self.txs,
+        })
+    }
+}
+
+fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonError> {
     fn epee_err(e: monero_epee::EpeeError) -> DaemonError {
         DaemonError::Request(format!("invalid get_blocks.bin response: {e:?}"))
     }
@@ -391,7 +425,7 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, 
     let mut fields = epee.entry().map_err(epee_err)?.fields().map_err(epee_err)?;
 
     let mut status: Option<Vec<u8>> = None;
-    let mut blocks: Option<Vec<Vec<Transaction>>> = None;
+    let mut blocks: Option<Vec<BinBlock>> = None;
 
     while let Some(entry) = fields.next() {
         let (key, value) = entry.map_err(epee_err)?;
@@ -405,10 +439,18 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, 
                 while let Some(block_entry) = block_entries.next() {
                     let mut block_fields = block_entry.map_err(epee_err)?.fields().map_err(epee_err)?;
                     let mut txs = Vec::new();
+                    let mut block_blob = None;
                     while let Some(field) = block_fields.next() {
                         let (field_key, field_value) = field.map_err(epee_err)?;
-                        if field_key.consume() != b"txs" {
-                            continue; // "block" (the header+coinbase blob), etc. - not needed here
+                        match field_key.consume() {
+                            b"txs" => {}
+                            // The header, coinbase and transaction hashes: the
+                            // block's identity.
+                            b"block" => {
+                                block_blob = Some(field_value.to_str().map_err(epee_err)?.consume().to_vec());
+                                continue;
+                            }
+                            _ => continue,
                         }
                         // `txs`' own element shape genuinely differs by monerod
                         // version, confirmed against a real response, not assumed:
@@ -453,7 +495,7 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, 
                             })?);
                         }
                     }
-                    out.push(txs);
+                    out.push(BinBlock { block: block_blob, txs });
                 }
                 blocks = Some(out);
             }
@@ -692,6 +734,36 @@ impl MoneroDaemonClient for RpcDaemonClient {
         self.get_blocks_bin_range(start_height, count).await
     }
 
+    /// `get_blocks.bin`, decoding each block's own header: one round trip
+    /// for the range, and every block's id computed from the same blob its
+    /// transactions came with. Genesis the ordinary way, as for
+    /// `get_blocks_range`.
+    async fn get_chain_blocks(&self, start_height: u64, count: u64) -> Result<Vec<ChainBlock>, DaemonError> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        let mut from = start_height;
+        if start_height == 0 {
+            let hash = self.get_block_hash(0).await?;
+            let timestamp = self.get_block_timestamp(0).await?;
+            let txs = self.get_block_transactions(0).await?;
+            out.push(ChainBlock { height: 0, hash, prev_hash: String::new(), timestamp, txs });
+            from = 1;
+        }
+        let wanted = count - out.len() as u64;
+        if wanted > 0 {
+            let blocks = self.get_blocks_bin(from, wanted).await?;
+            for (offset, block) in blocks.into_iter().take(wanted as usize).enumerate() {
+                out.push(block.into_chain_block(from + offset as u64)?);
+            }
+        }
+        if out.is_empty() {
+            return Err(DaemonError::Request(format!("get_blocks.bin returned no blocks from height {start_height}")));
+        }
+        Ok(out)
+    }
+
     async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
         let resp: GetBlockResult = self.post_json_rpc("get_block", json!({ "height": height })).await?;
         Ok(resp.block_header.timestamp)
@@ -774,6 +846,32 @@ mod tests {
     use super::*;
 
     const FIXTURE_TX_HEX: &str = include_str!("../tests/fixtures/subaddress_tx.hex");
+
+    /// A real mainnet block with only its coinbase (from the `monero` crate's
+    /// own serialisation test).
+    const COINBASE_ONLY_BLOCK_HEX: &str = "0c0c94debaf805beb3489c722a285c092a32e7c6893abfc7d069699c8326fc3445a749c5276b6200000000029b892201ffdf882201b699d4c8b1ec020223df524af2a2ef5f870adb6e1ceb03a475c39f8b9ef76aa50b46ddd2a18349402b012839bfa19b7524ec7488917714c216ca254b38ed0424ca65ae828a7c006aeaf10208f5316a7f6b99cca60000";
+
+    /// A block's identity comes from its own blob: the id the node reports
+    /// for it, its parent's id and its timestamp. A blob that doesn't match
+    /// the transactions sent with it, or is missing, is an error, never a
+    /// block with made-up identity.
+    #[test]
+    fn a_get_blocks_bin_entry_carries_its_own_block_identity() {
+        let blob = hex::decode(COINBASE_ONLY_BLOCK_HEX).unwrap();
+        let decoded: monero::Block = deserialize(&blob).unwrap();
+        let block = BinBlock { block: Some(blob.clone()), txs: vec![] }.into_chain_block(1_000).unwrap();
+        assert_eq!(block.height, 1_000);
+        assert_eq!(block.hash, hex::encode(decoded.id().0));
+        assert_eq!(block.prev_hash, "beb3489c722a285c092a32e7c6893abfc7d069699c8326fc3445a749c5276b62");
+        assert_eq!(block.timestamp, decoded.header.timestamp.0);
+        assert!(block.txs.is_empty());
+
+        let tx: Transaction = deserialize(&hex::decode(FIXTURE_TX_HEX.trim()).unwrap()).unwrap();
+        let extra = BinBlock { block: Some(blob), txs: vec![tx] }.into_chain_block(1_000);
+        assert!(extra.is_err(), "a transaction the block doesn't list");
+        assert!(BinBlock { block: None, txs: vec![] }.into_chain_block(1_000).is_err());
+        assert!(BinBlock { block: Some(vec![1, 2, 3]), txs: vec![] }.into_chain_block(1_000).is_err());
+    }
 
     fn entry(as_hex: &str) -> TxEntry {
         TxEntry { as_hex: as_hex.to_string(), in_pool: false, block_height: Some(1) }

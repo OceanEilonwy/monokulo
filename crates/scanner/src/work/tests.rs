@@ -487,3 +487,172 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
     assert_eq!(store.lock().get_scanned_block_hash("mainnet", 41).unwrap().as_deref(), Some("c41"), "rescanned to the new tip");
     assert_eq!(cursor_of(&store, &tenant), Some(41));
 }
+
+/// A node that replaces its tip right after serving a run of blocks: the
+/// scanner holds (and commits) the old tip, which the chain then discards.
+struct ReorgsAfterFetch<'a> {
+    inner: &'a FakeDaemonClient,
+    fork: u64,
+    armed: std::sync::atomic::AtomicBool,
+    chain_fetches: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for ReorgsAfterFetch<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.inner.get_height().await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        self.inner.get_block_hash(height).await
+    }
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_block_transactions(height).await
+    }
+    async fn get_chain_blocks(&self, start: u64, count: u64) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        self.chain_fetches.fetch_add(1, Ordering::Relaxed);
+        let blocks = self.inner.get_chain_blocks(start, count).await?;
+        if self.armed.swap(false, Ordering::Relaxed) {
+            let tip = self.inner.get_height().await?;
+            let replacement: Vec<(String, Vec<Transaction>)> = (self.fork..=tip).map(|h| (format!("new{h}"), vec![])).collect();
+            self.inner.reorg_from(self.fork, replacement.iter().map(|(hash, txs)| (hash.as_str(), txs.clone())).collect());
+        }
+        Ok(blocks)
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_mempool_transactions().await
+    }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.inner.get_mempool_txids().await
+    }
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_transactions(txids).await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        self.inner.locate_transaction(txid).await
+    }
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        self.inner.get_transaction(txid).await
+    }
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.inner.is_key_image_spent(key_images).await
+    }
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        self.inner.get_block_timestamp(height).await
+    }
+}
+
+/// A payment in a block the chain then discards, whose transaction the node
+/// can no longer find and which isn't provably double-spent, stops counting
+/// confirmations: it goes back to unconfirmed, and its order never settles
+/// on the strength of a block that no longer exists.
+#[tokio::test]
+async fn a_reorged_payment_the_node_cannot_find_never_settles_its_order() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.push_block("a1", vec![]);
+    fake.push_block("a2", vec![]);
+    let tenants = [(tenant.clone(), handle)];
+    let round = || run_round_on(&store, &custody, &fake, &tenants);
+    round().await;
+    fake.push_block("a3", vec![fixture_tx()]);
+    round().await;
+    assert_eq!(store.lock().get_all_payments(&order).unwrap()[0].block_height, Some(3));
+
+    // The chain replaces block 3 with one that doesn't hold the payment,
+    // and nothing proves its inputs were spent elsewhere.
+    fake.reorg_from(3, vec![("b3", vec![])]);
+    for i in 0..15 {
+        fake.push_block(&format!("b{}", 4 + i), vec![]);
+    }
+    for _ in 0..6 {
+        round().await;
+    }
+    let payment = &store.lock().get_all_payments(&order).unwrap()[0];
+    assert_eq!(payment.block_height, None, "not in any block any more");
+    assert_eq!(payment.voided_at, None, "and not voided without proof");
+    assert_ne!(order_status(&store, &order), OrderStatus::Paid, "no confirmations on a discarded block");
+}
+
+/// Catch-up groups are served in turn: a store far behind doesn't get every
+/// catch-up turn just because each turn moves it up a few blocks.
+#[tokio::test]
+async fn a_store_far_behind_does_not_hold_every_catch_up_turn() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (far, far_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (near, near_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let fake = FakeDaemonClient::new();
+    for h in 1..=400 {
+        let height = fake.push_block(&format!("a{h}"), vec![]);
+        store.set_scanned_block("mainnet", height, &format!("a{h}")).unwrap();
+    }
+    store.execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = 100 WHERE id = '{far}'")).unwrap();
+    store.execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = 300 WHERE id = '{near}'")).unwrap();
+    let store = store.into_shared();
+    let tenants = [(far.clone(), far_handle), (near.clone(), near_handle)];
+    let state = ScanState::default();
+    for _ in 0..2 {
+        run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    }
+    assert!(cursor_of(&store, &far).unwrap() > 100, "the far group had its turn");
+    assert!(cursor_of(&store, &near).unwrap() > 300, "and so did the other, on the very next turn");
+}
+
+/// The node replaces its tip after the scanner fetched it: the scanner
+/// commits the old tip with its own contents (never one block's payments
+/// under another's hash), then detects the reorg and reconciles, so no
+/// payment from the discarded block survives.
+#[tokio::test]
+async fn a_tip_replaced_after_it_was_fetched_leaves_no_phantom_payment() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.push_block("a1", vec![]);
+    fake.push_block("a2", vec![]);
+    let tenants = [(tenant.clone(), handle)];
+    run_round_on(&store, &custody, &fake, &tenants).await;
+    for h in 3..=11 {
+        fake.push_block(&format!("a{h}"), if h == 11 { vec![fixture_tx()] } else { vec![] });
+    }
+    let daemon = ReorgsAfterFetch { inner: &fake, fork: 11, armed: true.into(), chain_fetches: AtomicU64::new(0) };
+    for _ in 0..6 {
+        run_round_on(&store, &custody, &daemon, &tenants).await;
+    }
+    assert_eq!(store.lock().get_scanned_block_hash("mainnet", 11).unwrap().as_deref(), Some("new11"), "reconciled to the new tip");
+    let payments = store.lock().get_all_payments(&order).unwrap();
+    assert!(payments.iter().all(|p| p.block_height.is_none()), "nothing counted in a discarded block: {payments:?}");
+    assert_ne!(order_status(&store, &order), OrderStatus::Paid);
+}
+
+/// A catch-up group whose stores can't be scanned (keys not registered)
+/// costs no block fetches: it waits at its cursor.
+#[tokio::test]
+async fn a_group_with_nobody_to_scan_fetches_nothing() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (unregistered, _, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let fake = FakeDaemonClient::new();
+    for h in 1..=20 {
+        let height = fake.push_block(&format!("a{h}"), vec![]);
+        store.set_scanned_block("mainnet", height, &format!("a{h}")).unwrap();
+    }
+    store.execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = 5 WHERE id = '{unregistered}'")).unwrap();
+    let store = store.into_shared();
+    let daemon = ReorgsAfterFetch { inner: &fake, fork: 0, armed: false.into(), chain_fetches: AtomicU64::new(0) };
+    run_round_on(&store, &custody, &daemon, &[]).await;
+    assert_eq!(daemon.chain_fetches.load(Ordering::Relaxed), 0);
+    assert_eq!(cursor_of(&store, &unregistered), Some(5), "still where it was, to be caught up once registered");
+}
+
+/// One round with the default budget and fresh memory.
+async fn run_round_on(store: &SharedStore, custody: &dyn KeyCustody, daemon: &dyn MoneroDaemonClient, tenants: &[(String, WalletHandle)]) {
+    run_round(&ScanState::default(), &inputs(&Db::over_shared(store.clone()), custody, daemon, tenants), ROUND_BUDGET)
+        .await
+        .into_result()
+        .unwrap();
+}

@@ -539,6 +539,32 @@ impl Store {
         Ok(rows)
     }
 
+    /// The scan windows of several tenants at once (see `scan_window`), in
+    /// one query: minor indices by tenant, each list ascending. A tenant with
+    /// nothing in scope is absent.
+    pub fn scan_windows(
+        &self, tenant_ids: &[String], since: i64, grace_period_seconds: i64,
+    ) -> Result<std::collections::HashMap<String, Vec<u32>>> {
+        let ids = serde_json::to_string(tenant_ids)
+            .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT o.tenant_id, o.minor_index FROM orders o
+             WHERE o.tenant_id IN (SELECT value FROM json_each(:ids)) AND {}
+             ORDER BY o.tenant_id, o.minor_index",
+            super::IN_SCAN_WINDOW
+        ))?;
+        let mut windows: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
+        let rows = stmt.query_map(
+            rusqlite::named_params! { ":ids": ids, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u32)),
+        )?;
+        for row in rows {
+            let (tenant_id, minor) = row?;
+            windows.entry(tenant_id).or_default().push(minor);
+        }
+        Ok(windows)
+    }
+
     /// Moves every enabled tenant on `network` at cursor `from` that has
     /// nothing that could have been paid since `since` (no order in its scan
     /// window as of then) straight to `to`: there is nothing in those blocks

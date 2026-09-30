@@ -9,6 +9,29 @@ use crate::scanner::{void_and_notify_in_tx, ScannerError};
 use crate::store::db::Class;
 use crate::store::{Db, OpenedReorg, OrderPaymentRow, ReorgPhase, Store};
 
+#[cfg(test)]
+mod decide_tests {
+    use super::*;
+
+    #[test]
+    fn reconciliation_follows_the_transaction_and_voids_only_on_proof() {
+        use Decision::*;
+        use TxLocation::*;
+        for (voided, location, proven, expected) in [
+            (false, InBlock(7), false, Move(Some(7))),
+            (false, InPool, false, Move(None)),
+            (false, NotFound, true, Void),
+            (false, NotFound, false, Move(None)),
+            (true, InBlock(7), false, Restore(7)),
+            (true, InPool, false, Keep),
+            (true, NotFound, false, Keep),
+            (true, NotFound, true, Keep),
+        ] {
+            assert_eq!(decide(voided, location, proven), expected, "voided={voided} {location:?} proven={proven}");
+        }
+    }
+}
+
 use super::{bounded, Progress, Round};
 
 /// Candidates collected into the job per unit.
@@ -149,11 +172,9 @@ impl Chain<'_> {
         Ok((processed, done))
     }
 
-    /// The existing reconciliation rules, for one payment:
-    /// - not voided: follow its transaction (new height, back to the pool),
-    ///   or void it if and only if a different transaction provably spent
-    ///   its key images;
-    /// - voided: restore it if its transaction is back on the chain.
+    /// Re-examines one payment against the chain as the node has it now
+    /// ([`decide`]), and applies the outcome and completes the candidate in
+    /// one transaction.
     async fn reexamine(&self, candidate: &OrderPaymentRow, tip: u64, done: &mut Reconciled) -> Result<(), ScannerError> {
         // The row as it is now: something else may have changed it since
         // it was collected.
@@ -168,75 +189,63 @@ impl Chain<'_> {
             })
             .await?;
         let Some(payment) = current else { return Ok(()) };
+        let voided = payment.voided_at.is_some();
         let location = bounded(self.daemon.locate_transaction(&payment.txid)).await?;
-        let (order_id, txid, output) = (payment.order_id.clone(), payment.txid.clone(), payment.output_index);
-        if payment.voided_at.is_some() {
-            let (o, t) = (order_id.clone(), txid.clone());
-            let restored = self
-                .db(move |s, network| {
-                    s.in_transaction(|s| -> Result<bool, ScannerError> {
-                        let mut restored = false;
-                        if let TxLocation::InBlock(height) = location {
-                            if s.unvoid_payment(&o, &t, output)? {
-                                s.update_payment_block_height(&o, &t, output, Some(height as i64))?;
-                                restored = true;
-                            }
+        // Only a transaction that is nowhere to be found needs the key-image
+        // evidence: dropped, evicted and double-spent look the same otherwise.
+        let proven = !voided && location == TxLocation::NotFound && self.double_spend_proven(&payment).await?;
+        let decision = decide(voided, location, proven);
+
+        let (order_id, txid, output, now) = (payment.order_id.clone(), payment.txid.clone(), payment.output_index, self.now);
+        let changed = self
+            .db(move |s, network| {
+                s.in_transaction(|s| -> Result<bool, ScannerError> {
+                    let changed = match decision {
+                        Decision::Keep => false,
+                        Decision::Move(height) => {
+                            let height = height.map(|h| h as i64);
+                            s.update_payment_block_height(&order_id, &txid, output, height)?;
+                            height != payment.block_height
                         }
-                        s.complete_reorg_candidate(network, id)?;
-                        Ok(restored)
-                    })
-                })
-                .await?;
-            if restored {
-                done.dirty_orders.insert(order_id);
-            }
-            return Ok(());
-        }
-        let new_height = match location {
-            TxLocation::InBlock(height) => Some(Some(height as i64)),
-            TxLocation::InPool => Some(None),
-            TxLocation::NotFound => None,
-        };
-        if let Some(height) = new_height {
-            let (o, t) = (order_id.clone(), txid.clone());
-            self.db(move |s, network| {
-                s.in_transaction(|s| -> Result<(), ScannerError> {
-                    s.update_payment_block_height(&o, &t, output, height)?;
-                    Ok(s.complete_reorg_candidate(network, id)?)
+                        Decision::Restore(height) => {
+                            let restored = s.unvoid_payment(&order_id, &txid, output)?;
+                            if restored {
+                                s.update_payment_block_height(&order_id, &txid, output, Some(height as i64))?;
+                            }
+                            restored
+                        }
+                        Decision::Void => {
+                            void_and_notify_in_tx(s, &order_id, &txid, output, tip, now)?;
+                            true
+                        }
+                    };
+                    s.complete_reorg_candidate(network, id)?;
+                    Ok(changed)
                 })
             })
             .await?;
-            if height != payment.block_height {
-                done.dirty_orders.insert(order_id);
-            }
-            return Ok(());
+        if changed {
+            done.dirty_orders.insert(candidate.order_id.clone());
         }
-        // Nowhere to be found. Dropped, evicted and double-spent look the
-        // same from here, except by the key images.
-        let proven = match crate::scanner::parse_payment_key_images(&payment.key_images_json) {
-            Ok(images) => bounded(self.daemon.is_key_image_spent_corroborated(&images))
-                .await?
-                .contains(&KeyImageStatus::SpentInBlockchain),
-            Err(error) => {
-                tracing::warn!(payment.id = payment.id, error = %error, "reorg: a vanished payment's stored key images are invalid - never voiding it on that");
-                false
-            }
-        };
-        let (o, t, now) = (order_id.clone(), txid.clone(), self.now);
-        self.db(move |s, network| {
-            s.in_transaction(|s| -> Result<(), ScannerError> {
-                if proven {
-                    void_and_notify_in_tx(s, &o, &t, output, tip, now)?;
-                }
-                Ok(s.complete_reorg_candidate(network, id)?)
-            })
-        })
-        .await?;
-        if proven {
-            done.dirty_orders.insert(order_id.clone());
-            done.double_spent_orders.insert(order_id);
+        if decision == Decision::Void {
+            done.double_spent_orders.insert(candidate.order_id.clone());
         }
         Ok(())
+    }
+
+    /// Whether a different transaction provably spent `payment`'s inputs,
+    /// asked of every node that can answer (corroborated). Invalid stored
+    /// evidence is never proof.
+    async fn double_spend_proven(&self, payment: &OrderPaymentRow) -> Result<bool, ScannerError> {
+        match crate::scanner::parse_payment_key_images(&payment.key_images_json) {
+            Ok(images) => Ok(bounded(self.daemon.is_key_image_spent_corroborated(&images))
+                .await?
+                .contains(&KeyImageStatus::SpentInBlockchain)),
+            Err(error) => {
+                tracing::warn!(payment.id = payment.id, error = %error, "reorg: a vanished payment's stored key images are invalid - never voiding it on that");
+                Ok(false)
+            }
+        }
     }
 
     /// The job's last step, once every candidate is done: rewind to the
@@ -278,6 +287,41 @@ impl Chain<'_> {
                 Ok(Some(JobStep::Rewound))
             }
         }
+    }
+}
+
+/// What reconciliation does to one payment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Decision {
+    /// Leave it as recorded.
+    Keep,
+    /// Record where its transaction is now: in a block, or (`None`) not in
+    /// any block.
+    Move(Option<u64>),
+    /// It was voided, and its transaction is back on the chain here.
+    Restore(u64),
+    /// A different transaction provably spent its inputs.
+    Void,
+}
+
+/// The reconciliation rules for one payment, given whether it was voided,
+/// where the node now places its transaction, and whether a double spend is
+/// proven. No I/O, so the whole table is tested directly.
+///
+/// A payment whose transaction can't be found and isn't provably
+/// double-spent is moved *out of any block*: it isn't on this chain, so no
+/// confirmations may count towards it. As an unconfirmed payment it is
+/// followed by the vanished-payment check, which records its height when it
+/// is mined again and voids it on proof. (Leaving its old height would keep
+/// counting confirmations on a discarded block and could settle the order.)
+pub(crate) fn decide(voided: bool, location: TxLocation, double_spend_proven: bool) -> Decision {
+    match (voided, location) {
+        (true, TxLocation::InBlock(height)) => Decision::Restore(height),
+        (true, TxLocation::InPool | TxLocation::NotFound) => Decision::Keep,
+        (false, TxLocation::InBlock(height)) => Decision::Move(Some(height)),
+        (false, TxLocation::InPool) => Decision::Move(None),
+        (false, TxLocation::NotFound) if double_spend_proven => Decision::Void,
+        (false, TxLocation::NotFound) => Decision::Move(None),
     }
 }
 
