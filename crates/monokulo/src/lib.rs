@@ -26,9 +26,5 @@ pub mod settings;
 pub mod templates;
 pub mod views;
 
-pub fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-}
+/// Seconds since the Unix epoch: the one clock both services share.
+pub use shared::time::now_unix;

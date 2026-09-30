@@ -28,10 +28,5 @@ pub mod webhook_delivery;
 pub mod webhook_sign;
 pub mod work;
 
-pub fn now_unix() -> i64 {
-    // A clock set before 1970 reads as 0 rather than panicking in every loop.
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+/// Seconds since the Unix epoch: the one clock both services share.
+pub use shared::time::now_unix;

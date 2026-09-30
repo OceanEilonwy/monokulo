@@ -119,12 +119,7 @@ impl LogsParams {
 
 const LOGS: &str = "/dashboard/admin/logs";
 
-fn now_nanos() -> i64 {
-    jiff::Timestamp::now()
-        .as_nanosecond()
-        .try_into()
-        .unwrap_or(i64::MAX)
-}
+use shared::time::now_unix_nanos as now_nanos;
 
 /// Where times are shown: the browser's zone when it said one this server
 /// knows, UTC otherwise.

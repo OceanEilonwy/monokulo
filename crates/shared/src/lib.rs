@@ -26,5 +26,6 @@ pub mod rate_limit;
 pub mod settings;
 pub mod sqlite;
 pub mod supervise;
+pub mod time;
 pub mod webhook_sign;
 pub mod xmr_amount;
