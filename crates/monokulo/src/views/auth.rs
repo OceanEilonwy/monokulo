@@ -107,7 +107,15 @@ mod tests {
 
     #[test]
     fn signup_page_renders_with_no_error() {
-        let html = signup_page(&chrome(), &SignupViewModel { error: None, invite_required: false, invite_token: String::new() }).into_string();
+        let html = signup_page(
+            &chrome(),
+            &SignupViewModel {
+                error: None,
+                invite_required: false,
+                invite_token: String::new(),
+            },
+        )
+        .into_string();
         assert!(html.contains("<form"));
         assert!(html.to_lowercase().contains("sign up"));
     }
@@ -128,47 +136,106 @@ mod tests {
 
     #[test]
     fn signup_page_shows_the_invite_required_message_and_hides_the_form() {
-        let html =
-            signup_page(&chrome(), &SignupViewModel { error: None, invite_required: true, invite_token: String::new() }).into_string();
-        assert!(!html.contains("<form method=\"post\" action=\"/dashboard/signup\""), "an invite-only instance with no token must not show the signup form");
+        let html = signup_page(
+            &chrome(),
+            &SignupViewModel {
+                error: None,
+                invite_required: true,
+                invite_token: String::new(),
+            },
+        )
+        .into_string();
+        assert!(
+            !html.contains("<form method=\"post\" action=\"/dashboard/signup\""),
+            "an invite-only instance with no token must not show the signup form"
+        );
         assert!(html.contains("/request-invite"));
     }
 
     #[test]
     fn login_page_renders_with_no_error() {
-        let html = login_page(&chrome(), &LoginViewModel { error: None, next: None }).into_string();
+        let html = login_page(
+            &chrome(),
+            &LoginViewModel {
+                error: None,
+                next: None,
+            },
+        )
+        .into_string();
         assert!(html.contains("<form"));
         assert!(html.to_lowercase().contains("log in"));
     }
 
     #[test]
     fn login_page_shows_the_error_when_present() {
-        let html =
-            login_page(&chrome(), &LoginViewModel { error: Some("invalid email or password".to_string()), next: None }).into_string();
+        let html = login_page(
+            &chrome(),
+            &LoginViewModel {
+                error: Some("invalid email or password".to_string()),
+                next: None,
+            },
+        )
+        .into_string();
         assert!(html.contains("invalid email or password"));
     }
 
     #[test]
     fn login_page_includes_a_hidden_next_field_when_present() {
-        let html =
-            login_page(&chrome(), &LoginViewModel { error: None, next: Some("/connect/woocommerce?nonce=abc".to_string()) })
-                .into_string();
-        assert!(html.contains(r#"type="hidden" name="next""#), "expected a hidden next field, got: {html}");
-        assert!(html.contains("/connect/woocommerce?nonce"), "expected the next value's content present, got: {html}");
-        assert!(html.contains("abc"), "expected the next value's content present, got: {html}");
+        let html = login_page(
+            &chrome(),
+            &LoginViewModel {
+                error: None,
+                next: Some("/connect/woocommerce?nonce=abc".to_string()),
+            },
+        )
+        .into_string();
+        assert!(
+            html.contains(r#"type="hidden" name="next""#),
+            "expected a hidden next field, got: {html}"
+        );
+        assert!(
+            html.contains("/connect/woocommerce?nonce"),
+            "expected the next value's content present, got: {html}"
+        );
+        assert!(
+            html.contains("abc"),
+            "expected the next value's content present, got: {html}"
+        );
     }
 
     #[test]
     fn login_page_escapes_special_characters_in_next_rather_than_injecting_them_raw() {
-        let html = login_page(&chrome(), &LoginViewModel { error: None, next: Some("/connect/woocommerce?a=1&b=2".to_string()) })
-            .into_string();
-        assert!(html.contains("&amp;"), "expected the & in next to be HTML-escaped, got: {html}");
-        assert!(!html.contains("a=1&b=2"), "a raw, unescaped & would be a template-injection smell, got: {html}");
+        let html = login_page(
+            &chrome(),
+            &LoginViewModel {
+                error: None,
+                next: Some("/connect/woocommerce?a=1&b=2".to_string()),
+            },
+        )
+        .into_string();
+        assert!(
+            html.contains("&amp;"),
+            "expected the & in next to be HTML-escaped, got: {html}"
+        );
+        assert!(
+            !html.contains("a=1&b=2"),
+            "a raw, unescaped & would be a template-injection smell, got: {html}"
+        );
     }
 
     #[test]
     fn login_page_has_no_hidden_next_field_when_absent() {
-        let html = login_page(&chrome(), &LoginViewModel { error: None, next: None }).into_string();
-        assert!(!html.contains(r#"name="next""#), "expected no hidden next field, got: {html}");
+        let html = login_page(
+            &chrome(),
+            &LoginViewModel {
+                error: None,
+                next: None,
+            },
+        )
+        .into_string();
+        assert!(
+            !html.contains(r#"name="next""#),
+            "expected no hidden next field, got: {html}"
+        );
     }
 }

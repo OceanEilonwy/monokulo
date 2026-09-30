@@ -130,7 +130,10 @@ impl WalletData {
     /// Adds `txid` to the pending list, unless it's already there.
     pub fn add_pending(&mut self, txid: &str, amount_piconero: u64) {
         if !self.pending.iter().any(|p| p.txid == txid) {
-            self.pending.push(PendingTx { txid: txid.to_string(), amount_piconero });
+            self.pending.push(PendingTx {
+                txid: txid.to_string(),
+                amount_piconero,
+            });
         }
     }
 }
@@ -150,24 +153,43 @@ pub struct WalletFileLock {
 impl WalletFile {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, WalletError> {
         let path = path.as_ref();
-        let contents = std::fs::read_to_string(path).map_err(|e| WalletError::WalletFile(format!("failed to read {}: {e}", path.display())))?;
-        let data: WalletData = serde_json::from_str(&contents).map_err(|e| WalletError::WalletFile(format!("failed to parse {}: {e}", path.display())))?;
+        let contents = std::fs::read_to_string(path).map_err(|e| {
+            WalletError::WalletFile(format!("failed to read {}: {e}", path.display()))
+        })?;
+        let data: WalletData = serde_json::from_str(&contents).map_err(|e| {
+            WalletError::WalletFile(format!("failed to parse {}: {e}", path.display()))
+        })?;
         if data.version != FORMAT_VERSION {
-            return Err(WalletError::WalletFile(format!("{} is format version {}, this build reads {FORMAT_VERSION}", path.display(), data.version)));
+            return Err(WalletError::WalletFile(format!(
+                "{} is format version {}, this build reads {FORMAT_VERSION}",
+                path.display(),
+                data.version
+            )));
         }
-        Ok(WalletFile { path: path.to_path_buf(), data })
+        Ok(WalletFile {
+            path: path.to_path_buf(),
+            data,
+        })
     }
 
     /// Writes a new wallet file. Refuses to replace one that exists.
     pub fn create(path: impl AsRef<Path>, data: WalletData) -> Result<Self, WalletError> {
         let path = path.as_ref();
         if path.exists() {
-            return Err(WalletError::WalletFile(format!("wallet file {} already exists", path.display())));
+            return Err(WalletError::WalletFile(format!(
+                "wallet file {} already exists",
+                path.display()
+            )));
         }
         if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir).map_err(|e| WalletError::WalletFile(format!("failed to create {}: {e}", dir.display())))?;
+            std::fs::create_dir_all(dir).map_err(|e| {
+                WalletError::WalletFile(format!("failed to create {}: {e}", dir.display()))
+            })?;
         }
-        let file = WalletFile { path: path.to_path_buf(), data };
+        let file = WalletFile {
+            path: path.to_path_buf(),
+            data,
+        };
         file.save()?;
         Ok(file)
     }
@@ -180,10 +202,20 @@ impl WalletFile {
     /// changing a file that already exists hold its [`Self::lock`].
     pub fn save(&self) -> Result<(), WalletError> {
         let tmp_path = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, serde_json::to_string_pretty(&self.data).expect("WalletData always serializes") + "\n")
-            .map_err(|e| WalletError::WalletFile(format!("failed to write {}: {e}", tmp_path.display())))?;
-        std::fs::rename(&tmp_path, &self.path)
-            .map_err(|e| WalletError::WalletFile(format!("failed to move {} into place over {}: {e}", tmp_path.display(), self.path.display())))
+        std::fs::write(
+            &tmp_path,
+            serde_json::to_string_pretty(&self.data).expect("WalletData always serializes") + "\n",
+        )
+        .map_err(|e| {
+            WalletError::WalletFile(format!("failed to write {}: {e}", tmp_path.display()))
+        })?;
+        std::fs::rename(&tmp_path, &self.path).map_err(|e| {
+            WalletError::WalletFile(format!(
+                "failed to move {} into place over {}: {e}",
+                tmp_path.display(),
+                self.path.display()
+            ))
+        })
     }
 
     /// Takes the exclusive lock on `path`'s sibling `<path>.lock`, with
@@ -202,14 +234,27 @@ impl WalletFile {
     ///
     /// An OS file lock is released when its process exits, however it
     /// exits, so a lock is never left behind by a crash.
-    pub async fn lock_with(path: impl AsRef<Path>, on_busy: &BusyHandler) -> Result<WalletFileLock, WalletError> {
+    pub async fn lock_with(
+        path: impl AsRef<Path>,
+        on_busy: &BusyHandler,
+    ) -> Result<WalletFileLock, WalletError> {
         let lock_path = lock_path(path.as_ref());
         let on_busy = on_busy.clone();
         tokio::task::spawn_blocking(move || {
-            let open_error = |e: std::io::Error| WalletError::WalletFile(format!("failed to open {}: {e}", lock_path.display()));
-            let lock_error = |e: std::io::Error| WalletError::WalletFile(format!("failed to lock {}: {e}", lock_path.display()));
+            let open_error = |e: std::io::Error| {
+                WalletError::WalletFile(format!("failed to open {}: {e}", lock_path.display()))
+            };
+            let lock_error = |e: std::io::Error| {
+                WalletError::WalletFile(format!("failed to lock {}: {e}", lock_path.display()))
+            };
             loop {
-                let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&lock_path).map_err(open_error)?;
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .read(true)
+                    .write(true)
+                    .open(&lock_path)
+                    .map_err(open_error)?;
                 match file.try_lock() {
                     Ok(()) => return Ok(WalletFileLock::recording_holder(file)),
                     Err(std::fs::TryLockError::WouldBlock) => {}
@@ -217,7 +262,10 @@ impl WalletFile {
                 }
                 let holder = LockHolder {
                     lock_path: lock_path.clone(),
-                    description: std::fs::read_to_string(&lock_path).ok().filter(|held_by| !held_by.trim().is_empty()).unwrap_or_else(|| "an unknown process".to_string()),
+                    description: std::fs::read_to_string(&lock_path)
+                        .ok()
+                        .filter(|held_by| !held_by.trim().is_empty())
+                        .unwrap_or_else(|| "an unknown process".to_string()),
                 };
                 match on_busy(&holder) {
                     BusyChoice::Retry => continue,
@@ -236,7 +284,10 @@ impl WalletFile {
     /// Locks `path`, loads it fresh, applies `change`, and saves - the one
     /// safe way to change a wallet file another process might be changing
     /// too. Nothing is saved if `change` fails.
-    pub async fn update<T>(path: impl AsRef<Path>, change: impl FnOnce(&mut WalletData) -> Result<T, WalletError>) -> Result<T, WalletError> {
+    pub async fn update<T>(
+        path: impl AsRef<Path>,
+        change: impl FnOnce(&mut WalletData) -> Result<T, WalletError>,
+    ) -> Result<T, WalletError> {
         Self::update_with(path, &default_busy_handler(), change).await
     }
 
@@ -260,12 +311,23 @@ impl WalletFileLock {
     /// finds it busy can say who's using the wallet.
     fn recording_holder(mut file: std::fs::File) -> Self {
         use std::io::Write;
-        let program = std::env::args().next().map(|path| Path::new(&path).file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_default();
+        let program = std::env::args()
+            .next()
+            .map(|path| {
+                Path::new(&path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_default();
         let args: Vec<String> = std::env::args().skip(1).collect();
         let mut holder = format!("pid {} ({program} {})", std::process::id(), args.join(" "));
         holder.truncate(200);
         // Best effort: the lock itself is what matters, not the note.
-        let _ = file.set_len(0).and_then(|()| file.write_all(holder.trim_end().as_bytes()));
+        let _ = file
+            .set_len(0)
+            .and_then(|()| file.write_all(holder.trim_end().as_bytes()));
         WalletFileLock { _file: file }
     }
 }
@@ -280,7 +342,12 @@ pub struct LockHolder {
 
 impl std::fmt::Display for LockHolder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} is locked by {}", self.lock_path.with_extension("").display(), self.description)
+        write!(
+            f,
+            "{} is locked by {}",
+            self.lock_path.with_extension("").display(),
+            self.description
+        )
     }
 }
 
@@ -335,13 +402,25 @@ pub struct MigrationReport {
 /// sends, whose change they are). Top-level bookkeeping in the wallets
 /// file (faucet txids and the like) goes into `pending_owner`'s `extra`;
 /// the file's `_comment` goes into every wallet's.
-pub fn migrate_legacy(wallets_json: &Path, ledger_json: &Path, out_dir: &Path, pending_owner: &str) -> Result<MigrationReport, WalletError> {
+pub fn migrate_legacy(
+    wallets_json: &Path,
+    ledger_json: &Path,
+    out_dir: &Path,
+    pending_owner: &str,
+) -> Result<MigrationReport, WalletError> {
     let read = |path: &Path| -> Result<Value, WalletError> {
-        let contents = std::fs::read_to_string(path).map_err(|e| WalletError::WalletFile(format!("failed to read {}: {e}", path.display())))?;
-        serde_json::from_str(&contents).map_err(|e| WalletError::WalletFile(format!("failed to parse {}: {e}", path.display())))
+        let contents = std::fs::read_to_string(path).map_err(|e| {
+            WalletError::WalletFile(format!("failed to read {}: {e}", path.display()))
+        })?;
+        serde_json::from_str(&contents).map_err(|e| {
+            WalletError::WalletFile(format!("failed to parse {}: {e}", path.display()))
+        })
     };
     let Value::Object(wallets) = read(wallets_json)? else {
-        return Err(WalletError::WalletFile(format!("{} isn't a JSON object", wallets_json.display())));
+        return Err(WalletError::WalletFile(format!(
+            "{} isn't a JSON object",
+            wallets_json.display()
+        )));
     };
     let ledger = read(ledger_json)?;
 
@@ -354,10 +433,22 @@ pub fn migrate_legacy(wallets_json: &Path, ledger_json: &Path, out_dir: &Path, p
         match value {
             Value::Object(entry) if entry.contains_key("private_spend_key") => {
                 let credentials: WalletCredentials = serde_json::from_value(value.clone())
-                    .map_err(|e| WalletError::WalletFile(format!("wallet {name:?} in {}: {e}", wallets_json.display())))?;
+                    .map_err(|e| {
+                        WalletError::WalletFile(format!(
+                            "wallet {name:?} in {}: {e}",
+                            wallets_json.display()
+                        ))
+                    })?;
                 let mut data = WalletData::new(credentials);
                 for (key, field) in entry {
-                    if !["address", "private_spend_key", "private_view_key", "mnemonic"].contains(&key.as_str()) {
+                    if ![
+                        "address",
+                        "private_spend_key",
+                        "private_view_key",
+                        "mnemonic",
+                    ]
+                    .contains(&key.as_str())
+                    {
                         data.extra.insert(key.clone(), field.clone());
                     }
                 }
@@ -374,21 +465,34 @@ pub fn migrate_legacy(wallets_json: &Path, ledger_json: &Path, out_dir: &Path, p
         }
     }
     let Some(owner_index) = datas.iter().position(|(name, _)| name == pending_owner) else {
-        return Err(WalletError::WalletFile(format!("no wallet named {pending_owner:?} in {}", wallets_json.display())));
+        return Err(WalletError::WalletFile(format!(
+            "no wallet named {pending_owner:?} in {}",
+            wallets_json.display()
+        )));
     };
     datas[owner_index].1.extra.extend(bookkeeping);
 
-    let keys: Vec<crate::WalletKeys> = datas.iter().map(|(_, data)| crate::WalletKeys::from_data(data, PathBuf::new())).collect();
+    let keys: Vec<crate::WalletKeys> = datas
+        .iter()
+        .map(|(_, data)| crate::WalletKeys::from_data(data, PathBuf::new()))
+        .collect();
     let mut report = MigrationReport::default();
     for entry in ledger["entries"].as_array().cloned().unwrap_or_default() {
         let txid = entry["txid"].as_str().unwrap_or_default().to_string();
-        let (Some(height), Some(hex_bytes)) = (entry["height"].as_u64(), entry["serialized_output_hex"].as_str()) else {
-            datas[owner_index].1.add_pending(&txid, entry["amount_piconero"].as_u64().unwrap_or(0));
+        let (Some(height), Some(hex_bytes)) = (
+            entry["height"].as_u64(),
+            entry["serialized_output_hex"].as_str(),
+        ) else {
+            datas[owner_index]
+                .1
+                .add_pending(&txid, entry["amount_piconero"].as_u64().unwrap_or(0));
             continue;
         };
         let output = crate::decode_output(&txid, hex_bytes)?;
         let Some(owner) = keys.iter().position(|k| k.owns(&output)) else {
-            report.unowned_outputs.push(format!("{txid}:{}", output.index_in_transaction()));
+            report
+                .unowned_outputs
+                .push(format!("{txid}:{}", output.index_in_transaction()));
             continue;
         };
         datas[owner].1.outputs.push(OutputRecord {

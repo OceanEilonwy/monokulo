@@ -11,10 +11,10 @@
 //! the actual goal. A smarter algorithm is a reasonable future improvement,
 //! not a v1 requirement.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::IpAddr;
-use parking_lot::Mutex;
 
 /// Window length. Also the age past which an entry carries no information: a bucket
 /// whose window started more than this long ago resets to zero on its next lookup,
@@ -62,24 +62,32 @@ struct LimiterState<K> {
 
 impl<K> Default for LimiterState<K> {
     fn default() -> Self {
-        LimiterState { buckets: HashMap::new(), next_prune_at: 0 }
+        LimiterState {
+            buckets: HashMap::new(),
+            next_prune_at: 0,
+        }
     }
 }
 
 impl<K: Eq + Hash + Clone> RateLimiter<K> {
     pub fn new(limit_per_minute: u32) -> Self {
-        RateLimiter { limit_per_minute: std::sync::atomic::AtomicU32::new(limit_per_minute), state: Mutex::new(LimiterState::default()) }
+        RateLimiter {
+            limit_per_minute: std::sync::atomic::AtomicU32::new(limit_per_minute),
+            state: Mutex::new(LimiterState::default()),
+        }
     }
 
     /// Changes the limit from the next request on. Counts already taken in
     /// the current window stay, so lowering the limit can refuse a caller
     /// straight away and raising it lets them carry on.
     pub fn set_limit(&self, limit_per_minute: u32) {
-        self.limit_per_minute.store(limit_per_minute, std::sync::atomic::Ordering::Relaxed);
+        self.limit_per_minute
+            .store(limit_per_minute, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn limit(&self) -> u32 {
-        self.limit_per_minute.load(std::sync::atomic::Ordering::Relaxed)
+        self.limit_per_minute
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns `true` if this request is allowed, having consumed one unit of the
@@ -109,7 +117,11 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
         if now - entry.1 >= WINDOW_SECONDS {
             *entry = (0, now);
         }
-        if entry.0 >= self.limit_per_minute.load(std::sync::atomic::Ordering::Relaxed) {
+        if entry.0
+            >= self
+                .limit_per_minute
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
             false
         } else {
             entry.0 += 1;
@@ -134,7 +146,10 @@ mod tests {
         assert!(limiter.check(ip, 1000));
         assert!(limiter.check(ip, 1000));
         assert!(limiter.check(ip, 1000));
-        assert!(!limiter.check(ip, 1000), "fourth request in the same window must be rejected");
+        assert!(
+            !limiter.check(ip, 1000),
+            "fourth request in the same window must be rejected"
+        );
     }
 
     #[test]
@@ -161,7 +176,11 @@ mod tests {
         for n in 0..PRUNE_THRESHOLD {
             assert!(limiter.check(nth_address(n), 1000));
         }
-        assert_eq!(limiter.tracked_addresses(), PRUNE_THRESHOLD, "nothing is expired yet");
+        assert_eq!(
+            limiter.tracked_addresses(),
+            PRUNE_THRESHOLD,
+            "nothing is expired yet"
+        );
 
         // One more request, a window later: every existing entry is now stale.
         assert!(limiter.check(nth_address(PRUNE_THRESHOLD), 1000 + WINDOW_SECONDS));
@@ -180,15 +199,24 @@ mod tests {
         let limiter = RateLimiter::new(1);
         let victim = nth_address(7);
         assert!(limiter.check(victim, 1000));
-        assert!(!limiter.check(victim, 1000), "budget exhausted within the window");
+        assert!(
+            !limiter.check(victim, 1000),
+            "budget exhausted within the window"
+        );
 
         for n in 100_000..(100_000 + PRUNE_THRESHOLD) {
             limiter.check(nth_address(n), 1000);
         }
         // A window later, the sweep discards `victim` along with everyone else.
         assert!(limiter.check(nth_address(1), 1000 + WINDOW_SECONDS));
-        assert!(limiter.check(victim, 1000 + WINDOW_SECONDS), "a new window must grant a fresh budget");
-        assert!(!limiter.check(victim, 1000 + WINDOW_SECONDS), "...and only one unit of it");
+        assert!(
+            limiter.check(victim, 1000 + WINDOW_SECONDS),
+            "a new window must grant a fresh budget"
+        );
+        assert!(
+            !limiter.check(victim, 1000 + WINDOW_SECONDS),
+            "...and only one unit of it"
+        );
     }
 
     #[test]
@@ -213,7 +241,10 @@ mod tests {
         for _ in 0..4 {
             assert!(limiter.check(ip, 2000));
         }
-        assert!(!limiter.check(ip, 2000), "the limit must still be enforced after a wholesale drop");
+        assert!(
+            !limiter.check(ip, 2000),
+            "the limit must still be enforced after a wholesale drop"
+        );
     }
 
     #[test]
@@ -223,7 +254,10 @@ mod tests {
         let b: IpAddr = "5.6.7.8".parse().unwrap();
         assert!(limiter.check(a, 1000));
         assert!(!limiter.check(a, 1000));
-        assert!(limiter.check(b, 1000), "a different IP must not be affected by another IP's usage");
+        assert!(
+            limiter.check(b, 1000),
+            "a different IP must not be affected by another IP's usage"
+        );
     }
 
     #[test]
@@ -234,7 +268,10 @@ mod tests {
         assert!(limiter.check(key.clone(), 100));
         assert!(!limiter.check(key.clone(), 100), "limit of 2 reached");
         limiter.set_limit(5);
-        assert!(limiter.check(key.clone(), 100), "raised to 5 within the same window");
+        assert!(
+            limiter.check(key.clone(), 100),
+            "raised to 5 within the same window"
+        );
         assert!(limiter.check(key.clone(), 100));
         assert!(limiter.check(key.clone(), 100));
         assert!(!limiter.check(key, 100));

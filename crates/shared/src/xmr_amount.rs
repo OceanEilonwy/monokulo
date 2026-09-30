@@ -61,9 +61,15 @@ pub fn parse_xmr_to_piconero(xmr_amount: &str) -> Result<u64, AmountError> {
     if fraction.len() > 12 {
         return Err(AmountError::TooManyDecimalPlaces);
     }
-    let whole: u128 = if whole.is_empty() { 0 } else { whole.parse().map_err(|_| AmountError::TooLarge)? };
+    let whole: u128 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().map_err(|_| AmountError::TooLarge)?
+    };
     let fraction_padded = format!("{fraction:0<12}");
-    let frac: u128 = fraction_padded.parse().map_err(|_| AmountError::InvalidDecimal)?;
+    let frac: u128 = fraction_padded
+        .parse()
+        .map_err(|_| AmountError::InvalidDecimal)?;
     let piconero = whole
         .checked_mul(1_000_000_000_000)
         .and_then(|p| p.checked_add(frac))
@@ -87,6 +93,51 @@ pub fn format_piconero_as_xmr(piconero: u64) -> String {
     format!("{whole}.{frac:012}")
 }
 
+/// An amount of monero in piconero (10^-12 XMR). Its own type so an amount
+/// can't be passed where a confirmation count or height is expected, or the
+/// other way round; stored in SQLite with a checked conversion.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct Piconero(pub u64);
+
+impl Piconero {
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for Piconero {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl rusqlite::ToSql for Piconero {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let value = i64::try_from(self.0)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        Ok(value.into())
+    }
+}
+
+impl rusqlite::types::FromSql for Piconero {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        crate::sqlite::Unsigned::<u64>::column_result(value).map(|v| Piconero(v.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,7 +147,10 @@ mod tests {
         assert_eq!(parse_xmr_to_piconero("0.0067").unwrap(), 6_700_000_000);
         assert_eq!(parse_xmr_to_piconero("1").unwrap(), 1_000_000_000_000);
         assert_eq!(parse_xmr_to_piconero("0.000000000001").unwrap(), 1); // one piconero
-        assert_eq!(parse_xmr_to_piconero("0.0000000000001"), Err(AmountError::TooManyDecimalPlaces)); // 13 places
+        assert_eq!(
+            parse_xmr_to_piconero("0.0000000000001"),
+            Err(AmountError::TooManyDecimalPlaces)
+        ); // 13 places
     }
 
     #[test]
@@ -111,7 +165,11 @@ mod tests {
     fn format_and_parse_xmr_round_trip() {
         for piconero in [0u64, 1, 6_700_000_000, 1_000_000_000_000, 167_500_000_000] {
             let formatted = format_piconero_as_xmr(piconero);
-            assert_eq!(parse_xmr_to_piconero(&formatted).unwrap(), piconero, "round trip failed for {piconero}");
+            assert_eq!(
+                parse_xmr_to_piconero(&formatted).unwrap(),
+                piconero,
+                "round trip failed for {piconero}"
+            );
         }
     }
 
@@ -120,10 +178,19 @@ mod tests {
         // 2^64 piconero exactly: the old `as u64` cast turned this into 0, so a
         // config rate of this size would have priced every order in that currency
         // at nothing.
-        assert_eq!(parse_xmr_to_piconero("18446744.073709551616"), Err(AmountError::TooLarge));
-        assert_eq!(parse_xmr_to_piconero("20000000"), Err(AmountError::TooLarge));
+        assert_eq!(
+            parse_xmr_to_piconero("18446744.073709551616"),
+            Err(AmountError::TooLarge)
+        );
+        assert_eq!(
+            parse_xmr_to_piconero("20000000"),
+            Err(AmountError::TooLarge)
+        );
         // One piconero below the wrap point must still be accepted exactly.
-        assert_eq!(parse_xmr_to_piconero("18446744.073709551615").unwrap(), u64::MAX);
+        assert_eq!(
+            parse_xmr_to_piconero("18446744.073709551615").unwrap(),
+            u64::MAX
+        );
 
         // ...and through a whole part too big for the u128 intermediate itself.
         assert!(matches!(
@@ -136,15 +203,22 @@ mod tests {
     fn a_leading_plus_sign_is_rejected_rather_than_shifting_the_decimal_place() {
         // Rust's integer parser accepts `+`, and the `+` then consumed one of the
         // zero-padding slots: "1.+5" silently became 1.05 instead of being refused.
-        assert_eq!(parse_xmr_to_piconero("1.+5"), Err(AmountError::InvalidDecimal));
-        assert_eq!(parse_xmr_to_piconero("+1"), Err(AmountError::InvalidDecimal));
+        assert_eq!(
+            parse_xmr_to_piconero("1.+5"),
+            Err(AmountError::InvalidDecimal)
+        );
+        assert_eq!(
+            parse_xmr_to_piconero("+1"),
+            Err(AmountError::InvalidDecimal)
+        );
     }
 
     #[test]
     fn every_other_malformed_decimal_shape_is_rejected() {
         for bad in [
             "", ".", "..", "1.2.3", "-1", "-0.5", "1e5", "1E5", " 5", "5 ", "\t5", "5\n", "1_000",
-            "0x10", "NaN", "inf", "٥", "1,5", "5.", // trailing dot: fraction is empty, whole is "5"
+            "0x10", "NaN", "inf", "٥", "1,5",
+            "5.", // trailing dot: fraction is empty, whole is "5"
         ] {
             let result = parse_xmr_to_piconero(bad);
             if bad == "5." {
@@ -153,7 +227,10 @@ mod tests {
                 assert_eq!(result.unwrap(), 5_000_000_000_000);
                 continue;
             }
-            assert!(result.is_err(), "{bad:?} should be rejected, got {result:?}");
+            assert!(
+                result.is_err(),
+                "{bad:?} should be rejected, got {result:?}"
+            );
         }
     }
 }

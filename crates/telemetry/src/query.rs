@@ -39,9 +39,19 @@ pub enum Expr {
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Not(Box<Expr>),
-    Compare { field: String, op: Op, value: Value },
-    Contains { field: String, text: String },
-    Like { field: String, pattern: String },
+    Compare {
+        field: String,
+        op: Op,
+        value: Value,
+    },
+    Contains {
+        field: String,
+        text: String,
+    },
+    Like {
+        field: String,
+        pattern: String,
+    },
     Has(String),
     /// Free text: the message contains it.
     Text(String),
@@ -165,7 +175,9 @@ pub fn parse(text: &str) -> Result<Option<Expr>, ParseError> {
 
 fn looks_like_words(text: &str) -> bool {
     !text.contains(|c: char| "=<>!()'\"".contains(c))
-        && !text.split_whitespace().any(|w| ["contains", "like", "has"].iter().any(|k| is_keyword(w, k)))
+        && !text
+            .split_whitespace()
+            .any(|w| ["contains", "like", "has"].iter().any(|k| is_keyword(w, k)))
 }
 
 // --- Tokens ----------------------------------------------------------------
@@ -192,7 +204,11 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
     let chars: Vec<char> = text.chars().collect();
     let mut tokens = Vec::new();
     let mut i = 0;
-    let error = |message: &str, start: usize, end: usize| ParseError { message: message.to_string(), start, end };
+    let error = |message: &str, start: usize, end: usize| ParseError {
+        message: message.to_string(),
+        start,
+        end,
+    };
     while i < chars.len() {
         let c = chars[i];
         let start = i;
@@ -246,11 +262,23 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                 i += 1;
                 loop {
                     match chars.get(i) {
-                        None => return Err(error("this string has no closing quote", start, chars.len())),
+                        None => {
+                            return Err(error(
+                                "this string has no closing quote",
+                                start,
+                                chars.len(),
+                            ))
+                        }
                         Some('\\') => {
                             match chars.get(i + 1) {
                                 Some(&next) => value.push(next),
-                                None => return Err(error("this string has no closing quote", start, chars.len())),
+                                None => {
+                                    return Err(error(
+                                        "this string has no closing quote",
+                                        start,
+                                        chars.len(),
+                                    ))
+                                }
                             }
                             i += 2;
                         }
@@ -266,9 +294,14 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                 }
                 Token::Str(value)
             }
-            c if c.is_ascii_digit() || (c == '-' && chars.get(i + 1).is_some_and(char::is_ascii_digit)) => {
+            c if c.is_ascii_digit()
+                || (c == '-' && chars.get(i + 1).is_some_and(char::is_ascii_digit)) =>
+            {
                 i += 1;
-                while chars.get(i).is_some_and(|c| c.is_ascii_digit() || *c == '.') {
+                while chars
+                    .get(i)
+                    .is_some_and(|c| c.is_ascii_digit() || *c == '.')
+                {
                     i += 1;
                 }
                 let number: String = chars[start..i].iter().collect();
@@ -281,14 +314,21 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                 }
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
-                while chars.get(i).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.') {
+                while chars
+                    .get(i)
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
+                {
                     i += 1;
                 }
                 Token::Word(chars[start..i].iter().collect())
             }
             _ => return Err(error(&format!("unexpected '{c}'"), start, start + 1)),
         };
-        tokens.push(Spanned { token, start, end: i });
+        tokens.push(Spanned {
+            token,
+            start,
+            end: i,
+        });
     }
     Ok(tokens)
 }
@@ -305,11 +345,17 @@ fn is_keyword(word: &str, keyword: &str) -> bool {
     word.eq_ignore_ascii_case(keyword)
 }
 
-const KEYWORDS: &[&str] = &["and", "or", "not", "has", "contains", "like", "true", "false", "null"];
+const KEYWORDS: &[&str] = &[
+    "and", "or", "not", "has", "contains", "like", "true", "false", "null",
+];
 
 impl Parser {
     fn new(text: &str) -> Result<Parser, ParseError> {
-        Ok(Parser { tokens: tokenize(text)?, at: 0, len: text.chars().count() })
+        Ok(Parser {
+            tokens: tokenize(text)?,
+            at: 0,
+            len: text.chars().count(),
+        })
     }
 
     fn peek(&self) -> Option<&Spanned> {
@@ -328,8 +374,16 @@ impl Parser {
 
     fn error_here(&self, message: &str) -> ParseError {
         match self.peek() {
-            Some(t) => ParseError { message: message.to_string(), start: t.start, end: t.end },
-            None => ParseError { message: message.to_string(), start: self.len, end: self.len },
+            Some(t) => ParseError {
+                message: message.to_string(),
+                start: t.start,
+                end: t.end,
+            },
+            None => ParseError {
+                message: message.to_string(),
+                start: self.len,
+                end: self.len,
+            },
         }
     }
 
@@ -375,8 +429,15 @@ impl Parser {
             Token::Open => {
                 let inner = self.or()?;
                 match self.next() {
-                    Some(Spanned { token: Token::Close, .. }) => Ok(inner),
-                    _ => Err(ParseError { message: "this bracket is never closed".into(), start: first.start, end: first.end }),
+                    Some(Spanned {
+                        token: Token::Close,
+                        ..
+                    }) => Ok(inner),
+                    _ => Err(ParseError {
+                        message: "this bracket is never closed".into(),
+                        start: first.start,
+                        end: first.end,
+                    }),
                 }
             }
             Token::Str(text) => Ok(Expr::Text(text)),
@@ -388,15 +449,20 @@ impl Parser {
                 let field = canonical_field(&word);
                 self.after_field(field)
             }
-            _ => Err(ParseError { message: "expected a property name, a quoted text or '('".into(), start: first.start, end: first.end }),
+            _ => Err(ParseError {
+                message: "expected a property name, a quoted text or '('".into(),
+                start: first.start,
+                end: first.end,
+            }),
         }
     }
 
     fn field(&mut self) -> Result<String, ParseError> {
         match self.next() {
-            Some(Spanned { token: Token::Word(word), .. }) if !KEYWORDS.iter().any(|k| is_keyword(&word, k)) => {
-                Ok(canonical_field(&word))
-            }
+            Some(Spanned {
+                token: Token::Word(word),
+                ..
+            }) if !KEYWORDS.iter().any(|k| is_keyword(&word, k)) => Ok(canonical_field(&word)),
             _ => {
                 self.at -= 1;
                 Err(self.error_here("expected a property name"))
@@ -406,7 +472,8 @@ impl Parser {
 
     fn after_field(&mut self, field: String) -> Result<Expr, ParseError> {
         let Some(next) = self.next() else {
-            return Err(self.error_here("expected =, !=, <, >, 'contains' or 'like' after the property name"));
+            return Err(self
+                .error_here("expected =, !=, <, >, 'contains' or 'like' after the property name"));
         };
         match next.token {
             Token::Op(op) => {
@@ -414,18 +481,26 @@ impl Parser {
                 Ok(Expr::Compare { field, op, value })
             }
             Token::Word(word) if is_keyword(&word, "contains") || is_keyword(&word, "like") => {
-                let Some(Spanned { token: Token::Str(text), .. }) = self.next() else {
+                let Some(Spanned {
+                    token: Token::Str(text),
+                    ..
+                }) = self.next()
+                else {
                     self.at -= 1;
                     return Err(self.error_here("expected a quoted text"));
                 };
                 if is_keyword(&word, "contains") {
                     Ok(Expr::Contains { field, text })
                 } else {
-                    Ok(Expr::Like { field, pattern: text })
+                    Ok(Expr::Like {
+                        field,
+                        pattern: text,
+                    })
                 }
             }
             _ => Err(ParseError {
-                message: "expected =, !=, <, >, 'contains' or 'like' after the property name".into(),
+                message: "expected =, !=, <, >, 'contains' or 'like' after the property name"
+                    .into(),
                 start: next.start,
                 end: next.end,
             }),
@@ -444,7 +519,13 @@ impl Parser {
             Token::Word(w) if is_keyword(&w, "false") => Value::Bool(false),
             Token::Word(w) if is_keyword(&w, "null") => Value::Null,
             Token::Word(w) if !KEYWORDS.iter().any(|k| is_keyword(&w, k)) => Value::Text(w),
-            _ => return Err(ParseError { message: "expected a value".into(), start: token.start, end: token.end }),
+            _ => {
+                return Err(ParseError {
+                    message: "expected a value".into(),
+                    start: token.start,
+                    end: token.end,
+                })
+            }
         };
         if field == "level" {
             let severity = match &value {
@@ -461,7 +542,11 @@ impl Parser {
             };
         }
         if value == Value::Null && !matches!(op, Op::Eq | Op::Ne) {
-            return Err(ParseError { message: "null can only be compared with = or !=".into(), start: token.start, end: token.end });
+            return Err(ParseError {
+                message: "null can only be compared with = or !=".into(),
+                start: token.start,
+                end: token.end,
+            });
         }
         Ok(value)
     }
@@ -674,7 +759,10 @@ mod tests {
     #[test]
     fn precedence_and_printing_round_trip() {
         for (input, printed) in [
-            ("level >= warn and store.id = 's_1'", "level >= warn and store.id = 's_1'"),
+            (
+                "level >= warn and store.id = 's_1'",
+                "level >= warn and store.id = 's_1'",
+            ),
             ("a = 1 or b = 2 and c = 3", "a = 1 or b = 2 and c = 3"),
             ("(a = 1 or b = 2) and c = 3", "(a = 1 or b = 2) and c = 3"),
             ("not (a = 1 or b = 2)", "not (a = 1 or b = 2)"),
@@ -687,10 +775,16 @@ mod tests {
             ("'payment'", "'payment'"),
             ("target like 'scanner::%'", "target like 'scanner::%'"),
         ] {
-            let expr = parse(input).unwrap_or_else(|e| panic!("{input}: {e}")).unwrap();
+            let expr = parse(input)
+                .unwrap_or_else(|e| panic!("{input}: {e}"))
+                .unwrap();
             let text = expr.to_string();
             assert_eq!(text, printed, "{input}");
-            assert_eq!(p(&text), expr, "printing then parsing gives the same query: {input}");
+            assert_eq!(
+                p(&text),
+                expr,
+                "printing then parsing gives the same query: {input}"
+            );
         }
     }
 
@@ -722,7 +816,10 @@ mod tests {
     #[test]
     fn sql_uses_parameters_for_every_value_and_field_name() {
         let mut params = Vec::new();
-        let sql = p("store.id = 's_1' and network = 'x\\' OR 1=1 --' and level >= warn and not has error").to_sql(&mut params);
+        let sql = p(
+            "store.id = 's_1' and network = 'x\\' OR 1=1 --' and level >= warn and not has error",
+        )
+        .to_sql(&mut params);
         assert_eq!(
             sql,
             "(((store_id = ? AND json_extract(attributes, ?) = ?) AND level >= ?) AND ((json_extract(attributes, ?) IS NOT NULL) IS NOT 1))"
@@ -742,7 +839,10 @@ mod tests {
     #[test]
     fn text_searches_escape_like_wildcards() {
         let mut params = Vec::new();
-        assert_eq!(p("'100%_done'").to_sql(&mut params), "message LIKE ? ESCAPE '\\'");
+        assert_eq!(
+            p("'100%_done'").to_sql(&mut params),
+            "message LIKE ? ESCAPE '\\'"
+        );
         assert_eq!(params, vec![SqlValue::Text("%100\\%\\_done%".into())]);
     }
 }

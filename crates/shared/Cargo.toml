@@ -40,6 +40,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 thiserror = "2.0.20"
@@ -60,4 +61,8 @@ tokio = { version = "1.53.1", features = ["full", "test-util"] }
 # `exchange_rate`'s own `coingecko` test module spins up a real local HTTP
 # server standing in for Coingecko (`spawn_price_server`) - needs a real
 # router, test-only (the runtime itself is now a real dependency above).
-axum = "0.8.9"
+# Defaults less `tower-log` (see crates/scanner/Cargo.toml).
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing"] }
+
+[lints]
+workspace = true

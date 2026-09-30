@@ -27,8 +27,8 @@
 
 mod support;
 
-use std::collections::HashMap;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,8 +66,17 @@ async fn require_daemon_reachable(daemon: &dyn MoneroDaemonClient, host: &str, p
 
 /// One request against the engine's admin API, authenticated with the
 /// tenant's `sk_` - the only way orders are created or read now.
-async fn oneshot_json(router: &axum::Router, sk: &str, method: &str, uri: String, body: Option<Value>) -> (StatusCode, Value) {
-    let mut builder = Request::builder().method(method).uri(uri).header("authorization", format!("Bearer {sk}"));
+async fn oneshot_json(
+    router: &axum::Router,
+    sk: &str,
+    method: &str,
+    uri: String,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {sk}"));
     let body = match body {
         Some(v) => {
             builder = builder.header("content-type", "application/json");
@@ -75,10 +84,15 @@ async fn oneshot_json(router: &axum::Router, sk: &str, method: &str, uri: String
         }
         None => Body::empty(),
     };
-    let response = router.clone().oneshot(builder.body(body).unwrap()).await.unwrap();
+    let response = router
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json = serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("response body was not JSON: {e}"));
+    let json = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|e| panic!("response body was not JSON: {e}"));
     (status, json)
 }
 
@@ -99,13 +113,26 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
-        RpcDaemonClient::new(e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT, e2e_fixture::NODE_SSL, e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS)
-            .expect("failed to build daemon RPC client"),
+        RpcDaemonClient::new(
+            e2e_fixture::NODE_HOST,
+            e2e_fixture::NODE_PORT,
+            e2e_fixture::NODE_SSL,
+            e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS,
+        )
+        .expect("failed to build daemon RPC client"),
     );
-    require_daemon_reachable(daemon.as_ref(), e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT).await;
+    require_daemon_reachable(
+        daemon.as_ref(),
+        e2e_fixture::NODE_HOST,
+        e2e_fixture::NODE_PORT,
+    )
+    .await;
 
-    let material = WalletMaterial::from_hex(e2e_fixture::WALLET_PRIVATE_VIEW_KEY, e2e_fixture::WALLET_PUBLIC_SPEND_KEY)
-        .expect("invalid wallet key material in support::e2e_fixture");
+    let material = WalletMaterial::from_hex(
+        e2e_fixture::WALLET_PRIVATE_VIEW_KEY,
+        e2e_fixture::WALLET_PUBLIC_SPEND_KEY,
+    )
+    .expect("invalid wallet key material in support::e2e_fixture");
     let sealed = key_custody.seal(&material).await.unwrap();
     let created = store
         .lock()
@@ -122,29 +149,41 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         )
         .expect("failed to create tenant");
     let sk = created.secret_token.clone();
-    let handle = key_custody.unseal_and_register(&created.tenant.sealed_key_material).await.unwrap();
-    let wallet_handles = Arc::new(RwLock::new(HashMap::from([(created.tenant.id.clone(), handle)])));
+    let handle = key_custody
+        .unseal_and_register(&created.tenant.sealed_key_material)
+        .await
+        .unwrap();
+    let wallet_handles = Arc::new(RwLock::new(HashMap::from([(
+        created.tenant.id.clone(),
+        handle,
+    )])));
 
     let app_state = AppState {
-        read_pool: None,
-        store: store.clone(),
-        key_custody: key_custody.clone(),
-        key_custody_backend: "plain".to_string(),
-        wallet_handles,
+        db: scanner::store::Database::inline(store.clone()),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        settings: scanner::engine_settings::EngineSettings::defaults(),
+        log_store: None,
+        custody: scanner::http::Custody {
+            backends: key_custody.clone(),
+            default_backend: "plain".to_string(),
+            wallet_handles,
+        },
         // This test drives scanning directly via `run_scan_tick` below (not
         // through `AppState` at all - see that call site's own comment), so
         // these three exist only to satisfy `AppState`'s shape, not because
         // this test's own logic reads them. Still wired to the same real
         // `daemon` this test already built, rather than a disconnected
         // placeholder, so `AppState` stays internally honest.
-        daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(
-            Network::Stagenet,
-            Arc::new(FallbackDaemonClient::new(vec![FallbackNode { label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT), client: daemon.clone() }])),
-        )])),
-        scanner_status: scanner::scanner_status::new_scanner_status_map(),
-        settings: scanner::engine_settings::EngineSettings::defaults(),
-        log_store: None,
+        networks: scanner::http::Networks {
+            daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(
+                Network::Stagenet,
+                Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                    label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT),
+                    client: daemon.clone(),
+                }])),
+            )])),
+            scanner_status: scanner::scanner_status::new_scanner_status_map(),
+        },
     };
     let router = build_router(app_state, 1_000_000);
 
@@ -152,7 +191,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     // why this is a few hundred thousand piconero, not a realistic amount) --
     let (status, order) = oneshot_json(
         &router,
-        &sk,
+        sk.expose(),
         "POST",
         "/api/v1/admin/tenant/orders".to_string(),
         Some(json!({
@@ -172,8 +211,8 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     // crates/cli-wallet, whose own `send_payment` retries the whole
     // connect-then-send sequence internally on real, observed node flakiness) --
     let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
-    .await
-    .unwrap_or_else(|e| panic!("\n\n{e}\n"));
+        .await
+        .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
     println!("sent real stagenet payment, tx {tx_hash_hex}");
 
@@ -183,12 +222,26 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     let tenants = vec![(created.tenant.id.clone(), handle)];
     let mut last_status = String::new();
     for attempt in 1..=30 {
-        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, e2e_fixture::PAYMENT_REORG_CHECK_DEPTH, 0)
-            .await
-            .expect("scan tick failed");
+        run_scan_tick(
+            &store,
+            key_custody.as_ref(),
+            daemon.as_ref(),
+            network_str(Network::Stagenet),
+            &tenants,
+            e2e_fixture::PAYMENT_REORG_CHECK_DEPTH,
+            0,
+        )
+        .await
+        .expect("scan tick failed");
 
-        let (status, order_status) =
-            oneshot_json(&router, &sk, "GET", format!("/api/v1/admin/tenant/orders/{order_id}"), None).await;
+        let (status, order_status) = oneshot_json(
+            &router,
+            sk.expose(),
+            "GET",
+            format!("/api/v1/admin/tenant/orders/{order_id}"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         last_status = order_status["status"].as_str().unwrap().to_string();
         println!("[{attempt}/30] status={last_status}");
@@ -197,7 +250,10 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
             println!("PASS: order {order_id} reached status '{last_status}' (tx {tx_hash_hex})");
             return;
         }
-        assert_ne!(last_status, "expired", "order expired before the real payment was detected");
+        assert_ne!(
+            last_status, "expired",
+            "order expired before the real payment was detected"
+        );
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     panic!("order {order_id} still '{last_status}' after 30 scan attempts - real stagenet payment (tx {tx_hash_hex}) was not detected");

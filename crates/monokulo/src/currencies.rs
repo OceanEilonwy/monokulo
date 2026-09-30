@@ -73,7 +73,11 @@ pub fn currency_options(db: &Db, selected: &str) -> Result<Vec<CurrencyOptionVie
         .into_iter()
         .map(|c| {
             let is_selected = resolved_selected.as_deref() == Some(c.canonical_code.as_str());
-            CurrencyOptionView { code: c.canonical_code, description: c.description, selected: is_selected }
+            CurrencyOptionView {
+                code: c.canonical_code,
+                description: c.description,
+                selected: is_selected,
+            }
         })
         .collect())
 }
@@ -86,15 +90,27 @@ mod tests {
     #[test]
     fn the_canonical_code_itself_resolves_case_insensitively() {
         let db = Db::open_in_memory().unwrap();
-        assert_eq!(resolve_currency(&db, "USD").unwrap(), Some("USD".to_string()));
-        assert_eq!(resolve_currency(&db, "usd").unwrap(), Some("USD".to_string()));
-        assert_eq!(resolve_currency(&db, "UsD").unwrap(), Some("USD".to_string()));
+        assert_eq!(
+            resolve_currency(&db, "USD").unwrap(),
+            Some("USD".to_string())
+        );
+        assert_eq!(
+            resolve_currency(&db, "usd").unwrap(),
+            Some("USD".to_string())
+        );
+        assert_eq!(
+            resolve_currency(&db, "UsD").unwrap(),
+            Some("USD".to_string())
+        );
     }
 
     #[test]
     fn a_known_ticker_alias_resolves_to_its_canonical_code() {
         let db = Db::open_in_memory().unwrap();
-        assert_eq!(resolve_currency(&db, "US$").unwrap(), Some("USD".to_string()));
+        assert_eq!(
+            resolve_currency(&db, "US$").unwrap(),
+            Some("USD".to_string())
+        );
         assert_eq!(resolve_currency(&db, "$").unwrap(), Some("USD".to_string()));
         assert_eq!(resolve_currency(&db, "£").unwrap(), Some("GBP".to_string()));
     }
@@ -102,7 +118,10 @@ mod tests {
     #[test]
     fn xmr_is_itself_a_selectable_currency() {
         let db = Db::open_in_memory().unwrap();
-        assert_eq!(resolve_currency(&db, "XMR").unwrap(), Some("XMR".to_string()));
+        assert_eq!(
+            resolve_currency(&db, "XMR").unwrap(),
+            Some("XMR".to_string())
+        );
     }
 
     #[test]
@@ -124,7 +143,11 @@ mod tests {
     fn currency_options_marks_exactly_one_option_selected_by_canonical_code() {
         let db = Db::open_in_memory().unwrap();
         let options = currency_options(&db, "EUR").unwrap();
-        let selected: Vec<&str> = options.iter().filter(|o| o.selected).map(|o| o.code.as_str()).collect();
+        let selected: Vec<&str> = options
+            .iter()
+            .filter(|o| o.selected)
+            .map(|o| o.code.as_str())
+            .collect();
         assert_eq!(selected, vec!["EUR"]);
     }
 
@@ -132,7 +155,11 @@ mod tests {
     fn currency_options_marks_the_matching_option_selected_from_a_ticker_alias() {
         let db = Db::open_in_memory().unwrap();
         let options = currency_options(&db, "£").unwrap();
-        let selected: Vec<&str> = options.iter().filter(|o| o.selected).map(|o| o.code.as_str()).collect();
+        let selected: Vec<&str> = options
+            .iter()
+            .filter(|o| o.selected)
+            .map(|o| o.code.as_str())
+            .collect();
         assert_eq!(selected, vec!["GBP"]);
     }
 
@@ -150,12 +177,25 @@ mod tests {
         // handful of currencies the tests above happen to touch.
         let db = Db::open_in_memory().unwrap();
         let all = db.list_currencies().unwrap();
-        assert!(all.len() >= 15, "expected a real starter set of currencies, got {}", all.len());
+        assert!(
+            all.len() >= 15,
+            "expected a real starter set of currencies, got {}",
+            all.len()
+        );
         for row in &all {
-            assert_eq!(resolve_currency(&db, &row.canonical_code).unwrap(), Some(row.canonical_code.clone()));
+            assert_eq!(
+                resolve_currency(&db, &row.canonical_code).unwrap(),
+                Some(row.canonical_code.clone())
+            );
             let tickers: Vec<String> =
-                serde_json::from_str(&row.tickers_json).unwrap_or_else(|e| panic!("{}'s tickers are not valid JSON: {e}", row.canonical_code));
-            assert!(!tickers.is_empty(), "{} has no tickers at all", row.canonical_code);
+                serde_json::from_str(&row.tickers_json).unwrap_or_else(|e| {
+                    panic!("{}'s tickers are not valid JSON: {e}", row.canonical_code)
+                });
+            assert!(
+                !tickers.is_empty(),
+                "{} has no tickers at all",
+                row.canonical_code
+            );
         }
     }
 }

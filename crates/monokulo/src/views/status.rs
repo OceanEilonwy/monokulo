@@ -172,14 +172,25 @@ mod tests {
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("the engine could not be reached"));
-        assert!(!html.contains("<table"), "an engine error must not still show a (fabricated) networks table");
+        assert!(
+            !html.contains("<table"),
+            "an engine error must not still show a (fabricated) networks table"
+        );
     }
 
     #[test]
     fn shows_no_configured_networks_message_when_networks_is_empty() {
-        let data = StatusPageViewModel { abuse: None, engine_error: None, networks: vec![], poll_interval_secs: 30, generated_at_display: "just now".to_string() };
+        let data = StatusPageViewModel {
+            abuse: None,
+            engine_error: None,
+            networks: vec![],
+            poll_interval_secs: 30,
+            generated_at_display: "just now".to_string(),
+        };
         let html = page(&chrome(), &data).into_string();
-        assert!(html.to_lowercase().contains("no monero nodes are configured"));
+        assert!(html
+            .to_lowercase()
+            .contains("no monero nodes are configured"));
     }
 
     #[test]
@@ -214,6 +225,9 @@ mod tests {
         assert!(html.contains("tag-error"));
         assert!(html.contains("connection refused"));
         assert!(html.contains("scanner blew up"));
-        assert!(html.contains("42"), "expected the tick count shown, got: {html}");
+        assert!(
+            html.contains("42"),
+            "expected the tick count shown, got: {html}"
+        );
     }
 }

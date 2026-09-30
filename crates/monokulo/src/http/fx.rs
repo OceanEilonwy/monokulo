@@ -28,7 +28,12 @@ impl<S: Send + Sync> FromRequestParts<S> for FxRequest {
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(FxRequest(parts.headers.get(FX_REQUEST).is_some_and(|v| v.as_bytes() == b"true")))
+        Ok(FxRequest(
+            parts
+                .headers
+                .get(FX_REQUEST)
+                .is_some_and(|v| v.as_bytes() == b"true"),
+        ))
     }
 }
 
@@ -49,8 +54,16 @@ impl<S: Send + Sync> FromRequestParts<S> for Timezone {
 
 /// [`Timezone`]'s zone, from a request's headers.
 pub fn browser_zone(headers: &axum::http::HeaderMap) -> Option<String> {
-    let plausible = |z: &str| !z.is_empty() && z.len() <= 64 && z.chars().all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c));
-    let header = headers.get("x-timezone").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let plausible = |z: &str| {
+        !z.is_empty()
+            && z.len() <= 64
+            && z.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c))
+    };
+    let header = headers
+        .get("x-timezone")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let cookie = headers
         .get_all(axum::http::header::COOKIE)
         .iter()
@@ -77,7 +90,11 @@ pub fn respond(fx: FxRequest, redirect_to: &str, fragment: impl FnOnce() -> Mark
 /// section with its errors, as `422` (fixi swaps it like a success; the
 /// glue script only stops a 5xx from being swapped).
 pub fn invalid(fragment: Markup) -> Response {
-    (StatusCode::UNPROCESSABLE_ENTITY, Html(fragment.into_string())).into_response()
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Html(fragment.into_string()),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -97,11 +114,23 @@ mod tests {
     #[tokio::test]
     async fn a_fixi_post_gets_the_fragment_and_any_other_post_the_redirect() {
         let router = Router::new().route("/save", post(handler));
-        let plain = router.clone().oneshot(Request::post("/save").body(Body::empty()).unwrap()).await.unwrap();
+        let plain = router
+            .clone()
+            .oneshot(Request::post("/save").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(plain.status(), StatusCode::FOUND);
         assert_eq!(plain.headers()["location"], "/done");
 
-        let fx = router.oneshot(Request::post("/save").header("FX-Request", "true").body(Body::empty()).unwrap()).await.unwrap();
+        let fx = router
+            .oneshot(
+                Request::post("/save")
+                    .header("FX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(fx.status(), StatusCode::OK);
         let body = fx.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], br#"<section id="s">saved</section>"#);
@@ -110,14 +139,32 @@ mod tests {
     #[tokio::test]
     async fn only_a_plausible_time_zone_is_believed() {
         let zone = |value: &str| {
-            let (mut parts, _) = Request::get("/").header("x-timezone", value).body(()).unwrap().into_parts();
-            futures_util::FutureExt::now_or_never(Timezone::from_request_parts(&mut parts, &())).unwrap().unwrap().0
+            let (mut parts, _) = Request::get("/")
+                .header("x-timezone", value)
+                .body(())
+                .unwrap()
+                .into_parts();
+            futures_util::FutureExt::now_or_never(Timezone::from_request_parts(&mut parts, &()))
+                .unwrap()
+                .unwrap()
+                .0
         };
         assert_eq!(zone("Europe/London"), Some("Europe/London".into()));
-        assert_eq!(zone("America/Argentina/Buenos_Aires"), Some("America/Argentina/Buenos_Aires".into()));
+        assert_eq!(
+            zone("America/Argentina/Buenos_Aires"),
+            Some("America/Argentina/Buenos_Aires".into())
+        );
         assert_eq!(zone("<script>"), None);
-        let (mut parts, _) = Request::get("/").header("cookie", "session=x; tz=Asia%2FTokyo").body(()).unwrap().into_parts();
-        let from_cookie = futures_util::FutureExt::now_or_never(Timezone::from_request_parts(&mut parts, &())).unwrap().unwrap().0;
+        let (mut parts, _) = Request::get("/")
+            .header("cookie", "session=x; tz=Asia%2FTokyo")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let from_cookie =
+            futures_util::FutureExt::now_or_never(Timezone::from_request_parts(&mut parts, &()))
+                .unwrap()
+                .unwrap()
+                .0;
         assert_eq!(from_cookie.as_deref(), Some("Asia/Tokyo"));
     }
 }

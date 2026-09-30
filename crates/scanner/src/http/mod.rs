@@ -31,14 +31,15 @@ mod orders;
 pub mod rate_limit;
 mod status_page;
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
-use std::collections::HashMap;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::FromRequestParts;
-use axum::http::{StatusCode, header, request::Parts};
+use axum::extract::{FromRef, FromRequestParts};
+use axum::http::{header, request::Parts, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
@@ -49,46 +50,57 @@ use tower_http::limit::RequestBodyLimitLayer;
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
 use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
-use crate::store::{ReadStorePool, SharedStore, Store, StoreError, Tenant};
+use crate::store::{StoreError, Tenant};
 
 use rate_limit::{admin_rate_limit_middleware, RateLimiter};
 
+/// Key custody as the API uses it.
 #[derive(Clone)]
+pub struct Custody {
+    pub backends: Arc<dyn KeyCustody>,
+    /// The `[key_custody].backend` value new tenants' keys are sealed in, so
+    /// `admin::create_tenant` records which backend actually holds a new
+    /// tenant's keys (`tenants.key_custody_backend`). Configured, not
+    /// derived: nothing about `Arc<dyn KeyCustody>` says which
+    /// implementation it is, by design.
+    pub default_backend: String,
+    /// Each registered tenant's wallet handle.
+    pub wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+}
+
+/// The networks the engine serves.
+#[derive(Clone)]
+pub struct Networks {
+    /// One `FallbackDaemonClient` per configured network, swapped whole when
+    /// node settings are saved (admin_settings_v2.md task 2.1). A network is
+    /// "configured" exactly when it has a client here: a tenant can only be
+    /// created for one (`admin::create_tenant`), otherwise its address would
+    /// be derived but never scanned. The same clients the scan loops use, so
+    /// `GET /status` reports on the nodes scanning really uses.
+    pub daemons: crate::engine_settings::Daemons,
+    /// Live scan-tick history per network, updated by the scan loop after
+    /// every tick - see `scanner_status`'s own module doc comment.
+    pub scanner_status: ScannerStatusMap,
+}
+
+/// Everything the handlers share. A handler takes just the parts it uses
+/// (`State<Database>`, `State<Custody>`, ...: see the `FromRef` derive), so
+/// its signature says what it can touch.
+#[derive(Clone, FromRef)]
 pub struct AppState {
-    pub store: SharedStore,
-    pub read_pool: Option<ReadStorePool>,
-    pub key_custody: Arc<dyn KeyCustody>,
-    /// The `[key_custody].backend` value that produced `key_custody` above -
-    /// `"plain"` or `"socket"` - so `admin::create_tenant` can record which
-    /// backend actually sealed a *newly created* tenant's key material in
-    /// `tenants.key_custody_backend` (see that column's own comment in
-    /// `migrations/0001_init.sql`) instead of the pre-WBS-2.1.3 hardcoded
-    /// `"plain"` literal, which would otherwise misrepresent every tenant
-    /// created while this instance is running with `backend = "socket"`
-    /// configured. A plain `String`, not a re-derivation from `key_custody`'s
-    /// own concrete type: nothing about `Arc<dyn KeyCustody>` lets a caller ask
-    /// "which implementation is this," by design (see `key_custody`'s own module
-    /// doc comment) - `main.rs` already knows the answer from `Config` at boot,
-    /// so it hands it down alongside the trait object rather than reconstructing
-    /// it via some new downcast/introspection surface this boundary was
-    /// deliberately never given.
-    pub key_custody_backend: String,
-    pub wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    /// The database: reads on the read pool, writes on the database worker
+    /// (the `Admin` class, in turn with the scanner's and webhooks' work),
+    /// and order-change notifications. Handlers never hold the shared store.
+    pub db: crate::store::Database,
+    /// Key custody: the backends, which one new stores use, and the
+    /// wallet handles registered so far.
+    pub custody: Custody,
     /// Per-`sk_`-token budget for every route (falling back to the caller's
     /// address for a request without a token) - see `http::rate_limit`'s own
     /// module doc comment for why token-keying is the right shape here.
     pub admin_rate_limiter: Arc<RateLimiter<String>>,
-    /// One `FallbackDaemonClient` per configured network, swapped whole when
-    /// node settings are saved (admin_settings_v2.md task 2.1). A network
-    /// is "configured" exactly when it has a client here: a tenant can only
-    /// be created for one (`admin::create_tenant`), otherwise its address
-    /// would be derived but never scanned. The same clients the scan loops
-    /// use, so `GET /status` reports on the nodes scanning really uses.
-    pub daemons: crate::engine_settings::Daemons,
-    /// Live scan-tick history per network, updated by `main.rs`'s own scan
-    /// loop after every tick - see `scanner_status`'s own module doc
-    /// comment.
-    pub scanner_status: ScannerStatusMap,
+    /// The nodes of each network and the scanner's status on them.
+    pub networks: Networks,
     /// Every engine setting, live (admin_settings_v2.md part 1): handlers
     /// and loops read the current value of what they need on each use.
     pub settings: Arc<crate::engine_settings::EngineSettings>,
@@ -105,14 +117,14 @@ impl AppState {
     /// a rate limit high enough that no test trips it by accident, default
     /// settings and no log store. A test that needs something else
     /// overrides just that field with struct update syntax:
-    /// `AppState { daemons, ..AppState::for_tests() }`.
+    /// `AppState { log_store, ..AppState::for_tests() }`.
     pub fn for_tests() -> Self {
-        Self::for_tests_with_store(Store::open_in_memory().unwrap().into_shared())
+        Self::for_tests_with_store(crate::store::Store::open_in_memory().unwrap().into_shared())
     }
 
     /// [`AppState::for_tests`] around a store the test prepared itself (for
     /// example to load real settings from it first).
-    pub fn for_tests_with_store(store: SharedStore) -> Self {
+    pub fn for_tests_with_store(store: crate::store::SharedStore) -> Self {
         let mainnet_daemon = Arc::new(crate::daemon_fallback::FallbackDaemonClient::new(vec![
             crate::daemon_fallback::FallbackNode {
                 label: "fake-node:18081".to_string(),
@@ -120,31 +132,22 @@ impl AppState {
             },
         ]));
         AppState {
-            store,
-            read_pool: None,
-            key_custody: Arc::new(crate::key_custody::PlainKeyCustody::default()),
-            key_custody_backend: "plain".to_string(),
-            wallet_handles: Arc::default(),
+            db: crate::store::Database::inline(store),
             admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
-            daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(monero::Network::Mainnet, mainnet_daemon)])),
-            scanner_status: crate::scanner_status::new_scanner_status_map(),
             settings: crate::engine_settings::EngineSettings::defaults(),
             log_store: None,
-        }
-    }
-}
-
-impl AppState {
-    pub async fn read_store<T: Send + 'static>(
-        &self, f: impl FnOnce(&Store) -> Result<T, StoreError> + Send + 'static,
-    ) -> Result<T, StoreError> {
-        if let Some(pool) = &self.read_pool {
-            pool.query(f).await
-        } else {
-            let store = self.store.clone();
-            tokio::task::spawn_blocking(move || f(&store.lock()))
-                .await
-                .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?
+            custody: crate::http::Custody {
+                backends: Arc::new(crate::key_custody::PlainKeyCustody::default()),
+                default_backend: "plain".to_string(),
+                wallet_handles: Arc::default(),
+            },
+            networks: crate::http::Networks {
+                daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(
+                    monero::Network::Mainnet,
+                    mainnet_daemon,
+                )])),
+                scanner_status: crate::scanner_status::new_scanner_status_map(),
+            },
         }
     }
 }
@@ -166,30 +169,56 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
         .route("/status", get(status_page::status_page))
         .route("/api/v1/admin/key-custody", get(admin::key_custody_options))
-        .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            admin_rate_limit_middleware,
+        ));
 
     // Every route here requires a real `Authorization: Bearer sk_...` (see
     // `AuthedTenant`), so each gets its own per-token budget.
     let admin_router = Router::new()
         .route(
             "/api/v1/admin/tenant",
-            get(admin::get_own_tenant).patch(admin::patch_own_tenant).delete(admin::delete_own_tenant),
+            get(admin::get_own_tenant)
+                .patch(admin::patch_own_tenant)
+                .delete(admin::delete_own_tenant),
         )
-        .route("/api/v1/admin/tenant/rotate-secret", post(admin::rotate_secret))
-        .route("/api/v1/admin/tenant/key-custody", axum::routing::put(admin::switch_key_custody))
-        .route("/api/v1/admin/tenant/orders", get(admin::list_orders).post(orders::create_order_for_admin))
-        .route("/api/v1/admin/tenant/orders/{order_id}", get(admin::get_order_detail))
+        .route(
+            "/api/v1/admin/tenant/rotate-secret",
+            post(admin::rotate_secret),
+        )
+        .route(
+            "/api/v1/admin/tenant/key-custody",
+            axum::routing::put(admin::switch_key_custody),
+        )
+        .route(
+            "/api/v1/admin/tenant/orders",
+            get(admin::list_orders).post(orders::create_order_for_admin),
+        )
+        .route(
+            "/api/v1/admin/tenant/orders/{order_id}",
+            get(admin::get_order_detail),
+        )
         .route(
             "/api/v1/admin/tenant/orders/{order_id}/refund-address",
             post(admin::set_order_refund_address),
         )
-        .route("/api/v1/admin/tenant/payments/lookup", post(admin::lookup_payment))
+        .route(
+            "/api/v1/admin/tenant/payments/lookup",
+            post(admin::lookup_payment),
+        )
         .route(
             "/api/v1/admin/tenant/webhooks",
             get(admin::list_webhooks).post(admin::create_webhook),
         )
-        .route("/api/v1/admin/tenant/webhooks/{webhook_id}", delete(admin::delete_webhook))
-        .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
+        .route(
+            "/api/v1/admin/tenant/webhooks/{webhook_id}",
+            delete(admin::delete_webhook),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            admin_rate_limit_middleware,
+        ));
 
     // The instance-wide settings API - a different credential (the instance
     // admin token, `AuthedInstanceAdmin`) from every route above, which all
@@ -208,7 +237,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/api/v1/admin/logs/trace/{trace_id}", get(logs::trace))
         .route("/api/v1/admin/logs/histogram", get(logs::histogram))
         .route("/api/v1/admin/logs/attributes", get(logs::attributes))
-        .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            admin_rate_limit_middleware,
+        ));
 
     // The long-lived order-event stream (one per store monokulo is watching)
     // is kept out of the request limits below: a request timeout would cut
@@ -217,15 +249,27 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     let limits = RequestLimits::default();
     let events_router = Router::new()
         .route("/api/v1/admin/tenant/events", get(admin::order_events))
-        .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware))
-        .layer(middleware::from_fn_with_state(limits.clone(), stream_limit_middleware));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            admin_rate_limit_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            limits.clone(),
+            stream_limit_middleware,
+        ));
 
     unauthenticated_router
         .merge(admin_router)
         .merge(instance_admin_router)
-        .layer(middleware::from_fn_with_state(limits, request_limit_middleware))
+        .layer(middleware::from_fn_with_state(
+            limits,
+            request_limit_middleware,
+        ))
         .merge(events_router)
-        .layer(middleware::from_fn_with_state(state.clone(), body_limit_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            body_limit_middleware,
+        ))
         // A fixed outer ceiling; the live limit above (server.max_body_bytes,
         // task 2.6) is what normally applies.
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
@@ -254,7 +298,10 @@ async fn body_limit_middleware(
         .and_then(|v| v.parse::<u64>().ok())
         .or_else(|| request.body().size_hint().exact());
     if declared.is_some_and(|len| len > limit) {
-        return (StatusCode::PAYLOAD_TOO_LARGE, Json(serde_json::json!({ "error": "request body too large" })))
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({ "error": "request body too large" })),
+        )
             .into_response();
     }
     if declared.is_some() {
@@ -262,8 +309,18 @@ async fn body_limit_middleware(
     }
     let (parts, body) = request.into_parts();
     match axum::body::to_bytes(body, usize::try_from(limit).unwrap_or(usize::MAX)).await {
-        Ok(bytes) => next.run(axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))).await,
-        Err(_) => (StatusCode::PAYLOAD_TOO_LARGE, Json(serde_json::json!({ "error": "request body too large" }))).into_response(),
+        Ok(bytes) => {
+            next.run(axum::extract::Request::from_parts(
+                parts,
+                axum::body::Body::from(bytes),
+            ))
+            .await
+        }
+        Err(_) => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({ "error": "request body too large" })),
+        )
+            .into_response(),
     }
 }
 
@@ -301,7 +358,11 @@ impl RequestLimits {
 }
 
 fn service_unavailable(message: &str) -> axum::response::Response {
-    (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": message }))).into_response()
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({ "error": message })),
+    )
+        .into_response()
 }
 
 async fn request_limit_middleware(
@@ -329,7 +390,13 @@ async fn stream_limit_middleware(
     let (parts, body) = next.run(request).await.into_parts();
     // The permit lives as long as the stream's body, and is released when
     // the client disconnects and the body is dropped.
-    axum::response::Response::from_parts(parts, axum::body::Body::new(PermitBody { inner: body, _permit: permit }))
+    axum::response::Response::from_parts(
+        parts,
+        axum::body::Body::new(PermitBody {
+            inner: body,
+            _permit: permit,
+        }),
+    )
 }
 
 /// A response body that holds a semaphore permit until it is dropped.
@@ -371,7 +438,9 @@ pub fn parse_status_query(s: &str) -> Result<OrderStatus, ApiError> {
         "partial" => Ok(OrderStatus::Partial),
         "overpaid" => Ok(OrderStatus::Overpaid),
         "expired" => Ok(OrderStatus::Expired),
-        other => Err(ApiError::BadRequest(format!("unknown status filter: {other}"))),
+        other => Err(ApiError::BadRequest(format!(
+            "unknown status filter: {other}"
+        ))),
     }
 }
 
@@ -384,15 +453,23 @@ pub struct AuthedTenant(pub Tenant);
 impl FromRequestParts<AppState> for AuthedTenant {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let header_value = parts
             .headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .ok_or(ApiError::Unauthorized)?;
-        let token = header_value.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?.to_string();
+        let token = shared::auth::RawToken::presented(
+            header_value
+                .strip_prefix("Bearer ")
+                .ok_or(ApiError::Unauthorized)?,
+        );
         let tenant = state
-            .read_store(move |store| store.find_tenant_by_secret_token(&token))
+            .db
+            .read(move |store| store.find_tenant_by_secret_token(&token))
             .await?
             .ok_or(ApiError::Unauthorized)?;
         // The request's lines name the store (`telemetry::http::server`).
@@ -403,17 +480,21 @@ impl FromRequestParts<AppState> for AuthedTenant {
 
 /// Ensures a tenant has a live `WalletHandle` in this process, registering it with
 /// `KeyCustody` from its sealed material on first use if it doesn't yet.
-pub async fn resolve_wallet_handle(state: &AppState, tenant: &Tenant) -> Result<WalletHandle, ApiError> {
-    let known = state.wallet_handles.read().get(&tenant.id).copied();
+pub async fn resolve_wallet_handle(
+    state: &AppState,
+    tenant: &Tenant,
+) -> Result<WalletHandle, ApiError> {
+    let known = state.custody.wallet_handles.read().get(&tenant.id).copied();
     match known {
-        Some(handle) if state.key_custody.handle_is_live(handle) => return Ok(handle),
+        Some(handle) if state.custody.backends.handle_is_live(handle) => return Ok(handle),
         // Its backend lost it (restarted, or was disabled): register again.
         Some(handle) => forget_wallet_handle(state, &tenant.id, handle),
         None => {}
     }
     // The row as it is now, not as it was when the request was
     // authenticated: the store may have just moved to another backend.
-    let current = state.store.lock().get_tenant_by_id(&tenant.id)?;
+    let id = tenant.id.clone();
+    let current = state.db.write(move |s| s.get_tenant_by_id(&id)).await?;
     let tenant = current.as_ref().unwrap_or(tenant);
     // The registration can't happen under the lock (it's `async`, and holding a
     // std `RwLock` across an `.await` would be a deadlock waiting to happen), so two
@@ -427,22 +508,32 @@ pub async fn resolve_wallet_handle(state: &AppState, tenant: &Tenant) -> Result<
     // refuses, so a disabled backend's store isn't quietly brought back.
     let handle = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        state.key_custody.unseal_and_register_in_idempotent(&tenant.key_custody_backend, &tenant.sealed_key_material, &tenant.id),
-    ).await.map_err(|_| ApiError::Internal("key custody registration timed out".into()))??;
+        state.custody.backends.unseal_and_register_in_idempotent(
+            &tenant.key_custody_backend,
+            &tenant.sealed_key_material,
+            tenant.id.as_str(),
+        ),
+    )
+    .await
+    .map_err(|_| ApiError::Internal("key custody registration timed out".into()))??;
     let winner = {
-        let mut handles = state.wallet_handles.write();
+        let mut handles = state.custody.wallet_handles.write();
         *handles.entry(tenant.id.clone()).or_insert(handle)
     };
     if winner != handle {
-        let _ = state.key_custody.remove_wallet(handle).await;
+        let _ = state.custody.backends.remove_wallet(handle).await;
     }
     Ok(winner)
 }
 
 /// Drops `handle` as `tenant_id`'s live handle, if it still is, so the next
 /// `resolve_wallet_handle` registers the store's keys again.
-pub fn forget_wallet_handle(state: &AppState, tenant_id: &str, handle: WalletHandle) {
-    let mut handles = state.wallet_handles.write();
+pub fn forget_wallet_handle(
+    state: &AppState,
+    tenant_id: &crate::store::TenantId,
+    handle: WalletHandle,
+) {
+    let mut handles = state.custody.wallet_handles.write();
     if handles.get(tenant_id) == Some(&handle) {
         handles.remove(tenant_id);
     }
@@ -480,7 +571,9 @@ impl From<StoreError> for ApiError {
     fn from(e: StoreError) -> Self {
         match e {
             StoreError::NotFound => ApiError::NotFound,
-            StoreError::Sqlite(e) if is_transient_sqlite(&e) => ApiError::Unavailable(e.to_string()),
+            StoreError::Sqlite(e) if is_transient_sqlite(&e) => {
+                ApiError::Unavailable(e.to_string())
+            }
             StoreError::Sqlite(e) => ApiError::Internal(e.to_string()),
             StoreError::WorkerUnavailable(e) => ApiError::Unavailable(e),
         }
@@ -492,7 +585,9 @@ impl From<KeyCustodyError> for ApiError {
         match e {
             // The store exists; its keys just aren't registered in this
             // process right now (a backend restart, a switch in progress).
-            KeyCustodyError::UnknownWallet => ApiError::Unavailable("this store's keys are not available right now".to_string()),
+            KeyCustodyError::UnknownWallet => {
+                ApiError::Unavailable("this store's keys are not available right now".to_string())
+            }
             KeyCustodyError::BackendUnavailable(m) => ApiError::Unavailable(m),
             other => ApiError::Internal(other.to_string()),
         }

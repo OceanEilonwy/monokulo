@@ -207,10 +207,17 @@ pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> 
 #[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SettingKindView {
-    Integer { min: Option<i64>, max: Option<i64> },
+    Integer {
+        min: Option<i64>,
+        max: Option<i64>,
+    },
     Bool,
-    Choice { choices: Vec<String> },
-    ChoiceList { choices: Vec<String> },
+    Choice {
+        choices: Vec<String>,
+    },
+    ChoiceList {
+        choices: Vec<String>,
+    },
     Url,
     Address,
     Path,
@@ -223,7 +230,9 @@ pub enum SettingKindView {
     /// engine; set by the handler for keys it knows (structured_logging.md
     /// 1.3).
     #[serde(skip)]
-    TimeLimit { now: u64 },
+    TimeLimit {
+        now: u64,
+    },
 }
 
 impl From<live_settings::SettingKind> for SettingKindView {
@@ -233,8 +242,12 @@ impl From<live_settings::SettingKind> for SettingKindView {
         match kind {
             K::Integer { min, max } => SettingKindView::Integer { min, max },
             K::Bool => SettingKindView::Bool,
-            K::Choice { choices } => SettingKindView::Choice { choices: owned(choices) },
-            K::ChoiceList { choices } => SettingKindView::ChoiceList { choices: owned(choices) },
+            K::Choice { choices } => SettingKindView::Choice {
+                choices: owned(choices),
+            },
+            K::ChoiceList { choices } => SettingKindView::ChoiceList {
+                choices: owned(choices),
+            },
             K::Url => SettingKindView::Url,
             K::Address => SettingKindView::Address,
             K::Path => SettingKindView::Path,
@@ -400,7 +413,10 @@ impl SettingsTab {
     /// The tab a `?tab=` value names; General for a missing or unknown one,
     /// so an old bookmark or a typo still lands somewhere useful.
     pub fn from_id(id: Option<&str>) -> SettingsTab {
-        SettingsTab::ALL.into_iter().find(|tab| Some(tab.id()) == id).unwrap_or(SettingsTab::General)
+        SettingsTab::ALL
+            .into_iter()
+            .find(|tab| Some(tab.id()) == id)
+            .unwrap_or(SettingsTab::General)
     }
 
     /// The tab's page.
@@ -416,7 +432,11 @@ impl SettingsTab {
         match self {
             SettingsTab::General | SettingsTab::Abuse => &[(None, Monokulo)],
             SettingsTab::Nodes | SettingsTab::Custody => &[(None, Engine)],
-            SettingsTab::Payments => &[(None, Engine), (Some("Webhooks"), Engine), (Some("Exchange rates"), Monokulo)],
+            SettingsTab::Payments => &[
+                (None, Engine),
+                (Some("Webhooks"), Engine),
+                (Some("Exchange rates"), Monokulo),
+            ],
             SettingsTab::Server | SettingsTab::Other => &[(None, Engine), (None, Monokulo)],
             SettingsTab::Logging => &[(Some("Monokulo"), Monokulo), (Some("Engine"), Engine)],
         }
@@ -425,7 +445,9 @@ impl SettingsTab {
     /// Whether every setting on this tab is the engine's, so the tab has
     /// nothing to show or save while the engine can't be reached.
     pub fn engine_only(self) -> bool {
-        self.groups().iter().all(|(_, owner)| *owner == SettingOwner::Engine)
+        self.groups()
+            .iter()
+            .all(|(_, owner)| *owner == SettingOwner::Engine)
     }
 }
 
@@ -440,7 +462,7 @@ pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, Option
             "signup" | "engine" | "public_url" => (SettingsTab::General, None),
             "exchange_rate" => (SettingsTab::Payments, Some("Exchange rates")),
             "abuse" | "rate_limit" => (SettingsTab::Abuse, None),
-            "http_cache" => (SettingsTab::Server, None),
+            "http_cache" | "database" => (SettingsTab::Server, None),
             "logging" => (SettingsTab::Logging, Some("Monokulo")),
             _ => (SettingsTab::Other, None),
         },
@@ -448,11 +470,13 @@ pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, Option
             "monero_node" => (SettingsTab::Nodes, None),
             // How much memory a scan may use is about the machine, not
             // about payments.
-            "payment" if key == "payment.scan_chunk_memory_budget_mb" => (SettingsTab::Server, None),
+            "payment" if key == "payment.scan_chunk_memory_budget_mb" => {
+                (SettingsTab::Server, None)
+            }
             "payment" => (SettingsTab::Payments, None),
             "webhooks" => (SettingsTab::Payments, Some("Webhooks")),
             "key_custody" => (SettingsTab::Custody, None),
-            "server" => (SettingsTab::Server, None),
+            "server" | "database" => (SettingsTab::Server, None),
             "logging" => (SettingsTab::Logging, Some("Engine")),
             _ => (SettingsTab::Other, None),
         },
@@ -491,13 +515,20 @@ fn field_id(key: &str) -> String {
 
 /// The id of a setting's help text, when it has some.
 fn help_id(field: &AdminScalarFieldView) -> Option<String> {
-    field.help.as_ref().map(|_| format!("setting-help-{}", field.form_name()))
+    field
+        .help
+        .as_ref()
+        .map(|_| format!("setting-help-{}", field.form_name()))
 }
 
 impl AdminScalarFieldView {
     /// The name the setting's control is sent under.
     pub fn form_name(&self) -> &str {
-        if self.name.is_empty() { &self.key } else { &self.name }
+        if self.name.is_empty() {
+            &self.key
+        } else {
+            &self.name
+        }
     }
 }
 
@@ -536,7 +567,9 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
                 }
             }
         }
-        SettingKindView::Url => html! { input type="url" name=(name) value=(field.value) id=(id) aria-describedby=[help]; },
+        SettingKindView::Url => {
+            html! { input type="url" name=(name) value=(field.value) id=(id) aria-describedby=[help]; }
+        }
         // Never echoed back: left empty means "keep the current one".
         SettingKindView::Secret => html! {
             input type="password" name=(name) value="" autocomplete="off" id=(id) aria-describedby=[help]
@@ -548,7 +581,9 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
                 }
             }
         },
-        SettingKindView::Json => html! { textarea name=(name) rows="4" id=(id) aria-describedby=[help] { (field.value) } },
+        SettingKindView::Json => {
+            html! { textarea name=(name) rows="4" id=(id) aria-describedby=[help] { (field.value) } }
+        }
         SettingKindView::TimeLimit { now } => {
             let until: u64 = field.value.trim().parse().unwrap_or(0);
             let on = until > *now;
@@ -564,7 +599,9 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
                 }
             }
         }
-        _ => html! { input type="text" name=(name) value=(field.value) id=(id) aria-describedby=[help]; },
+        _ => {
+            html! { input type="text" name=(name) value=(field.value) id=(id) aria-describedby=[help]; }
+        }
     }
 }
 
@@ -729,25 +766,41 @@ const ENABLED_BACKENDS: &str = "key_custody.enabled_backends";
 /// The key custody backends the engine offers, and whether each is turned
 /// on. Empty from an engine that doesn't say.
 fn custody_backends(fields: &[AdminScalarFieldView]) -> Vec<(String, bool)> {
-    let Some(field) = fields.iter().find(|f| f.key == ENABLED_BACKENDS) else { return Vec::new() };
-    let SettingKindView::ChoiceList { choices } = &field.kind else { return Vec::new() };
+    let Some(field) = fields.iter().find(|f| f.key == ENABLED_BACKENDS) else {
+        return Vec::new();
+    };
+    let SettingKindView::ChoiceList { choices } = &field.kind else {
+        return Vec::new();
+    };
     let enabled: Vec<&str> = field.value.split(',').map(str::trim).collect();
-    choices.iter().map(|choice| (choice.clone(), enabled.contains(&choice.as_str()))).collect()
+    choices
+        .iter()
+        .map(|choice| (choice.clone(), enabled.contains(&choice.as_str())))
+        .collect()
 }
 
 /// The backend a key custody setting belongs to: one only that backend
 /// uses is named `key_custody.<backend>_...` (`key_custody.socket_path`).
-fn custody_backend_of<'a>(field: &AdminScalarFieldView, backends: &'a [(String, bool)]) -> Option<&'a str> {
+fn custody_backend_of<'a>(
+    field: &AdminScalarFieldView,
+    backends: &'a [(String, bool)],
+) -> Option<&'a str> {
     let rest = field.key.strip_prefix("key_custody.")?;
     backends
         .iter()
         .map(|(backend, _)| backend.as_str())
-        .find(|backend| rest.strip_prefix(backend).is_some_and(|after| after.starts_with('_')))
+        .find(|backend| {
+            rest.strip_prefix(backend)
+                .is_some_and(|after| after.starts_with('_'))
+        })
 }
 
 /// A section of its own for each backend, shown only while it's turned on
 /// (at once with JavaScript, after saving without).
-fn custody_backend_sections(fields: &[AdminScalarFieldView], backends: &[(String, bool)]) -> Markup {
+fn custody_backend_sections(
+    fields: &[AdminScalarFieldView],
+    backends: &[(String, bool)],
+) -> Markup {
     html! {
         @for (backend, enabled) in backends {
             section class="custody-backend" data-custody-backend=(backend) hidden[!enabled] {
@@ -835,14 +888,27 @@ fn engine_unavailable(data: &AdminSettingsViewModel) -> Markup {
 /// are shown: the engine's in its (alphabetical) order, except that the key
 /// custody backends to turn on come before the choice among them, and on
 /// Server the engine's own `server.*` come before the scan memory budget.
-fn group_fields<'a>(data: &'a AdminSettingsViewModel, tab: SettingsTab, heading: Option<&str>, owner: SettingOwner) -> Vec<&'a AdminScalarFieldView> {
+fn group_fields<'a>(
+    data: &'a AdminSettingsViewModel,
+    tab: SettingsTab,
+    heading: Option<&str>,
+    owner: SettingOwner,
+) -> Vec<&'a AdminScalarFieldView> {
     let fields = match owner {
         SettingOwner::Monokulo => &data.monokulo_fields,
         SettingOwner::Engine => &data.scanner_fields,
     };
-    let mut own: Vec<&AdminScalarFieldView> = fields.iter().filter(|f| setting_placement(&f.key, owner) == (tab, heading)).collect();
+    let mut own: Vec<&AdminScalarFieldView> = fields
+        .iter()
+        .filter(|f| setting_placement(&f.key, owner) == (tab, heading))
+        .collect();
     if owner == SettingOwner::Engine {
-        own.sort_by_key(|f| (f.key != ENABLED_BACKENDS, f.key.starts_with("payment.") && tab == SettingsTab::Server));
+        own.sort_by_key(|f| {
+            (
+                f.key != ENABLED_BACKENDS,
+                f.key.starts_with("payment.") && tab == SettingsTab::Server,
+            )
+        });
     }
     own
 }
@@ -851,7 +917,10 @@ fn group_fields<'a>(data: &'a AdminSettingsViewModel, tab: SettingsTab, heading:
 /// shows while a setting nobody placed is in it.
 fn tab_shown(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
     tab != SettingsTab::Other
-        || tab.groups().iter().any(|(heading, owner)| !group_fields(data, tab, *heading, *owner).is_empty())
+        || tab
+            .groups()
+            .iter()
+            .any(|(heading, owner)| !group_fields(data, tab, *heading, *owner).is_empty())
 }
 
 /// Whether a tab's label carries the marker (T5): a network stores use has
@@ -860,8 +929,15 @@ fn tab_shown(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
 fn needs_attention(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
     let unserved = tab == SettingsTab::Nodes
         && (!data.unreachable_networks.is_empty()
-            || data.scanner_networks.iter().any(|n| n.tenant_count > 0 && n.rows.is_empty()));
-    let restart = tab.groups().iter().any(|(heading, owner)| group_fields(data, tab, *heading, *owner).iter().any(|f| f.pending_restart));
+            || data
+                .scanner_networks
+                .iter()
+                .any(|n| n.tenant_count > 0 && n.rows.is_empty()));
+    let restart = tab.groups().iter().any(|(heading, owner)| {
+        group_fields(data, tab, *heading, *owner)
+            .iter()
+            .any(|f| f.pending_restart)
+    });
     unserved || restart
 }
 
@@ -929,7 +1005,12 @@ fn node_status(status: &NodeStatusView) -> Markup {
 /// "Add a node" row, which has no status or buttons); `index` numbers its
 /// fields. The buttons are submit buttons of the tab's form: pressing one
 /// applies it to the submitted rows and saves, with or without JavaScript.
-fn node_row(network: &AdminNetworkFieldView, index: usize, row: &NodeRowView, position: Option<(usize, usize)>) -> Markup {
+fn node_row(
+    network: &AdminNetworkFieldView,
+    index: usize,
+    row: &NodeRowView,
+    position: Option<(usize, usize)>,
+) -> Markup {
     let n = &network.network;
     let name = |field: &str| format!("node_{n}_{index}_{field}");
     let id = |field: &str| format!("node-{n}-{index}-{field}");
@@ -938,7 +1019,10 @@ fn node_row(network: &AdminNetworkFieldView, index: usize, row: &NodeRowView, po
         Some((0, _)) => "Primary".to_string(),
         Some((at, _)) => format!("Fallback {at}"),
     };
-    let example = network.example_address.as_deref().unwrap_or("node.example.com:18081");
+    let example = network
+        .example_address
+        .as_deref()
+        .unwrap_or("node.example.com:18081");
     let error_id = row.row.error.as_ref().map(|_| id("error"));
     let described = match &error_id {
         Some(error) => format!("{} {error}", id("address-help")),
@@ -991,7 +1075,10 @@ fn node_row(network: &AdminNetworkFieldView, index: usize, row: &NodeRowView, po
 /// `stagenet` as `Stagenet`, for a heading.
 fn capitalized(word: &str) -> String {
     let mut chars = word.chars();
-    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// One network's block: its rows in order, then a blank "Add a node" row
@@ -1052,7 +1139,10 @@ fn node_fields(data: &AdminSettingsViewModel) -> Markup {
 fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
     let backends = custody_backends(&data.scanner_fields);
     let engine_down = !engine_available(data);
-    let first_engine_group = tab.groups().iter().position(|(_, owner)| *owner == SettingOwner::Engine);
+    let first_engine_group = tab
+        .groups()
+        .iter()
+        .position(|(_, owner)| *owner == SettingOwner::Engine);
     html! {
         @for (i, (heading, owner)) in tab.groups().iter().enumerate() {
             @if *owner == SettingOwner::Engine && engine_down {
@@ -1141,7 +1231,11 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
             script { (maud::PreEscaped(NODE_FORM_SCRIPT)) }
         }
     };
-    layout(chrome, &format!("{} - Admin settings - Monokulo", data.tab.label()), body)
+    layout(
+        chrome,
+        &format!("{} - Admin settings - Monokulo", data.tab.label()),
+        body,
+    )
 }
 
 #[cfg(test)]
@@ -1164,14 +1258,50 @@ mod tests {
             ("engine.url", M, General, None),
             ("engine.admin_token", M, General, None),
             ("public_url", M, General, None),
-            ("exchange_rate.coingecko_enabled", M, Payments, Some("Exchange rates")),
-            ("exchange_rate.coingecko_base_url", M, Payments, Some("Exchange rates")),
-            ("exchange_rate.coinmarketcap_enabled", M, Payments, Some("Exchange rates")),
-            ("exchange_rate.coinmarketcap_base_url", M, Payments, Some("Exchange rates")),
-            ("exchange_rate.haveno_enabled", M, Payments, Some("Exchange rates")),
-            ("exchange_rate.haveno_base_url", M, Payments, Some("Exchange rates")),
-            ("exchange_rate.cache_seconds", M, Payments, Some("Exchange rates")),
+            (
+                "exchange_rate.coingecko_enabled",
+                M,
+                Payments,
+                Some("Exchange rates"),
+            ),
+            (
+                "exchange_rate.coingecko_base_url",
+                M,
+                Payments,
+                Some("Exchange rates"),
+            ),
+            (
+                "exchange_rate.coinmarketcap_enabled",
+                M,
+                Payments,
+                Some("Exchange rates"),
+            ),
+            (
+                "exchange_rate.coinmarketcap_base_url",
+                M,
+                Payments,
+                Some("Exchange rates"),
+            ),
+            (
+                "exchange_rate.haveno_enabled",
+                M,
+                Payments,
+                Some("Exchange rates"),
+            ),
+            (
+                "exchange_rate.haveno_base_url",
+                M,
+                Payments,
+                Some("Exchange rates"),
+            ),
+            (
+                "exchange_rate.cache_seconds",
+                M,
+                Payments,
+                Some("Exchange rates"),
+            ),
             ("http_cache.max_mb", M, Server, None),
+            ("database.read_connections", M, Server, None),
             ("abuse.soft_per_min", M, Abuse, None),
             ("abuse.hard_per_min", M, Abuse, None),
             ("abuse.signed_in_per_min", M, Abuse, None),
@@ -1196,17 +1326,28 @@ mod tests {
             ("key_custody.socket_path", E, Custody, None),
             ("payment.confirmations_required", E, Payments, None),
             ("payment.order_expiry_minutes", E, Payments, None),
-            ("payment.expired_order_grace_period_minutes", E, Payments, None),
+            (
+                "payment.expired_order_grace_period_minutes",
+                E,
+                Payments,
+                None,
+            ),
             ("payment.reorg_check_depth", E, Payments, None),
             ("payment.mempool_poll_interval_ms", E, Payments, None),
             ("payment.scan_chunk_memory_budget_mb", E, Server, None),
             ("webhooks.allow_private_urls", E, Payments, Some("Webhooks")),
-            ("webhooks.delivery_timeout_ms", E, Payments, Some("Webhooks")),
+            (
+                "webhooks.delivery_timeout_ms",
+                E,
+                Payments,
+                Some("Webhooks"),
+            ),
             ("webhooks.max_attempts", E, Payments, Some("Webhooks")),
             ("server.bind", E, Server, None),
             ("server.worker_threads", E, Server, None),
             ("server.max_body_bytes", E, Server, None),
             ("server.rate_limit_per_token_per_min", E, Server, None),
+            ("database.read_connections", E, Server, None),
             ("logging.level", E, Logging, Some("Engine")),
             ("logging.dev_mode_until", E, Logging, Some("Engine")),
             ("logging.retention_days", E, Logging, Some("Engine")),
@@ -1219,10 +1360,17 @@ mod tests {
     #[test]
     fn every_setting_known_today_has_a_named_tab() {
         for (key, owner, tab, heading) in PLACEMENTS {
-            assert_eq!(setting_placement(key, *owner), (*tab, *heading), "{key} ({owner:?})");
+            assert_eq!(
+                setting_placement(key, *owner),
+                (*tab, *heading),
+                "{key} ({owner:?})"
+            );
             assert_ne!(*tab, SettingsTab::Other, "{key}");
             // The heading is one the tab actually shows, for that owner.
-            assert!(tab.groups().contains(&(*heading, *owner)), "{key} is placed under a group {tab:?} doesn't have");
+            assert!(
+                tab.groups().contains(&(*heading, *owner)),
+                "{key} is placed under a group {tab:?} doesn't have"
+            );
         }
     }
 
@@ -1230,15 +1378,25 @@ mod tests {
     #[test]
     fn the_tab_list_covers_both_registries() {
         let listed = |owner: SettingOwner| -> Vec<&str> {
-            PLACEMENTS.iter().filter(|(_, o, _, _)| *o == owner).map(|(key, ..)| *key).collect()
+            PLACEMENTS
+                .iter()
+                .filter(|(_, o, _, _)| *o == owner)
+                .map(|(key, ..)| *key)
+                .collect()
         };
         let mut monokulo: Vec<&str> = crate::settings::ALL.iter().map(|s| s.key()).collect();
         monokulo.sort_unstable();
         let mut monokulo_listed = listed(SettingOwner::Monokulo);
         monokulo_listed.sort_unstable();
-        assert_eq!(monokulo_listed, monokulo, "every monokulo setting has a tab");
+        assert_eq!(
+            monokulo_listed, monokulo,
+            "every monokulo setting has a tab"
+        );
 
-        let mut engine: Vec<&str> = scanner::engine_settings::ALL.iter().map(|s| s.key()).collect();
+        let mut engine: Vec<&str> = scanner::engine_settings::ALL
+            .iter()
+            .map(|s| s.key())
+            .collect();
         engine.sort_unstable();
         let mut engine_listed = listed(SettingOwner::Engine);
         engine_listed.sort_unstable();
@@ -1247,9 +1405,18 @@ mod tests {
 
     #[test]
     fn a_setting_the_map_does_not_know_goes_to_other() {
-        assert_eq!(setting_placement("telemetry.sample_rate", SettingOwner::Engine), (SettingsTab::Other, None));
-        assert_eq!(setting_placement("brand_new", SettingOwner::Engine), (SettingsTab::Other, None));
-        assert_eq!(setting_placement("brand.new", SettingOwner::Monokulo), (SettingsTab::Other, None));
+        assert_eq!(
+            setting_placement("telemetry.sample_rate", SettingOwner::Engine),
+            (SettingsTab::Other, None)
+        );
+        assert_eq!(
+            setting_placement("brand_new", SettingOwner::Engine),
+            (SettingsTab::Other, None)
+        );
+        assert_eq!(
+            setting_placement("brand.new", SettingOwner::Monokulo),
+            (SettingsTab::Other, None)
+        );
     }
 
     #[test]
@@ -1259,14 +1426,24 @@ mod tests {
         }
         assert_eq!(SettingsTab::from_id(None), SettingsTab::General);
         assert_eq!(SettingsTab::from_id(Some("nope")), SettingsTab::General);
-        assert_eq!(SettingsTab::Nodes.href(), "/dashboard/admin/settings?tab=nodes");
+        assert_eq!(
+            SettingsTab::Nodes.href(),
+            "/dashboard/admin/settings?tab=nodes"
+        );
         assert!(SettingsTab::Nodes.engine_only() && SettingsTab::Custody.engine_only());
-        assert!(!SettingsTab::Payments.engine_only() && !SettingsTab::Server.engine_only() && !SettingsTab::Logging.engine_only());
+        assert!(
+            !SettingsTab::Payments.engine_only()
+                && !SettingsTab::Server.engine_only()
+                && !SettingsTab::Logging.engine_only()
+        );
     }
 
     #[test]
     fn setup_page_shows_the_echoed_email_and_an_error() {
-        let data = SetupViewModel { error: Some("Passwords do not match.".to_string()), email: "owner@example.com".to_string() };
+        let data = SetupViewModel {
+            error: Some("Passwords do not match.".to_string()),
+            email: "owner@example.com".to_string(),
+        };
         let html = setup_page(&chrome(), &data).into_string();
         assert!(html.contains("Set up your admin account"));
         assert!(html.contains("Passwords do not match."));
@@ -1275,14 +1452,23 @@ mod tests {
 
     #[test]
     fn request_invite_page_shows_the_form_before_submission_and_a_thank_you_after() {
-        let form = RequestInviteViewModel { error: None, submitted: false };
+        let form = RequestInviteViewModel {
+            error: None,
+            submitted: false,
+        };
         let html = request_invite_page(&chrome(), &form).into_string();
         assert!(html.contains(r#"<form method="post" action="/request-invite">"#));
 
-        let thanks = RequestInviteViewModel { error: None, submitted: true };
+        let thanks = RequestInviteViewModel {
+            error: None,
+            submitted: true,
+        };
         let html = request_invite_page(&chrome(), &thanks).into_string();
         assert!(html.to_lowercase().contains("thanks"));
-        assert!(!html.contains("<form method=\"post\" action=\"/request-invite\""), "a submitted confirmation must not still show the request form");
+        assert!(
+            !html.contains("<form method=\"post\" action=\"/request-invite\""),
+            "a submitted confirmation must not still show the request form"
+        );
     }
 
     fn row(id: &str, email: &str) -> AdminInviteRequestRow {
@@ -1317,7 +1503,8 @@ mod tests {
     }
 
     #[test]
-    fn admin_invites_page_lists_rows_with_a_mailto_link_and_a_delete_form_carrying_the_current_page() {
+    fn admin_invites_page_lists_rows_with_a_mailto_link_and_a_delete_form_carrying_the_current_page(
+    ) {
         let data = AdminInvitesViewModel {
             error: None,
             success: None,
@@ -1339,7 +1526,8 @@ mod tests {
     }
 
     #[test]
-    fn admin_invites_page_shows_the_struck_through_just_deleted_row_even_with_no_other_pending_rows() {
+    fn admin_invites_page_shows_the_struck_through_just_deleted_row_even_with_no_other_pending_rows(
+    ) {
         let mut deleted = row("row-1", "gone@example.com");
         deleted.just_deleted = true;
         let data = AdminInvitesViewModel {
@@ -1364,10 +1552,17 @@ mod tests {
     /// A field as the handler builds it: an engine setting monokulo also
     /// has is sent as `engine:<key>`.
     fn field_for(key: &str, owner: SettingOwner) -> AdminScalarFieldView {
-        let shared = owner == SettingOwner::Engine && PLACEMENTS.iter().any(|(k, o, ..)| *k == key && *o == SettingOwner::Monokulo);
+        let shared = owner == SettingOwner::Engine
+            && PLACEMENTS
+                .iter()
+                .any(|(k, o, ..)| *k == key && *o == SettingOwner::Monokulo);
         AdminScalarFieldView {
             key: key.to_string(),
-            name: if shared { format!("engine:{key}") } else { String::new() },
+            name: if shared {
+                format!("engine:{key}")
+            } else {
+                String::new()
+            },
             label: key.replace(['.', '_'], " "),
             value: "1".to_string(),
             source_label: "default".to_string(),
@@ -1408,7 +1603,12 @@ mod tests {
 
     fn node_row_view(address: &str) -> NodeRowView {
         NodeRowView {
-            row: crate::admin_nodes::NodeRow { address: address.to_string(), ssl: false, self_signed: true, error: None },
+            row: crate::admin_nodes::NodeRow {
+                address: address.to_string(),
+                ssl: false,
+                self_signed: true,
+                error: None,
+            },
             label: address.to_string(),
             status: None,
         }
@@ -1421,62 +1621,128 @@ mod tests {
     /// The tab bar's link to `tab`, with `aria-current` or not.
     fn tab_link(tab: SettingsTab, current: bool) -> String {
         let href = tab.href();
-        let current = if current { r#" aria-current="page""# } else { "" };
-        format!(r##"<a href="{href}" fx-action="{href}" fx-target="#settings-panel" fx-push-url{current}>{}"##, tab.label())
+        let current = if current {
+            r#" aria-current="page""#
+        } else {
+            ""
+        };
+        format!(
+            r##"<a href="{href}" fx-action="{href}" fx-target="#settings-panel" fx-push-url{current}>{}"##,
+            tab.label()
+        )
     }
 
     #[test]
     fn each_tab_shows_only_its_own_settings() {
         for tab in SettingsTab::ALL {
             let html = page(&full_view(tab));
-            for (key, owner, placed, _) in PLACEMENTS.iter().filter(|(key, ..)| !key.starts_with("monero_node.")) {
+            for (key, owner, placed, _) in PLACEMENTS
+                .iter()
+                .filter(|(key, ..)| !key.starts_with("monero_node."))
+            {
                 let name = field_for(key, *owner).form_name().to_string();
                 let shown = html.contains(&format!(r#"name="{name}""#));
                 assert_eq!(shown, *placed == tab, "{name} on {tab:?}");
             }
-            assert_eq!(html.contains(r#"name="node_stagenet_0_address""#), tab == SettingsTab::Nodes, "{tab:?}");
+            assert_eq!(
+                html.contains(r#"name="node_stagenet_0_address""#),
+                tab == SettingsTab::Nodes,
+                "{tab:?}"
+            );
             // One form, one Save, and the tab it's for.
             assert_eq!(html.matches("<form ").count(), 1, "{tab:?}");
-            assert!(html.contains(&format!(r#"<input type="hidden" name="tab" value="{}">"#, tab.id())), "{tab:?}");
-            assert_eq!(html.matches(r#"<button type="submit" class="btn-primary">Save</button>"#).count(), 1, "{tab:?}");
+            assert!(
+                html.contains(&format!(
+                    r#"<input type="hidden" name="tab" value="{}">"#,
+                    tab.id()
+                )),
+                "{tab:?}"
+            );
+            assert_eq!(
+                html.matches(r#"<button type="submit" class="btn-primary">Save</button>"#)
+                    .count(),
+                1,
+                "{tab:?}"
+            );
         }
     }
 
     #[test]
     fn tabs_with_two_owners_head_each_group() {
         let payments = page(&full_view(SettingsTab::Payments));
-        let order = ["name=\"payment.confirmations_required\"", "<h3>Webhooks</h3>", "name=\"webhooks.max_attempts\"", "<h3>Exchange rates</h3>", "name=\"exchange_rate.cache_seconds\""];
-        let at: Vec<usize> = order.iter().map(|needle| payments.find(needle).unwrap_or_else(|| panic!("{needle}: {payments}"))).collect();
+        let order = [
+            "name=\"payment.confirmations_required\"",
+            "<h3>Webhooks</h3>",
+            "name=\"webhooks.max_attempts\"",
+            "<h3>Exchange rates</h3>",
+            "name=\"exchange_rate.cache_seconds\"",
+        ];
+        let at: Vec<usize> = order
+            .iter()
+            .map(|needle| {
+                payments
+                    .find(needle)
+                    .unwrap_or_else(|| panic!("{needle}: {payments}"))
+            })
+            .collect();
         assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?}");
 
         let logging = page(&full_view(SettingsTab::Logging));
         let monokulo = logging.find("<h3>Monokulo</h3>").expect(&logging);
         let engine = logging.find("<h3>Engine</h3>").expect(&logging);
         assert!(monokulo < logging.find(r#"name="logging.level""#).unwrap());
-        assert!(engine < logging.find(r#"name="engine:logging.level""#).unwrap() && monokulo < engine);
+        assert!(
+            engine < logging.find(r#"name="engine:logging.level""#).unwrap() && monokulo < engine
+        );
 
         let server = page(&full_view(SettingsTab::Server));
-        assert!(server.find(r#"name="server.worker_threads""#).unwrap() < server.find(r#"name="payment.scan_chunk_memory_budget_mb""#).unwrap());
+        assert!(
+            server.find(r#"name="server.worker_threads""#).unwrap()
+                < server
+                    .find(r#"name="payment.scan_chunk_memory_budget_mb""#)
+                    .unwrap()
+        );
         assert!(server.contains(r#"name="http_cache.max_mb""#));
 
         let abuse = page(&full_view(SettingsTab::Abuse));
-        assert!(abuse.contains("How this instance tells visitors apart"), "the explanation stays with its settings");
-        assert!(!page(&full_view(SettingsTab::General)).contains("How this instance tells visitors apart"));
+        assert!(
+            abuse.contains("How this instance tells visitors apart"),
+            "the explanation stays with its settings"
+        );
+        assert!(!page(&full_view(SettingsTab::General))
+            .contains("How this instance tells visitors apart"));
     }
 
     #[test]
     fn general_is_the_default_and_the_open_tab_is_marked_current() {
-        let html = page(&AdminSettingsViewModel { ..full_view(SettingsTab::General) });
+        let html = page(&AdminSettingsViewModel {
+            ..full_view(SettingsTab::General)
+        });
         assert_eq!(AdminSettingsViewModel::default().tab, SettingsTab::General);
-        assert!(html.contains(&tab_link(SettingsTab::General, true)), "{html}");
-        assert!(html.contains(&tab_link(SettingsTab::Nodes, false)), "{html}");
-        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Other) {
+        assert!(
+            html.contains(&tab_link(SettingsTab::General, true)),
+            "{html}"
+        );
+        assert!(
+            html.contains(&tab_link(SettingsTab::Nodes, false)),
+            "{html}"
+        );
+        for tab in SettingsTab::ALL
+            .into_iter()
+            .filter(|tab| *tab != SettingsTab::Other)
+        {
             let html = page(&full_view(tab));
             let bar = &html[html.find(r#"<nav id="settings-tabs""#).unwrap()..];
             let bar = &bar[..bar.find("</nav>").unwrap()];
             assert_eq!(bar.matches(r#"aria-current="page""#).count(), 1, "{tab:?}");
             assert!(html.contains(&tab_link(tab, true)), "{tab:?}: {html}");
-            assert!(html.contains(&format!("<title>{} - Admin settings - Monokulo</title>", tab.label())), "{tab:?}");
+            assert!(
+                html.contains(&format!(
+                    "<title>{} - Admin settings - Monokulo</title>",
+                    tab.label()
+                )),
+                "{tab:?}"
+            );
         }
     }
 
@@ -1486,7 +1752,8 @@ mod tests {
         let html = page(&full_view(SettingsTab::General));
         assert!(!html.contains("tab=other"), "{html}");
         let mut data = full_view(SettingsTab::Other);
-        data.scanner_fields.push(field_for("telemetry.sample_rate", SettingOwner::Engine));
+        data.scanner_fields
+            .push(field_for("telemetry.sample_rate", SettingOwner::Engine));
         let html = page(&data);
         assert!(html.contains(&tab_link(SettingsTab::Other, true)), "{html}");
         assert!(html.contains(r#"name="telemetry.sample_rate""#), "{html}");
@@ -1497,12 +1764,17 @@ mod tests {
         for tab in SettingsTab::ALL {
             let data = AdminSettingsViewModel {
                 error: Some("Something was refused.".into()),
-                notices: vec![Notice::Warning("Saved. These settings take effect after the engine restarts: server.bind.".into())],
+                notices: vec![Notice::Warning(
+                    "Saved. These settings take effect after the engine restarts: server.bind."
+                        .into(),
+                )],
                 ..full_view(tab)
             };
             let html = page(&data);
             let banner = html.find("Something was refused.").expect(&html);
-            let notice = html.find("take effect after the engine restarts").expect(&html);
+            let notice = html
+                .find("take effect after the engine restarts")
+                .expect(&html);
             let bar = html.find(r#"<nav id="settings-tabs""#).expect(&html);
             let panel = html.find(r#"<section id="settings-panel""#).expect(&html);
             assert!(banner < bar && notice < bar && bar < panel, "{tab:?}");
@@ -1517,10 +1789,19 @@ mod tests {
             html[start..end].contains(r#"<span class="tab-marker" aria-hidden="true">●</span><span class="visually-hidden"> (needs attention)</span>"#)
         };
         let html = page(&full_view(SettingsTab::General));
-        assert!(SettingsTab::ALL.iter().filter(|t| **t != SettingsTab::Other).all(|t| !marked(&html, *t)), "nothing to see: {html}");
+        assert!(
+            SettingsTab::ALL
+                .iter()
+                .filter(|t| **t != SettingsTab::Other)
+                .all(|t| !marked(&html, *t)),
+            "nothing to see: {html}"
+        );
 
         // A network stores use that no node answers for.
-        let html = page(&AdminSettingsViewModel { unreachable_networks: vec!["stagenet".into()], ..full_view(SettingsTab::General) });
+        let html = page(&AdminSettingsViewModel {
+            unreachable_networks: vec!["stagenet".into()],
+            ..full_view(SettingsTab::General)
+        });
         assert!(marked(&html, SettingsTab::Nodes), "{html}");
         assert!(!marked(&html, SettingsTab::Server));
 
@@ -1532,11 +1813,22 @@ mod tests {
 
         // A saved setting waiting for a restart, whichever process owns it.
         let mut data = full_view(SettingsTab::General);
-        data.scanner_fields.iter_mut().find(|f| f.key == "server.worker_threads").unwrap().pending_restart = true;
+        data.scanner_fields
+            .iter_mut()
+            .find(|f| f.key == "server.worker_threads")
+            .unwrap()
+            .pending_restart = true;
         let html = page(&data);
-        assert!(marked(&html, SettingsTab::Server) && !marked(&html, SettingsTab::Nodes), "{html}");
+        assert!(
+            marked(&html, SettingsTab::Server) && !marked(&html, SettingsTab::Nodes),
+            "{html}"
+        );
         let mut data = full_view(SettingsTab::General);
-        data.monokulo_fields.iter_mut().find(|f| f.key == "logging.level").unwrap().pending_restart = true;
+        data.monokulo_fields
+            .iter_mut()
+            .find(|f| f.key == "logging.level")
+            .unwrap()
+            .pending_restart = true;
         assert!(marked(&page(&data), SettingsTab::Logging));
     }
 
@@ -1551,27 +1843,61 @@ mod tests {
             scanner_fields: vec![],
             ..full_view(tab)
         };
-        let unconfigured = |tab| AdminSettingsViewModel { scanner_configured: false, scanner_reachable: false, scanner_fields: vec![], ..full_view(tab) };
-        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Other) {
+        let unconfigured = |tab| AdminSettingsViewModel {
+            scanner_configured: false,
+            scanner_reachable: false,
+            scanner_fields: vec![],
+            ..full_view(tab)
+        };
+        for tab in SettingsTab::ALL
+            .into_iter()
+            .filter(|tab| *tab != SettingsTab::Other)
+        {
             for (data, message) in [
-                (unreachable(tab), "Could not reach the configured engine: connection refused"),
-                (unconfigured(tab), "Set <code>engine.url</code> and <code>engine.admin_token</code> on the"),
+                (
+                    unreachable(tab),
+                    "Could not reach the configured engine: connection refused",
+                ),
+                (
+                    unconfigured(tab),
+                    "Set <code>engine.url</code> and <code>engine.admin_token</code> on the",
+                ),
             ] {
                 let html = page(&data);
-                let engine_part = tab.groups().iter().any(|(_, owner)| *owner == SettingOwner::Engine);
-                assert_eq!(html.matches(message).count(), usize::from(engine_part), "{tab:?}: {html}");
+                let engine_part = tab
+                    .groups()
+                    .iter()
+                    .any(|(_, owner)| *owner == SettingOwner::Engine);
+                assert_eq!(
+                    html.matches(message).count(),
+                    usize::from(engine_part),
+                    "{tab:?}: {html}"
+                );
                 if tab.engine_only() {
                     assert!(!html.contains("<form "), "nothing to save on {tab:?}");
                 } else {
-                    assert!(html.contains("<form ") && html.contains(r#"class="btn-primary">Save</button>"#), "{tab:?}");
-                    assert!(!html.contains("<h3>Webhooks</h3>"), "one message, not a heading per group: {html}");
+                    assert!(
+                        html.contains("<form ")
+                            && html.contains(r#"class="btn-primary">Save</button>"#),
+                        "{tab:?}"
+                    );
+                    assert!(
+                        !html.contains("<h3>Webhooks</h3>"),
+                        "one message, not a heading per group: {html}"
+                    );
                 }
             }
         }
         let payments = page(&unreachable(SettingsTab::Payments));
-        assert!(payments.contains(r#"name="exchange_rate.cache_seconds""#), "{payments}");
+        assert!(
+            payments.contains(r#"name="exchange_rate.cache_seconds""#),
+            "{payments}"
+        );
         let logging = page(&unreachable(SettingsTab::Logging));
-        assert!(logging.find("<h3>Engine</h3>").unwrap() < logging.find("Could not reach").unwrap(), "{logging}");
+        assert!(
+            logging.find("<h3>Engine</h3>").unwrap() < logging.find("Could not reach").unwrap(),
+            "{logging}"
+        );
     }
 
     #[test]
@@ -1596,7 +1922,10 @@ mod tests {
             )),
             "{html}"
         );
-        assert!(html.contains(r#"aria-describedby="setting-help-engine.url""#), "{html}");
+        assert!(
+            html.contains(r#"aria-describedby="setting-help-engine.url""#),
+            "{html}"
+        );
     }
 
     /// A network with no nodes that no store uses starts closed; one with
@@ -1613,7 +1942,10 @@ mod tests {
         );
         assert!(html.contains(r#"<details class="node-network" data-network="testnet" data-tenant-count="0"><summary>Add a node for testnet</summary>"#), "{html}");
         assert!(!html.contains("<textarea"), "no JSON box");
-        assert!(!html.contains("<summary>Example</summary>"), "no JSON example");
+        assert!(
+            !html.contains("<summary>Example</summary>"),
+            "no JSON example"
+        );
 
         // With stores but no node, it's open, so the admin sees the gap.
         data.scanner_networks[2].tenant_count = 1;
@@ -1624,25 +1956,56 @@ mod tests {
     #[test]
     fn node_rows_are_named_in_order_with_their_buttons_and_a_blank_row_to_add_one() {
         let mut data = full_view(SettingsTab::Nodes);
-        data.scanner_networks[1].rows = vec![node_row_view("a.example:1"), node_row_view("b.example:2"), node_row_view("c.example:3")];
+        data.scanner_networks[1].rows = vec![
+            node_row_view("a.example:1"),
+            node_row_view("b.example:2"),
+            node_row_view("c.example:3"),
+        ];
         data.scanner_networks[1].rows[1].row.ssl = true;
         data.scanner_networks[1].rows[1].row.self_signed = false;
         let html = page(&data);
-        let block = &html[html.find(r#"data-network="stagenet""#).unwrap()..html.find(r#"data-network="testnet""#).unwrap()];
-        let legends: Vec<&str> = block.match_indices("<legend class=\"node-row-name\">").map(|(at, m)| &block[at + m.len()..at + m.len() + block[at + m.len()..].find('<').unwrap()]).collect();
-        assert_eq!(legends, ["Primary", "Fallback 1", "Fallback 2", "Add a node"]);
+        let block = &html[html.find(r#"data-network="stagenet""#).unwrap()
+            ..html.find(r#"data-network="testnet""#).unwrap()];
+        let legends: Vec<&str> = block
+            .match_indices("<legend class=\"node-row-name\">")
+            .map(|(at, m)| {
+                &block[at + m.len()..at + m.len() + block[at + m.len()..].find('<').unwrap()]
+            })
+            .collect();
+        assert_eq!(
+            legends,
+            ["Primary", "Fallback 1", "Fallback 2", "Add a node"]
+        );
         assert!(block.contains("Fallbacks are tried in order when the one before fails."));
         // The fields, named by network and row.
         assert!(block.contains(r#"<input type="text" name="node_stagenet_1_address" id="node-stagenet-1-address" value="b.example:2""#), "{block}");
         assert!(block.contains(r#"<input type="checkbox" name="node_stagenet_1_ssl" id="node-stagenet-1-ssl" value="on" checked"#), "{block}");
         assert!(block.contains(r#"<input type="checkbox" name="node_stagenet_1_self_signed" id="node-stagenet-1-self_signed" value="on" aria-describedby"#), "{block}");
-        assert!(block.contains(r#"name="node_stagenet_3_address" id="node-stagenet-3-address" value="""#), "the blank row: {block}");
+        assert!(
+            block.contains(
+                r#"name="node_stagenet_3_address" id="node-stagenet-3-address" value="""#
+            ),
+            "the blank row: {block}"
+        );
         assert!(block.contains(r#"<input type="checkbox" name="node_stagenet_3_self_signed" id="node-stagenet-3-self_signed" value="on" checked"#), "self-signed is ticked by default: {block}");
         // No Move up on the first row, no Move down on the last, none on the blank one.
-        let buttons: Vec<&str> = block.match_indices(r#"name="node_action" value=""#).map(|(at, m)| &block[at + m.len()..at + m.len() + block[at + m.len()..].find('"').unwrap()]).collect();
+        let buttons: Vec<&str> = block
+            .match_indices(r#"name="node_action" value=""#)
+            .map(|(at, m)| {
+                &block[at + m.len()..at + m.len() + block[at + m.len()..].find('"').unwrap()]
+            })
+            .collect();
         assert_eq!(
             buttons,
-            ["down:stagenet:0", "remove:stagenet:0", "up:stagenet:1", "down:stagenet:1", "remove:stagenet:1", "up:stagenet:2", "remove:stagenet:2"]
+            [
+                "down:stagenet:0",
+                "remove:stagenet:0",
+                "up:stagenet:1",
+                "down:stagenet:1",
+                "remove:stagenet:1",
+                "up:stagenet:2",
+                "remove:stagenet:2"
+            ]
         );
         // Each field: its name, then what it's for, then the control.
         assert!(block.contains(r#"<label class="setting-label" for="node-stagenet-0-address">Address</label><span class="field-help" id="node-stagenet-0-address-help">The node's host and port, like <code>node.example.com:18089</code>."#), "{block}");
@@ -1655,21 +2018,50 @@ mod tests {
     fn a_nodes_status_is_said_in_words() {
         let mut data = full_view(SettingsTab::Nodes);
         let statuses = [
-            NodeStatusView { height: Some(1_234_567), in_use: true, ..Default::default() },
-            NodeStatusView { error: Some("connection refused".into()), resting: true, ..Default::default() },
-            NodeStatusView { height: Some(10), wrong_network: Some("mainnet".into()), ..Default::default() },
+            NodeStatusView {
+                height: Some(1_234_567),
+                in_use: true,
+                ..Default::default()
+            },
+            NodeStatusView {
+                error: Some("connection refused".into()),
+                resting: true,
+                ..Default::default()
+            },
+            NodeStatusView {
+                height: Some(10),
+                wrong_network: Some("mainnet".into()),
+                ..Default::default()
+            },
         ];
         data.scanner_networks[1].rows = statuses
             .iter()
             .enumerate()
-            .map(|(i, status)| NodeRowView { status: Some(status.clone()), ..node_row_view(&format!("n{i}.example:1")) })
+            .map(|(i, status)| NodeRowView {
+                status: Some(status.clone()),
+                ..node_row_view(&format!("n{i}.example:1"))
+            })
             .collect();
-        data.scanner_networks[1].rows.push(node_row_view("new.example:1"));
+        data.scanner_networks[1]
+            .rows
+            .push(node_row_view("new.example:1"));
         let html = page(&data);
-        assert!(html.contains(r#"<p class="node-status">Reachable, height 1,234,567. In use.</p>"#), "{html}");
+        assert!(
+            html.contains(r#"<p class="node-status">Reachable, height 1,234,567. In use.</p>"#),
+            "{html}"
+        );
         assert!(html.contains(r#"<p class="node-status is-problem">Not reachable: connection refused. Resting after failures.</p>"#), "{html}");
-        assert!(html.contains(r#"<p class="node-status is-problem">Wrong network: this node is on mainnet.</p>"#), "{html}");
-        assert_eq!(html.matches(r#"class="node-status"#).count(), 3, "nothing for a node with no status yet");
+        assert!(
+            html.contains(
+                r#"<p class="node-status is-problem">Wrong network: this node is on mainnet.</p>"#
+            ),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches(r#"class="node-status"#).count(),
+            3,
+            "nothing for a node with no status yet"
+        );
         assert_eq!(super::thousands(0), "0");
         assert_eq!(super::thousands(999), "999");
         assert_eq!(super::thousands(1000), "1,000");
@@ -1679,8 +2071,10 @@ mod tests {
     fn what_is_wrong_shows_where_it_is() {
         let mut data = full_view(SettingsTab::Nodes);
         data.scanner_networks[1].rows[0].row.address = "node.example.com".into();
-        data.scanner_networks[1].rows[0].row.error = Some("Add the port, like node.example.com:18081.".into());
-        data.scanner_networks[2].error = Some("node.example.com:18081 is on mainnet, not testnet.".into());
+        data.scanner_networks[1].rows[0].row.error =
+            Some("Add the port, like node.example.com:18081.".into());
+        data.scanner_networks[2].error =
+            Some("node.example.com:18081 is on mainnet, not testnet.".into());
         let html = page(&data);
         assert!(
             html.contains(r#"value="node.example.com" aria-describedby="node-stagenet-0-address-help node-stagenet-0-error" aria-invalid="true""#),
@@ -1700,16 +2094,28 @@ mod tests {
             kind,
             ..Default::default()
         };
-        let backends = || SettingKindView::ChoiceList { choices: vec!["plain".into(), "socket".into()] };
+        let backends = || SettingKindView::ChoiceList {
+            choices: vec!["plain".into(), "socket".into()],
+        };
         let page = |enabled: &str| {
             let data = AdminSettingsViewModel {
                 tab: SettingsTab::Custody,
                 scanner_configured: true,
                 scanner_reachable: true,
                 scanner_fields: vec![
-                    field("key_custody.default_backend", "plain", SettingKindView::Choice { choices: vec!["plain".into(), "socket".into()] }),
+                    field(
+                        "key_custody.default_backend",
+                        "plain",
+                        SettingKindView::Choice {
+                            choices: vec!["plain".into(), "socket".into()],
+                        },
+                    ),
                     field("key_custody.enabled_backends", enabled, backends()),
-                    field("key_custody.socket_path", "/run/kc.sock", SettingKindView::Path),
+                    field(
+                        "key_custody.socket_path",
+                        "/run/kc.sock",
+                        SettingKindView::Path,
+                    ),
                 ],
                 ..Default::default()
             };
@@ -1719,17 +2125,39 @@ mod tests {
         let html = page("plain");
         // The backends are boxes to tick, after an empty value so ticking
         // none still says so; they come before the choice among them.
-        assert!(html.contains(r#"<input type="hidden" name="key_custody.enabled_backends" value="">"#), "{html}");
+        assert!(
+            html.contains(r#"<input type="hidden" name="key_custody.enabled_backends" value="">"#),
+            "{html}"
+        );
         assert!(html.contains(r#"<input type="checkbox" name="key_custody.enabled_backends" value="plain" checked>"#), "{html}");
-        assert!(html.contains(r#"<input type="checkbox" name="key_custody.enabled_backends" value="socket">"#), "{html}");
-        assert!(html.find(r#"name="key_custody.enabled_backends""#).unwrap() < html.find(r#"name="key_custody.default_backend""#).unwrap());
+        assert!(
+            html.contains(
+                r#"<input type="checkbox" name="key_custody.enabled_backends" value="socket">"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.find(r#"name="key_custody.enabled_backends""#).unwrap()
+                < html.find(r#"name="key_custody.default_backend""#).unwrap()
+        );
         // The socket's path sits in the socket's own section, hidden while
         // socket is off; plain has nothing to set.
-        let socket = html.find(r#"<section class="custody-backend" data-custody-backend="socket" hidden>"#).expect(&html);
-        assert!(html.find(r#"name="key_custody.socket_path""#).unwrap() > socket, "{html}");
-        assert!(html.find(r#"name="key_custody.default_backend""#).unwrap() < socket, "{html}");
+        let socket = html
+            .find(r#"<section class="custody-backend" data-custody-backend="socket" hidden>"#)
+            .expect(&html);
+        assert!(
+            html.find(r#"name="key_custody.socket_path""#).unwrap() > socket,
+            "{html}"
+        );
+        assert!(
+            html.find(r#"name="key_custody.default_backend""#).unwrap() < socket,
+            "{html}"
+        );
         assert!(html.contains(r#"<section class="custody-backend" data-custody-backend="plain"><h3>Key custody: plain</h3><p class="hint">Nothing to set up"#), "{html}");
-        assert!(html.contains(r#"name !== "key_custody.enabled_backends""#), "shown as soon as it's ticked, with JavaScript");
+        assert!(
+            html.contains(r#"name !== "key_custody.enabled_backends""#),
+            "shown as soon as it's ticked, with JavaScript"
+        );
 
         let html = page("plain,socket");
         assert!(html.contains(r#"<section class="custody-backend" data-custody-backend="socket"><h3>Key custody: socket</h3>"#), "{html}");
@@ -1745,12 +2173,31 @@ mod tests {
             kind,
             ..Default::default()
         };
-        let choice = scalar_field(&field(SettingKindView::Choice { choices: vec!["public".into(), "invite_only".into()] }, "public")).into_string();
-        assert!(choice.contains(r#"<option value="public" selected>"#), "{choice}");
+        let choice = scalar_field(&field(
+            SettingKindView::Choice {
+                choices: vec!["public".into(), "invite_only".into()],
+            },
+            "public",
+        ))
+        .into_string();
+        assert!(
+            choice.contains(r#"<option value="public" selected>"#),
+            "{choice}"
+        );
         let boolean = scalar_field(&field(SettingKindView::Bool, "false")).into_string();
-        assert!(boolean.contains(r#"<option value="false" selected>"#), "{boolean}");
-        let secret = scalar_field(&field(SettingKindView::Secret, "\u{2022}\u{2022}\u{2022}\u{2022}")).into_string();
-        assert!(secret.contains(r#"type="password""#) && secret.contains(r#"value="""#), "{secret}");
+        assert!(
+            boolean.contains(r#"<option value="false" selected>"#),
+            "{boolean}"
+        );
+        let secret = scalar_field(&field(
+            SettingKindView::Secret,
+            "\u{2022}\u{2022}\u{2022}\u{2022}",
+        ))
+        .into_string();
+        assert!(
+            secret.contains(r#"type="password""#) && secret.contains(r#"value="""#),
+            "{secret}"
+        );
         assert!(!secret.contains('\u{2022}'));
     }
 
@@ -1765,17 +2212,41 @@ mod tests {
             ..Default::default()
         };
         let off = scalar_field(&field("0")).into_string();
-        assert!(off.contains(r#"<option value="0" selected>Off</option>"#), "{off}");
-        assert!(off.contains(&format!(r#"<option value="{}">On for 1 hour</option>"#, now + 3600)), "{off}");
-        assert!(off.contains(&format!(r#"<option value="{}">On for 24 hours</option>"#, now + 86_400)), "{off}");
+        assert!(
+            off.contains(r#"<option value="0" selected>Off</option>"#),
+            "{off}"
+        );
+        assert!(
+            off.contains(&format!(
+                r#"<option value="{}">On for 1 hour</option>"#,
+                now + 3600
+            )),
+            "{off}"
+        );
+        assert!(
+            off.contains(&format!(
+                r#"<option value="{}">On for 24 hours</option>"#,
+                now + 86_400
+            )),
+            "{off}"
+        );
         assert!(!off.contains("On until"), "{off}");
 
         let on = scalar_field(&field(&(now + 600).to_string())).into_string();
-        assert!(on.contains(&format!(r#"<option value="{}" selected>On until 2026-09-21 14:23 UTC</option>"#, now + 600)), "{on}");
+        assert!(
+            on.contains(&format!(
+                r#"<option value="{}" selected>On until 2026-09-21 14:23 UTC</option>"#,
+                now + 600
+            )),
+            "{on}"
+        );
         assert!(on.contains(r#"<option value="0">Off</option>"#), "{on}");
 
         let ended = scalar_field(&field(&(now - 1).to_string())).into_string();
-        assert!(ended.contains(r#"<option value="0" selected>Off</option>"#), "a time already past is off: {ended}");
+        assert!(
+            ended.contains(r#"<option value="0" selected>Off</option>"#),
+            "a time already past is off: {ended}"
+        );
     }
 
     #[test]
@@ -1807,5 +2278,4 @@ mod tests {
         assert!(html.contains("applies after a restart"));
         assert!(html.contains("restart needed"));
     }
-
 }

@@ -39,12 +39,12 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use live_settings::{FieldError, Reloadable, Section, Warning};
+use opentelemetry::trace::TracerProvider as _;
 use parking_lot::Mutex;
 use tracing::Subscriber;
 use tracing_subscriber::field::MakeExt;
-use tracing_subscriber::fmt::MakeWriter;
-use opentelemetry::trace::TracerProvider as _;
 use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{reload, EnvFilter, Layer, Registry};
@@ -70,7 +70,11 @@ impl Format {
     /// `<PREFIX>_LOG_FORMAT` (`json` or `pretty`) if set, otherwise pretty
     /// at a terminal and JSON everywhere else.
     pub fn from_env(env_prefix: &str) -> Format {
-        match std::env::var(format!("{env_prefix}_LOG_FORMAT")).ok().as_deref().map(str::trim) {
+        match std::env::var(format!("{env_prefix}_LOG_FORMAT"))
+            .ok()
+            .as_deref()
+            .map(str::trim)
+        {
             Some("json") => Format::Json,
             Some("pretty") => Format::Pretty,
             _ if std::io::stderr().is_terminal() => Format::Pretty,
@@ -112,7 +116,10 @@ impl Default for LogConfig {
 
 /// The `check` for a level setting: refuses anything `tracing` can't parse
 /// as a filter.
-#[allow(clippy::ptr_arg, reason = "a setting's `check` takes `&T`, and this setting is a `String`")]
+#[allow(
+    clippy::ptr_arg,
+    reason = "a setting's `check` takes `&T`, and this setting is a `String`"
+)]
 pub fn check_level(level: &String) -> Result<(), String> {
     if level.trim().is_empty() {
         return Err("Enter a level such as info, or leave the default.".to_string());
@@ -125,7 +132,11 @@ pub fn check_level(level: &String) -> Result<(), String> {
 /// The filter development mode uses: `debug`, the noisy libraries held back,
 /// then any per-target directives from the level setting (which win).
 fn dev_filter(level: &str) -> String {
-    let targeted: Vec<&str> = level.split(',').map(str::trim).filter(|d| d.contains('=')).collect();
+    let targeted: Vec<&str> = level
+        .split(',')
+        .map(str::trim)
+        .filter(|d| d.contains('='))
+        .collect();
     let mut filter = format!("debug,{DEV_MODE_QUIET}");
     for directive in targeted {
         filter.push(',');
@@ -135,16 +146,25 @@ fn dev_filter(level: &str) -> String {
 }
 
 fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
-
 
 /// A Unix time as `2026-09-28 14:00 UTC`, for messages.
 pub fn format_unix_utc(unix: u64) -> String {
-    let Ok(at) = time::OffsetDateTime::from_unix_timestamp(i64::try_from(unix).unwrap_or(i64::MAX)) else {
+    let Ok(at) = time::OffsetDateTime::from_unix_timestamp(i64::try_from(unix).unwrap_or(i64::MAX))
+    else {
         return unix.to_string();
     };
-    format!("{:04}-{:02}-{:02} {:02}:{:02} UTC", at.year(), u8::from(at.month()), at.day(), at.hour(), at.minute())
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        at.year(),
+        u8::from(at.month()),
+        at.day(),
+        at.hour(),
+        at.minute()
+    )
 }
 
 type Output = Box<dyn Layer<Registry> + Send + Sync>;
@@ -212,11 +232,16 @@ pub fn build<W>(
     ansi: bool,
     level: &str,
     writer: W,
-) -> (Telemetry, impl Subscriber + Send + Sync + for<'a> tracing_subscriber::registry::LookupSpan<'a>)
+) -> (
+    Telemetry,
+    impl Subscriber + Send + Sync + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+)
 where
     W: for<'w> MakeWriter<'w> + Send + Sync + 'static,
 {
-    let filter = EnvFilter::builder().parse(level).unwrap_or_else(|_| EnvFilter::new(DEFAULT_LEVEL));
+    let filter = EnvFilter::builder()
+        .parse(level)
+        .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LEVEL));
     let (filter, filter_handle) = reload::Layer::new(filter);
     let sink = Arc::new(store::StoreSink::default());
     let output: Output = match format {
@@ -241,8 +266,12 @@ where
         .with_tracer(tracer)
         .with_location(false)
         .with_threads(false)
-        .with_filter(filter_fn(|metadata| metadata.is_span() && *metadata.level() <= tracing::Level::INFO));
-    let subscriber = Registry::default().with(output.with_filter(filter)).with(otel);
+        .with_filter(filter_fn(|metadata| {
+            metadata.is_span() && *metadata.level() <= tracing::Level::INFO
+        }));
+    let subscriber = Registry::default()
+        .with(output.with_filter(filter))
+        .with(otel);
     let telemetry = Telemetry {
         service,
         filter: filter_handle,
@@ -250,7 +279,10 @@ where
         store: OnceLock::new(),
         otlp_config: Mutex::new(None),
         state: Mutex::new(LogStatus {
-            config: LogConfig { level: level.to_string(), ..LogConfig::default() },
+            config: LogConfig {
+                level: level.to_string(),
+                ..LogConfig::default()
+            },
             effective_filter: level.to_string(),
             dev_mode: false,
         }),
@@ -270,7 +302,12 @@ fn pretty_field(
     if field.name() == "message" {
         write!(writer, "{}", redact::text(&raw))
     } else {
-        write!(writer, "{}={}", field.name(), redact::field(field.name(), &raw))
+        write!(
+            writer,
+            "{}={}",
+            field.name(),
+            redact::field(field.name(), &raw)
+        )
     }
 }
 
@@ -346,7 +383,9 @@ impl Telemetry {
         self.set(config, dev_mode);
         if dev_mode {
             tracing::info!(until = %format_unix_utc(config.dev_mode_until), "development logging is on");
-            let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return;
+            };
             let this = Arc::clone(self);
             let config = config.clone();
             let wait = Duration::from_secs(config.dev_mode_until - now);
@@ -364,8 +403,15 @@ impl Telemetry {
         if let Some(store) = self.store.get() {
             store.set_limits(config.retention_days, config.max_mb);
         }
-        self.set_otlp(otlp::OtlpConfig::from_settings(&config.otlp_endpoint, &config.otlp_headers));
-        let effective = if dev_mode { dev_filter(&config.level) } else { config.level.clone() };
+        self.set_otlp(otlp::OtlpConfig::from_settings(
+            &config.otlp_endpoint,
+            &config.otlp_headers,
+        ));
+        let effective = if dev_mode {
+            dev_filter(&config.level)
+        } else {
+            config.level.clone()
+        };
         let filter = match EnvFilter::builder().parse(&effective) {
             Ok(filter) => filter,
             Err(e) => {
@@ -377,7 +423,11 @@ impl Telemetry {
             tracing::warn!(error = %e, "log filter not applied");
             return;
         }
-        *self.state.lock() = LogStatus { config: config.clone(), effective_filter: effective, dev_mode };
+        *self.state.lock() = LogStatus {
+            config: config.clone(),
+            effective_filter: effective,
+            dev_mode,
+        };
     }
 }
 

@@ -52,6 +52,7 @@ mod checkout;
 mod connect;
 mod connections;
 mod dashboard;
+pub mod embed_domains;
 pub mod fx;
 mod home;
 mod invites;
@@ -63,48 +64,94 @@ mod pay;
 mod pos;
 mod pos_logs;
 mod signup;
-mod telemetry_client;
-pub mod embed_domains;
 pub mod status_page;
 pub mod store_key;
+mod telemetry_client;
 #[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::FromRequestParts;
-use axum::http::{HeaderMap, StatusCode, header, request::Parts};
+use axum::http::{header, request::Parts, HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
+use axum::Router;
 use axum_extra::extract::CookieJar;
 use serde_json::json;
 
-use crate::db::{SharedDb, UserRow};
+use crate::db::{Database, UserRow};
 use crate::engine_client::EngineClient;
+use shared::auth::{RawToken, TokenHash};
+
+/// A store connection the signed-in user owns: made only by checking the
+/// row's owner ([`OwnedStore::check`], which `orders::load_owned_connection`
+/// uses), so a dashboard handler can't render or change a store it merely
+/// looked up by id. Reads as the row it wraps.
+pub struct OwnedStore(crate::db::StoreConnectionRow);
+
+impl OwnedStore {
+    /// `row`, if `user_id` owns it. A row that isn't theirs and one that
+    /// doesn't exist must look the same to the caller (`None` for both).
+    pub fn check(row: crate::db::StoreConnectionRow, user_id: &crate::db::UserId) -> Option<Self> {
+        (&row.user_id == user_id).then_some(OwnedStore(row))
+    }
+
+    pub fn into_row(self) -> crate::db::StoreConnectionRow {
+        self.0
+    }
+}
+
+impl std::ops::Deref for OwnedStore {
+    type Target = crate::db::StoreConnectionRow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// Name of the cookie the browser-facing login flow (`dashboard::login_submit`)
 /// sets and [`AuthedUser`] reads back — a plain constant so the two sides
 /// can't drift apart on the name.
 pub(crate) const SESSION_COOKIE_NAME: &str = "session";
 
+/// The engine as monokulo talks to it.
 #[derive(Clone)]
-pub struct AppState {
-    pub db: SharedDb,
-    pub engine_client: EngineClient,
-    /// AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's `sk_...`
-    /// secret token before it's stored in `store_connections` — see
-    /// `crate::crypto` and `http/connections.rs`. Sourced from an
-    /// environment variable in the real binary (`main.rs`); tests just
-    /// construct a fixed key directly.
-    pub encryption_key: [u8; 32],
+pub struct Engine {
+    pub client: EngineClient,
     /// Short-TTL cache of the engine's own `GET /status` response, shared by
     /// every viewer - see `http::status_page`'s own module doc comment for
     /// why this exists (a real incident: the nav bar's status dot alone
     /// turned "one user browsing the dashboard" into enough engine requests
     /// to trip its own rate limiter).
     pub status_cache: status_page::StatusCache,
+}
+
+impl Engine {
+    /// The engine at `client`, with nothing cached yet.
+    pub fn new(client: EngineClient) -> Self {
+        Engine {
+            client,
+            status_cache: status_page::new_status_cache(),
+        }
+    }
+}
+
+/// Everything the handlers share. A handler takes just the parts it uses
+/// (`State<Database>`, `State<Engine>`, ...: see the `FromRef` derive), so
+/// its signature says what it can touch.
+#[derive(Clone, axum::extract::FromRef)]
+pub struct AppState {
+    /// The database (`db::Database`): `read` and `write` jobs.
+    pub db: Database,
+    /// The engine: its client and the cached `GET /status`.
+    pub engine: Engine,
+    /// AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's `sk_...`
+    /// secret token before it's stored in `store_connections` — see
+    /// `crate::crypto` and `http/connections.rs`. Sourced from an
+    /// environment variable in the real binary (`main.rs`); tests just
+    /// construct a fixed key directly.
+    pub encryption_key: crate::crypto::AtRestKey,
     /// Fiat-to-XMR conversion for monokulo's own order-creation
     /// endpoint (`docs/fx_refactor.md` Phase 1.4) - the engine no longer
     /// has any concept of this (per that document's own resolved
@@ -130,7 +177,7 @@ pub struct AppState {
 
 /// The encryption key [`AppState::for_tests`] uses.
 #[cfg(any(test, feature = "test-support"))]
-pub const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+pub const TEST_ENCRYPTION_KEY: crate::crypto::AtRestKey = crate::crypto::AtRestKey::new([7u8; 32]);
 
 #[cfg(any(test, feature = "test-support"))]
 impl AppState {
@@ -139,9 +186,10 @@ impl AppState {
     /// encryption key, XMR-only exchange rates, default abuse limits and
     /// settings, no DNS and no log store. A test that needs something else
     /// overrides just that field with struct update syntax:
-    /// `AppState { engine_client, ..AppState::for_tests() }`.
+    /// `AppState { log_store, ..AppState::for_tests() }`.
     pub fn for_tests() -> Self {
-        let db = crate::db::Db::open_in_memory().expect("opening an in-memory db for a test AppState");
+        let db =
+            crate::db::Db::open_in_memory().expect("opening an in-memory db for a test AppState");
         db.seed_test_admin();
         Self::for_tests_with_db(db.into_shared())
     }
@@ -149,17 +197,18 @@ impl AppState {
     /// [`AppState::for_tests`] around a db the test prepared itself, so a
     /// test that needs its own db doesn't also open and seed one it throws
     /// away.
-    pub fn for_tests_with_db(db: SharedDb) -> Self {
+    pub fn for_tests_with_db(db: crate::db::SharedDb) -> Self {
         AppState {
-            db,
-            engine_client: EngineClient::new("http://127.0.0.1:1"),
+            db: Database::inline(db),
             encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: status_page::new_status_cache(),
             exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             abuse: Default::default(),
-            dns: Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            dns: Arc::new(crate::embed_domains::UnavailableDns(
+                "DNS is not available in tests".to_string(),
+            )),
             settings: crate::settings::MonokuloSettings::defaults(),
             log_store: None,
+            engine: crate::http::Engine::new(EngineClient::new("http://127.0.0.1:1")),
         }
     }
 }
@@ -167,47 +216,146 @@ impl AppState {
 pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/", axum::routing::get(home::landing))
-        .route("/admin/setup", axum::routing::get(admin_setup::setup_form).post(admin_setup::setup_submit))
-        .route("/dashboard/admin/settings", axum::routing::get(admin_settings::page).post(admin_settings::save))
-        .route("/request-invite", axum::routing::get(invites::request_invite_form).post(invites::request_invite_submit))
-        .route("/dashboard/admin/invites", axum::routing::get(invites::invites_page))
-        .route("/dashboard/admin/invites/create-link", axum::routing::post(invites::create_invite_link))
-        .route("/dashboard/admin/invites/delete-all", axum::routing::post(invites::delete_all_invite_requests))
-        .route("/dashboard/admin/invites/{id}/delete", axum::routing::post(invites::delete_invite_request))
+        .route(
+            "/admin/setup",
+            axum::routing::get(admin_setup::setup_form).post(admin_setup::setup_submit),
+        )
+        .route(
+            "/dashboard/admin/settings",
+            axum::routing::get(admin_settings::page).post(admin_settings::save),
+        )
+        .route(
+            "/request-invite",
+            axum::routing::get(invites::request_invite_form).post(invites::request_invite_submit),
+        )
+        .route(
+            "/dashboard/admin/invites",
+            axum::routing::get(invites::invites_page),
+        )
+        .route(
+            "/dashboard/admin/invites/create-link",
+            axum::routing::post(invites::create_invite_link),
+        )
+        .route(
+            "/dashboard/admin/invites/delete-all",
+            axum::routing::post(invites::delete_all_invite_requests),
+        )
+        .route(
+            "/dashboard/admin/invites/{id}/delete",
+            axum::routing::post(invites::delete_invite_request),
+        )
         .route("/dashboard/admin/logs", axum::routing::get(logs_page::page))
-        .route("/dashboard/admin/logs/tail", axum::routing::get(logs_page::tail))
-        .route("/dashboard/admin/logs/syntax", axum::routing::get(logs_page::syntax_page))
-        .route("/dashboard/admin/logs/export", axum::routing::get(logs_page::export))
-        .route("/dashboard/admin/logs/trace/{trace_id}", axum::routing::get(logs_page::trace_page))
-        .route("/dashboard/admin/logs/row/{cursor}", axum::routing::get(logs_page::row_page))
-        .route("/dashboard/admin/logs/pos", axum::routing::get(logs_page::pos_session_for_order))
-        .route("/dashboard/admin/logs/pos/{session}", axum::routing::get(logs_page::pos_timeline))
+        .route(
+            "/dashboard/admin/logs/tail",
+            axum::routing::get(logs_page::tail),
+        )
+        .route(
+            "/dashboard/admin/logs/syntax",
+            axum::routing::get(logs_page::syntax_page),
+        )
+        .route(
+            "/dashboard/admin/logs/export",
+            axum::routing::get(logs_page::export),
+        )
+        .route(
+            "/dashboard/admin/logs/trace/{trace_id}",
+            axum::routing::get(logs_page::trace_page),
+        )
+        .route(
+            "/dashboard/admin/logs/row/{cursor}",
+            axum::routing::get(logs_page::row_page),
+        )
+        .route(
+            "/dashboard/admin/logs/pos",
+            axum::routing::get(logs_page::pos_session_for_order),
+        )
+        .route(
+            "/dashboard/admin/logs/pos/{session}",
+            axum::routing::get(logs_page::pos_timeline),
+        )
         .route("/dashboard/admin/logs/saved", post(logs_page::save_search))
-        .route("/dashboard/admin/logs/saved/{id}/delete", post(logs_page::delete_search))
+        .route(
+            "/dashboard/admin/logs/saved/{id}/delete",
+            post(logs_page::delete_search),
+        )
         .route("/status", axum::routing::get(status_page::status_page))
-        .route("/status/summary", axum::routing::get(status_page::status_summary))
-        .route("/status/events", axum::routing::get(status_page::status_events))
+        .route(
+            "/status/summary",
+            axum::routing::get(status_page::status_summary),
+        )
+        .route(
+            "/status/events",
+            axum::routing::get(status_page::status_events),
+        )
         .route("/signup", post(signup::signup))
         .route("/login", post(login::login))
         .route("/logout", post(logout::logout))
         .route("/connections", post(connections::create_connection))
         .route("/dashboard", axum::routing::get(home::dashboard_home))
-        .route("/dashboard/signup", axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit))
-        .route("/dashboard/login", axum::routing::get(dashboard::login_form).post(dashboard::login_submit))
-        .route("/dashboard/logout", axum::routing::post(dashboard::logout_submit))
-        .route("/dashboard/theme", axum::routing::post(dashboard::theme_submit))
-        .route("/dashboard/timezone", axum::routing::post(dashboard::timezone_submit))
-        .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit))
-        .route("/dashboard/stores/new", axum::routing::get(home::new_store_picker))
-        .route("/dashboard/stores/new/woocommerce", axum::routing::get(home::woocommerce_instructions))
-        .route("/dashboard/stores/{id}", axum::routing::get(orders::store_detail))
-        .route("/dashboard/stores/{id}/settings", axum::routing::get(orders::store_settings))
-        .route("/dashboard/stores/{id}/settings/domains", post(embed_domains::add_domain))
-        .route("/dashboard/stores/{id}/settings/domains/{domain_id}/check", post(embed_domains::check_domain))
-        .route("/dashboard/stores/{id}/settings/domains/{domain_id}/delete", post(embed_domains::delete_domain))
-        .route("/dashboard/stores/{id}/settings/embed-restriction", post(embed_domains::set_embed_restriction))
-        .route("/dashboard/stores/{id}/settings/key-custody", post(orders::move_key_storage))
-        .route("/dashboard/stores/{id}/embed-warning/dismiss", post(embed_domains::dismiss_embed_warning))
+        .route(
+            "/dashboard/signup",
+            axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit),
+        )
+        .route(
+            "/dashboard/login",
+            axum::routing::get(dashboard::login_form).post(dashboard::login_submit),
+        )
+        .route(
+            "/dashboard/logout",
+            axum::routing::post(dashboard::logout_submit),
+        )
+        .route(
+            "/dashboard/theme",
+            axum::routing::post(dashboard::theme_submit),
+        )
+        .route(
+            "/dashboard/timezone",
+            axum::routing::post(dashboard::timezone_submit),
+        )
+        .route(
+            "/dashboard/connect",
+            axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit),
+        )
+        .route(
+            "/dashboard/stores/new",
+            axum::routing::get(home::new_store_picker),
+        )
+        .route(
+            "/dashboard/stores/new/woocommerce",
+            axum::routing::get(home::woocommerce_instructions),
+        )
+        .route(
+            "/dashboard/stores/{id}",
+            axum::routing::get(orders::store_detail),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings",
+            axum::routing::get(orders::store_settings),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/domains",
+            post(embed_domains::add_domain),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/domains/{domain_id}/check",
+            post(embed_domains::check_domain),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/domains/{domain_id}/delete",
+            post(embed_domains::delete_domain),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/embed-restriction",
+            post(embed_domains::set_embed_restriction),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/key-custody",
+            post(orders::move_key_storage),
+        )
+        .route(
+            "/dashboard/stores/{id}/embed-warning/dismiss",
+            post(embed_domains::dismiss_embed_warning),
+        )
         .route(
             "/dashboard/stores/{id}/orders/new",
             axum::routing::get(orders::create_order_page).post(orders::create_order),
@@ -220,7 +368,10 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/stores/{id}/settings/fx-provider",
             axum::routing::post(orders::update_fx_providers),
         )
-        .route("/dashboard/stores/{id}/settings/diagnostics", axum::routing::post(orders::update_diagnostics))
+        .route(
+            "/dashboard/stores/{id}/settings/diagnostics",
+            axum::routing::post(orders::update_diagnostics),
+        )
         .route(
             "/dashboard/stores/{id}/settings/base-currency",
             axum::routing::post(orders::update_base_currency),
@@ -245,27 +396,66 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/delete",
             axum::routing::post(orders::webhooks_delete),
         )
-        .route("/dashboard/stores/{id}/pos", axum::routing::get(pos::pos_page))
-        .route("/dashboard/stores/{id}/pos/orders", axum::routing::get(pos::list_orders).post(pos::create_order))
-        .route("/dashboard/stores/{id}/pos/orders/{order_id}", axum::routing::get(pos::order_detail))
-        .route("/dashboard/stores/{id}/pos/orders/{order_id}/background", axum::routing::post(pos::background_order))
-        .route("/dashboard/stores/{id}/pos/orders/{order_id}/cancel", axum::routing::post(pos::cancel_order))
-        .route("/dashboard/stores/{id}/pos/orders/{order_id}/status", axum::routing::get(pos::order_status))
-        .route("/dashboard/stores/{id}/pos/events", axum::routing::get(pos::order_events))
+        .route(
+            "/dashboard/stores/{id}/pos",
+            axum::routing::get(pos::pos_page),
+        )
+        .route(
+            "/dashboard/stores/{id}/pos/orders",
+            axum::routing::get(pos::list_orders).post(pos::create_order),
+        )
+        .route(
+            "/dashboard/stores/{id}/pos/orders/{order_id}",
+            axum::routing::get(pos::order_detail),
+        )
+        .route(
+            "/dashboard/stores/{id}/pos/orders/{order_id}/background",
+            axum::routing::post(pos::background_order),
+        )
+        .route(
+            "/dashboard/stores/{id}/pos/orders/{order_id}/cancel",
+            axum::routing::post(pos::cancel_order),
+        )
+        .route(
+            "/dashboard/stores/{id}/pos/orders/{order_id}/status",
+            axum::routing::get(pos::order_status),
+        )
+        .route(
+            "/dashboard/stores/{id}/pos/events",
+            axum::routing::get(pos::order_events),
+        )
         .route(
             "/dashboard/stores/{id}/pos/logs",
-            post(pos_logs::receive).layer(axum::extract::DefaultBodyLimit::max(pos_logs::MAX_BODY_BYTES)),
+            post(pos_logs::receive).layer(axum::extract::DefaultBodyLimit::max(
+                pos_logs::MAX_BODY_BYTES,
+            )),
         )
-        .route("/dashboard/stores/{id}/orders", axum::routing::get(orders::orders_list))
-        .route("/dashboard/stores/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
-        .route("/dashboard/stores/{id}/orders/{order_id}", axum::routing::get(orders::order_detail))
-        .route("/dashboard/stores/{id}/orders/{order_id}/events", axum::routing::get(orders::order_detail_events))
-        .route("/connect/{platform}", axum::routing::get(connect::start).post(connect::confirm_submit))
+        .route(
+            "/dashboard/stores/{id}/orders",
+            axum::routing::get(orders::orders_list),
+        )
+        .route(
+            "/dashboard/stores/{id}/orders/lookup",
+            axum::routing::post(orders::lookup_payment),
+        )
+        .route(
+            "/dashboard/stores/{id}/orders/{order_id}",
+            axum::routing::get(orders::order_detail),
+        )
+        .route(
+            "/dashboard/stores/{id}/orders/{order_id}/events",
+            axum::routing::get(orders::order_detail_events),
+        )
+        .route(
+            "/connect/{platform}",
+            axum::routing::get(connect::start).post(connect::confirm_submit),
+        )
         .route("/connect/{platform}/finish", post(connect::finish))
         .route(
             "/telemetry/client",
-            post(telemetry_client::client_report)
-                .layer(axum::extract::DefaultBodyLimit::max(telemetry_client::MAX_BODY_BYTES)),
+            post(telemetry_client::client_report).layer(axum::extract::DefaultBodyLimit::max(
+                telemetry_client::MAX_BODY_BYTES,
+            )),
         );
 
     // `POST /pay/{pk}/orders` (`docs/fx_refactor.md` Phase 1.4) is
@@ -277,9 +467,18 @@ pub fn build_router(state: AppState) -> Router {
     // IP-keyed limit - see `http::rate_limit`'s own module doc comment.
     let pay_router = Router::new()
         .route("/pay/{pk}/orders", post(pay::create_order))
-        .route("/pay/{pk}/orders/{order_id}", axum::routing::get(checkout::checkout_page))
-        .route("/pay/{pk}/orders/{order_id}/status", axum::routing::get(checkout::checkout_status))
-        .route("/pay/{pk}/orders/{order_id}/events", axum::routing::get(checkout::checkout_events))
+        .route(
+            "/pay/{pk}/orders/{order_id}",
+            axum::routing::get(checkout::checkout_page),
+        )
+        .route(
+            "/pay/{pk}/orders/{order_id}/status",
+            axum::routing::get(checkout::checkout_status),
+        )
+        .route(
+            "/pay/{pk}/orders/{order_id}/events",
+            axum::routing::get(checkout::checkout_events),
+        )
         .route(
             "/pay/{pk}/orders/{order_id}/refund-address",
             axum::routing::post(checkout::set_refund_address),
@@ -287,18 +486,28 @@ pub fn build_router(state: AppState) -> Router {
         // A real follow-up to `docs/fx_refactor.md`: a nav-bearing,
         // shareable page wrapping the (nav-less) checkout page above in an
         // iframe - see `checkout::checkout_share_page`'s own doc comment.
-        .route("/pay/{pk}/orders/{order_id}/share", axum::routing::get(checkout::checkout_share_page))
+        .route(
+            "/pay/{pk}/orders/{order_id}/share",
+            axum::routing::get(checkout::checkout_share_page),
+        )
         // Errors the WooCommerce plugin forwards (structured_logging.md 2.4).
         .route(
             "/pay/{pk}/logs",
-            post(telemetry_client::plugin::forward)
-                .layer(axum::extract::DefaultBodyLimit::max(telemetry_client::plugin::MAX_BODY_BYTES)),
+            post(telemetry_client::plugin::forward).layer(axum::extract::DefaultBodyLimit::max(
+                telemetry_client::plugin::MAX_BODY_BYTES,
+            )),
         )
-        .layer(middleware::from_fn_with_state(state.clone(), embed_domains::embed_policy_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            embed_domains::embed_policy_middleware,
+        ))
         // Identifies the client (and a store's secret key), spends its
         // budget and challenges it past its soft limit before anything else
         // runs (`http::abuse`).
-        .layer(middleware::from_fn_with_state(state.clone(), abuse::pay_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            abuse::pay_middleware,
+        ))
         // Outside the rate limit, so a preflight never spends budget and a
         // `429` still carries the headers a cross-origin caller needs to read it.
         .layer(embed_cors_layer(&state));
@@ -306,27 +515,57 @@ pub fn build_router(state: AppState) -> Router {
     // Every other route (the dashboard, login, sign-up, the landing and
     // status pages) is counted too - see `http::abuse::site_middleware`.
     // Static files are added below, outside it, and never counted.
-    let router = router.layer(middleware::from_fn_with_state(state.clone(), abuse::site_middleware));
+    let router = router.layer(middleware::from_fn_with_state(
+        state.clone(),
+        abuse::site_middleware,
+    ));
 
     let router = router.merge(pay_router);
 
     // A plain static file, not state-changing - no rate limiter needed
     // (`docs/fx_refactor.md` Phase 4.3), same as the engine's original.
-    let router = router.route("/static/monokulo-client.js", axum::routing::get(pay::client_library).layer(any_origin_cors_layer()));
-    let router = router.route("/static/checkout.js", axum::routing::get(pay::checkout_script));
-    let router = router.route("/static/challenge.js", axum::routing::get(pay::challenge_script));
+    let router = router.route(
+        "/static/monokulo-client.js",
+        axum::routing::get(pay::client_library).layer(any_origin_cors_layer()),
+    );
+    let router = router.route(
+        "/static/checkout.js",
+        axum::routing::get(pay::checkout_script),
+    );
+    let router = router.route(
+        "/static/challenge.js",
+        axum::routing::get(pay::challenge_script),
+    );
     let router = router.route("/static/pos-app.js", axum::routing::get(pay::pos_script));
     let router = router.route("/static/pos-app.css", axum::routing::get(pay::pos_style));
-    let router = router.route("/static/jsQR.js", axum::routing::get(pay::qr_decoder_script));
-    let router = router.route("/static/telemetry.js", axum::routing::get(pay::telemetry_script));
+    let router = router.route(
+        "/static/jsQR.js",
+        axum::routing::get(pay::qr_decoder_script),
+    );
+    let router = router.route(
+        "/static/telemetry.js",
+        axum::routing::get(pay::telemetry_script),
+    );
     let router = router.route("/static/fixi.js", axum::routing::get(pay::fixi_script));
     let router = router.route("/static/ssexi.js", axum::routing::get(pay::ssexi_script));
-    let router = router.route("/static/fx-glue.js", axum::routing::get(pay::fx_glue_script));
+    let router = router.route(
+        "/static/fx-glue.js",
+        axum::routing::get(pay::fx_glue_script),
+    );
     let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
     let router = router.route("/static/favicon.svg", axum::routing::get(pay::favicon_svg));
-    let router = router.route("/static/manrope-500.woff2", axum::routing::get(pay::manrope_500_woff2));
-    let router = router.route("/static/manrope-700.woff2", axum::routing::get(pay::manrope_700_woff2));
-    let router = router.route("/static/manrope-800.woff2", axum::routing::get(pay::manrope_800_woff2));
+    let router = router.route(
+        "/static/manrope-500.woff2",
+        axum::routing::get(pay::manrope_500_woff2),
+    );
+    let router = router.route(
+        "/static/manrope-700.woff2",
+        axum::routing::get(pay::manrope_700_woff2),
+    );
+    let router = router.route(
+        "/static/manrope-800.woff2",
+        axum::routing::get(pay::manrope_800_woff2),
+    );
 
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real
@@ -360,13 +599,19 @@ pub fn build_router(state: AppState) -> Router {
 /// user - `/logout` (WBS 1.1.3) needs to know exactly which session row to
 /// delete, and re-deriving it would mean re-parsing the credential a second
 /// time outside this extractor.
-pub struct AuthedUser(pub UserRow, pub String);
+pub struct AuthedUser(pub UserRow, pub TokenHash);
 
 impl FromRequestParts<AppState> for AuthedUser {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        resolve_authed_user(state, &parts.headers).map(|(user, hash)| AuthedUser(user, hash)).ok_or(ApiError::Unauthorized)
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        resolve_authed_user(state, &parts.headers)
+            .await
+            .map(|(user, hash)| AuthedUser(user, hash))
+            .ok_or(ApiError::Unauthorized)
     }
 }
 
@@ -378,12 +623,15 @@ impl FromRequestParts<AppState> for AuthedUser {
 /// with the same `401` `AuthedUser` would; a *valid* session that just isn't
 /// the admin account gets `403`, not `401` - see [`ApiError::Forbidden`]'s
 /// own doc comment for why those are kept distinct.
-pub struct AuthedAdmin(pub UserRow, pub String);
+pub struct AuthedAdmin(pub UserRow, pub TokenHash);
 
 impl FromRequestParts<AppState> for AuthedAdmin {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let AuthedUser(user, hash) = AuthedUser::from_request_parts(parts, state).await?;
         if !user.is_admin {
             return Err(ApiError::Forbidden);
@@ -406,12 +654,20 @@ impl FromRequestParts<AppState> for AuthedAdmin {
 fn embed_cors_layer(state: &AppState) -> tower_http::cors::CorsLayer {
     use tower_http::cors::AllowOrigin;
     let db = state.db.clone();
-    cors_layer_base().allow_origin(AllowOrigin::predicate(move |origin, parts| {
-        let Some(public_key) = embed_domains::public_key_of_pay_path(parts.uri.path()) else { return true };
-        let Ok(origin) = origin.to_str() else { return false };
-        match crate::embed_domains::policy_for_public_key(&db, public_key) {
-            Some(policy) => policy.allows_origin(origin, crate::now_unix()),
-            None => true,
+    cors_layer_base().allow_origin(AllowOrigin::async_predicate(move |origin, parts| {
+        let public_key =
+            embed_domains::public_key_of_pay_path(parts.uri.path()).map(str::to_string);
+        async move {
+            let Some(public_key) = public_key else {
+                return true;
+            };
+            let Ok(origin) = origin.to_str() else {
+                return false;
+            };
+            match crate::embed_domains::policy_for_public_key(&db, &public_key).await {
+                Some(policy) => policy.allows_origin(origin, crate::now_unix()),
+                None => true,
+            }
         }
     }))
 }
@@ -429,8 +685,15 @@ fn cors_layer_base() -> tower_http::cors::CorsLayer {
         // `Monokulo-Proof` carries a solved challenge; `Monokulo-Challenge`
         // and `Retry-After` must be readable by the embed library on another
         // site (`http::abuse`).
-        .allow_headers([header::CONTENT_TYPE, header::ACCEPT, header::HeaderName::from_static(abuse::PROOF_HEADER)])
-        .expose_headers([header::HeaderName::from_static(abuse::CHALLENGE_HEADER), header::RETRY_AFTER])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::HeaderName::from_static(abuse::PROOF_HEADER),
+        ])
+        .expose_headers([
+            header::HeaderName::from_static(abuse::CHALLENGE_HEADER),
+            header::RETRY_AFTER,
+        ])
         .allow_private_network(true)
         .max_age(std::time::Duration::from_secs(24 * 60 * 60))
 }
@@ -438,12 +701,43 @@ fn cors_layer_base() -> tower_http::cors::CorsLayer {
 /// Page chrome for a page with the site nav (or another status
 /// indicator): `views::PageChrome::from_user` plus the engine's last known
 /// health (`status_page::known_health`).
-pub(crate) fn page_chrome(state: &AppState, user: Option<&crate::db::UserRow>, current_path: impl Into<String>) -> crate::views::PageChrome {
-    let health = status_page::known_health(state);
-    let alerts = user.map(|user| store_alerts(state, user)).unwrap_or_default();
-    let mut chrome = crate::views::PageChrome::from_user(user, current_path).with_health(health).with_alerts(alerts);
-    if let Some(store) = store_of_path(&chrome.current_path) {
-        chrome.browser_reports = state.db.lock().client_logging(store).unwrap_or(false);
+pub(crate) async fn page_chrome(
+    state: &AppState,
+    user: Option<&crate::db::UserRow>,
+    current_path: impl Into<String>,
+) -> crate::views::PageChrome {
+    let current_path = current_path.into();
+    let unserved = status_page::known_unserved(&state.engine);
+    // One read for both: the user's stores (only when some store can't be
+    // scanned) and whether this page's store reports browser logs.
+    let user_id = user
+        .filter(|_| !unserved.is_empty())
+        .map(|user| user.id.clone());
+    let store = store_of_path(&current_path).map(str::to_string);
+    let (stores, browser_reports) = state
+        .db
+        .read(move |db| {
+            let stores = match user_id {
+                Some(user_id) => db
+                    .list_store_connections_for_user(&user_id)
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            let reports = store.map(|store| {
+                db.client_logging(&crate::db::ConnectionId::new(store))
+                    .unwrap_or(false)
+            });
+            Ok::<_, crate::db::DbError>((stores, reports))
+        })
+        .await
+        .unwrap_or_default();
+    let mut chrome = crate::views::PageChrome::from_user(user, current_path)
+        .with_health(status_page::known_health(&state.engine))
+        .with_alerts(store_alerts(&unserved, &stores));
+    // Only a store's own pages depend on its opt-in; every other page keeps
+    // `from_user`'s choice.
+    if let Some(reports) = browser_reports {
+        chrome.browser_reports = reports;
     }
     chrome
 }
@@ -460,16 +754,21 @@ pub(crate) fn store_of_path(path: &str) -> Option<&str> {
 
 /// One alert per store of `user` that the engine can't scan right now
 /// (task 3.7, decision D2). Only ever the signed-in owner's own stores.
-fn store_alerts(state: &AppState, user: &crate::db::UserRow) -> Vec<String> {
-    let unserved = status_page::known_unserved(state);
-    if unserved.is_empty() {
-        return Vec::new();
-    }
-    let Ok(stores) = state.db.lock().list_store_connections_for_user(&user.id) else { return Vec::new() };
+fn store_alerts(
+    unserved: &[crate::engine_client::UnservedTenant],
+    stores: &[crate::db::StoreConnectionRow],
+) -> Vec<String> {
     let mut alerts = Vec::new();
     for store in stores {
-        let name = store.site_url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
-        for problem in unserved.iter().filter(|u| u.public_key == store.tenant_public_key) {
+        let name = store
+            .site_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/');
+        for problem in unserved
+            .iter()
+            .filter(|u| u.public_key == store.tenant_public_key)
+        {
             alerts.push(match problem.reason.as_str() {
                 "catching_up" => format!(
                     "{name}: payments are being checked late - the engine is catching up {} block(s) it couldn't check for this store. They'll show up once it has.",
@@ -506,48 +805,81 @@ fn store_alerts(state: &AppState, user: &crate::db::UserRow) -> Vec<String> {
 /// `None` covers every reason a session doesn't resolve (missing/malformed
 /// header, missing cookie, unknown/invalid token, a database error looking
 /// either up) - never distinguished further, same as [`AuthedUser`] itself.
-pub(crate) fn resolve_authed_user(state: &AppState, headers: &HeaderMap) -> Option<(UserRow, String)> {
-    let token = if let Some(header_value) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
-        header_value.strip_prefix("Bearer ")?.to_string()
+pub(crate) async fn resolve_authed_user(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<(UserRow, TokenHash)> {
+    let token = if let Some(header_value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        RawToken::presented(header_value.strip_prefix("Bearer ")?)
     } else {
         let jar = CookieJar::from_headers(headers);
-        jar.get(SESSION_COOKIE_NAME)?.value().to_string()
+        RawToken::presented(jar.get(SESSION_COOKIE_NAME)?.value())
     };
-    let token_hash = shared::auth::hash_secret_token(&token);
+    let token_hash = token.hash();
 
-    let db = state.db.lock();
-    let session = db.find_session(&token_hash).ok().flatten()?;
-    let mut user = db.get_user_by_id(&session.user_id).ok().flatten()?;
+    let hash = token_hash.clone();
+    let mut user = state
+        .db
+        .read(move |db| {
+            let Some(session) = db.find_session(&hash)? else {
+                return Ok(None);
+            };
+            db.get_user_by_id(&session.user_id)
+        })
+        .await
+        .ok()
+        .flatten()?;
     user.browser_timezone = fx::browser_zone(headers);
-    record_identity(&user.id, &token_hash);
+    record_identity(user.id.as_str(), &token_hash);
     Some((user, token_hash))
 }
 
 /// Puts who's signed in on the request's lines (`user.id`, `session.id`;
 /// `telemetry::http::server`), so the Logs page can show every line of one
 /// session. Visitors who aren't signed in have neither.
-pub(crate) fn record_identity(user_id: &str, token_hash: &str) {
-    tracing::Span::current().record("user.id", user_id).record("session.id", session_log_id(token_hash));
+pub(crate) fn record_identity(user_id: &str, token_hash: &TokenHash) {
+    tracing::Span::current()
+        .record("user.id", user_id)
+        .record("session.id", session_log_id(token_hash));
 }
 
 /// A session's name in the logs: stable for the session, and no use for
 /// finding or presenting it (it is derived from the stored hash, which is
 /// itself only a lookup key, and cut short).
-pub(crate) fn session_log_id(token_hash: &str) -> String {
+pub(crate) fn session_log_id(token_hash: &TokenHash) -> String {
     use sha2::{Digest, Sha256};
+    let token_hash = token_hash.as_str();
     hex::encode(&Sha256::digest(format!("monokulo log session:{token_hash}").as_bytes())[..8])
 }
 
 /// Puts the store a request concerns on its lines (`store.id`): the one in
 /// a dashboard store page's path, or the one whose public key a `/pay/`
 /// route carries.
-async fn record_store(axum::extract::State(state): axum::extract::State<AppState>, request: axum::extract::Request, next: middleware::Next) -> Response {
+async fn record_store(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
     let path = request.uri().path();
-    let store = match path.strip_prefix("/dashboard/stores/").and_then(|rest| rest.split('/').next()).filter(|id| !id.is_empty()) {
+    let store = match path
+        .strip_prefix("/dashboard/stores/")
+        .and_then(|rest| rest.split('/').next())
+        .filter(|id| !id.is_empty())
+    {
         Some(id) => Some(id.to_string()),
-        None => embed_domains::public_key_of_pay_path(path)
-            .and_then(|pk| state.db.lock().get_store_connection_by_public_key(pk).ok().flatten())
-            .map(|row| row.id),
+        None => match embed_domains::public_key_of_pay_path(path).map(str::to_string) {
+            Some(pk) => state
+                .db
+                .read(move |db| db.get_store_connection_by_public_key(&pk))
+                .await
+                .ok()
+                .flatten()
+                .map(|row| row.id.into_string()),
+            None => None,
+        },
     };
     if let Some(store) = store {
         tracing::Span::current().record("store.id", store);
@@ -613,7 +945,10 @@ impl IntoResponse for ApiError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "The payment engine is busy or unreachable. Try again in a moment.".to_string(),
             ),
-            ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string()),
+            ApiError::Internal => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_string(),
+            ),
         };
         (status, Json(json!({ "error": message }))).into_response()
     }

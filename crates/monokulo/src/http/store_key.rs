@@ -59,10 +59,19 @@ pub fn key_matches(state: &AppState, stored_encrypted: &str, presented: &str) ->
 /// Checks a request's `Authorization` header against the store with public
 /// key `pk`. An unknown store is `Invalid` whenever a header is present:
 /// there is no key it could match.
-pub fn check(state: &AppState, pk: &str, headers: &axum::http::HeaderMap) -> KeyCheck {
-    let Some(value) = headers.get(header::AUTHORIZATION) else { return KeyCheck::Absent };
-    let Some(presented) = value.to_str().ok().and_then(|v| v.strip_prefix("Bearer ")) else { return KeyCheck::Invalid };
-    let row = match state.db.lock().get_store_connection_by_public_key(pk) {
+pub async fn check(state: &AppState, pk: &str, headers: &axum::http::HeaderMap) -> KeyCheck {
+    let Some(value) = headers.get(header::AUTHORIZATION) else {
+        return KeyCheck::Absent;
+    };
+    let Some(presented) = value.to_str().ok().and_then(|v| v.strip_prefix("Bearer ")) else {
+        return KeyCheck::Invalid;
+    };
+    let key = pk.to_string();
+    let row = match state
+        .db
+        .read(move |db| db.get_store_connection_by_public_key(&key))
+        .await
+    {
         Ok(Some(row)) => row,
         _ => return KeyCheck::Invalid,
     };

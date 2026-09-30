@@ -69,3 +69,6 @@ required-features = ["e2e"]
 name = "e2e_stagenet_confirmation_threshold"
 path = "tests/e2e_stagenet_confirmation_threshold.rs"
 required-features = ["e2e"]
+
+[lints]
+workspace = true

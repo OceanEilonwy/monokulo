@@ -35,11 +35,3 @@ async fn main() -> ExitCode {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn compiles() {
-        assert!(true);
-    }
-}

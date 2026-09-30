@@ -24,8 +24,17 @@ pub fn parse_traceparent(value: &str) -> Option<SpanContext> {
     let trace_id = parts.next()?;
     let span_id = parts.next()?;
     let flags = parts.next()?;
-    let is_hex = |s: &str, len: usize| s.len() == len && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    if !is_hex(version, 2) || version == "ff" || !is_hex(trace_id, 32) || !is_hex(span_id, 16) || !is_hex(flags, 2) {
+    let is_hex = |s: &str, len: usize| {
+        s.len() == len
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    if !is_hex(version, 2)
+        || version == "ff"
+        || !is_hex(trace_id, 32)
+        || !is_hex(span_id, 16)
+        || !is_hex(flags, 2)
+    {
         return None;
     }
     if version == "00" && parts.next().is_some() {
@@ -40,7 +49,12 @@ pub fn parse_traceparent(value: &str) -> Option<SpanContext> {
 
 /// Formats a span context as a `traceparent` value.
 pub fn format_traceparent(context: &SpanContext) -> String {
-    format!("00-{}-{}-{:02x}", context.trace_id(), context.span_id(), context.trace_flags().to_u8())
+    format!(
+        "00-{}-{}-{:02x}",
+        context.trace_id(),
+        context.span_id(),
+        context.trace_flags().to_u8()
+    )
 }
 
 /// Makes `span` a child of the caller's span named by a `traceparent`
@@ -48,7 +62,9 @@ pub fn format_traceparent(context: &SpanContext) -> String {
 /// first entered. Returns false (and leaves the span in a new trace) when
 /// the value doesn't parse.
 pub fn set_remote_parent(span: &Span, traceparent: &str) -> bool {
-    let Some(remote) = parse_traceparent(traceparent) else { return false };
+    let Some(remote) = parse_traceparent(traceparent) else {
+        return false;
+    };
     let context = opentelemetry::Context::new().with_remote_span_context(remote);
     span.set_parent(context).is_ok()
 }

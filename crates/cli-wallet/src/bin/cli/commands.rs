@@ -11,8 +11,8 @@ use cli_wallet::amount::{format_amount, parse_amount, Unit};
 use cli_wallet::file::{default_busy_handler, BusyChoice, BusyHandler, LockHolder, WalletData};
 use cli_wallet::meta::AddressBookEntry;
 use cli_wallet::{
-    legacy_seed_for, FeePriority, OwnedOutput, ResolvedWallet, SweepSelect, TransferKind, TransferRequest, Wallet, WalletCtx, WalletError, WalletKeys,
-    RING_LEN,
+    legacy_seed_for, FeePriority, OwnedOutput, ResolvedWallet, SweepSelect, TransferKind,
+    TransferRequest, Wallet, WalletCtx, WalletError, WalletKeys, RING_LEN,
 };
 
 use crate::args::{self, IndexSelection, SubtractFee, PRIORITY_NAMES};
@@ -64,31 +64,41 @@ pub enum Command {
         args: Vec<String>,
     },
     /// Send the whole unlocked balance of the current account to one address.
-    #[command(override_usage = "sweep_all [index=<N1>[,<N2>,...] | index=all] [<priority>] [<ring_size>] [outputs=<N>] <address>")]
+    #[command(
+        override_usage = "sweep_all [index=<N1>[,<N2>,...] | index=all] [<priority>] [<ring_size>] [outputs=<N>] <address>"
+    )]
     SweepAll {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
     /// Send the whole unlocked balance of an account to one address.
-    #[command(override_usage = "sweep_account <account> [index=<N1>[,<N2>,...] | index=all] [<priority>] [<ring_size>] [outputs=<N>] <address>")]
+    #[command(
+        override_usage = "sweep_account <account> [index=<N1>[,<N2>,...] | index=all] [<priority>] [<ring_size>] [outputs=<N>] <address>"
+    )]
     SweepAccount {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
     /// Send every unlocked output smaller than a threshold to one address.
-    #[command(override_usage = "sweep_below <amount_threshold> [index=<N1>[,<N2>,...]] [<priority>] [<ring_size>] <address>")]
+    #[command(
+        override_usage = "sweep_below <amount_threshold> [index=<N1>[,<N2>,...]] [<priority>] [<ring_size>] <address>"
+    )]
     SweepBelow {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
     /// Send one output, named by its key image, to one address.
-    #[command(override_usage = "sweep_single [<priority>] [<ring_size>] [outputs=<N>] <key_image> <address>")]
+    #[command(
+        override_usage = "sweep_single [<priority>] [<ring_size>] [outputs=<N>] <key_image> <address>"
+    )]
     SweepSingle {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
     /// Show incoming and outgoing transfers.
-    #[command(override_usage = "show_transfers [in|out|all|pending|failed|pool|coinbase] [index=<N1>[,<N2>,...]] [<min_height> [<max_height>]]")]
+    #[command(
+        override_usage = "show_transfers [in|out|all|pending|failed|pool|coinbase] [index=<N1>[,<N2>,...]] [<min_height> [<max_height>]]"
+    )]
     ShowTransfers {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -96,19 +106,25 @@ pub enum Command {
     /// Show one transfer.
     ShowTransfer { txid: String },
     /// Write transfers to a CSV file.
-    #[command(override_usage = "export_transfers [in|out|all|pending|failed|coinbase] [index=<N1>[,<N2>,...]] [<min_height> [<max_height>]] [output=<filepath>]")]
+    #[command(
+        override_usage = "export_transfers [in|out|all|pending|failed|coinbase] [index=<N1>[,<N2>,...]] [<min_height> [<max_height>]] [output=<filepath>]"
+    )]
     ExportTransfers {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Show incoming outputs.
-    #[command(override_usage = "incoming_transfers [available|unavailable] [verbose] [uses] [index=<N1>[,<N2>[,...]]]")]
+    #[command(
+        override_usage = "incoming_transfers [available|unavailable] [verbose] [uses] [index=<N1>[,<N2>[,...]]]"
+    )]
     IncomingTransfers {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// List unspent outputs, with a histogram of their heights.
-    #[command(override_usage = "unspent_outputs [index=<N1>[,<N2>,...]] [<min_amount> [<max_amount>]]")]
+    #[command(
+        override_usage = "unspent_outputs [index=<N1>[,<N2>,...]] [<min_amount> [<max_amount>]]"
+    )]
     UnspentOutputs {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -131,7 +147,9 @@ pub enum Command {
     /// Show the wallet's description.
     GetDescription,
     /// List, add to, or delete from the address book.
-    #[command(override_usage = "address_book [(add <address> [<description possibly with whitespaces>])|(delete <index>)]")]
+    #[command(
+        override_usage = "address_book [(add <address> [<description possibly with whitespaces>])|(delete <index>)]"
+    )]
     AddressBook {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -185,7 +203,10 @@ pub enum Command {
     /// the `inputs=<N>` largest, merged) into equal outputs of this
     /// account's own - 16 by default, the most one transaction holds - so
     /// the e2e suites have plenty of independently spendable outputs.
-    #[command(override_usage = "pocketchange [<pieces>] [inputs=<N>] [<priority>]", visible_alias = "split")]
+    #[command(
+        override_usage = "pocketchange [<pieces>] [inputs=<N>] [<priority>]",
+        visible_alias = "split"
+    )]
     Pocketchange {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -238,11 +259,20 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn open(ctx: &WalletCtx, path: &std::path::Path, do_not_relay: bool) -> Result<Self, CliError> {
+    pub fn open(
+        ctx: &WalletCtx,
+        path: &std::path::Path,
+        do_not_relay: bool,
+    ) -> Result<Self, CliError> {
         let resolved = ResolvedWallet::open(ctx, path)?;
         let mut keys = resolved.keys();
         keys.set_busy_handler(busy_handler());
-        Ok(Session { resolved, keys, wallet: None, do_not_relay })
+        Ok(Session {
+            resolved,
+            keys,
+            wallet: None,
+            do_not_relay,
+        })
     }
 
     async fn wallet(&mut self) -> Result<&Wallet, CliError> {
@@ -282,7 +312,6 @@ fn busy_handler() -> BusyHandler {
 }
 
 impl Session {
-
     fn data(&self) -> Result<WalletData, CliError> {
         Ok(self.keys.load()?.data)
     }
@@ -322,7 +351,9 @@ fn short(address: &str) -> &str {
 
 /// `YYYY-MM-DD HH:MM:SS`, UTC.
 pub fn format_timestamp(timestamp: Option<u64>) -> String {
-    let Some(secs) = timestamp else { return "-".to_string() };
+    let Some(secs) = timestamp else {
+        return "-".to_string();
+    };
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     // Howard Hinnant's days-to-civil.
@@ -335,7 +366,12 @@ pub fn format_timestamp(timestamp: Option<u64>) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}", rem / 3_600, rem % 3_600 / 60, rem % 60)
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
 }
 
 /// `(balance, unlocked balance, output count)` per `(account, address
@@ -348,7 +384,11 @@ type Balances = BTreeMap<(u32, u32), (u64, u64, usize)>;
 /// wallet; frozen outputs count towards neither.
 fn balances(keys: &WalletKeys, data: &WalletData, tip: u64) -> Result<Balances, CliError> {
     let mut balances = Balances::new();
-    for output in keys.outputs(data)?.into_iter().filter(|o| !o.spent && !o.frozen) {
+    for output in keys
+        .outputs(data)?
+        .into_iter()
+        .filter(|o| !o.spent && !o.frozen)
+    {
         let entry = balances.entry(output.subaddress()).or_default();
         entry.0 += output.amount();
         entry.2 += 1;
@@ -363,7 +403,10 @@ fn balances(keys: &WalletKeys, data: &WalletData, tip: u64) -> Result<Balances, 
 }
 
 fn account_totals(balances: &Balances, account: u32) -> (u64, u64) {
-    balances.iter().filter(|((a, _), _)| *a == account).fold((0, 0), |(b, u), (_, (bal, unl, _))| (b + bal, u + unl))
+    balances
+        .iter()
+        .filter(|((a, _), _)| *a == account)
+        .fold((0, 0), |(b, u), (_, (bal, unl, _))| (b + bal, u + unl))
 }
 
 pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError> {
@@ -396,15 +439,28 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
         Command::SweepSingle { args } => {
             let (key_image, parsed) = args::parse_sweep_single(&args)?;
             let data = session.data()?;
-            let output = session.keys.outputs(&data)?.into_iter().find(|o| o.key_image == key_image).ok_or("Failed to find key image")?;
-            sweep(session, output.subaddress().0, parsed, SweepSelect::KeyImage(key_image)).await
+            let output = session
+                .keys
+                .outputs(&data)?
+                .into_iter()
+                .find(|o| o.key_image == key_image)
+                .ok_or("Failed to find key image")?;
+            sweep(
+                session,
+                output.subaddress().0,
+                parsed,
+                SweepSelect::KeyImage(key_image),
+            )
+            .await
         }
         Command::ShowTransfers { args } => show_transfers(session, &args).await,
         Command::ShowTransfer { txid } => show_transfer(session, &txid).await,
         Command::ExportTransfers { args } => export_transfers(session, &args).await,
         Command::IncomingTransfers { args } => incoming_transfers(session, &args).await,
         Command::UnspentOutputs { args } => unspent_outputs(session, &args).await,
-        Command::SetTxNote { txid, note } => Ok(session.keys.set_note(&txid, &joined(&note)).await?),
+        Command::SetTxNote { txid, note } => {
+            Ok(session.keys.set_note(&txid, &joined(&note)).await?)
+        }
         Command::GetTxNote { txid } => {
             match session.data()?.tx_notes.get(&txid) {
                 Some(note) => println!("note found: {note}"),
@@ -414,10 +470,13 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
         }
         Command::SetDescription { text } => {
             let text = joined(&text);
-            session.keys.update_meta(|meta| {
-                let _: () = meta.description = Some(text).filter(|t| !t.is_empty());
-                Ok(())
-            }).await?;
+            session
+                .keys
+                .update_meta(|meta| {
+                    let _: () = meta.description = Some(text).filter(|t| !t.is_empty());
+                    Ok(())
+                })
+                .await?;
             Ok(())
         }
         Command::GetDescription => {
@@ -433,8 +492,20 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
         Command::Frozen { key_image } => {
             let image = args::parse_key_image(&key_image)?;
             let data = session.data()?;
-            let output = session.keys.outputs(&data)?.into_iter().find(|o| o.key_image == image).ok_or("Failed to find key image")?;
-            println!("{}: {key_image}", if output.frozen { "Frozen" } else { "Not frozen" });
+            let output = session
+                .keys
+                .outputs(&data)?
+                .into_iter()
+                .find(|o| o.key_image == image)
+                .ok_or("Failed to find key image")?;
+            println!(
+                "{}: {key_image}",
+                if output.frozen {
+                    "Frozen"
+                } else {
+                    "Not frozen"
+                }
+            );
             Ok(())
         }
         Command::MarkOutputSpent { output } => mark_output(session, &output, true).await,
@@ -442,8 +513,16 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
         Command::IsOutputSpent { output } => {
             let global_index = args::parse_output_spec(&output)?;
             let data = session.data()?;
-            let found = session.keys.outputs(&data)?.into_iter().find(|o| o.global_index() == global_index).ok_or("Output not found in the wallet")?;
-            println!("{}: {output}", if found.spent { "Spent" } else { "Not spent" });
+            let found = session
+                .keys
+                .outputs(&data)?
+                .into_iter()
+                .find(|o| o.global_index() == global_index)
+                .ok_or("Output not found in the wallet")?;
+            println!(
+                "{}: {output}",
+                if found.spent { "Spent" } else { "Not spent" }
+            );
             Ok(())
         }
         Command::RescanSpent => {
@@ -453,7 +532,13 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
                 println!("No changes: every output's spent status matches the chain");
             }
             for (output, spent) in changed {
-                println!("Output {} ({}, tx <{}>) is now {}", output.global_index(), money(output.amount(), unit), output.txid, if spent { "spent" } else { "unspent" });
+                println!(
+                    "Output {} ({}, tx <{}>) is now {}",
+                    output.global_index(),
+                    money(output.amount(), unit),
+                    output.txid,
+                    if spent { "spent" } else { "unspent" }
+                );
             }
             Ok(())
         }
@@ -461,10 +546,20 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
             let wallet = session.wallet().await?;
             let (data, resolved) = wallet.refresh().await?;
             let tip = wallet.tip().await?;
-            println!("Refresh done, transactions resolved: {resolved}, still pending: {}", data.pending.len());
+            println!(
+                "Refresh done, transactions resolved: {resolved}, still pending: {}",
+                data.pending.len()
+            );
             let unit = data.meta.settings.unit;
-            let (balance, unlocked) = account_totals(&balances(&session.keys, &data, tip)?, data.meta.current_account);
-            println!("Balance: {}, unlocked balance: {}", money(balance, unit), money(unlocked, unit));
+            let (balance, unlocked) = account_totals(
+                &balances(&session.keys, &data, tip)?,
+                data.meta.current_account,
+            );
+            println!(
+                "Balance: {}, unlocked balance: {}",
+                money(balance, unit),
+                money(unlocked, unit)
+            );
             Ok(())
         }
         Command::Status => {
@@ -472,9 +567,20 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
             let wallet = session.wallet().await?;
             let tip = wallet.tip().await?;
             let version = wallet.daemon_version().await?;
-            let ssl = if wallet.node_url().starts_with("https://") { "SSL" } else { "no SSL" };
-            let sync = if pending == 0 { "synced".to_string() } else { format!("{pending} transaction(s) awaiting confirmation") };
-            println!("Refreshed {tip}/{tip}, {sync}, daemon RPC v{}.{}, {ssl}", version.major, version.minor);
+            let ssl = if wallet.node_url().starts_with("https://") {
+                "SSL"
+            } else {
+                "no SSL"
+            };
+            let sync = if pending == 0 {
+                "synced".to_string()
+            } else {
+                format!("{pending} transaction(s) awaiting confirmation")
+            };
+            println!(
+                "Refreshed {tip}/{tip}, {sync}, daemon RPC v{}.{}, {ssl}",
+                version.major, version.minor
+            );
             Ok(())
         }
         Command::Fee => {
@@ -482,7 +588,11 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
             let wallet = session.wallet().await?;
             for (priority, name) in PRIORITY_NAMES.iter().enumerate().skip(1) {
                 let per_weight = wallet.fee_per_weight(fee_priority(priority as u32)).await?;
-                println!("Fee at priority {priority} ({name}): {} {} per byte", money(per_weight, unit), unit.name());
+                println!(
+                    "Fee at priority {priority} ({name}): {} {} per byte",
+                    money(per_weight, unit),
+                    unit.name()
+                );
             }
             Ok(())
         }
@@ -493,7 +603,10 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
         Command::WalletInfo => {
             let data = session.data()?;
             println!("Filename: {}", session.keys.path().display());
-            println!("Description: {}", data.meta.description.as_deref().unwrap_or("<Not set>"));
+            println!(
+                "Description: {}",
+                data.meta.description.as_deref().unwrap_or("<Not set>")
+            );
             println!("Address: {}", data.address);
             println!("Type: Normal");
             println!("Network type: Stagenet");
@@ -538,7 +651,10 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
                 account: data.meta.current_account,
                 subaddress_indexes: None,
                 priority: fee_priority(parsed.priority.unwrap_or(data.meta.settings.priority)),
-                kind: TransferKind::Pocketchange { pieces: parsed.pieces, inputs: parsed.inputs },
+                kind: TransferKind::Pocketchange {
+                    pieces: parsed.pieces,
+                    inputs: parsed.inputs,
+                },
             };
             send_prepared(session, request, |prepared, unit| {
                 let piece = prepared.destinations.first().map_or(0, |d| d.amount_piconero);
@@ -577,15 +693,33 @@ async fn balance(session: &mut Session, detail: bool) -> Result<(), CliError> {
     let balances = balances(&session.keys, &data, tip)?;
     let (balance, unlocked) = account_totals(&balances, current);
     println!("Currently selected account: [{current}] {}", account.label);
-    println!("Tag: {}", account.tag.as_deref().unwrap_or("(No tag assigned)"));
-    println!("Balance: {}, unlocked balance: {}", money(balance, unit), money(unlocked, unit));
+    println!(
+        "Tag: {}",
+        account.tag.as_deref().unwrap_or("(No tag assigned)")
+    );
+    println!(
+        "Balance: {}, unlocked balance: {}",
+        money(balance, unit),
+        money(unlocked, unit)
+    );
     if detail {
         println!("Balance per address:");
-        println!("{:>15} {:>21} {:>21} {:>7} {:>21}", "Address", "Balance", "Unlocked balance", "Outputs", "Label");
+        println!(
+            "{:>15} {:>21} {:>21} {:>7} {:>21}",
+            "Address", "Balance", "Unlocked balance", "Outputs", "Label"
+        );
         for (index, label) in account.subaddress_labels.iter().enumerate() {
-            let (balance, unlocked, count) = balances.get(&(current, index as u32)).copied().unwrap_or_default();
+            let (balance, unlocked, count) = balances
+                .get(&(current, index as u32))
+                .copied()
+                .unwrap_or_default();
             let address = session.keys.subaddress(current, index as u32);
-            println!("{index:>8} {:>6} {:>21} {:>21} {count:>7} {label:>21}", short(&address), money(balance, unit), money(unlocked, unit));
+            println!(
+                "{index:>8} {:>6} {:>21} {:>21} {count:>7} {label:>21}",
+                short(&address),
+                money(balance, unit),
+                money(unlocked, unit)
+            );
         }
     }
     Ok(())
@@ -607,29 +741,55 @@ async fn print_accounts(session: &mut Session) -> Result<(), CliError> {
         match tag {
             Some(tag) => {
                 println!("Accounts with tag: {tag}");
-                println!("Tag's description: {}", data.meta.tag_descriptions.get(tag).map(String::as_str).unwrap_or(""));
+                println!(
+                    "Tag's description: {}",
+                    data.meta
+                        .tag_descriptions
+                        .get(tag)
+                        .map(String::as_str)
+                        .unwrap_or("")
+                );
             }
             None if groups.len() > 1 => println!("Untagged accounts:"),
             None => {}
         }
-        println!("{:>17} {:>21} {:>21} {:>21}", "Account", "Balance", "Unlocked balance", "Label");
+        println!(
+            "{:>17} {:>21} {:>21} {:>21}",
+            "Account", "Balance", "Unlocked balance", "Label"
+        );
         for &index in indexes {
             let (balance, unlocked) = account_totals(&balances, index as u32);
             total += balance;
             total_unlocked += unlocked;
-            let marker = if index as u32 == data.meta.current_account { '*' } else { ' ' };
+            let marker = if index as u32 == data.meta.current_account {
+                '*'
+            } else {
+                ' '
+            };
             let address = session.keys.subaddress(index as u32, 0);
-            println!(" {marker}{index:>8} {:>6} {:>21} {:>21} {:>21}", short(&address), money(balance, unit), money(unlocked, unit), accounts[index].label);
+            println!(
+                " {marker}{index:>8} {:>6} {:>21} {:>21} {:>21}",
+                short(&address),
+                money(balance, unit),
+                money(unlocked, unit),
+                accounts[index].label
+            );
         }
     }
     println!("----------------------------------------------------------------------------------");
-    println!("{:>15} {:>21} {:>21}", "Total", money(total, unit), money(total_unlocked, unit));
+    println!(
+        "{:>15} {:>21} {:>21}",
+        "Total",
+        money(total, unit),
+        money(total_unlocked, unit)
+    );
     Ok(())
 }
 
 fn parse_account_index(word: Option<&String>) -> Result<u32, CliError> {
     let word = word.ok_or("missing account index")?;
-    word.parse().map_err(|_| CliError::Usage(format!("failed to parse index: {word}")))
+    word.parse()
+        .map_err(|_| CliError::Usage(format!("failed to parse index: {word}")))
 }
 
 async fn account(session: &mut Session, args: &[String]) -> Result<(), CliError> {
@@ -637,11 +797,13 @@ async fn account(session: &mut Session, args: &[String]) -> Result<(), CliError>
         None => print_accounts(session).await,
         Some("new") => {
             let label = joined(&args[1..]);
-            session.keys.update_meta(|meta| {
-                meta.current_account = meta.add_account(&label);
-                Ok(())
-            })
-            .await?;
+            session
+                .keys
+                .update_meta(|meta| {
+                    meta.current_account = meta.add_account(&label);
+                    Ok(())
+                })
+                .await?;
             print_accounts(session).await
         }
         Some("switch") => {
@@ -659,24 +821,39 @@ async fn account(session: &mut Session, args: &[String]) -> Result<(), CliError>
         Some("label") => {
             let index = parse_account_index(args.get(1))?;
             let label = joined(&args[2..]);
-            session.keys.update_meta(|meta| meta.label_account(index, &label)).await?;
+            session
+                .keys
+                .update_meta(|meta| meta.label_account(index, &label))
+                .await?;
             print_accounts(session).await
         }
         Some("tag") => {
             let tag = args.get(1).ok_or("missing tag name")?.clone();
-            let indexes = args[2..].iter().map(|w| parse_account_index(Some(w))).collect::<Result<Vec<_>, _>>()?;
+            let indexes = args[2..]
+                .iter()
+                .map(|w| parse_account_index(Some(w)))
+                .collect::<Result<Vec<_>, _>>()?;
             if indexes.is_empty() {
                 return Err("missing account index".into());
             }
-            session.keys.update_meta(|meta| meta.tag_accounts(Some(&tag), &indexes)).await?;
+            session
+                .keys
+                .update_meta(|meta| meta.tag_accounts(Some(&tag), &indexes))
+                .await?;
             print_accounts(session).await
         }
         Some("untag") => {
-            let indexes = args[1..].iter().map(|w| parse_account_index(Some(w))).collect::<Result<Vec<_>, _>>()?;
+            let indexes = args[1..]
+                .iter()
+                .map(|w| parse_account_index(Some(w)))
+                .collect::<Result<Vec<_>, _>>()?;
             if indexes.is_empty() {
                 return Err("missing account index".into());
             }
-            session.keys.update_meta(|meta| meta.tag_accounts(None, &indexes)).await?;
+            session
+                .keys
+                .update_meta(|meta| meta.tag_accounts(None, &indexes))
+                .await?;
             print_accounts(session).await
         }
         Some("tag_description") => {
@@ -685,7 +862,11 @@ async fn account(session: &mut Session, args: &[String]) -> Result<(), CliError>
             session
                 .keys
                 .update_meta(|meta| {
-                    if !meta.accounts().iter().any(|a| a.tag.as_deref() == Some(tag.as_str())) {
+                    if !meta
+                        .accounts()
+                        .iter()
+                        .any(|a| a.tag.as_deref() == Some(tag.as_str()))
+                    {
                         return Err(format!("Tag {tag} is unregistered."));
                     }
                     meta.tag_descriptions.insert(tag, description);
@@ -715,23 +896,39 @@ async fn address(session: &mut Session, args: &[String]) -> Result<(), CliError>
         }
         Some("new") => {
             let label = joined(&args[1..]);
-            let index = session.keys.update_meta(|meta| meta.add_subaddress(current, &label)).await?;
+            let index = session
+                .keys
+                .update_meta(|meta| meta.add_subaddress(current, &label))
+                .await?;
             print_address_row(&session.keys, current, index, &label);
         }
         Some("label") => {
-            let index: u32 = args.get(1).ok_or("missing address index")?.parse().map_err(|_| "failed to parse index")?;
+            let index: u32 = args
+                .get(1)
+                .ok_or("missing address index")?
+                .parse()
+                .map_err(|_| "failed to parse index")?;
             let label = joined(&args[2..]);
-            session.keys.update_meta(|meta| meta.label_subaddress(current, index, &label)).await?;
+            session
+                .keys
+                .update_meta(|meta| meta.label_subaddress(current, index, &label))
+                .await?;
             print_address_row(&session.keys, current, index, &label);
         }
         Some("one-off") => {
-            let [account, index] = [args.get(1), args.get(2)].map(|w| w.and_then(|w| w.parse::<u32>().ok()));
-            let (Some(account), Some(index)) = (account, index) else { return Err("usage: address one-off <account> <subaddress>".into()) };
+            let [account, index] =
+                [args.get(1), args.get(2)].map(|w| w.and_then(|w| w.parse::<u32>().ok()));
+            let (Some(account), Some(index)) = (account, index) else {
+                return Err("usage: address one-off <account> <subaddress>".into());
+            };
             print_address_row(&session.keys, account, index, "");
         }
         Some("device") => return Err("address device: this wallet has no hardware device".into()),
         Some(min) => {
-            let parse = |w: &str| w.parse::<usize>().map_err(|_| CliError::Usage(format!("failed to parse index: {w}")));
+            let parse = |w: &str| {
+                w.parse::<usize>()
+                    .map_err(|_| CliError::Usage(format!("failed to parse index: {w}")))
+            };
             let min = parse(min)?;
             let max = match args.get(1) {
                 Some(max) => parse(max)?,
@@ -760,23 +957,40 @@ fn integrated_address(session: &Session, arg: Option<&str>) -> Result<(), CliErr
         None => {
             let id = rand_payment_id();
             println!("Random payment ID: {}", hex::encode(id));
-            println!("Matching integrated address: {}", session.keys.integrated_address(id));
+            println!(
+                "Matching integrated address: {}",
+                session.keys.integrated_address(id)
+            );
         }
         Some(pid) if pid.len() == 16 && pid.bytes().all(|b| b.is_ascii_hexdigit()) => {
-            let id: [u8; 8] = hex::decode(pid).expect("checked hex").try_into().expect("checked length");
-            println!("Matching integrated address: {}", session.keys.integrated_address(id));
+            let id: [u8; 8] = hex::decode(pid)
+                .expect("checked hex")
+                .try_into()
+                .expect("checked length");
+            println!(
+                "Matching integrated address: {}",
+                session.keys.integrated_address(id)
+            );
         }
         Some(address) => {
-            let parsed = monero_wallet::address::MoneroAddress::from_str(monero_wallet::address::Network::Stagenet, address)
-                .map_err(|_| format!("failed to parse payment ID or address: {address}"))?;
-            let id = parsed.payment_id().ok_or("Address is not an integrated address")?;
+            let parsed = monero_wallet::address::MoneroAddress::from_str(
+                monero_wallet::address::Network::Stagenet,
+                address,
+            )
+            .map_err(|_| format!("failed to parse payment ID or address: {address}"))?;
+            let id = parsed
+                .payment_id()
+                .ok_or("Address is not an integrated address")?;
             let standard = monero_wallet::address::MoneroAddress::new(
                 monero_wallet::address::Network::Stagenet,
                 monero_wallet::address::AddressType::Legacy,
                 parsed.spend(),
                 parsed.view(),
             );
-            println!("Integrated address: {standard}, payment ID: {}", hex::encode(id));
+            println!(
+                "Integrated address: {standard}, payment ID: {}",
+                hex::encode(id)
+            );
         }
     }
     Ok(())
@@ -788,18 +1002,35 @@ fn payments(session: &Session, payment_ids: &[String]) -> Result<(), CliError> {
     let outputs = session.keys.outputs(&data)?;
     let mut header = false;
     for pid in payment_ids {
-        let id: [u8; 8] = hex::decode(pid).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| format!("payment ID has invalid format, expected 16 hex characters: {pid}"))?;
-        let matching: Vec<&OwnedOutput> = outputs.iter().filter(|o| o.payment_id() == Some(id)).collect();
+        let id: [u8; 8] = hex::decode(pid)
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| {
+                format!("payment ID has invalid format, expected 16 hex characters: {pid}")
+            })?;
+        let matching: Vec<&OwnedOutput> = outputs
+            .iter()
+            .filter(|o| o.payment_id() == Some(id))
+            .collect();
         if matching.is_empty() {
             println!("No payments with id {pid}");
             continue;
         }
         if !header {
-            println!("{:>68}{:>68}{:>12}{:>21}{:>16}", "payment", "transaction", "height", "amount", "addr index");
+            println!(
+                "{:>68}{:>68}{:>12}{:>21}{:>16}",
+                "payment", "transaction", "height", "amount", "addr index"
+            );
             header = true;
         }
         for output in matching {
-            println!("{pid:>68}{:>68}{:>12}{:>21}{:>16}", output.txid, output.height, money(output.amount(), unit), output.subaddress().1);
+            println!(
+                "{pid:>68}{:>68}{:>12}{:>21}{:>16}",
+                output.txid,
+                output.height,
+                money(output.amount(), unit),
+                output.subaddress().1
+            );
         }
     }
     Ok(())
@@ -815,11 +1046,21 @@ fn confirm(data: &WalletData, summary: &str) -> Result<bool, CliError> {
     print!("{summary}\nIs this okay?  (Y/Yes/N/No): ");
     std::io::stdout().flush().ok();
     let mut answer = String::new();
-    std::io::stdin().lock().read_line(&mut answer).map_err(|e| format!("failed to read the answer: {e}"))?;
-    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+    std::io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .map_err(|e| format!("failed to read the answer: {e}"))?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
-async fn send_prepared(session: &mut Session, request: TransferRequest, summarize: impl FnOnce(&cli_wallet::PreparedTransfer, Unit) -> String) -> Result<(), CliError> {
+async fn send_prepared(
+    session: &mut Session,
+    request: TransferRequest,
+    summarize: impl FnOnce(&cli_wallet::PreparedTransfer, Unit) -> String,
+) -> Result<(), CliError> {
     let data = session.data()?;
     let relay = !session.do_not_relay;
     let wallet = session.wallet().await?;
@@ -837,7 +1078,8 @@ async fn send_prepared(session: &mut Session, request: TransferRequest, summariz
             println!("You can check its status by using the `show_transfers` command.");
         }
         Some(tx_hex) => {
-            std::fs::write("raw_monero_tx", tx_hex).map_err(|e| format!("failed to write raw_monero_tx: {e}"))?;
+            std::fs::write("raw_monero_tx", tx_hex)
+                .map_err(|e| format!("failed to write raw_monero_tx: {e}"))?;
             println!("Transaction successfully saved to raw_monero_tx, txid <{txid}>");
         }
     }
@@ -856,25 +1098,50 @@ async fn transfer(session: &mut Session, words: &[String]) -> Result<(), CliErro
         account: data.meta.current_account,
         subaddress_indexes: index_filter(parsed.indexes),
         priority: fee_priority(parsed.priority.unwrap_or(data.meta.settings.priority)),
-        kind: TransferKind::Pay { destinations: parsed.destinations, subtract_fee_from, split_change_into: None },
+        kind: TransferKind::Pay {
+            destinations: parsed.destinations,
+            subtract_fee_from,
+            split_change_into: None,
+        },
     };
     send_prepared(session, request, |prepared, unit| {
-        let sent: u64 = prepared.destinations.iter().map(|d| d.amount_piconero).sum();
-        format!("Sending {}.  The transaction fee is {}", money(sent, unit), money(prepared.fee, unit))
+        let sent: u64 = prepared
+            .destinations
+            .iter()
+            .map(|d| d.amount_piconero)
+            .sum();
+        format!(
+            "Sending {}.  The transaction fee is {}",
+            money(sent, unit),
+            money(prepared.fee, unit)
+        )
     })
     .await
 }
 
-async fn sweep(session: &mut Session, account: u32, parsed: args::SweepArgs, select: SweepSelect) -> Result<(), CliError> {
+async fn sweep(
+    session: &mut Session,
+    account: u32,
+    parsed: args::SweepArgs,
+    select: SweepSelect,
+) -> Result<(), CliError> {
     let data = session.data()?;
     let request = TransferRequest {
         account,
         subaddress_indexes: index_filter(parsed.indexes),
         priority: fee_priority(parsed.priority.unwrap_or(data.meta.settings.priority)),
-        kind: TransferKind::Sweep { address: parsed.address, outputs: parsed.outputs, select },
+        kind: TransferKind::Sweep {
+            address: parsed.address,
+            outputs: parsed.outputs,
+            select,
+        },
     };
     send_prepared(session, request, |prepared, unit| {
-        format!("Sweeping {} in 1 transaction for a total fee of {}.", money(prepared.inputs_total, unit), money(prepared.fee, unit))
+        format!(
+            "Sweeping {} in 1 transaction for a total fee of {}.",
+            money(prepared.inputs_total, unit),
+            money(prepared.fee, unit)
+        )
     })
     .await
 }
@@ -899,24 +1166,34 @@ pub struct TransferRow {
 /// grouped per transaction and account, from transactions it didn't send
 /// itself), `out`/`pending` (its own sends, confirmed or not) and `pool`
 /// (payments it was told to expect that haven't confirmed).
-pub fn transfer_rows(keys: &WalletKeys, data: &WalletData, tip: u64) -> Result<Vec<TransferRow>, WalletError> {
+pub fn transfer_rows(
+    keys: &WalletKeys,
+    data: &WalletData,
+    tip: u64,
+) -> Result<Vec<TransferRow>, WalletError> {
     let sent_txids: BTreeSet<&str> = data.sent.iter().map(|s| s.txid.as_str()).collect();
     let mut incoming: BTreeMap<(String, u32), TransferRow> = BTreeMap::new();
-    for output in keys.outputs(data)?.into_iter().filter(|o| !sent_txids.contains(o.txid.as_str())) {
+    for output in keys
+        .outputs(data)?
+        .into_iter()
+        .filter(|o| !sent_txids.contains(o.txid.as_str()))
+    {
         let (account, index) = output.subaddress();
-        let row = incoming.entry((output.txid.clone(), account)).or_insert_with(|| TransferRow {
-            height: Some(output.height),
-            direction: "in",
-            unlocked: Some(output.unlocked(tip)),
-            timestamp: output.timestamp,
-            amount: 0,
-            txid: output.txid.clone(),
-            payment_id: output.payment_id(),
-            fee: None,
-            destinations: vec![],
-            indexes: BTreeSet::new(),
-            account,
-        });
+        let row = incoming
+            .entry((output.txid.clone(), account))
+            .or_insert_with(|| TransferRow {
+                height: Some(output.height),
+                direction: "in",
+                unlocked: Some(output.unlocked(tip)),
+                timestamp: output.timestamp,
+                amount: 0,
+                txid: output.txid.clone(),
+                payment_id: output.payment_id(),
+                fee: None,
+                destinations: vec![],
+                indexes: BTreeSet::new(),
+                account,
+            });
         row.amount += output.amount();
         row.indexes.insert(index);
     }
@@ -924,19 +1201,31 @@ pub fn transfer_rows(keys: &WalletKeys, data: &WalletData, tip: u64) -> Result<V
     for sent in &data.sent {
         rows.push(TransferRow {
             height: sent.height,
-            direction: if sent.height.is_some() { "out" } else { "pending" },
+            direction: if sent.height.is_some() {
+                "out"
+            } else {
+                "pending"
+            },
             unlocked: None,
             timestamp: sent.timestamp,
             amount: sent.destinations.iter().map(|d| d.amount_piconero).sum(),
             txid: sent.txid.clone(),
             payment_id: None,
             fee: Some(sent.fee_piconero),
-            destinations: sent.destinations.iter().map(|d| (d.address.clone(), d.amount_piconero)).collect(),
+            destinations: sent
+                .destinations
+                .iter()
+                .map(|d| (d.address.clone(), d.amount_piconero))
+                .collect(),
             indexes: BTreeSet::from([0]),
             account: sent.account,
         });
     }
-    for pending in data.pending.iter().filter(|p| !sent_txids.contains(p.txid.as_str())) {
+    for pending in data
+        .pending
+        .iter()
+        .filter(|p| !sent_txids.contains(p.txid.as_str()))
+    {
         rows.push(TransferRow {
             height: None,
             direction: "pool",
@@ -955,7 +1244,11 @@ pub fn transfer_rows(keys: &WalletKeys, data: &WalletData, tip: u64) -> Result<V
     Ok(rows)
 }
 
-fn filter_rows(rows: Vec<TransferRow>, filter: &args::HistoryArgs, account: u32) -> Vec<TransferRow> {
+fn filter_rows(
+    rows: Vec<TransferRow>,
+    filter: &args::HistoryArgs,
+    account: u32,
+) -> Vec<TransferRow> {
     let indexes = index_filter(filter.indexes.clone());
     rows.into_iter()
         .filter(|row| row.account == account)
@@ -965,8 +1258,15 @@ fn filter_rows(rows: Vec<TransferRow>, filter: &args::HistoryArgs, account: u32)
             "pending" => filter.pending,
             _ => filter.pool,
         })
-        .filter(|row| row.height.is_none_or(|h| h >= filter.min_height && h <= filter.max_height))
-        .filter(|row| indexes.as_ref().is_none_or(|wanted| row.indexes.is_empty() || row.indexes.iter().any(|i| wanted.contains(i))))
+        .filter(|row| {
+            row.height
+                .is_none_or(|h| h >= filter.min_height && h <= filter.max_height)
+        })
+        .filter(|row| {
+            indexes.as_ref().is_none_or(|wanted| {
+                row.indexes.is_empty() || row.indexes.iter().any(|i| wanted.contains(i))
+            })
+        })
         .collect()
 }
 
@@ -982,9 +1282,18 @@ pub fn format_transfer_row(row: &TransferRow, note: &str, unit: Unit) -> String 
     let destinations = if row.destinations.is_empty() {
         "-".to_string()
     } else {
-        row.destinations.iter().map(|(address, amount)| format!("{}:{}", short(address), money(*amount, unit))).collect::<Vec<_>>().join(", ")
+        row.destinations
+            .iter()
+            .map(|(address, amount)| format!("{}:{}", short(address), money(*amount, unit)))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
-    let indexes = row.indexes.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let indexes = row
+        .indexes
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
         "{height:>8} {:>7} {lock:>8} {:>25} {:>20} {} {payment_id} {fee:>14} {destinations} {indexes} - {note}",
         row.direction,
@@ -1004,12 +1313,26 @@ async fn show_transfers(session: &mut Session, words: &[String]) -> Result<(), C
     let filter = args::parse_history(words)?;
     let (tip, data) = tip_and_data(session).await?;
     let unit = data.meta.settings.unit;
-    let rows = filter_rows(transfer_rows(&session.keys, &data, tip)?, &filter, data.meta.current_account);
+    let rows = filter_rows(
+        transfer_rows(&session.keys, &data, tip)?,
+        &filter,
+        data.meta.current_account,
+    );
     if rows.is_empty() {
         println!("No transfers found");
     }
     for row in rows {
-        println!("{}", format_transfer_row(&row, data.tx_notes.get(&row.txid).map(String::as_str).unwrap_or(""), unit));
+        println!(
+            "{}",
+            format_transfer_row(
+                &row,
+                data.tx_notes
+                    .get(&row.txid)
+                    .map(String::as_str)
+                    .unwrap_or(""),
+                unit
+            )
+        );
     }
     Ok(())
 }
@@ -1017,7 +1340,10 @@ async fn show_transfers(session: &mut Session, words: &[String]) -> Result<(), C
 async fn show_transfer(session: &mut Session, txid: &str) -> Result<(), CliError> {
     let (tip, data) = tip_and_data(session).await?;
     let unit = data.meta.settings.unit;
-    let rows: Vec<TransferRow> = transfer_rows(&session.keys, &data, tip)?.into_iter().filter(|row| row.txid == txid).collect();
+    let rows: Vec<TransferRow> = transfer_rows(&session.keys, &data, tip)?
+        .into_iter()
+        .filter(|row| row.txid == txid)
+        .collect();
     if rows.is_empty() {
         return Err("Transaction ID not found".into());
     }
@@ -1031,19 +1357,36 @@ async fn show_transfer(session: &mut Session, txid: &str) -> Result<(), CliError
         };
         println!("{direction}");
         println!("txid: {}", row.txid);
-        println!("Height: {}", row.height.map_or("-".to_string(), |h| h.to_string()));
+        println!(
+            "Height: {}",
+            row.height.map_or("-".to_string(), |h| h.to_string())
+        );
         println!("Timestamp: {}", format_timestamp(row.timestamp));
         println!("Amount: {}", money(row.amount, unit));
-        println!("Payment ID: {}", hex::encode(row.payment_id.unwrap_or([0; 8])));
+        println!(
+            "Payment ID: {}",
+            hex::encode(row.payment_id.unwrap_or([0; 8]))
+        );
         if let Some(fee) = row.fee {
-            let change = data.sent.iter().find(|s| s.txid == row.txid).map_or(0, |s| s.change_piconero);
+            let change = data
+                .sent
+                .iter()
+                .find(|s| s.txid == row.txid)
+                .map_or(0, |s| s.change_piconero);
             println!("Change: {}", money(change, unit));
             println!("Fee: {}", money(fee, unit));
             for (address, amount) in &row.destinations {
                 println!("Destination: {address} {}", money(*amount, unit));
             }
         } else if row.direction == "in" {
-            println!("Address index: {}", row.indexes.iter().map(u32::to_string).collect::<Vec<_>>().join(","));
+            println!(
+                "Address index: {}",
+                row.indexes
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             if let Some(unlocked) = row.unlocked {
                 println!("{}", if unlocked { "Unlocked" } else { "Locked" });
             }
@@ -1066,7 +1409,10 @@ async fn export_transfers(session: &mut Session, words: &[String]) -> Result<(),
     let (tip, data) = tip_and_data(session).await?;
     let unit = data.meta.settings.unit;
     let account = data.meta.current_account;
-    let path = filter.output.clone().unwrap_or_else(|| format!("output{account}.csv"));
+    let path = filter
+        .output
+        .clone()
+        .unwrap_or_else(|| format!("output{account}.csv"));
     let rows = filter_rows(transfer_rows(&session.keys, &data, tip)?, &filter, account);
     let mut csv = String::from("block,direction,unlocked,timestamp,amount,running balance,hash,payment ID,fee,destination,amount,index,note\n");
     let mut running: i128 = 0;
@@ -1076,29 +1422,60 @@ async fn export_transfers(session: &mut Session, words: &[String]) -> Result<(),
             "out" | "pending" => running -= (row.amount + row.fee.unwrap_or(0)) as i128,
             _ => {}
         }
-        let running_text = if running < 0 { format!("-{}", money(running.unsigned_abs() as u64, unit)) } else { money(running as u64, unit) };
+        let running_text = if running < 0 {
+            format!("-{}", money(running.unsigned_abs() as u64, unit))
+        } else {
+            money(running as u64, unit)
+        };
         let lines: Vec<(String, String)> = if row.destinations.is_empty() {
             vec![(String::new(), String::new())]
         } else {
-            row.destinations.iter().map(|(address, amount)| (address.clone(), money(*amount, unit))).collect()
+            row.destinations
+                .iter()
+                .map(|(address, amount)| (address.clone(), money(*amount, unit)))
+                .collect()
         };
         for (i, (destination, destination_amount)) in lines.into_iter().enumerate() {
             let fields = [
                 row.height.map_or(String::new(), |h| h.to_string()),
                 row.direction.to_string(),
-                row.unlocked.map_or(String::new(), |u| if u { "unlocked" } else { "locked" }.to_string()),
+                row.unlocked.map_or(String::new(), |u| {
+                    if u { "unlocked" } else { "locked" }.to_string()
+                }),
                 format_timestamp(row.timestamp),
-                if i == 0 { money(row.amount, unit) } else { String::new() },
-                if i == 0 { running_text.clone() } else { String::new() },
+                if i == 0 {
+                    money(row.amount, unit)
+                } else {
+                    String::new()
+                },
+                if i == 0 {
+                    running_text.clone()
+                } else {
+                    String::new()
+                },
                 row.txid.clone(),
                 hex::encode(row.payment_id.unwrap_or([0; 8])),
-                if i == 0 { row.fee.map_or(String::new(), |f| money(f, unit)) } else { String::new() },
+                if i == 0 {
+                    row.fee.map_or(String::new(), |f| money(f, unit))
+                } else {
+                    String::new()
+                },
                 destination,
                 destination_amount,
-                row.indexes.iter().map(u32::to_string).collect::<Vec<_>>().join(","),
+                row.indexes
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
                 data.tx_notes.get(&row.txid).cloned().unwrap_or_default(),
             ];
-            csv.push_str(&fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
+            csv.push_str(
+                &fields
+                    .iter()
+                    .map(|f| csv_field(f))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
             csv.push('\n');
         }
     }
@@ -1108,7 +1485,10 @@ async fn export_transfers(session: &mut Session, words: &[String]) -> Result<(),
 }
 
 pub fn format_incoming_header(verbose: bool) -> String {
-    let mut header = format!("{:>21}{:>8}{:>12}{:>8}{:>16}{:>68}{:>16}", "amount", "spent", "unlocked", "ringct", "global index", "tx id", "addr index");
+    let mut header = format!(
+        "{:>21}{:>8}{:>12}{:>8}{:>16}{:>68}{:>16}",
+        "amount", "spent", "unlocked", "ringct", "global index", "tx id", "addr index"
+    );
     if verbose {
         header.push_str(&format!("{:>68}{:>68}", "pubkey", "key image"));
     }
@@ -1134,7 +1514,11 @@ pub fn format_incoming_row(output: &OwnedOutput, tip: u64, verbose: bool, unit: 
         output.subaddress().1
     );
     if verbose {
-        row.push_str(&format!("{:>68}{:>68}", format!("<{}>", output.public_key_hex()), format!("<{}>", hex::encode(output.key_image))));
+        row.push_str(&format!(
+            "{:>68}{:>68}",
+            format!("<{}>", output.public_key_hex()),
+            format!("<{}>", hex::encode(output.key_image))
+        ));
     }
     row
 }
@@ -1148,7 +1532,9 @@ async fn incoming_transfers(session: &mut Session, words: &[String]) -> Result<(
             "available" => available = Some(true),
             "unavailable" => available = Some(false),
             "verbose" => verbose = true,
-            "uses" => return Err("incoming_transfers uses: not supported - it needs a chain scan".into()),
+            "uses" => {
+                return Err("incoming_transfers uses: not supported - it needs a chain scan".into())
+            }
             _ => break,
         }
         args.pop_front();
@@ -1165,7 +1551,11 @@ async fn incoming_transfers(session: &mut Session, words: &[String]) -> Result<(
         .outputs(&data)?
         .into_iter()
         .filter(|o| o.subaddress().0 == account)
-        .filter(|o| indexes.as_ref().is_none_or(|wanted| wanted.contains(&o.subaddress().1)))
+        .filter(|o| {
+            indexes
+                .as_ref()
+                .is_none_or(|wanted| wanted.contains(&o.subaddress().1))
+        })
         .filter(|o| available.is_none_or(|available| available != o.spent))
         .collect();
     if outputs.is_empty() {
@@ -1187,8 +1577,16 @@ async fn unspent_outputs(session: &mut Session, words: &[String]) -> Result<(), 
     let unit = session.unit()?;
     let mut args: std::collections::VecDeque<String> = words.iter().cloned().collect();
     let indexes = index_filter(args::take_index(&mut args, false)?);
-    let min_amount = args.pop_front().map(|w| parse_amount(&w, unit)).transpose()?.unwrap_or(0);
-    let max_amount = args.pop_front().map(|w| parse_amount(&w, unit)).transpose()?.unwrap_or(u64::MAX);
+    let min_amount = args
+        .pop_front()
+        .map(|w| parse_amount(&w, unit))
+        .transpose()?
+        .unwrap_or(0);
+    let max_amount = args
+        .pop_front()
+        .map(|w| parse_amount(&w, unit))
+        .transpose()?
+        .unwrap_or(u64::MAX);
     if min_amount > max_amount {
         return Err("<min_amount> should be smaller than <max_amount>".into());
     }
@@ -1199,7 +1597,11 @@ async fn unspent_outputs(session: &mut Session, words: &[String]) -> Result<(), 
         .outputs(&data)?
         .into_iter()
         .filter(|o| !o.spent && o.subaddress().0 == account)
-        .filter(|o| indexes.as_ref().is_none_or(|wanted| wanted.contains(&o.subaddress().1)))
+        .filter(|o| {
+            indexes
+                .as_ref()
+                .is_none_or(|wanted| wanted.contains(&o.subaddress().1))
+        })
         .filter(|o| (min_amount..=max_amount).contains(&o.amount()))
         .collect();
     if outputs.is_empty() {
@@ -1214,13 +1616,26 @@ async fn unspent_outputs(session: &mut Session, words: &[String]) -> Result<(), 
 pub fn format_unspent(outputs: &[OwnedOutput], unit: Unit) -> String {
     let mut text = format!("{:>21} {:>12}\n", "Amount", "Height");
     for output in outputs {
-        text.push_str(&format!("{:>21} {:>12}\n", money(output.amount(), unit), output.height));
+        text.push_str(&format!(
+            "{:>21} {:>12}\n",
+            money(output.amount(), unit),
+            output.height
+        ));
     }
     let heights = outputs.iter().map(|o| o.height);
     let amounts = outputs.iter().map(|o| o.amount());
-    let (min_height, max_height) = (heights.clone().min().unwrap_or(0), heights.max().unwrap_or(0));
-    text.push_str(&format!("\nMin block height: {min_height}\nMax block height: {max_height}\n"));
-    text.push_str(&format!("Min amount found: {}\nMax amount found: {}\n", money(amounts.clone().min().unwrap_or(0), unit), money(amounts.max().unwrap_or(0), unit)));
+    let (min_height, max_height) = (
+        heights.clone().min().unwrap_or(0),
+        heights.max().unwrap_or(0),
+    );
+    text.push_str(&format!(
+        "\nMin block height: {min_height}\nMax block height: {max_height}\n"
+    ));
+    text.push_str(&format!(
+        "Min amount found: {}\nMax amount found: {}\n",
+        money(amounts.clone().min().unwrap_or(0), unit),
+        money(amounts.max().unwrap_or(0), unit)
+    ));
     text.push_str(&format!("Total count: {}\n", outputs.len()));
 
     // Outputs per block-height bin, as a bar chart.
@@ -1230,9 +1645,15 @@ pub fn format_unspent(outputs: &[OwnedOutput], unit: Unit) -> String {
     for output in outputs {
         counts[(((output.height - min_height) / bin_size).min(BINS - 1)) as usize] += 1;
     }
-    text.push_str(&format!("\nBin size: {bin_size}\nOutputs per bin (block height from {min_height}):\n"));
+    text.push_str(&format!(
+        "\nBin size: {bin_size}\nOutputs per bin (block height from {min_height}):\n"
+    ));
     for (bin, count) in counts.iter().enumerate() {
-        text.push_str(&format!("{:>12} |{}\n", min_height + bin as u64 * bin_size, "*".repeat(*count)));
+        text.push_str(&format!(
+            "{:>12} |{}\n",
+            min_height + bin as u64 * bin_size,
+            "*".repeat(*count)
+        ));
     }
     text
 }
@@ -1245,28 +1666,46 @@ async fn address_book(session: &mut Session, args: &[String]) -> Result<(), CliE
                 println!("Address book is empty.");
             }
             for (index, entry) in book.iter().enumerate() {
-                println!("Index: {index}\nAddress: {}\nDescription: {}\n", entry.address, entry.description);
+                println!(
+                    "Index: {index}\nAddress: {}\nDescription: {}\n",
+                    entry.address, entry.description
+                );
             }
             Ok(())
         }
         Some("add") => {
             let address = args.get(1).ok_or("missing address")?.clone();
-            monero_wallet::address::MoneroAddress::from_str(monero_wallet::address::Network::Stagenet, &address)
-                .map_err(|e| format!("failed to parse address {address}: {e}"))?;
+            monero_wallet::address::MoneroAddress::from_str(
+                monero_wallet::address::Network::Stagenet,
+                &address,
+            )
+            .map_err(|e| format!("failed to parse address {address}: {e}"))?;
             let description = joined(&args[2..]);
-            session.keys.update_meta(|meta| {
-                let _: () = meta.address_book.push(AddressBookEntry { address, description });
-                Ok(())
-            }).await?;
+            session
+                .keys
+                .update_meta(|meta| {
+                    let _: () = meta.address_book.push(AddressBookEntry {
+                        address,
+                        description,
+                    });
+                    Ok(())
+                })
+                .await?;
             Ok(())
         }
         Some("delete") => {
-            let index: usize = args.get(1).ok_or("missing index")?.parse().map_err(|_| "failed to parse index")?;
+            let index: usize = args
+                .get(1)
+                .ok_or("missing index")?
+                .parse()
+                .map_err(|_| "failed to parse index")?;
             session
                 .keys
                 .update_meta(|meta| {
                     if index >= meta.address_book.len() {
-                        return Err(format!("failed to delete address book row {index}: there is no such row"));
+                        return Err(format!(
+                            "failed to delete address book row {index}: there is no such row"
+                        ));
                     }
                     meta.address_book.remove(index);
                     Ok(())
@@ -1299,27 +1738,44 @@ async fn set(session: &mut Session, args: &[String]) -> Result<(), CliError> {
     let settings = &data.meta.settings;
     let Some(option) = args.first() else {
         println!("seed = Electrum");
-        println!("always-confirm-transfers = {}", u8::from(!settings.skip_transfer_confirmation));
+        println!(
+            "always-confirm-transfers = {}",
+            u8::from(!settings.skip_transfer_confirmation)
+        );
         println!("default-ring-size = {RING_LEN}");
-        println!("priority = {} ({})", settings.priority, PRIORITY_NAMES[settings.priority as usize]);
+        println!(
+            "priority = {} ({})",
+            settings.priority, PRIORITY_NAMES[settings.priority as usize]
+        );
         println!("unit = {}", settings.unit.name());
         return Ok(());
     };
-    let value = args.get(1).ok_or_else(|| format!("set {option}: needs a value"))?.clone();
+    let value = args
+        .get(1)
+        .ok_or_else(|| format!("set {option}: needs a value"))?
+        .clone();
     match option.as_str() {
         "priority" => {
-            let priority = args::parse_priority(&value).ok_or_else(|| format!("priority must be one of {PRIORITY_NAMES:?} or 0-4"))?;
-            session.keys.update_meta(|meta| {
-                let _: () = meta.settings.priority = priority;
-                Ok(())
-            }).await?;
+            let priority = args::parse_priority(&value)
+                .ok_or_else(|| format!("priority must be one of {PRIORITY_NAMES:?} or 0-4"))?;
+            session
+                .keys
+                .update_meta(|meta| {
+                    let _: () = meta.settings.priority = priority;
+                    Ok(())
+                })
+                .await?;
         }
         "unit" => {
-            let unit = Unit::parse(&value).ok_or_else(|| format!("unit must be one of {:?}", Unit::ALL.map(Unit::name)))?;
-            session.keys.update_meta(|meta| {
-                let _: () = meta.settings.unit = unit;
-                Ok(())
-            }).await?;
+            let unit = Unit::parse(&value)
+                .ok_or_else(|| format!("unit must be one of {:?}", Unit::ALL.map(Unit::name)))?;
+            session
+                .keys
+                .update_meta(|meta| {
+                    let _: () = meta.settings.unit = unit;
+                    Ok(())
+                })
+                .await?;
         }
         "always-confirm-transfers" => {
             let confirm = match value.as_str() {
@@ -1327,14 +1783,20 @@ async fn set(session: &mut Session, args: &[String]) -> Result<(), CliError> {
                 "0" | "no" | "false" => false,
                 _ => return Err("always-confirm-transfers must be 0 or 1".into()),
             };
-            session.keys.update_meta(|meta| {
-                let _: () = meta.settings.skip_transfer_confirmation = !confirm;
-                Ok(())
-            }).await?;
+            session
+                .keys
+                .update_meta(|meta| {
+                    let _: () = meta.settings.skip_transfer_confirmation = !confirm;
+                    Ok(())
+                })
+                .await?;
         }
         "default-ring-size" => {
             if value != "0" && value != RING_LEN.to_string() {
-                return Err(format!("default-ring-size must be {RING_LEN}, the only size the network accepts").into());
+                return Err(format!(
+                    "default-ring-size must be {RING_LEN}, the only size the network accepts"
+                )
+                .into());
             }
         }
         other => return Err(format!("set: {other} isn't supported by this wallet").into()),

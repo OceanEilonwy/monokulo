@@ -26,6 +26,7 @@
 //! `AuthedTenant` (`src/http/mod.rs` at the repo root) parses.
 
 use serde::{Deserialize, Serialize};
+use shared::auth::RawToken;
 
 /// A client for one engine instance's admin API, reached at `base_url`
 /// (e.g. `http://127.0.0.1:PORT` in tests, a real domain in production).
@@ -68,7 +69,10 @@ impl EngineTarget {
         EngineTarget {
             base_url,
             max_cache_bytes,
-            http: shared::http_cache::build_traced_client(concat!("monokulo/", env!("CARGO_PKG_VERSION")), max_cache_bytes),
+            http: shared::http_cache::build_traced_client(
+                concat!("monokulo/", env!("CARGO_PKG_VERSION")),
+                max_cache_bytes,
+            ),
             live: Default::default(),
         }
     }
@@ -91,10 +95,9 @@ impl EngineClient {
     /// sites compiling unchanged.
     pub fn with_cache_limit(base_url: impl Into<String>, max_cache_bytes: u64) -> Self {
         EngineClient {
-            current: std::sync::Arc::new(parking_lot::RwLock::new(std::sync::Arc::new(EngineTarget::new(
-                base_url.into(),
-                max_cache_bytes,
-            )))),
+            current: std::sync::Arc::new(parking_lot::RwLock::new(std::sync::Arc::new(
+                EngineTarget::new(base_url.into(), max_cache_bytes),
+            ))),
         }
     }
 
@@ -124,8 +127,16 @@ impl EngineClient {
     /// Watches one order for changes - see `crate::live::LiveHub::subscribe`.
     /// `connection_id` keys the shared upstream stream; `sk` must be that
     /// connection's own secret.
-    pub fn subscribe_order(&self, connection_id: &str, sk: &str, order_id: &str) -> crate::live::OrderSubscription {
-        self.target().live.clone().subscribe(self, connection_id, sk, order_id)
+    pub fn subscribe_order(
+        &self,
+        connection_id: &crate::db::ConnectionId,
+        sk: &RawToken,
+        order_id: &shared::ids::OrderId,
+    ) -> crate::live::OrderSubscription {
+        self.target()
+            .live
+            .clone()
+            .subscribe(self, connection_id, sk, order_id)
     }
 
     /// How many stores currently hold an open engine event stream.
@@ -136,12 +147,15 @@ impl EngineClient {
     /// `GET {base_url}/api/v1/admin/tenant/events` — opens `sk`'s tenant's
     /// order-change event stream. The returned response's body is the
     /// never-ending SSE stream itself; the caller reads it chunk by chunk.
-    pub async fn open_order_events(&self, sk: &str) -> Result<reqwest::Response, EngineClientError> {
+    pub async fn open_order_events(
+        &self,
+        sk: &RawToken,
+    ) -> Result<reqwest::Response, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .get(format!("{}/api/v1/admin/tenant/events", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .send()
             .await?;
@@ -158,7 +172,10 @@ impl EngineClient {
 
     /// `POST {base_url}/api/v1/admin/tenants` — provisions a new tenant on
     /// the engine. No auth header (see module doc comment).
-    pub async fn create_tenant(&self, req: CreateTenantRequest) -> Result<CreateTenantResponse, EngineClientError> {
+    pub async fn create_tenant(
+        &self,
+        req: CreateTenantRequest,
+    ) -> Result<CreateTenantResponse, EngineClientError> {
         let target = self.target();
         let response = target
             .http
@@ -173,7 +190,11 @@ impl EngineClient {
     /// a store can choose from, and the default (part 5).
     pub async fn key_custody_options(&self) -> Result<KeyCustodyOptions, EngineClientError> {
         let target = self.target();
-        let response = target.http.get(format!("{}/api/v1/admin/key-custody", target.base_url)).send().await?;
+        let response = target
+            .http
+            .get(format!("{}/api/v1/admin/key-custody", target.base_url))
+            .send()
+            .await?;
         parse_response(response).await
     }
 
@@ -182,7 +203,7 @@ impl EngineClient {
     /// wallet's; the engine checks.
     pub async fn switch_key_custody(
         &self,
-        sk: &str,
+        sk: &RawToken,
         backend: &str,
         view_key_hex: &str,
         spend_pubkey_hex: &str,
@@ -190,9 +211,16 @@ impl EngineClient {
         let target = self.target();
         let response = target
             .http
-            .put(format!("{}/api/v1/admin/tenant/key-custody", target.base_url))
-            .bearer_auth(sk)
-            .json(&SwitchKeyCustodyRequest { backend, view_key_hex, spend_pubkey_hex })
+            .put(format!(
+                "{}/api/v1/admin/tenant/key-custody",
+                target.base_url
+            ))
+            .bearer_auth(sk.expose())
+            .json(&SwitchKeyCustodyRequest {
+                backend,
+                view_key_hex,
+                spend_pubkey_hex,
+            })
             .send()
             .await?;
         parse_response(response).await
@@ -200,12 +228,12 @@ impl EngineClient {
 
     /// `GET {base_url}/api/v1/admin/tenant` — fetches the tenant that owns
     /// `sk`, authenticated as that tenant via `Authorization: Bearer sk_...`.
-    pub async fn get_tenant(&self, sk: &str) -> Result<TenantView, EngineClientError> {
+    pub async fn get_tenant(&self, sk: &RawToken) -> Result<TenantView, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .get(format!("{}/api/v1/admin/tenant", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         parse_response(response).await
@@ -216,12 +244,12 @@ impl EngineClient {
     /// filtering yet — this task's scope is a plain list; see
     /// `src/http/admin.rs::ListOrdersQuery` at the repo root for what a
     /// later enhancement could add).
-    pub async fn list_orders(&self, sk: &str) -> Result<Vec<OrderView>, EngineClientError> {
+    pub async fn list_orders(&self, sk: &RawToken) -> Result<Vec<OrderView>, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .get(format!("{}/api/v1/admin/tenant/orders", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         parse_response(response).await
@@ -231,7 +259,14 @@ impl EngineClient {
     /// — a page of `sk`'s tenant's orders, newest first: only still-open
     /// ones when `open`, only those whose id or merchant order id contains
     /// `search`. At most 200 per page.
-    pub async fn list_orders_page(&self, sk: &str, open: bool, search: Option<&str>, limit: u32, offset: u32) -> Result<Vec<OrderView>, EngineClientError> {
+    pub async fn list_orders_page(
+        &self,
+        sk: &RawToken,
+        open: bool,
+        search: Option<&str>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<OrderView>, EngineClientError> {
         let target = self.target();
         let mut params = vec![("limit", limit.to_string()), ("offset", offset.to_string())];
         if open {
@@ -240,9 +275,15 @@ impl EngineClient {
         if let Some(search) = search {
             params.push(("search", search.to_string()));
         }
-        let url = reqwest::Url::parse_with_params(&format!("{}/api/v1/admin/tenant/orders", target.base_url), params)
-            .map_err(|e| EngineClientError::EngineError { status: reqwest::StatusCode::BAD_REQUEST, message: e.to_string() })?;
-        let response = target.http.get(url).bearer_auth(sk).send().await?;
+        let url = reqwest::Url::parse_with_params(
+            &format!("{}/api/v1/admin/tenant/orders", target.base_url),
+            params,
+        )
+        .map_err(|e| EngineClientError::EngineError {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            message: e.to_string(),
+        })?;
+        let response = target.http.get(url).bearer_auth(sk.expose()).send().await?;
         parse_response(response).await
     }
 
@@ -252,19 +293,31 @@ impl EngineClient {
     /// [`MAX_ORDER_IDS_PER_REQUEST`] ids. A screen watching many orders reads
     /// them this way so it costs one rate-limited engine request, not one per
     /// order.
-    pub async fn list_orders_by_ids(&self, sk: &str, order_ids: &[String]) -> Result<Vec<OrderView>, EngineClientError> {
+    pub async fn list_orders_by_ids(
+        &self,
+        sk: &RawToken,
+        order_ids: &[crate::db::OrderId],
+    ) -> Result<Vec<OrderView>, EngineClientError> {
         let target = self.target();
         if order_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let url = reqwest::Url::parse_with_params(&format!("{}/api/v1/admin/tenant/orders", target.base_url), [("ids", order_ids.join(","))])
-            .map_err(|e| EngineClientError::EngineError { status: reqwest::StatusCode::BAD_REQUEST, message: e.to_string() })?;
-        let response = target
-            .http
-            .get(url)
-            .bearer_auth(sk)
-            .send()
-            .await?;
+        let url = reqwest::Url::parse_with_params(
+            &format!("{}/api/v1/admin/tenant/orders", target.base_url),
+            [(
+                "ids",
+                order_ids
+                    .iter()
+                    .map(|id| id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )],
+        )
+        .map_err(|e| EngineClientError::EngineError {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            message: e.to_string(),
+        })?;
+        let response = target.http.get(url).bearer_auth(sk.expose()).send().await?;
         parse_response(response).await
     }
 
@@ -275,12 +328,19 @@ impl EngineClient {
     /// same as every other non-success status; callers distinguish it from a
     /// real internal error the same way `http/connections.rs` already
     /// distinguishes the engine's `400` from everything else.
-    pub async fn get_order_detail(&self, sk: &str, order_id: &str) -> Result<OrderDetailResponse, EngineClientError> {
+    pub async fn get_order_detail(
+        &self,
+        sk: &RawToken,
+        order_id: &shared::ids::OrderId,
+    ) -> Result<OrderDetailResponse, EngineClientError> {
         let target = self.target();
         let response = target
             .http
-            .get(format!("{}/api/v1/admin/tenant/orders/{order_id}", target.base_url))
-            .bearer_auth(sk)
+            .get(format!(
+                "{}/api/v1/admin/tenant/orders/{order_id}",
+                target.base_url
+            ))
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         parse_response(response).await
@@ -293,13 +353,22 @@ impl EngineClient {
     /// response already is (`EngineClientError::EngineError { status: 400,
     /// .. }`) - this method does no client-side validation of its own, the
     /// engine's is the one source of truth for what a valid txid looks like.
-    pub async fn lookup_payment(&self, sk: &str, txid: &str) -> Result<PaymentLookupView, EngineClientError> {
+    pub async fn lookup_payment(
+        &self,
+        sk: &RawToken,
+        txid: &str,
+    ) -> Result<PaymentLookupView, EngineClientError> {
         let target = self.target();
         let response = target
             .http
-            .post(format!("{}/api/v1/admin/tenant/payments/lookup", target.base_url))
-            .bearer_auth(sk)
-            .json(&LookupPaymentRequest { txid: txid.to_string() })
+            .post(format!(
+                "{}/api/v1/admin/tenant/payments/lookup",
+                target.base_url
+            ))
+            .bearer_auth(sk.expose())
+            .json(&LookupPaymentRequest {
+                txid: txid.to_string(),
+            })
             .send()
             .await?;
         parse_response(response).await
@@ -308,12 +377,15 @@ impl EngineClient {
     /// `GET {base_url}/api/v1/admin/tenant/webhooks` — lists `sk`'s tenant's
     /// registered webhooks (WBS 1.3.3). Read-only: this task builds no
     /// create/delete client methods, per its own scope.
-    pub async fn list_webhooks(&self, sk: &str) -> Result<Vec<WebhookView>, EngineClientError> {
+    pub async fn list_webhooks(
+        &self,
+        sk: &RawToken,
+    ) -> Result<Vec<WebhookView>, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .get(format!("{}/api/v1/admin/tenant/webhooks", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         parse_response(response).await
@@ -333,7 +405,7 @@ impl EngineClient {
     /// already be a plain string, never nested JSON.
     pub async fn create_webhook(
         &self,
-        sk: &str,
+        sk: &RawToken,
         url: &str,
         extra_headers: &std::collections::BTreeMap<String, String>,
     ) -> Result<(String, String), EngineClientError> {
@@ -341,13 +413,19 @@ impl EngineClient {
         let extra_headers = if extra_headers.is_empty() {
             None
         } else {
-            Some(serde_json::to_value(extra_headers).expect("a BTreeMap<String, String> always serializes to a JSON object"))
+            Some(
+                serde_json::to_value(extra_headers)
+                    .expect("a BTreeMap<String, String> always serializes to a JSON object"),
+            )
         };
         let response = target
             .http
             .post(format!("{}/api/v1/admin/tenant/webhooks", target.base_url))
-            .bearer_auth(sk)
-            .json(&CreateWebhookRequest { url: url.to_string(), extra_headers })
+            .bearer_auth(sk.expose())
+            .json(&CreateWebhookRequest {
+                url: url.to_string(),
+                extra_headers,
+            })
             .send()
             .await?;
         let parsed: CreateWebhookResponse = parse_response(response).await?;
@@ -360,12 +438,19 @@ impl EngineClient {
     /// on success and its own `404` for an unknown or not-this-tenant's
     /// `webhook_id` - `parse_response` isn't used here since it assumes a
     /// JSON body to deserialize, which a `204` never has.
-    pub async fn delete_webhook(&self, sk: &str, webhook_id: &str) -> Result<(), EngineClientError> {
+    pub async fn delete_webhook(
+        &self,
+        sk: &RawToken,
+        webhook_id: &str,
+    ) -> Result<(), EngineClientError> {
         let target = self.target();
         let response = target
             .http
-            .delete(format!("{}/api/v1/admin/tenant/webhooks/{webhook_id}", target.base_url))
-            .bearer_auth(sk)
+            .delete(format!(
+                "{}/api/v1/admin/tenant/webhooks/{webhook_id}",
+                target.base_url
+            ))
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         if response.status().is_success() {
@@ -391,13 +476,19 @@ impl EngineClient {
     /// its own configured ceiling - surfaced here as an ordinary
     /// `EngineClientError::EngineError` with status `400`, same as every
     /// other caller-facing engine validation error in this client.
-    pub async fn set_confirmations_required(&self, sk: &str, confirmations_required: u64) -> Result<TenantView, EngineClientError> {
+    pub async fn set_confirmations_required(
+        &self,
+        sk: &RawToken,
+        confirmations_required: u64,
+    ) -> Result<TenantView, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .patch(format!("{}/api/v1/admin/tenant", target.base_url))
-            .bearer_auth(sk)
-            .json(&PatchTenantRequest { confirmations_required: Some(confirmations_required) })
+            .bearer_auth(sk.expose())
+            .json(&PatchTenantRequest {
+                confirmations_required: Some(confirmations_required),
+            })
             .send()
             .await?;
         parse_response(response).await
@@ -412,8 +503,8 @@ impl EngineClient {
     /// this is the only rate computation left in the whole system.
     pub async fn create_order(
         &self,
-        sk: &str,
-        xmr_amount_piconero: u64,
+        sk: &RawToken,
+        xmr_amount_piconero: shared::xmr_amount::Piconero,
         merchant_order_id: Option<String>,
         confirmations_required: Option<u64>,
     ) -> Result<CreateOrderResponse, EngineClientError> {
@@ -421,8 +512,12 @@ impl EngineClient {
         let response = target
             .http
             .post(format!("{}/api/v1/admin/tenant/orders", target.base_url))
-            .bearer_auth(sk)
-            .json(&CreateOrderRequest { xmr_amount_piconero, merchant_order_id, confirmations_required })
+            .bearer_auth(sk.expose())
+            .json(&CreateOrderRequest {
+                xmr_amount_piconero: xmr_amount_piconero.get(),
+                merchant_order_id,
+                confirmations_required,
+            })
             .send()
             .await?;
         parse_response(response).await
@@ -434,13 +529,23 @@ impl EngineClient {
     /// verbatim, like every other free-text field), so the checkout checks
     /// the address parses for the order's network before calling this; a
     /// human reviews it before ever sending anything back to it.
-    pub async fn set_refund_address(&self, sk: &str, order_id: &str, refund_address: &str) -> Result<(), EngineClientError> {
+    pub async fn set_refund_address(
+        &self,
+        sk: &RawToken,
+        order_id: &shared::ids::OrderId,
+        refund_address: &str,
+    ) -> Result<(), EngineClientError> {
         let target = self.target();
         let response = target
             .http
-            .post(format!("{}/api/v1/admin/tenant/orders/{order_id}/refund-address", target.base_url))
-            .bearer_auth(sk)
-            .json(&SetRefundAddressRequest { refund_address: refund_address.to_string() })
+            .post(format!(
+                "{}/api/v1/admin/tenant/orders/{order_id}/refund-address",
+                target.base_url
+            ))
+            .bearer_auth(sk.expose())
+            .json(&SetRefundAddressRequest {
+                refund_address: refund_address.to_string(),
+            })
             .send()
             .await?;
         check_status(response).await?;
@@ -454,7 +559,11 @@ impl EngineClient {
     /// (`monokulo/src/http/status_page.rs`) is what renders it.
     pub async fn get_status(&self) -> Result<EngineStatusResponse, EngineClientError> {
         let target = self.target();
-        let response = target.http.get(format!("{}/status", target.base_url)).send().await?;
+        let response = target
+            .http
+            .get(format!("{}/status", target.base_url))
+            .send()
+            .await?;
         parse_response(response).await
     }
 }
@@ -480,13 +589,23 @@ impl EngineClient {
         parse_response(response).await
     }
 
-    pub async fn logs(&self, admin_token: &str, request: &telemetry::store::api::LogsRequest) -> Result<Vec<telemetry::store::LogRow>, EngineClientError> {
-        let response: telemetry::store::api::LogsResponse = self.get_logs_api(admin_token, "", request).await?;
+    pub async fn logs(
+        &self,
+        admin_token: &str,
+        request: &telemetry::store::api::LogsRequest,
+    ) -> Result<Vec<telemetry::store::LogRow>, EngineClientError> {
+        let response: telemetry::store::api::LogsResponse =
+            self.get_logs_api(admin_token, "", request).await?;
         Ok(response.rows)
     }
 
-    pub async fn log_trace(&self, admin_token: &str, trace_id: &str) -> Result<telemetry::store::Trace, EngineClientError> {
-        self.get_logs_api(admin_token, &format!("/trace/{trace_id}"), &()).await
+    pub async fn log_trace(
+        &self,
+        admin_token: &str,
+        trace_id: &str,
+    ) -> Result<telemetry::store::Trace, EngineClientError> {
+        self.get_logs_api(admin_token, &format!("/trace/{trace_id}"), &())
+            .await
     }
 
     pub async fn log_histogram(
@@ -494,12 +613,18 @@ impl EngineClient {
         admin_token: &str,
         request: &telemetry::store::api::HistogramRequest,
     ) -> Result<Vec<u64>, EngineClientError> {
-        let response: telemetry::store::api::HistogramResponse = self.get_logs_api(admin_token, "/histogram", request).await?;
+        let response: telemetry::store::api::HistogramResponse = self
+            .get_logs_api(admin_token, "/histogram", request)
+            .await?;
         Ok(response.counts)
     }
 
-    pub async fn log_attributes(&self, admin_token: &str) -> Result<Vec<String>, EngineClientError> {
-        let response: telemetry::store::api::AttributesResponse = self.get_logs_api(admin_token, "/attributes", &()).await?;
+    pub async fn log_attributes(
+        &self,
+        admin_token: &str,
+    ) -> Result<Vec<String>, EngineClientError> {
+        let response: telemetry::store::api::AttributesResponse =
+            self.get_logs_api(admin_token, "/attributes", &()).await?;
         Ok(response.names)
     }
 }
@@ -520,7 +645,9 @@ async fn check_status(response: reqwest::Response) -> Result<reqwest::Response, 
     Ok(response)
 }
 
-async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, EngineClientError> {
+async fn parse_response<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, EngineClientError> {
     let response = check_status(response).await?;
     Ok(response.json::<T>().await?)
 }
@@ -539,7 +666,10 @@ pub enum EngineClientError {
     #[error("request to engine failed: {0}")]
     Middleware(#[from] reqwest_middleware::Error),
     #[error("engine responded with {status}: {message}")]
-    EngineError { status: reqwest::StatusCode, message: String },
+    EngineError {
+        status: reqwest::StatusCode,
+        message: String,
+    },
 }
 
 /// Mirrors the engine's own `CreateTenantRequest` (`src/http/admin.rs` at the
@@ -582,7 +712,7 @@ struct SwitchKeyCustodyRequest<'a> {
 pub struct CreateTenantResponse {
     pub tenant_id: String,
     pub public_key: String,
-    pub secret_token: String,
+    pub secret_token: RawToken,
 }
 
 /// Mirrors the engine's own `TenantView`.
@@ -606,12 +736,12 @@ pub struct TenantView {
 /// `order_fiat_metadata` table (`db::Db::get_order_fiat_metadata`) instead.
 #[derive(Debug, Deserialize)]
 pub struct OrderView {
-    pub order_id: String,
+    pub order_id: shared::ids::OrderId,
     pub merchant_order_id: Option<String>,
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
-    pub status: String,
+    pub status: shared::order_status::OrderStatus,
     pub confirmations: u64,
     pub double_spend_detected_at: Option<i64>,
     pub refund_address: Option<String>,
@@ -702,7 +832,7 @@ struct CreateOrderRequest {
 /// Mirrors the engine's own `public::CreateOrderResponse`.
 #[derive(Debug, Deserialize)]
 pub struct CreateOrderResponse {
-    pub order_id: String,
+    pub order_id: shared::ids::OrderId,
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub expires_at: i64,
@@ -825,9 +955,15 @@ mod tests {
         let client = EngineClient::with_cache_limit("http://127.0.0.1:8443", 1024);
         let before = client.target();
         client.retarget("http://127.0.0.1:8443", 1024);
-        assert!(std::sync::Arc::ptr_eq(&before, &client.target()), "same address and cache: kept, streams stay open");
+        assert!(
+            std::sync::Arc::ptr_eq(&before, &client.target()),
+            "same address and cache: kept, streams stay open"
+        );
         client.retarget("http://127.0.0.1:8443", 2048);
-        assert!(!std::sync::Arc::ptr_eq(&before, &client.target()), "a new cache size is a new client");
+        assert!(
+            !std::sync::Arc::ptr_eq(&before, &client.target()),
+            "a new cache size is a new client"
+        );
         client.retarget("http://127.0.0.1:9443", 2048);
         assert_eq!(client.base_url(), "http://127.0.0.1:9443");
     }
@@ -841,8 +977,10 @@ mod tests {
     /// second such scalar — so both pass the engine's real validation
     /// (`WalletMaterial::from_hex` / `to_view_pair`) rather than being
     /// rejected before this test can prove anything.
-    const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+    const TEST_VIEW_KEY_HEX: &str =
+        "0707070707070707070707070707070707070707070707070707070707070707";
+    const TEST_SPEND_PUBKEY_HEX: &str =
+        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
     fn test_create_tenant_request() -> CreateTenantRequest {
         CreateTenantRequest {
@@ -865,7 +1003,9 @@ mod tests {
     /// around it.
     #[tokio::test]
     async fn create_tenant_then_get_tenant_round_trips_against_a_real_engine() {
-        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let engine =
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let client = EngineClient::new(format!("http://{}", engine.addr));
 
         let created = client
@@ -875,7 +1015,7 @@ mod tests {
 
         assert!(!created.tenant_id.is_empty());
         assert!(created.public_key.starts_with("pk_"));
-        assert!(created.secret_token.starts_with("sk_"));
+        assert!(created.secret_token.expose().starts_with("sk_"));
 
         let fetched = client
             .get_tenant(&created.secret_token)
@@ -893,7 +1033,9 @@ mod tests {
     /// 1.3.3) with the exact URL that was registered.
     #[tokio::test]
     async fn create_webhook_then_list_webhooks_round_trips_against_a_real_engine() {
-        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let engine =
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let client = EngineClient::new(format!("http://{}", engine.addr));
 
         let created = client
@@ -902,14 +1044,20 @@ mod tests {
             .expect("create_tenant against a real engine should succeed");
 
         let (webhook_id, signing_secret) = client
-            .create_webhook(&created.secret_token, "https://merchant.example/hook", &Default::default())
+            .create_webhook(
+                &created.secret_token,
+                "https://merchant.example/hook",
+                &Default::default(),
+            )
             .await
             .expect("create_webhook against a real engine should succeed");
         assert!(!webhook_id.is_empty());
         assert!(!signing_secret.is_empty());
 
-        let webhooks =
-            client.list_webhooks(&created.secret_token).await.expect("list_webhooks against a real engine should succeed");
+        let webhooks = client
+            .list_webhooks(&created.secret_token)
+            .await
+            .expect("list_webhooks against a real engine should succeed");
         assert_eq!(webhooks.len(), 1);
         assert_eq!(webhooks[0].webhook_id, webhook_id);
         assert_eq!(webhooks[0].url, "https://merchant.example/hook");
@@ -922,10 +1070,15 @@ mod tests {
     /// it an inert one, so the response lists that network and its node.
     #[tokio::test]
     async fn get_status_round_trips_against_a_real_engine() {
-        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let engine =
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let client = EngineClient::new(format!("http://{}", engine.addr));
 
-        let status = client.get_status().await.expect("get_status against a real engine should succeed");
+        let status = client
+            .get_status()
+            .await
+            .expect("get_status against a real engine should succeed");
 
         assert_eq!(status.networks.len(), 1);
         assert_eq!(status.networks[0].network, "mainnet");
@@ -973,30 +1126,78 @@ mod tests {
     /// own `Store` directly (`scanner_test_support::TestEngineHandle::store`),
     /// the same way scanner's own equivalent HTTP-level test does.
     #[tokio::test]
-    async fn create_order_with_a_confirmations_required_override_reaches_the_real_engines_stored_order() {
-        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+    async fn create_order_with_a_confirmations_required_override_reaches_the_real_engines_stored_order(
+    ) {
+        let engine =
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let client = EngineClient::new(format!("http://{}", engine.addr));
-        let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
+        let created = client
+            .create_tenant(test_create_tenant_request())
+            .await
+            .unwrap();
 
-        let order = client.create_order(&created.secret_token, 100_000_000_000, None, Some(3)).await.unwrap();
+        let order = client
+            .create_order(
+                &created.secret_token,
+                shared::xmr_amount::Piconero(100_000_000_000),
+                None,
+                Some(3),
+            )
+            .await
+            .unwrap();
 
         let store = engine.store().lock();
-        let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;
-        let stored = store.get_order(&tenant_id, &order.order_id).unwrap().unwrap();
+        let tenant_id = store
+            .find_tenant_by_public_key(&created.public_key)
+            .unwrap()
+            .unwrap()
+            .id;
+        let stored = store
+            .get_order(
+                &tenant_id,
+                &shared::ids::OrderId::new(order.order_id.as_str().to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.confirmations_required_override, Some(3));
     }
 
     #[tokio::test]
-    async fn create_order_with_no_confirmations_required_override_leaves_the_real_engines_stored_order_unset() {
-        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+    async fn create_order_with_no_confirmations_required_override_leaves_the_real_engines_stored_order_unset(
+    ) {
+        let engine =
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
         let client = EngineClient::new(format!("http://{}", engine.addr));
-        let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
+        let created = client
+            .create_tenant(test_create_tenant_request())
+            .await
+            .unwrap();
 
-        let order = client.create_order(&created.secret_token, 100_000_000_000, None, None).await.unwrap();
+        let order = client
+            .create_order(
+                &created.secret_token,
+                shared::xmr_amount::Piconero(100_000_000_000),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
 
         let store = engine.store().lock();
-        let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;
-        let stored = store.get_order(&tenant_id, &order.order_id).unwrap().unwrap();
+        let tenant_id = store
+            .find_tenant_by_public_key(&created.public_key)
+            .unwrap()
+            .unwrap()
+            .id;
+        let stored = store
+            .get_order(
+                &tenant_id,
+                &shared::ids::OrderId::new(order.order_id.as_str().to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.confirmations_required_override, None);
     }
 
@@ -1017,16 +1218,27 @@ mod tests {
             .spawn()
             .await;
         let client = EngineClient::new(format!("http://{}", engine.addr));
-        let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
+        let created = client
+            .create_tenant(test_create_tenant_request())
+            .await
+            .unwrap();
 
         // `NoopDaemonClient::locate_transaction` always reports `NotFound` -
         // real, deterministic behavior to assert against, not a guess.
-        let outcome = client.lookup_payment(&created.secret_token, &"a".repeat(64)).await.unwrap();
+        let outcome = client
+            .lookup_payment(&created.secret_token, &"a".repeat(64))
+            .await
+            .unwrap();
         assert!(matches!(outcome, PaymentLookupView::NotFoundOnChain));
 
-        let err = client.lookup_payment(&created.secret_token, "not-a-real-txid").await.unwrap_err();
+        let err = client
+            .lookup_payment(&created.secret_token, "not-a-real-txid")
+            .await
+            .unwrap_err();
         match err {
-            EngineClientError::EngineError { status, .. } => assert_eq!(status, reqwest::StatusCode::BAD_REQUEST),
+            EngineClientError::EngineError { status, .. } => {
+                assert_eq!(status, reqwest::StatusCode::BAD_REQUEST)
+            }
             other => panic!("expected a real 400 from the engine, got: {other}"),
         }
     }
@@ -1085,12 +1297,28 @@ mod tests {
             "first_scanned_height": null, "last_scanned_height": null, "currently_scanning": true,
             "payments": []
         });
-        let (base_url, calls) =
-            spawn_counting_server("/api/v1/admin/tenant/orders/{order_id}", Some("max-age=60"), order_body).await;
+        let (base_url, calls) = spawn_counting_server(
+            "/api/v1/admin/tenant/orders/{order_id}",
+            Some("max-age=60"),
+            order_body,
+        )
+        .await;
         let client = EngineClient::new(base_url);
 
-        client.get_order_detail("sk_whatever", "pay_1").await.unwrap();
-        client.get_order_detail("sk_whatever", "pay_1").await.unwrap();
+        client
+            .get_order_detail(
+                &shared::auth::RawToken::presented("sk_whatever"),
+                &shared::ids::OrderId::new("pay_1"),
+            )
+            .await
+            .unwrap();
+        client
+            .get_order_detail(
+                &shared::auth::RawToken::presented("sk_whatever"),
+                &shared::ids::OrderId::new("pay_1"),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -1119,8 +1347,20 @@ mod tests {
             spawn_counting_server("/api/v1/admin/tenant/orders/{order_id}", None, order_body).await;
         let client = EngineClient::new(base_url);
 
-        client.get_order_detail("sk_whatever", "pay_1").await.unwrap();
-        client.get_order_detail("sk_whatever", "pay_1").await.unwrap();
+        client
+            .get_order_detail(
+                &shared::auth::RawToken::presented("sk_whatever"),
+                &shared::ids::OrderId::new("pay_1"),
+            )
+            .await
+            .unwrap();
+        client
+            .get_order_detail(
+                &shared::auth::RawToken::presented("sk_whatever"),
+                &shared::ids::OrderId::new("pay_1"),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -1147,7 +1387,13 @@ mod tests {
                 "monokulo must not call the engine's non-admin route {path}"
             );
         }
-        assert!(seen >= 10, "expected to find the engine client's URLs, found {seen}");
-        assert!(!source.contains(concat!("/api/v1/", "t/")), "monokulo must not reference the engine's public routes");
+        assert!(
+            seen >= 10,
+            "expected to find the engine client's URLs, found {seen}"
+        );
+        assert!(
+            !source.contains(concat!("/api/v1/", "t/")),
+            "monokulo must not reference the engine's public routes"
+        );
     }
 }

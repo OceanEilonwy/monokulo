@@ -78,7 +78,7 @@ pub struct EmbedDomainView {
 pub struct StoreSettingsData {
     /// The zone the page shows times in (the signed-in user's).
     pub clock: super::time::Clock,
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     /// The tenant's current confirmation threshold - `10` when the engine is
     /// currently unreachable.
@@ -192,9 +192,16 @@ fn section_error(store: &StoreSettingsData, section: StoreSection, in_place: boo
 /// "Key storage": where the store's view key is kept, and a form to move it
 /// (task 5.6). The keys are entered again - they're never read back from
 /// anywhere - and the fields are always empty on render.
-fn key_storage_section(store: &StoreSettingsData, key_storage: &KeyStorageView, in_place: bool) -> Markup {
+fn key_storage_section(
+    store: &StoreSettingsData,
+    key_storage: &KeyStorageView,
+    in_place: bool,
+) -> Markup {
     let connection_id = &store.connection_id;
-    let (action, target) = fx(&format!("/dashboard/stores/{connection_id}/settings/key-custody"), StoreSection::KeyStorage);
+    let (action, target) = fx(
+        &format!("/dashboard/stores/{connection_id}/settings/key-custody"),
+        StoreSection::KeyStorage,
+    );
     html! {
       section id=(StoreSection::KeyStorage.id()) {
         h2 { "Key storage" }
@@ -335,7 +342,10 @@ fn confirmations_section(store: &StoreSettingsData, in_place: bool) -> Markup {
 /// order. Plain form fields (a checkbox and a position number per provider),
 /// so it works with no JavaScript.
 fn fx_provider_section(store: &StoreSettingsData, in_place: bool) -> Markup {
-    let action = format!("/dashboard/stores/{}/settings/fx-provider", store.connection_id);
+    let action = format!(
+        "/dashboard/stores/{}/settings/fx-provider",
+        store.connection_id
+    );
     html! {
         section id=(StoreSection::FxProvider.id()) {
                 h2 { "Exchange rate providers" }
@@ -480,7 +490,13 @@ fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
 /// "Diagnostics": whether this store's browsers, POS and plugin may send
 /// logs to this instance. Off by default.
 fn diagnostics_section(store: &StoreSettingsData, in_place: bool) -> Markup {
-    let (action, target) = fx(&format!("/dashboard/stores/{}/settings/diagnostics", store.connection_id), StoreSection::Diagnostics);
+    let (action, target) = fx(
+        &format!(
+            "/dashboard/stores/{}/settings/diagnostics",
+            store.connection_id
+        ),
+        StoreSection::Diagnostics,
+    );
     html! {
         section id=(StoreSection::Diagnostics.id()) {
             h2 { "Diagnostics" }
@@ -542,7 +558,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             @if let Some(store) = &data.store {
-                (super::store_breadcrumb(&store.connection_id, &store.display_name, false))
+                (super::store_breadcrumb(store.connection_id.as_str(), &store.display_name, false))
                 h1 { "Settings" }
 
                 @if let Some(error) = &store.settings_error {
@@ -672,10 +688,13 @@ mod tests {
     fn base_store() -> StoreSettingsData {
         StoreSettingsData {
             clock: crate::views::time::Clock::utc(0),
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             confirmations_required: 10,
-            fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
+            fx_provider_options: vec![FxProviderOption {
+                name: "coingecko".to_string(),
+                selected: true,
+            }],
             haveno_settings: None,
             base_currency: "XMR".to_string(),
             base_currency_options: vec![],
@@ -697,8 +716,14 @@ mod tests {
     fn with_haveno(settings: crate::fx_provider_settings::HavenoSettings) -> String {
         let store = StoreSettingsData {
             fx_provider_options: vec![
-                FxProviderOption { name: "coingecko".to_string(), selected: true },
-                FxProviderOption { name: "haveno".to_string(), selected: false },
+                FxProviderOption {
+                    name: "coingecko".to_string(),
+                    selected: true,
+                },
+                FxProviderOption {
+                    name: "haveno".to_string(),
+                    selected: false,
+                },
             ],
             haveno_settings: Some(HavenoSettingsView::from(&settings)),
             ..base_store()
@@ -708,13 +733,30 @@ mod tests {
 
     #[test]
     fn the_haveno_limits_are_shown_only_while_the_instance_offers_haveno() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
-        assert!(!html.contains("haveno_max_spread_pct") && !html.contains("Haveno (RetoSwap) limits"), "got: {html}");
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
+        assert!(
+            !html.contains("haveno_max_spread_pct") && !html.contains("Haveno (RetoSwap) limits"),
+            "got: {html}"
+        );
 
         let html = with_haveno(Default::default());
         assert!(html.contains("Haveno (RetoSwap) limits"), "got: {html}");
-        for name in ["haveno_currencies", "haveno_max_spread_pct", "haveno_min_offers_per_side", "haveno_min_depth_xmr_per_side"] {
-            assert!(html.contains(&format!(r#"name="{name}""#)), "missing {name}: {html}");
+        for name in [
+            "haveno_currencies",
+            "haveno_max_spread_pct",
+            "haveno_min_offers_per_side",
+            "haveno_min_depth_xmr_per_side",
+        ] {
+            assert!(
+                html.contains(&format!(r#"name="{name}""#)),
+                "missing {name}: {html}"
+            );
         }
     }
 
@@ -726,36 +768,75 @@ mod tests {
             min_offers_per_side: 3,
             min_depth_xmr_per_side: 1.5,
         });
-        assert!(html.contains(r#"name="haveno_currencies" value="USD, EUR""#), "got: {html}");
-        assert!(html.contains(r#"name="haveno_max_spread_pct" value="2.5""#), "got: {html}");
-        assert!(html.contains(r#"name="haveno_min_offers_per_side" value="3""#), "got: {html}");
-        assert!(html.contains(r#"name="haveno_min_depth_xmr_per_side" value="1.5""#), "got: {html}");
+        assert!(
+            html.contains(r#"name="haveno_currencies" value="USD, EUR""#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains(r#"name="haveno_max_spread_pct" value="2.5""#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains(r#"name="haveno_min_offers_per_side" value="3""#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains(r#"name="haveno_min_depth_xmr_per_side" value="1.5""#),
+            "got: {html}"
+        );
     }
 
     #[test]
     fn the_default_haveno_limits_render_as_plain_numbers() {
         let html = with_haveno(Default::default());
-        assert!(html.contains(r#"name="haveno_currencies" value="""#), "got: {html}");
-        assert!(html.contains(r#"name="haveno_max_spread_pct" value="5""#), "got: {html}");
-        assert!(html.contains(r#"name="haveno_min_offers_per_side" value="1""#), "got: {html}");
-        assert!(html.contains(r#"name="haveno_min_depth_xmr_per_side" value="0""#), "got: {html}");
+        assert!(
+            html.contains(r#"name="haveno_currencies" value="""#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains(r#"name="haveno_max_spread_pct" value="5""#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains(r#"name="haveno_min_offers_per_side" value="1""#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains(r#"name="haveno_min_depth_xmr_per_side" value="0""#),
+            "got: {html}"
+        );
     }
 
     #[test]
     fn a_hostile_currency_list_is_escaped() {
-        let html = with_haveno(crate::fx_provider_settings::HavenoSettings { currencies: vec![r#""><script>x</script>"#.to_string()], ..Default::default() });
+        let html = with_haveno(crate::fx_provider_settings::HavenoSettings {
+            currencies: vec![r#""><script>x</script>"#.to_string()],
+            ..Default::default()
+        });
         assert!(!html.contains("<script>x</script>"), "got: {html}");
     }
 
     #[test]
     fn diagnostics_are_off_until_turned_on() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
-        assert!(html.contains(r#"<section id="diagnostics"><h2>Diagnostics</h2>"#), "got: {html}");
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
+        assert!(
+            html.contains(r#"<section id="diagnostics"><h2>Diagnostics</h2>"#),
+            "got: {html}"
+        );
         assert!(html.contains("This store sends no diagnostic logs."));
         assert!(html.contains(r#"<input type="hidden" name="client_logging" value="on">"#));
         assert!(html.contains(r##"fx-target="#diagnostics""##));
 
-        let store = StoreSettingsData { client_logging: true, ..base_store() };
+        let store = StoreSettingsData {
+            client_logging: true,
+            ..base_store()
+        };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains("This store sends diagnostic logs."));
         assert!(html.contains(r#"<input type="hidden" name="client_logging" value="off">"#));
@@ -763,14 +844,27 @@ mod tests {
 
     #[test]
     fn the_restriction_switch_needs_a_verified_domain_to_turn_on() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
         assert!(html.contains(r#"<input type="hidden" name="restricted" value="on"><button type="submit" disabled>Only allow my verified domains</button>"#), "got: {html}");
 
-        let store = StoreSettingsData { embed_can_restrict: true, ..base_store() };
+        let store = StoreSettingsData {
+            embed_can_restrict: true,
+            ..base_store()
+        };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains(r#"<button type="submit">Only allow my verified domains</button>"#));
 
-        let store = StoreSettingsData { embed_can_restrict: true, embed_restricted: true, ..base_store() };
+        let store = StoreSettingsData {
+            embed_can_restrict: true,
+            embed_restricted: true,
+            ..base_store()
+        };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains("Only my verified domains can show this checkout."));
         assert!(html.contains(r#"<input type="hidden" name="restricted" value="off">"#));
@@ -778,29 +872,42 @@ mod tests {
 
     #[test]
     fn verified_domains_show_the_record_to_publish_until_verified() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
         assert!(html.contains(r#"<section id="verified-domains"><h2>Verified domains</h2>"#));
         assert!(html.contains("No domains yet."));
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains""#));
 
-        let domain = |id: &str, name: &str, state_label: &'static str, show_record: bool| EmbedDomainView {
-            id: id.to_string(),
-            domain: name.to_string(),
-            state_tag: "unknown",
-            state_label,
-            detail: None,
-            show_record,
-            record_name: format!("_monokulo.{name}"),
-            record_value: format!("monokulo-verify=token-{id}"),
-            last_checked: "never".to_string(),
-            last_error: None,
-        };
+        let domain =
+            |id: &str, name: &str, state_label: &'static str, show_record: bool| EmbedDomainView {
+                id: id.to_string(),
+                domain: name.to_string(),
+                state_tag: "unknown",
+                state_label,
+                detail: None,
+                show_record,
+                record_name: format!("_monokulo.{name}"),
+                record_value: format!("monokulo-verify=token-{id}"),
+                last_checked: "never".to_string(),
+                last_error: None,
+            };
         let store = StoreSettingsData {
-            embed_domains: vec![domain("d1", "shop.example", "Verified", false), domain("d2", "new.example", "Waiting for DNS", true)],
+            embed_domains: vec![
+                domain("d1", "shop.example", "Verified", false),
+                domain("d2", "new.example", "Waiting for DNS", true),
+            ],
             ..base_store()
         };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
-        assert!(!html.contains("monokulo-verify=token-d1"), "a verified domain doesn't need its record shown");
+        assert!(
+            !html.contains("monokulo-verify=token-d1"),
+            "a verified domain doesn't need its record shown"
+        );
         assert!(html.contains("<code>_monokulo.new.example</code>"));
         assert!(html.contains("<code>monokulo-verify=token-d2</code>"));
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains/d2/check""#));
@@ -815,7 +922,13 @@ mod tests {
 
     #[test]
     fn shows_store_context_above_the_settings_heading() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
         assert!(
             html.contains(r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a></nav><h1>Settings</h1>"#),
             "expected a store link above the Settings heading, got: {html}"
@@ -824,72 +937,122 @@ mod tests {
 
     #[test]
     fn the_default_threshold_row_has_no_delete_control() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
         assert!(html.contains("Default (fallback)"));
         assert!(html.contains(r#"value="10""#));
     }
 
     #[test]
     fn default_and_custom_confirmation_controls_submit_to_separate_forms() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
         assert!(html.contains(r##"<form id="default-confirmations" method="post" action="/dashboard/stores/conn_1/settings/confirmations" fx-action="/dashboard/stores/conn_1/settings/confirmations" fx-method="POST" fx-target="#confirmation-thresholds">"##), "{html}");
         assert!(html.contains(r#"name="zero_conf_checkbox_present" value="true""#));
         assert!(html.contains(r#"maxlength="3" required form="default-confirmations""#));
-        assert!(html.contains(r#"<button type="submit" form="default-confirmations">Save</button>"#));
+        assert!(
+            html.contains(r#"<button type="submit" form="default-confirmations">Save</button>"#)
+        );
         assert!(html.contains(r#"<form method="post" action="/dashboard/stores/conn_1/settings/confirmation-thresholds/save""#), "{html}");
         assert!(html.contains(r#"<button type="submit" class="btn-primary">Add</button>"#));
     }
 
     #[test]
     fn zero_conf_checkbox_is_unchecked_when_disabled() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
         assert!(
-            html.contains(r#"<input type="checkbox" name="zero_conf_enabled" form="default-confirmations">"#),
+            html.contains(
+                r#"<input type="checkbox" name="zero_conf_enabled" form="default-confirmations">"#
+            ),
             "expected the 0-conf checkbox unchecked when no ceiling is set, got: {html}"
         );
     }
 
     #[test]
     fn zero_conf_checkbox_is_checked_when_enabled() {
-        let store = StoreSettingsData { zero_conf_enabled: true, ..base_store() };
+        let store = StoreSettingsData {
+            zero_conf_enabled: true,
+            ..base_store()
+        };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains(r#"<input type="checkbox" name="zero_conf_enabled" checked form="default-confirmations">"#), "got: {html}");
     }
 
     #[test]
     fn confirmations_required_input_is_narrow_and_capped_at_three_digits() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
         assert!(html.contains(r#"class="confirmations-input" name="confirmations_required" value="10" size="3" maxlength="3""#), "got: {html}");
     }
 
     #[test]
     fn add_row_is_part_of_the_table_and_uses_descriptive_placeholders() {
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
         assert!(html.contains("<th>Action</th>"), "got: {html}");
         assert!(!html.contains("<th>Delete</th>"));
         assert!(!html.contains("threshold-gap-row"));
         assert!(html.contains(r#"<tr class="new-threshold-row"><td><input type="text" name="new_unit_amount" placeholder="Minimum Amount (XMR)">"#), "got: {html}");
-        assert!(html.contains(r##"placeholder="# Confirmations""##), "got: {html}");
+        assert!(
+            html.contains(r##"placeholder="# Confirmations""##),
+            "got: {html}"
+        );
         assert!(html.contains(r#"<button type="submit" class="btn-primary">Add</button>"#));
     }
 
     #[test]
     fn existing_threshold_rows_have_save_buttons_even_at_the_limit() {
         let store = StoreSettingsData {
-            confirmation_thresholds: vec![ConfirmationThresholdView { id: "threshold_1".to_string(), unit_amount: "50.00".to_string(), confirmations_required: 20 }],
+            confirmation_thresholds: vec![ConfirmationThresholdView {
+                id: "threshold_1".to_string(),
+                unit_amount: "50.00".to_string(),
+                confirmations_required: 20,
+            }],
             confirmation_thresholds_at_max: true,
             ..base_store()
         };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains("Maximum of 5 custom thresholds reached"));
         assert!(html.contains(r#"name="delete_threshold_1""#), "got: {html}");
-        assert!(html.contains(r#"<button type="submit">Save</button>"#), "existing thresholds need a Save button, got: {html}");
+        assert!(
+            html.contains(r#"<button type="submit">Save</button>"#),
+            "existing thresholds need a Save button, got: {html}"
+        );
         assert!(!html.contains(r#"<button type="submit" class="btn-primary">Add</button>"#));
     }
 
     #[test]
     fn shows_the_settings_error_when_present() {
-        let store = StoreSettingsData { settings_error: Some("Enter a whole number of confirmations.".to_string()), ..base_store() };
+        let store = StoreSettingsData {
+            settings_error: Some("Enter a whole number of confirmations.".to_string()),
+            ..base_store()
+        };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains("Enter a whole number of confirmations."));
     }
@@ -897,7 +1060,12 @@ mod tests {
     #[test]
     fn lists_webhooks_with_a_delete_form_each() {
         let store = StoreSettingsData {
-            webhooks: vec![WebhookRowViewModel { webhook_id: "wh_1".to_string(), url: "https://example.com/hook".to_string(), enabled: true, created_at: 1000 }],
+            webhooks: vec![WebhookRowViewModel {
+                webhook_id: "wh_1".to_string(),
+                url: "https://example.com/hook".to_string(),
+                enabled: true,
+                created_at: 1000,
+            }],
             ..base_store()
         };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
@@ -908,7 +1076,10 @@ mod tests {
 
     #[test]
     fn shows_the_webhook_signing_secret_exactly_once_after_creation() {
-        let store = StoreSettingsData { created_webhook_signing_secret: Some("whsec_abc123".to_string()), ..base_store() };
+        let store = StoreSettingsData {
+            created_webhook_signing_secret: Some("whsec_abc123".to_string()),
+            ..base_store()
+        };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains("whsec_abc123"));
         assert!(html.contains("Webhook created"));

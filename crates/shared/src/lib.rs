@@ -10,26 +10,22 @@
 //! keep `key-custody-service` and `scanner` from forming a cyclic Cargo
 //! dependency once `main.rs` needed to depend on both.
 
-pub mod log;
 pub mod auth;
 pub mod coinmarketcap;
 pub mod exchange_rate;
 pub mod haveno;
 pub mod http_cache;
+pub mod ids;
 pub mod key_custody;
+pub mod log;
 pub mod migrations;
 pub mod network;
+pub mod order_status;
 pub mod password;
 pub mod rate_limit;
 pub mod settings;
+pub mod sqlite;
 pub mod supervise;
+pub mod time;
 pub mod webhook_sign;
 pub mod xmr_amount;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn compiles() {
-        assert!(true);
-    }
-}

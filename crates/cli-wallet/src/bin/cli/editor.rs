@@ -15,13 +15,14 @@ use std::sync::{Arc, Mutex};
 use clap::Subcommand;
 use cli_wallet::amount::{format_amount, Unit};
 use cli_wallet::WalletKeys;
-use reedline::{
-    default_emacs_keybindings, DescriptionMode, EditCommand, Emacs, FileBackedHistory, Hinter, History, IdeMenu, KeyCode,
-    KeyModifiers, Keybindings, MenuBuilder, MouseClickMode, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline,
-    ReedlineEvent, ReedlineMenu, SearchQuery, Span, StyledText, Suggestion,
-};
 use nu_ansi_term::{Color as AnsiColor, Style};
 use reedline::Color;
+use reedline::{
+    default_emacs_keybindings, DescriptionMode, EditCommand, Emacs, FileBackedHistory, Hinter,
+    History, IdeMenu, KeyCode, KeyModifiers, Keybindings, MenuBuilder, MouseClickMode, Prompt,
+    PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline, ReedlineEvent,
+    ReedlineMenu, SearchQuery, Span, StyledText, Suggestion,
+};
 
 use crate::args::PRIORITY_NAMES;
 use crate::commands::Command;
@@ -46,12 +47,31 @@ pub fn command_specs() -> Vec<CommandSpec> {
             let usage = sub.clone().render_usage().to_string();
             let usage = usage.trim_start_matches("Usage:").trim();
             // Multi-line usages (account) repeat the name on each line.
-            let usage = usage.lines().map(|line| line.trim().trim_start_matches(name.as_str()).trim()).collect::<Vec<_>>().join(" | ");
-            CommandSpec { about: sub.get_about().map(|about| about.to_string()).unwrap_or_default(), name, usage }
+            let usage = usage
+                .lines()
+                .map(|line| line.trim().trim_start_matches(name.as_str()).trim())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            CommandSpec {
+                about: sub
+                    .get_about()
+                    .map(|about| about.to_string())
+                    .unwrap_or_default(),
+                name,
+                usage,
+            }
         })
         .collect();
-    specs.push(CommandSpec { name: "help".to_string(), about: "List commands, or show one command's usage.".to_string(), usage: "[<command>]".to_string() });
-    specs.push(CommandSpec { name: "exit".to_string(), about: "Close the wallet.".to_string(), usage: String::new() });
+    specs.push(CommandSpec {
+        name: "help".to_string(),
+        about: "List commands, or show one command's usage.".to_string(),
+        usage: "[<command>]".to_string(),
+    });
+    specs.push(CommandSpec {
+        name: "exit".to_string(),
+        about: "Close the wallet.".to_string(),
+        usage: String::new(),
+    });
     specs.sort_by(|a, b| a.name.cmp(&b.name));
     specs
 }
@@ -94,7 +114,10 @@ impl CompletionData {
         }
         for output in outputs.iter().rev() {
             if !txids.iter().any(|(txid, _)| *txid == output.txid) {
-                txids.push((output.txid.clone(), format!("in {} at {}", money(output.amount()), output.height)));
+                txids.push((
+                    output.txid.clone(),
+                    format!("in {} at {}", money(output.amount()), output.height),
+                ));
             }
         }
         for pending in &data.pending {
@@ -107,30 +130,87 @@ impl CompletionData {
         self.key_images = outputs
             .iter()
             .filter(|o| !o.spent)
-            .map(|o| (hex::encode(o.key_image), format!("{}{}", money(o.amount()), if o.frozen { ", frozen" } else { "" })))
+            .map(|o| {
+                (
+                    hex::encode(o.key_image),
+                    format!(
+                        "{}{}",
+                        money(o.amount()),
+                        if o.frozen { ", frozen" } else { "" }
+                    ),
+                )
+            })
             .collect();
         self.outputs = outputs
             .iter()
-            .map(|o| (format!("0/{}", o.global_index()), format!("{}{}", money(o.amount()), if o.spent { ", spent" } else { "" })))
+            .map(|o| {
+                (
+                    format!("0/{}", o.global_index()),
+                    format!(
+                        "{}{}",
+                        money(o.amount()),
+                        if o.spent { ", spent" } else { "" }
+                    ),
+                )
+            })
             .collect();
 
         let accounts = data.meta.accounts();
         let current = data.meta.current_account;
-        let mut addresses: Vec<(String, String)> =
-            data.meta.address_book.iter().map(|entry| (entry.address.clone(), format!("address book: {}", entry.description))).collect();
+        let mut addresses: Vec<(String, String)> = data
+            .meta
+            .address_book
+            .iter()
+            .map(|entry| {
+                (
+                    entry.address.clone(),
+                    format!("address book: {}", entry.description),
+                )
+            })
+            .collect();
         if let Some(account) = accounts.get(current as usize) {
             for (index, label) in account.subaddress_labels.iter().enumerate() {
-                addresses.push((keys.subaddress(current, index as u32), format!("own address {index}: {label}")));
+                addresses.push((
+                    keys.subaddress(current, index as u32),
+                    format!("own address {index}: {label}"),
+                ));
             }
         }
         self.addresses = addresses;
-        self.accounts = accounts.iter().enumerate().map(|(index, account)| (index.to_string(), account.label.clone())).collect();
-        let mut tags: Vec<String> = accounts.iter().filter_map(|account| account.tag.clone()).collect();
+        self.accounts = accounts
+            .iter()
+            .enumerate()
+            .map(|(index, account)| (index.to_string(), account.label.clone()))
+            .collect();
+        let mut tags: Vec<String> = accounts
+            .iter()
+            .filter_map(|account| account.tag.clone())
+            .collect();
         tags.dedup();
         self.account_tags = tags;
-        self.address_book_rows =
-            data.meta.address_book.iter().enumerate().map(|(index, entry)| (index.to_string(), format!("{} {}", &entry.address[..entry.address.len().min(12)], entry.description))).collect();
-        self.current_account = format!("account {current}: {}", accounts.get(current as usize).map(|a| a.label.as_str()).unwrap_or(""));
+        self.address_book_rows = data
+            .meta
+            .address_book
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                (
+                    index.to_string(),
+                    format!(
+                        "{} {}",
+                        &entry.address[..entry.address.len().min(12)],
+                        entry.description
+                    ),
+                )
+            })
+            .collect();
+        self.current_account = format!(
+            "account {current}: {}",
+            accounts
+                .get(current as usize)
+                .map(|a| a.label.as_str())
+                .unwrap_or("")
+        );
     }
 }
 
@@ -151,11 +231,15 @@ fn current_word(line: &str, pos: usize) -> (usize, Vec<&str>, &str) {
 }
 
 fn words(list: &[&str]) -> Vec<(String, String)> {
-    list.iter().map(|word| (word.to_string(), String::new())).collect()
+    list.iter()
+        .map(|word| (word.to_string(), String::new()))
+        .collect()
 }
 
 fn described(list: &[(&str, &str)]) -> Vec<(String, String)> {
-    list.iter().map(|(word, description)| (word.to_string(), description.to_string())).collect()
+    list.iter()
+        .map(|(word, description)| (word.to_string(), description.to_string()))
+        .collect()
 }
 
 const HISTORY_FILTERS: [(&str, &str); 7] = [
@@ -169,14 +253,24 @@ const HISTORY_FILTERS: [(&str, &str); 7] = [
 ];
 
 /// What completes after `previous` words - `(candidate, description)`.
-pub fn candidates(specs: &[CommandSpec], data: &CompletionData, previous: &[&str]) -> Vec<(String, String)> {
+pub fn candidates(
+    specs: &[CommandSpec],
+    data: &CompletionData,
+    previous: &[&str],
+) -> Vec<(String, String)> {
     let Some(&command) = previous.first() else {
-        return specs.iter().map(|spec| (spec.name.clone(), spec.about.clone())).collect();
+        return specs
+            .iter()
+            .map(|spec| (spec.name.clone(), spec.about.clone()))
+            .collect();
     };
     let args = &previous[1..];
     let priorities = || words(&PRIORITY_NAMES);
     match (command, args) {
-        ("help", []) => specs.iter().map(|spec| (spec.name.clone(), spec.about.clone())).collect(),
+        ("help", []) => specs
+            .iter()
+            .map(|spec| (spec.name.clone(), spec.about.clone()))
+            .collect(),
         ("balance", []) => described(&[("detail", "per-address balances")]),
         ("account", []) => described(&[
             ("new", "<label>"),
@@ -189,7 +283,11 @@ pub fn candidates(specs: &[CommandSpec], data: &CompletionData, previous: &[&str
         ("account", ["switch" | "label", ..]) if args.len() == 1 => data.accounts.clone(),
         ("account", ["untag", ..]) => data.accounts.clone(),
         ("account", ["tag", _, ..]) => data.accounts.clone(),
-        ("account", ["tag" | "tag_description"]) => data.account_tags.iter().map(|tag| (tag.clone(), String::new())).collect(),
+        ("account", ["tag" | "tag_description"]) => data
+            .account_tags
+            .iter()
+            .map(|tag| (tag.clone(), String::new()))
+            .collect(),
         ("address", []) => described(&[
             ("all", "every address of this account"),
             ("new", "<label>"),
@@ -197,7 +295,11 @@ pub fn candidates(specs: &[CommandSpec], data: &CompletionData, previous: &[&str
             ("one-off", "<account> <subaddress>"),
         ]),
         ("show_transfers" | "export_transfers", _) => described(&HISTORY_FILTERS),
-        ("incoming_transfers", _) => described(&[("available", "unspent"), ("unavailable", "spent"), ("verbose", "with key images")]),
+        ("incoming_transfers", _) => described(&[
+            ("available", "unspent"),
+            ("unavailable", "spent"),
+            ("verbose", "with key images"),
+        ]),
         ("set", []) => described(&[
             ("priority", "default fee priority"),
             ("unit", "display and input unit"),
@@ -210,7 +312,14 @@ pub fn candidates(specs: &[CommandSpec], data: &CompletionData, previous: &[&str
         ("set", ["default-ring-size"]) => words(&["16"]),
         ("transfer", _) => {
             // Priority only fits before the first address.
-            let mut list = if args.iter().any(|arg| arg.starts_with('5') || arg.starts_with('7')) { vec![] } else { priorities() };
+            let mut list = if args
+                .iter()
+                .any(|arg| arg.starts_with('5') || arg.starts_with('7'))
+            {
+                vec![]
+            } else {
+                priorities()
+            };
             list.extend(data.addresses.clone());
             list
         }
@@ -226,16 +335,30 @@ pub fn candidates(specs: &[CommandSpec], data: &CompletionData, previous: &[&str
         }
         ("sweep_single", _) => data.addresses.clone(),
         ("pocketchange" | "split", _) => {
-            let mut list = described(&[("16", "the most one transaction holds (default)"), ("8", "pieces"), ("4", "pieces"), ("inputs=", "merge the N largest outputs first")]);
+            let mut list = described(&[
+                ("16", "the most one transaction holds (default)"),
+                ("8", "pieces"),
+                ("4", "pieces"),
+                ("inputs=", "merge the N largest outputs first"),
+            ]);
             list.extend(priorities());
             list
         }
         ("freeze" | "thaw" | "frozen", []) => data.key_images.clone(),
         ("show_transfer" | "get_tx_note" | "set_tx_note", []) => data.txids.clone(),
-        ("mark_output_spent" | "mark_output_unspent" | "is_output_spent", []) => data.outputs.clone(),
-        ("address_book", []) => described(&[("add", "<address> [<description>]"), ("delete", "<index>")]),
+        ("mark_output_spent" | "mark_output_unspent" | "is_output_spent", []) => {
+            data.outputs.clone()
+        }
+        ("address_book", []) => {
+            described(&[("add", "<address> [<description>]"), ("delete", "<index>")])
+        }
         ("address_book", ["delete"]) => data.address_book_rows.clone(),
-        ("address_book", ["add"]) => data.addresses.iter().filter(|(_, description)| !description.starts_with("address book")).cloned().collect(),
+        ("address_book", ["add"]) => data
+            .addresses
+            .iter()
+            .filter(|(_, description)| !description.starts_with("address book"))
+            .cloned()
+            .collect(),
         _ => vec![],
     }
 }
@@ -282,18 +405,34 @@ impl WalletHinter {
         }
         match trimmed.split_once(char::is_whitespace) {
             None => {
-                let matching: Vec<&CommandSpec> = specs.iter().filter(|spec| spec.name.starts_with(trimmed)).collect();
+                let matching: Vec<&CommandSpec> = specs
+                    .iter()
+                    .filter(|spec| spec.name.starts_with(trimmed))
+                    .collect();
                 match matching.as_slice() {
-                    [only] if only.name != trimmed => (only.name[trimmed.len()..].to_string(), true),
+                    [only] if only.name != trimmed => {
+                        (only.name[trimmed.len()..].to_string(), true)
+                    }
                     [only] if !only.usage.is_empty() => (format!("  {}", only.usage), false),
                     _ => (String::new(), false),
                 }
             }
             Some((command, rest)) => match specs.iter().find(|spec| spec.name == command) {
                 Some(spec) if !spec.usage.is_empty() => {
-                    let usage = matching_forms(&spec.usage, rest, line.ends_with(char::is_whitespace));
-                    let forms: Vec<String> = usage.iter().map(|form| format!("{command} {form}")).collect();
-                    (format!("{}  {}", if line.ends_with(' ') { "" } else { " " }, forms.join(" | ")), false)
+                    let usage =
+                        matching_forms(&spec.usage, rest, line.ends_with(char::is_whitespace));
+                    let forms: Vec<String> = usage
+                        .iter()
+                        .map(|form| format!("{command} {form}"))
+                        .collect();
+                    (
+                        format!(
+                            "{}  {}",
+                            if line.ends_with(' ') { "" } else { " " },
+                            forms.join(" | ")
+                        ),
+                        false,
+                    )
                 }
                 _ => (String::new(), false),
             },
@@ -311,12 +450,17 @@ fn matching_forms<'a>(usage: &'a str, typed: &str, last_word_complete: bool) -> 
     let typed: Vec<&str> = typed.split_whitespace().collect();
     let fits = |form: &&str| {
         let tokens: Vec<&str> = form.split_whitespace().collect();
-        typed.iter().enumerate().all(|(i, word)| match tokens.get(i) {
-            Some(token) if token.starts_with(['<', '[', '(']) => true,
-            Some(token) if i + 1 == typed.len() && !last_word_complete => token.starts_with(word),
-            Some(token) => token == word,
-            None => false,
-        })
+        typed
+            .iter()
+            .enumerate()
+            .all(|(i, word)| match tokens.get(i) {
+                Some(token) if token.starts_with(['<', '[', '(']) => true,
+                Some(token) if i + 1 == typed.len() && !last_word_complete => {
+                    token.starts_with(word)
+                }
+                Some(token) => token == word,
+                None => false,
+            })
     };
     let matching: Vec<&str> = forms.iter().copied().filter(fits).collect();
     if matching.is_empty() {
@@ -327,13 +471,23 @@ fn matching_forms<'a>(usage: &'a str, typed: &str, last_word_complete: bool) -> 
 }
 
 impl Hinter for WalletHinter {
-    fn handle(&mut self, line: &str, pos: usize, history: &dyn History, use_ansi_coloring: bool, _cwd: &str) -> String {
+    fn handle(
+        &mut self,
+        line: &str,
+        pos: usize,
+        history: &dyn History,
+        use_ansi_coloring: bool,
+        _cwd: &str,
+    ) -> String {
         self.acceptable.clear();
         if pos != line.len() || line.is_empty() {
             return String::new();
         }
         let from_history = history
-            .search(SearchQuery::last_with_prefix(line.to_string(), history.session()))
+            .search(SearchQuery::last_with_prefix(
+                line.to_string(),
+                history.session(),
+            ))
             .ok()
             .and_then(|entries| entries.into_iter().next())
             .and_then(|entry| entry.command_line.get(line.len()..).map(str::to_string))
@@ -346,7 +500,11 @@ impl Hinter for WalletHinter {
             self.acceptable = hint.clone();
         }
         if use_ansi_coloring && !hint.is_empty() {
-            let style = if acceptable { Style::new().fg(AnsiColor::DarkGray) } else { Style::new().fg(AnsiColor::DarkGray).italic() };
+            let style = if acceptable {
+                Style::new().fg(AnsiColor::DarkGray)
+            } else {
+                Style::new().fg(AnsiColor::DarkGray).italic()
+            };
             style.paint(hint).to_string()
         } else {
             hint
@@ -374,11 +532,22 @@ impl reedline::Highlighter for WalletHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
         let mut styled = StyledText::new();
         let leading = line.len() - line.trim_start().len();
-        let command_end = line[leading..].find(char::is_whitespace).map_or(line.len(), |i| leading + i);
+        let command_end = line[leading..]
+            .find(char::is_whitespace)
+            .map_or(line.len(), |i| leading + i);
         let command = &line[leading..command_end];
-        let known = self.specs.iter().any(|spec| spec.name == command) || command == "quit" || command == "q";
+        let known = self.specs.iter().any(|spec| spec.name == command)
+            || command == "quit"
+            || command == "q";
         styled.push((Style::new(), line[..leading].to_string()));
-        styled.push((if known { Style::new().fg(AnsiColor::Green).bold() } else { Style::new().fg(AnsiColor::Red) }, command.to_string()));
+        styled.push((
+            if known {
+                Style::new().fg(AnsiColor::Green).bold()
+            } else {
+                Style::new().fg(AnsiColor::Red)
+            },
+            command.to_string(),
+        ));
         styled.push((Style::new(), line[command_end..].to_string()));
         styled
     }
@@ -397,7 +566,13 @@ impl Prompt for WalletPrompt {
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        Cow::Owned(self.data.lock().expect("completion data lock").current_account.clone())
+        Cow::Owned(
+            self.data
+                .lock()
+                .expect("completion data lock")
+                .current_account
+                .clone(),
+        )
     }
 
     fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {
@@ -435,7 +610,9 @@ fn history_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))?;
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+        })?;
     let dir = base.join("stagenet-wallet-cli");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("history"))
@@ -452,18 +629,52 @@ fn keybindings() -> Keybindings {
     let mut keys = default_emacs_keybindings();
     let (alt, shift) = (KeyModifiers::ALT, KeyModifiers::SHIFT);
     // Tab opens the completion menu, then steps through it.
-    keys.add_binding(KeyModifiers::NONE, KeyCode::Tab, ReedlineEvent::UntilFound(vec![ReedlineEvent::Menu("completion_menu".to_string()), ReedlineEvent::MenuNext]));
+    keys.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
     keys.add_binding(shift, KeyCode::BackTab, ReedlineEvent::MenuPrevious);
     // Word-wise movement and selection with Alt, as in macOS text fields
     // (Ctrl works too, from the defaults).
-    keys.add_binding(alt, KeyCode::Left, edit(EditCommand::MoveWordLeft { select: false }));
-    keys.add_binding(alt, KeyCode::Right, ReedlineEvent::UntilFound(vec![ReedlineEvent::HistoryHintWordComplete, edit(EditCommand::MoveWordRight { select: false })]));
-    keys.add_binding(alt | shift, KeyCode::Left, edit(EditCommand::MoveWordLeft { select: true }));
-    keys.add_binding(alt | shift, KeyCode::Right, edit(EditCommand::MoveWordRight { select: true }));
+    keys.add_binding(
+        alt,
+        KeyCode::Left,
+        edit(EditCommand::MoveWordLeft { select: false }),
+    );
+    keys.add_binding(
+        alt,
+        KeyCode::Right,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::HistoryHintWordComplete,
+            edit(EditCommand::MoveWordRight { select: false }),
+        ]),
+    );
+    keys.add_binding(
+        alt | shift,
+        KeyCode::Left,
+        edit(EditCommand::MoveWordLeft { select: true }),
+    );
+    keys.add_binding(
+        alt | shift,
+        KeyCode::Right,
+        edit(EditCommand::MoveWordRight { select: true }),
+    );
     keys.add_binding(alt, KeyCode::Backspace, edit(EditCommand::BackspaceWord));
     keys.add_binding(alt, KeyCode::Delete, edit(EditCommand::DeleteWord));
-    keys.add_binding(shift, KeyCode::Home, edit(EditCommand::MoveToLineStart { select: true }));
-    keys.add_binding(shift, KeyCode::End, edit(EditCommand::MoveToLineEnd { select: true }));
+    keys.add_binding(
+        shift,
+        KeyCode::Home,
+        edit(EditCommand::MoveToLineStart { select: true }),
+    );
+    keys.add_binding(
+        shift,
+        KeyCode::End,
+        edit(EditCommand::MoveToLineEnd { select: true }),
+    );
     keys.add_binding(alt, KeyCode::Char('a'), edit(EditCommand::SelectAll));
     keys
 }
@@ -481,9 +692,15 @@ pub fn line_editor(data: Arc<Mutex<CompletionData>>) -> Reedline {
         .with_max_description_width(60);
     let mut editor = Reedline::create()
         .with_edit_mode(Box::new(Emacs::new(keybindings())))
-        .with_completer(Box::new(WalletCompleter { specs: specs.clone(), data }))
+        .with_completer(Box::new(WalletCompleter {
+            specs: specs.clone(),
+            data,
+        }))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu)))
-        .with_hinter(Box::new(WalletHinter { specs: specs.clone(), acceptable: String::new() }))
+        .with_hinter(Box::new(WalletHinter {
+            specs: specs.clone(),
+            acceptable: String::new(),
+        }))
         .with_highlighter(Box::new(WalletHighlighter { specs }))
         .with_partial_completions(true)
         .with_quick_completions(true)
@@ -494,7 +711,9 @@ pub fn line_editor(data: Arc<Mutex<CompletionData>>) -> Reedline {
         // A leading space keeps a line out of history (for anything you'd
         // rather not have saved).
         .with_history_exclusion_prefix(Some(" ".to_string()));
-    if let Some(history) = history_path().and_then(|path| FileBackedHistory::with_file(1_000, path).ok()) {
+    if let Some(history) =
+        history_path().and_then(|path| FileBackedHistory::with_file(1_000, path).ok())
+    {
         editor = editor.with_history(Box::new(history));
     }
     editor
@@ -509,8 +728,17 @@ mod tests {
             txids: vec![("ab12".repeat(16), "in 1.0 XMR".to_string())],
             key_images: vec![("cd34".repeat(16), "0.5 XMR".to_string())],
             outputs: vec![("0/42".to_string(), "0.5 XMR".to_string())],
-            addresses: vec![("5AAAA".to_string(), "address book: shop".to_string()), ("5BBBB".to_string(), "own address 0: Primary account".to_string())],
-            accounts: vec![("0".to_string(), "Primary account".to_string()), ("1".to_string(), "savings".to_string())],
+            addresses: vec![
+                ("5AAAA".to_string(), "address book: shop".to_string()),
+                (
+                    "5BBBB".to_string(),
+                    "own address 0: Primary account".to_string(),
+                ),
+            ],
+            accounts: vec![
+                ("0".to_string(), "Primary account".to_string()),
+                ("1".to_string(), "savings".to_string()),
+            ],
             account_tags: vec![],
             address_book_rows: vec![("0".to_string(), "5AAAA shop".to_string())],
             current_account: "account 0: Primary account".to_string(),
@@ -524,14 +752,32 @@ mod tests {
     #[test]
     fn every_parser_command_is_known_to_the_editor_with_its_usage() {
         let specs = command_specs();
-        for name in ["transfer", "sweep_all", "show_transfers", "balance", "account", "freeze", "add_output", "help", "exit"] {
+        for name in [
+            "transfer",
+            "sweep_all",
+            "show_transfers",
+            "balance",
+            "account",
+            "freeze",
+            "add_output",
+            "help",
+            "exit",
+        ] {
             assert!(specs.iter().any(|spec| spec.name == name), "{name}");
         }
         let transfer = specs.iter().find(|spec| spec.name == "transfer").unwrap();
-        assert!(transfer.usage.starts_with("[index=<N1>"), "usage without the name: {}", transfer.usage);
+        assert!(
+            transfer.usage.starts_with("[index=<N1>"),
+            "usage without the name: {}",
+            transfer.usage
+        );
         assert!(!transfer.about.is_empty());
         let account = specs.iter().find(|spec| spec.name == "account").unwrap();
-        assert!(account.usage.contains("new <label") && account.usage.contains(" | "), "{}", account.usage);
+        assert!(
+            account.usage.contains("new <label") && account.usage.contains(" | "),
+            "{}",
+            account.usage
+        );
     }
 
     #[test]
@@ -539,50 +785,106 @@ mod tests {
         let specs = command_specs();
         let data = data();
         assert!(names(candidates(&specs, &data, &[])).contains(&"transfer".to_string()));
-        assert_eq!(names(candidates(&specs, &data, &["account"])), ["new", "switch", "label", "tag", "untag", "tag_description"]);
-        assert_eq!(names(candidates(&specs, &data, &["account", "switch"])), ["0", "1"]);
+        assert_eq!(
+            names(candidates(&specs, &data, &["account"])),
+            ["new", "switch", "label", "tag", "untag", "tag_description"]
+        );
+        assert_eq!(
+            names(candidates(&specs, &data, &["account", "switch"])),
+            ["0", "1"]
+        );
         assert!(names(candidates(&specs, &data, &["account", "switch", "1"])).is_empty());
-        assert_eq!(names(candidates(&specs, &data, &["set", "unit"]))[0], "monero");
-        assert_eq!(names(candidates(&specs, &data, &["freeze"])), ["cd34".repeat(16)]);
-        assert_eq!(names(candidates(&specs, &data, &["show_transfer"])), ["ab12".repeat(16)]);
-        assert_eq!(names(candidates(&specs, &data, &["is_output_spent"])), ["0/42"]);
+        assert_eq!(
+            names(candidates(&specs, &data, &["set", "unit"]))[0],
+            "monero"
+        );
+        assert_eq!(
+            names(candidates(&specs, &data, &["freeze"])),
+            ["cd34".repeat(16)]
+        );
+        assert_eq!(
+            names(candidates(&specs, &data, &["show_transfer"])),
+            ["ab12".repeat(16)]
+        );
+        assert_eq!(
+            names(candidates(&specs, &data, &["is_output_spent"])),
+            ["0/42"]
+        );
 
         let transfer = names(candidates(&specs, &data, &["transfer"]));
-        assert!(transfer.contains(&"elevated".to_string()) && transfer.contains(&"5AAAA".to_string()));
+        assert!(
+            transfer.contains(&"elevated".to_string()) && transfer.contains(&"5AAAA".to_string())
+        );
         let after_address = names(candidates(&specs, &data, &["transfer", "5AAAA", "1"]));
-        assert!(!after_address.contains(&"elevated".to_string()), "priority only fits before the first address");
+        assert!(
+            !after_address.contains(&"elevated".to_string()),
+            "priority only fits before the first address"
+        );
     }
 
     #[test]
     fn the_completer_replaces_just_the_word_being_typed() {
-        let mut completer = WalletCompleter { specs: command_specs(), data: Arc::new(Mutex::new(data())) };
+        let mut completer = WalletCompleter {
+            specs: command_specs(),
+            data: Arc::new(Mutex::new(data())),
+        };
         let suggestions = reedline::Completer::complete(&mut completer, "account sw", 10);
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].value, "switch");
-        assert_eq!((suggestions[0].span.start, suggestions[0].span.end), (8, 10));
+        assert_eq!(
+            (suggestions[0].span.start, suggestions[0].span.end),
+            (8, 10)
+        );
         assert_eq!(suggestions[0].description.as_deref(), Some("<index>"));
     }
 
     #[test]
     fn hints_finish_a_unique_command_then_show_its_usage() {
         let specs = command_specs();
-        assert_eq!(WalletHinter::hint_without_history(&specs, "transf"), ("er".to_string(), true));
+        assert_eq!(
+            WalletHinter::hint_without_history(&specs, "transf"),
+            ("er".to_string(), true)
+        );
         let (usage, acceptable) = WalletHinter::hint_without_history(&specs, "transfer ");
         assert!(!acceptable, "a usage hint is for reading, not accepting");
         assert!(usage.contains("transfer [index=<N1>"), "{usage}");
         let (switch, _) = WalletHinter::hint_without_history(&specs, "account switch ");
-        assert_eq!(switch.trim(), "account switch <index>", "only the forms that fit what's typed");
+        assert_eq!(
+            switch.trim(),
+            "account switch <index>",
+            "only the forms that fit what's typed"
+        );
         let (partial, _) = WalletHinter::hint_without_history(&specs, "account ta");
-        assert!(partial.contains("account tag <tag_name>") && partial.contains("account tag_description") && !partial.contains("switch"), "{partial}");
-        assert_eq!(WalletHinter::hint_without_history(&specs, "s").0, "", "ambiguous: no hint");
-        assert_eq!(WalletHinter::hint_without_history(&specs, "nonsense ").0, "");
+        assert!(
+            partial.contains("account tag <tag_name>")
+                && partial.contains("account tag_description")
+                && !partial.contains("switch"),
+            "{partial}"
+        );
+        assert_eq!(
+            WalletHinter::hint_without_history(&specs, "s").0,
+            "",
+            "ambiguous: no hint"
+        );
+        assert_eq!(
+            WalletHinter::hint_without_history(&specs, "nonsense ").0,
+            ""
+        );
     }
 
     #[test]
     fn the_command_word_is_green_when_known_and_red_when_not() {
-        let highlighter = WalletHighlighter { specs: command_specs() };
+        let highlighter = WalletHighlighter {
+            specs: command_specs(),
+        };
         let known = reedline::Highlighter::highlight(&highlighter, "balance detail", 0);
-        assert_eq!(known.buffer[1], (Style::new().fg(AnsiColor::Green).bold(), "balance".to_string()));
+        assert_eq!(
+            known.buffer[1],
+            (
+                Style::new().fg(AnsiColor::Green).bold(),
+                "balance".to_string()
+            )
+        );
         let unknown = reedline::Highlighter::highlight(&highlighter, "  balanse", 0);
         assert_eq!(unknown.buffer[1].1, "balanse");
         assert_eq!(unknown.buffer[1].0, Style::new().fg(AnsiColor::Red));

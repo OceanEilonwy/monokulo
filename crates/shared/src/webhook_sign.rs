@@ -17,7 +17,8 @@ type HmacSha256 = Hmac<Sha256>;
 /// `signing_secret`. Documented with a fixed test vector so a merchant implementing
 /// verification can cross-check their own computation against the same input.
 pub fn sign_payload(secret: &str, payload: &[u8]) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(payload);
     hex::encode(mac.finalize().into_bytes())
 }
@@ -43,7 +44,8 @@ pub fn verify_signature(secret: &str, payload: &[u8], presented_signature_hex: &
     let Ok(presented) = hex::decode(presented_signature_hex) else {
         return false;
     };
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(payload);
     mac.verify_slice(&presented).is_ok()
 }
@@ -166,7 +168,10 @@ mod tests {
         let signature = sign_payload(secret, payload);
         // Cross-checked independently via Python's stdlib: hmac.new(secret.encode(),
         // payload, hashlib.sha256).hexdigest() with the exact secret/payload above.
-        assert_eq!(signature, "61be1ffcef67db7a31a61f55b0c1abda7c41963499ab87101bf8ba17eca01ff5");
+        assert_eq!(
+            signature,
+            "61be1ffcef67db7a31a61f55b0c1abda7c41963499ab87101bf8ba17eca01ff5"
+        );
         assert!(verify_signature(secret, payload, &signature));
     }
 
@@ -223,12 +228,12 @@ mod tests {
         assert!(!verify_signature(secret, payload, &first_off));
 
         for bad in [
-            "",                        // empty
-            &good[..2],                // a correct prefix, far too short
-            &good[..good.len() - 2],   // a correct prefix one byte short of the tag
-            &format!("{good}00"),      // correct tag with trailing junk
-            "not hex at all",          // undecodable
-            &good.to_uppercase(),      // valid hex, wrong case
+            "",                      // empty
+            &good[..2],              // a correct prefix, far too short
+            &good[..good.len() - 2], // a correct prefix one byte short of the tag
+            &format!("{good}00"),    // correct tag with trailing junk
+            "not hex at all",        // undecodable
+            &good.to_uppercase(),    // valid hex, wrong case
         ] {
             let expected = bad == good.to_uppercase();
             assert_eq!(
@@ -242,13 +247,20 @@ mod tests {
 
     #[test]
     fn public_https_url_with_a_public_ip_is_allowed() {
-        assert!(validate_webhook_url("https://merchant.example/hook", IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))).is_ok());
+        assert!(validate_webhook_url(
+            "https://merchant.example/hook",
+            IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))
+        )
+        .is_ok());
     }
 
     #[test]
     fn loopback_resolved_address_is_rejected() {
-        let err = validate_webhook_url("http://looks-public.example/hook", IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
-            .unwrap_err();
+        let err = validate_webhook_url(
+            "http://looks-public.example/hook",
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        )
+        .unwrap_err();
         assert_eq!(err, WebhookUrlError::PrivateAddress);
     }
 
@@ -266,8 +278,11 @@ mod tests {
 
     #[test]
     fn cloud_metadata_address_is_rejected() {
-        let err =
-            validate_webhook_url("http://example.test/hook", IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))).unwrap_err();
+        let err = validate_webhook_url(
+            "http://example.test/hook",
+            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+        )
+        .unwrap_err();
         assert_eq!(err, WebhookUrlError::PrivateAddress);
     }
 
@@ -279,12 +294,18 @@ mod tests {
         // every check in this function. Unmapping before classifying is what makes
         // the rules independent of which family the resolver happened to answer in.
         for mapped in [
-            "::ffff:127.0.0.1",   // loopback
-            "::ffff:10.0.0.1",    // RFC 1918
+            "::ffff:127.0.0.1",       // loopback
+            "::ffff:10.0.0.1",        // RFC 1918
             "::ffff:169.254.169.254", // cloud metadata
         ] {
-            let err = validate_webhook_url("http://looks-public.example/hook", mapped.parse().unwrap()).unwrap_err();
-            assert_eq!(err, WebhookUrlError::PrivateAddress, "{mapped} must be rejected");
+            let err =
+                validate_webhook_url("http://looks-public.example/hook", mapped.parse().unwrap())
+                    .unwrap_err();
+            assert_eq!(
+                err,
+                WebhookUrlError::PrivateAddress,
+                "{mapped} must be rejected"
+            );
         }
     }
 
@@ -293,12 +314,19 @@ mod tests {
         // fe80::/10 - the v6 counterpart of 169.254.0.0/16, and the same
         // neighbouring-host reachability concern.
         for ip in ["fe80::1", "febf:ffff::1"] {
-            let err = validate_webhook_url("http://example.test/hook", ip.parse().unwrap()).unwrap_err();
-            assert_eq!(err, WebhookUrlError::PrivateAddress, "{ip} must be rejected");
+            let err =
+                validate_webhook_url("http://example.test/hook", ip.parse().unwrap()).unwrap_err();
+            assert_eq!(
+                err,
+                WebhookUrlError::PrivateAddress,
+                "{ip} must be rejected"
+            );
         }
         // The neighbouring prefix is genuinely global and must still be allowed -
         // this is a /10, not a /16.
-        assert!(validate_webhook_url("http://example.test/hook", "fec0::1".parse().unwrap()).is_ok());
+        assert!(
+            validate_webhook_url("http://example.test/hook", "fec0::1".parse().unwrap()).is_ok()
+        );
     }
 
     #[test]
@@ -307,12 +335,22 @@ mod tests {
         // `Ipv4Addr::is_private` says nothing about it) but just as much a
         // neighbouring-host range on any deployment behind a carrier-grade NAT,
         // which a self-hosted router install plausibly is.
-        for ip in [Ipv4Addr::new(100, 64, 0, 1), Ipv4Addr::new(100, 127, 255, 254)] {
+        for ip in [
+            Ipv4Addr::new(100, 64, 0, 1),
+            Ipv4Addr::new(100, 127, 255, 254),
+        ] {
             let err = validate_webhook_url("http://example.test/hook", IpAddr::V4(ip)).unwrap_err();
-            assert_eq!(err, WebhookUrlError::PrivateAddress, "{ip} must be rejected");
+            assert_eq!(
+                err,
+                WebhookUrlError::PrivateAddress,
+                "{ip} must be rejected"
+            );
         }
         // Immediately either side of the /10 is ordinary public space.
-        for ip in [Ipv4Addr::new(100, 63, 255, 255), Ipv4Addr::new(100, 128, 0, 1)] {
+        for ip in [
+            Ipv4Addr::new(100, 63, 255, 255),
+            Ipv4Addr::new(100, 128, 0, 1),
+        ] {
             assert!(
                 validate_webhook_url("http://example.test/hook", IpAddr::V4(ip)).is_ok(),
                 "{ip} is outside 100.64.0.0/10 and must still be allowed"
@@ -326,12 +364,25 @@ mod tests {
         // 127 - every mainstream stack routes a connection to it at the local host -
         // and `Ipv4Addr::is_unspecified` covers only that single address, leaving the
         // rest of 0.0.0.0/8 classified as ordinary public space.
-        for ip in [Ipv4Addr::new(0, 0, 0, 0), Ipv4Addr::new(0, 0, 0, 1), Ipv4Addr::new(0, 255, 255, 254)] {
-            let err = validate_webhook_url("http://looks-public.example/hook", IpAddr::V4(ip)).unwrap_err();
-            assert_eq!(err, WebhookUrlError::PrivateAddress, "{ip} must be rejected");
+        for ip in [
+            Ipv4Addr::new(0, 0, 0, 0),
+            Ipv4Addr::new(0, 0, 0, 1),
+            Ipv4Addr::new(0, 255, 255, 254),
+        ] {
+            let err = validate_webhook_url("http://looks-public.example/hook", IpAddr::V4(ip))
+                .unwrap_err();
+            assert_eq!(
+                err,
+                WebhookUrlError::PrivateAddress,
+                "{ip} must be rejected"
+            );
         }
         // 1.0.0.0 is the first address outside the /8 and is genuinely routable.
-        assert!(validate_webhook_url("http://example.test/hook", IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1))).is_ok());
+        assert!(validate_webhook_url(
+            "http://example.test/hook",
+            IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1))
+        )
+        .is_ok());
     }
 
     #[test]
@@ -342,9 +393,20 @@ mod tests {
         // only the `ffff` form left this one classified as an unremarkable global v6
         // address, one character away from the same bypass the unmapping exists to
         // close.
-        for compat in ["::127.0.0.1", "::10.0.0.1", "::169.254.169.254", "::0.0.0.1"] {
-            let err = validate_webhook_url("http://looks-public.example/hook", compat.parse().unwrap()).unwrap_err();
-            assert_eq!(err, WebhookUrlError::PrivateAddress, "{compat} must be rejected");
+        for compat in [
+            "::127.0.0.1",
+            "::10.0.0.1",
+            "::169.254.169.254",
+            "::0.0.0.1",
+        ] {
+            let err =
+                validate_webhook_url("http://looks-public.example/hook", compat.parse().unwrap())
+                    .unwrap_err();
+            assert_eq!(
+                err,
+                WebhookUrlError::PrivateAddress,
+                "{compat} must be rejected"
+            );
         }
     }
 
@@ -353,16 +415,21 @@ mod tests {
         // Nothing legitimate ever registers a webhook here; anything that does is
         // probing the classifier rather than integrating with it.
         for ip in [
-            "224.0.0.1",        // v4 multicast, 224.0.0.0/4
-            "239.255.255.250",  // SSDP, the same /4
-            "240.0.0.1",        // reserved class E, 240.0.0.0/4
-            "255.255.255.255",  // broadcast
-            "198.18.0.1",       // benchmarking, 198.18.0.0/15
-            "198.19.255.255",   // ...and its far end
-            "ff02::1",          // v6 multicast, ff00::/8
+            "224.0.0.1",       // v4 multicast, 224.0.0.0/4
+            "239.255.255.250", // SSDP, the same /4
+            "240.0.0.1",       // reserved class E, 240.0.0.0/4
+            "255.255.255.255", // broadcast
+            "198.18.0.1",      // benchmarking, 198.18.0.0/15
+            "198.19.255.255",  // ...and its far end
+            "ff02::1",         // v6 multicast, ff00::/8
         ] {
-            let err = validate_webhook_url("http://example.test/hook", ip.parse().unwrap()).unwrap_err();
-            assert_eq!(err, WebhookUrlError::PrivateAddress, "{ip} must be rejected");
+            let err =
+                validate_webhook_url("http://example.test/hook", ip.parse().unwrap()).unwrap_err();
+            assert_eq!(
+                err,
+                WebhookUrlError::PrivateAddress,
+                "{ip} must be rejected"
+            );
         }
         // Immediately either side of 198.18.0.0/15 is ordinary public space.
         for ip in ["198.17.255.255", "198.20.0.1", "223.255.255.255"] {
@@ -375,7 +442,11 @@ mod tests {
 
     #[test]
     fn non_http_scheme_is_rejected_even_with_a_public_ip() {
-        let err = validate_webhook_url("file:///etc/passwd", IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))).unwrap_err();
+        let err = validate_webhook_url(
+            "file:///etc/passwd",
+            IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+        )
+        .unwrap_err();
         assert_eq!(err, WebhookUrlError::UnsupportedScheme);
     }
 
@@ -389,8 +460,10 @@ mod tests {
     //
     // PHP equivalent to check against: `hash_hmac('sha256', KNOWN_VECTOR_PAYLOAD, KNOWN_VECTOR_SECRET)`.
     const KNOWN_VECTOR_SECRET: &str = "known_vector_secret_for_php_crosscheck";
-    const KNOWN_VECTOR_PAYLOAD: &[u8] = br#"{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}"#;
-    const KNOWN_VECTOR_SIGNATURE_HEX: &str = "436a60c6f66d20b611c7e4a3f78ab13167fb26680a65d8b2e5a114c182de80f1";
+    const KNOWN_VECTOR_PAYLOAD: &[u8] =
+        br#"{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}"#;
+    const KNOWN_VECTOR_SIGNATURE_HEX: &str =
+        "436a60c6f66d20b611c7e4a3f78ab13167fb26680a65d8b2e5a114c182de80f1";
 
     #[test]
     fn known_vector_for_cross_language_php_verification() {
@@ -399,6 +472,10 @@ mod tests {
         // guarding against.
         let signature = sign_payload(KNOWN_VECTOR_SECRET, KNOWN_VECTOR_PAYLOAD);
         assert_eq!(signature, KNOWN_VECTOR_SIGNATURE_HEX);
-        assert!(verify_signature(KNOWN_VECTOR_SECRET, KNOWN_VECTOR_PAYLOAD, KNOWN_VECTOR_SIGNATURE_HEX));
+        assert!(verify_signature(
+            KNOWN_VECTOR_SECRET,
+            KNOWN_VECTOR_PAYLOAD,
+            KNOWN_VECTOR_SIGNATURE_HEX
+        ));
     }
 }

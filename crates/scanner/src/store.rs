@@ -13,15 +13,25 @@
 //! order creation (the future HTTP handler / writer actor) — `Store` only persists the
 //! result.
 
-use std::cell::RefCell;
 use parking_lot::Mutex;
+use std::cell::RefCell;
 use std::sync::Arc;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-use crate::auth::{generate_public_key, generate_secret_token, hash_secret_token};
-use crate::status::{OrderStatus, PaymentView, StatusInputs, derive_status};
+pub use shared::ids::{OrderId, TenantId, WebhookId};
+
+use crate::auth::{generate_public_key, generate_secret_token, RawToken};
+use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
+
+pub mod db;
+mod work;
+pub use db::{Db, DbMetrics};
+pub use work::{
+    position, sql_height, BlockCheckpoint, OpenedReorg, Position, ReorgCandidate, ReorgJob,
+    ReorgPhase, StagedPayment,
+};
 
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.
@@ -32,47 +42,90 @@ use crate::status::{OrderStatus, PaymentView, StatusInputs, derive_status};
 /// unit test in this codebase opens a fresh `:memory:` database exactly once.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
-    (2, include_str!("../migrations/0002_active_orders_index.sql")),
-    (3, include_str!("../migrations/0003_network_scoped_scanning.sql")),
-    (4, include_str!("../migrations/0004_order_scoped_payment_uniqueness.sql")),
-    (5, include_str!("../migrations/0005_drop_order_fiat_columns.sql")),
-    (6, include_str!("../migrations/0006_drop_tenant_template_dir.sql")),
+    (
+        2,
+        include_str!("../migrations/0002_active_orders_index.sql"),
+    ),
+    (
+        3,
+        include_str!("../migrations/0003_network_scoped_scanning.sql"),
+    ),
+    (
+        4,
+        include_str!("../migrations/0004_order_scoped_payment_uniqueness.sql"),
+    ),
+    (
+        5,
+        include_str!("../migrations/0005_drop_order_fiat_columns.sql"),
+    ),
+    (
+        6,
+        include_str!("../migrations/0006_drop_tenant_template_dir.sql"),
+    ),
     (7, include_str!("../migrations/0007_order_rescans.sql")),
-    (8, include_str!("../migrations/0008_order_scanned_range.sql")),
-    (9, include_str!("../migrations/0009_utc_suffix_date_columns.sql")),
+    (
+        8,
+        include_str!("../migrations/0008_order_scanned_range.sql"),
+    ),
+    (
+        9,
+        include_str!("../migrations/0009_utc_suffix_date_columns.sql"),
+    ),
     (10, include_str!("../migrations/0010_settings.sql")),
-    (11, include_str!("../migrations/0011_order_confirmations_override.sql")),
-    (12, include_str!("../migrations/0012_drop_order_rescans.sql")),
-    (13, include_str!("../migrations/0013_drop_zero_conf_max_piconero.sql")),
-    (14, include_str!("../migrations/0014_drop_tenant_allowed_origins.sql")),
-    (15, include_str!("../migrations/0015_tenant_scan_cursor.sql")),
+    (
+        11,
+        include_str!("../migrations/0011_order_confirmations_override.sql"),
+    ),
+    (
+        12,
+        include_str!("../migrations/0012_drop_order_rescans.sql"),
+    ),
+    (
+        13,
+        include_str!("../migrations/0013_drop_zero_conf_max_piconero.sql"),
+    ),
+    (
+        14,
+        include_str!("../migrations/0014_drop_tenant_allowed_origins.sql"),
+    ),
+    (
+        15,
+        include_str!("../migrations/0015_tenant_scan_cursor.sql"),
+    ),
     (16, include_str!("../migrations/0016_order_closed_at.sql")),
-    (17, include_str!("../migrations/0017_pending_payment_recomputes.sql")),
-    (18, include_str!("../migrations/0018_partial_block_scans.sql")),
+    (
+        17,
+        include_str!("../migrations/0017_pending_payment_recomputes.sql"),
+    ),
+    (
+        18,
+        include_str!("../migrations/0018_partial_block_scans.sql"),
+    ),
+    (19, include_str!("../migrations/0019_scanner_work.sql")),
+    (20, include_str!("../migrations/0020_scanner_indexes.sql")),
 ];
 
-/// Connection-level settings that are *not* persisted in the database file, so they
-/// have to be re-applied every single time a connection is opened - not just on the
-/// boot that happened to run the initial migration. `foreign_keys` in particular
-/// defaults to OFF in SQLite: setting it once inside `0001_init.sql` meant foreign
-/// key enforcement was silently inactive on every restart after the very first one.
-/// (`journal_mode = WAL` *is* persisted in the file, but is set here too so a fresh
-/// file gets it from the first connection onward rather than only mid-migration.)
-///
-/// WAL + NORMAL is the standard pairing for this workload: WAL lets the writer commit
-/// while read connections keep serving status polls, and NORMAL is durable against
-/// application/process crashes under WAL (only an OS crash or power loss can lose the
-/// last few commits). This isn't a ledger moving funds - it's a record of payments
-/// observed on-chain - so that tradeoff beats paying fsync-per-commit latency.
-///
-/// Must run before `apply_migrations`: `PRAGMA foreign_keys` is a no-op if issued
-/// inside a transaction, and each migration now runs inside one.
+/// The engine's writing connections (the shared store and the database
+/// worker) take `shared::sqlite`'s writer settings: WAL, `synchronous =
+/// NORMAL`, foreign keys, a busy timeout and a statement cache. This isn't a
+/// ledger moving funds, it's a record of payments observed on-chain, so
+/// NORMAL's tradeoff (only an OS crash or power loss can lose the last few
+/// commits) beats paying an fsync per commit.
 fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
-         PRAGMA foreign_keys = ON;",
-    )
+    shared::sqlite::configure_writer(conn)
+}
+
+/// A column value as plain text, for comparing database states in tests.
+#[cfg(test)]
+pub(crate) fn value_text(value: rusqlite::types::ValueRef<'_>) -> String {
+    use rusqlite::types::ValueRef;
+    match value {
+        ValueRef::Null => "null".into(),
+        ValueRef::Integer(i) => i.to_string(),
+        ValueRef::Real(r) => r.to_string(),
+        ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+        ValueRef::Blob(b) => hex::encode(b),
+    }
 }
 
 /// Each migration's DDL and its `schema_migrations` bookkeeping row commit together
@@ -93,45 +146,124 @@ fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
 
 pub type SharedStore = Arc<Mutex<Store>>;
 
-type ReadJob = Box<dyn FnOnce(&Store) + Send + 'static>;
-
-/// Independent read-only SQLite connections. WAL lets these readers run
-/// concurrently with the writer; each connection stays on its own thread so
-/// a disk stall never blocks a Tokio worker.
+/// Independent read-only SQLite connections (`shared::sqlite::Pool`). WAL
+/// lets these readers run concurrently with the writer; each connection
+/// stays on its own thread, so a disk stall never blocks a Tokio worker, and
+/// a read goes to whichever connection is free.
 #[derive(Clone)]
-pub struct ReadStorePool {
-    workers: Arc<Vec<tokio::sync::mpsc::Sender<ReadJob>>>,
-    next: Arc<std::sync::atomic::AtomicUsize>,
-}
+pub struct ReadStorePool(shared::sqlite::Pool<Store>);
 
 impl ReadStorePool {
     pub fn open(path: &str, count: usize) -> Result<Self> {
-        let mut workers = Vec::new();
-        for n in 0..count.max(1) {
-            let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA query_only = ON;")?;
-            let store = Store::from_connection(conn);
-            let (sender, mut receiver) = tokio::sync::mpsc::channel::<ReadJob>(64);
-            std::thread::Builder::new().name(format!("scanner-db-read-{n}"))
-                .spawn(move || {
-                    while let Some(job) = receiver.blocking_recv() {
-                        job(&store);
-                    }
-                })
-                .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
-            workers.push(sender);
-        }
-        Ok(Self { workers: Arc::new(workers), next: Arc::new(std::sync::atomic::AtomicUsize::new(0)) })
+        let stores = (0..count.max(1))
+            .map(|_| Ok(Store::from_connection(shared::sqlite::open_reader(path)?)))
+            .collect::<Result<Vec<_>>>()?;
+        shared::sqlite::Pool::start("scanner-db-read", stores)
+            .map(Self)
+            .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))
+    }
+
+    /// Reads on the caller, on `store`, with writes refused as on a pool
+    /// connection: for in-memory databases and tests.
+    pub fn inline(store: SharedStore) -> Self {
+        ReadStorePool(shared::sqlite::Pool::Inline(store))
     }
 
     pub async fn query<T: Send + 'static>(
-        &self, f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
+        &self,
+        f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        let job: ReadJob = Box::new(move |store| { let _ = reply.send(f(store)); });
-        let index = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.workers.len();
-        self.workers[index].send(job).await.map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?;
-        answer.await.map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?
+        match &self.0 {
+            shared::sqlite::Pool::Inline(_) => {
+                self.0.run(move |store| store.read_only(|| f(store))).await
+            }
+            shared::sqlite::Pool::Threads { .. } => self.0.run(f).await,
+        }
+    }
+}
+
+/// How the engine's HTTP handlers reach the database: reads on the read
+/// pool, writes on the database worker ([`Db`]), and the order-change
+/// notifications its writes publish. No handler holds the shared store.
+#[derive(Clone)]
+pub struct Database {
+    writes: Db,
+    reads: ReadStorePool,
+    changes: tokio::sync::broadcast::Sender<OrderChange>,
+    /// The test's shared store, for [`Database::lock`].
+    #[cfg(test)]
+    inline: Option<SharedStore>,
+}
+
+impl Database {
+    /// The worker and read pool (both over the database file), sharing
+    /// `store`'s order-change notifications - the store the worker was
+    /// opened from ([`Db::open`]), so its commits reach subscribers.
+    pub fn from_parts(writes: Db, reads: ReadStorePool, store: &Store) -> Self {
+        Database {
+            writes,
+            reads,
+            changes: store.order_changes.clone(),
+            #[cfg(test)]
+            inline: None,
+        }
+    }
+
+    /// Everything on the caller, on `store`: for in-memory databases and
+    /// tests. Reads still can't write.
+    pub fn inline(store: SharedStore) -> Self {
+        let changes = store.lock().order_changes.clone();
+        Database {
+            writes: Db::over_shared(store.clone()),
+            reads: ReadStorePool::inline(store.clone()),
+            changes,
+            #[cfg(test)]
+            inline: Some(store),
+        }
+    }
+
+    /// Runs `f` on a read-only connection.
+    pub async fn read<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.reads.query(f).await
+    }
+
+    /// Runs a write (or a read that must see this connection's own writes)
+    /// on the database worker, in turn with the scanner's and webhooks' work
+    /// (the `Admin` class), never on a Tokio worker: a slow disk or a write
+    /// lock held by the scanner delays this request, not every task sharing
+    /// its worker.
+    pub async fn write<T, E>(
+        &self,
+        f: impl FnOnce(&Store) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+    {
+        self.writes.run(db::Class::Admin, f).await
+    }
+
+    /// Every [`OrderChange`] committed from now on.
+    pub fn subscribe_order_changes(&self) -> tokio::sync::broadcast::Receiver<OrderChange> {
+        self.changes.subscribe()
+    }
+
+    /// The test's shared store, for setting up and checking state directly.
+    /// Only for an inline database; production code can't call it.
+    #[cfg(test)]
+    pub fn lock(&self) -> parking_lot::MutexGuard<'_, Store> {
+        self.shared_store_for_test().lock()
+    }
+
+    /// The test's shared store itself, for code under test that takes one.
+    #[cfg(test)]
+    pub fn shared_store_for_test(&self) -> &SharedStore {
+        self.inline
+            .as_ref()
+            .expect("only an inline test database has a shared store")
     }
 }
 
@@ -155,8 +287,8 @@ pub struct Store {
 /// spurious hint costs one read and a coalesced burst loses nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrderChange {
-    pub tenant_id: String,
-    pub order_id: String,
+    pub tenant_id: TenantId,
+    pub order_id: OrderId,
 }
 
 /// Enough for a burst of changes in one scan tick; a subscriber that falls
@@ -173,6 +305,12 @@ pub enum StoreError {
     WorkerUnavailable(String),
 }
 
+impl From<shared::sqlite::PoolError> for StoreError {
+    fn from(e: shared::sqlite::PoolError) -> Self {
+        StoreError::WorkerUnavailable(e.to_string())
+    }
+}
+
 type Result<T> = std::result::Result<T, StoreError>;
 
 // ---------------------------------------------------------------------------
@@ -181,7 +319,7 @@ type Result<T> = std::result::Result<T, StoreError>;
 
 #[derive(Debug, Clone)]
 pub struct Tenant {
-    pub id: String,
+    pub id: TenantId,
     pub public_key: String,
     pub key_custody_backend: String,
     pub sealed_key_material: Vec<u8>,
@@ -219,13 +357,13 @@ pub struct CreatedTenant {
     pub tenant: Tenant,
     /// Shown here exactly once - callers must hand this to the operator and never
     /// persist it themselves; only `secret_token_hash` is stored.
-    pub secret_token: String,
+    pub secret_token: RawToken,
 }
 
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub id: String,
-    pub tenant_id: String,
+    pub id: OrderId,
+    pub tenant_id: TenantId,
     pub merchant_order_id: Option<String>,
     pub minor_index: u32,
     pub address: String,
@@ -252,7 +390,7 @@ pub struct Order {
 }
 
 pub struct NewOrder {
-    pub tenant_id: String,
+    pub tenant_id: TenantId,
     pub merchant_order_id: Option<String>,
     pub minor_index: u32,
     pub address: String,
@@ -271,7 +409,7 @@ pub struct NewOrder {
 #[derive(Debug, Clone)]
 pub struct OrderPaymentRow {
     pub id: i64,
-    pub order_id: String,
+    pub order_id: OrderId,
     pub txid: String,
     pub output_index: i64,
     pub amount_piconero: u64,
@@ -282,9 +420,9 @@ pub struct OrderPaymentRow {
 }
 
 pub struct StagedMatch<'a> {
-    pub network: &'a str,
-    pub tenant_id: &'a str,
-    pub order_id: &'a str,
+    pub network: monero::Network,
+    pub tenant_id: &'a TenantId,
+    pub order_id: &'a OrderId,
     pub txid: &'a str,
     pub output_index: i64,
     pub amount: u64,
@@ -294,11 +432,12 @@ pub struct StagedMatch<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Webhook {
-    pub id: String,
-    pub tenant_id: String,
+    pub id: WebhookId,
+    pub tenant_id: TenantId,
     pub url: String,
     pub extra_headers: String,
-    pub signing_secret: String,
+    /// Hidden in `Debug`; `expose` it only to sign a delivery.
+    pub signing_secret: live_settings::Secret,
     pub enabled: bool,
     pub created_at: i64,
 }
@@ -309,35 +448,167 @@ fn status_to_str(s: OrderStatus) -> &'static str {
 
 /// Paid, overpaid and expired orders are closed: nothing more is expected.
 fn is_terminal(s: OrderStatus) -> bool {
-    matches!(s, OrderStatus::Paid | OrderStatus::Overpaid | OrderStatus::Expired)
+    matches!(
+        s,
+        OrderStatus::Paid | OrderStatus::Overpaid | OrderStatus::Expired
+    )
+}
+
+/// A status that tells a merchant to ship: the one kind of transition that
+/// must not be announced from a chain that may be discarded.
+fn is_settlement(s: OrderStatus) -> bool {
+    matches!(s, OrderStatus::Paid | OrderStatus::Overpaid)
+}
+
+/// Everything a status recompute decides from.
+struct StatusFacts<'a> {
+    order: &'a Order,
+    /// The order's valid payments as of `current_height`.
+    views: &'a [PaymentView],
+    confirmations_required: u64,
+    /// The tenant is behind the network: blocks not yet scanned for it
+    /// could hold a payment.
+    tenant_lagging: bool,
+    /// A reorg is being reconciled on the order's network.
+    settlement_frozen: bool,
+    current_height: u64,
+    now: i64,
+}
+
+/// What a status recompute writes.
+#[derive(Debug, PartialEq, Eq)]
+struct StatusPlan {
+    status: OrderStatus,
+    confirmations: u64,
+    amount_received: u64,
+    next_due_at: Option<i64>,
+    next_due_height: Option<i64>,
+    /// A settlement had to wait: the recompute obligation stays.
+    keep_obligation: bool,
+}
+
+/// The status rules, with no I/O: the derived status, the two holds on it,
+/// and when the order can next change without a payment changing.
+fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
+    let order = facts.order;
+    let amount_received: u64 = facts.views.iter().map(|v| v.amount_piconero).sum();
+    let confirmations = facts
+        .views
+        .iter()
+        .map(|v| v.confirmations)
+        .min()
+        .unwrap_or(0);
+    let derived = derive_status(
+        facts.views,
+        StatusInputs {
+            xmr_amount_piconero: order.xmr_amount_piconero,
+            confirmations_required: facts.confirmations_required,
+            now: facts.now,
+            expires_at: order.expires_at,
+        },
+    );
+    // While the tenant is behind the network, an order mustn't become
+    // expired: its payment may be in a block not yet scanned for it, and an
+    // `order.expired` webhook can make a shop cancel an order that turns out
+    // to be paid. It expires once the tenant has caught up.
+    let expiry_held = derived == OrderStatus::Expired
+        && order.status != OrderStatus::Expired
+        && facts.tenant_lagging;
+    // While a reorg on this network is being reconciled, confirmations may be
+    // counted on the losing chain: an order can't newly settle until the
+    // rewind. Everything else (expiry, confirmation counts, walking a
+    // settlement back) still happens, and it shows where the payment stands.
+    let settlement_deferred =
+        is_settlement(derived) && !is_settlement(order.status) && facts.settlement_frozen;
+    let status = if expiry_held {
+        order.status
+    } else if settlement_deferred {
+        if facts.views.iter().all(|v| v.is_zero_conf) {
+            OrderStatus::Unconfirmed
+        } else {
+            OrderStatus::Confirming
+        }
+    } else {
+        derived
+    };
+    // When the status can next move without a payment changing (a payment
+    // change leaves a `pending_payment_recomputes` row instead):
+    // - its deadline, while it is still short of the amount;
+    // - the next block, while a mined payment is short of the confirmations
+    //   required (the count customers see moves every block);
+    // - again next round, when a transition was held back (rescheduled at
+    //   `now`, so it queues behind anything due earlier);
+    // - never, once terminal.
+    let (next_due_at, next_due_height) = if settlement_deferred || expiry_held {
+        (Some(facts.now), None)
+    } else if is_terminal(status) {
+        (None, None)
+    } else {
+        let short_of_amount = amount_received < order.xmr_amount_piconero;
+        let confirming = facts
+            .views
+            .iter()
+            .any(|v| !v.is_zero_conf && v.confirmations < facts.confirmations_required);
+        (
+            short_of_amount.then_some(order.expires_at.saturating_add(1).max(facts.now)),
+            confirming.then_some(facts.current_height.saturating_add(1) as i64),
+        )
+    };
+    StatusPlan {
+        status,
+        confirmations,
+        amount_received,
+        next_due_at,
+        next_due_height,
+        keep_obligation: settlement_deferred,
+    }
 }
 
 /// The scan window (task 7.3, decision D10) as an SQL condition on an
 /// `orders` row aliased `o`: open (not terminal), or closed no earlier than
 /// `?since` minus the grace period. Parameters: `:since_minus_grace`.
+///
+/// For one order (by primary key) only. Across a tenant's orders the OR
+/// defeats every index, so those queries use its two halves instead, each
+/// with its own index: [`OPEN_ORDERS`] and [`recently_closed_orders`].
 const IN_SCAN_WINDOW: &str = "(o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')
      OR (o.closed_at_utc IS NOT NULL AND o.closed_at_utc >= :since_minus_grace))";
+
+/// The open half of the scan window, for orders aliased `o` of one tenant
+/// (`orders_tenant_status_idx`).
+const OPEN_ORDERS: &str = "o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')";
+
+/// Whether the tenant whose id is the SQL expression `tenant` has an order
+/// in its scan window: two `EXISTS`, each answered from an index.
+/// Parameters: `:since_minus_grace`.
+fn tenant_in_scope(tenant: &str) -> String {
+    format!(
+        "(EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = {tenant} AND {OPEN_ORDERS})
+          OR EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = {tenant} AND o.closed_at_utc >= :since_minus_grace))"
+    )
+}
+
+/// The ids of the scan window's orders for tenants matching the SQL
+/// condition `tenants` on `o.tenant_id`, as a `UNION` of its two indexed
+/// halves. Parameters: `:since_minus_grace`.
+fn scan_window_orders(tenants: &str) -> String {
+    format!(
+        "SELECT o.id FROM orders o WHERE {tenants} AND {OPEN_ORDERS}
+         UNION SELECT o.id FROM orders o WHERE {tenants} AND o.closed_at_utc >= :since_minus_grace"
+    )
+}
 
 /// An unknown value can only come from a hand-edited or corrupted row (the
 /// schema's CHECK constraint rejects it otherwise). It is reported as a row
 /// conversion error rather than a panic, so one bad row fails the query that
 /// read it, not the whole scan loop.
 fn status_from_str(s: &str) -> rusqlite::Result<OrderStatus> {
-    Ok(match s {
-        "pending" => OrderStatus::Pending,
-        "unconfirmed" => OrderStatus::Unconfirmed,
-        "confirming" => OrderStatus::Confirming,
-        "paid" => OrderStatus::Paid,
-        "partial" => OrderStatus::Partial,
-        "overpaid" => OrderStatus::Overpaid,
-        "expired" => OrderStatus::Expired,
-        other => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                format!("unknown order status in database: {other:?}").into(),
-            ))
-        }
+    s.parse().map_err(|e: shared::order_status::UnknownStatus| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("{e} in database").into(),
+        )
     })
 }
 
@@ -348,14 +619,60 @@ fn new_id(prefix: &str) -> String {
 impl Store {
     fn from_connection(conn: Connection) -> Self {
         let (order_changes, _) = tokio::sync::broadcast::channel(ORDER_CHANGE_CAPACITY);
-        Store { conn, order_changes, pending_order_changes: RefCell::new(None) }
+        Store {
+            conn,
+            order_changes,
+            pending_order_changes: RefCell::new(None),
+        }
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
+        #[cfg(test)]
+        return Self::open_in_memory_from_template();
+        #[cfg(not(test))]
+        {
+            let conn = Connection::open_in_memory()?;
+            configure_connection(&conn)?;
+            apply_migrations(&conn)?;
+            Ok(Store::from_connection(conn))
+        }
+    }
+
+    /// Under test, a fresh in-memory store is a copy of one migrated once
+    /// per test binary: running every migration costs tens of milliseconds,
+    /// and tests open thousands of stores. `open_file` still migrates, and
+    /// the migration tests run the migrations themselves.
+    #[cfg(test)]
+    fn open_in_memory_from_template() -> Result<Self> {
+        static TEMPLATE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+            let conn = Connection::open_in_memory().expect("an in-memory database");
+            configure_connection(&conn).expect("configured");
+            apply_migrations(&conn).expect("migrated");
+            conn.serialize(rusqlite::MAIN_DB)
+                .expect("serialized")
+                .to_vec()
+        });
+        let mut conn = Connection::open_in_memory()?;
+        conn.deserialize_read_exact(
+            rusqlite::MAIN_DB,
+            TEMPLATE.as_slice(),
+            TEMPLATE.len(),
+            false,
+        )?;
         configure_connection(&conn)?;
-        apply_migrations(&conn)?;
         Ok(Store::from_connection(conn))
+    }
+
+    /// Another connection to the same database file, sharing this store's
+    /// order-change notifications. Migrations have already run.
+    pub(crate) fn connect_again(&self, path: &str) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        configure_connection(&conn)?;
+        Ok(Store {
+            conn,
+            order_changes: self.order_changes.clone(),
+            pending_order_changes: RefCell::new(None),
+        })
     }
 
     pub fn open_file(path: &str) -> Result<Self> {
@@ -371,11 +688,14 @@ impl Store {
         self.order_changes.subscribe()
     }
 
-    fn publish_order_change(&self, tenant_id: &str, order_id: &str) {
+    fn publish_order_change(&self, tenant_id: &TenantId, order_id: &OrderId) {
         if self.order_changes.receiver_count() == 0 {
             return;
         }
-        let change = OrderChange { tenant_id: tenant_id.to_string(), order_id: order_id.to_string() };
+        let change = OrderChange {
+            tenant_id: tenant_id.clone(),
+            order_id: order_id.clone(),
+        };
         match self.pending_order_changes.borrow_mut().as_mut() {
             Some(pending) => {
                 if !pending.contains(&change) {
@@ -389,7 +709,7 @@ impl Store {
     }
 
     /// [`Self::publish_order_change`] for a caller holding only the order id.
-    fn publish_order_change_by_id(&self, order_id: &str) -> Result<()> {
+    fn publish_order_change_by_id(&self, order_id: &OrderId) -> Result<()> {
         if self.order_changes.receiver_count() == 0 {
             return Ok(());
         }
@@ -397,6 +717,12 @@ impl Store {
             self.publish_order_change(&tenant_id, order_id);
         }
         Ok(())
+    }
+
+    /// Runs `f` with this connection refusing writes, as a read pool's
+    /// connections do (`shared::sqlite::read_only`).
+    pub fn read_only<T>(&self, f: impl FnOnce() -> T) -> T {
+        shared::sqlite::read_only(&self.conn, f)
     }
 
     pub fn into_shared(self) -> SharedStore {
@@ -434,7 +760,11 @@ impl Store {
         *self.pending_order_changes.borrow_mut() = Some(Vec::new());
         let reset = ResetOnDrop(&self.pending_order_changes);
         let result = self.run_transaction(f);
-        let pending = self.pending_order_changes.borrow_mut().take().unwrap_or_default();
+        let pending = self
+            .pending_order_changes
+            .borrow_mut()
+            .take()
+            .unwrap_or_default();
         drop(reset);
         if result.is_ok() {
             for change in pending {
@@ -449,7 +779,16 @@ impl Store {
         F: FnOnce(&Store) -> std::result::Result<T, E>,
         E: From<StoreError>,
     {
-        let tx = self.conn.unchecked_transaction().map_err(StoreError::from)?;
+        // IMMEDIATE takes SQLite's write lock at BEGIN. A deferred
+        // transaction that reads first and writes later fails that write with
+        // SQLITE_BUSY_SNAPSHOT (which no busy timeout retries) whenever another
+        // connection committed in between; this waits for the lock up front
+        // instead, so the decision reads and the writes see one snapshot.
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(StoreError::from)?;
         let out = f(self)?;
         tx.commit().map_err(StoreError::from)?;
         Ok(out)
@@ -465,13 +804,117 @@ impl Store {
         Ok(())
     }
 
+    /// Fault injection: the `n`th statement-level access check from now (0-based,
+    /// counted over every statement prepared) is denied, once, so that
+    /// statement fails with an authorization error. `None` disarms. While
+    /// armed the statement cache is off, so every statement is prepared, and
+    /// checked, each time it runs. Returns the running count of checks, so a
+    /// sweep knows when `n` was past the last one.
+    #[cfg(test)]
+    pub(crate) fn fail_nth_access(
+        &self,
+        n: Option<usize>,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let seen = std::sync::Arc::new(AtomicUsize::new(0));
+        match n {
+            Some(n) => {
+                self.conn.set_prepared_statement_cache_capacity(0);
+                self.conn.flush_prepared_statement_cache();
+                let counter = seen.clone();
+                self.conn
+                    .authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
+                        use rusqlite::hooks::AuthAction::*;
+                        // Counted once per statement (its kind), not per
+                        // column it reads, and not inside triggers: failing
+                        // a later check of the same statement takes the
+                        // same path.
+                        let statement = context.accessor.is_none()
+                            && matches!(
+                                context.action,
+                                Select
+                                    | Insert { .. }
+                                    | Update { .. }
+                                    | Delete { .. }
+                                    | Transaction { .. }
+                                    | Savepoint { .. }
+                                    | Pragma { .. }
+                            );
+                        if statement && counter.fetch_add(1, Ordering::Relaxed) == n {
+                            rusqlite::hooks::Authorization::Deny
+                        } else {
+                            rusqlite::hooks::Authorization::Allow
+                        }
+                    }))
+                    .unwrap();
+            }
+            None => {
+                self.conn
+                    .authorizer(
+                        None::<
+                            fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization,
+                        >,
+                    )
+                    .unwrap();
+                self.conn
+                    .set_prepared_statement_cache_capacity(shared::sqlite::STATEMENT_CACHE);
+            }
+        }
+        seen
+    }
+
+    /// The connection itself, for tests that query it directly.
+    #[cfg(test)]
+    pub(crate) fn conn_for_test(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Every row of every table, as text, for comparing whole-database
+    /// states in tests.
+    #[cfg(test)]
+    pub(crate) fn dump_for_test(&self) -> String {
+        use std::fmt::Write;
+        let tables: Vec<String> = self
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let mut out = String::new();
+        for table in tables {
+            let mut stmt = self
+                .conn
+                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .unwrap();
+            let columns = stmt.column_count();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |row| {
+                    Ok((0..columns)
+                        .map(|i| value_text(row.get_ref(i).unwrap()))
+                        .collect::<Vec<_>>()
+                        .join("|"))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            rows.sort();
+            let _ = writeln!(out, "[{table}]");
+            for row in rows {
+                let _ = writeln!(out, "{row}");
+            }
+        }
+        out
+    }
+
     // -- Tenants --------------------------------------------------------
 
     pub fn create_tenant(&self, new: NewTenant, now: i64) -> Result<CreatedTenant> {
-        let id = new_id("tn");
+        let id = TenantId::new(new_id("tn"));
         let public_key = generate_public_key();
         let secret_token = generate_secret_token();
-        let secret_hash = hash_secret_token(&secret_token);
+        let secret_hash = secret_token.hash();
 
         self.conn.execute(
             "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
@@ -494,7 +937,10 @@ impl Store {
         )?;
 
         let tenant = self.get_tenant_by_id(&id)?.ok_or(StoreError::NotFound)?;
-        Ok(CreatedTenant { tenant, secret_token })
+        Ok(CreatedTenant {
+            tenant,
+            secret_token,
+        })
     }
 
     fn row_to_tenant(row: &rusqlite::Row) -> rusqlite::Result<Tenant> {
@@ -510,39 +956,53 @@ impl Store {
             order_expiry_seconds: row.get("order_expiry_seconds")?,
             created_at: row.get("created_at_utc")?,
             disabled_at: row.get("disabled_at_utc")?,
-            scanned_through_height: row.get::<_, Option<i64>>("scanned_through_height")?.map(|h| h as u64),
+            scanned_through_height: row
+                .get::<_, Option<i64>>("scanned_through_height")?
+                .map(|h| h as u64),
         })
     }
 
     /// Public keys of the enabled tenants on `network`, for `/status`'s list
     /// of stores that can't be scanned (task 3.7).
-    pub fn tenant_public_keys_on_network(&self, network: &str) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY public_key")?;
-        let rows = stmt.query_map(params![network], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    pub fn tenant_public_keys_on_network(&self, network: monero::Network) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY public_key")?;
+        let rows = stmt
+            .query_map(params![shared::network::SqlNetwork(network)], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// Every active tenant's (public key, network, key custody backend).
     pub fn tenant_custody_backends(&self) -> Result<Vec<(String, String, String)>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT public_key, network, key_custody_backend FROM tenants WHERE disabled_at_utc IS NULL ORDER BY public_key",
         )?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// `lagging_tenants`, by public key: (public key, cursor).
-    pub fn lagging_tenant_keys(&self, network: &str) -> Result<Vec<(String, u64)>> {
-        let mut stmt = self.conn.prepare(
+    pub fn lagging_tenant_keys(&self, network: monero::Network) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT public_key, scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL
                AND scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = ?1)
              ORDER BY public_key",
         )?;
         let rows = stmt
-            .query_map(params![network], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
+            .query_map(params![shared::network::SqlNetwork(network)], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -550,13 +1010,21 @@ impl Store {
     /// Sets every tenant's `key_custody_backend` (the one-time move to
     /// per-store custody, `engine_settings::migrate_key_custody_setting`).
     pub fn relabel_all_tenants_key_custody(&self, backend: &str) -> Result<()> {
-        self.conn.execute("UPDATE tenants SET key_custody_backend = ?1", params![backend])?;
+        self.conn.execute(
+            "UPDATE tenants SET key_custody_backend = ?1",
+            params![backend],
+        )?;
         Ok(())
     }
 
     /// Moves one tenant to another key custody backend with its newly sealed
     /// keys, in one statement (task 5.3).
-    pub fn update_tenant_key_custody(&self, tenant_id: &str, backend: &str, sealed: &[u8]) -> Result<()> {
+    pub fn update_tenant_key_custody(
+        &self,
+        tenant_id: &TenantId,
+        backend: &str,
+        sealed: &[u8],
+    ) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE tenants SET key_custody_backend = ?2, sealed_key_material = ?3 WHERE id = ?1 AND disabled_at_utc IS NULL",
             params![tenant_id, backend, sealed],
@@ -570,9 +1038,13 @@ impl Store {
     /// How many enabled tenants each network has, for the admin page (tasks
     /// 2.2 and 4.4).
     pub fn count_tenants_by_network(&self) -> Result<std::collections::HashMap<String, u64>> {
-        let mut stmt = self.conn.prepare("SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL GROUP BY network")?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL GROUP BY network",
+        )?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?
             .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
         Ok(rows)
     }
@@ -582,19 +1054,29 @@ impl Store {
     /// in the HTTP layer (`http::resolve_wallet_handle`) is a fallback, not the
     /// only path.
     pub fn list_active_tenants(&self) -> Result<Vec<Tenant>> {
-        let mut stmt = self.conn.prepare("SELECT * FROM tenants WHERE disabled_at_utc IS NULL")?;
-        let rows = stmt.query_map([], Self::row_to_tenant)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT * FROM tenants WHERE disabled_at_utc IS NULL")?;
+        let rows = stmt
+            .query_map([], Self::row_to_tenant)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     pub fn count_tenants(&self) -> Result<u64> {
-        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM tenants", [], |row| row.get(0))?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM tenants", [], |row| row.get(0))?;
         Ok(count as u64)
     }
 
-    pub fn get_tenant_by_id(&self, id: &str) -> Result<Option<Tenant>> {
+    pub fn get_tenant_by_id(&self, id: &TenantId) -> Result<Option<Tenant>> {
         self.conn
-            .query_row("SELECT * FROM tenants WHERE id = ?1", params![id], Self::row_to_tenant)
+            .query_row(
+                "SELECT * FROM tenants WHERE id = ?1",
+                params![id],
+                Self::row_to_tenant,
+            )
             .optional()
             .map_err(Into::into)
     }
@@ -613,8 +1095,8 @@ impl Store {
     /// The *only* sanctioned way to resolve a tenant for an admin request: entirely
     /// from the presented secret token, never from any path parameter. See
     /// `docs/DESIGN.md` §10.1 for why this is structural, not a per-handler check.
-    pub fn find_tenant_by_secret_token(&self, raw_token: &str) -> Result<Option<Tenant>> {
-        let hash = hash_secret_token(raw_token);
+    pub fn find_tenant_by_secret_token(&self, raw_token: &RawToken) -> Result<Option<Tenant>> {
+        let hash = raw_token.hash();
         self.conn
             .query_row(
                 "SELECT * FROM tenants WHERE secret_token_hash = ?1 AND disabled_at_utc IS NULL",
@@ -625,9 +1107,9 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub fn rotate_tenant_secret(&self, tenant_id: &str) -> Result<String> {
+    pub fn rotate_tenant_secret(&self, tenant_id: &TenantId) -> Result<RawToken> {
         let new_token = generate_secret_token();
-        let new_hash = hash_secret_token(&new_token);
+        let new_hash = new_token.hash();
         let changed = self.conn.execute(
             "UPDATE tenants SET secret_token_hash = ?2 WHERE id = ?1",
             params![tenant_id, new_hash],
@@ -644,7 +1126,11 @@ impl Store {
     /// key material in place). Each field is `Option<Option<T>>`-free by design:
     /// `None` means "leave unchanged", so a partial PATCH body only touches the
     /// fields it actually included.
-    pub fn update_tenant_config(&self, tenant_id: &str, patch: TenantConfigPatch) -> Result<()> {
+    pub fn update_tenant_config(
+        &self,
+        tenant_id: &TenantId,
+        patch: TenantConfigPatch,
+    ) -> Result<()> {
         if let Some(v) = patch.confirmations_required {
             self.conn.execute(
                 "UPDATE tenants SET confirmations_required = ?2 WHERE id = ?1",
@@ -666,13 +1152,13 @@ impl Store {
     /// isn't warranted yet.
     pub fn list_orders(
         &self,
-        tenant_id: &str,
+        tenant_id: &TenantId,
         status_filter: Option<OrderStatus>,
         limit: u32,
         cursor: Option<i64>,
     ) -> Result<Vec<Order>> {
         let status_str = status_filter.map(status_to_str);
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM orders
              WHERE tenant_id = ?1
                AND (?2 IS NULL OR status = ?2)
@@ -681,7 +1167,10 @@ impl Store {
              LIMIT ?4",
         )?;
         let rows = stmt
-            .query_map(params![tenant_id, status_str, cursor, limit], Self::row_to_order)?
+            .query_map(
+                params![tenant_id, status_str, cursor, limit],
+                Self::row_to_order,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -692,13 +1181,13 @@ impl Store {
     /// when given, skipping the first `offset`.
     pub fn list_orders_page(
         &self,
-        tenant_id: &str,
+        tenant_id: &TenantId,
         open_only: bool,
         search: Option<&str>,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Order>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM orders
              WHERE tenant_id = ?1
                AND (?2 = 0 OR status IN (?3, ?4, ?5, ?6))
@@ -759,16 +1248,20 @@ impl Store {
     /// payment that lands just after an order's own deadline, distinct from
     /// the manual rescan (`scanner::rescan_order`) which exists for after
     /// this window has already elapsed.
-    pub fn active_tenant_ids(&self, network: &str, now: i64, grace_period_seconds: i64) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT DISTINCT o.tenant_id FROM orders o
-             JOIN tenants t ON t.id = o.tenant_id
-             WHERE {IN_SCAN_WINDOW} AND t.network = :network AND t.disabled_at_utc IS NULL"
+    pub fn active_tenant_ids(
+        &self,
+        network: monero::Network,
+        now: i64,
+        grace_period_seconds: i64,
+    ) -> Result<Vec<TenantId>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT t.id FROM tenants t WHERE t.network = :network AND t.disabled_at_utc IS NULL AND {}",
+            tenant_in_scope("t.id")
         ))?;
         let rows = stmt
             .query_map(
-                rusqlite::named_params! { ":since_minus_grace": now - grace_period_seconds, ":network": network },
-                |row| row.get::<_, String>(0),
+                rusqlite::named_params! { ":since_minus_grace": now - grace_period_seconds, ":network": shared::network::SqlNetwork(network) },
+                |row| row.get::<_, TenantId>(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -779,9 +1272,15 @@ impl Store {
     /// `since` minus the grace period. The live scan passes now; catch-up
     /// passes the time of the tenant's cursor block, so orders that closed
     /// during its gap are still looked for.
-    pub fn scan_window(&self, tenant_id: &str, since: i64, grace_period_seconds: i64) -> Result<Vec<u32>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT o.minor_index FROM orders o WHERE o.tenant_id = :tenant AND {IN_SCAN_WINDOW} ORDER BY o.minor_index"
+    pub fn scan_window(
+        &self,
+        tenant_id: &TenantId,
+        since: i64,
+        grace_period_seconds: i64,
+    ) -> Result<Vec<u32>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT minor_index FROM orders WHERE id IN ({}) ORDER BY minor_index",
+            scan_window_orders("o.tenant_id = :tenant")
         ))?;
         let rows = stmt
             .query_map(
@@ -790,21 +1289,6 @@ impl Store {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
-    }
-
-    /// Whether `tenant_id` has an order that could have been paid at any time
-    /// since `since` (a unix time): one still open, or one that expired no
-    /// earlier than `since` minus the grace period. Catch-up uses this with
-    /// the time of a lagging tenant's cursor block, so an order that was in
-    /// scope during the gap is still looked for even if it isn't any more.
-    pub fn tenant_has_orders_in_scope_since(&self, tenant_id: &str, since: i64, grace_period_seconds: i64) -> Result<bool> {
-        self.conn
-            .query_row(
-                &format!("SELECT EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = :tenant AND {IN_SCAN_WINDOW})"),
-                rusqlite::named_params! { ":tenant": tenant_id, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
-                |row| row.get(0),
-            )
-            .map_err(Into::into)
     }
 
     /// Every order on `network` still in a non-terminal status - the same four
@@ -823,8 +1307,13 @@ impl Store {
     /// whose transactions it matched during that same tick.
     /// `now`/`grace_period_seconds` - see `active_tenant_ids`'s own doc
     /// comment (the same widening, one level down).
-    pub fn non_terminal_order_ids(&self, network: &str, now: i64, grace_period_seconds: i64) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+    pub fn non_terminal_order_ids(
+        &self,
+        network: monero::Network,
+        now: i64,
+        grace_period_seconds: i64,
+    ) -> Result<Vec<OrderId>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT o.id FROM orders o
              JOIN tenants t ON t.id = o.tenant_id
              WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at_utc >= ?6)) AND t.network = ?7",
@@ -838,9 +1327,9 @@ impl Store {
                     status_to_str(OrderStatus::Partial),
                     status_to_str(OrderStatus::Expired),
                     now - grace_period_seconds,
-                    network,
+                    shared::network::SqlNetwork(network),
                 ],
-                |row| row.get::<_, String>(0),
+                |row| row.get::<_, OrderId>(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -848,50 +1337,50 @@ impl Store {
 
     /// Payment changes whose status/webhook transaction has not committed yet.
     /// Unlike the live scan window this includes old, closed orders.
-    pub fn pending_payment_recomputes(&self, network: &str) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+    pub fn pending_payment_recomputes(&self, network: monero::Network) -> Result<Vec<OrderId>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT p.order_id FROM pending_payment_recomputes p
              JOIN orders o ON o.id = p.order_id
              JOIN tenants t ON t.id = o.tenant_id WHERE t.network = ?1",
         )?;
-        let rows = stmt.query_map([network], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt
+            .query_map([shared::network::SqlNetwork(network)], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// A bounded, stable page for background status work. Keyset pagination
     /// avoids an OFFSET walk over a large backlog on every tick.
-    pub fn pending_payment_recomputes_page(&self, network: &str, after: &str, limit: usize) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+    pub fn pending_payment_recomputes_page(
+        &self,
+        network: monero::Network,
+        after: &str,
+        limit: usize,
+    ) -> Result<Vec<OrderId>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT p.order_id FROM pending_payment_recomputes p
              JOIN orders o ON o.id = p.order_id JOIN tenants t ON t.id = o.tenant_id
              WHERE t.network = ?1 AND p.order_id > ?2 ORDER BY p.order_id LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![network, after, limit as i64], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn non_terminal_order_ids_page(
-        &self, network: &str, now: i64, grace_period_seconds: i64, after: &str, limit: usize,
-    ) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.tenant_id
-             WHERE (o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')
-                    OR (o.status = 'expired' AND o.expires_at_utc >= ?1))
-               AND t.network = ?2 AND o.id > ?3 ORDER BY o.id LIMIT ?4",
-        )?;
-        let rows = stmt.query_map(params![now - grace_period_seconds, network, after, limit as i64], |row| row.get(0))?
+        let rows = stmt
+            .query_map(
+                params![shared::network::SqlNetwork(network), after, limit as i64],
+                |row| row.get(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// Call inside the same transaction as the status update and webhook enqueue.
-    pub fn clear_pending_payment_recompute(&self, order_id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM pending_payment_recomputes WHERE order_id = ?1", [order_id])?;
+    pub fn clear_pending_payment_recompute(&self, order_id: &OrderId) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM pending_payment_recomputes WHERE order_id = ?1",
+            [order_id],
+        )?;
         Ok(())
     }
 
-    pub fn disable_tenant(&self, tenant_id: &str, now: i64) -> Result<()> {
+    pub fn disable_tenant(&self, tenant_id: &TenantId, now: i64) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE tenants SET disabled_at_utc = ?2 WHERE id = ?1",
             params![tenant_id, now],
@@ -912,7 +1401,7 @@ impl Store {
     /// address scannable that no order can be attributed to. See
     /// `create_order_claiming_minor_index`, which advances the counter and inserts
     /// the order together.
-    pub fn allocate_minor_index(&self, tenant_id: &str) -> Result<u32> {
+    pub fn allocate_minor_index(&self, tenant_id: &TenantId) -> Result<u32> {
         let allocated: i64 = self.conn.query_row(
             "UPDATE tenants SET next_minor_index = next_minor_index + 1
              WHERE id = ?1
@@ -926,7 +1415,7 @@ impl Store {
     /// The index `allocate_minor_index` would hand out next, without claiming it.
     /// Only useful in combination with `create_order_claiming_minor_index` - see
     /// that method for why order creation can't simply allocate first.
-    pub fn peek_next_minor_index(&self, tenant_id: &str) -> Result<u32> {
+    pub fn peek_next_minor_index(&self, tenant_id: &TenantId) -> Result<u32> {
         let next: i64 = self.conn.query_row(
             "SELECT next_minor_index FROM tenants WHERE id = ?1",
             params![tenant_id],
@@ -955,8 +1444,17 @@ impl Store {
     /// retry on `Ok(None)`; a losing racer costs one extra derivation and burns no
     /// index (the conditional UPDATE leaves the counter untouched when it doesn't
     /// match), so two concurrent creations can never end up sharing an address.
-    pub fn create_order_claiming_minor_index(&self, expected_index: u32, new: NewOrder) -> Result<Option<Order>> {
-        let tx = self.conn.unchecked_transaction()?;
+    pub fn create_order_claiming_minor_index(
+        &self,
+        expected_index: u32,
+        new: NewOrder,
+    ) -> Result<Option<Order>> {
+        // IMMEDIATE, like every other write transaction: the write lock from
+        // the start, so its reads and writes see one snapshot.
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
         let claimed = tx.execute(
             "UPDATE tenants SET next_minor_index = next_minor_index + 1
              WHERE id = ?1 AND next_minor_index = ?2",
@@ -965,10 +1463,12 @@ impl Store {
         if claimed == 0 {
             return Ok(None);
         }
-        let id = new_id("order");
+        let id = OrderId::new(new_id("order"));
         Self::insert_order(&tx, &id, &new)?;
         tx.commit()?;
-        Ok(Some(self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)?))
+        Ok(Some(
+            self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)?,
+        ))
     }
 
     // -- Orders -----------------------------------------------------------
@@ -976,12 +1476,12 @@ impl Store {
     /// Free function over a bare `&Connection` so both `create_order` and
     /// `create_order_claiming_minor_index` (which runs inside a `Transaction`) can
     /// share one copy of the INSERT.
-    fn insert_order(conn: &Connection, id: &str, new: &NewOrder) -> rusqlite::Result<()> {
+    fn insert_order(conn: &Connection, id: &OrderId, new: &NewOrder) -> rusqlite::Result<()> {
         conn.execute(
             "INSERT INTO orders (id, tenant_id, merchant_order_id, minor_index, address,
                 xmr_amount_piconero, description, created_at_utc, expires_at_utc, updated_at_utc,
-                confirmations_required_override)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10)",
+                confirmations_required_override, next_due_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10, ?9)",
             params![
                 id,
                 new.tenant_id,
@@ -999,7 +1499,7 @@ impl Store {
     }
 
     pub fn create_order(&self, new: NewOrder) -> Result<Order> {
-        let id = new_id("order");
+        let id = OrderId::new(new_id("order"));
         Self::insert_order(&self.conn, &id, &new)?;
         self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)
     }
@@ -1024,20 +1524,30 @@ impl Store {
             updated_at: row.get("updated_at_utc")?,
             first_scanned_height: row.get("first_scanned_height")?,
             last_scanned_height: row.get("last_scanned_height")?,
-            confirmations_required_override: row.get::<_, Option<i64>>("confirmations_required_override")?.map(|v| v as u64),
+            confirmations_required_override: row
+                .get::<_, Option<i64>>("confirmations_required_override")?
+                .map(|v| v as u64),
         })
     }
 
-    fn get_order_by_id(&self, id: &str) -> Result<Option<Order>> {
+    fn get_order_by_id(&self, id: &OrderId) -> Result<Option<Order>> {
         self.conn
-            .query_row("SELECT * FROM orders WHERE id = ?1", params![id], Self::row_to_order)
+            .query_row(
+                "SELECT * FROM orders WHERE id = ?1",
+                params![id],
+                Self::row_to_order,
+            )
             .optional()
             .map_err(Into::into)
     }
 
     /// Routes a scanner match (which only knows a subaddress minor index) back to
     /// the order that index was issued for.
-    pub fn find_order_by_minor_index(&self, tenant_id: &str, minor_index: u32) -> Result<Option<Order>> {
+    pub fn find_order_by_minor_index(
+        &self,
+        tenant_id: &TenantId,
+        minor_index: u32,
+    ) -> Result<Option<Order>> {
         self.conn
             .query_row(
                 "SELECT * FROM orders WHERE tenant_id = ?1 AND minor_index = ?2",
@@ -1052,7 +1562,7 @@ impl Store {
     /// `docs/DESIGN.md` §10.1 applied at the row level. A order_id belonging to a
     /// different tenant must come back as `Ok(None)`, indistinguishable from a
     /// nonexistent one.
-    pub fn get_order(&self, tenant_id: &str, order_id: &str) -> Result<Option<Order>> {
+    pub fn get_order(&self, tenant_id: &TenantId, order_id: &OrderId) -> Result<Option<Order>> {
         self.conn
             .query_row(
                 "SELECT * FROM orders WHERE id = ?1 AND tenant_id = ?2",
@@ -1065,7 +1575,12 @@ impl Store {
 
     /// Scoped by `tenant_id`, same IDOR-prevention rule as `get_order`. Records
     /// only - nothing in this system ever sends to a refund address (§DESIGN.md 3).
-    pub fn set_refund_address(&self, tenant_id: &str, order_id: &str, refund_address: &str) -> Result<bool> {
+    pub fn set_refund_address(
+        &self,
+        tenant_id: &TenantId,
+        order_id: &OrderId,
+        refund_address: &str,
+    ) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE orders SET refund_address = ?3 WHERE id = ?1 AND tenant_id = ?2",
             params![order_id, tenant_id, refund_address],
@@ -1096,7 +1611,7 @@ impl Store {
     #[allow(clippy::too_many_arguments)]
     pub fn record_payment_match(
         &self,
-        order_id: &str,
+        order_id: &OrderId,
         txid: &str,
         output_index: i64,
         amount_piconero: u64,
@@ -1106,9 +1621,12 @@ impl Store {
     ) -> Result<bool> {
         // Whether this is a genuinely new row has to be established before the
         // upsert: with `DO UPDATE`, `execute`'s changed-row count is 1 for both
-        // paths and can't distinguish them. A separate read is safe here because
-        // every write to this database is already serialized through one writer
-        // (see this module's header comment).
+        // paths and can't distinguish them. Two connections write (the database
+        // worker and, for tests and tools, the shared store), so a concurrent
+        // insert of the same row between this read and the upsert is possible;
+        // the upsert stays correct either way (the unique key makes it one row),
+        // and only the "is this new" answer, which decides a change
+        // notification, could be off.
         let existing_height: Option<Option<i64>> = self
             .conn
             .query_row(
@@ -1150,7 +1668,7 @@ impl Store {
     /// 0004) reconciling one of them never rewrites the other's row.
     pub fn update_payment_block_height(
         &self,
-        order_id: &str,
+        order_id: &OrderId,
         txid: &str,
         output_index: i64,
         new_height: Option<i64>,
@@ -1170,7 +1688,13 @@ impl Store {
     /// only once `is_key_image_spent` affirmatively proves a different, unrelated
     /// transaction consumed the same inputs (see `docs/DESIGN.md` §7.5). Returns
     /// `false` if the row didn't exist or was already voided (idempotent).
-    pub fn void_payment(&self, order_id: &str, txid: &str, output_index: i64, voided_at: i64) -> Result<bool> {
+    pub fn void_payment(
+        &self,
+        order_id: &OrderId,
+        txid: &str,
+        output_index: i64,
+        voided_at: i64,
+    ) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE order_payments SET voided_at_utc = ?4
              WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NULL",
@@ -1189,7 +1713,12 @@ impl Store {
     /// sticky: "a double-spend was once observed on this order" stays true forever,
     /// independently of whether the payment ultimately stood. Returns `false` if the
     /// row didn't exist or wasn't voided (idempotent).
-    pub fn unvoid_payment(&self, order_id: &str, txid: &str, output_index: i64) -> Result<bool> {
+    pub fn unvoid_payment(
+        &self,
+        order_id: &OrderId,
+        txid: &str,
+        output_index: i64,
+    ) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE order_payments SET voided_at_utc = NULL
              WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NOT NULL",
@@ -1201,8 +1730,8 @@ impl Store {
         Ok(changed > 0)
     }
 
-    pub fn get_valid_payments(&self, order_id: &str) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+    pub fn get_valid_payments(&self, order_id: &OrderId) -> Result<Vec<OrderPaymentRow>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM order_payments WHERE order_id = ?1 AND voided_at_utc IS NULL",
         )?;
         let rows = stmt
@@ -1213,10 +1742,10 @@ impl Store {
 
     /// Every payment (voided or not) for an order - the audit trail a merchant can
     /// inspect for "why does this show partial" or "when was this double-spent".
-    pub fn get_all_payments(&self, order_id: &str) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT * FROM order_payments WHERE order_id = ?1 ORDER BY first_seen_at_utc")?;
+    pub fn get_all_payments(&self, order_id: &OrderId) -> Result<Vec<OrderPaymentRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM order_payments WHERE order_id = ?1 ORDER BY first_seen_at_utc",
+        )?;
         let rows = stmt
             .query_map(params![order_id], Self::row_to_payment)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1256,8 +1785,12 @@ impl Store {
     /// order's received total forever. Unconfirmed payments are inherently "above"
     /// any block height, so re-examining them is also just the correct reading of
     /// the question this query asks.
-    pub fn find_payments_at_or_after_height(&self, network: &str, min_height: u64) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+    pub fn find_payments_at_or_after_height(
+        &self,
+        network: monero::Network,
+        min_height: u64,
+    ) -> Result<Vec<OrderPaymentRow>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1266,7 +1799,10 @@ impl Store {
                AND t.network = ?2",
         )?;
         let rows = stmt
-            .query_map(params![min_height as i64, network], Self::row_to_payment)?
+            .query_map(
+                params![min_height as i64, shared::network::SqlNetwork(network)],
+                Self::row_to_payment,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1283,10 +1819,10 @@ impl Store {
     /// same reason its non-voided counterpart does - see that method's doc comment.
     pub fn find_voided_payments_at_or_after_height(
         &self,
-        network: &str,
+        network: monero::Network,
         min_height: u64,
     ) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1295,7 +1831,10 @@ impl Store {
                AND t.network = ?2",
         )?;
         let rows = stmt
-            .query_map(params![min_height as i64, network], Self::row_to_payment)?
+            .query_map(
+                params![min_height as i64, shared::network::SqlNetwork(network)],
+                Self::row_to_payment,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1303,13 +1842,17 @@ impl Store {
     /// Every voided payment on `network` whose void happened at or after `cutoff`
     /// (compared against `voided_at`, a unix timestamp - not a block height, unlike
     /// this method's reorg-driven siblings above) - the candidate set for
-    /// `scanner::revalidate_recent_double_spend_voids`'s bounded recheck sweep. A
+    /// the upkeep tier's bounded void recheck (`work::upkeep`). A
     /// caller passes `cutoff = now - window_secs` so the result is bounded by how
     /// many voids happened *recently*, not by the network's entire history - see
     /// that function's own doc comment for why an old void is not worth rechecking
     /// forever. Scoped by network for the same reason every sibling query here is.
-    pub fn find_payments_voided_since(&self, network: &str, cutoff: i64) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+    pub fn find_payments_voided_since(
+        &self,
+        network: monero::Network,
+        cutoff: i64,
+    ) -> Result<Vec<OrderPaymentRow>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1318,7 +1861,10 @@ impl Store {
                AND t.network = ?2",
         )?;
         let rows = stmt
-            .query_map(params![cutoff, network], Self::row_to_payment)?
+            .query_map(
+                params![cutoff, shared::network::SqlNetwork(network)],
+                Self::row_to_payment,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1335,8 +1881,11 @@ impl Store {
     ///
     /// Scoped by network for the same reason its height-based counterparts are: one
     /// network's daemon must never be asked about another chain's transactions.
-    pub fn find_unconfirmed_payments(&self, network: &str) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+    pub fn find_unconfirmed_payments(
+        &self,
+        network: monero::Network,
+    ) -> Result<Vec<OrderPaymentRow>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1345,7 +1894,10 @@ impl Store {
                AND t.network = ?1",
         )?;
         let rows = stmt
-            .query_map(params![network], Self::row_to_payment)?
+            .query_map(
+                params![shared::network::SqlNetwork(network)],
+                Self::row_to_payment,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1353,8 +1905,13 @@ impl Store {
     /// A bounded page for the routine vanished-mempool sweep. The rowid is a
     /// stable keyset cursor for the life of a payment row; callers wrap to zero
     /// at the end so transactions still absent from the pool are revisited.
-    pub fn unconfirmed_payments_page(&self, network: &str, after_rowid: i64, limit: usize) -> Result<Vec<(i64, OrderPaymentRow)>> {
-        let mut stmt = self.conn.prepare(
+    pub fn unconfirmed_payments_page(
+        &self,
+        network: monero::Network,
+        after_rowid: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, OrderPaymentRow)>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.rowid, op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1362,15 +1919,27 @@ impl Store {
                AND op.block_height IS NULL AND t.network = ?1
              ORDER BY op.rowid LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![network, after_rowid, limit as i64], |row| {
-            Ok((row.get(0)?, Self::row_to_payment(row)?))
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt
+            .query_map(
+                params![
+                    shared::network::SqlNetwork(network),
+                    after_rowid,
+                    limit as i64
+                ],
+                |row| Ok((row.get(0)?, Self::row_to_payment(row)?)),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     #[cfg(test)]
-    pub fn overwrite_payment_key_images_for_test(&self, order_id: &str, raw: &str) {
-        self.conn.execute("UPDATE order_payments SET key_images_json = ?2 WHERE order_id = ?1", params![order_id, raw]).unwrap();
+    pub fn overwrite_payment_key_images_for_test(&self, order_id: &OrderId, raw: &str) {
+        self.conn
+            .execute(
+                "UPDATE order_payments SET key_images_json = ?2 WHERE order_id = ?1",
+                params![order_id, raw],
+            )
+            .unwrap();
     }
 
     pub fn find_payment_by_key_image(&self, key_image_hex: &str) -> Result<Vec<OrderPaymentRow>> {
@@ -1378,9 +1947,9 @@ impl Store {
         // is adequate at v1 scale and avoids a separate normalized table for what is
         // purely reorg-bookkeeping metadata (see docs/DESIGN.md §8.1).
         let pattern = format!("%\"{key_image_hex}\"%");
-        let mut stmt = self
-            .conn
-            .prepare("SELECT * FROM order_payments WHERE key_images_json LIKE ?1 AND voided_at_utc IS NULL")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM order_payments WHERE key_images_json LIKE ?1 AND voided_at_utc IS NULL",
+        )?;
         let rows = stmt
             .query_map(params![pattern], Self::row_to_payment)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1400,77 +1969,114 @@ impl Store {
     /// that feature.
     pub fn recompute_order_status(
         &self,
-        order_id: &str,
+        order_id: &OrderId,
         current_height: u64,
         now: i64,
     ) -> Result<(OrderStatus, OrderStatus)> {
-        let order = self.get_order_by_id(order_id)?.ok_or(StoreError::NotFound)?;
-        let tenant = self.get_tenant_by_id(&order.tenant_id)?.ok_or(StoreError::NotFound)?;
-        let valid = self.get_valid_payments(order_id)?;
-
-        let views: Vec<PaymentView> = valid
+        let order = self
+            .get_order_by_id(order_id)?
+            .ok_or(StoreError::NotFound)?;
+        let (confirmations_required, network, lagging) = self.recompute_facts(&order.tenant_id)?;
+        let views: Vec<PaymentView> = self
+            .get_valid_payments(order_id)?
             .iter()
-            .map(|p| {
-                let confirmations = match p.block_height {
+            .map(|p| PaymentView {
+                amount_piconero: p.amount_piconero,
+                confirmations: match p.block_height {
                     Some(h) if current_height >= h as u64 => current_height - h as u64 + 1,
                     _ => 0,
-                };
-                PaymentView {
-                    amount_piconero: p.amount_piconero,
-                    confirmations,
-                    is_zero_conf: p.block_height.is_none(),
-                }
+                },
+                is_zero_conf: p.block_height.is_none(),
             })
             .collect();
-
-        let total: u64 = views.iter().map(|v| v.amount_piconero).sum();
-        let min_confirmations = views.iter().map(|v| v.confirmations).min().unwrap_or(0);
-
-        let mut new_status = derive_status(
-            &views,
-            StatusInputs {
-                xmr_amount_piconero: order.xmr_amount_piconero,
-                confirmations_required: order.confirmations_required_override.unwrap_or(tenant.confirmations_required),
-                now,
-                expires_at: order.expires_at,
-            },
-        );
-        // While the tenant is behind the network, an order mustn't become
-        // expired: its payment may be in a block not yet scanned for it, and an
-        // `order.expired` webhook can make a shop cancel an order that turns
-        // out to be paid. It expires once the tenant has caught up.
-        if new_status == OrderStatus::Expired && order.status != OrderStatus::Expired && self.is_tenant_lagging(&tenant)? {
-            new_status = order.status;
-        }
+        let plan = plan_status(&StatusFacts {
+            order: &order,
+            views: &views,
+            confirmations_required: order
+                .confirmations_required_override
+                .unwrap_or(confirmations_required),
+            tenant_lagging: lagging,
+            settlement_frozen: self.settlement_frozen(network)?,
+            current_height,
+            now,
+        });
 
         // `closed_at_utc` (migration 0016): set the first time the order is
         // terminal, kept while it stays terminal, cleared if it reopens. An
         // expired order closed at its deadline, however late expiry was
-        // noticed (its store may have been catching up).
-        let closed_at = if new_status == OrderStatus::Expired { order.expires_at.min(now) } else { now };
+        // noticed (its store may have been catching up). Written only if
+        // something changed: most recomputes change nothing, and a write that
+        // changes nothing still costs a page write on slow storage.
+        let closed_at = if plan.status == OrderStatus::Expired {
+            order.expires_at.min(now)
+        } else {
+            now
+        };
         self.conn.execute(
             "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5,
-                closed_at_utc = CASE WHEN ?6 THEN COALESCE(closed_at_utc, ?7) ELSE NULL END
-             WHERE id = ?1",
+                closed_at_utc = CASE WHEN ?6 THEN COALESCE(closed_at_utc, ?7) ELSE NULL END,
+                next_due_at_utc = ?8, next_due_height = ?9
+             WHERE id = ?1
+               AND (status IS NOT ?2 OR confirmations IS NOT ?3 OR amount_received_piconero IS NOT ?4
+                    OR closed_at_utc IS NOT (CASE WHEN ?6 THEN COALESCE(closed_at_utc, ?7) ELSE NULL END)
+                    OR next_due_at_utc IS NOT ?8 OR next_due_height IS NOT ?9)",
             params![
                 order_id,
-                status_to_str(new_status),
-                min_confirmations as i64,
-                total as i64,
+                status_to_str(plan.status),
+                plan.confirmations as i64,
+                plan.amount_received as i64,
                 now,
-                is_terminal(new_status),
-                closed_at
+                is_terminal(plan.status),
+                closed_at,
+                plan.next_due_at,
+                plan.next_due_height,
             ],
         )?;
-        if order.status != new_status || order.confirmations != min_confirmations || order.amount_received_piconero != total {
+        // The payment-change obligation is met by this recompute, unless the
+        // settlement it implies had to wait.
+        if plan.keep_obligation {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO pending_payment_recomputes (order_id) VALUES (?1)",
+                [order_id],
+            )?;
+        } else {
+            self.clear_pending_payment_recompute(order_id)?;
+        }
+        if order.status != plan.status
+            || order.confirmations != plan.confirmations
+            || order.amount_received_piconero != plan.amount_received
+        {
             self.publish_order_change(&order.tenant_id, order_id);
         }
+        Ok((order.status, plan.status))
+    }
 
-        Ok((order.status, new_status))
+    /// What a status recompute needs to know about an order's tenant: its
+    /// confirmations requirement, its network, and whether it is behind the
+    /// network (a disabled tenant never is). One small row, not the tenant
+    /// with its key material.
+    fn recompute_facts(&self, tenant_id: &TenantId) -> Result<(u64, monero::Network, bool)> {
+        self.conn
+            .query_row(
+                "SELECT t.confirmations_required, t.network,
+                        t.disabled_at_utc IS NULL AND t.scanned_through_height IS NOT NULL
+                        AND t.scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = t.network)
+                 FROM tenants t WHERE t.id = ?1",
+                [tenant_id],
+                |row| {
+                    Ok((
+                        row.get::<_, shared::sqlite::Unsigned<u64>>(0)?.0,
+                        row.get::<_, shared::network::SqlNetwork>(1)?.0,
+                        row.get::<_, Option<bool>>(2)?.unwrap_or(false),
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(StoreError::NotFound)
     }
 
     /// Sticky, first-occurrence-only - see schema comment on `double_spend_detected_at`.
-    pub fn mark_double_spend_detected(&self, order_id: &str, at: i64) -> Result<bool> {
+    pub fn mark_double_spend_detected(&self, order_id: &OrderId, at: i64) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE orders SET double_spend_detected_at_utc = ?2 WHERE id = ?1 AND double_spend_detected_at_utc IS NULL",
             params![order_id, at],
@@ -1490,7 +2096,7 @@ impl Store {
     /// doc comment for why it only calls this once every voided payment on the order
     /// has been cleared, never as a side effect of clearing just one of several.
     /// Returns `false` if the flag was already unset (idempotent).
-    pub fn clear_double_spend_flag(&self, order_id: &str) -> Result<bool> {
+    pub fn clear_double_spend_flag(&self, order_id: &OrderId) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE orders SET double_spend_detected_at_utc = NULL WHERE id = ?1 AND double_spend_detected_at_utc IS NOT NULL",
             params![order_id],
@@ -1510,11 +2116,11 @@ impl Store {
     /// from there (see `scanner::run_scan_tick`). Scoped by network because heights
     /// are meaningless across chains - mainnet height 100 and stagenet height 100
     /// are unrelated blocks.
-    pub fn max_scanned_height(&self, network: &str) -> Result<Option<u64>> {
+    pub fn max_scanned_height(&self, network: monero::Network) -> Result<Option<u64>> {
         self.conn
             .query_row(
                 "SELECT MAX(height) FROM scanned_blocks WHERE network = ?1",
-                params![network],
+                params![shared::network::SqlNetwork(network)],
                 |row| row.get::<_, Option<i64>>(0),
             )
             .map(|opt| opt.map(|h| h as u64))
@@ -1525,61 +2131,44 @@ impl Store {
     /// route a bare `order_id` back to its tenant to look up webhooks). Never
     /// expose this through the HTTP layer; every externally-reachable order lookup
     /// must go through `get_order`'s tenant-scoped query instead.
-    pub fn get_order_tenant_id(&self, order_id: &str) -> Result<Option<String>> {
-        self.conn
-            .query_row("SELECT tenant_id FROM orders WHERE id = ?1", params![order_id], |row| row.get(0))
-            .optional()
-            .map_err(Into::into)
-    }
-
-    pub fn get_scanned_block_hash(&self, network: &str, height: u64) -> Result<Option<String>> {
+    pub fn get_order_tenant_id(&self, order_id: &OrderId) -> Result<Option<TenantId>> {
         self.conn
             .query_row(
-                "SELECT block_hash FROM scanned_blocks WHERE network = ?1 AND height = ?2",
-                params![network, height as i64],
+                "SELECT tenant_id FROM orders WHERE id = ?1",
+                params![order_id],
                 |row| row.get(0),
             )
             .optional()
             .map_err(Into::into)
     }
 
-    pub fn set_scanned_block(&self, network: &str, height: u64, hash: &str) -> Result<()> {
+    pub fn get_scanned_block_hash(
+        &self,
+        network: monero::Network,
+        height: u64,
+    ) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT block_hash FROM scanned_blocks WHERE network = ?1 AND height = ?2",
+                params![shared::network::SqlNetwork(network), height as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn set_scanned_block(
+        &self,
+        network: monero::Network,
+        height: u64,
+        hash: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO scanned_blocks (network, height, block_hash) VALUES (?1, ?2, ?3)
              ON CONFLICT(network, height) DO UPDATE SET block_hash = excluded.block_hash",
-            params![network, height as i64, hash],
+            params![shared::network::SqlNetwork(network), height as i64, hash],
         )?;
         Ok(())
-    }
-
-    /// Returns the next transaction needing a scan for this tenant. A changed
-    /// hash or scan window invalidates the old checkpoint and its staged
-    /// matches before any work on the replacement block begins.
-    pub fn start_partial_block(
-        &self, network: &str, tenant_id: &str, height: u64, hash: &str, generation: u64,
-    ) -> Result<usize> {
-        let generation = generation.to_string();
-        let old: Option<(i64, String, String, i64)> = self.conn.query_row(
-            "SELECT height, block_hash, window_generation, next_tx_index FROM partial_block_progress
-             WHERE network = ?1 AND tenant_id = ?2",
-            params![network, tenant_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).optional()?;
-        if let Some((old_height, old_hash, old_generation, next)) = old {
-            if old_height == height as i64 && old_hash == hash && old_generation == generation {
-                return Ok(next as usize);
-            }
-        }
-        self.in_transaction(|s| {
-            s.clear_partial_block(network, tenant_id)?;
-            s.conn.execute(
-                "INSERT INTO partial_block_progress
-                 (network, tenant_id, height, block_hash, window_generation, next_tx_index)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-                params![network, tenant_id, height as i64, hash, generation],
-            )?;
-            Ok(0)
-        })
     }
 
     pub fn stage_partial_match(&self, matched: StagedMatch<'_>) -> Result<()> {
@@ -1587,52 +2176,25 @@ impl Store {
             "INSERT OR IGNORE INTO partial_block_matches
              (network, tenant_id, order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![matched.network, matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
+            params![shared::network::SqlNetwork(matched.network), matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
                 matched.amount as i64, matched.key_images_json, matched.seen_at],
         )?;
         Ok(())
     }
 
-    pub fn advance_partial_block(&self, network: &str, tenant_id: &str, next_tx_index: usize) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE partial_block_progress SET next_tx_index = ?3 WHERE network = ?1 AND tenant_id = ?2",
-            params![network, tenant_id, next_tx_index as i64],
+    pub fn clear_partial_block(
+        &self,
+        network: monero::Network,
+        tenant_id: &TenantId,
+    ) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
+            params![shared::network::SqlNetwork(network), tenant_id],
         )?;
-        if changed == 0 { return Err(StoreError::NotFound); }
-        Ok(())
-    }
-
-    /// Called inside the same transaction that commits the block hash and
-    /// tenant cursor. Partial results cannot affect order status before then.
-    pub fn promote_partial_block(&self, network: &str, tenant_id: &str, height: u64, hash: &str, tx_count: usize) -> Result<Vec<String>> {
-        let progress: Option<(i64, String, i64)> = self.conn.query_row(
-            "SELECT height, block_hash, next_tx_index FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
-            params![network, tenant_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).optional()?;
-        if !matches!(progress, Some((h, ref block_hash, next)) if h == height as i64 && block_hash == hash && next == tx_count as i64) {
-            return Err(StoreError::NotFound);
-        }
-        let mut stmt = self.conn.prepare(
-            "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc
-             FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
+        self.conn.execute(
+            "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
+            params![shared::network::SqlNetwork(network), tenant_id],
         )?;
-        let rows = stmt.query_map(params![network, tenant_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?, row.get::<_, String>(4)?, row.get::<_, i64>(5)?))
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut touched = Vec::new();
-        for (order_id, txid, output_index, amount, key_images, seen_at) in rows {
-            self.record_payment_match(&order_id, &txid, output_index, amount as u64, &key_images, seen_at, Some(height as i64))?;
-            touched.push(order_id);
-        }
-        self.clear_partial_block(network, tenant_id)?;
-        Ok(touched)
-    }
-
-    pub fn clear_partial_block(&self, network: &str, tenant_id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2", params![network, tenant_id])?;
-        self.conn.execute("DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2", params![network, tenant_id])?;
         Ok(())
     }
 
@@ -1646,18 +2208,40 @@ impl Store {
     /// chain - the transaction was rebroadcast and mined into the fork that won - is
     /// never seen at all: the scanner's high-water mark is still above those heights,
     /// and blocks below it are never revisited.
-    pub fn forget_scanned_blocks_at_or_above(&self, network: &str, height: u64) -> Result<()> {
+    pub fn forget_scanned_blocks_at_or_above(
+        &self,
+        network: monero::Network,
+        height: u64,
+    ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height >= ?2",
-            params![network, height as i64],
+            params![shared::network::SqlNetwork(network), height as i64],
         )?;
         Ok(())
     }
 
-    pub fn prune_scanned_blocks_below(&self, network: &str, min_height: u64) -> Result<()> {
+    /// Copies what it can of the write-ahead log back into the database
+    /// without waiting for anyone (`PASSIVE`). Returns whether the whole log
+    /// was copied. With two writers and long-lived readers the log can grow
+    /// between SQLite's own automatic checkpoints; once a checkpoint lets it
+    /// reset, `journal_size_limit` trims the file.
+    pub fn checkpoint_wal(&self) -> Result<bool> {
+        let (busy, log, checkpointed): (i64, i64, i64) =
+            self.conn
+                .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?;
+        Ok(busy == 0 && log == checkpointed)
+    }
+
+    pub fn prune_scanned_blocks_below(
+        &self,
+        network: monero::Network,
+        min_height: u64,
+    ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height < ?2",
-            params![network, min_height as i64],
+            params![shared::network::SqlNetwork(network), min_height as i64],
         )?;
         Ok(())
     }
@@ -1671,130 +2255,66 @@ impl Store {
 
     /// Gives every tenant on `network` whose cursor was never set the
     /// network's height. Called when a network is first seeded.
-    pub fn anchor_unset_cursors(&self, network: &str, height: u64) -> Result<()> {
+    pub fn anchor_unset_cursors(&self, network: monero::Network, height: u64) -> Result<()> {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height IS NULL",
-            params![network, height as i64],
+            params![shared::network::SqlNetwork(network), height as i64],
         )?;
         Ok(())
-    }
-
-    /// Moves every tenant on `network` that was caught up to `height - 1` on to
-    /// `height`, except those in `left_behind` (tenants whose scan failed on
-    /// this block). Called in the same transaction as `set_scanned_block`, so
-    /// the network and its caught-up tenants always move together.
-    ///
-    /// Also held back: any tenant created, or given a new order, at or after
-    /// `tick_started` (the time the tick read which tenants to scan). The
-    /// tick didn't scan for it with that order's address, so it catches up
-    /// next tick with its current range instead of being moved past blocks.
-    pub fn advance_caught_up_cursors(&self, network: &str, height: u64, left_behind: &[String], tick_started: i64) -> Result<()> {
-        let left_behind = serde_json::to_string(left_behind).map_err(|e| {
-            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-        })?;
-        self.conn.execute(
-            "UPDATE tenants SET scanned_through_height = ?2
-             WHERE network = ?1 AND scanned_through_height = ?2 - 1
-               AND id NOT IN (SELECT value FROM json_each(?3))
-               AND created_at_utc < ?4
-               AND id NOT IN (SELECT tenant_id FROM orders WHERE created_at_utc >= ?4)",
-            params![network, height as i64, left_behind, tick_started],
-        )?;
-        Ok(())
-    }
-
-    /// Sets one tenant's cursor, for catch-up. Never moves it backwards: a
-    /// catch-up step that raced a reorg clamp mustn't undo the clamp's work
-    /// by writing an older value, and mustn't push a clamped cursor forward
-    /// past blocks the reorg made it rescan either, so the caller only calls
-    /// this for the block it just scanned, and the `= ?3` guard makes it a
-    /// no-op if the cursor moved in between.
-    pub fn advance_tenant_cursor(&self, tenant_id: &str, from: u64, to: u64) -> Result<bool> {
-        let changed = self.conn.execute(
-            "UPDATE tenants SET scanned_through_height = ?2 WHERE id = ?1 AND scanned_through_height = ?3",
-            params![tenant_id, to as i64, from as i64],
-        )?;
-        if changed > 0 {
-            self.conn.execute("DELETE FROM partial_block_matches WHERE tenant_id = ?1", [tenant_id])?;
-            self.conn.execute("DELETE FROM partial_block_progress WHERE tenant_id = ?1", [tenant_id])?;
-        }
-        Ok(changed > 0)
     }
 
     /// After a reorg rewinds `network` to `height`, no tenant can be ahead of
     /// it. `None` (the reorg reached genesis) un-anchors every cursor.
-    pub fn clamp_cursors(&self, network: &str, height: Option<u64>) -> Result<()> {
+    pub fn clamp_cursors(&self, network: monero::Network, height: Option<u64>) -> Result<()> {
         match height {
             Some(h) => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height > ?2",
-                params![network, h as i64],
+                params![shared::network::SqlNetwork(network), h as i64],
             )?,
             None => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = NULL WHERE network = ?1",
-                params![network],
+                params![shared::network::SqlNetwork(network)],
             )?,
         };
         Ok(())
     }
 
-    /// Moves a lagging tenant straight to `height`: for one with nothing that
-    /// could have been paid during its gap (see
-    /// `tenant_has_orders_in_scope_since`), or a disabled one.
-    pub fn snap_cursor(&self, tenant_id: &str, height: u64) -> Result<()> {
-        self.conn.execute(
-            "UPDATE tenants SET scanned_through_height = ?2 WHERE id = ?1 AND scanned_through_height < ?2",
-            params![tenant_id, height as i64],
-        )?;
-        self.conn.execute("DELETE FROM partial_block_matches WHERE tenant_id = ?1", [tenant_id])?;
-        self.conn.execute("DELETE FROM partial_block_progress WHERE tenant_id = ?1", [tenant_id])?;
-        Ok(())
-    }
-
     /// Tenants on `network` whose cursor is below the network's high-water
     /// mark, with their cursors, lowest first.
-    pub fn lagging_tenants(&self, network: &str) -> Result<Vec<(String, u64)>> {
-        let mut stmt = self.conn.prepare(
+    pub fn lagging_tenants(&self, network: monero::Network) -> Result<Vec<(TenantId, u64)>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id, scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL
                AND scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = ?1)
              ORDER BY scanned_through_height, id",
         )?;
         let rows = stmt
-            .query_map(params![network], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
+            .query_map(params![shared::network::SqlNetwork(network)], |row| {
+                Ok((row.get::<_, TenantId>(0)?, row.get::<_, i64>(1)? as u64))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// Disabled tenants on `network` whose cursor is behind: nothing is
     /// scanned for them any more, so they are simply moved along.
-    pub fn snap_disabled_cursors(&self, network: &str, height: u64) -> Result<()> {
+    pub fn snap_disabled_cursors(&self, network: monero::Network, height: u64) -> Result<()> {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND disabled_at_utc IS NOT NULL AND scanned_through_height < ?2",
-            params![network, height as i64],
+            params![shared::network::SqlNetwork(network), height as i64],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [network],
+            [shared::network::SqlNetwork(network)],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [network],
+            [shared::network::SqlNetwork(network)],
         )?;
         Ok(())
-    }
-
-    /// Whether `tenant` hasn't been scanned up to its network's high-water
-    /// mark. While it is, its orders mustn't expire: a payment may be sitting
-    /// in a block it hasn't been checked against yet.
-    fn is_tenant_lagging(&self, tenant: &Tenant) -> Result<bool> {
-        if tenant.disabled_at.is_some() {
-            return Ok(false);
-        }
-        let Some(cursor) = tenant.scanned_through_height else { return Ok(false) };
-        Ok(self.max_scanned_height(&tenant.network)?.is_some_and(|high_water| cursor < high_water))
     }
 
     // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) -------
@@ -1810,16 +2330,20 @@ impl Store {
     /// longer selects it.
     pub fn bump_scanned_heights_for_tenant(
         &self,
-        tenant_id: &str,
+        tenant_id: &TenantId,
         height: u64,
         now: i64,
         grace_period_seconds: i64,
     ) -> Result<()> {
+        // Only rows it changes: most rounds nothing has moved, and a write
+        // that changes nothing still costs a page write on slow storage.
         self.conn.execute(
             &format!(
-                "UPDATE orders AS o
+                "UPDATE orders
                  SET last_scanned_height = :height, first_scanned_height = COALESCE(first_scanned_height, :height)
-                 WHERE o.tenant_id = :tenant AND {IN_SCAN_WINDOW}"
+                 WHERE id IN ({})
+                   AND (last_scanned_height IS NOT :height OR first_scanned_height IS NULL)",
+                scan_window_orders("o.tenant_id = :tenant")
             ),
             rusqlite::named_params! {
                 ":tenant": tenant_id,
@@ -1834,7 +2358,14 @@ impl Store {
     /// or `None` if nothing has ever been saved for `key`. Settings themselves are
     /// resolved by `engine_settings` (environment, then this, then the default).
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        self.conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0)).optional().map_err(Into::into)
+        self.conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// Persists one setting - an `INSERT ... ON CONFLICT DO UPDATE` upsert, since the
@@ -1858,7 +2389,8 @@ impl Store {
     /// where falling through to a hardcoded default would be wrong - there is
     /// no sensible default Monero node to fall back to.
     pub fn delete_setting(&self, key: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])?;
         Ok(())
     }
 
@@ -1867,16 +2399,26 @@ impl Store {
     /// call per known key, then resolves each known setting's effective value/source
     /// against this map plus the environment.
     pub fn list_settings(&self) -> Result<std::collections::HashMap<String, String>> {
-        let mut stmt = self.conn.prepare("SELECT key, value FROM settings")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
-        rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>().map_err(Into::into)
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT key, value FROM settings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()
+            .map_err(Into::into)
     }
 
     /// `true` if this order is presently in the live scanner's own in-scope set
     /// (the same widened predicate `bump_scanned_heights_for_tenant` uses) - the
     /// only way an order can be "currently scanning" now that the manual rescan
     /// feature is gone (`docs/txid_lookup_and_scan_chunking_wbs.md` Part C.2).
-    pub fn is_order_currently_scanning(&self, order_id: &str, now: i64, grace_period_seconds: i64) -> Result<bool> {
+    pub fn is_order_currently_scanning(
+        &self,
+        order_id: &OrderId,
+        now: i64,
+        grace_period_seconds: i64,
+    ) -> Result<bool> {
         self.conn
             .query_row(
                 &format!("SELECT EXISTS(SELECT 1 FROM orders o WHERE o.id = :order AND {IN_SCAN_WINDOW})"),
@@ -1890,13 +2432,13 @@ impl Store {
 
     pub fn create_webhook(
         &self,
-        tenant_id: &str,
+        tenant_id: &TenantId,
         url: &str,
         extra_headers_json: &str,
         signing_secret: &str,
         now: i64,
     ) -> Result<Webhook> {
-        let id = new_id("wh");
+        let id = WebhookId::new(new_id("wh"));
         self.conn.execute(
             "INSERT INTO webhooks (id, tenant_id, url, extra_headers, signing_secret, created_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1904,17 +2446,19 @@ impl Store {
         )?;
         Ok(Webhook {
             id,
-            tenant_id: tenant_id.to_string(),
+            tenant_id: tenant_id.clone(),
             url: url.to_string(),
             extra_headers: extra_headers_json.to_string(),
-            signing_secret: signing_secret.to_string(),
+            signing_secret: live_settings::Secret::new(signing_secret),
             enabled: true,
             created_at: now,
         })
     }
 
-    pub fn list_webhooks(&self, tenant_id: &str) -> Result<Vec<Webhook>> {
-        let mut stmt = self.conn.prepare("SELECT * FROM webhooks WHERE tenant_id = ?1")?;
+    pub fn list_webhooks(&self, tenant_id: &TenantId) -> Result<Vec<Webhook>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT * FROM webhooks WHERE tenant_id = ?1")?;
         let rows = stmt
             .query_map(params![tenant_id], |row| {
                 Ok(Webhook {
@@ -1922,7 +2466,9 @@ impl Store {
                     tenant_id: row.get("tenant_id")?,
                     url: row.get("url")?,
                     extra_headers: row.get("extra_headers")?,
-                    signing_secret: row.get("signing_secret")?,
+                    signing_secret: live_settings::Secret::new(
+                        row.get::<_, String>("signing_secret")?,
+                    ),
                     enabled: row.get::<_, i64>("enabled")? != 0,
                     created_at: row.get("created_at_utc")?,
                 })
@@ -1934,7 +2480,7 @@ impl Store {
     /// Scoped by `tenant_id`, same IDOR-prevention rule as `get_order`. Returns
     /// `false` (not an error) if the webhook doesn't exist or belongs to a different
     /// tenant - the two are indistinguishable from the caller's perspective.
-    pub fn delete_webhook(&self, tenant_id: &str, webhook_id: &str) -> Result<bool> {
+    pub fn delete_webhook(&self, tenant_id: &TenantId, webhook_id: &WebhookId) -> Result<bool> {
         let changed = self.conn.execute(
             "DELETE FROM webhooks WHERE id = ?1 AND tenant_id = ?2",
             params![webhook_id, tenant_id],
@@ -1944,8 +2490,8 @@ impl Store {
 
     pub fn enqueue_webhook_delivery(
         &self,
-        webhook_id: &str,
-        order_id: &str,
+        webhook_id: &WebhookId,
+        order_id: &OrderId,
         event_type: &str,
         payload_json: &str,
         next_attempt_at: i64,
@@ -1967,8 +2513,13 @@ impl Store {
     ///   same order are never in flight at once and can't overtake each other;
     /// - at most `per_tenant` per store, so one store with a big backlog (or a
     ///   slow endpoint) can't fill the batch and hold up every other store.
-    pub fn due_webhook_deliveries_fair(&self, now: i64, per_tenant: u32, limit: u32) -> Result<Vec<DueDelivery>> {
-        let mut stmt = self.conn.prepare(
+    pub fn due_webhook_deliveries_fair(
+        &self,
+        now: i64,
+        per_tenant: u32,
+        limit: u32,
+    ) -> Result<Vec<DueDelivery>> {
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id, webhook_id, order_id, event_type, payload_json, attempt_count, url, extra_headers, signing_secret
              FROM (
                 SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
@@ -1994,7 +2545,7 @@ impl Store {
                     attempt_count: row.get::<_, i64>(5)? as u32,
                     url: row.get(6)?,
                     extra_headers_json: row.get(7)?,
-                    signing_secret: row.get(8)?,
+                    signing_secret: live_settings::Secret::new(row.get::<_, String>(8)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2015,7 +2566,7 @@ impl Store {
     }
 
     pub fn due_webhook_deliveries(&self, now: i64, limit: u32) -> Result<Vec<DueDelivery>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
                     w.url, w.extra_headers, w.signing_secret
              FROM webhook_deliveries d
@@ -2035,14 +2586,19 @@ impl Store {
                     attempt_count: row.get::<_, i64>(5)? as u32,
                     url: row.get(6)?,
                     extra_headers_json: row.get(7)?,
-                    signing_secret: row.get(8)?,
+                    signing_secret: live_settings::Secret::new(row.get::<_, String>(8)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    pub fn mark_webhook_delivered(&self, delivery_id: i64, response_status: u16, at: i64) -> Result<()> {
+    pub fn mark_webhook_delivered(
+        &self,
+        delivery_id: i64,
+        response_status: u16,
+        at: i64,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE webhook_deliveries SET delivered_at_utc = ?2, last_attempted_at_utc = ?2, last_response_status = ?3
              WHERE id = ?1",
@@ -2067,7 +2623,13 @@ impl Store {
                  last_response_status = ?4,
                  last_error = ?5
              WHERE id = ?1",
-            params![delivery_id, next_attempt_at, at, response_status.map(|s| s as i64), error],
+            params![
+                delivery_id,
+                next_attempt_at,
+                at,
+                response_status.map(|s| s as i64),
+                error
+            ],
         )?;
         Ok(())
     }
@@ -2076,43 +2638,288 @@ impl Store {
 #[derive(Debug, Clone)]
 pub struct DueDelivery {
     pub delivery_id: i64,
-    pub webhook_id: String,
-    pub order_id: String,
+    pub webhook_id: WebhookId,
+    pub order_id: OrderId,
     pub event_type: String,
     pub payload_json: String,
     pub attempt_count: u32,
     pub url: String,
     pub extra_headers_json: String,
-    pub signing_secret: String,
+    /// Hidden in `Debug`; `expose` it only to sign a delivery.
+    pub signing_secret: live_settings::Secret,
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
+    fn order(status: OrderStatus, expires_at: i64) -> Order {
+        Order {
+            id: "o".into(),
+            tenant_id: "t".into(),
+            merchant_order_id: None,
+            minor_index: 1,
+            address: "a".into(),
+            xmr_amount_piconero: 100,
+            amount_received_piconero: 0,
+            status,
+            confirmations: 0,
+            double_spend_detected_at: None,
+            refund_address: None,
+            description: None,
+            created_at: 0,
+            expires_at,
+            updated_at: 0,
+            first_scanned_height: None,
+            last_scanned_height: None,
+            confirmations_required_override: None,
+        }
+    }
+
+    fn mined(amount: u64, confirmations: u64) -> PaymentView {
+        PaymentView {
+            amount_piconero: amount,
+            confirmations,
+            is_zero_conf: false,
+        }
+    }
+
+    fn pooled(amount: u64) -> PaymentView {
+        PaymentView {
+            amount_piconero: amount,
+            confirmations: 0,
+            is_zero_conf: true,
+        }
+    }
+
+    /// The status rules as a table: derived status, the expiry hold, the
+    /// settlement freeze, and the next points an order is due.
+    #[test]
+    fn plan_status_covers_every_rule() {
+        use OrderStatus::*;
+        struct Case {
+            what: &'static str,
+            was: OrderStatus,
+            views: Vec<PaymentView>,
+            lagging: bool,
+            frozen: bool,
+            now: i64,
+            required: u64,
+            expect: (OrderStatus, Option<i64>, Option<i64>, bool),
+        }
+        // Ten confirmations required, deadline 1000, tip 50.
+        let cases = [
+            Case {
+                what: "unpaid, before its deadline",
+                was: Pending,
+                views: vec![],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Pending, Some(1001), None, false),
+            },
+            Case {
+                what: "unpaid, after its deadline",
+                was: Pending,
+                views: vec![],
+                lagging: false,
+                frozen: false,
+                now: 2000,
+                required: 10,
+                expect: (Expired, None, None, false),
+            },
+            Case {
+                what: "expiry held while the tenant is behind",
+                was: Pending,
+                views: vec![],
+                lagging: true,
+                frozen: false,
+                now: 2000,
+                required: 10,
+                expect: (Pending, Some(2000), None, false),
+            },
+            Case {
+                what: "already expired: a hold doesn't reopen it",
+                was: Expired,
+                views: vec![],
+                lagging: true,
+                frozen: false,
+                now: 2000,
+                required: 10,
+                expect: (Expired, None, None, false),
+            },
+            Case {
+                what: "part paid, confirming",
+                was: Pending,
+                views: vec![mined(40, 3)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Partial, Some(1001), Some(51), false),
+            },
+            Case {
+                what: "paid in the pool",
+                was: Pending,
+                views: vec![pooled(100)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Unconfirmed, None, None, false),
+            },
+            Case {
+                what: "paid, confirming",
+                was: Unconfirmed,
+                views: vec![mined(100, 3)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Confirming, None, Some(51), false),
+            },
+            Case {
+                what: "paid and confirmed",
+                was: Confirming,
+                views: vec![mined(100, 10)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Paid, None, None, false),
+            },
+            Case {
+                what: "overpaid and confirmed",
+                was: Confirming,
+                views: vec![mined(150, 10)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 10,
+                expect: (Overpaid, None, None, false),
+            },
+            Case {
+                what: "settlement waits for a reorg",
+                was: Confirming,
+                views: vec![mined(100, 10)],
+                lagging: false,
+                frozen: true,
+                now: 500,
+                required: 10,
+                expect: (Confirming, Some(500), None, true),
+            },
+            Case {
+                what: "a zero-conf settlement waits too",
+                was: Pending,
+                views: vec![pooled(100)],
+                lagging: false,
+                frozen: true,
+                now: 500,
+                required: 0,
+                expect: (Unconfirmed, Some(500), None, true),
+            },
+            Case {
+                what: "zero-conf accepted: paid from the pool",
+                was: Pending,
+                views: vec![pooled(100)],
+                lagging: false,
+                frozen: false,
+                now: 500,
+                required: 0,
+                expect: (Paid, None, None, false),
+            },
+            Case {
+                what: "already paid: the freeze doesn't hold it",
+                was: Paid,
+                views: vec![mined(100, 12)],
+                lagging: false,
+                frozen: true,
+                now: 500,
+                required: 10,
+                expect: (Paid, None, None, false),
+            },
+        ];
+        for case in cases {
+            let order = order(case.was, 1000);
+            let plan = plan_status(&StatusFacts {
+                order: &order,
+                views: &case.views,
+                confirmations_required: case.required,
+                tenant_lagging: case.lagging,
+                settlement_frozen: case.frozen,
+                current_height: 50,
+                now: case.now,
+            });
+            assert_eq!(
+                (
+                    plan.status,
+                    plan.next_due_at,
+                    plan.next_due_height,
+                    plan.keep_obligation
+                ),
+                case.expect,
+                "{}",
+                case.what
+            );
+        }
+    }
+
+    /// A recompute that changes nothing writes nothing (`updated_at` stays).
+    #[test]
+    fn a_recompute_that_changes_nothing_writes_nothing() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
+        store.recompute_order_status(&order.id, 10, 1_000).unwrap();
+        let before = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap()
+            .updated_at;
+        store.recompute_order_status(&order.id, 11, 1_500).unwrap();
+        let after = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap()
+            .updated_at;
+        assert_eq!(before, after);
+    }
+
     #[tokio::test]
     async fn read_pool_uses_independent_connections_without_blocking_the_runtime() {
-        let path = std::env::temp_dir().join(format!("scanner_read_pool_{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("scanner_read_pool_{}.db", uuid::Uuid::new_v4()));
         let path_str = path.to_string_lossy().into_owned();
         let writer = Store::open_file(&path_str).unwrap();
-        writer.set_scanned_block("mainnet", 1, "h1").unwrap();
+        writer
+            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+            .unwrap();
         let pool = ReadStorePool::open(&path_str, 2).unwrap();
 
         let (started, ready) = tokio::sync::oneshot::channel();
         let (release, wait) = std::sync::mpsc::channel::<()>();
         let held_pool = pool.clone();
         let held = tokio::spawn(async move {
-            held_pool.query(move |store| {
-                started.send(()).unwrap();
-                wait.recv().unwrap();
-                store.max_scanned_height("mainnet")
-            }).await
+            held_pool
+                .query(move |store| {
+                    started.send(()).unwrap();
+                    wait.recv().unwrap();
+                    store.max_scanned_height(monero::Network::Mainnet)
+                })
+                .await
         });
         ready.await.unwrap();
         // A second read reaches another connection while the first worker is
         // deliberately occupied. No async worker or writer mutex is involved.
-        let second = tokio::time::timeout(std::time::Duration::from_secs(2),
-            pool.query(|store| store.max_scanned_height("mainnet"))).await.unwrap().unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            pool.query(|store| store.max_scanned_height(monero::Network::Mainnet)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(second, Some(1));
         release.send(()).unwrap();
         assert_eq!(held.await.unwrap().unwrap(), Some(1));
@@ -2141,7 +2948,7 @@ mod tests {
         store
             .create_order(NewOrder {
                 confirmations_required_override: None,
-                tenant_id: tenant_id.to_string(),
+                tenant_id: shared::ids::TenantId::new(tenant_id.to_string()),
                 merchant_order_id: None,
                 minor_index,
                 address: format!("sub_{minor_index}"),
@@ -2163,13 +2970,19 @@ mod tests {
             panic!("simulated bug while holding the store lock");
         })
         .join();
-        assert!(joined.is_err(), "the helper thread must really have panicked");
+        assert!(
+            joined.is_err(),
+            "the helper thread must really have panicked"
+        );
 
         // With a poisoning mutex every later `lock()` would fail from here on,
         // taking the scan loop and every HTTP handler down with it.
         let store = shared.lock();
-        let order = new_order(&store, &tenant.tenant.id, 1);
-        assert_eq!(store.get_order_by_id(&order.id).unwrap().unwrap().id, order.id);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
+        assert_eq!(
+            store.get_order_by_id(&order.id).unwrap().unwrap().id,
+            order.id
+        );
     }
 
     #[test]
@@ -2180,28 +2993,39 @@ mod tests {
 
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _: std::result::Result<(), StoreError> = store.in_transaction(|s| {
-                new_order(s, &tenant.tenant.id, 1);
+                new_order(s, tenant.tenant.id.as_str(), 1);
                 panic!("simulated bug mid-transaction");
             });
         }));
         assert!(caught.is_err());
 
         // Rolled back: the order written inside the transaction is gone.
-        assert!(store.find_order_by_minor_index(&tenant.tenant.id, 1).unwrap().is_none());
+        assert!(store
+            .find_order_by_minor_index(&tenant.tenant.id, 1)
+            .unwrap()
+            .is_none());
         // No transaction left open: a new one begins and commits normally.
         store
             .in_transaction(|s| -> Result<()> {
-                new_order(s, &tenant.tenant.id, 2);
+                new_order(s, tenant.tenant.id.as_str(), 2);
                 Ok(())
             })
             .unwrap();
-        assert!(store.find_order_by_minor_index(&tenant.tenant.id, 2).unwrap().is_some());
+        assert!(store
+            .find_order_by_minor_index(&tenant.tenant.id, 2)
+            .unwrap()
+            .is_some());
 
         // And changes made outside any transaction are published straight away,
         // not left in the buffer the panicked transaction had set up.
         while changes.try_recv().is_ok() {}
-        let order = store.find_order_by_minor_index(&tenant.tenant.id, 2).unwrap().unwrap();
-        assert!(store.set_refund_address(&tenant.tenant.id, &order.id, "refund").unwrap());
+        let order = store
+            .find_order_by_minor_index(&tenant.tenant.id, 2)
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .set_refund_address(&tenant.tenant.id, &order.id, "refund")
+            .unwrap());
         assert_eq!(changes.try_recv().unwrap().order_id, order.id);
     }
 
@@ -2209,7 +3033,7 @@ mod tests {
     fn an_unknown_order_status_in_a_row_is_an_error_not_a_panic() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         store
             .execute_raw_for_test(&format!(
                 "PRAGMA ignore_check_constraints = ON; UPDATE orders SET status = 'bogus' WHERE id = '{}'; PRAGMA ignore_check_constraints = OFF;",
@@ -2226,9 +3050,14 @@ mod tests {
         let tenant = new_tenant(&store);
         // Cap the database at its current size, then fill whatever free space
         // is left, so the next write can't grow it.
-        store.execute_raw_for_test("PRAGMA max_page_count = 1;").unwrap();
+        store
+            .execute_raw_for_test("PRAGMA max_page_count = 1;")
+            .unwrap();
         let mut filled = 0;
-        while store.set_setting(&format!("filler.{filled}"), &"x".repeat(2000)).is_ok() {
+        while store
+            .set_setting(&format!("filler.{filled}"), &"x".repeat(2000))
+            .is_ok()
+        {
             filled += 1;
             assert!(filled < 10_000, "the cap didn't take effect");
         }
@@ -2244,38 +3073,68 @@ mod tests {
             expires_at: 2,
         });
         match err {
-            Err(StoreError::Sqlite(e)) => assert_eq!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DiskFull)),
+            Err(StoreError::Sqlite(e)) => {
+                assert_eq!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DiskFull))
+            }
             other => panic!("expected a disk-full error, got {other:?}"),
         }
-        assert!(store.find_order_by_minor_index(&tenant.tenant.id, 1).unwrap().is_none());
+        assert!(store
+            .find_order_by_minor_index(&tenant.tenant.id, 1)
+            .unwrap()
+            .is_none());
 
         // Space comes back: writes work again.
-        store.execute_raw_for_test("PRAGMA max_page_count = 1000000;").unwrap();
-        new_order(&store, &tenant.tenant.id, 1);
+        store
+            .execute_raw_for_test("PRAGMA max_page_count = 1000000;")
+            .unwrap();
+        new_order(&store, tenant.tenant.id.as_str(), 1);
     }
 
     #[test]
     fn a_setting_that_was_never_saved_reads_as_none() {
         let store = Store::open_in_memory().unwrap();
-        assert_eq!(store.get_setting("payment.confirmations_required").unwrap(), None);
+        assert_eq!(
+            store.get_setting("payment.confirmations_required").unwrap(),
+            None
+        );
         assert_eq!(store.list_settings().unwrap().len(), 0);
     }
 
     #[test]
     fn a_saved_setting_round_trips_and_a_second_save_overwrites_rather_than_erroring() {
         let store = Store::open_in_memory().unwrap();
-        store.set_setting("payment.confirmations_required", "5").unwrap();
-        assert_eq!(store.get_setting("payment.confirmations_required").unwrap().as_deref(), Some("5"));
+        store
+            .set_setting("payment.confirmations_required", "5")
+            .unwrap();
+        assert_eq!(
+            store
+                .get_setting("payment.confirmations_required")
+                .unwrap()
+                .as_deref(),
+            Some("5")
+        );
 
         // The admin settings page's "Save" always writes every field it shows,
         // whether or not a row already exists for it - a second save of the same
         // key must update in place, not fail a UNIQUE constraint.
-        store.set_setting("payment.confirmations_required", "8").unwrap();
-        assert_eq!(store.get_setting("payment.confirmations_required").unwrap().as_deref(), Some("8"));
+        store
+            .set_setting("payment.confirmations_required", "8")
+            .unwrap();
+        assert_eq!(
+            store
+                .get_setting("payment.confirmations_required")
+                .unwrap()
+                .as_deref(),
+            Some("8")
+        );
 
         let all = store.list_settings().unwrap();
         assert_eq!(all.len(), 1);
-        assert_eq!(all.get("payment.confirmations_required").map(String::as_str), Some("8"));
+        assert_eq!(
+            all.get("payment.confirmations_required")
+                .map(String::as_str),
+            Some("8")
+        );
     }
 
     #[test]
@@ -2293,34 +3152,120 @@ mod tests {
         assert_eq!(store.count_tenants().unwrap(), 2);
     }
 
+    /// A transaction that reads, then writes, must not lose its write to a
+    /// commit another connection made in between: with a deferred BEGIN that
+    /// write fails with SQLITE_BUSY_SNAPSHOT, which no busy timeout retries.
+    /// `in_transaction` holds the write lock from its first statement, so the
+    /// other writer waits instead and both writes land.
+    #[test]
+    fn a_transaction_holds_the_write_lock_before_its_first_read() {
+        let path = std::env::temp_dir().join(format!("immediate_tx_{}.db", Uuid::new_v4()));
+        let path = path.to_str().unwrap().to_owned();
+        let store = Store::open_file(&path).unwrap();
+        let other = Connection::open(&path).unwrap();
+        other.busy_timeout(std::time::Duration::ZERO).unwrap();
+
+        store
+            .in_transaction(|s| -> Result<()> {
+                let _ = s.get_setting("a")?;
+                let competing = other.execute("INSERT INTO settings (key, value) VALUES ('b', '1')", []);
+                assert!(
+                    matches!(competing, Err(rusqlite::Error::SqliteFailure(ref e, _)) if e.code == rusqlite::ErrorCode::DatabaseBusy),
+                    "another writer must wait for this transaction, got {competing:?}"
+                );
+                s.set_setting("a", "1")
+            })
+            .unwrap();
+        other
+            .execute("INSERT INTO settings (key, value) VALUES ('b', '1')", [])
+            .unwrap();
+        assert_eq!(store.get_setting("a").unwrap().as_deref(), Some("1"));
+        assert_eq!(store.get_setting("b").unwrap().as_deref(), Some("1"));
+        drop(other);
+        drop(store);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{path}{suffix}"));
+        }
+    }
+
     #[test]
     fn pending_payment_recomputes_survive_reopening_and_track_real_changes() {
         let path = std::env::temp_dir().join(format!("pending_recomputes_{}.db", Uuid::new_v4()));
         let store = Store::open_file(path.to_str().unwrap()).unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
-        store.record_payment_match(&order.id, "tx", 0, 1, "[]", 1000, Some(1)).unwrap();
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
+        store
+            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1000, Some(1))
+            .unwrap();
         drop(store);
         let store = Store::open_file(path.to_str().unwrap()).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
-        assert!(store.pending_payment_recomputes("stagenet").unwrap().is_empty());
+        assert_eq!(
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
+            vec![order.id.clone()]
+        );
+        assert!(store
+            .pending_payment_recomputes(monero::Network::Stagenet)
+            .unwrap()
+            .is_empty());
         store.clear_pending_payment_recompute(&order.id).unwrap();
-        store.record_payment_match(&order.id, "tx", 0, 1, "[]", 1001, Some(1)).unwrap();
-        assert!(store.pending_payment_recomputes("mainnet").unwrap().is_empty(), "duplicate sightings aren't new work");
-        store.update_payment_block_height(&order.id, "tx", 0, None).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        store
+            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1001, Some(1))
+            .unwrap();
+        assert!(
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap()
+                .is_empty(),
+            "duplicate sightings aren't new work"
+        );
+        store
+            .update_payment_block_height(&order.id, "tx", 0, None)
+            .unwrap();
+        assert_eq!(
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
+            vec![order.id.clone()]
+        );
         store.clear_pending_payment_recompute(&order.id).unwrap();
         store.void_payment(&order.id, "tx", 0, 1002).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        assert_eq!(
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
+            vec![order.id.clone()]
+        );
         store.clear_pending_payment_recompute(&order.id).unwrap();
         store.unvoid_payment(&order.id, "tx", 0).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        assert_eq!(
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
+            vec![order.id.clone()]
+        );
         // Reapply just the new DDL to pre-existing payments: an upgrade also
         // schedules recovery for writes made before durable tracking existed.
-        store.conn.execute_batch("DROP TRIGGER payment_insert_needs_recompute;
-            DROP TRIGGER payment_update_needs_recompute; DROP TABLE pending_payment_recomputes;").unwrap();
-        store.conn.execute_batch(include_str!("../migrations/0017_pending_payment_recomputes.sql")).unwrap();
-        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id]);
+        store
+            .conn
+            .execute_batch(
+                "DROP TRIGGER payment_insert_needs_recompute;
+            DROP TRIGGER payment_update_needs_recompute; DROP TABLE pending_payment_recomputes;",
+            )
+            .unwrap();
+        store
+            .conn
+            .execute_batch(include_str!(
+                "../migrations/0017_pending_payment_recomputes.sql"
+            ))
+            .unwrap();
+        assert_eq!(
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
+            vec![order.id]
+        );
         drop(store);
         std::fs::remove_file(path).unwrap();
     }
@@ -2358,13 +3303,20 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let created = new_tenant(&store);
 
-        let by_pk = store.find_tenant_by_public_key(&created.tenant.public_key).unwrap();
+        let by_pk = store
+            .find_tenant_by_public_key(&created.tenant.public_key)
+            .unwrap();
         assert_eq!(by_pk.unwrap().id, created.tenant.id);
 
-        let by_secret = store.find_tenant_by_secret_token(&created.secret_token).unwrap();
+        let by_secret = store
+            .find_tenant_by_secret_token(&created.secret_token)
+            .unwrap();
         assert_eq!(by_secret.unwrap().id, created.tenant.id);
 
-        assert!(store.find_tenant_by_secret_token("sk_wrong").unwrap().is_none());
+        assert!(store
+            .find_tenant_by_secret_token(&RawToken::presented("sk_wrong"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -2373,8 +3325,14 @@ mod tests {
         let created = new_tenant(&store);
         let new_secret = store.rotate_tenant_secret(&created.tenant.id).unwrap();
 
-        assert!(store.find_tenant_by_secret_token(&created.secret_token).unwrap().is_none());
-        assert!(store.find_tenant_by_secret_token(&new_secret).unwrap().is_some());
+        assert!(store
+            .find_tenant_by_secret_token(&created.secret_token)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_tenant_by_secret_token(&new_secret)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -2383,8 +3341,14 @@ mod tests {
         let created = new_tenant(&store);
         store.disable_tenant(&created.tenant.id, 2000).unwrap();
 
-        assert!(store.find_tenant_by_public_key(&created.tenant.public_key).unwrap().is_none());
-        assert!(store.find_tenant_by_secret_token(&created.secret_token).unwrap().is_none());
+        assert!(store
+            .find_tenant_by_public_key(&created.tenant.public_key)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_tenant_by_secret_token(&created.secret_token)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -2421,7 +3385,11 @@ mod tests {
         indices.sort_unstable();
         let mut deduped = indices.clone();
         deduped.dedup();
-        assert_eq!(indices.len(), deduped.len(), "duplicate minor_index allocated under concurrency");
+        assert_eq!(
+            indices.len(),
+            deduped.len(),
+            "duplicate minor_index allocated under concurrency"
+        );
         assert_eq!(indices, (1..=50).collect::<Vec<_>>());
     }
 
@@ -2432,10 +3400,16 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant_a = new_tenant(&store);
         let tenant_b = new_tenant(&store);
-        let order_b = new_order(&store, &tenant_b.tenant.id, 1);
+        let order_b = new_order(&store, tenant_b.tenant.id.as_str(), 1);
 
-        assert!(store.get_order(&tenant_a.tenant.id, &order_b.id).unwrap().is_none());
-        assert!(store.get_order(&tenant_b.tenant.id, &order_b.id).unwrap().is_some());
+        assert!(store
+            .get_order(&tenant_a.tenant.id, &order_b.id)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_order(&tenant_b.tenant.id, &order_b.id)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -2444,12 +3418,22 @@ mod tests {
         let tenant_a = new_tenant(&store);
         let tenant_b = new_tenant(&store);
         let webhook_b = store
-            .create_webhook(&tenant_b.tenant.id, "https://b.example/hook", "{}", "secret", 1000)
+            .create_webhook(
+                &tenant_b.tenant.id,
+                "https://b.example/hook",
+                "{}",
+                "secret",
+                1000,
+            )
             .unwrap();
 
-        assert!(!store.delete_webhook(&tenant_a.tenant.id, &webhook_b.id).unwrap());
+        assert!(!store
+            .delete_webhook(&tenant_a.tenant.id, &webhook_b.id)
+            .unwrap());
         assert_eq!(store.list_webhooks(&tenant_b.tenant.id).unwrap().len(), 1);
-        assert!(store.delete_webhook(&tenant_b.tenant.id, &webhook_b.id).unwrap());
+        assert!(store
+            .delete_webhook(&tenant_b.tenant.id, &webhook_b.id)
+            .unwrap());
         assert_eq!(store.list_webhooks(&tenant_b.tenant.id).unwrap().len(), 0);
     }
 
@@ -2457,7 +3441,7 @@ mod tests {
     fn duplicate_payment_match_is_idempotent() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         let first = store
             .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None)
@@ -2467,7 +3451,10 @@ mod tests {
             .unwrap();
 
         assert!(first);
-        assert!(!second, "re-reporting the same output must be a no-op, not a new row");
+        assert!(
+            !second,
+            "re-reporting the same output must be a no-op, not a new row"
+        );
         assert_eq!(store.get_all_payments(&order.id).unwrap().len(), 1);
     }
 
@@ -2475,7 +3462,7 @@ mod tests {
     fn recompute_status_reflects_new_payment_and_persists() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         assert_eq!(order.status, OrderStatus::Pending);
 
         store
@@ -2485,7 +3472,10 @@ mod tests {
         assert_eq!(old, OrderStatus::Pending);
         assert_eq!(new, OrderStatus::Paid);
 
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(refetched.status, OrderStatus::Paid);
         assert_eq!(refetched.amount_received_piconero, 100);
         assert_eq!(refetched.confirmations, 10);
@@ -2514,24 +3504,36 @@ mod tests {
             .unwrap();
         assert_eq!(order.confirmations_required_override, Some(2));
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         // current_height 51, payment mined at 50 -> 2 confirmations.
         let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
-        assert_eq!(status, OrderStatus::Paid, "2 confirmations must already be enough under a Some(2) override");
+        assert_eq!(
+            status,
+            OrderStatus::Paid,
+            "2 confirmations must already be enough under a Some(2) override"
+        );
     }
 
     #[test]
     fn recompute_status_falls_back_to_the_tenants_default_when_no_override_is_set() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1); // confirmations_required_override: None
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1); // confirmations_required_override: None
         assert_eq!(order.confirmations_required_override, None);
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         // Same 2-confirmation depth as the override test above, but with no
         // override this must still be short of the tenant's default of 10.
         let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
-        assert_eq!(status, OrderStatus::Confirming, "with no override, the tenant's own default of 10 must still apply");
+        assert_eq!(
+            status,
+            OrderStatus::Confirming,
+            "with no override, the tenant's own default of 10 must still apply"
+        );
     }
 
     #[test]
@@ -2542,10 +3544,14 @@ mod tests {
         // the survivor alone.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
-        store.record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50)).unwrap();
-        store.record_payment_match(&order.id, "tx_b", 0, 40, "[\"ki_b\"]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&order.id, "tx_b", 0, 40, "[\"ki_b\"]", 1500, Some(50))
+            .unwrap();
         let (_, paid) = store.recompute_order_status(&order.id, 59, 1600).unwrap();
         assert_eq!(paid, OrderStatus::Paid);
 
@@ -2555,7 +3561,10 @@ mod tests {
         assert_eq!(before, OrderStatus::Paid);
         assert_eq!(after, OrderStatus::Partial);
 
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(refetched.amount_received_piconero, 40);
         assert!(refetched.double_spend_detected_at.is_some());
     }
@@ -2567,10 +3576,14 @@ mod tests {
         // still recording that a double-spend occurred.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
-        store.record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50)).unwrap();
-        store.record_payment_match(&order.id, "tx_c", 0, 100, "[\"ki_c\"]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&order.id, "tx_c", 0, 100, "[\"ki_c\"]", 1500, Some(50))
+            .unwrap();
         let (_, before_void) = store.recompute_order_status(&order.id, 59, 1600).unwrap();
         assert_eq!(before_void, OrderStatus::Overpaid); // 160 total against an expected 100
 
@@ -2581,11 +3594,16 @@ mod tests {
         // tx_c alone (100) exactly covers the expected amount - still `paid`, not
         // downgraded, even though a double-spend genuinely occurred on this order.
         assert_eq!(after, OrderStatus::Paid);
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert!(refetched.double_spend_detected_at.is_some());
     }
 
-    fn drain_changes(receiver: &mut tokio::sync::broadcast::Receiver<OrderChange>) -> Vec<OrderChange> {
+    fn drain_changes(
+        receiver: &mut tokio::sync::broadcast::Receiver<OrderChange>,
+    ) -> Vec<OrderChange> {
         let mut changes = Vec::new();
         while let Ok(change) = receiver.try_recv() {
             changes.push(change);
@@ -2597,29 +3615,46 @@ mod tests {
     fn order_changes_are_published_only_when_something_visible_changed() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         let mut changes = store.subscribe_order_changes();
-        let expected = vec![OrderChange { tenant_id: tenant.tenant.id.clone(), order_id: order.id.clone() }];
+        let expected = vec![OrderChange {
+            tenant_id: tenant.tenant.id.clone(),
+            order_id: order.id.clone(),
+        }];
 
         // Nothing paid, nothing expired: a recompute that changes nothing is silent.
-        store.recompute_order_status(&order.id, 100, order.created_at).unwrap();
+        store
+            .recompute_order_status(&order.id, 100, order.created_at)
+            .unwrap();
         assert!(drain_changes(&mut changes).is_empty());
 
         // First sighting in the mempool, then the same sighting again (the ~1s mempool poll).
-        store.record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None).unwrap();
+        store
+            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None)
+            .unwrap();
         assert_eq!(drain_changes(&mut changes), expected);
-        store.record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None).unwrap();
+        store
+            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None)
+            .unwrap();
         assert!(drain_changes(&mut changes).is_empty());
         // Mined: the height is new information.
-        store.record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, Some(90)).unwrap();
+        store
+            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, Some(90))
+            .unwrap();
         assert_eq!(drain_changes(&mut changes), expected);
 
-        store.recompute_order_status(&order.id, 100, order.created_at).unwrap();
+        store
+            .recompute_order_status(&order.id, 100, order.created_at)
+            .unwrap();
         assert_eq!(drain_changes(&mut changes), expected);
-        store.recompute_order_status(&order.id, 100, order.created_at).unwrap();
+        store
+            .recompute_order_status(&order.id, 100, order.created_at)
+            .unwrap();
         assert!(drain_changes(&mut changes).is_empty());
 
-        assert!(store.set_refund_address(&tenant.tenant.id, &order.id, "refund").unwrap());
+        assert!(store
+            .set_refund_address(&tenant.tenant.id, &order.id, "refund")
+            .unwrap());
         assert_eq!(drain_changes(&mut changes), expected);
         assert!(store.mark_double_spend_detected(&order.id, 1000).unwrap());
         assert_eq!(drain_changes(&mut changes), expected);
@@ -2631,7 +3666,7 @@ mod tests {
     fn order_changes_inside_a_transaction_publish_once_after_commit_and_never_on_rollback() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         let mut changes = store.subscribe_order_changes();
 
         let rolled_back: std::result::Result<(), StoreError> = store.in_transaction(|store| {
@@ -2639,19 +3674,28 @@ mod tests {
             Err(StoreError::NotFound)
         });
         assert!(rolled_back.is_err());
-        assert!(drain_changes(&mut changes).is_empty(), "a rolled-back write must announce nothing");
+        assert!(
+            drain_changes(&mut changes).is_empty(),
+            "a rolled-back write must announce nothing"
+        );
 
         store
             .in_transaction(|store| -> Result<()> {
                 store.set_refund_address(&tenant.tenant.id, &order.id, "refund")?;
                 store.mark_double_spend_detected(&order.id, 1000)?;
-                assert!(drain_changes(&mut changes).is_empty(), "nothing is published before the commit");
+                assert!(
+                    drain_changes(&mut changes).is_empty(),
+                    "nothing is published before the commit"
+                );
                 Ok(())
             })
             .unwrap();
         assert_eq!(
             drain_changes(&mut changes),
-            vec![OrderChange { tenant_id: tenant.tenant.id.clone(), order_id: order.id.clone() }],
+            vec![OrderChange {
+                tenant_id: tenant.tenant.id.clone(),
+                order_id: order.id.clone()
+            }],
             "one change per order per transaction"
         );
     }
@@ -2660,12 +3704,18 @@ mod tests {
     fn mark_double_spend_detected_is_sticky_first_occurrence_only() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         assert!(store.mark_double_spend_detected(&order.id, 1000).unwrap());
-        assert!(!store.mark_double_spend_detected(&order.id, 2000).unwrap(), "must not overwrite the first timestamp");
+        assert!(
+            !store.mark_double_spend_detected(&order.id, 2000).unwrap(),
+            "must not overwrite the first timestamp"
+        );
 
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(refetched.double_spend_detected_at, Some(1000));
     }
 
@@ -2685,14 +3735,30 @@ mod tests {
             .unwrap();
         let refetched = store.get_tenant_by_id(&created.tenant.id).unwrap().unwrap();
         assert_eq!(refetched.confirmations_required, 3);
-        assert_eq!(refetched.order_expiry_seconds, created.tenant.order_expiry_seconds); // untouched
+        assert_eq!(
+            refetched.order_expiry_seconds,
+            created.tenant.order_expiry_seconds
+        ); // untouched
 
         // Native 0-conf: a tenant's own default can be patched down to zero directly,
         // no separate ceiling/`_set` flag machinery needed.
         store
-            .update_tenant_config(&created.tenant.id, TenantConfigPatch { confirmations_required: Some(0), ..Default::default() })
+            .update_tenant_config(
+                &created.tenant.id,
+                TenantConfigPatch {
+                    confirmations_required: Some(0),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-        assert_eq!(store.get_tenant_by_id(&created.tenant.id).unwrap().unwrap().confirmations_required, 0);
+        assert_eq!(
+            store
+                .get_tenant_by_id(&created.tenant.id)
+                .unwrap()
+                .unwrap()
+                .confirmations_required,
+            0
+        );
     }
 
     #[test]
@@ -2700,15 +3766,21 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         for i in 1..=3u32 {
-            new_order(&store, &tenant.tenant.id, i);
+            new_order(&store, tenant.tenant.id.as_str(), i);
         }
-        let all = store.list_orders(&tenant.tenant.id, None, 10, None).unwrap();
+        let all = store
+            .list_orders(&tenant.tenant.id, None, 10, None)
+            .unwrap();
         assert_eq!(all.len(), 3);
         assert!(all[0].created_at >= all[1].created_at); // newest first (all equal here, but ordering must not error)
 
-        let pending_only = store.list_orders(&tenant.tenant.id, Some(OrderStatus::Pending), 10, None).unwrap();
+        let pending_only = store
+            .list_orders(&tenant.tenant.id, Some(OrderStatus::Pending), 10, None)
+            .unwrap();
         assert_eq!(pending_only.len(), 3);
-        let paid_only = store.list_orders(&tenant.tenant.id, Some(OrderStatus::Paid), 10, None).unwrap();
+        let paid_only = store
+            .list_orders(&tenant.tenant.id, Some(OrderStatus::Paid), 10, None)
+            .unwrap();
         assert_eq!(paid_only.len(), 0);
 
         let page = store.list_orders(&tenant.tenant.id, None, 2, None).unwrap();
@@ -2734,21 +3806,43 @@ mod tests {
         .enumerate()
         {
             let tenant = new_tenant(&store);
-            let order = new_order(&store, &tenant.tenant.id, i as u32 + 1);
+            let order = new_order(&store, tenant.tenant.id.as_str(), i as u32 + 1);
             store
                 .conn
-                .execute("UPDATE orders SET status = ?2 WHERE id = ?1", params![order.id, status_to_str(status)])
+                .execute(
+                    "UPDATE orders SET status = ?2 WHERE id = ?1",
+                    params![order.id, status_to_str(status)],
+                )
                 .unwrap();
             tenants_by_status.insert(status, tenant.tenant.id);
         }
 
-        let active: std::collections::HashSet<String> = store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().into_iter().collect();
+        let active: std::collections::HashSet<TenantId> = store
+            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
+            .unwrap()
+            .into_iter()
+            .collect();
 
-        for status in [OrderStatus::Pending, OrderStatus::Unconfirmed, OrderStatus::Confirming, OrderStatus::Partial] {
-            assert!(active.contains(&tenants_by_status[&status]), "{status} must be active");
+        for status in [
+            OrderStatus::Pending,
+            OrderStatus::Unconfirmed,
+            OrderStatus::Confirming,
+            OrderStatus::Partial,
+        ] {
+            assert!(
+                active.contains(&tenants_by_status[&status]),
+                "{status} must be active"
+            );
         }
-        for status in [OrderStatus::Paid, OrderStatus::Overpaid, OrderStatus::Expired] {
-            assert!(!active.contains(&tenants_by_status[&status]), "{status} must not be active");
+        for status in [
+            OrderStatus::Paid,
+            OrderStatus::Overpaid,
+            OrderStatus::Expired,
+        ] {
+            assert!(
+                !active.contains(&tenants_by_status[&status]),
+                "{status} must not be active"
+            );
         }
     }
 
@@ -2759,25 +3853,49 @@ mod tests {
         // together here since they share the exact same boundary condition.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1); // expires_at = 2000
-        // Closed at its deadline, as `recompute_order_status` records it.
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1); // expires_at = 2000
+                                                                     // Closed at its deadline, as `recompute_order_status` records it.
         store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![order.id]).unwrap();
 
         // Exactly at the boundary (`expires_at >= now - grace`) - inclusive.
-        assert!(store.active_tenant_ids("mainnet", 2000, 0).unwrap().contains(&tenant.tenant.id));
-        assert!(store.non_terminal_order_ids("mainnet", 2000, 0).unwrap().contains(&order.id));
+        assert!(store
+            .active_tenant_ids(monero::Network::Mainnet, 2000, 0)
+            .unwrap()
+            .contains(&tenant.tenant.id));
+        assert!(store
+            .non_terminal_order_ids(monero::Network::Mainnet, 2000, 0)
+            .unwrap()
+            .contains(&order.id));
 
         // One second past, with no grace at all - excluded.
-        assert!(!store.active_tenant_ids("mainnet", 2001, 0).unwrap().contains(&tenant.tenant.id));
-        assert!(!store.non_terminal_order_ids("mainnet", 2001, 0).unwrap().contains(&order.id));
+        assert!(!store
+            .active_tenant_ids(monero::Network::Mainnet, 2001, 0)
+            .unwrap()
+            .contains(&tenant.tenant.id));
+        assert!(!store
+            .non_terminal_order_ids(monero::Network::Mainnet, 2001, 0)
+            .unwrap()
+            .contains(&order.id));
 
         // A real grace window: still within it.
-        assert!(store.active_tenant_ids("mainnet", 2500, 600).unwrap().contains(&tenant.tenant.id));
-        assert!(store.non_terminal_order_ids("mainnet", 2500, 600).unwrap().contains(&order.id));
+        assert!(store
+            .active_tenant_ids(monero::Network::Mainnet, 2500, 600)
+            .unwrap()
+            .contains(&tenant.tenant.id));
+        assert!(store
+            .non_terminal_order_ids(monero::Network::Mainnet, 2500, 600)
+            .unwrap()
+            .contains(&order.id));
 
         // Past even the grace window - excluded again.
-        assert!(!store.active_tenant_ids("mainnet", 2601, 600).unwrap().contains(&tenant.tenant.id));
-        assert!(!store.non_terminal_order_ids("mainnet", 2601, 600).unwrap().contains(&order.id));
+        assert!(!store
+            .active_tenant_ids(monero::Network::Mainnet, 2601, 600)
+            .unwrap()
+            .contains(&tenant.tenant.id));
+        assert!(!store
+            .non_terminal_order_ids(monero::Network::Mainnet, 2601, 600)
+            .unwrap()
+            .contains(&order.id));
     }
 
     #[test]
@@ -2789,23 +3907,29 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
 
-        let pending_order = new_order(&store, &tenant.tenant.id, 1); // expires_at = 2000, status defaults to pending
+        let pending_order = new_order(&store, tenant.tenant.id.as_str(), 1); // expires_at = 2000, status defaults to pending
         assert!(
-            store.is_order_currently_scanning(&pending_order.id, 2000, 0).unwrap(),
+            store
+                .is_order_currently_scanning(&pending_order.id, 2000, 0)
+                .unwrap(),
             "a non-terminal order must be currently scanning regardless of grace"
         );
 
-        let expired_in_grace = new_order(&store, &tenant.tenant.id, 2);
+        let expired_in_grace = new_order(&store, tenant.tenant.id.as_str(), 2);
         store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![expired_in_grace.id]).unwrap();
         assert!(
-            store.is_order_currently_scanning(&expired_in_grace.id, 2500, 600).unwrap(),
+            store
+                .is_order_currently_scanning(&expired_in_grace.id, 2500, 600)
+                .unwrap(),
             "an expired order still inside its grace window must be currently scanning"
         );
 
-        let expired_past_grace = new_order(&store, &tenant.tenant.id, 3);
+        let expired_past_grace = new_order(&store, tenant.tenant.id.as_str(), 3);
         store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![expired_past_grace.id]).unwrap();
         assert!(
-            !store.is_order_currently_scanning(&expired_past_grace.id, 2601, 600).unwrap(),
+            !store
+                .is_order_currently_scanning(&expired_past_grace.id, 2601, 600)
+                .unwrap(),
             "an expired order past its grace window must not be currently scanning"
         );
     }
@@ -2814,7 +3938,10 @@ mod tests {
     fn tenant_with_no_orders_at_all_is_not_active() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        assert!(!store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id));
+        assert!(!store
+            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
+            .unwrap()
+            .contains(&tenant.tenant.id));
     }
 
     #[test]
@@ -2827,21 +3954,32 @@ mod tests {
         // cached "inactive" state that a new order needs to invalidate.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order_a = new_order(&store, &tenant.tenant.id, 1);
+        let order_a = new_order(&store, tenant.tenant.id.as_str(), 1);
 
-        assert!(store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id));
+        assert!(store
+            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
+            .unwrap()
+            .contains(&tenant.tenant.id));
 
-        store.record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         let (_, status) = store.recompute_order_status(&order_a.id, 59, 1600).unwrap();
         assert_eq!(status, OrderStatus::Paid);
         assert!(
-            !store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id),
+            !store
+                .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
+                .unwrap()
+                .contains(&tenant.tenant.id),
             "tenant must drop off once its only order is fully settled"
         );
 
-        let order_b = new_order(&store, &tenant.tenant.id, 2);
+        let order_b = new_order(&store, tenant.tenant.id.as_str(), 2);
         assert!(
-            store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id),
+            store
+                .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
+                .unwrap()
+                .contains(&tenant.tenant.id),
             "a fresh order must bring the tenant straight back onto the watchlist"
         );
         let _ = order_b;
@@ -2851,14 +3989,19 @@ mod tests {
     fn tenant_stays_active_while_any_one_of_several_orders_remains_pending() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order_a = new_order(&store, &tenant.tenant.id, 1);
-        let _order_b = new_order(&store, &tenant.tenant.id, 2);
+        let order_a = new_order(&store, tenant.tenant.id.as_str(), 1);
+        let _order_b = new_order(&store, tenant.tenant.id.as_str(), 2);
 
-        store.record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50)).unwrap();
+        store
+            .record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         store.recompute_order_status(&order_a.id, 59, 1600).unwrap();
 
         assert!(
-            store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id),
+            store
+                .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
+                .unwrap()
+                .contains(&tenant.tenant.id),
             "order_b is still pending, so the tenant must stay active even though order_a settled"
         );
     }
@@ -2867,9 +4010,15 @@ mod tests {
     fn webhook_delivery_queue_lifecycle() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         let webhook = store
-            .create_webhook(&tenant.tenant.id, "https://merchant.example/hook", "{}", "whsec_x", 1000)
+            .create_webhook(
+                &tenant.tenant.id,
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
             .unwrap();
 
         let id = store
@@ -2882,12 +4031,14 @@ mod tests {
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].delivery_id, id);
         assert_eq!(due[0].url, "https://merchant.example/hook");
-        assert_eq!(due[0].signing_secret, "whsec_x");
+        assert_eq!(due[0].signing_secret.expose(), "whsec_x");
         assert_eq!(due[0].attempt_count, 0);
 
         // A failed attempt reschedules and increments attempt_count; it stays due
         // once the new next_attempt_at has passed.
-        store.schedule_webhook_retry(id, 2000, Some(500), Some("server error"), 1000).unwrap();
+        store
+            .schedule_webhook_retry(id, 2000, Some(500), Some("server error"), 1000)
+            .unwrap();
         assert!(store.due_webhook_deliveries(1500, 10).unwrap().is_empty());
         let due = store.due_webhook_deliveries(2000, 10).unwrap();
         assert_eq!(due[0].attempt_count, 1);
@@ -2895,56 +4046,119 @@ mod tests {
         // A successful delivery removes it from the due set permanently, even if
         // asked about at a much later time.
         store.mark_webhook_delivered(id, 200, 2000).unwrap();
-        assert!(store.due_webhook_deliveries(999_999, 10).unwrap().is_empty());
+        assert!(store
+            .due_webhook_deliveries(999_999, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn disabling_a_webhook_removes_its_deliveries_from_the_due_set() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         let webhook = store
-            .create_webhook(&tenant.tenant.id, "https://merchant.example/hook", "{}", "whsec_x", 1000)
+            .create_webhook(
+                &tenant.tenant.id,
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
             .unwrap();
-        store.enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 1000).unwrap();
+        store
+            .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 1000)
+            .unwrap();
 
-        store.conn.execute("UPDATE webhooks SET enabled = 0 WHERE id = ?1", params![webhook.id]).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE webhooks SET enabled = 0 WHERE id = ?1",
+                params![webhook.id],
+            )
+            .unwrap();
         assert!(store.due_webhook_deliveries(1000, 10).unwrap().is_empty());
     }
 
     #[test]
     fn max_scanned_height_reflects_the_highest_recorded_block() {
         let store = Store::open_in_memory().unwrap();
-        assert_eq!(store.max_scanned_height("mainnet").unwrap(), None);
-        store.set_scanned_block("mainnet", 100, "h100").unwrap();
-        store.set_scanned_block("mainnet", 105, "h105").unwrap();
-        store.set_scanned_block("mainnet", 102, "h102").unwrap();
-        assert_eq!(store.max_scanned_height("mainnet").unwrap(), Some(105));
+        assert_eq!(
+            store.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            None
+        );
+        store
+            .set_scanned_block(monero::Network::Mainnet, 100, "h100")
+            .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 105, "h105")
+            .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 102, "h102")
+            .unwrap();
+        assert_eq!(
+            store.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(105)
+        );
     }
 
     #[test]
     fn get_order_tenant_id_is_unscoped_by_design() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
-        assert_eq!(store.get_order_tenant_id(&order.id).unwrap(), Some(tenant.tenant.id));
-        assert_eq!(store.get_order_tenant_id("pay_nonexistent").unwrap(), None);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
+        assert_eq!(
+            store.get_order_tenant_id(&order.id).unwrap(),
+            Some(tenant.tenant.id)
+        );
+        assert_eq!(
+            store
+                .get_order_tenant_id(&shared::ids::OrderId::new("pay_nonexistent"))
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
     fn scanned_blocks_round_trip_and_prune() {
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 100, "hash100").unwrap();
-        store.set_scanned_block("mainnet", 101, "hash101").unwrap();
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), Some("hash100".to_string()));
+        store
+            .set_scanned_block(monero::Network::Mainnet, 100, "hash100")
+            .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 101, "hash101")
+            .unwrap();
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
+            Some("hash100".to_string())
+        );
 
         // Reorg overwrite at the same height.
-        store.set_scanned_block("mainnet", 100, "hash100_v2").unwrap();
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), Some("hash100_v2".to_string()));
+        store
+            .set_scanned_block(monero::Network::Mainnet, 100, "hash100_v2")
+            .unwrap();
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
+            Some("hash100_v2".to_string())
+        );
 
-        store.prune_scanned_blocks_below("mainnet", 101).unwrap();
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), None);
-        assert!(store.get_scanned_block_hash("mainnet", 101).unwrap().is_some());
+        store
+            .prune_scanned_blocks_below(monero::Network::Mainnet, 101)
+            .unwrap();
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
+            None
+        );
+        assert!(store
+            .get_scanned_block_hash(monero::Network::Mainnet, 101)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -2954,23 +4168,60 @@ mod tests {
         // *different* hashes at the *same* height without colliding, and querying
         // one network must never see the other's data.
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 100, "mainnet_hash_100").unwrap();
-        store.set_scanned_block("stagenet", 100, "stagenet_hash_100").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 100, "mainnet_hash_100")
+            .unwrap();
+        store
+            .set_scanned_block(monero::Network::Stagenet, 100, "stagenet_hash_100")
+            .unwrap();
 
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), Some("mainnet_hash_100".to_string()));
-        assert_eq!(store.get_scanned_block_hash("stagenet", 100).unwrap(), Some("stagenet_hash_100".to_string()));
-        assert_eq!(store.get_scanned_block_hash("testnet", 100).unwrap(), None, "a third, never-written network must see nothing");
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
+            Some("mainnet_hash_100".to_string())
+        );
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Stagenet, 100)
+                .unwrap(),
+            Some("stagenet_hash_100".to_string())
+        );
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Testnet, 100)
+                .unwrap(),
+            None,
+            "a third, never-written network must see nothing"
+        );
 
         // Advancing one network's tip must not affect the other's.
-        store.set_scanned_block("mainnet", 105, "mainnet_hash_105").unwrap();
-        assert_eq!(store.max_scanned_height("mainnet").unwrap(), Some(105));
-        assert_eq!(store.max_scanned_height("stagenet").unwrap(), Some(100));
+        store
+            .set_scanned_block(monero::Network::Mainnet, 105, "mainnet_hash_105")
+            .unwrap();
+        assert_eq!(
+            store.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(105)
+        );
+        assert_eq!(
+            store.max_scanned_height(monero::Network::Stagenet).unwrap(),
+            Some(100)
+        );
 
         // Pruning one network's old blocks must not touch the other's.
-        store.prune_scanned_blocks_below("mainnet", 105).unwrap();
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), None);
+        store
+            .prune_scanned_blocks_below(monero::Network::Mainnet, 105)
+            .unwrap();
         assert_eq!(
-            store.get_scanned_block_hash("stagenet", 100).unwrap(),
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Stagenet, 100)
+                .unwrap(),
             Some("stagenet_hash_100".to_string()),
             "pruning mainnet must not prune stagenet's row at the same height"
         );
@@ -2980,7 +4231,7 @@ mod tests {
     fn active_tenant_ids_is_scoped_by_network() {
         let store = Store::open_in_memory().unwrap();
         let mainnet_tenant = new_tenant(&store); // new_tenant() always uses "mainnet"
-        new_order(&store, &mainnet_tenant.tenant.id, 1);
+        new_order(&store, mainnet_tenant.tenant.id.as_str(), 1);
 
         let stagenet_tenant = store
             .create_tenant(
@@ -2995,13 +4246,20 @@ mod tests {
                 1000,
             )
             .unwrap();
-        new_order(&store, &stagenet_tenant.tenant.id, 1);
+        new_order(&store, stagenet_tenant.tenant.id.as_str(), 1);
 
-        let mainnet_active = store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap();
+        let mainnet_active = store
+            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
+            .unwrap();
         assert!(mainnet_active.contains(&mainnet_tenant.tenant.id));
-        assert!(!mainnet_active.contains(&stagenet_tenant.tenant.id), "a stagenet tenant must never appear in a mainnet query");
+        assert!(
+            !mainnet_active.contains(&stagenet_tenant.tenant.id),
+            "a stagenet tenant must never appear in a mainnet query"
+        );
 
-        let stagenet_active = store.active_tenant_ids("stagenet", i64::MAX, 0).unwrap();
+        let stagenet_active = store
+            .active_tenant_ids(monero::Network::Stagenet, i64::MAX, 0)
+            .unwrap();
         assert!(stagenet_active.contains(&stagenet_tenant.tenant.id));
         assert!(!stagenet_active.contains(&mainnet_tenant.tenant.id));
     }
@@ -3013,8 +4271,18 @@ mod tests {
         // pick up the other's payment just because the numeric heights coincide.
         let store = Store::open_in_memory().unwrap();
         let mainnet_tenant = new_tenant(&store);
-        let mainnet_order = new_order(&store, &mainnet_tenant.tenant.id, 1);
-        store.record_payment_match(&mainnet_order.id, "tx_mainnet", 0, 100, "[]", 1500, Some(50)).unwrap();
+        let mainnet_order = new_order(&store, mainnet_tenant.tenant.id.as_str(), 1);
+        store
+            .record_payment_match(
+                &mainnet_order.id,
+                "tx_mainnet",
+                0,
+                100,
+                "[]",
+                1500,
+                Some(50),
+            )
+            .unwrap();
 
         let stagenet_tenant = store
             .create_tenant(
@@ -3029,14 +4297,28 @@ mod tests {
                 1000,
             )
             .unwrap();
-        let stagenet_order = new_order(&store, &stagenet_tenant.tenant.id, 1);
-        store.record_payment_match(&stagenet_order.id, "tx_stagenet", 0, 100, "[]", 1500, Some(50)).unwrap();
+        let stagenet_order = new_order(&store, stagenet_tenant.tenant.id.as_str(), 1);
+        store
+            .record_payment_match(
+                &stagenet_order.id,
+                "tx_stagenet",
+                0,
+                100,
+                "[]",
+                1500,
+                Some(50),
+            )
+            .unwrap();
 
-        let mainnet_affected = store.find_payments_at_or_after_height("mainnet", 50).unwrap();
+        let mainnet_affected = store
+            .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
+            .unwrap();
         assert_eq!(mainnet_affected.len(), 1);
         assert_eq!(mainnet_affected[0].txid, "tx_mainnet");
 
-        let stagenet_affected = store.find_payments_at_or_after_height("stagenet", 50).unwrap();
+        let stagenet_affected = store
+            .find_payments_at_or_after_height(monero::Network::Stagenet, 50)
+            .unwrap();
         assert_eq!(stagenet_affected.len(), 1);
         assert_eq!(stagenet_affected[0].txid, "tx_stagenet");
     }
@@ -3050,13 +4332,21 @@ mod tests {
         // asked about a chain it doesn't serve).
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let mempool_order = new_order(&store, &tenant.tenant.id, 1);
-        let mined_order = new_order(&store, &tenant.tenant.id, 2);
-        let voided_order = new_order(&store, &tenant.tenant.id, 3);
-        store.record_payment_match(&mempool_order.id, "tx_pool", 0, 100, "[]", 1500, None).unwrap();
-        store.record_payment_match(&mined_order.id, "tx_mined", 0, 100, "[]", 1500, Some(50)).unwrap();
-        store.record_payment_match(&voided_order.id, "tx_voided", 0, 100, "[]", 1500, None).unwrap();
-        store.void_payment(&voided_order.id, "tx_voided", 0, 1600).unwrap();
+        let mempool_order = new_order(&store, tenant.tenant.id.as_str(), 1);
+        let mined_order = new_order(&store, tenant.tenant.id.as_str(), 2);
+        let voided_order = new_order(&store, tenant.tenant.id.as_str(), 3);
+        store
+            .record_payment_match(&mempool_order.id, "tx_pool", 0, 100, "[]", 1500, None)
+            .unwrap();
+        store
+            .record_payment_match(&mined_order.id, "tx_mined", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&voided_order.id, "tx_voided", 0, 100, "[]", 1500, None)
+            .unwrap();
+        store
+            .void_payment(&voided_order.id, "tx_voided", 0, 1600)
+            .unwrap();
 
         let stagenet_tenant = store
             .create_tenant(
@@ -3071,19 +4361,42 @@ mod tests {
                 1000,
             )
             .unwrap();
-        let stagenet_order = new_order(&store, &stagenet_tenant.tenant.id, 1);
-        store.record_payment_match(&stagenet_order.id, "tx_stagenet_pool", 0, 100, "[]", 1500, None).unwrap();
+        let stagenet_order = new_order(&store, stagenet_tenant.tenant.id.as_str(), 1);
+        store
+            .record_payment_match(
+                &stagenet_order.id,
+                "tx_stagenet_pool",
+                0,
+                100,
+                "[]",
+                1500,
+                None,
+            )
+            .unwrap();
 
-        let found = store.find_unconfirmed_payments("mainnet").unwrap();
-        assert_eq!(found.len(), 1, "only the live mempool-only mainnet row: {found:?}");
+        let found = store
+            .find_unconfirmed_payments(monero::Network::Mainnet)
+            .unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "only the live mempool-only mainnet row: {found:?}"
+        );
         assert_eq!(found[0].txid, "tx_pool");
 
-        let first_page = store.unconfirmed_payments_page("mainnet", 0, 1).unwrap();
+        let first_page = store
+            .unconfirmed_payments_page(monero::Network::Mainnet, 0, 1)
+            .unwrap();
         assert_eq!(first_page.len(), 1);
         assert_eq!(first_page[0].1.txid, "tx_pool");
-        assert!(store.unconfirmed_payments_page("mainnet", first_page[0].0, 1).unwrap().is_empty());
+        assert!(store
+            .unconfirmed_payments_page(monero::Network::Mainnet, first_page[0].0, 1)
+            .unwrap()
+            .is_empty());
 
-        let stagenet_found = store.find_unconfirmed_payments("stagenet").unwrap();
+        let stagenet_found = store
+            .find_unconfirmed_payments(monero::Network::Stagenet)
+            .unwrap();
         assert_eq!(stagenet_found.len(), 1);
         assert_eq!(stagenet_found[0].txid, "tx_stagenet_pool");
     }
@@ -3093,14 +4406,35 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         for index in 1..=3 {
-            let order = new_order(&store, &tenant.tenant.id, index);
-            store.record_payment_match(&order.id, &format!("tx_{index}"), 0, 100, "[]", 1500, None).unwrap();
+            let order = new_order(&store, tenant.tenant.id.as_str(), index);
+            store
+                .record_payment_match(&order.id, &format!("tx_{index}"), 0, 100, "[]", 1500, None)
+                .unwrap();
         }
-        let first = store.unconfirmed_payments_page("mainnet", 0, 2).unwrap();
-        assert_eq!(first.iter().map(|(_, payment)| payment.txid.as_str()).collect::<Vec<_>>(), vec!["tx_1", "tx_2"]);
-        let second = store.unconfirmed_payments_page("mainnet", first.last().unwrap().0, 2).unwrap();
-        assert_eq!(second.iter().map(|(_, payment)| payment.txid.as_str()).collect::<Vec<_>>(), vec!["tx_3"]);
-        assert!(store.unconfirmed_payments_page("mainnet", second.last().unwrap().0, 2).unwrap().is_empty());
+        let first = store
+            .unconfirmed_payments_page(monero::Network::Mainnet, 0, 2)
+            .unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .map(|(_, payment)| payment.txid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tx_1", "tx_2"]
+        );
+        let second = store
+            .unconfirmed_payments_page(monero::Network::Mainnet, first.last().unwrap().0, 2)
+            .unwrap();
+        assert_eq!(
+            second
+                .iter()
+                .map(|(_, payment)| payment.txid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tx_3"]
+        );
+        assert!(store
+            .unconfirmed_payments_page(monero::Network::Mainnet, second.last().unwrap().0, 2)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -3115,20 +4449,37 @@ mod tests {
         // `find_payments_at_or_after_height` (and therefore to reorg reconciliation).
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
-        assert!(store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None).unwrap());
-        assert_eq!(store.get_all_payments(&order.id).unwrap()[0].block_height, None);
+        assert!(store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None)
+            .unwrap());
+        assert_eq!(
+            store.get_all_payments(&order.id).unwrap()[0].block_height,
+            None
+        );
 
         // Same output, now seen inside a block - the row must learn its height.
-        assert!(!store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, Some(50)).unwrap());
+        assert!(!store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, Some(50))
+            .unwrap());
         let payments = store.get_all_payments(&order.id).unwrap();
-        assert_eq!(payments.len(), 1, "still exactly one row - this is an update, not a second payment");
+        assert_eq!(
+            payments.len(),
+            1,
+            "still exactly one row - this is an update, not a second payment"
+        );
         assert_eq!(payments[0].block_height, Some(50));
 
         // And with a height known, the payment is now reachable by reorg
         // reconciliation, which filters on `block_height >= ?`.
-        assert_eq!(store.find_payments_at_or_after_height("mainnet", 50).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -3140,12 +4491,19 @@ mod tests {
         // payment's confirmations back to zero on every subsequent tick.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50)).unwrap();
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None)
+            .unwrap();
 
-        assert_eq!(store.get_all_payments(&order.id).unwrap()[0].block_height, Some(50));
+        assert_eq!(
+            store.get_all_payments(&order.id).unwrap()[0].block_height,
+            Some(50)
+        );
     }
 
     #[test]
@@ -3156,16 +4514,23 @@ mod tests {
         // same upsert. That must not quietly revise the row it decided against.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None)
+            .unwrap();
         assert!(store.void_payment(&order.id, "txabc", 0, 1600).unwrap());
 
-        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1700, Some(50)).unwrap();
+        store
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1700, Some(50))
+            .unwrap();
         let payments = store.get_all_payments(&order.id).unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(payments[0].voided_at, Some(1600), "still voided");
-        assert_eq!(payments[0].block_height, None, "and the guarded update must not have run either");
+        assert_eq!(
+            payments[0].block_height, None,
+            "and the guarded update must not have run either"
+        );
     }
 
     #[test]
@@ -3179,17 +4544,23 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant_a = new_tenant(&store);
         let tenant_b = new_tenant(&store);
-        let order_a = new_order(&store, &tenant_a.tenant.id, 1);
-        let order_b = new_order(&store, &tenant_b.tenant.id, 1);
+        let order_a = new_order(&store, tenant_a.tenant.id.as_str(), 1);
+        let order_b = new_order(&store, tenant_b.tenant.id.as_str(), 1);
 
-        assert!(store.record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1500, Some(50)).unwrap());
-        assert!(store.record_payment_match(&order_b.id, "shared_tx", 0, 100, "[]", 1500, Some(50)).unwrap());
+        assert!(store
+            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1500, Some(50))
+            .unwrap());
+        assert!(store
+            .record_payment_match(&order_b.id, "shared_tx", 0, 100, "[]", 1500, Some(50))
+            .unwrap());
 
         assert_eq!(store.get_all_payments(&order_a.id).unwrap().len(), 1);
         assert_eq!(store.get_all_payments(&order_b.id).unwrap().len(), 1);
 
         // Within one order it is still an idempotent no-op, exactly as before.
-        assert!(!store.record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1600, Some(50)).unwrap());
+        assert!(!store
+            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1600, Some(50))
+            .unwrap());
         assert_eq!(store.get_all_payments(&order_a.id).unwrap().len(), 1);
     }
 
@@ -3197,18 +4568,28 @@ mod tests {
     fn unvoid_payment_restores_a_row_without_clearing_the_double_spend_flag() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
-        store.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50)).unwrap();
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
+        store
+            .record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
         store.void_payment(&order.id, "tx_a", 0, 1600).unwrap();
         store.mark_double_spend_detected(&order.id, 1600).unwrap();
 
         assert!(store.unvoid_payment(&order.id, "tx_a", 0).unwrap());
-        assert!(store.get_all_payments(&order.id).unwrap()[0].voided_at.is_none());
-        assert!(!store.unvoid_payment(&order.id, "tx_a", 0).unwrap(), "idempotent - already un-voided");
+        assert!(store.get_all_payments(&order.id).unwrap()[0]
+            .voided_at
+            .is_none());
+        assert!(
+            !store.unvoid_payment(&order.id, "tx_a", 0).unwrap(),
+            "idempotent - already un-voided"
+        );
 
         // Sticky by design (see the schema comment): the incident happened, whether
         // or not the payment ultimately stood.
-        let refetched = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap();
+        let refetched = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(refetched.double_spend_detected_at, Some(1600));
     }
 
@@ -3234,21 +4615,42 @@ mod tests {
         .enumerate()
         {
             let tenant = new_tenant(&store);
-            let order = new_order(&store, &tenant.tenant.id, i as u32 + 1);
+            let order = new_order(&store, tenant.tenant.id.as_str(), i as u32 + 1);
             store
                 .conn
-                .execute("UPDATE orders SET status = ?2 WHERE id = ?1", params![order.id, status_to_str(status)])
+                .execute(
+                    "UPDATE orders SET status = ?2 WHERE id = ?1",
+                    params![order.id, status_to_str(status)],
+                )
                 .unwrap();
             ids_by_status.insert(status, order.id);
         }
 
-        let ids: std::collections::HashSet<String> =
-            store.non_terminal_order_ids("mainnet", i64::MAX, 0).unwrap().into_iter().collect();
-        for status in [OrderStatus::Pending, OrderStatus::Unconfirmed, OrderStatus::Confirming, OrderStatus::Partial] {
-            assert!(ids.contains(&ids_by_status[&status]), "{status} orders must be recomputed every tick");
+        let ids: std::collections::HashSet<OrderId> = store
+            .non_terminal_order_ids(monero::Network::Mainnet, i64::MAX, 0)
+            .unwrap()
+            .into_iter()
+            .collect();
+        for status in [
+            OrderStatus::Pending,
+            OrderStatus::Unconfirmed,
+            OrderStatus::Confirming,
+            OrderStatus::Partial,
+        ] {
+            assert!(
+                ids.contains(&ids_by_status[&status]),
+                "{status} orders must be recomputed every tick"
+            );
         }
-        for status in [OrderStatus::Paid, OrderStatus::Overpaid, OrderStatus::Expired] {
-            assert!(!ids.contains(&ids_by_status[&status]), "{status} is terminal - nothing left to recompute");
+        for status in [
+            OrderStatus::Paid,
+            OrderStatus::Overpaid,
+            OrderStatus::Expired,
+        ] {
+            assert!(
+                !ids.contains(&ids_by_status[&status]),
+                "{status} is terminal - nothing left to recompute"
+            );
         }
 
         let stagenet = store
@@ -3264,9 +4666,15 @@ mod tests {
                 1000,
             )
             .unwrap();
-        let stagenet_order = new_order(&store, &stagenet.tenant.id, 1);
-        assert!(!store.non_terminal_order_ids("mainnet", i64::MAX, 0).unwrap().contains(&stagenet_order.id));
-        assert!(store.non_terminal_order_ids("stagenet", i64::MAX, 0).unwrap().contains(&stagenet_order.id));
+        let stagenet_order = new_order(&store, stagenet.tenant.id.as_str(), 1);
+        assert!(!store
+            .non_terminal_order_ids(monero::Network::Mainnet, i64::MAX, 0)
+            .unwrap()
+            .contains(&stagenet_order.id));
+        assert!(store
+            .non_terminal_order_ids(monero::Network::Stagenet, i64::MAX, 0)
+            .unwrap()
+            .contains(&stagenet_order.id));
     }
 
     #[test]
@@ -3284,17 +4692,20 @@ mod tests {
 
         let first = store.peek_next_minor_index(&tenant_id).unwrap();
         let order = store
-            .create_order_claiming_minor_index(first, NewOrder {
-                confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
-                merchant_order_id: None,
-                minor_index: first,
-                address: "sub_1".into(),
-                xmr_amount_piconero: 100,
-                description: None,
-                created_at: 1000,
-                expires_at: 2000,
-            })
+            .create_order_claiming_minor_index(
+                first,
+                NewOrder {
+                    confirmations_required_override: None,
+                    tenant_id: tenant_id.clone(),
+                    merchant_order_id: None,
+                    minor_index: first,
+                    address: "sub_1".into(),
+                    xmr_amount_piconero: 100,
+                    description: None,
+                    created_at: 1000,
+                    expires_at: 2000,
+                },
+            )
             .unwrap()
             .expect("the first claim of a fresh index must succeed");
         assert_eq!(order.minor_index, first);
@@ -3303,35 +4714,45 @@ mod tests {
         // A claim of an index the counter has already moved past changes nothing at
         // all - the caller re-derives against the new index rather than burning one.
         let stale = store
-            .create_order_claiming_minor_index(first, NewOrder {
-                confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
-                merchant_order_id: None,
-                minor_index: first,
-                address: "sub_1_again".into(),
-                xmr_amount_piconero: 100,
-                description: None,
-                created_at: 1000,
-                expires_at: 2000,
-            })
+            .create_order_claiming_minor_index(
+                first,
+                NewOrder {
+                    confirmations_required_override: None,
+                    tenant_id: tenant_id.clone(),
+                    merchant_order_id: None,
+                    minor_index: first,
+                    address: "sub_1_again".into(),
+                    xmr_amount_piconero: 100,
+                    description: None,
+                    created_at: 1000,
+                    expires_at: 2000,
+                },
+            )
             .unwrap();
         assert!(stale.is_none());
-        assert_eq!(store.peek_next_minor_index(&tenant_id).unwrap(), first + 1, "a losing racer must not burn an index");
+        assert_eq!(
+            store.peek_next_minor_index(&tenant_id).unwrap(),
+            first + 1,
+            "a losing racer must not burn an index"
+        );
 
         // A *failing* insert (this minor_index is already taken, violating
         // UNIQUE(tenant_id, minor_index)) must roll the counter bump back with it.
         let next = store.peek_next_minor_index(&tenant_id).unwrap();
-        let failed = store.create_order_claiming_minor_index(next, NewOrder {
-            confirmations_required_override: None,
-            tenant_id: tenant_id.clone(),
-            merchant_order_id: None,
-            minor_index: first, // deliberately the already-used index, not `next`
-            address: "sub_collision".into(),
-            xmr_amount_piconero: 100,
-            description: None,
-            created_at: 1000,
-            expires_at: 2000,
-        });
+        let failed = store.create_order_claiming_minor_index(
+            next,
+            NewOrder {
+                confirmations_required_override: None,
+                tenant_id: tenant_id.clone(),
+                merchant_order_id: None,
+                minor_index: first, // deliberately the already-used index, not `next`
+                address: "sub_collision".into(),
+                xmr_amount_piconero: 100,
+                description: None,
+                created_at: 1000,
+                expires_at: 2000,
+            },
+        );
         assert!(failed.is_err());
         assert_eq!(
             store.peek_next_minor_index(&tenant_id).unwrap(),
@@ -3443,21 +4864,39 @@ mod tests {
 
         shared::migrations::apply(&store.conn, MIGRATIONS).unwrap();
 
-        let payments = store.get_all_payments(order_id).unwrap();
-        assert_eq!(payments.len(), 1, "the pre-upgrade payment must survive the table rebuild");
+        let payments = store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert_eq!(
+            payments.len(),
+            1,
+            "the pre-upgrade payment must survive the table rebuild"
+        );
         assert_eq!(payments[0].txid, "tx_from_before_the_upgrade");
         assert_eq!(payments[0].output_index, 2);
         assert_eq!(payments[0].amount_piconero, 4242);
         assert_eq!(payments[0].key_images_json, "[\"ki_a\"]");
         assert_eq!(payments[0].first_seen_at, 1500);
-        assert_eq!(payments[0].block_height, Some(77), "every column, not just the ones the new constraint names");
+        assert_eq!(
+            payments[0].block_height,
+            Some(77),
+            "every column, not just the ones the new constraint names"
+        );
         assert_eq!(payments[0].voided_at, Some(1600));
 
         // And the new constraint is genuinely in force afterwards.
         let other_tenant = new_tenant(&store);
-        let other_order = new_order(&store, &other_tenant.tenant.id, 1);
+        let other_order = new_order(&store, other_tenant.tenant.id.as_str(), 1);
         assert!(store
-            .record_payment_match(&other_order.id, "tx_from_before_the_upgrade", 2, 100, "[]", 1700, Some(77))
+            .record_payment_match(
+                &other_order.id,
+                "tx_from_before_the_upgrade",
+                2,
+                100,
+                "[]",
+                1700,
+                Some(77)
+            )
             .unwrap());
 
         // SQLite drops a table's indexes with the table, and does *not* re-derive
@@ -3470,12 +4909,23 @@ mod tests {
                 .conn
                 .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='order_payments' AND sql IS NOT NULL ORDER BY name")
                 .unwrap();
-            let rows = stmt.query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+            let rows = stmt
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
             rows
         };
+        // Later migrations add their own indexes (0019's reorg collection
+        // streams); the one that existed before the rebuild must survive it.
         assert_eq!(
             indexes,
-            vec!["order_payments_order_idx".to_string()],
+            vec![
+                "order_payments_confirmed_height_idx".to_string(),
+                "order_payments_order_idx".to_string(),
+                "order_payments_unconfirmed_idx".to_string(),
+                "order_payments_voided_idx".to_string(),
+            ],
             "every explicitly-declared index that existed on order_payments before the rebuild must exist after it"
         );
         // ...plus the implicit index backing the new constraint, which is what makes
@@ -3489,7 +4939,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(has_unique_index, "the UNIQUE(order_id, txid, output_index) constraint must survive as a real index");
+        assert!(
+            has_unique_index,
+            "the UNIQUE(order_id, txid, output_index) constraint must survive as a real index"
+        );
     }
 
     #[test]
@@ -3512,9 +4965,19 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert!(!columns.iter().any(|c| c == "allowed_origins"), "got columns {columns:?}");
+        assert!(
+            !columns.iter().any(|c| c == "allowed_origins"),
+            "got columns {columns:?}"
+        );
         let store = Store::from_connection(conn);
-        assert_eq!(store.get_tenant_by_id("old").unwrap().unwrap().public_key, "pk_old");
+        assert_eq!(
+            store
+                .get_tenant_by_id(&shared::ids::TenantId::new("old"))
+                .unwrap()
+                .unwrap()
+                .public_key,
+            "pk_old"
+        );
     }
 
     #[test]
@@ -3537,7 +5000,12 @@ mod tests {
 
         shared::migrations::apply(&conn, MIGRATIONS).unwrap();
         let override_for = |id: &str| -> Option<i64> {
-            conn.query_row("SELECT confirmations_required_override FROM orders WHERE id = ?1", [id], |row| row.get(0)).unwrap()
+            conn.query_row(
+                "SELECT confirmations_required_override FROM orders WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
         };
         assert_eq!(override_for("trusted"), Some(0));
         assert_eq!(override_for("pending"), None);
@@ -3554,49 +5022,98 @@ mod tests {
         // voided, propping up the order's received total forever.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
-        store.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50)).unwrap();
-        assert_eq!(store.find_payments_at_or_after_height("mainnet", 50).unwrap().len(), 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
+        store
+            .record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            .unwrap();
+        assert_eq!(
+            store
+                .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
+                .unwrap()
+                .len(),
+            1
+        );
 
         // A reorg drops it back to the mempool.
-        store.update_payment_block_height(&order.id, "tx_a", 0, None).unwrap();
-        let still_visible = store.find_payments_at_or_after_height("mainnet", 50).unwrap();
-        assert_eq!(still_visible.len(), 1, "an unconfirmed payment is above every block height, not below all of them");
+        store
+            .update_payment_block_height(&order.id, "tx_a", 0, None)
+            .unwrap();
+        let still_visible = store
+            .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
+            .unwrap();
+        assert_eq!(
+            still_visible.len(),
+            1,
+            "an unconfirmed payment is above every block height, not below all of them"
+        );
         assert_eq!(still_visible[0].block_height, None);
 
         // The same applies to the voided half of the pair, which un-voiding depends on.
         store.void_payment(&order.id, "tx_a", 0, 1600).unwrap();
-        assert!(store.find_payments_at_or_after_height("mainnet", 50).unwrap().is_empty());
-        assert_eq!(store.find_voided_payments_at_or_after_height("mainnet", 50).unwrap().len(), 1);
+        assert!(store
+            .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .find_voided_payments_at_or_after_height(monero::Network::Mainnet, 50)
+                .unwrap()
+                .len(),
+            1
+        );
 
         // And a network scope violation is still impossible either way.
-        assert!(store.find_payments_at_or_after_height("stagenet", 50).unwrap().is_empty());
-        assert!(store.find_voided_payments_at_or_after_height("stagenet", 50).unwrap().is_empty());
+        assert!(store
+            .find_payments_at_or_after_height(monero::Network::Stagenet, 50)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .find_voided_payments_at_or_after_height(monero::Network::Stagenet, 50)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn find_payments_voided_since_is_bounded_by_recency_not_by_every_void_ever() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
-        store.record_payment_match(&order.id, "tx_old", 0, 100, "[]", 1000, Some(50)).unwrap();
-        store.record_payment_match(&order.id, "tx_recent", 1, 100, "[]", 1000, Some(50)).unwrap();
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
+        store
+            .record_payment_match(&order.id, "tx_old", 0, 100, "[]", 1000, Some(50))
+            .unwrap();
+        store
+            .record_payment_match(&order.id, "tx_recent", 1, 100, "[]", 1000, Some(50))
+            .unwrap();
         store.void_payment(&order.id, "tx_old", 0, 1000).unwrap();
         store.void_payment(&order.id, "tx_recent", 1, 5000).unwrap();
 
-        let recent_only = store.find_payments_voided_since("mainnet", 3000).unwrap();
+        let recent_only = store
+            .find_payments_voided_since(monero::Network::Mainnet, 3000)
+            .unwrap();
         assert_eq!(recent_only.len(), 1);
         assert_eq!(recent_only[0].txid, "tx_recent");
 
-        let both = store.find_payments_voided_since("mainnet", 0).unwrap();
-        assert_eq!(both.len(), 2, "a cutoff at or before every void returns all of them");
+        let both = store
+            .find_payments_voided_since(monero::Network::Mainnet, 0)
+            .unwrap();
+        assert_eq!(
+            both.len(),
+            2,
+            "a cutoff at or before every void returns all of them"
+        );
 
         assert!(
-            store.find_payments_voided_since("mainnet", 5001).unwrap().is_empty(),
+            store
+                .find_payments_voided_since(monero::Network::Mainnet, 5001)
+                .unwrap()
+                .is_empty(),
             "a cutoff after every void returns nothing"
         );
         assert!(
-            store.find_payments_voided_since("stagenet", 0).unwrap().is_empty(),
+            store
+                .find_payments_voided_since(monero::Network::Stagenet, 0)
+                .unwrap()
+                .is_empty(),
             "network scope violation must still be impossible"
         );
     }
@@ -3605,24 +5122,40 @@ mod tests {
     fn clear_double_spend_flag_only_reports_a_real_change_and_is_idempotent() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
-        assert!(!store.clear_double_spend_flag(&order.id).unwrap(), "nothing to clear yet");
+        assert!(
+            !store.clear_double_spend_flag(&order.id).unwrap(),
+            "nothing to clear yet"
+        );
 
         store.mark_double_spend_detected(&order.id, 1000).unwrap();
-        assert!(store.get_order_by_id(&order.id).unwrap().unwrap().double_spend_detected_at.is_some());
+        assert!(store
+            .get_order_by_id(&order.id)
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_some());
 
         assert!(store.clear_double_spend_flag(&order.id).unwrap());
-        assert!(store.get_order_by_id(&order.id).unwrap().unwrap().double_spend_detected_at.is_none());
+        assert!(store
+            .get_order_by_id(&order.id)
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_none());
 
-        assert!(!store.clear_double_spend_flag(&order.id).unwrap(), "already clear - idempotent");
+        assert!(
+            !store.clear_double_spend_flag(&order.id).unwrap(),
+            "already clear - idempotent"
+        );
     }
 
     #[test]
     fn in_transaction_rolls_every_write_back_when_the_closure_fails() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         let result: Result<()> = store.in_transaction(|s| {
             s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))?;
@@ -3630,12 +5163,22 @@ mod tests {
             Err(StoreError::NotFound)
         });
         assert!(result.is_err());
-        assert!(store.get_all_payments(&order.id).unwrap().is_empty(), "the whole group must be gone, not just the last write");
-        assert!(store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap().double_spend_detected_at.is_none());
+        assert!(
+            store.get_all_payments(&order.id).unwrap().is_empty(),
+            "the whole group must be gone, not just the last write"
+        );
+        assert!(store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_none());
 
         // And the successful case commits normally.
         store
-            .in_transaction(|s| s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50)))
+            .in_transaction(|s| {
+                s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            })
             .unwrap();
         assert_eq!(store.get_all_payments(&order.id).unwrap().len(), 1);
     }
@@ -3644,15 +5187,29 @@ mod tests {
     fn forget_scanned_blocks_at_or_above_walks_the_high_water_mark_back() {
         let store = Store::open_in_memory().unwrap();
         for h in 100..=105 {
-            store.set_scanned_block("mainnet", h, &format!("hash{h}")).unwrap();
+            store
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("hash{h}"))
+                .unwrap();
         }
-        store.set_scanned_block("stagenet", 103, "stagenet_hash").unwrap();
+        store
+            .set_scanned_block(monero::Network::Stagenet, 103, "stagenet_hash")
+            .unwrap();
 
-        store.forget_scanned_blocks_at_or_above("mainnet", 103).unwrap();
-        assert_eq!(store.max_scanned_height("mainnet").unwrap(), Some(102));
-        assert!(store.get_scanned_block_hash("mainnet", 103).unwrap().is_none());
+        store
+            .forget_scanned_blocks_at_or_above(monero::Network::Mainnet, 103)
+            .unwrap();
         assert_eq!(
-            store.get_scanned_block_hash("stagenet", 103).unwrap(),
+            store.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(102)
+        );
+        assert!(store
+            .get_scanned_block_hash(monero::Network::Mainnet, 103)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Stagenet, 103)
+                .unwrap(),
             Some("stagenet_hash".to_string()),
             "another network's window at the same height must be untouched"
         );
@@ -3662,16 +5219,26 @@ mod tests {
     fn find_payment_by_key_image_locates_the_owning_row() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         store
-            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"deadbeef\",\"cafef00d\"]", 1500, None)
+            .record_payment_match(
+                &order.id,
+                "tx_a",
+                0,
+                60,
+                "[\"deadbeef\",\"cafef00d\"]",
+                1500,
+                None,
+            )
             .unwrap();
 
         let found = store.find_payment_by_key_image("cafef00d").unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].txid, "tx_a");
 
-        assert!(store.find_payment_by_key_image("not_present").unwrap().is_empty());
+        assert!(store
+            .find_payment_by_key_image("not_present")
+            .unwrap()
+            .is_empty());
     }
-
 }

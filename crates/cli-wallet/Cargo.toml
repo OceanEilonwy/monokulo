@@ -70,3 +70,6 @@ path = "src/bin/refresh_decoy_pool.rs"
 [[bin]]
 name = "stagenet-wallet-cli"
 path = "src/bin/cli/main.rs"
+
+[lints]
+workspace = true

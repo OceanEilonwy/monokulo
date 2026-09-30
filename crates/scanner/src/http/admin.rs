@@ -2,14 +2,21 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::auth::generate_webhook_secret;
 use crate::daemon::MoneroDaemonClient;
+use crate::engine_settings::EngineSettings;
 use crate::key_custody::{KeyCustodyError, SubaddressIndex, WalletMaterial};
 use crate::status::OrderStatus;
-use crate::store::{NewTenant, Order, OrderPaymentRow, Store, TenantConfigPatch, Webhook};
+use crate::store::{
+    Database, NewTenant, Order, OrderPaymentRow, Store, TenantConfigPatch, Webhook,
+};
 
-use super::{resolve_wallet_handle, AppState, ApiError, AuthedTenant, network_str, now_unix, parse_network, parse_status_query};
+use super::{
+    network_str, now_unix, parse_network, parse_status_query, resolve_wallet_handle, ApiError,
+    AppState, AuthedTenant, Custody,
+};
 
 /// `KeyCustodyError::InvalidKeyMaterial` from `register_wallet`/`derive_subaddress`
 /// below means *this request's* `view_key_hex`/`spend_pubkey_hex` decoded to the
@@ -24,7 +31,9 @@ use super::{resolve_wallet_handle, AppState, ApiError, AuthedTenant, network_str
 /// own, more specific mapping rather than changing that default for every caller.
 fn key_custody_error_for_new_tenant(e: KeyCustodyError) -> ApiError {
     match e {
-        KeyCustodyError::InvalidKeyMaterial(m) => ApiError::BadRequest(format!("invalid key material: {m}")),
+        KeyCustodyError::InvalidKeyMaterial(m) => {
+            ApiError::BadRequest(format!("invalid key material: {m}"))
+        }
         other => other.into(),
     }
 }
@@ -48,12 +57,16 @@ pub struct CreateTenantRequest {
 /// The backend a new or moving store's keys go to: `requested`, or the
 /// default. Refused if it isn't enabled.
 fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<String, ApiError> {
-    let enabled = state.key_custody.enabled_backends();
+    let enabled = state.custody.backends.enabled_backends();
     if enabled.is_empty() {
         // A single backend, not a router (some tests): it is the only one.
-        return Ok(requested.map(str::to_string).unwrap_or_else(|| state.key_custody_backend.clone()));
+        return Ok(requested
+            .map(str::to_string)
+            .unwrap_or_else(|| state.custody.default_backend.clone()));
     }
-    let backend = requested.map(str::to_string).unwrap_or_else(|| state.settings.custody.load().default.as_str().to_string());
+    let backend = requested
+        .map(str::to_string)
+        .unwrap_or_else(|| state.settings.custody.load().default.as_str().to_string());
     if !enabled.contains(&backend) {
         return Err(ApiError::BadRequest(format!(
             "key custody backend {backend:?} is not enabled on this instance (enabled: {})",
@@ -65,7 +78,7 @@ fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<String, A
 
 #[derive(Serialize)]
 pub struct CreateTenantResponse {
-    tenant_id: String,
+    tenant_id: crate::store::TenantId,
     public_key: String,
     secret_token: String,
 }
@@ -76,8 +89,9 @@ pub async fn create_tenant(
 ) -> Result<Json<CreateTenantResponse>, ApiError> {
     let material = WalletMaterial::from_hex(&req.view_key_hex, &req.spend_pubkey_hex)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    let network = parse_network(req.network.as_deref().unwrap_or("mainnet")).map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    if !state.daemons.is_configured(network) {
+    let network = parse_network(req.network.as_deref().unwrap_or("mainnet"))
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if !state.networks.daemons.is_configured(network) {
         return Err(ApiError::BadRequest(format!(
             "no monero_node is configured for network {:?} on this instance",
             network_str(network)
@@ -88,55 +102,68 @@ pub async fn create_tenant(
     let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
 
     let handle = state
-        .key_custody
+        .custody
+        .backends
         .register_wallet_in(&backend, material.clone())
         .await
         .map_err(key_custody_error_for_new_tenant)?;
     let primary_address = state
-        .key_custody
+        .custody
+        .backends
         .derive_subaddress(handle, SubaddressIndex::default(), network)
         .await
         .map_err(key_custody_error_for_new_tenant)?;
-    let sealed = match state.key_custody.seal_in(&backend, &material).await {
+    let sealed = match state.custody.backends.seal_in(&backend, &material).await {
         Ok(sealed) => sealed,
         Err(e) => {
-            let _ = state.key_custody.remove_wallet(handle).await;
+            let _ = state.custody.backends.remove_wallet(handle).await;
             return Err(key_custody_error_for_new_tenant(e));
         }
     };
     let defaults = state.settings.tenant_defaults.load();
 
-    let created = state.store.lock().create_tenant(
-        NewTenant {
-            // The backend that sealed these keys and holds them (part 5).
-            key_custody_backend: backend.clone(),
-            sealed_key_material: sealed,
-            primary_address: primary_address.to_string(),
-            network: network_str(network).to_string(),
-            // Values the request doesn't give come from the instance's
-            // current defaults (task 2.9), not a hardcoded number.
-            confirmations_required: Some(req.confirmations_required.unwrap_or(defaults.confirmations_required)),
-            order_expiry_seconds: Some(req.order_expiry_seconds.unwrap_or(defaults.order_expiry_seconds)),
-        },
-        now_unix(),
-    );
+    let new_tenant = NewTenant {
+        // The backend that sealed these keys and holds them (part 5).
+        key_custody_backend: backend.clone(),
+        sealed_key_material: sealed,
+        primary_address: primary_address.to_string(),
+        network: network_str(network).to_string(),
+        // Values the request doesn't give come from the instance's
+        // current defaults (task 2.9), not a hardcoded number.
+        confirmations_required: Some(
+            req.confirmations_required
+                .unwrap_or(defaults.confirmations_required),
+        ),
+        order_expiry_seconds: Some(
+            req.order_expiry_seconds
+                .unwrap_or(defaults.order_expiry_seconds),
+        ),
+    };
+    let created = state
+        .db
+        .write(move |s| s.create_tenant(new_tenant, now_unix()))
+        .await;
     // A failed insert leaves a registered wallet nothing holds a handle to - key
     // material live in `KeyCustody` for the rest of the process's life, with no
     // tenant row to ever offboard it. Hand it back before returning the error.
     let created = match created {
         Ok(created) => created,
         Err(e) => {
-            let _ = state.key_custody.remove_wallet(handle).await;
+            let _ = state.custody.backends.remove_wallet(handle).await;
             return Err(e.into());
         }
     };
 
-    state.wallet_handles.write().insert(created.tenant.id.clone(), handle);
+    state
+        .custody
+        .wallet_handles
+        .write()
+        .insert(created.tenant.id.clone(), handle);
 
     Ok(Json(CreateTenantResponse {
         tenant_id: created.tenant.id,
         public_key: created.tenant.public_key,
-        secret_token: created.secret_token,
+        secret_token: created.secret_token.expose().to_string(),
     }))
 }
 
@@ -159,7 +186,9 @@ pub(crate) const MAX_CONFIRMATIONS_REQUIRED: u64 = 720;
 /// Shared by the tenant-level default (here) and `http::public::create_order_for_admin`'s
 /// per-order override - the exact same bound, so it's enforced in exactly one place
 /// rather than as two copies that could drift.
-pub(crate) fn validate_confirmations_required(confirmations_required: Option<u64>) -> Result<(), ApiError> {
+pub(crate) fn validate_confirmations_required(
+    confirmations_required: Option<u64>,
+) -> Result<(), ApiError> {
     if let Some(confirmations) = confirmations_required {
         if confirmations > MAX_CONFIRMATIONS_REQUIRED {
             return Err(ApiError::BadRequest(format!(
@@ -194,7 +223,7 @@ fn validate_tenant_settings(
 
 #[derive(Serialize)]
 pub struct TenantView {
-    tenant_id: String,
+    tenant_id: crate::store::TenantId,
     public_key: String,
     primary_address: String,
     network: String,
@@ -229,10 +258,15 @@ pub struct SwitchKeyCustodyRequest {
 /// address may be in any valid form (the bootstrap CLI stores what was
 /// typed). The public spend key must match, and so must the public view key
 /// derived from the given private view key.
-pub fn is_same_wallet(material: &WalletMaterial, primary_address: &str, network: monero::Network) -> Result<bool, ApiError> {
+pub fn is_same_wallet(
+    material: &WalletMaterial,
+    primary_address: &str,
+    network: monero::Network,
+) -> Result<bool, ApiError> {
     // The keys were already parsed by `WalletMaterial::from_hex`, so an
     // error here is the stored address.
-    crate::key_custody::wallet_matches_address(material, primary_address, network).map_err(ApiError::Internal)
+    crate::key_custody::wallet_matches_address(material, primary_address, network)
+        .map_err(ApiError::Internal)
 }
 
 /// `PUT /api/v1/admin/tenant/key-custody` - moves the authenticated store to
@@ -251,7 +285,9 @@ pub async fn switch_key_custody(
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let network = parse_network(&tenant.network).map_err(|e| ApiError::Internal(e.to_string()))?;
     if !is_same_wallet(&material, &tenant.primary_address, network)? {
-        return Err(ApiError::BadRequest("These keys belong to a different wallet from the one this store uses.".to_string()));
+        return Err(ApiError::BadRequest(
+            "These keys belong to a different wallet from the one this store uses.".to_string(),
+        ));
     }
     let backend = chosen_backend(&state, Some(&req.backend))?;
 
@@ -261,27 +297,45 @@ pub async fn switch_key_custody(
     static SWITCHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _switching = SWITCHING.lock().await;
 
-    let handle = state.key_custody.register_wallet_in(&backend, material.clone()).await.map_err(ApiError::from)?;
-    let sealed = match state.key_custody.seal_in(&backend, &material).await {
+    let handle = state
+        .custody
+        .backends
+        .register_wallet_in(&backend, material.clone())
+        .await
+        .map_err(ApiError::from)?;
+    let sealed = match state.custody.backends.seal_in(&backend, &material).await {
         Ok(sealed) => sealed,
         Err(e) => {
-            let _ = state.key_custody.remove_wallet(handle).await;
+            let _ = state.custody.backends.remove_wallet(handle).await;
             return Err(e.into());
         }
     };
-    let updated = state.store.lock().update_tenant_key_custody(&tenant.id, &backend, &sealed);
+    let (id, chosen) = (tenant.id.clone(), backend.clone());
+    let updated = state
+        .db
+        .write(move |s| s.update_tenant_key_custody(&id, &chosen, &sealed))
+        .await;
     if let Err(e) = updated {
-        let _ = state.key_custody.remove_wallet(handle).await;
+        let _ = state.custody.backends.remove_wallet(handle).await;
         return Err(e.into());
     }
-    let previous = state.wallet_handles.write().insert(tenant.id.clone(), handle);
+    let previous = state
+        .custody
+        .wallet_handles
+        .write()
+        .insert(tenant.id.clone(), handle);
     if let Some(previous) = previous.filter(|p| *p != handle) {
-        if let Err(e) = state.key_custody.remove_wallet(previous).await {
+        if let Err(e) = state.custody.backends.remove_wallet(previous).await {
             // The old backend is down: it loses the copy when it restarts.
             tracing::warn!(store.id = %tenant.id, error = %e, "moved a store's keys, but removing them from its old key custody backend failed");
         }
     }
-    let refetched = state.store.lock().get_tenant_by_id(&tenant.id)?.ok_or(ApiError::NotFound)?;
+    let id = tenant.id.clone();
+    let refetched = state
+        .db
+        .write(move |s| s.get_tenant_by_id(&id))
+        .await?
+        .ok_or(ApiError::NotFound)?;
     Ok(Json(TenantView::from(refetched)))
 }
 
@@ -308,22 +362,31 @@ fn backend_description(name: &str) -> &'static str {
 /// `GET /api/v1/admin/key-custody` - the backends a store can choose from
 /// and the default (task 5.4). Not secret: any caller that reaches the
 /// private engine API may ask.
-pub async fn key_custody_options(State(state): State<AppState>) -> Json<KeyCustodyView> {
-    let mut enabled_names = state.key_custody.enabled_backends();
+pub async fn key_custody_options(
+    State(custody): State<Custody>,
+    State(settings): State<Arc<EngineSettings>>,
+) -> Json<KeyCustodyView> {
+    let mut enabled_names = custody.backends.enabled_backends();
     if enabled_names.is_empty() {
-        enabled_names.push(state.key_custody_backend.clone());
+        enabled_names.push(custody.default_backend.clone());
     }
     let enabled = enabled_names
         .iter()
         .filter_map(|name| match name.as_str() {
-            "plain" => Some(KeyCustodyBackendView { name: "plain", description: backend_description("plain") }),
-            "socket" => Some(KeyCustodyBackendView { name: "socket", description: backend_description("socket") }),
+            "plain" => Some(KeyCustodyBackendView {
+                name: "plain",
+                description: backend_description("plain"),
+            }),
+            "socket" => Some(KeyCustodyBackendView {
+                name: "socket",
+                description: backend_description("socket"),
+            }),
             _ => None,
         })
         .collect();
-    let default = match state.key_custody.enabled_backends().is_empty() {
-        true => state.key_custody_backend.clone(),
-        false => state.settings.custody.load().default.as_str().to_string(),
+    let default = match custody.backends.enabled_backends().is_empty() {
+        true => custody.default_backend.clone(),
+        false => settings.custody.load().default.as_str().to_string(),
     };
     Json(KeyCustodyView { enabled, default })
 }
@@ -340,7 +403,7 @@ pub struct PatchTenantRequest {
 
 pub async fn patch_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
     Json(req): Json<PatchTenantRequest>,
 ) -> Result<Json<TenantView>, ApiError> {
     validate_tenant_settings(req.confirmations_required, req.order_expiry_seconds)?;
@@ -348,9 +411,14 @@ pub async fn patch_own_tenant(
         confirmations_required: req.confirmations_required,
         order_expiry_seconds: req.order_expiry_seconds,
     };
-    let store = state.store.lock();
-    store.update_tenant_config(&tenant.id, patch)?;
-    let refetched = store.get_tenant_by_id(&tenant.id)?.ok_or(ApiError::NotFound)?;
+    let id = tenant.id.clone();
+    let refetched = db
+        .write(move |s| {
+            s.update_tenant_config(&id, patch)?;
+            s.get_tenant_by_id(&id)
+        })
+        .await?
+        .ok_or(ApiError::NotFound)?;
     Ok(Json(TenantView::from(refetched)))
 }
 
@@ -361,28 +429,33 @@ pub struct RotateSecretResponse {
 
 pub async fn rotate_secret(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
 ) -> Result<Json<RotateSecretResponse>, ApiError> {
-    let new_secret = state.store.lock().rotate_tenant_secret(&tenant.id)?;
-    Ok(Json(RotateSecretResponse { secret_token: new_secret }))
+    let id = tenant.id.clone();
+    let new_secret = db.write(move |s| s.rotate_tenant_secret(&id)).await?;
+    Ok(Json(RotateSecretResponse {
+        secret_token: new_secret.expose().to_string(),
+    }))
 }
 
 pub async fn delete_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(custody): State<Custody>,
+    State(db): State<Database>,
 ) -> Result<StatusCode, ApiError> {
-    let removed_handle = state.wallet_handles.write().remove(&tenant.id);
+    let removed_handle = custody.wallet_handles.write().remove(&tenant.id);
     if let Some(handle) = removed_handle {
         // Best-effort: an already-unknown handle is not an error worth surfacing here.
-        let _ = state.key_custody.remove_wallet(handle).await;
+        let _ = custody.backends.remove_wallet(handle).await;
     }
-    state.store.lock().disable_tenant(&tenant.id, now_unix())?;
+    let id = tenant.id.clone();
+    db.write(move |s| s.disable_tenant(&id, now_unix())).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize)]
 pub struct OrderView {
-    order_id: String,
+    order_id: crate::store::OrderId,
     merchant_order_id: Option<String>,
     address: String,
     xmr_amount_piconero: u64,
@@ -419,7 +492,8 @@ fn build_order_view(
     now: i64,
     grace_period_seconds: i64,
 ) -> std::result::Result<OrderView, crate::store::StoreError> {
-    let currently_scanning = store.is_order_currently_scanning(&order.id, now, grace_period_seconds)?;
+    let currently_scanning =
+        store.is_order_currently_scanning(&order.id, now, grace_period_seconds)?;
     Ok(OrderView {
         order_id: order.id,
         merchant_order_id: order.merchant_order_id,
@@ -464,41 +538,73 @@ pub const MAX_LIST_ORDER_IDS: usize = 100;
 
 pub async fn list_orders(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
+    State(settings): State<Arc<EngineSettings>>,
     Query(q): Query<ListOrdersQuery>,
 ) -> Result<Json<Vec<OrderView>>, ApiError> {
-    let status_filter: Option<OrderStatus> = q.status.as_deref().map(parse_status_query).transpose()?;
+    let status_filter: Option<OrderStatus> =
+        q.status.as_deref().map(parse_status_query).transpose()?;
     let limit = q.limit.unwrap_or(50).min(200);
     let now = now_unix();
-    let ids: Option<Vec<&str>> = q.ids.as_deref().map(|ids| ids.split(',').map(str::trim).filter(|id| !id.is_empty()).collect());
-    if ids.as_ref().is_some_and(|ids| ids.len() > MAX_LIST_ORDER_IDS) {
-        return Err(ApiError::BadRequest(format!("ids may name at most {MAX_LIST_ORDER_IDS} orders")));
+    let ids: Option<Vec<crate::store::OrderId>> = q.ids.as_deref().map(|ids| {
+        ids.split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(crate::store::OrderId::new)
+            .collect()
+    });
+    if ids
+        .as_ref()
+        .is_some_and(|ids| ids.len() > MAX_LIST_ORDER_IDS)
+    {
+        return Err(ApiError::BadRequest(format!(
+            "ids may name at most {MAX_LIST_ORDER_IDS} orders"
+        )));
     }
-    let store = state.store.lock();
-    let orders = match ids {
-        Some(ids) => {
-            let mut orders = Vec::with_capacity(ids.len());
-            for id in ids {
-                if let Some(order) = store.get_order(&tenant.id, id)? {
-                    orders.push(order);
+    let search: Option<String> = q
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .map(str::to_owned);
+    if search
+        .as_deref()
+        .is_some_and(|term| term.chars().count() > 120)
+    {
+        return Err(ApiError::BadRequest("search is too long".into()));
+    }
+    let paged = q.open.unwrap_or(false) || q.search.is_some() || q.offset.is_some();
+    let (open, offset, cursor, tenant_id) = (
+        q.open.unwrap_or(false),
+        q.offset.unwrap_or(0),
+        q.cursor,
+        tenant.id.clone(),
+    );
+    let grace = settings.scan.load().expired_order_grace_period_seconds;
+    let views = db
+        .read(move |store| {
+            let orders = match ids {
+                Some(ids) => {
+                    let mut orders = Vec::with_capacity(ids.len());
+                    for id in ids {
+                        if let Some(order) = store.get_order(&tenant_id, &id)? {
+                            orders.push(order);
+                        }
+                    }
+                    orders
                 }
-            }
+                None if paged => {
+                    store.list_orders_page(&tenant_id, open, search.as_deref(), limit, offset)?
+                }
+                None => store.list_orders(&tenant_id, status_filter, limit, cursor)?,
+            };
             orders
-        }
-        None if q.open.unwrap_or(false) || q.search.is_some() || q.offset.is_some() => {
-            let search = q.search.as_deref().map(str::trim).filter(|term| !term.is_empty());
-            if search.is_some_and(|term| term.chars().count() > 120) {
-                return Err(ApiError::BadRequest("search is too long".into()));
-            }
-            store.list_orders_page(&tenant.id, q.open.unwrap_or(false), search, limit, q.offset.unwrap_or(0))?
-        }
-        None => store.list_orders(&tenant.id, status_filter, limit, q.cursor)?,
-    };
-    let views: std::result::Result<Vec<OrderView>, _> = orders
-        .into_iter()
-        .map(|o| build_order_view(&store, o, now, state.settings.scan.load().expired_order_grace_period_seconds))
-        .collect();
-    Ok(Json(views?))
+                .into_iter()
+                .map(|o| build_order_view(store, o, now, grace))
+                .collect::<std::result::Result<Vec<_>, _>>()
+        })
+        .await?;
+    Ok(Json(views))
 }
 
 #[derive(Serialize)]
@@ -533,13 +639,25 @@ pub struct OrderDetailResponse {
 
 pub async fn get_order_detail(
     AuthedTenant(tenant): AuthedTenant,
-    Path(order_id): Path<String>,
-    State(state): State<AppState>,
+    Path(order_id): Path<crate::store::OrderId>,
+    State(db): State<Database>,
+    State(settings): State<Arc<EngineSettings>>,
 ) -> Result<Json<OrderDetailResponse>, ApiError> {
-    let store = state.store.lock();
-    let order = store.get_order(&tenant.id, &order_id)?.ok_or(ApiError::NotFound)?;
-    let payments = store.get_all_payments(&order.id)?;
-    let order_view = build_order_view(&store, order, now_unix(), state.settings.scan.load().expired_order_grace_period_seconds)?;
+    let grace = settings.scan.load().expired_order_grace_period_seconds;
+    let tenant_id = tenant.id.clone();
+    let found = db
+        .read(move |store| {
+            let Some(order) = store.get_order(&tenant_id, &order_id)? else {
+                return Ok(None);
+            };
+            let payments = store.get_all_payments(&order.id)?;
+            Ok(Some((
+                build_order_view(store, order, now_unix(), grace)?,
+                payments,
+            )))
+        })
+        .await?;
+    let (order_view, payments) = found.ok_or(ApiError::NotFound)?;
     Ok(Json(OrderDetailResponse {
         order: order_view,
         payments: payments.into_iter().map(PaymentView::from).collect(),
@@ -561,11 +679,14 @@ pub struct SetRefundAddressRequest {
 /// tenant is simply not found.
 pub async fn set_order_refund_address(
     AuthedTenant(tenant): AuthedTenant,
-    Path(order_id): Path<String>,
-    State(state): State<AppState>,
+    Path(order_id): Path<crate::store::OrderId>,
+    State(db): State<Database>,
     Json(req): Json<SetRefundAddressRequest>,
 ) -> Result<(), ApiError> {
-    let updated = state.store.lock().set_refund_address(&tenant.id, &order_id, &req.refund_address)?;
+    let id = tenant.id.clone();
+    let updated = db
+        .write(move |s| s.set_refund_address(&id, &order_id, &req.refund_address))
+        .await?;
     if updated {
         Ok(())
     } else {
@@ -581,35 +702,52 @@ pub struct CreateWebhookRequest {
 
 #[derive(Serialize)]
 pub struct CreateWebhookResponse {
-    webhook_id: String,
+    webhook_id: crate::store::WebhookId,
     signing_secret: String,
 }
 
 pub async fn create_webhook(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
     Json(req): Json<CreateWebhookRequest>,
 ) -> Result<Json<CreateWebhookResponse>, ApiError> {
-    let parsed = url::Url::parse(&req.url).map_err(|e| ApiError::BadRequest(format!("invalid url: {e}")))?;
+    let parsed =
+        url::Url::parse(&req.url).map_err(|e| ApiError::BadRequest(format!("invalid url: {e}")))?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(ApiError::BadRequest("only http/https URLs are allowed".into()));
+        return Err(ApiError::BadRequest(
+            "only http/https URLs are allowed".into(),
+        ));
     }
     // Resolved-IP SSRF validation (see webhook_sign::validate_webhook_url) happens
     // at delivery time in the not-yet-built delivery worker, not here - DNS can
     // change between registration and delivery, so a registration-time-only check
     // would be insufficient on its own regardless.
     let secret = generate_webhook_secret();
-    let extra_headers_json = req.extra_headers.map(|v| v.to_string()).unwrap_or_else(|| "{}".to_string());
-    let webhook = state
-        .store
-        .lock()
-        .create_webhook(&tenant.id, &req.url, &extra_headers_json, &secret, now_unix())?;
-    Ok(Json(CreateWebhookResponse { webhook_id: webhook.id, signing_secret: secret }))
+    let extra_headers_json = req
+        .extra_headers
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "{}".to_string());
+    let (tenant_id, url, signing_secret) = (tenant.id.clone(), req.url.clone(), secret.clone());
+    let webhook = db
+        .write(move |store| {
+            store.create_webhook(
+                &tenant_id,
+                &url,
+                &extra_headers_json,
+                &signing_secret,
+                now_unix(),
+            )
+        })
+        .await?;
+    Ok(Json(CreateWebhookResponse {
+        webhook_id: webhook.id,
+        signing_secret: secret,
+    }))
 }
 
 #[derive(Serialize)]
 pub struct WebhookView {
-    webhook_id: String,
+    webhook_id: crate::store::WebhookId,
     url: String,
     enabled: bool,
     created_at: i64,
@@ -617,24 +755,33 @@ pub struct WebhookView {
 
 impl From<Webhook> for WebhookView {
     fn from(w: Webhook) -> Self {
-        WebhookView { webhook_id: w.id, url: w.url, enabled: w.enabled, created_at: w.created_at }
+        WebhookView {
+            webhook_id: w.id,
+            url: w.url,
+            enabled: w.enabled,
+            created_at: w.created_at,
+        }
     }
 }
 
 pub async fn list_webhooks(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
 ) -> Result<Json<Vec<WebhookView>>, ApiError> {
-    let webhooks = state.store.lock().list_webhooks(&tenant.id)?;
+    let id = tenant.id.clone();
+    let webhooks = db.read(move |s| s.list_webhooks(&id)).await?;
     Ok(Json(webhooks.into_iter().map(WebhookView::from).collect()))
 }
 
 pub async fn delete_webhook(
     AuthedTenant(tenant): AuthedTenant,
-    Path(webhook_id): Path<String>,
-    State(state): State<AppState>,
+    Path(webhook_id): Path<crate::store::WebhookId>,
+    State(db): State<Database>,
 ) -> Result<StatusCode, ApiError> {
-    let deleted = state.store.lock().delete_webhook(&tenant.id, &webhook_id)?;
+    let id = tenant.id.clone();
+    let deleted = db
+        .write(move |s| s.delete_webhook(&id, &webhook_id))
+        .await?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -668,7 +815,9 @@ pub enum PaymentLookupView {
     /// time is a safe no-op that still reports the same match). A list, not a
     /// single id: a transaction can in principle pay more than one of a
     /// tenant's subaddresses in one output set.
-    Matched { order_ids: Vec<String> },
+    Matched {
+        order_ids: Vec<crate::store::OrderId>,
+    },
 }
 
 /// `POST /api/v1/admin/tenant/payments/lookup` - `docs/txid_lookup_and_scan_
@@ -681,7 +830,7 @@ pub enum PaymentLookupView {
 /// reason: a real match is a real match regardless of the order's current
 /// status.
 ///
-/// Uses `state.daemons` (the live scanner's own pool), not a separate one:
+/// Uses `state.networks.daemons` (the live scanner's own pool), not a separate one:
 /// this is two quick calls, not a bulk historical walk, so it poses none of
 /// the sustained-request-volume contention `AppState::rescan_daemons` exists
 /// to prevent - see that field's own doc comment for the class of problem
@@ -693,38 +842,58 @@ pub async fn lookup_payment(
 ) -> Result<Json<PaymentLookupView>, ApiError> {
     let txid = req.txid.trim().to_lowercase();
     if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(ApiError::BadRequest("txid must be 64 hex characters".to_string()));
+        return Err(ApiError::BadRequest(
+            "txid must be 64 hex characters".to_string(),
+        ));
     }
 
-    let network = parse_network(&tenant.network)
-        .map_err(|e| ApiError::Internal(format!("tenant has an unrecognized network {:?}: {e}", tenant.network)))?;
-    let daemon = state
-        .daemons
-        .get(network)
-        .ok_or_else(|| ApiError::Unavailable(format!("no Monero node is configured for network {network:?}")))?;
+    let network = parse_network(&tenant.network).map_err(|e| {
+        ApiError::Internal(format!(
+            "tenant has an unrecognized network {:?}: {e}",
+            tenant.network
+        ))
+    })?;
+    let daemon = state.networks.daemons.get(network).ok_or_else(|| {
+        ApiError::Unavailable(format!(
+            "no Monero node is configured for network {network:?}"
+        ))
+    })?;
 
-    let location = daemon.locate_transaction(&txid).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let location = daemon
+        .locate_transaction(&txid)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let block_height = match location {
         crate::daemon::TxLocation::NotFound => return Ok(Json(PaymentLookupView::NotFoundOnChain)),
         crate::daemon::TxLocation::InPool => None,
         crate::daemon::TxLocation::InBlock(h) => Some(h),
     };
 
-    let tx = daemon.get_transaction(&txid).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let tx = daemon
+        .get_transaction(&txid)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let mut handle = resolve_wallet_handle(&state, &tenant).await?;
     let now = now_unix();
 
     // Computed (async, no `&Store` held) then persisted (sync, brief lock) as
-    // two separate steps, same as `run_scan_tick`/`scanner::rescan_order`
+    // two separate steps, same as the scheduler/`scanner::rescan_order`
     // already do everywhere else in this codebase - never a single
     // await-spanning call holding the store's lock.
     let mut retries = 0;
     let scan = loop {
-        match crate::scanner::scan_transaction(state.key_custody.as_ref(), handle, &tx, 0..tenant.next_minor_index).await {
+        match crate::scanner::scan_transaction(
+            state.custody.backends.as_ref(),
+            handle,
+            &tx,
+            0..tenant.next_minor_index,
+        )
+        .await
+        {
             Ok(scan) => break scan,
-            Err(crate::scanner::ScannerError::KeyCustody(crate::key_custody::KeyCustodyError::UnknownWallet))
-                if retries < super::UNKNOWN_WALLET_RETRIES =>
-            {
+            Err(crate::scanner::ScannerError::KeyCustody(
+                crate::key_custody::KeyCustodyError::UnknownWallet,
+            )) if retries < super::UNKNOWN_WALLET_RETRIES => {
                 retries += 1;
                 super::forget_wallet_handle(&state, &tenant.id, handle);
                 handle = resolve_wallet_handle(&state, &tenant).await?;
@@ -733,10 +902,12 @@ pub async fn lookup_payment(
             Err(e) => return Err(ApiError::Internal(e.to_string())),
         }
     };
-    let touched = {
-        let store = state.store.lock();
-        crate::scanner::record_scan_match(&store, &tenant.id, &scan, now, block_height).map_err(|e| ApiError::Internal(e.to_string()))?
-    };
+    let id = tenant.id.clone();
+    let touched = state
+        .db
+        .write(move |store| crate::scanner::record_scan_match(store, &id, &scan, now, block_height))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     if touched.is_empty() {
         return Ok(Json(PaymentLookupView::NoMatchingOrder));
@@ -746,16 +917,25 @@ pub async fn lookup_payment(
     // against - `block_height` itself is not a safe substitute (a mempool
     // match has none, and even a mined match's own height could already be
     // behind the real tip by an unrelated confirmation or two).
-    let current_height = daemon.get_height().await.map_err(|e| ApiError::Internal(e.to_string()))?;
-    {
-        let store = state.store.lock();
-        for order_id in &touched {
-            crate::scanner::recompute_and_notify(&store, order_id, current_height, now)
-                .map_err(|e| ApiError::Internal(e.to_string()))?;
-        }
-    }
+    let current_height = daemon
+        .get_height()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let orders: Vec<crate::store::OrderId> = touched.iter().cloned().collect();
+    state
+        .db
+        .write(move |store| {
+            for order_id in &orders {
+                crate::scanner::recompute_and_notify(store, order_id, current_height, now)?;
+            }
+            Ok::<(), crate::scanner::ScannerError>(())
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    Ok(Json(PaymentLookupView::Matched { order_ids: touched.into_iter().collect() }))
+    Ok(Json(PaymentLookupView::Matched {
+        order_ids: touched.into_iter().collect(),
+    }))
 }
 
 /// `GET /api/v1/admin/tenant/events` - a Server-Sent Events stream of this
@@ -773,27 +953,40 @@ pub async fn lookup_payment(
 /// Carries no order state itself - see [`crate::store::OrderChange`].
 pub async fn order_events(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
-) -> axum::response::sse::Sse<impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+    State(db): State<Database>,
+) -> axum::response::sse::Sse<
+    impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio::sync::broadcast::error::RecvError;
 
-    let receiver = state.store.lock().subscribe_order_changes();
-    let ready = futures_util::stream::once(async { Ok(Event::default().event("ready").data("{}")) });
-    let changes = futures_util::stream::unfold((receiver, tenant.id), |(mut receiver, tenant_id)| async move {
-        loop {
-            match receiver.recv().await {
-                Ok(change) if change.tenant_id == tenant_id => {
-                    let data = serde_json::json!({ "order_id": change.order_id }).to_string();
-                    return Some((Ok(Event::default().event("order").data(data)), (receiver, tenant_id)));
+    let receiver = db.subscribe_order_changes();
+    let ready =
+        futures_util::stream::once(async { Ok(Event::default().event("ready").data("{}")) });
+    let changes = futures_util::stream::unfold(
+        (receiver, tenant.id),
+        |(mut receiver, tenant_id)| async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(change) if change.tenant_id == tenant_id => {
+                        let data = serde_json::json!({ "order_id": change.order_id }).to_string();
+                        return Some((
+                            Ok(Event::default().event("order").data(data)),
+                            (receiver, tenant_id),
+                        ));
+                    }
+                    Ok(_) => continue,
+                    Err(RecvError::Lagged(_)) => {
+                        return Some((
+                            Ok(Event::default().event("resync").data("{}")),
+                            (receiver, tenant_id),
+                        ));
+                    }
+                    Err(RecvError::Closed) => return None,
                 }
-                Ok(_) => continue,
-                Err(RecvError::Lagged(_)) => {
-                    return Some((Ok(Event::default().event("resync").data("{}")), (receiver, tenant_id)));
-                }
-                Err(RecvError::Closed) => return None,
             }
-        }
-    });
-    Sse::new(futures_util::StreamExt::chain(ready, changes)).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
+        },
+    );
+    Sse::new(futures_util::StreamExt::chain(ready, changes))
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
 }

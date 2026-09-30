@@ -76,7 +76,13 @@ pub fn challenge_page(chrome: &PageChrome, view: &ChallengePageView) -> Markup {
         }
         script src="/static/challenge.js" {}
     };
-    layout_bare_with_head(chrome, "Checking your connection", "width=device-width, initial-scale=1", head, body)
+    layout_bare_with_head(
+        chrome,
+        "Checking your connection",
+        "width=device-width, initial-scale=1",
+        head,
+        body,
+    )
 }
 
 /// Past the hard limit: nothing to solve, just wait.
@@ -111,8 +117,13 @@ mod tests {
         assert!(html.contains("This page continues in 10 seconds."));
         // The state and the way on come before the explanation, so a small
         // frame shows them.
-        assert!(html.find(r#"class="challenge-stage"#).unwrap() < html.find(r#"class="challenge-why""#).unwrap());
-        assert!(html.find(">continue</a>").unwrap() < html.find(r#"class="challenge-why""#).unwrap());
+        assert!(
+            html.find(r#"class="challenge-stage"#).unwrap()
+                < html.find(r#"class="challenge-why""#).unwrap()
+        );
+        assert!(
+            html.find(">continue</a>").unwrap() < html.find(r#"class="challenge-why""#).unwrap()
+        );
         assert!(html.contains(r#"role="status""#));
         assert!(html.contains(r#"data-challenge="abc.def""#));
         assert!(html.contains(r#"src="/static/challenge.js""#));

@@ -37,8 +37,8 @@
 
 mod support;
 
-use std::collections::HashMap;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -103,7 +103,9 @@ fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -112,7 +114,11 @@ fn urlencode(s: &str) -> String {
 }
 
 fn form_body(fields: &[(&str, &str)]) -> String {
-    fields.iter().map(|(k, v)| format!("{}={}", urlencode(k), urlencode(v))).collect::<Vec<_>>().join("&")
+    fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlencode(k), urlencode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 async fn body_text(response: axum::response::Response) -> String {
@@ -152,36 +158,60 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
-        RpcDaemonClient::new(e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT, e2e_fixture::NODE_SSL, e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS)
-            .expect("failed to build daemon RPC client"),
+        RpcDaemonClient::new(
+            e2e_fixture::NODE_HOST,
+            e2e_fixture::NODE_PORT,
+            e2e_fixture::NODE_SSL,
+            e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS,
+        )
+        .expect("failed to build daemon RPC client"),
     );
-    require_daemon_reachable(daemon.as_ref(), e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT).await;
+    require_daemon_reachable(
+        daemon.as_ref(),
+        e2e_fixture::NODE_HOST,
+        e2e_fixture::NODE_PORT,
+    )
+    .await;
 
     let fallback_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
         label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT),
         client: daemon.clone(),
     }]));
-    let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::new(RwLock::new(HashMap::new()));
+    let wallet_handles: Arc<RwLock<HashMap<scanner::store::TenantId, WalletHandle>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
-        read_pool: None,
-        store: store.clone(),
-        key_custody: key_custody.clone(),
-        key_custody_backend: "plain".to_string(),
-        wallet_handles: wallet_handles.clone(),
+        db: scanner::store::Database::inline(store.clone()),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
-        daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(Network::Stagenet, fallback_daemon)])),
-        scanner_status: new_scanner_status_map(),
         log_store: None,
         settings: scanner::engine_settings::EngineSettings::defaults(),
+        custody: scanner::http::Custody {
+            backends: key_custody.clone(),
+            default_backend: "plain".to_string(),
+            wallet_handles: wallet_handles.clone(),
+        },
+        networks: scanner::http::Networks {
+            daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(
+                Network::Stagenet,
+                fallback_daemon,
+            )])),
+            scanner_status: new_scanner_status_map(),
+        },
     };
     let engine_router = build_engine_router(engine_state, 1_000_000);
-    let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral engine port");
-    let engine_addr = engine_listener.local_addr().expect("bound engine listener has no local address");
+    let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind an ephemeral engine port");
+    let engine_addr = engine_listener
+        .local_addr()
+        .expect("bound engine listener has no local address");
     tokio::spawn(async move {
-        axum::serve(engine_listener, engine_router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-            .await
-            .expect("test engine server error");
+        axum::serve(
+            engine_listener,
+            engine_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .expect("test engine server error");
     });
     let engine_base_url = format!("http://{engine_addr}");
     println!("real engine bound at {engine_base_url}");
@@ -190,10 +220,8 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     // own router is driven via oneshot below), pointed at the real engine above ----
     let cp_db = Db::open_in_memory().unwrap().into_shared();
     let cp_state = ControlPlaneAppState {
-        db: cp_db,
-        engine_client: EngineClient::new(engine_base_url.clone()),
-        encryption_key: [7u8; 32],
-        status_cache: monokulo::http::status_page::new_status_cache(),
+        db: monokulo::db::Database::inline(cp_db),
+        encryption_key: monokulo::crypto::AtRestKey::new([7u8; 32]),
         // `docs/fx_refactor.md` Phase 5: order creation now goes through
         // monokulo's own `/pay/{pk}/orders`, the real path a production
         // storefront takes. The order below is priced directly in `"XMR"` -
@@ -203,9 +231,12 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         // real-stagenet test.
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Default::default(),
-        dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+        dns: Arc::new(monokulo::embed_domains::UnavailableDns(
+            "DNS is not available in tests".to_string(),
+        )),
         log_store: None,
         settings: monokulo::settings::MonokuloSettings::defaults(),
+        engine: monokulo::http::Engine::new(EngineClient::new(engine_base_url.clone())),
     };
     let cp_router = build_monokulo_router(cp_state);
 
@@ -219,12 +250,19 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
                 .method("POST")
                 .uri("/dashboard/signup")
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(form_body(&[("email", &email), ("password", password)])))
+                .body(Body::from(form_body(&[
+                    ("email", &email),
+                    ("password", password),
+                ])))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(signup_response.status(), StatusCode::FOUND, "real signup should redirect to login");
+    assert_eq!(
+        signup_response.status(),
+        StatusCode::FOUND,
+        "real signup should redirect to login"
+    );
 
     let login_response = cp_router
         .clone()
@@ -233,13 +271,26 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
                 .method("POST")
                 .uri("/dashboard/login")
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(form_body(&[("email", &email), ("password", password)])))
+                .body(Body::from(form_body(&[
+                    ("email", &email),
+                    ("password", password),
+                ])))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(login_response.status(), StatusCode::FOUND, "real login should redirect to /dashboard");
-    let set_cookie = login_response.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    assert_eq!(
+        login_response.status(),
+        StatusCode::FOUND,
+        "real login should redirect to /dashboard"
+    );
+    let set_cookie = login_response
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let session_cookie = set_cookie.split(';').next().unwrap().to_string();
 
     // ---- 2. connect a store via the real "advanced" connect form, using the
@@ -264,11 +315,23 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         )
         .await
         .unwrap();
-    assert_eq!(connect_response.status(), StatusCode::OK, "expected the connect success page, not a re-rendered form");
+    assert_eq!(
+        connect_response.status(),
+        StatusCode::OK,
+        "expected the connect success page, not a re-rendered form"
+    );
     let connect_html = body_text(connect_response).await;
-    assert!(connect_html.contains("Store connected"), "expected a real successful connect, got: {connect_html}");
-    let pk_start = connect_html.find("pk_").expect("expected a real pk_ value in the connect success page");
-    let public_key: String = connect_html[pk_start..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    assert!(
+        connect_html.contains("Store connected"),
+        "expected a real successful connect, got: {connect_html}"
+    );
+    let pk_start = connect_html
+        .find("pk_")
+        .expect("expected a real pk_ value in the connect success page");
+    let public_key: String = connect_html[pk_start..]
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
     println!("connected real store, public_key={public_key}");
 
     // A real tenant now exists on the real engine, created through the real
@@ -276,7 +339,11 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     // engine's own admin::create_tenant handler already registered its real
     // WalletHandle into the shared wallet_handles registry this test also
     // holds a handle to, exactly like it would for any real caller.
-    assert_eq!(wallet_handles.read().len(), 1, "the real connect flow should have registered exactly one tenant");
+    assert_eq!(
+        wallet_handles.read().len(),
+        1,
+        "the real connect flow should have registered exactly one tenant"
+    );
 
     // ---- 3. create a real order through monokulo's own public
     // `/pay/{pk}/orders` (this is what a real storefront - or the
@@ -289,12 +356,18 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
                 .method("POST")
                 .uri(format!("/pay/{public_key}/orders"))
                 .header("content-type", "application/json")
-                .body(Body::from(json!({ "amount": "0.000335", "currency": "XMR" }).to_string()))
+                .body(Body::from(
+                    json!({ "amount": "0.000335", "currency": "XMR" }).to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(order_response.status(), StatusCode::OK, "real order creation through monokulo must succeed");
+    assert_eq!(
+        order_response.status(),
+        StatusCode::OK,
+        "real order creation through monokulo must succeed"
+    );
     let order: Value = body_json(order_response).await;
     let order_id = order["order_id"].as_str().unwrap().to_string();
     let address = order["address"].as_str().unwrap().to_string();
@@ -303,8 +376,8 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
 
     // ---- 4. pay it for real - genuine signed + broadcast stagenet transaction ----
     let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
-    .await
-    .unwrap_or_else(|e| panic!("\n\n{e}\n"));
+        .await
+        .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
     println!("sent real stagenet payment, tx {tx_hash_hex}");
 
@@ -314,14 +387,33 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let expected_total = expected_total_received_display(amount_piconero);
     let mut last_dashboard_html = String::new();
     for attempt in 1..=30 {
-        let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().iter().map(|(id, h)| (id.clone(), *h)).collect();
-        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, e2e_fixture::PAYMENT_REORG_CHECK_DEPTH, 0)
-            .await
-            .expect("scan tick failed");
+        let tenants: Vec<(scanner::store::TenantId, WalletHandle)> = wallet_handles
+            .read()
+            .iter()
+            .map(|(id, h)| (id.clone(), *h))
+            .collect();
+        run_scan_tick(
+            &store,
+            key_custody.as_ref(),
+            daemon.as_ref(),
+            network_str(Network::Stagenet),
+            &tenants,
+            e2e_fixture::PAYMENT_REORG_CHECK_DEPTH,
+            0,
+        )
+        .await
+        .expect("scan tick failed");
 
         let dashboard_response = cp_router
             .clone()
-            .oneshot(Request::builder().method("GET").uri("/dashboard").header("cookie", &session_cookie).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/dashboard")
+                    .header("cookie", &session_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(dashboard_response.status(), StatusCode::OK);

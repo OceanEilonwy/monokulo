@@ -49,6 +49,23 @@ pub enum CryptoError {
     InvalidUtf8,
 }
 
+/// The key secrets are encrypted with at rest. Its bytes are only read by
+/// [`encrypt`] and [`decrypt`], and `Debug` doesn't print them.
+#[derive(Clone)]
+pub struct AtRestKey([u8; 32]);
+
+impl AtRestKey {
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        AtRestKey(bytes)
+    }
+}
+
+impl std::fmt::Debug for AtRestKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AtRestKey(..)")
+    }
+}
+
 /// Encrypts `plaintext` under `key`, returning a single hex-encoded string
 /// (nonce || ciphertext-with-tag) safe to store in a plain `TEXT` column.
 ///
@@ -56,15 +73,17 @@ pub enum CryptoError {
 /// plaintext twice yields two different encoded strings (see this module's
 /// own test), which is required for GCM's security (nonce reuse under the
 /// same key breaks the authentication guarantee).
-pub fn encrypt(key: &[u8; 32], plaintext: &str) -> String {
-    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
+pub fn encrypt(key: &AtRestKey, plaintext: &str) -> String {
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key.0));
     // A fresh, cryptographically random nonce every call - see this
     // module's doc comment on why that matters for GCM.
     let nonce = CipherNonce::generate();
     // Only fails for absurdly large plaintexts (far beyond GCM's ~64GiB
     // limit) - never for anything this module is actually used for (a
     // ~70-byte `sk_...` token).
-    let ciphertext = cipher.encrypt(&nonce, plaintext.as_bytes()).expect("AES-256-GCM encryption failed");
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_bytes())
+        .expect("AES-256-GCM encryption failed");
 
     let mut combined = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     combined.extend_from_slice(nonce.as_ref());
@@ -75,7 +94,7 @@ pub fn encrypt(key: &[u8; 32], plaintext: &str) -> String {
 /// Inverse of [`encrypt`]. Fails (never panics) on a malformed encoded
 /// string, a truncated nonce/ciphertext, or an authentication-tag mismatch
 /// (tampered or corrupted data, or the wrong key).
-pub fn decrypt(key: &[u8; 32], encoded: &str) -> Result<String, CryptoError> {
+pub fn decrypt(key: &AtRestKey, encoded: &str) -> Result<String, CryptoError> {
     let combined = hex::decode(encoded).map_err(|_| CryptoError::InvalidEncoding)?;
     if combined.len() < NONCE_LEN {
         return Err(CryptoError::Truncated);
@@ -86,8 +105,10 @@ pub fn decrypt(key: &[u8; 32], encoded: &str) -> Result<String, CryptoError> {
     // statically.
     let nonce = CipherNonce::try_from(nonce_bytes).map_err(|_| CryptoError::Truncated)?;
 
-    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
-    let plaintext_bytes = cipher.decrypt(&nonce, ciphertext).map_err(|_| CryptoError::AuthenticationFailed)?;
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key.0));
+    let plaintext_bytes = cipher
+        .decrypt(&nonce, ciphertext)
+        .map_err(|_| CryptoError::AuthenticationFailed)?;
     String::from_utf8(plaintext_bytes).map_err(|_| CryptoError::InvalidUtf8)
 }
 
@@ -95,7 +116,7 @@ pub fn decrypt(key: &[u8; 32], encoded: &str) -> Result<String, CryptoError> {
 mod tests {
     use super::*;
 
-    const TEST_KEY: [u8; 32] = [7u8; 32];
+    const TEST_KEY: AtRestKey = AtRestKey::new([7u8; 32]);
 
     #[test]
     fn encrypt_then_decrypt_round_trips_to_the_exact_original_plaintext() {
@@ -110,7 +131,10 @@ mod tests {
         let plaintext = "sk_same_token_every_time";
         let first = encrypt(&TEST_KEY, plaintext);
         let second = encrypt(&TEST_KEY, plaintext);
-        assert_ne!(first, second, "fresh nonce per call should make the two encodings differ");
+        assert_ne!(
+            first, second,
+            "fresh nonce per call should make the two encodings differ"
+        );
 
         // Both must still independently decrypt back to the same plaintext.
         assert_eq!(decrypt(&TEST_KEY, &first).unwrap(), plaintext);
@@ -129,7 +153,10 @@ mod tests {
         let tampered = hex::encode(bytes);
 
         let result = decrypt(&TEST_KEY, &tampered);
-        assert!(matches!(result, Err(CryptoError::AuthenticationFailed)), "expected an auth failure, got: {result:?}");
+        assert!(
+            matches!(result, Err(CryptoError::AuthenticationFailed)),
+            "expected an auth failure, got: {result:?}"
+        );
     }
 
     #[test]
@@ -139,21 +166,30 @@ mod tests {
         // Cut it down to fewer bytes than even the nonce alone.
         let truncated = &encoded[..NONCE_LEN]; // hex chars, well short of a full nonce's worth of bytes
         let result = decrypt(&TEST_KEY, truncated);
-        assert!(matches!(result, Err(CryptoError::Truncated)), "expected Truncated, got: {result:?}");
+        assert!(
+            matches!(result, Err(CryptoError::Truncated)),
+            "expected Truncated, got: {result:?}"
+        );
     }
 
     #[test]
     fn decrypting_a_non_hex_string_returns_an_error_not_a_panic() {
         let result = decrypt(&TEST_KEY, "not valid hex at all!!");
-        assert!(matches!(result, Err(CryptoError::InvalidEncoding)), "expected InvalidEncoding, got: {result:?}");
+        assert!(
+            matches!(result, Err(CryptoError::InvalidEncoding)),
+            "expected InvalidEncoding, got: {result:?}"
+        );
     }
 
     #[test]
     fn decrypting_with_the_wrong_key_returns_an_error() {
         let plaintext = "sk_wrong_key_test";
         let encoded = encrypt(&TEST_KEY, plaintext);
-        let wrong_key = [9u8; 32];
+        let wrong_key = AtRestKey::new([9u8; 32]);
         let result = decrypt(&wrong_key, &encoded);
-        assert!(matches!(result, Err(CryptoError::AuthenticationFailed)), "expected an auth failure, got: {result:?}");
+        assert!(
+            matches!(result, Err(CryptoError::AuthenticationFailed)),
+            "expected an auth failure, got: {result:?}"
+        );
     }
 }

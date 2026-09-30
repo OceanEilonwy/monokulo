@@ -20,9 +20,15 @@ use serde::Serialize;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
-use crate::file::{default_busy_handler, BusyHandler, OutputRecord, SentDestination, SentRecord, WalletData, WalletFile, WalletFileLock};
+use crate::file::{
+    default_busy_handler, BusyHandler, OutputRecord, SentDestination, SentRecord, WalletData,
+    WalletFile, WalletFileLock,
+};
 use crate::meta::WalletMeta;
-use crate::{decode_output, locate_height, scalar_from_hex, DecoyCache, ReqwestTransport, WalletError, RING_LEN, SPENDABLE_AGE};
+use crate::{
+    decode_output, locate_height, scalar_from_hex, DecoyCache, ReqwestTransport, WalletError,
+    RING_LEN, SPENDABLE_AGE,
+};
 
 /// The highest fee rate (piconero per unit of weight) this crate accepts
 /// from a node - comfortably above the `priority` level (about 4_000_000 on
@@ -66,7 +72,9 @@ impl OwnedOutput {
 
     /// `(account, address index)` this output was received on.
     pub fn subaddress(&self) -> (u32, u32) {
-        self.output.subaddress().map_or((0, 0), |index| (index.account(), index.address()))
+        self.output
+            .subaddress()
+            .map_or((0, 0), |index| (index.account(), index.address()))
     }
 
     /// Old enough to spend ([`SPENDABLE_AGE`] blocks) at chain height `tip`.
@@ -99,16 +107,26 @@ impl WalletKeys {
     pub(crate) fn from_data(data: &WalletData, path: PathBuf) -> WalletKeys {
         let spend_key = scalar_from_hex(&data.private_spend_key);
         let view_key = scalar_from_hex(&data.private_view_key);
-        let spend_key_dalek: Zeroizing<curve25519_dalek::Scalar> = Zeroizing::new((*spend_key).into());
-        let public_spend = Point::from(&*spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
-        let view_pair = ViewPair::new(public_spend, view_key.clone()).expect("torsioned spend key in a wallet file");
+        let spend_key_dalek: Zeroizing<curve25519_dalek::Scalar> =
+            Zeroizing::new((*spend_key).into());
+        let public_spend =
+            Point::from(&*spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
+        let view_pair = ViewPair::new(public_spend, view_key.clone())
+            .expect("torsioned spend key in a wallet file");
         let address = view_pair.legacy_address(Network::Stagenet);
         assert_eq!(
             address.to_string(),
             data.address,
             "derived address doesn't match the expected address - private_spend_key/private_view_key don't match that address"
         );
-        WalletKeys { view_pair, spend_key, view_key, address, path, busy_handler: default_busy_handler() }
+        WalletKeys {
+            view_pair,
+            spend_key,
+            view_key,
+            address,
+            path,
+            busy_handler: default_busy_handler(),
+        }
     }
 
     pub fn address(&self) -> String {
@@ -129,30 +147,42 @@ impl WalletKeys {
     /// primary address.
     pub fn subaddress(&self, account: u32, index: u32) -> String {
         match SubaddressIndex::new(account, index) {
-            Some(subaddress) => self.view_pair.subaddress(Network::Stagenet, subaddress).to_string(),
+            Some(subaddress) => self
+                .view_pair
+                .subaddress(Network::Stagenet, subaddress)
+                .to_string(),
             None => self.address(),
         }
     }
 
     pub fn integrated_address(&self, payment_id: [u8; 8]) -> String {
-        self.view_pair.legacy_integrated_address(Network::Stagenet, payment_id).to_string()
+        self.view_pair
+            .legacy_integrated_address(Network::Stagenet, payment_id)
+            .to_string()
     }
 
     /// `(secret, public)` spend key, hex-encoded.
     pub fn spend_key_hex(&self) -> (Zeroizing<String>, String) {
-        (Zeroizing::new(hex::encode(<[u8; 32]>::from(*self.spend_key))), hex::encode(self.view_pair.spend().compress().to_bytes()))
+        (
+            Zeroizing::new(hex::encode(<[u8; 32]>::from(*self.spend_key))),
+            hex::encode(self.view_pair.spend().compress().to_bytes()),
+        )
     }
 
     /// `(secret, public)` view key, hex-encoded.
     pub fn view_key_hex(&self) -> (Zeroizing<String>, String) {
-        (Zeroizing::new(hex::encode(<[u8; 32]>::from(*self.view_key))), hex::encode(self.view_pair.view().compress().to_bytes()))
+        (
+            Zeroizing::new(hex::encode(<[u8; 32]>::from(*self.view_key))),
+            hex::encode(self.view_pair.view().compress().to_bytes()),
+        )
     }
 
     /// Whether `output` is this wallet's: an output's key is always the
     /// wallet's spend key plus `key_offset`.
     pub(crate) fn owns(&self, output: &WalletOutput) -> bool {
         let offset = output.key_offset().into();
-        output.key().into() - &offset * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE == self.view_pair.spend().into()
+        output.key().into() - &offset * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE
+            == self.view_pair.spend().into()
     }
 
     /// The key image `output` is spent under - what the chain records when
@@ -160,7 +190,9 @@ impl WalletKeys {
     /// and the rest the same way the reference wallet does.
     pub fn key_image(&self, output: &WalletOutput) -> [u8; 32] {
         let secret = (*self.spend_key).into() + output.key_offset().into();
-        (secret * Point::biased_hash(output.key().compress().to_bytes()).into()).compress().to_bytes()
+        (secret * Point::biased_hash(output.key().compress().to_bytes()).into())
+            .compress()
+            .to_bytes()
     }
 
     /// Every output in `data`, in file order.
@@ -196,32 +228,58 @@ impl WalletKeys {
     }
 
     /// Changes the wallet file under its lock (see [`WalletFile::update`]).
-    pub async fn update<T>(&self, change: impl FnOnce(&mut WalletData) -> Result<T, WalletError>) -> Result<T, WalletError> {
+    pub async fn update<T>(
+        &self,
+        change: impl FnOnce(&mut WalletData) -> Result<T, WalletError>,
+    ) -> Result<T, WalletError> {
         WalletFile::update_with(&self.path, &self.busy_handler, change).await
     }
 
     /// Changes this wallet's [`WalletMeta`] under the file lock, returning
     /// whatever `change` does.
-    pub async fn update_meta<T>(&self, change: impl FnOnce(&mut WalletMeta) -> Result<T, String>) -> Result<T, WalletError> {
-        self.update(|data| change(&mut data.meta).map_err(WalletError::Invalid)).await
+    pub async fn update_meta<T>(
+        &self,
+        change: impl FnOnce(&mut WalletMeta) -> Result<T, String>,
+    ) -> Result<T, WalletError> {
+        self.update(|data| change(&mut data.meta).map_err(WalletError::Invalid))
+            .await
     }
 
     /// `freeze`/`thaw <key_image>`. Returns `false` if no output of this
     /// wallet's has that key image.
     pub async fn set_frozen(&self, key_image: [u8; 32], frozen: bool) -> Result<bool, WalletError> {
-        self.update_output(|o| o.key_image == key_image, |record| record.frozen = frozen).await
+        self.update_output(
+            |o| o.key_image == key_image,
+            |record| record.frozen = frozen,
+        )
+        .await
     }
 
     /// `mark_output_spent`/`mark_output_unspent <amount>/<offset>`, where
     /// `offset` is the output's global index. Returns `false` if no output
     /// of this wallet's is at that index.
     pub async fn set_spent(&self, global_index: u64, spent: bool) -> Result<bool, WalletError> {
-        self.update_output(|o| o.global_index() == global_index, |record| record.spent = spent).await
+        self.update_output(
+            |o| o.global_index() == global_index,
+            |record| record.spent = spent,
+        )
+        .await
     }
 
-    async fn update_output(&self, find: impl Fn(&OwnedOutput) -> bool, change: impl FnMut(&mut OutputRecord)) -> Result<bool, WalletError> {
+    async fn update_output(
+        &self,
+        find: impl Fn(&OwnedOutput) -> bool,
+        change: impl FnMut(&mut OutputRecord),
+    ) -> Result<bool, WalletError> {
         self.update(|data| {
-            let Some(id) = self.outputs(data)?.into_iter().find(|o| find(o)).map(|o| o.id()) else { return Ok(false) };
+            let Some(id) = self
+                .outputs(data)?
+                .into_iter()
+                .find(|o| find(o))
+                .map(|o| o.id())
+            else {
+                return Ok(false);
+            };
             Ok(update_records(data, &[id], change) > 0)
         })
         .await
@@ -255,16 +313,25 @@ impl WalletKeys {
 
 /// Which output of its transaction a record is.
 fn record_index(record: &OutputRecord) -> Option<u64> {
-    decode_output(&record.txid, &record.serialized_output_hex).ok().map(|output| output.index_in_transaction())
+    decode_output(&record.txid, &record.serialized_output_hex)
+        .ok()
+        .map(|output| output.index_in_transaction())
 }
 
 /// Applies `change` to exactly the given outputs (`(txid, index in
 /// transaction)`), leaving any other outputs of the same transactions
 /// alone. Returns how many matched.
-fn update_records(data: &mut WalletData, ids: &[(String, u64)], mut change: impl FnMut(&mut OutputRecord)) -> usize {
+fn update_records(
+    data: &mut WalletData,
+    ids: &[(String, u64)],
+    mut change: impl FnMut(&mut OutputRecord),
+) -> usize {
     let mut matched = 0;
     for record in data.outputs.iter_mut() {
-        if ids.iter().any(|(txid, index)| *txid == record.txid && record_index(record) == Some(*index)) {
+        if ids
+            .iter()
+            .any(|(txid, index)| *txid == record.txid && record_index(record) == Some(*index))
+        {
             change(record);
             matched += 1;
         }
@@ -277,11 +344,21 @@ fn update_records(data: &mut WalletData, ids: &[(String, u64)], mut change: impl
 /// the same transaction twice changes nothing), takes `txid` off the
 /// pending list, and dates this wallet's [`SentRecord`] for it, if any.
 /// Returns how many outputs were newly recorded.
-pub(crate) fn record_resolved(data: &mut WalletData, txid: &str, height: u64, timestamp: Option<u64>, outputs: &[WalletOutput]) -> usize {
+pub(crate) fn record_resolved(
+    data: &mut WalletData,
+    txid: &str,
+    height: u64,
+    timestamp: Option<u64>,
+    outputs: &[WalletOutput],
+) -> usize {
     let mut recorded = 0;
     for output in outputs {
         let index = output.index_in_transaction();
-        if data.outputs.iter().any(|record| record.txid == txid && record_index(record) == Some(index)) {
+        if data
+            .outputs
+            .iter()
+            .any(|record| record.txid == txid && record_index(record) == Some(index))
+        {
             continue;
         }
         data.outputs.push(OutputRecord {
@@ -346,7 +423,11 @@ pub enum TransferKind {
     },
     /// Spend every selected output and send all of it, less the fee, to
     /// `address`, split over `outputs` outputs.
-    Sweep { address: String, outputs: usize, select: SweepSelect },
+    Sweep {
+        address: String,
+        outputs: usize,
+        select: SweepSelect,
+    },
     /// `pocketchange`: spend the `inputs` largest spendable outputs and pay
     /// all of it, less the fee, back to the account as `pieces` equal
     /// outputs - more independently spendable outputs, so the e2e suites
@@ -378,7 +459,11 @@ impl TransferRequest {
             account: 0,
             subaddress_indexes: None,
             priority: FeePriority::Unimportant,
-            kind: TransferKind::Pay { destinations, subtract_fee_from: vec![], split_change_into },
+            kind: TransferKind::Pay {
+                destinations,
+                subtract_fee_from: vec![],
+                split_change_into,
+            },
         }
     }
 }
@@ -424,18 +509,37 @@ impl Wallet {
 
     /// The chain height, as the output-age checks use it.
     pub async fn tip(&self) -> Result<u64, WalletError> {
-        Ok(self.rpc.latest_block_number().await.map_err(|e| WalletError::Rpc(e.to_string()))? as u64)
+        Ok(self
+            .rpc
+            .latest_block_number()
+            .await
+            .map_err(|e| WalletError::Rpc(e.to_string()))? as u64)
     }
 
     /// The fee rate, piconero per unit of weight, at `priority`.
     pub async fn fee_per_weight(&self, priority: FeePriority) -> Result<u64, WalletError> {
-        Ok(self.rpc.fee_rate(priority, MAX_FEE_PER_WEIGHT).await.map_err(|e| WalletError::Rpc(e.to_string()))?.per_weight())
+        Ok(self
+            .rpc
+            .fee_rate(priority, MAX_FEE_PER_WEIGHT)
+            .await
+            .map_err(|e| WalletError::Rpc(e.to_string()))?
+            .per_weight())
     }
 
     pub async fn daemon_version(&self) -> Result<DaemonVersion, WalletError> {
-        let response = self.post_json("json_rpc", serde_json::json!({ "jsonrpc": "2.0", "id": "0", "method": "get_version" })).await?;
-        let version = response["result"]["version"].as_u64().ok_or_else(|| WalletError::Rpc(format!("get_version returned no version: {response}")))?;
-        Ok(DaemonVersion { major: (version >> 16) as u32, minor: (version & 0xffff) as u32 })
+        let response = self
+            .post_json(
+                "json_rpc",
+                serde_json::json!({ "jsonrpc": "2.0", "id": "0", "method": "get_version" }),
+            )
+            .await?;
+        let version = response["result"]["version"].as_u64().ok_or_else(|| {
+            WalletError::Rpc(format!("get_version returned no version: {response}"))
+        })?;
+        Ok(DaemonVersion {
+            major: (version >> 16) as u32,
+            minor: (version & 0xffff) as u32,
+        })
     }
 
     async fn post_json(&self, route: &str, body: Value) -> Result<Value, WalletError> {
@@ -458,8 +562,17 @@ impl Wallet {
     /// transactions resolved.
     async fn resolve_pending(&self, data: &mut WalletData) -> Result<usize, WalletError> {
         let mut resolved = 0;
-        for txid in data.pending.iter().map(|p| p.txid.clone()).collect::<Vec<_>>() {
-            let Some((height, timestamp, outputs)) = self.scan_transaction(&data.meta, &txid).await? else { continue };
+        for txid in data
+            .pending
+            .iter()
+            .map(|p| p.txid.clone())
+            .collect::<Vec<_>>()
+        {
+            let Some((height, timestamp, outputs)) =
+                self.scan_transaction(&data.meta, &txid).await?
+            else {
+                continue;
+            };
             // A split, or a send whose change was split, pays this wallet
             // several outputs in one transaction: each gets its own record.
             record_resolved(data, &txid, height, Some(timestamp), &outputs);
@@ -492,13 +605,34 @@ impl Wallet {
     /// output in it that pays this wallet, in output order - `None` while
     /// it's still unconfirmed (or pays this wallet nothing, which is
     /// logged).
-    async fn scan_transaction(&self, meta: &WalletMeta, txid: &str) -> Result<Option<(u64, u64, Vec<WalletOutput>)>, WalletError> {
-        let Some(height) = locate_height(&self.http_client, &self.node_url, txid).await? else { return Ok(None) };
-        let block = self.rpc.block_by_number(height as usize).await.map_err(|e| WalletError::Rpc(e.to_string()))?;
+    async fn scan_transaction(
+        &self,
+        meta: &WalletMeta,
+        txid: &str,
+    ) -> Result<Option<(u64, u64, Vec<WalletOutput>)>, WalletError> {
+        let Some(height) = locate_height(&self.http_client, &self.node_url, txid).await? else {
+            return Ok(None);
+        };
+        let block = self
+            .rpc
+            .block_by_number(height as usize)
+            .await
+            .map_err(|e| WalletError::Rpc(e.to_string()))?;
         let timestamp = block.header.timestamp;
-        let scannable = self.rpc.expand_to_scannable_block(block).await.map_err(|e| WalletError::Rpc(e.to_string()))?;
-        let found = self.scanner(meta).scan(scannable).map_err(|e| WalletError::Rpc(e.to_string()))?.not_additionally_locked();
-        let mut outputs: Vec<WalletOutput> = found.into_iter().filter(|o| hex::encode(o.transaction()) == txid).collect();
+        let scannable = self
+            .rpc
+            .expand_to_scannable_block(block)
+            .await
+            .map_err(|e| WalletError::Rpc(e.to_string()))?;
+        let found = self
+            .scanner(meta)
+            .scan(scannable)
+            .map_err(|e| WalletError::Rpc(e.to_string()))?
+            .not_additionally_locked();
+        let mut outputs: Vec<WalletOutput> = found
+            .into_iter()
+            .filter(|o| hex::encode(o.transaction()) == txid)
+            .collect();
         if outputs.is_empty() {
             // A wrong txid is a data problem, not a reason to crash the
             // whole run.
@@ -520,17 +654,28 @@ impl Wallet {
             return Ok(Vec::new());
         }
         let key_images: Vec<String> = outputs.iter().map(|o| hex::encode(o.key_image)).collect();
-        let response = self.post_json("is_key_image_spent", serde_json::json!({ "key_images": key_images })).await?;
+        let response = self
+            .post_json(
+                "is_key_image_spent",
+                serde_json::json!({ "key_images": key_images }),
+            )
+            .await?;
         let statuses = response["spent_status"]
             .as_array()
             .filter(|statuses| statuses.len() == outputs.len())
-            .ok_or_else(|| WalletError::Rpc(format!("is_key_image_spent returned an unexpected answer: {response}")))?;
+            .ok_or_else(|| {
+                WalletError::Rpc(format!(
+                    "is_key_image_spent returned an unexpected answer: {response}"
+                ))
+            })?;
         let mut changed = Vec::new();
         for (output, status) in outputs.into_iter().zip(statuses) {
             // 0: unspent, 1: spent on chain, 2: spent in the pool.
             let spent = status.as_u64() != Some(0);
             if spent != output.spent {
-                update_records(&mut file.data, &[output.id()], |record| record.spent = spent);
+                update_records(&mut file.data, &[output.id()], |record| {
+                    record.spent = spent
+                });
                 changed.push((output, spent));
             }
         }
@@ -544,7 +689,10 @@ impl Wallet {
     /// transaction `request` describes from the wallet's own spendable
     /// outputs. Nothing is written until [`Self::commit`]; the wallet file
     /// stays locked until then.
-    pub async fn prepare_transfer(&self, request: &TransferRequest) -> Result<PreparedTransfer, WalletError> {
+    pub async fn prepare_transfer(
+        &self,
+        request: &TransferRequest,
+    ) -> Result<PreparedTransfer, WalletError> {
         let (lock, file, _) = self.lock_and_resolve().await?;
 
         let latest_height = self.tip().await?;
@@ -553,7 +701,12 @@ impl Wallet {
             .into_iter()
             .filter(|o| !o.spent && !o.frozen && o.unlocked(latest_height))
             .filter(|o| o.subaddress().0 == request.account)
-            .filter(|o| request.subaddress_indexes.as_ref().is_none_or(|indexes| indexes.contains(&o.subaddress().1)))
+            .filter(|o| {
+                request
+                    .subaddress_indexes
+                    .as_ref()
+                    .is_none_or(|indexes| indexes.contains(&o.subaddress().1))
+            })
             .collect();
         // Largest-first: most payments are covered by a single existing
         // output, so trying the biggest first keeps the common case to one
@@ -563,29 +716,55 @@ impl Wallet {
         // One block of lag margin for decoy selection, not the tip itself -
         // a pooled public endpoint's backends can disagree by one block.
         let decoy_block_number = (latest_height.saturating_sub(1)) as usize;
-        let fee_rate = self.rpc.fee_rate(request.priority, MAX_FEE_PER_WEIGHT).await.map_err(|e| WalletError::Rpc(e.to_string()))?;
-        let change = Change::new(self.view_pair.clone(), SubaddressIndex::new(request.account, 0));
+        let fee_rate = self
+            .rpc
+            .fee_rate(request.priority, MAX_FEE_PER_WEIGHT)
+            .await
+            .map_err(|e| WalletError::Rpc(e.to_string()))?;
+        let change = Change::new(
+            self.view_pair.clone(),
+            SubaddressIndex::new(request.account, 0),
+        );
         let build = |inputs: &[OutputWithDecoys], payments: Vec<(MoneroAddress, u64)>| {
             let mut outgoing_view_key = Zeroizing::new([0u8; 32]);
             use rand_core::RngCore;
             OsRng.fill_bytes(outgoing_view_key.as_mut());
-            let signable =
-                SignableTransaction::new(RctType::ClsagBulletproofPlus, outgoing_view_key, inputs.to_vec(), payments.clone(), change.clone(), vec![], fee_rate)?;
+            let signable = SignableTransaction::new(
+                RctType::ClsagBulletproofPlus,
+                outgoing_view_key,
+                inputs.to_vec(),
+                payments.clone(),
+                change.clone(),
+                vec![],
+                fee_rate,
+            )?;
             Ok(Built { signable, payments })
         };
 
         let mut inputs = Vec::new();
         let mut spent = Vec::new();
         let built = match &request.kind {
-            TransferKind::Sweep { address, outputs, select } => {
+            TransferKind::Sweep {
+                address,
+                outputs,
+                select,
+            } => {
                 let address = parse_address(address)?;
                 let selected: Vec<OwnedOutput> = match select {
                     SweepSelect::All => candidates,
-                    SweepSelect::KeyImage(key_image) => candidates.into_iter().filter(|o| o.key_image == *key_image).collect(),
-                    SweepSelect::Below(threshold) => candidates.into_iter().filter(|o| o.amount() < *threshold).collect(),
+                    SweepSelect::KeyImage(key_image) => candidates
+                        .into_iter()
+                        .filter(|o| o.key_image == *key_image)
+                        .collect(),
+                    SweepSelect::Below(threshold) => candidates
+                        .into_iter()
+                        .filter(|o| o.amount() < *threshold)
+                        .collect(),
                 };
                 if selected.is_empty() {
-                    return Err(WalletError::Invalid("No unlocked outputs to sweep".to_string()));
+                    return Err(WalletError::Invalid(
+                        "No unlocked outputs to sweep".to_string(),
+                    ));
                 }
                 for owned in selected {
                     spent.push(owned.id());
@@ -594,21 +773,32 @@ impl Wallet {
                 let total_in: u64 = inputs.iter().map(|i| i.commitment().amount).sum();
                 let pieces = (*outputs).max(1) as u64;
                 settle_fee(|fee| {
-                    let amount = total_in.checked_sub(fee).filter(|amount| *amount >= pieces)?;
+                    let amount = total_in
+                        .checked_sub(fee)
+                        .filter(|amount| *amount >= pieces)?;
                     let mut payments = vec![(address, amount / pieces); pieces as usize];
                     payments[0].1 += amount % pieces;
                     Some(build(&inputs, payments))
                 })?
             }
-            TransferKind::Pocketchange { pieces, inputs: input_count } => {
+            TransferKind::Pocketchange {
+                pieces,
+                inputs: input_count,
+            } => {
                 if !(2..=MAX_OUTPUTS).contains(pieces) {
-                    return Err(WalletError::Invalid(format!("pocketchange splits into 2 to {MAX_OUTPUTS} pieces, not {pieces}")));
+                    return Err(WalletError::Invalid(format!(
+                        "pocketchange splits into 2 to {MAX_OUTPUTS} pieces, not {pieces}"
+                    )));
                 }
                 if *input_count == 0 {
-                    return Err(WalletError::Invalid("pocketchange needs at least 1 input".to_string()));
+                    return Err(WalletError::Invalid(
+                        "pocketchange needs at least 1 input".to_string(),
+                    ));
                 }
                 if candidates.is_empty() {
-                    return Err(WalletError::Invalid("No unlocked outputs to split".to_string()));
+                    return Err(WalletError::Invalid(
+                        "No unlocked outputs to split".to_string(),
+                    ));
                 }
                 for owned in candidates.into_iter().take(*input_count) {
                     spent.push(owned.id());
@@ -625,14 +815,25 @@ impl Wallet {
                     if piece == 0 {
                         return None;
                     }
-                    Some(build(&inputs, vec![(own_address, piece); pieces as usize - 1]))
+                    Some(build(
+                        &inputs,
+                        vec![(own_address, piece); pieces as usize - 1],
+                    ))
                 })?
             }
-            TransferKind::Pay { destinations, subtract_fee_from, split_change_into } => {
-                let destinations: Vec<(MoneroAddress, u64)> =
-                    destinations.iter().map(|(to, amount)| Ok((parse_address(to)?, *amount))).collect::<Result<_, WalletError>>()?;
+            TransferKind::Pay {
+                destinations,
+                subtract_fee_from,
+                split_change_into,
+            } => {
+                let destinations: Vec<(MoneroAddress, u64)> = destinations
+                    .iter()
+                    .map(|(to, amount)| Ok((parse_address(to)?, *amount)))
+                    .collect::<Result<_, WalletError>>()?;
                 if let Some(bad) = subtract_fee_from.iter().find(|&&i| i >= destinations.len()) {
-                    return Err(WalletError::Invalid(format!("subtractfeefrom index {bad} is out of range")));
+                    return Err(WalletError::Invalid(format!(
+                        "subtractfeefrom index {bad} is out of range"
+                    )));
                 }
                 let amount: u64 = destinations.iter().map(|(_, amount)| amount).sum();
                 let mut last_necessary_fee: Option<u64> = None;
@@ -640,8 +841,16 @@ impl Wallet {
                 loop {
                     let Some(owned) = remaining.next() else {
                         return Err(WalletError::InsufficientFunds {
-                            needed: amount + if subtract_fee_from.is_empty() { last_necessary_fee.unwrap_or(0) } else { 0 },
-                            available: inputs.iter().map(|i: &OutputWithDecoys| i.commitment().amount).sum(),
+                            needed: amount
+                                + if subtract_fee_from.is_empty() {
+                                    last_necessary_fee.unwrap_or(0)
+                                } else {
+                                    0
+                                },
+                            available: inputs
+                                .iter()
+                                .map(|i: &OutputWithDecoys| i.commitment().amount)
+                                .sum(),
                             address: self.address(),
                         });
                     };
@@ -661,7 +870,10 @@ impl Wallet {
                             let share = fee.div_ceil(subtract_fee_from.len() as u64);
                             let mut payments = destinations.clone();
                             for &i in subtract_fee_from {
-                                payments[i].1 = payments[i].1.checked_sub(share).filter(|amount| *amount > 0)?;
+                                payments[i].1 = payments[i]
+                                    .1
+                                    .checked_sub(share)
+                                    .filter(|amount| *amount > 0)?;
                             }
                             Some(build(&inputs, payments))
                         })?;
@@ -694,27 +906,66 @@ impl Wallet {
 
         let inputs_total: u64 = inputs.iter().map(|i| i.commitment().amount).sum();
         let fee = built.signable.necessary_fee();
-        let destinations: Vec<SentDestination> =
-            built.payments.iter().map(|(address, amount)| SentDestination { address: address.to_string(), amount_piconero: *amount }).collect();
-        let change = inputs_total - destinations.iter().map(|d| d.amount_piconero).sum::<u64>() - fee;
-        Ok(PreparedTransfer { _lock: lock, signable: built.signable, spent, account: request.account, destinations, fee, change, inputs: inputs.len(), inputs_total })
+        let destinations: Vec<SentDestination> = built
+            .payments
+            .iter()
+            .map(|(address, amount)| SentDestination {
+                address: address.to_string(),
+                amount_piconero: *amount,
+            })
+            .collect();
+        let change =
+            inputs_total - destinations.iter().map(|d| d.amount_piconero).sum::<u64>() - fee;
+        Ok(PreparedTransfer {
+            _lock: lock,
+            signable: built.signable,
+            spent,
+            account: request.account,
+            destinations,
+            fee,
+            change,
+            inputs: inputs.len(),
+            inputs_total,
+        })
     }
 
-    async fn with_decoys(&self, decoy_block_number: usize, output: WalletOutput) -> Result<OutputWithDecoys, WalletError> {
-        OutputWithDecoys::new(&mut OsRng, &self.decoy_cache, RING_LEN, decoy_block_number, output).await.map_err(|e| WalletError::Rpc(e.to_string()))
+    async fn with_decoys(
+        &self,
+        decoy_block_number: usize,
+        output: WalletOutput,
+    ) -> Result<OutputWithDecoys, WalletError> {
+        OutputWithDecoys::new(
+            &mut OsRng,
+            &self.decoy_cache,
+            RING_LEN,
+            decoy_block_number,
+            output,
+        )
+        .await
+        .map_err(|e| WalletError::Rpc(e.to_string()))
     }
 
     /// Signs `prepared` and, if `relay`, broadcasts it, marks the outputs
     /// it spent, and records it (a [`SentRecord`], plus its change as
     /// pending). Without `relay` the file is left alone and the signed
     /// transaction's bytes are returned instead.
-    pub async fn commit(&self, prepared: PreparedTransfer, relay: bool) -> Result<CommittedTransfer, WalletError> {
+    pub async fn commit(
+        &self,
+        prepared: PreparedTransfer,
+        relay: bool,
+    ) -> Result<CommittedTransfer, WalletError> {
         let tx: Transaction = prepared.signable.sign(&mut OsRng, &self.spend_key)?;
         let hash = tx.hash();
         if !relay {
-            return Ok(CommittedTransfer { hash, unrelayed_hex: Some(hex::encode(tx.serialize())) });
+            return Ok(CommittedTransfer {
+                hash,
+                unrelayed_hex: Some(hex::encode(tx.serialize())),
+            });
         }
-        self.rpc.publish_transaction(&tx).await.map_err(WalletError::Broadcast)?;
+        self.rpc
+            .publish_transaction(&tx)
+            .await
+            .map_err(WalletError::Broadcast)?;
 
         // Only now, after a successful broadcast, change the file - a
         // failure anywhere above must leave it exactly as it was, so a
@@ -722,7 +973,9 @@ impl Wallet {
         // `prepared` holds is still held, so a fresh load is current.
         let txid = hex::encode(hash);
         let mut file = self.load()?;
-        update_records(&mut file.data, &prepared.spent, |record| record.spent = true);
+        update_records(&mut file.data, &prepared.spent, |record| {
+            record.spent = true
+        });
         file.data.sent.push(SentRecord {
             txid: txid.clone(),
             account: prepared.account,
@@ -734,7 +987,10 @@ impl Wallet {
         });
         file.data.add_pending(&txid, prepared.change);
         file.save()?;
-        Ok(CommittedTransfer { hash, unrelayed_hex: None })
+        Ok(CommittedTransfer {
+            hash,
+            unrelayed_hex: None,
+        })
     }
 
     async fn transfer(&self, request: TransferRequest) -> Result<[u8; 32], WalletError> {
@@ -746,7 +1002,8 @@ impl Wallet {
     /// sending `amount` piconero to `to` from the wallet's own spendable
     /// outputs, and records it. Returns the new transaction's hash.
     pub async fn send(&self, to: &str, amount: u64) -> Result<[u8; 32], WalletError> {
-        self.transfer(TransferRequest::pay(vec![(to.to_string(), amount)], None)).await
+        self.transfer(TransferRequest::pay(vec![(to.to_string(), amount)], None))
+            .await
     }
 
     /// Same as [`Self::send`], but splits whatever's left over after
@@ -755,16 +1012,33 @@ impl Wallet {
     /// payment also grows the pool of independently-aged spendable outputs
     /// a later send can draw on, at no extra RPC cost (same tx, more
     /// outputs). `split_change_into < 2` behaves exactly like `send`.
-    pub async fn send_with_change_split(&self, to: &str, amount: u64, split_change_into: usize) -> Result<[u8; 32], WalletError> {
-        self.transfer(TransferRequest::pay(vec![(to.to_string(), amount)], Some(split_change_into))).await
+    pub async fn send_with_change_split(
+        &self,
+        to: &str,
+        amount: u64,
+        split_change_into: usize,
+    ) -> Result<[u8; 32], WalletError> {
+        self.transfer(TransferRequest::pay(
+            vec![(to.to_string(), amount)],
+            Some(split_change_into),
+        ))
+        .await
     }
 
     /// Splits account 0's `inputs` largest spendable outputs into `pieces`
     /// equal outputs of its own (see [`TransferKind::Pocketchange`]). Each
     /// new piece needs its own `SPENDABLE_AGE` confirmations before it's
     /// usable, same as any other change output.
-    pub async fn pocketchange(&self, pieces: usize, inputs: usize) -> Result<[u8; 32], WalletError> {
-        self.transfer(TransferRequest { kind: TransferKind::Pocketchange { pieces, inputs }, ..TransferRequest::pay(vec![], None) }).await
+    pub async fn pocketchange(
+        &self,
+        pieces: usize,
+        inputs: usize,
+    ) -> Result<[u8; 32], WalletError> {
+        self.transfer(TransferRequest {
+            kind: TransferKind::Pocketchange { pieces, inputs },
+            ..TransferRequest::pay(vec![], None)
+        })
+        .await
     }
 
     /// Records a transaction this wallet didn't sign itself (a faucet
@@ -776,8 +1050,11 @@ impl Wallet {
         let mut file = self.load()?;
         let known = file.data.outputs.iter().any(|record| record.txid == txid);
         if known {
-            if let Some((height, timestamp, outputs)) = self.scan_transaction(&file.data.meta, txid).await? {
-                let added = record_resolved(&mut file.data, txid, height, Some(timestamp), &outputs);
+            if let Some((height, timestamp, outputs)) =
+                self.scan_transaction(&file.data.meta, txid).await?
+            {
+                let added =
+                    record_resolved(&mut file.data, txid, height, Some(timestamp), &outputs);
                 if added > 0 {
                     eprintln!("cli-wallet: recovered {added} untracked output(s) of {txid}");
                 }
@@ -799,7 +1076,11 @@ impl Wallet {
         let (data, _) = self.refresh().await?;
         let latest_height = self.tip().await?;
         let mut balance = WalletBalance::default();
-        for output in self.outputs(&data)?.into_iter().filter(|o| !o.spent && !o.frozen) {
+        for output in self
+            .outputs(&data)?
+            .into_iter()
+            .filter(|o| !o.spent && !o.frozen)
+        {
             if output.unlocked(latest_height) {
                 balance.spendable_piconero += output.amount();
                 balance.spendable_outputs += 1;
@@ -822,7 +1103,8 @@ pub struct WalletBalance {
 }
 
 pub(crate) fn parse_address(address: &str) -> Result<MoneroAddress, WalletError> {
-    MoneroAddress::from_str(Network::Stagenet, address).map_err(|e| WalletError::Invalid(format!("failed to parse address {address}: {e}")))
+    MoneroAddress::from_str(Network::Stagenet, address)
+        .map_err(|e| WalletError::Invalid(format!("failed to parse address {address}: {e}")))
 }
 
 /// A built transaction plus the payments it was built with -
@@ -838,14 +1120,20 @@ struct Built {
 /// transaction's weight doesn't depend on its amounts, so this settles on
 /// the second build in practice. `build` returns `None` once the fee is
 /// more than there is to send.
-fn settle_fee(mut build: impl FnMut(u64) -> Option<Result<Built, SendError>>) -> Result<Built, WalletError> {
-    let too_small = || WalletError::Invalid("the fee is more than the amount being sent".to_string());
+fn settle_fee(
+    mut build: impl FnMut(u64) -> Option<Result<Built, SendError>>,
+) -> Result<Built, WalletError> {
+    let too_small =
+        || WalletError::Invalid("the fee is more than the amount being sent".to_string());
     let mut fee = 0;
     for _ in 0..8 {
         match build(fee).ok_or_else(too_small)? {
             Ok(built) if built.signable.necessary_fee() <= fee => return Ok(built),
             Ok(built) => fee = built.signable.necessary_fee(),
-            Err(SendError::NotEnoughFunds { necessary_fee: Some(needed), .. }) if needed > fee => fee = needed,
+            Err(SendError::NotEnoughFunds {
+                necessary_fee: Some(needed),
+                ..
+            }) if needed > fee => fee = needed,
             Err(e) => return Err(e.into()),
         }
     }

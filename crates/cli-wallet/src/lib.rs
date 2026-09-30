@@ -77,8 +77,8 @@ use zeroize::Zeroizing;
 pub use file::{WalletData, WalletFile};
 pub use monero_wallet::interface::FeePriority;
 pub use wallet::{
-    CommittedTransfer, DaemonVersion, OwnedOutput, PreparedTransfer, SweepSelect, TransferKind, TransferRequest, Wallet, WalletBalance, WalletKeys,
-    MAX_OUTPUTS,
+    CommittedTransfer, DaemonVersion, OwnedOutput, PreparedTransfer, SweepSelect, TransferKind,
+    TransferRequest, Wallet, WalletBalance, WalletKeys, MAX_OUTPUTS,
 };
 
 /// The ring size required for the `ClsagBulletproofPlus` RCT type this
@@ -104,7 +104,11 @@ pub enum WalletError {
          2. send to: {address}\n\
          3. record the faucet's txid: stagenet-wallet-cli add_output <txid>"
     )]
-    InsufficientFunds { needed: u64, available: u64, address: String },
+    InsufficientFunds {
+        needed: u64,
+        available: u64,
+        address: String,
+    },
     #[error("failed to build/sign the transaction: {0}")]
     Send(#[from] SendError),
     #[error("failed to broadcast the transaction: {0}")]
@@ -142,15 +146,25 @@ impl HttpTransport for ReqwestTransport {
         body: Vec<u8>,
         response_size_limit: Option<usize>,
     ) -> impl Send + std::future::Future<Output = Result<Vec<u8>, InterfaceError>> {
-        let request = self.client.post(format!("{}/{route}", self.base_url)).header("content-type", "application/json").body(body);
+        let request = self
+            .client
+            .post(format!("{}/{route}", self.base_url))
+            .header("content-type", "application/json")
+            .body(body);
         async move {
-            let response = request.send().await.map_err(|e| InterfaceError::InterfaceError(format!("request failed: {e}")))?;
+            let response = request
+                .send()
+                .await
+                .map_err(|e| InterfaceError::InterfaceError(format!("request failed: {e}")))?;
             if let (Some(limit), Some(len)) = (response_size_limit, response.content_length()) {
                 if len > limit as u64 {
                     return Err(InterfaceError::InterfaceError(format!("response claimed {len} bytes, exceeding the {limit}-byte limit for {route}")));
                 }
             }
-            let bytes = response.bytes().await.map_err(|e| InterfaceError::InterfaceError(format!("{e}")))?;
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| InterfaceError::InterfaceError(format!("{e}")))?;
             Ok(bytes.to_vec())
         }
     }
@@ -184,7 +198,9 @@ struct DecoyCache {
 }
 
 impl ProvidesBlockchainMeta for DecoyCache {
-    fn latest_block_number(&self) -> impl Send + std::future::Future<Output = Result<usize, InterfaceError>> {
+    fn latest_block_number(
+        &self,
+    ) -> impl Send + std::future::Future<Output = Result<usize, InterfaceError>> {
         self.daemon.latest_block_number()
     }
 }
@@ -205,7 +221,8 @@ impl ProvidesUnvalidatedDecoys for DecoyCache {
         &self,
         indexes: &[u64],
         evaluate_unlocked: EvaluateUnlocked,
-    ) -> impl Send + std::future::Future<Output = Result<Vec<Option<[Point; 2]>>, TransactionsError>> {
+    ) -> impl Send + std::future::Future<Output = Result<Vec<Option<[Point; 2]>>, TransactionsError>>
+    {
         ProvidesUnvalidatedDecoys::unlocked_ringct_outputs(&self.daemon, indexes, evaluate_unlocked)
     }
 }
@@ -247,12 +264,21 @@ pub struct WalletCtx {
 /// `nodes` in the order a connection attempt tries them: starting at index
 /// `start` (wrapping around), each without a trailing `/`.
 fn nodes_in_order(nodes: &[String], start: usize) -> Vec<String> {
-    (0..nodes.len()).map(|offset| nodes[(start + offset) % nodes.len()].trim_end_matches('/').to_string()).collect()
+    (0..nodes.len())
+        .map(|offset| {
+            nodes[(start + offset) % nodes.len()]
+                .trim_end_matches('/')
+                .to_string()
+        })
+        .collect()
 }
 
 /// See [`WalletCtx::node_urls`].
-pub const DEFAULT_STAGENET_NODES: [&str; 3] =
-    ["http://node.monerodevs.org:38089", "http://node2.monerodevs.org:38089", "http://node3.monerodevs.org:38089"];
+pub const DEFAULT_STAGENET_NODES: [&str; 3] = [
+    "http://node.monerodevs.org:38089",
+    "http://node2.monerodevs.org:38089",
+    "http://node3.monerodevs.org:38089",
+];
 
 /// The repository's own `e2e/` directory, anchored to *this crate's* own
 /// compile-time location (`crates/cli-wallet/`) rather than whatever the
@@ -279,7 +305,10 @@ impl Default for WalletCtx {
             // The same three community stagenet nodes monokulo's stagenet
             // config uses (`e2e/moneropay-stagenet.toml`): separate
             // machines, so one rate-limiting us doesn't block the others.
-            node_urls: DEFAULT_STAGENET_NODES.iter().map(|url| url.to_string()).collect(),
+            node_urls: DEFAULT_STAGENET_NODES
+                .iter()
+                .map(|url| url.to_string())
+                .collect(),
             accept_invalid_certs: true,
             wallet_dir: PathBuf::from(e2e_path!("wallets")),
             decoy_distribution_path: e2e_path!("stagenet-decoy-distribution.json").to_string(),
@@ -341,7 +370,8 @@ impl ResolvedWallet {
     pub fn spend_public_key_hex(&self) -> String {
         let spend_key = scalar_from_hex(&self.private_spend_key_hex);
         let spend_key_dalek: curve25519_dalek::Scalar = (*spend_key).into();
-        let public_spend = Point::from(&spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
+        let public_spend =
+            Point::from(&spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
         hex::encode(public_spend.compress().to_bytes())
     }
 
@@ -382,14 +412,20 @@ impl ResolvedWallet {
         let mut last_error = None;
         let mut connected = None;
         for node_url in nodes_in_order(&self.node_urls, start) {
-            let transport = ReqwestTransport { client: http_client.clone(), base_url: node_url.clone() };
+            let transport = ReqwestTransport {
+                client: http_client.clone(),
+                base_url: node_url.clone(),
+            };
             match MoneroDaemon::new(transport).await {
                 Ok(rpc) => {
                     connected = Some((rpc, node_url));
                     break;
                 }
                 Err(source) => {
-                    let error = WalletError::DaemonUnreachable { url: node_url, source };
+                    let error = WalletError::DaemonUnreachable {
+                        url: node_url,
+                        source,
+                    };
                     eprintln!("cli-wallet: {error}; trying the next node");
                     last_error = Some(error);
                 }
@@ -399,9 +435,18 @@ impl ResolvedWallet {
             return Err(last_error.expect("at least one node was tried"));
         };
         let distribution = load_decoy_distribution(&self.decoy_distribution_path)?;
-        let decoy_cache = DecoyCache { daemon: rpc.clone(), distribution };
+        let decoy_cache = DecoyCache {
+            daemon: rpc.clone(),
+            distribution,
+        };
 
-        Ok(Wallet { keys, rpc, decoy_cache, http_client, node_url })
+        Ok(Wallet {
+            keys,
+            rpc,
+            decoy_cache,
+            http_client,
+            node_url,
+        })
     }
 }
 
@@ -413,7 +458,10 @@ pub struct WalletStore {
 impl WalletStore {
     pub fn load(ctx: &WalletCtx) -> Result<Self, WalletError> {
         if !ctx.wallet_dir.is_dir() {
-            return Err(WalletError::WalletFile(format!("wallet directory {} doesn't exist", ctx.wallet_dir.display())));
+            return Err(WalletError::WalletFile(format!(
+                "wallet directory {} doesn't exist",
+                ctx.wallet_dir.display()
+            )));
         }
         Ok(Self { ctx: ctx.clone() })
     }
@@ -462,15 +510,31 @@ const ELECTRUM_LANGUAGES: [ElectrumLanguage; 13] = [
 /// `--mnemonic-language` names (the reference wallet's English names) for
 /// the legacy 25-word seeds this crate generates and prints, in
 /// [`ELECTRUM_LANGUAGES`] order.
-pub const SEED_LANGUAGE_NAMES: [&str; 12] =
-    ["English", "Chinese", "Dutch", "French", "Spanish", "German", "Italian", "Portuguese", "Japanese", "Russian", "Esperanto", "Lojban"];
+pub const SEED_LANGUAGE_NAMES: [&str; 12] = [
+    "English",
+    "Chinese",
+    "Dutch",
+    "French",
+    "Spanish",
+    "German",
+    "Italian",
+    "Portuguese",
+    "Japanese",
+    "Russian",
+    "Esperanto",
+    "Lojban",
+];
 
 fn seed_language(name: &str) -> Result<ElectrumLanguage, WalletError> {
     SEED_LANGUAGE_NAMES
         .iter()
         .position(|known| known.eq_ignore_ascii_case(name))
         .map(|i| ELECTRUM_LANGUAGES[i])
-        .ok_or_else(|| WalletError::Invalid(format!("unknown mnemonic language {name:?} - one of {SEED_LANGUAGE_NAMES:?}")))
+        .ok_or_else(|| {
+            WalletError::Invalid(format!(
+                "unknown mnemonic language {name:?} - one of {SEED_LANGUAGE_NAMES:?}"
+            ))
+        })
 }
 
 /// Derives `WalletCredentials` (address + hex-encoded spend/view keys) from
@@ -478,10 +542,14 @@ fn seed_language(name: &str) -> Result<ElectrumLanguage, WalletError> {
 /// exactly [`Scalar::hash`]'s own documented definition, as every Monero
 /// wallet derives it) and the address from both, rather than trusting a
 /// caller-supplied pair.
-fn credentials_from_spend_key(spend_key: Zeroizing<Scalar>, mnemonic: Option<String>) -> WalletCredentials {
+fn credentials_from_spend_key(
+    spend_key: Zeroizing<Scalar>,
+    mnemonic: Option<String>,
+) -> WalletCredentials {
     let view_key = Zeroizing::new(Scalar::hash(<[u8; 32]>::from(*spend_key)));
     let spend_key_dalek: Zeroizing<curve25519_dalek::Scalar> = Zeroizing::new((*spend_key).into());
-    let public_spend = Point::from(&*spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
+    let public_spend =
+        Point::from(&*spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
     let address = ViewPair::new(public_spend, Zeroizing::new(*view_key))
         .expect("a freshly derived spend key is never torsioned")
         .legacy_address(Network::Stagenet);
@@ -497,18 +565,28 @@ fn credentials_from_spend_key(spend_key: Zeroizing<Scalar>, mnemonic: Option<Str
 /// seed in `language`.
 pub fn generate_credentials(language: &str) -> Result<WalletCredentials, WalletError> {
     let seed = ElectrumSeed::new(&mut OsRng, seed_language(language)?);
-    let spend_key = Zeroizing::new(Scalar::read(&mut &seed.entropy()[..]).expect("a generated legacy Seed's own entropy is always a canonical scalar"));
-    Ok(credentials_from_spend_key(spend_key, Some(seed.to_string().to_string())))
+    let spend_key = Zeroizing::new(
+        Scalar::read(&mut &seed.entropy()[..])
+            .expect("a generated legacy Seed's own entropy is always a canonical scalar"),
+    );
+    Ok(credentials_from_spend_key(
+        spend_key,
+        Some(seed.to_string().to_string()),
+    ))
 }
 
 /// `--generate-from-spend-key`: the wallet a hex private spend key belongs
 /// to.
-pub fn credentials_from_spend_key_hex(spend_key_hex: &str) -> Result<WalletCredentials, WalletError> {
+pub fn credentials_from_spend_key_hex(
+    spend_key_hex: &str,
+) -> Result<WalletCredentials, WalletError> {
     let bytes: [u8; 32] = hex::decode(spend_key_hex.trim())
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or_else(|| WalletError::Invalid("failed to parse spend key secret key".to_string()))?;
-    let spend_key = Scalar::read(&mut &bytes[..]).map_err(|_| WalletError::Invalid("spend key isn't a canonical ed25519 scalar".to_string()))?;
+    let spend_key = Scalar::read(&mut &bytes[..]).map_err(|_| {
+        WalletError::Invalid("spend key isn't a canonical ed25519 scalar".to_string())
+    })?;
     Ok(credentials_from_spend_key(Zeroizing::new(spend_key), None))
 }
 
@@ -523,11 +601,18 @@ pub fn credentials_from_seed(phrase: &str) -> Result<WalletCredentials, WalletEr
     if word_count == 16 {
         for lang in POLYSEED_LANGUAGES {
             if let Ok(seed) = Polyseed::from_string(lang, phrase.clone()) {
-                let spend_key = Zeroizing::new(Scalar::from(curve25519_dalek::Scalar::from_bytes_mod_order(*seed.key())));
-                return Ok(credentials_from_spend_key(spend_key, Some(phrase.to_string())));
+                let spend_key = Zeroizing::new(Scalar::from(
+                    curve25519_dalek::Scalar::from_bytes_mod_order(*seed.key()),
+                ));
+                return Ok(credentials_from_spend_key(
+                    spend_key,
+                    Some(phrase.to_string()),
+                ));
             }
         }
-        return Err(WalletError::Invalid("16-word phrase didn't parse as a Polyseed in any supported language".to_string()));
+        return Err(WalletError::Invalid(
+            "16-word phrase didn't parse as a Polyseed in any supported language".to_string(),
+        ));
     }
 
     if word_count == 24 || word_count == 25 {
@@ -535,9 +620,13 @@ pub fn credentials_from_seed(phrase: &str) -> Result<WalletCredentials, WalletEr
             if let Ok(seed) = ElectrumSeed::from_string(lang, phrase.clone()) {
                 let entropy = seed.entropy();
                 let spend_key = Zeroizing::new(
-                    Scalar::read(&mut &entropy[..]).expect("a parsed legacy Seed's own entropy is always a canonical scalar"),
+                    Scalar::read(&mut &entropy[..])
+                        .expect("a parsed legacy Seed's own entropy is always a canonical scalar"),
                 );
-                return Ok(credentials_from_spend_key(spend_key, Some(phrase.to_string())));
+                return Ok(credentials_from_spend_key(
+                    spend_key,
+                    Some(phrase.to_string()),
+                ));
             }
         }
         return Err(WalletError::Invalid(format!("{word_count}-word phrase didn't parse as a legacy Electrum-style seed in any supported language")));
@@ -549,24 +638,38 @@ pub fn credentials_from_seed(phrase: &str) -> Result<WalletCredentials, WalletEr
 /// The 25-word seed that restores `spend_key_hex`, in `language` - what
 /// `seed` prints for a wallet with no recorded mnemonic.
 pub fn legacy_seed_for(spend_key_hex: &str, language: &str) -> Result<String, WalletError> {
-    let seed = ElectrumSeed::from_entropy(seed_language(language)?, Zeroizing::new(hex32(spend_key_hex)))
-        .ok_or_else(|| WalletError::Invalid("spend key has no 25-word seed".to_string()))?;
+    let seed = ElectrumSeed::from_entropy(
+        seed_language(language)?,
+        Zeroizing::new(hex32(spend_key_hex)),
+    )
+    .ok_or_else(|| WalletError::Invalid("spend key has no 25-word seed".to_string()))?;
     Ok(seed.to_string().to_string())
 }
 
 /// Reads back an output stored as hex-encoded `WalletOutput::serialize()`.
 pub(crate) fn decode_output(txid: &str, hex_bytes: &str) -> Result<WalletOutput, WalletError> {
-    let bytes = hex::decode(hex_bytes).map_err(|e| WalletError::WalletFile(format!("output of {txid} has invalid serialized_output_hex: {e}")))?;
-    WalletOutput::read(&mut &bytes[..]).map_err(|e| WalletError::WalletFile(format!("output of {txid} failed to deserialize: {e}")))
+    let bytes = hex::decode(hex_bytes).map_err(|e| {
+        WalletError::WalletFile(format!(
+            "output of {txid} has invalid serialized_output_hex: {e}"
+        ))
+    })?;
+    WalletOutput::read(&mut &bytes[..]).map_err(|e| {
+        WalletError::WalletFile(format!("output of {txid} failed to deserialize: {e}"))
+    })
 }
 
 fn hex32(hex_str: &str) -> [u8; 32] {
     let bytes = hex::decode(hex_str).expect("invalid hex in wallet file key material");
-    bytes.try_into().expect("key material must be exactly 32 bytes")
+    bytes
+        .try_into()
+        .expect("key material must be exactly 32 bytes")
 }
 
 fn scalar_from_hex(hex_str: &str) -> Zeroizing<Scalar> {
-    Zeroizing::new(Scalar::read(&mut &hex32(hex_str)[..]).expect("wallet file private key isn't a canonical ed25519 scalar"))
+    Zeroizing::new(
+        Scalar::read(&mut &hex32(hex_str)[..])
+            .expect("wallet file private key isn't a canonical ed25519 scalar"),
+    )
 }
 
 /// Loads a committed output-distribution snapshot (a plain JSON array of
@@ -574,8 +677,10 @@ fn scalar_from_hex(hex_str: &str) -> Zeroizing<Scalar> {
 /// `DecoyCache` - see that type's own doc comment for why a cached snapshot
 /// is a fully valid input, not an approximation.
 fn load_decoy_distribution(path: &str) -> Result<Vec<u64>, WalletError> {
-    let contents = std::fs::read_to_string(path).map_err(|e| WalletError::Decoys(format!("failed to read {path}: {e}")))?;
-    serde_json::from_str(&contents).map_err(|e| WalletError::Decoys(format!("failed to parse {path}: {e}")))
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| WalletError::Decoys(format!("failed to read {path}: {e}")))?;
+    serde_json::from_str(&contents)
+        .map_err(|e| WalletError::Decoys(format!("failed to parse {path}: {e}")))
 }
 
 /// Fetches one real `ringct_output_distribution` snapshot over `from..=to`
@@ -583,12 +688,34 @@ fn load_decoy_distribution(path: &str) -> Result<Vec<u64>, WalletError> {
 /// crate ever performs the expensive live fetch `DecoyCache` exists to
 /// avoid on every send. Meant to be run occasionally, by hand, via the
 /// `refresh-decoy-pool` `[[bin]]` - never by the e2e suites themselves.
-pub async fn refresh_decoy_distribution(node_url: &str, accept_invalid_certs: bool, from: usize, to: usize, out_path: &str) -> Result<usize, WalletError> {
-    let client = reqwest::Client::builder().danger_accept_invalid_certs(accept_invalid_certs).timeout(std::time::Duration::from_secs(60)).build().expect("failed to build reqwest client");
-    let transport = ReqwestTransport { client, base_url: node_url.trim_end_matches('/').to_string() };
-    let daemon = MoneroDaemon::new(transport).await.map_err(|source| WalletError::DaemonUnreachable { url: node_url.to_string(), source })?;
-    let distribution = ProvidesUnvalidatedDecoys::ringct_output_distribution(&daemon, from..=to).await.map_err(|e| WalletError::Rpc(e.to_string()))?;
-    std::fs::write(out_path, serde_json::to_string(&distribution).unwrap()).map_err(|e| WalletError::Decoys(format!("failed to write {out_path}: {e}")))?;
+pub async fn refresh_decoy_distribution(
+    node_url: &str,
+    accept_invalid_certs: bool,
+    from: usize,
+    to: usize,
+    out_path: &str,
+) -> Result<usize, WalletError> {
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(accept_invalid_certs)
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .expect("failed to build reqwest client");
+    let transport = ReqwestTransport {
+        client,
+        base_url: node_url.trim_end_matches('/').to_string(),
+    };
+    let daemon =
+        MoneroDaemon::new(transport)
+            .await
+            .map_err(|source| WalletError::DaemonUnreachable {
+                url: node_url.to_string(),
+                source,
+            })?;
+    let distribution = ProvidesUnvalidatedDecoys::ringct_output_distribution(&daemon, from..=to)
+        .await
+        .map_err(|e| WalletError::Rpc(e.to_string()))?;
+    std::fs::write(out_path, serde_json::to_string(&distribution).unwrap())
+        .map_err(|e| WalletError::Decoys(format!("failed to write {out_path}: {e}")))?;
     Ok(distribution.len())
 }
 
@@ -599,7 +726,11 @@ pub async fn refresh_decoy_distribution(node_url: &str, accept_invalid_certs: bo
 /// for) or `scanner`'s equivalent (this crate has no dependency on
 /// `scanner` at all, by design). `Ok(None)` means "not confirmed yet"
 /// (still in the mempool, or genuinely unknown) - both are left pending.
-async fn locate_height(client: &reqwest::Client, node_url: &str, txid: &str) -> Result<Option<u64>, WalletError> {
+async fn locate_height(
+    client: &reqwest::Client,
+    node_url: &str,
+    txid: &str,
+) -> Result<Option<u64>, WalletError> {
     let response: Value = client
         .post(format!("{node_url}/get_transactions"))
         .json(&serde_json::json!({ "txs_hashes": [txid], "decode_as_json": false }))
@@ -609,7 +740,10 @@ async fn locate_height(client: &reqwest::Client, node_url: &str, txid: &str) -> 
         .json()
         .await
         .map_err(|e| WalletError::Rpc(format!("get_transactions returned invalid JSON: {e}")))?;
-    Ok(response["txs"].as_array().and_then(|txs| txs.first()).and_then(|tx| tx["block_height"].as_u64()))
+    Ok(response["txs"]
+        .as_array()
+        .and_then(|txs| txs.first())
+        .and_then(|tx| tx["block_height"].as_u64()))
 }
 
 /// Connects, resolves anything pending, and sends `amount` piconero to
@@ -630,7 +764,12 @@ async fn locate_height(client: &reqwest::Client, node_url: &str, txid: &str) -> 
 ///
 /// `split_change_into` forwards to [`Wallet::send_with_change_split`]
 /// when `Some` (`None` keeps the single-`Change`-output behavior).
-pub async fn send_payment(wallet: ResolvedWallet, to: &str, amount: u64, split_change_into: Option<usize>) -> Result<[u8; 32], WalletError> {
+pub async fn send_payment(
+    wallet: ResolvedWallet,
+    to: &str,
+    amount: u64,
+    split_change_into: Option<usize>,
+) -> Result<[u8; 32], WalletError> {
     const ATTEMPTS: u32 = 5;
     const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
     let mut attempt = 1;
@@ -666,30 +805,59 @@ mod tests {
 
     #[test]
     fn each_retry_starts_from_the_next_node_and_still_tries_them_all() {
-        let nodes: Vec<String> = DEFAULT_STAGENET_NODES.iter().map(|n| format!("{n}/")).collect();
-        let host = |url: &String| url.split("//").nth(1).unwrap().split('.').next().unwrap().to_string();
-        let order = |start| nodes_in_order(&nodes, start).iter().map(host).collect::<Vec<_>>();
+        let nodes: Vec<String> = DEFAULT_STAGENET_NODES
+            .iter()
+            .map(|n| format!("{n}/"))
+            .collect();
+        let host = |url: &String| {
+            url.split("//")
+                .nth(1)
+                .unwrap()
+                .split('.')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let order = |start| {
+            nodes_in_order(&nodes, start)
+                .iter()
+                .map(host)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(order(0), ["node", "node2", "node3"]);
         assert_eq!(order(1), ["node2", "node3", "node"]);
         assert_eq!(order(4), ["node2", "node3", "node"], "wraps around");
-        assert!(nodes_in_order(&nodes, 0).iter().all(|url| !url.ends_with('/')));
+        assert!(nodes_in_order(&nodes, 0)
+            .iter()
+            .all(|url| !url.ends_with('/')));
     }
 
     /// Three real outputs of one stagenet split transaction
     /// (`testdata/split_transaction_outputs.json`), all paying `spender`.
     fn split_transaction() -> (String, u64, Vec<WalletOutput>) {
-        let fixture: Value = serde_json::from_str(include_str!("../testdata/split_transaction_outputs.json")).unwrap();
+        let fixture: Value =
+            serde_json::from_str(include_str!("../testdata/split_transaction_outputs.json"))
+                .unwrap();
         let outputs = fixture["serialized_outputs_hex"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|hex_bytes| WalletOutput::read(&mut &hex::decode(hex_bytes.as_str().unwrap()).unwrap()[..]).unwrap())
+            .map(|hex_bytes| {
+                WalletOutput::read(&mut &hex::decode(hex_bytes.as_str().unwrap()).unwrap()[..])
+                    .unwrap()
+            })
             .collect();
-        (fixture["txid"].as_str().unwrap().to_string(), fixture["height"].as_u64().unwrap(), outputs)
+        (
+            fixture["txid"].as_str().unwrap().to_string(),
+            fixture["height"].as_u64().unwrap(),
+            outputs,
+        )
     }
 
     fn committed_wallet(name: &str) -> WalletData {
-        WalletFile::load(WalletCtx::default().wallet_path(name)).unwrap().data
+        WalletFile::load(WalletCtx::default().wallet_path(name))
+            .unwrap()
+            .data
     }
 
     /// A fresh copy of a committed wallet's keys, with no outputs, in its
@@ -710,7 +878,9 @@ mod tests {
     }
 
     fn output_index(record: &OutputRecord) -> u64 {
-        decode_output(&record.txid, &record.serialized_output_hex).unwrap().index_in_transaction()
+        decode_output(&record.txid, &record.serialized_output_hex)
+            .unwrap()
+            .index_in_transaction()
     }
 
     /// Regression: a split pays this wallet many outputs in one
@@ -722,11 +892,21 @@ mod tests {
         let (_, mut data) = temp_wallet("record-all", "spender");
         data.add_pending(&txid, 0);
 
-        assert_eq!(record_resolved(&mut data, &txid, height, Some(1_700_000_000), &outputs), 3);
-        assert!(data.pending.is_empty(), "resolving takes the txid off the pending list");
-        let recorded: std::collections::BTreeSet<u64> = data.outputs.iter().map(output_index).collect();
+        assert_eq!(
+            record_resolved(&mut data, &txid, height, Some(1_700_000_000), &outputs),
+            3
+        );
+        assert!(
+            data.pending.is_empty(),
+            "resolving takes the txid off the pending list"
+        );
+        let recorded: std::collections::BTreeSet<u64> =
+            data.outputs.iter().map(output_index).collect();
         assert_eq!(recorded.len(), 3);
-        assert!(data.outputs.iter().all(|o| o.txid == txid && o.height == height && !o.spent && o.amount_piconero > 0));
+        assert!(data
+            .outputs
+            .iter()
+            .all(|o| o.txid == txid && o.height == height && !o.spent && o.amount_piconero > 0));
 
         // Recording the same transaction again adds nothing.
         assert_eq!(record_resolved(&mut data, &txid, height, None, &outputs), 0);
@@ -749,7 +929,10 @@ mod tests {
             timestamp: None,
         });
         record_resolved(&mut data, &txid, height, Some(42), &outputs);
-        assert_eq!((data.sent[0].height, data.sent[0].timestamp), (Some(height), Some(42)));
+        assert_eq!(
+            (data.sent[0].height, data.sent[0].timestamp),
+            (Some(height), Some(42))
+        );
     }
 
     /// The ownership check is what splits the old shared ledger between
@@ -772,7 +955,8 @@ mod tests {
         let (_, _, outputs) = split_transaction();
         let (path, data) = temp_wallet("key-images", "spender");
         let keys = WalletKeys::from_data(&data, path);
-        let images: std::collections::BTreeSet<[u8; 32]> = outputs.iter().map(|o| keys.key_image(o)).collect();
+        let images: std::collections::BTreeSet<[u8; 32]> =
+            outputs.iter().map(|o| keys.key_image(o)).collect();
         assert_eq!(images.len(), outputs.len());
         assert_eq!(keys.key_image(&outputs[0]), keys.key_image(&outputs[0]));
     }
@@ -782,28 +966,52 @@ mod tests {
         let (txid, height, outputs) = split_transaction();
         let (path, data) = temp_wallet("freeze", "spender");
         let keys = WalletKeys::from_data(&data, path.clone());
-        keys.update(|data| Ok(record_resolved(data, &txid, height, None, &outputs))).await.unwrap();
+        keys.update(|data| Ok(record_resolved(data, &txid, height, None, &outputs)))
+            .await
+            .unwrap();
 
         let image = keys.key_image(&outputs[1]);
         assert!(keys.set_frozen(image, true).await.unwrap());
-        assert!(!keys.set_frozen([7; 32], true).await.unwrap(), "unknown key image");
-        assert!(keys.set_spent(outputs[2].index_on_blockchain(), true).await.unwrap());
+        assert!(
+            !keys.set_frozen([7; 32], true).await.unwrap(),
+            "unknown key image"
+        );
+        assert!(keys
+            .set_spent(outputs[2].index_on_blockchain(), true)
+            .await
+            .unwrap());
 
-        let reloaded = keys.outputs(&WalletFile::load(&path).unwrap().data).unwrap();
+        let reloaded = keys
+            .outputs(&WalletFile::load(&path).unwrap().data)
+            .unwrap();
         for output in reloaded {
             let index = output.output.index_in_transaction();
-            assert_eq!(output.frozen, index == outputs[1].index_in_transaction(), "frozen flag of output {index}");
-            assert_eq!(output.spent, index == outputs[2].index_in_transaction(), "spent flag of output {index}");
+            assert_eq!(
+                output.frozen,
+                index == outputs[1].index_in_transaction(),
+                "frozen flag of output {index}"
+            );
+            assert_eq!(
+                output.spent,
+                index == outputs[2].index_in_transaction(),
+                "spent flag of output {index}"
+            );
         }
     }
 
     #[test]
     fn a_wallet_file_refuses_to_be_created_twice_and_round_trips() {
         let (path, data) = temp_wallet("round-trip", "spender");
-        assert!(WalletFile::create(&path, data.clone()).is_err(), "an existing wallet file is never replaced");
+        assert!(
+            WalletFile::create(&path, data.clone()).is_err(),
+            "an existing wallet file is never replaced"
+        );
         let reloaded = WalletFile::load(&path).unwrap().data;
         assert_eq!(reloaded.address, data.address);
-        assert_eq!(serde_json::to_value(&reloaded).unwrap(), serde_json::to_value(&data).unwrap());
+        assert_eq!(
+            serde_json::to_value(&reloaded).unwrap(),
+            serde_json::to_value(&data).unwrap()
+        );
     }
 
     /// Concurrent read-modify-writes from many tasks each land - the lock
@@ -849,11 +1057,18 @@ mod tests {
                 answers.lock().unwrap().pop().unwrap()
             })
         };
-        let error = WalletFile::lock_with(&path, &handler).await.err().expect("cancelled");
+        let error = WalletFile::lock_with(&path, &handler)
+            .await
+            .err()
+            .expect("cancelled");
         assert!(matches!(error, WalletError::Locked(_)), "{error}");
         let seen = seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 2, "retry asks again while it's still held");
-        assert!(seen[0].contains(&format!("pid {}", std::process::id())), "names the holder: {}", seen[0]);
+        assert!(
+            seen[0].contains(&format!("pid {}", std::process::id())),
+            "names the holder: {}",
+            seen[0]
+        );
         assert!(seen[0].contains("spender.json is locked by"), "{}", seen[0]);
 
         let wait: BusyHandler = Arc::new(|_: &LockHolder| BusyChoice::Wait);
@@ -861,7 +1076,9 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             drop(held);
         });
-        WalletFile::lock_with(&path, &wait).await.expect("waiting gets the lock once it's released");
+        WalletFile::lock_with(&path, &wait)
+            .await
+            .expect("waiting gets the lock once it's released");
         release.await.unwrap();
     }
 
@@ -890,23 +1107,48 @@ mod tests {
             .collect();
         entries.push(serde_json::json!({ "txid": "ab".repeat(32), "height": null, "serialized_output_hex": null, "amount_piconero": 5, "spent": false }));
         std::fs::write(dir.join("wallets.json"), wallets.to_string()).unwrap();
-        std::fs::write(dir.join("ledger.json"), serde_json::json!({ "entries": entries }).to_string()).unwrap();
+        std::fs::write(
+            dir.join("ledger.json"),
+            serde_json::json!({ "entries": entries }).to_string(),
+        )
+        .unwrap();
 
         let out = dir.join("wallets");
-        let report = migrate_legacy(&dir.join("wallets.json"), &dir.join("ledger.json"), &out, "spender").unwrap();
+        let report = migrate_legacy(
+            &dir.join("wallets.json"),
+            &dir.join("ledger.json"),
+            &out,
+            "spender",
+        )
+        .unwrap();
         assert!(report.unowned_outputs.is_empty());
 
         let spender = WalletFile::load(out.join("spender.json")).unwrap().data;
         let merchant = WalletFile::load(out.join("merchant.json")).unwrap().data;
         assert_eq!(spender.outputs.len(), 3);
-        assert!(spender.outputs.iter().all(|o| o.amount_piconero > 0), "amounts come from the outputs themselves");
+        assert!(
+            spender.outputs.iter().all(|o| o.amount_piconero > 0),
+            "amounts come from the outputs themselves"
+        );
         assert_eq!(spender.pending.len(), 1);
-        assert_eq!(spender.extra["faucet_used"], "https://stagenet-faucet.xmr-tw.org/");
+        assert_eq!(
+            spender.extra["faucet_used"],
+            "https://stagenet-faucet.xmr-tw.org/"
+        );
         assert_eq!(spender.extra["_comment"], "stagenet only");
         assert!(merchant.outputs.is_empty() && merchant.pending.is_empty());
         assert_eq!(merchant.extra["role"], "merchant");
         assert!(!merchant.extra.contains_key("faucet_used"));
-        assert!(migrate_legacy(&dir.join("wallets.json"), &dir.join("ledger.json"), &out, "spender").is_err(), "never overwrites");
+        assert!(
+            migrate_legacy(
+                &dir.join("wallets.json"),
+                &dir.join("ledger.json"),
+                &out,
+                "spender"
+            )
+            .is_err(),
+            "never overwrites"
+        );
     }
 
     #[test]
@@ -914,9 +1156,20 @@ mod tests {
         let generated = generate_credentials("English").unwrap();
         let phrase = generated.mnemonic.clone().unwrap();
         assert_eq!(phrase.split_whitespace().count(), 25);
-        assert_eq!(credentials_from_seed(&phrase).unwrap().address, generated.address);
-        assert_eq!(legacy_seed_for(&generated.private_spend_key_hex, "English").unwrap(), phrase);
-        assert_eq!(credentials_from_spend_key_hex(&generated.private_spend_key_hex).unwrap().address, generated.address);
+        assert_eq!(
+            credentials_from_seed(&phrase).unwrap().address,
+            generated.address
+        );
+        assert_eq!(
+            legacy_seed_for(&generated.private_spend_key_hex, "English").unwrap(),
+            phrase
+        );
+        assert_eq!(
+            credentials_from_spend_key_hex(&generated.private_spend_key_hex)
+                .unwrap()
+                .address,
+            generated.address
+        );
         assert!(generate_credentials("Klingon").is_err());
     }
 }

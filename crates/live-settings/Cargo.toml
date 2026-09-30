@@ -24,3 +24,6 @@ url = "2.5.8"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

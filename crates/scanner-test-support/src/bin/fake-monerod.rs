@@ -59,7 +59,9 @@ impl Chain {
         if self.online.load(Ordering::SeqCst) {
             Ok(())
         } else {
-            Err(Box::new((StatusCode::SERVICE_UNAVAILABLE, "offline").into_response()))
+            Err(Box::new(
+                (StatusCode::SERVICE_UNAVAILABLE, "offline").into_response(),
+            ))
         }
     }
 }
@@ -76,12 +78,20 @@ async fn json_rpc(State(chain): State<Chain>, Json(request): Json<Value>) -> Res
         return *r;
     }
     let id = request.get("id").cloned().unwrap_or(json!("0"));
-    let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
+    let method = request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let top = chain.count.load(Ordering::SeqCst).saturating_sub(1);
     match method {
-        "get_info" => Json(json!({ "jsonrpc": "2.0", "id": id, "result": chain.info() })).into_response(),
+        "get_info" => {
+            Json(json!({ "jsonrpc": "2.0", "id": id, "result": chain.info() })).into_response()
+        }
         "get_block" => {
-            let height = request.pointer("/params/height").and_then(Value::as_u64).unwrap_or(top);
+            let height = request
+                .pointer("/params/height")
+                .and_then(Value::as_u64)
+                .unwrap_or(top);
             if height > top {
                 return Json(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -2, "message": format!("requested height {height} greater than current top block height {top}") } })).into_response();
             }
@@ -149,11 +159,24 @@ async fn unsupported(uri: axum::http::Uri) -> StatusCode {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u64>().ok());
+    let arg = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse::<u64>().ok())
+    };
     let port = arg("--port").unwrap_or(0);
     let height = arg("--height").unwrap_or(1000);
-    let nettype = args.iter().position(|a| a == "--nettype").and_then(|i| args.get(i + 1)).map_or("stagenet", String::as_str);
-    let chain = Chain { count: Arc::new(AtomicU64::new(height + 1)), online: Arc::new(AtomicBool::new(true)), nettype: Arc::from(nettype) };
+    let nettype = args
+        .iter()
+        .position(|a| a == "--nettype")
+        .and_then(|i| args.get(i + 1))
+        .map_or("stagenet", String::as_str);
+    let chain = Chain {
+        count: Arc::new(AtomicU64::new(height + 1)),
+        online: Arc::new(AtomicBool::new(true)),
+        nettype: Arc::from(nettype),
+    };
     let app = Router::new()
         .route("/get_height", post(get_height))
         .route("/get_info", post(get_info).get(get_info))

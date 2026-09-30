@@ -10,12 +10,14 @@
 //! `rotate_secret` does.
 
 use crate::key_custody::{KeyCustody, WalletMaterial};
-use crate::store::{CreatedTenant, NewTenant, Store};
 use crate::store::Tenant;
+use crate::store::{CreatedTenant, NewTenant, SharedStore, Store};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LocalAdminError {
-    #[error("no tenant is configured yet - run `scanner --bootstrap-wallet ...`, then start the server")]
+    #[error(
+        "no tenant is configured yet - run `scanner --bootstrap-wallet ...`, then start the server"
+    )]
     NoTenant,
     #[error("more than one tenant is configured ({0}) - name which one with --pk <pk_...>")]
     AmbiguousTenant(String),
@@ -38,7 +40,6 @@ pub enum LocalAdminError {
 /// rest of the file-based config model). One-time provisioning for a self-hosted,
 /// single-tenant deployment; a hosted instance creates tenants at
 /// runtime via the admin HTTP API instead and never calls this at all.
-#[derive(Debug)]
 pub struct BootstrapWalletArgs {
     pub primary_address: String,
     pub view_key_hex: String,
@@ -46,6 +47,19 @@ pub struct BootstrapWalletArgs {
     pub network: String,
     /// Where the keys are kept; the instance's default when `None`.
     pub key_custody_backend: Option<String>,
+}
+
+/// The private view key never shows in `Debug` output.
+impl std::fmt::Debug for BootstrapWalletArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapWalletArgs")
+            .field("primary_address", &self.primary_address)
+            .field("view_key_hex", &"<redacted>")
+            .field("spend_pubkey_hex", &self.spend_pubkey_hex)
+            .field("network", &self.network)
+            .field("key_custody_backend", &self.key_custody_backend)
+            .finish()
+    }
 }
 
 /// Creates the one tenant a self-hosted deployment needs - but only if none
@@ -57,12 +71,12 @@ pub struct BootstrapWalletArgs {
 /// (`crate::settings`), not a value baked into this command - a bootstrap tenant
 /// should start out consistent with the instance it's being created on.
 pub async fn bootstrap_wallet(
-    store: &Store,
+    store: &SharedStore,
     key_custody: &std::sync::Arc<dyn KeyCustody>,
     key_custody_backend: &str,
     args: BootstrapWalletArgs,
 ) -> Result<CreatedTenant, LocalAdminError> {
-    if store.count_tenants()? > 0 {
+    if store.lock().count_tenants()? > 0 {
         return Err(LocalAdminError::AlreadyBootstrapped);
     }
     let material = WalletMaterial::from_hex(&args.view_key_hex, &args.spend_pubkey_hex)?;
@@ -78,14 +92,30 @@ pub async fn bootstrap_wallet(
         }
         Err(e) => return Err(LocalAdminError::AddressMismatch(args.network.clone(), e)),
     }
-    let key_custody_backend = args.key_custody_backend.as_deref().unwrap_or(key_custody_backend);
+    let key_custody_backend = args
+        .key_custody_backend
+        .as_deref()
+        .unwrap_or(key_custody_backend);
     let enabled = key_custody.enabled_backends();
     if !enabled.is_empty() && !enabled.iter().any(|b| b == key_custody_backend) {
-        return Err(LocalAdminError::BackendNotEnabled(key_custody_backend.to_string(), enabled.join(", ")));
+        return Err(LocalAdminError::BackendNotEnabled(
+            key_custody_backend.to_string(),
+            enabled.join(", "),
+        ));
     }
-    let sealed = key_custody.seal_in(key_custody_backend, &material).await.map_err(LocalAdminError::KeyMaterial)?;
+    let sealed = key_custody
+        .seal_in(key_custody_backend, &material)
+        .await
+        .map_err(LocalAdminError::KeyMaterial)?;
 
-    let defaults: crate::engine_settings::TenantDefaults = crate::engine_settings::read_section(store);
+    // The store is locked only now, after sealing, and not across it: the
+    // tenant count is checked again under the same lock as the insert.
+    let store = store.lock();
+    if store.count_tenants()? > 0 {
+        return Err(LocalAdminError::AlreadyBootstrapped);
+    }
+    let defaults: crate::engine_settings::TenantDefaults =
+        crate::engine_settings::read_section(&store);
 
     let created = store.create_tenant(
         NewTenant {
@@ -107,7 +137,9 @@ pub async fn bootstrap_wallet(
 /// target) has exactly one, so the common case never needs `--pk` at all.
 fn resolve_tenant(store: &Store, pk: Option<&str>) -> Result<Tenant, LocalAdminError> {
     if let Some(pk) = pk {
-        return store.find_tenant_by_public_key(pk)?.ok_or_else(|| LocalAdminError::UnknownTenant(pk.to_string()));
+        return store
+            .find_tenant_by_public_key(pk)?
+            .ok_or_else(|| LocalAdminError::UnknownTenant(pk.to_string()));
     }
     let mut tenants = store.list_active_tenants()?;
     match tenants.len() {
@@ -126,7 +158,7 @@ fn resolve_tenant(store: &Store, pk: Option<&str>) -> Result<Tenant, LocalAdminE
 pub fn rotate_secret(store: &Store, pk: Option<&str>) -> Result<(String, String), LocalAdminError> {
     let tenant = resolve_tenant(store, pk)?;
     let new_secret = store.rotate_tenant_secret(&tenant.id)?;
-    Ok((tenant.public_key, new_secret))
+    Ok((tenant.public_key, new_secret.expose().to_string()))
 }
 
 /// A snapshot of a tenant's non-secret settings, for `--show-tenant`. Everything
@@ -156,6 +188,7 @@ pub fn show_tenant(store: &Store, pk: Option<&str>) -> Result<TenantSummary, Loc
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::key_custody::{KeyCustody, PlainKeyCustody, WalletMaterial};
@@ -193,7 +226,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_tenant_with_no_tenants_at_all_is_a_clear_error() {
         let store = Store::open_in_memory().unwrap();
-        assert!(matches!(resolve_tenant(&store, None), Err(LocalAdminError::NoTenant)));
+        assert!(matches!(
+            resolve_tenant(&store, None),
+            Err(LocalAdminError::NoTenant)
+        ));
     }
 
     #[tokio::test]
@@ -218,7 +254,10 @@ mod tests {
                 .unwrap();
         }
         let err = resolve_tenant(&store, None).unwrap_err();
-        assert!(matches!(err, LocalAdminError::AmbiguousTenant(_)), "got {err}");
+        assert!(
+            matches!(err, LocalAdminError::AmbiguousTenant(_)),
+            "got {err}"
+        );
 
         // But naming one directly still works with two present.
         let (_, tenant, pk) = store_with_tenant().await;
@@ -273,9 +312,21 @@ mod tests {
 
         let (pk, new_secret) = rotate_secret(&store, None).unwrap();
         assert_eq!(pk, created.tenant.public_key);
-        assert_ne!(new_secret, created.secret_token);
-        assert!(store.find_tenant_by_secret_token(&created.secret_token).unwrap().is_none(), "old secret must stop working");
-        assert!(store.find_tenant_by_secret_token(&new_secret).unwrap().is_some(), "new secret must work");
+        assert_ne!(new_secret, created.secret_token.expose());
+        assert!(
+            store
+                .find_tenant_by_secret_token(&created.secret_token)
+                .unwrap()
+                .is_none(),
+            "old secret must stop working"
+        );
+        assert!(
+            store
+                .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&new_secret))
+                .unwrap()
+                .is_some(),
+            "new secret must work"
+        );
     }
 
     #[tokio::test]
@@ -287,11 +338,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_local_admin_command_gives_the_same_actionable_error_when_nothing_is_configured_yet() {
+    async fn every_local_admin_command_gives_the_same_actionable_error_when_nothing_is_configured_yet(
+    ) {
         let store = Store::open_in_memory().unwrap();
-        for err in [rotate_secret(&store, None).unwrap_err(), show_tenant(&store, None).unwrap_err()] {
+        for err in [
+            rotate_secret(&store, None).unwrap_err(),
+            show_tenant(&store, None).unwrap_err(),
+        ] {
             assert!(matches!(err, LocalAdminError::NoTenant), "got {err}");
-            assert!(err.to_string().contains("--bootstrap-wallet"), "should point at the fix: {err}");
+            assert!(
+                err.to_string().contains("--bootstrap-wallet"),
+                "should point at the fix: {err}"
+            );
         }
     }
 
@@ -304,7 +362,11 @@ mod tests {
         };
         let (view, spend) = (scalar(0xaa), scalar(0xbb));
         let spend_pub = monero::PublicKey::from_private_key(&spend);
-        let address = monero::Address::standard(monero::Network::Stagenet, spend_pub, monero::PublicKey::from_private_key(&view));
+        let address = monero::Address::standard(
+            monero::Network::Stagenet,
+            spend_pub,
+            monero::PublicKey::from_private_key(&view),
+        );
         BootstrapWalletArgs {
             primary_address: address.to_string(),
             view_key_hex: hex::encode(view.to_bytes()),
@@ -316,74 +378,126 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_wallet_refuses_an_address_that_is_not_the_wallet_of_the_keys() {
-        let store = Store::open_in_memory().unwrap();
-        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        let store = Store::open_in_memory().unwrap().into_shared();
+        let key_custody: std::sync::Arc<dyn KeyCustody> =
+            std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
         let mut args = bootstrap_args();
         args.network = "mainnet".to_string();
-        let err = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap_err();
-        assert!(matches!(err, LocalAdminError::AddressMismatch(..)), "a stagenet address on mainnet: {err}");
+        let err = bootstrap_wallet(&store, &key_custody, "plain", args)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, LocalAdminError::AddressMismatch(..)),
+            "a stagenet address on mainnet: {err}"
+        );
         let mut args = bootstrap_args();
         args.primary_address = "4abc".to_string();
-        let err = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap_err();
+        let err = bootstrap_wallet(&store, &key_custody, "plain", args)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("not a Monero address"), "{err}");
-        assert_eq!(store.count_tenants().unwrap(), 0);
+        assert_eq!(store.lock().count_tenants().unwrap(), 0);
     }
 
     #[tokio::test]
     async fn bootstrap_wallet_keeps_the_keys_in_the_backend_asked_for_if_it_is_enabled() {
-        let store = Store::open_in_memory().unwrap();
-        let backends: std::collections::HashMap<String, std::sync::Arc<dyn KeyCustody>> = std::collections::HashMap::from([
-            ("plain".to_string(), std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default()) as std::sync::Arc<dyn KeyCustody>),
-            ("socket".to_string(), std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default()) as std::sync::Arc<dyn KeyCustody>),
-        ]);
-        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::CustodyRouter::new(backends, "plain"));
+        let store = Store::open_in_memory().unwrap().into_shared();
+        let backends: std::collections::HashMap<String, std::sync::Arc<dyn KeyCustody>> =
+            std::collections::HashMap::from([
+                (
+                    "plain".to_string(),
+                    std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default())
+                        as std::sync::Arc<dyn KeyCustody>,
+                ),
+                (
+                    "socket".to_string(),
+                    std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default())
+                        as std::sync::Arc<dyn KeyCustody>,
+                ),
+            ]);
+        let key_custody: std::sync::Arc<dyn KeyCustody> =
+            std::sync::Arc::new(crate::key_custody::CustodyRouter::new(backends, "plain"));
         let mut args = bootstrap_args();
         args.key_custody_backend = Some("hsm".to_string());
-        let err = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap_err();
-        assert!(matches!(err, LocalAdminError::BackendNotEnabled(..)), "{err}");
+        let err = bootstrap_wallet(&store, &key_custody, "plain", args)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, LocalAdminError::BackendNotEnabled(..)),
+            "{err}"
+        );
 
         let mut args = bootstrap_args();
         args.key_custody_backend = Some("socket".to_string());
-        let created = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap();
+        let created = bootstrap_wallet(&store, &key_custody, "plain", args)
+            .await
+            .unwrap();
         assert_eq!(created.tenant.key_custody_backend, "socket");
     }
 
     #[tokio::test]
     async fn bootstrap_wallet_creates_the_one_tenant_a_self_hosted_deployment_needs() {
-        let store = Store::open_in_memory().unwrap();
-        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
-        let created = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args()).await.unwrap();
+        let store = Store::open_in_memory().unwrap().into_shared();
+        let key_custody: std::sync::Arc<dyn KeyCustody> =
+            std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        let created = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args())
+            .await
+            .unwrap();
 
         assert_eq!(created.tenant.network, "stagenet");
-        assert_eq!(created.tenant.confirmations_required, 10, "should reflect this instance's real current settings, not a hardcoded value");
-        assert!(store.find_tenant_by_secret_token(&created.secret_token).unwrap().is_some());
+        assert_eq!(
+            created.tenant.confirmations_required, 10,
+            "should reflect this instance's real current settings, not a hardcoded value"
+        );
+        assert!(store
+            .lock()
+            .find_tenant_by_secret_token(&created.secret_token)
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
     async fn bootstrap_wallet_picks_up_a_saved_setting_rather_than_the_hardcoded_fallback() {
-        let store = Store::open_in_memory().unwrap();
-        store.set_setting("payment.confirmations_required", "3").unwrap();
-        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
-        let created = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args()).await.unwrap();
+        let store = Store::open_in_memory().unwrap().into_shared();
+        store
+            .lock()
+            .set_setting("payment.confirmations_required", "3")
+            .unwrap();
+        let key_custody: std::sync::Arc<dyn KeyCustody> =
+            std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        let created = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args())
+            .await
+            .unwrap();
         assert_eq!(created.tenant.confirmations_required, 3);
     }
 
     #[tokio::test]
     async fn bootstrap_wallet_refuses_a_second_time_once_any_tenant_already_exists() {
-        let store = Store::open_in_memory().unwrap();
-        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
-        bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args()).await.unwrap();
-        let err = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args()).await.unwrap_err();
-        assert!(matches!(err, LocalAdminError::AlreadyBootstrapped), "got {err}");
+        let store = Store::open_in_memory().unwrap().into_shared();
+        let key_custody: std::sync::Arc<dyn KeyCustody> =
+            std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args())
+            .await
+            .unwrap();
+        let err = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, LocalAdminError::AlreadyBootstrapped),
+            "got {err}"
+        );
     }
 
     #[tokio::test]
     async fn bootstrap_wallet_rejects_malformed_key_material_with_a_clear_error_not_a_panic() {
-        let store = Store::open_in_memory().unwrap();
-        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        let store = Store::open_in_memory().unwrap().into_shared();
+        let key_custody: std::sync::Arc<dyn KeyCustody> =
+            std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
         let mut args = bootstrap_args();
         args.view_key_hex = "not hex".to_string();
-        let err = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap_err();
+        let err = bootstrap_wallet(&store, &key_custody, "plain", args)
+            .await
+            .unwrap_err();
         assert!(matches!(err, LocalAdminError::KeyMaterial(_)), "got {err}");
     }
 }

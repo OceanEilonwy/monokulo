@@ -89,7 +89,9 @@ pub fn max_cache_bytes_from_env() -> u64 {
 /// `CoingeckoRateProvider`'s own existing app-level TTL cache (`piconero_per_unit_cached`)
 /// remains the thing actually bounding how often it hits the real API.
 pub fn build_client(user_agent: &str, max_cache_bytes: u64) -> ClientWithMiddleware {
-    client_builder(user_agent).with(CacheMiddleware::new(max_cache_bytes)).build()
+    client_builder(user_agent)
+        .with(CacheMiddleware::new(max_cache_bytes))
+        .build()
 }
 
 /// [`build_client`] for calls to our own services (monokulo to the engine),
@@ -97,7 +99,10 @@ pub fn build_client(user_agent: &str, max_cache_bytes: u64) -> ClientWithMiddlew
 /// (structured_logging.md 2.3). Not for third parties such as exchange-rate
 /// APIs, which have no use for our trace ids.
 pub fn build_traced_client(user_agent: &str, max_cache_bytes: u64) -> ClientWithMiddleware {
-    client_builder(user_agent).with(PropagateTrace).with(CacheMiddleware::new(max_cache_bytes)).build()
+    client_builder(user_agent)
+        .with(PropagateTrace)
+        .with(CacheMiddleware::new(max_cache_bytes))
+        .build()
 }
 
 fn client_builder(user_agent: &str) -> ClientBuilder {
@@ -113,9 +118,17 @@ pub struct PropagateTrace;
 
 #[async_trait::async_trait]
 impl Middleware for PropagateTrace {
-    async fn handle(&self, mut req: Request, extensions: &mut Extensions, next: Next<'_>) -> reqwest_middleware::Result<Response> {
-        if let Some(value) = telemetry::trace::current_traceparent().and_then(|v| reqwest::header::HeaderValue::from_str(&v).ok()) {
-            req.headers_mut().insert(telemetry::trace::TRACEPARENT, value);
+    async fn handle(
+        &self,
+        mut req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<Response> {
+        if let Some(value) = telemetry::trace::current_traceparent()
+            .and_then(|v| reqwest::header::HeaderValue::from_str(&v).ok())
+        {
+            req.headers_mut()
+                .insert(telemetry::trace::TRACEPARENT, value);
         }
         next.run(req, extensions).await
     }
@@ -164,8 +177,9 @@ impl CachedResponse {
         if let Some(etag) = &self.etag {
             builder = builder.header(reqwest::header::ETAG, etag);
         }
-        let http_response =
-            builder.body(self.body).expect("status/headers copied from a real response can't fail to rebuild");
+        let http_response = builder
+            .body(self.body)
+            .expect("status/headers copied from a real response can't fail to rebuild");
         Response::from(http_response)
     }
 }
@@ -194,7 +208,11 @@ fn cache_key(req: &Request) -> Option<String> {
     if req.method() != Method::GET {
         return None;
     }
-    let auth = req.headers().get(reqwest::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let auth = req
+        .headers()
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     Some(format!("{} {}", req.url(), auth))
 }
 
@@ -204,12 +222,25 @@ fn cache_key(req: &Request) -> Option<String> {
 /// repo root). Not a general Cache-Control parser; doesn't need to be one.
 fn parse_max_age(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let raw = headers.get(reqwest::header::CACHE_CONTROL)?.to_str().ok()?;
-    raw.split(',').find_map(|directive| directive.trim().strip_prefix("max-age=")?.parse::<u64>().ok()).map(Duration::from_secs)
+    raw.split(',')
+        .find_map(|directive| {
+            directive
+                .trim()
+                .strip_prefix("max-age=")?
+                .parse::<u64>()
+                .ok()
+        })
+        .map(Duration::from_secs)
 }
 
 #[async_trait::async_trait]
 impl Middleware for CacheMiddleware {
-    async fn handle(&self, req: Request, extensions: &mut Extensions, next: Next<'_>) -> reqwest_middleware::Result<Response> {
+    async fn handle(
+        &self,
+        req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<Response> {
         let Some(key) = cache_key(&req) else {
             return next.run(req, extensions).await;
         };
@@ -231,13 +262,31 @@ impl Middleware for CacheMiddleware {
         };
 
         let status = response.status().as_u16();
-        let content_type =
-            response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_string);
-        let etag = response.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         let url = response.url().clone();
-        let body = response.bytes().await.map_err(reqwest_middleware::Error::Reqwest)?;
+        let body = response
+            .bytes()
+            .await
+            .map_err(reqwest_middleware::Error::Reqwest)?;
 
-        let cached = CachedResponse { status, content_type, etag, body, url, stored_at: Instant::now(), max_age };
+        let cached = CachedResponse {
+            status,
+            content_type,
+            etag,
+            body,
+            url,
+            stored_at: Instant::now(),
+            max_age,
+        };
         self.cache.insert(key, cached.clone()).await;
         Ok(cached.into_response())
     }
@@ -265,11 +314,13 @@ mod tests {
                 let calls = calls_for_handler.clone();
                 async move {
                     let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
-                    let mut response = axum::response::Json(serde_json::json!({ "call": n })).into_response();
+                    let mut response =
+                        axum::response::Json(serde_json::json!({ "call": n })).into_response();
                     if let Some(cc) = cache_control {
-                        response
-                            .headers_mut()
-                            .insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static(cc));
+                        response.headers_mut().insert(
+                            axum::http::header::CACHE_CONTROL,
+                            axum::http::HeaderValue::from_static(cc),
+                        );
                         response.headers_mut().insert(
                             axum::http::header::ETAG,
                             axum::http::HeaderValue::from_str(&format!("\"{n}\"")).unwrap(),
@@ -294,12 +345,33 @@ mod tests {
         let (base_url, calls) = spawn_server(Some("max-age=60")).await;
         let client = build_client("test-agent", 16 * 1024 * 1024);
 
-        let first: serde_json::Value = client.get(format!("{base_url}/thing")).send().await.unwrap().json().await.unwrap();
-        let second: serde_json::Value = client.get(format!("{base_url}/thing")).send().await.unwrap().json().await.unwrap();
+        let first: serde_json::Value = client
+            .get(format!("{base_url}/thing"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let second: serde_json::Value = client
+            .get(format!("{base_url}/thing"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
 
         assert_eq!(first["call"], 1);
-        assert_eq!(second["call"], 1, "the second call must be served from cache, not a fresh request");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "the real server must only have been hit once");
+        assert_eq!(
+            second["call"], 1,
+            "the second call must be served from cache, not a fresh request"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the real server must only have been hit once"
+        );
     }
 
     #[tokio::test]
@@ -307,11 +379,28 @@ mod tests {
         let (base_url, calls) = spawn_server(None).await;
         let client = build_client("test-agent", 16 * 1024 * 1024);
 
-        let first: serde_json::Value = client.get(format!("{base_url}/thing")).send().await.unwrap().json().await.unwrap();
-        let second: serde_json::Value = client.get(format!("{base_url}/thing")).send().await.unwrap().json().await.unwrap();
+        let first: serde_json::Value = client
+            .get(format!("{base_url}/thing"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let second: serde_json::Value = client
+            .get(format!("{base_url}/thing"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
 
         assert_eq!(first["call"], 1);
-        assert_eq!(second["call"], 2, "an ordinary, non-cache-control-bearing response must never be cached");
+        assert_eq!(
+            second["call"], 2,
+            "an ordinary, non-cache-control-bearing response must never be cached"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
@@ -320,13 +409,30 @@ mod tests {
         let (base_url, calls) = spawn_server(Some("max-age=60")).await;
         let client = build_client("test-agent", 16 * 1024 * 1024);
 
-        let a: serde_json::Value =
-            client.get(format!("{base_url}/thing")).bearer_auth("sk_a").send().await.unwrap().json().await.unwrap();
-        let b: serde_json::Value =
-            client.get(format!("{base_url}/thing")).bearer_auth("sk_b").send().await.unwrap().json().await.unwrap();
+        let a: serde_json::Value = client
+            .get(format!("{base_url}/thing"))
+            .bearer_auth("sk_a")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let b: serde_json::Value = client
+            .get(format!("{base_url}/thing"))
+            .bearer_auth("sk_b")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
 
         assert_eq!(a["call"], 1);
-        assert_eq!(b["call"], 2, "a different bearer token must never be served tenant A's cached response");
+        assert_eq!(
+            b["call"], 2,
+            "a different bearer token must never be served tenant A's cached response"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
@@ -335,15 +441,32 @@ mod tests {
         let (base_url, _calls) = spawn_server(Some("max-age=0")).await;
         let client = build_client("test-agent", 16 * 1024 * 1024);
 
-        let first: serde_json::Value = client.get(format!("{base_url}/thing")).send().await.unwrap().json().await.unwrap();
+        let first: serde_json::Value = client
+            .get(format!("{base_url}/thing"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         // `max-age=0` is stale immediately - no real sleep needed for this test to
         // exercise the "past its max age" branch, only for the elapsed-time check
         // itself to have something nonzero to compare against.
         tokio::time::sleep(Duration::from_millis(5)).await;
-        let second: serde_json::Value = client.get(format!("{base_url}/thing")).send().await.unwrap().json().await.unwrap();
+        let second: serde_json::Value = client
+            .get(format!("{base_url}/thing"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
 
         assert_eq!(first["call"], 1);
-        assert_eq!(second["call"], 2, "a stale entry must trigger a real refetch, not be served past its own max-age");
+        assert_eq!(
+            second["call"], 2,
+            "a stale entry must trigger a real refetch, not be served past its own max-age"
+        );
     }
 
     #[tokio::test]
@@ -362,13 +485,16 @@ mod tests {
                 let big_body = big_body_for_handler.clone();
                 async move {
                     calls.fetch_add(1, Ordering::SeqCst);
-                    let mut response = format!("{{\"n\":\"{n}\",\"pad\":\"{big_body}\"}}").into_response();
-                    response
-                        .headers_mut()
-                        .insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("max-age=60"));
-                    response
-                        .headers_mut()
-                        .insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/json"));
+                    let mut response =
+                        format!("{{\"n\":\"{n}\",\"pad\":\"{big_body}\"}}").into_response();
+                    response.headers_mut().insert(
+                        axum::http::header::CACHE_CONTROL,
+                        axum::http::HeaderValue::from_static("max-age=60"),
+                    );
+                    response.headers_mut().insert(
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_static("application/json"),
+                    );
                     response
                 }
             }),
@@ -382,7 +508,14 @@ mod tests {
 
         let client = build_client("test-agent", 3 * 1024);
         for n in ["a", "b", "c"] {
-            client.get(format!("{base_url}/item/{n}")).send().await.unwrap().bytes().await.unwrap();
+            client
+                .get(format!("{base_url}/item/{n}"))
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
         }
         // `moka`'s eviction is asynchronous - its housekeeping syncs on a fixed
         // ~300ms interval (`LOG_SYNC_INTERVAL_MILLIS`), so this has to wait past
@@ -391,13 +524,23 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let calls_before = calls.load(Ordering::SeqCst);
-        assert_eq!(calls_before, 3, "each distinct item must have been a real fetch the first time");
+        assert_eq!(
+            calls_before, 3,
+            "each distinct item must have been a real fetch the first time"
+        );
 
         // Re-request all three - whichever were evicted must be real refetches
         // (bumping the call count), and with a 3KB cap against ~1KB entries, at
         // least one eviction must have happened.
         for n in ["a", "b", "c"] {
-            client.get(format!("{base_url}/item/{n}")).send().await.unwrap().bytes().await.unwrap();
+            client
+                .get(format!("{base_url}/item/{n}"))
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
         }
         let calls_after = calls.load(Ordering::SeqCst);
         assert!(
@@ -411,7 +554,10 @@ mod tests {
         let app = Router::new().route(
             "/echo",
             get(|headers: axum::http::HeaderMap| async move {
-                headers.get("traceparent").map(|v| v.to_str().unwrap().to_string()).unwrap_or_default()
+                headers
+                    .get("traceparent")
+                    .map(|v| v.to_str().unwrap().to_string())
+                    .unwrap_or_default()
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -425,15 +571,29 @@ mod tests {
     #[tokio::test]
     async fn a_traced_client_sends_the_callers_trace_and_a_plain_one_does_not() {
         let base_url = spawn_echo_traceparent_server().await;
-        let (_telemetry, subscriber) =
-            telemetry::build("test", telemetry::Format::Json, false, "info", std::io::sink);
+        let (_telemetry, subscriber) = telemetry::build(
+            "test",
+            telemetry::Format::Json,
+            false,
+            "info",
+            std::io::sink,
+        );
         let _guard = tracing::subscriber::set_default(subscriber);
         let span = tracing::info_span!("caller");
         let expected = telemetry::trace::traceparent(&span).unwrap();
 
         let traced = build_traced_client("test-agent", 1024 * 1024);
         let sent = tracing::Instrument::instrument(
-            async { traced.get(format!("{base_url}/echo")).send().await.unwrap().text().await.unwrap() },
+            async {
+                traced
+                    .get(format!("{base_url}/echo"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap()
+            },
             span.clone(),
         )
         .await;
@@ -441,7 +601,16 @@ mod tests {
 
         let plain = build_client("test-agent", 1024 * 1024);
         let sent = tracing::Instrument::instrument(
-            async { plain.get(format!("{base_url}/echo")).send().await.unwrap().text().await.unwrap() },
+            async {
+                plain
+                    .get(format!("{base_url}/echo"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap()
+            },
             span,
         )
         .await;

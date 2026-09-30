@@ -26,8 +26,8 @@
 //! The key is random per process, so a restart simply invalidates
 //! outstanding challenges (clients get a new one).
 
-use std::collections::HashMap;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 
 use hmac::{Hmac, KeyInit, Mac};
 use rand::Rng;
@@ -61,7 +61,9 @@ pub enum RedeemError {
 impl RedeemError {
     pub fn message(&self) -> &'static str {
         match self {
-            RedeemError::Malformed | RedeemError::BadSignature => "The challenge answer is not valid.",
+            RedeemError::Malformed | RedeemError::BadSignature => {
+                "The challenge answer is not valid."
+            }
             RedeemError::Expired => "The challenge expired. Please try again.",
             RedeemError::TooEarly => "Please wait a few more seconds.",
             RedeemError::WrongClient => "The challenge was issued to a different connection.",
@@ -96,13 +98,21 @@ pub struct IssuedChallenge {
 
 impl Challenges {
     pub fn with_key(key: [u8; 32], max_redeemed: usize) -> Self {
-        Challenges { key, redeemed: Mutex::new(HashMap::new()), max_redeemed }
+        Challenges {
+            key,
+            redeemed: Mutex::new(HashMap::new()),
+            max_redeemed,
+        }
     }
 
     fn sign(&self, payload: &str) -> String {
         let mut mac = HmacSha256::new_from_slice(&self.key).expect("HMAC accepts any key length");
         mac.update(payload.as_bytes());
-        format!("{}.{}", hex::encode(payload), hex::encode(mac.finalize().into_bytes()))
+        format!(
+            "{}.{}",
+            hex::encode(payload),
+            hex::encode(mac.finalize().into_bytes())
+        )
     }
 
     fn random() -> String {
@@ -114,14 +124,25 @@ impl Challenges {
     /// A proof-of-work challenge for `client`.
     pub fn issue(&self, client: &ClientIdentity, difficulty: u32, now: i64) -> IssuedChallenge {
         let expires = now + CHALLENGE_TTL_SECS;
-        let challenge = self.sign(&format!("pow|{difficulty}|{expires}|{client}|{}", Self::random()));
-        IssuedChallenge { challenge, difficulty, expires_in: CHALLENGE_TTL_SECS }
+        let challenge = self.sign(&format!(
+            "pow|{difficulty}|{expires}|{client}|{}",
+            Self::random()
+        ));
+        IssuedChallenge {
+            challenge,
+            difficulty,
+            expires_in: CHALLENGE_TTL_SECS,
+        }
     }
 
     /// A wait token for `client`, redeemable from `now + WAIT_SECS`.
     pub fn issue_wait(&self, client: &ClientIdentity, now: i64) -> String {
         let not_before = now + WAIT_SECS;
-        self.sign(&format!("wait|{not_before}|{}|{client}|{}", not_before + WAIT_TTL_SECS, Self::random()))
+        self.sign(&format!(
+            "wait|{not_before}|{}|{client}|{}",
+            not_before + WAIT_TTL_SECS,
+            Self::random()
+        ))
     }
 
     /// Checks a signed token and returns its payload fields.
@@ -131,7 +152,8 @@ impl Challenges {
         let mac_bytes = hex::decode(mac_hex).map_err(|_| RedeemError::Malformed)?;
         let mut mac = HmacSha256::new_from_slice(&self.key).expect("HMAC accepts any key length");
         mac.update(&payload);
-        mac.verify_slice(&mac_bytes).map_err(|_| RedeemError::BadSignature)?;
+        mac.verify_slice(&mac_bytes)
+            .map_err(|_| RedeemError::BadSignature)?;
         let payload = String::from_utf8(payload).map_err(|_| RedeemError::Malformed)?;
         let fields: Vec<String> = payload.split('|').map(str::to_string).collect();
         if fields.len() != 5 {
@@ -156,8 +178,16 @@ impl Challenges {
     }
 
     /// Redeems a proof `<challenge>.<nonce>` for `client`.
-    pub fn redeem_proof(&self, proof: &str, client: &ClientIdentity, now: i64) -> Result<(), RedeemError> {
-        let (challenge, nonce) = proof.trim().rsplit_once('.').ok_or(RedeemError::Malformed)?;
+    pub fn redeem_proof(
+        &self,
+        proof: &str,
+        client: &ClientIdentity,
+        now: i64,
+    ) -> Result<(), RedeemError> {
+        let (challenge, nonce) = proof
+            .trim()
+            .rsplit_once('.')
+            .ok_or(RedeemError::Malformed)?;
         if nonce.is_empty() || nonce.len() > 20 || !nonce.bytes().all(|b| b.is_ascii_digit()) {
             return Err(RedeemError::Malformed);
         }
@@ -173,14 +203,20 @@ impl Challenges {
         if fields[3] != client.to_string() {
             return Err(RedeemError::WrongClient);
         }
-        if leading_zero_bits(&Sha256::digest(format!("{challenge}{nonce}").as_bytes())) < difficulty {
+        if leading_zero_bits(&Sha256::digest(format!("{challenge}{nonce}").as_bytes())) < difficulty
+        {
             return Err(RedeemError::NotSolved);
         }
         self.remember(challenge, expires, now)
     }
 
     /// Redeems a wait token for `client`.
-    pub fn redeem_wait(&self, token: &str, client: &ClientIdentity, now: i64) -> Result<(), RedeemError> {
+    pub fn redeem_wait(
+        &self,
+        token: &str,
+        client: &ClientIdentity,
+        now: i64,
+    ) -> Result<(), RedeemError> {
         let fields = self.open(token.trim())?;
         if fields[0] != "wait" {
             return Err(RedeemError::Malformed);
@@ -217,7 +253,10 @@ pub fn leading_zero_bits(hash: &[u8]) -> u32 {
 pub fn solve(challenge: &str, difficulty: u32) -> String {
     (0u64..)
         .map(|n| n.to_string())
-        .find(|nonce| leading_zero_bits(&Sha256::digest(format!("{challenge}{nonce}").as_bytes())) >= difficulty)
+        .find(|nonce| {
+            leading_zero_bits(&Sha256::digest(format!("{challenge}{nonce}").as_bytes()))
+                >= difficulty
+        })
         .expect("a nonce exists")
 }
 
@@ -234,9 +273,15 @@ mod tests {
         let challenges = Challenges::with_key([1; 32], 100);
         let issued = challenges.issue(&client(1), 8, 1000);
         let proof = format!("{}.{}", issued.challenge, solve(&issued.challenge, 8));
-        assert_eq!(challenges.redeem_proof(&proof, &client(2), 1001), Err(RedeemError::WrongClient));
+        assert_eq!(
+            challenges.redeem_proof(&proof, &client(2), 1001),
+            Err(RedeemError::WrongClient)
+        );
         assert_eq!(challenges.redeem_proof(&proof, &client(1), 1001), Ok(()));
-        assert_eq!(challenges.redeem_proof(&proof, &client(1), 1002), Err(RedeemError::Replayed));
+        assert_eq!(
+            challenges.redeem_proof(&proof, &client(1), 1002),
+            Err(RedeemError::Replayed)
+        );
     }
 
     #[test]
@@ -247,24 +292,56 @@ mod tests {
         // A nonce that doesn't meet the difficulty.
         let wrong = (0u64..)
             .map(|n| n.to_string())
-            .find(|n| leading_zero_bits(&Sha256::digest(format!("{}{n}", issued.challenge).as_bytes())) < 12)
+            .find(|n| {
+                leading_zero_bits(&Sha256::digest(
+                    format!("{}{n}", issued.challenge).as_bytes(),
+                )) < 12
+            })
             .unwrap();
-        assert_eq!(challenges.redeem_proof(&format!("{}.{wrong}", issued.challenge), &client(1), 1001), Err(RedeemError::NotSolved));
         assert_eq!(
-            challenges.redeem_proof(&format!("{}.{nonce}", issued.challenge), &client(1), 1000 + CHALLENGE_TTL_SECS + 1),
+            challenges.redeem_proof(&format!("{}.{wrong}", issued.challenge), &client(1), 1001),
+            Err(RedeemError::NotSolved)
+        );
+        assert_eq!(
+            challenges.redeem_proof(
+                &format!("{}.{nonce}", issued.challenge),
+                &client(1),
+                1000 + CHALLENGE_TTL_SECS + 1
+            ),
             Err(RedeemError::Expired)
         );
         // Signed with another process's key.
         let other = Challenges::with_key([2; 32], 100).issue(&client(1), 1, 1000);
         let other_nonce = solve(&other.challenge, 1);
-        assert_eq!(challenges.redeem_proof(&format!("{}.{other_nonce}", other.challenge), &client(1), 1001), Err(RedeemError::BadSignature));
+        assert_eq!(
+            challenges.redeem_proof(
+                &format!("{}.{other_nonce}", other.challenge),
+                &client(1),
+                1001
+            ),
+            Err(RedeemError::BadSignature)
+        );
         // A lowered difficulty can't be forged into the payload.
         let (payload, mac) = issued.challenge.split_once('.').unwrap();
-        let tampered = String::from_utf8(hex::decode(payload).unwrap()).unwrap().replacen("|12|", "|1|", 1);
+        let tampered = String::from_utf8(hex::decode(payload).unwrap())
+            .unwrap()
+            .replacen("|12|", "|1|", 1);
         let forged = format!("{}.{mac}", hex::encode(tampered));
-        assert_eq!(challenges.redeem_proof(&format!("{forged}.{}", solve(&forged, 1)), &client(1), 1001), Err(RedeemError::BadSignature));
-        for bad in ["", "nonsense", "zz.zz.1", &format!("{}.abc", issued.challenge)] {
-            assert_eq!(challenges.redeem_proof(bad, &client(1), 1001), Err(RedeemError::Malformed), "{bad:?}");
+        assert_eq!(
+            challenges.redeem_proof(&format!("{forged}.{}", solve(&forged, 1)), &client(1), 1001),
+            Err(RedeemError::BadSignature)
+        );
+        for bad in [
+            "",
+            "nonsense",
+            "zz.zz.1",
+            &format!("{}.abc", issued.challenge),
+        ] {
+            assert_eq!(
+                challenges.redeem_proof(bad, &client(1), 1001),
+                Err(RedeemError::Malformed),
+                "{bad:?}"
+            );
         }
     }
 
@@ -272,16 +349,37 @@ mod tests {
     fn a_wait_token_only_redeems_after_its_wait_and_once() {
         let challenges = Challenges::with_key([1; 32], 100);
         let token = challenges.issue_wait(&client(1), 1000);
-        assert_eq!(challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS - 1), Err(RedeemError::TooEarly));
-        assert_eq!(challenges.redeem_wait(&token, &client(2), 1000 + WAIT_SECS), Err(RedeemError::WrongClient));
-        assert_eq!(challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS), Ok(()));
-        assert_eq!(challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS + 1), Err(RedeemError::Replayed));
+        assert_eq!(
+            challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS - 1),
+            Err(RedeemError::TooEarly)
+        );
+        assert_eq!(
+            challenges.redeem_wait(&token, &client(2), 1000 + WAIT_SECS),
+            Err(RedeemError::WrongClient)
+        );
+        assert_eq!(
+            challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS),
+            Ok(())
+        );
+        assert_eq!(
+            challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS + 1),
+            Err(RedeemError::Replayed)
+        );
         let late = challenges.issue_wait(&client(1), 1000);
-        assert_eq!(challenges.redeem_wait(&late, &client(1), 1000 + WAIT_SECS + WAIT_TTL_SECS + 1), Err(RedeemError::Expired));
+        assert_eq!(
+            challenges.redeem_wait(&late, &client(1), 1000 + WAIT_SECS + WAIT_TTL_SECS + 1),
+            Err(RedeemError::Expired)
+        );
         // A proof-of-work challenge is not a wait token, and vice versa.
         let pow = challenges.issue(&client(1), 1, 1000);
-        assert_eq!(challenges.redeem_wait(&pow.challenge, &client(1), 1100), Err(RedeemError::Malformed));
-        assert_eq!(challenges.redeem_proof(&format!("{late}.1"), &client(1), 1011), Err(RedeemError::Malformed));
+        assert_eq!(
+            challenges.redeem_wait(&pow.challenge, &client(1), 1100),
+            Err(RedeemError::Malformed)
+        );
+        assert_eq!(
+            challenges.redeem_proof(&format!("{late}.1"), &client(1), 1011),
+            Err(RedeemError::Malformed)
+        );
     }
 
     #[test]
@@ -289,13 +387,21 @@ mod tests {
         let challenges = Challenges::with_key([1; 32], 2);
         for n in 0..2 {
             let token = challenges.issue_wait(&client(n), 0);
-            challenges.redeem_wait(&token, &client(n), WAIT_SECS).unwrap();
+            challenges
+                .redeem_wait(&token, &client(n), WAIT_SECS)
+                .unwrap();
         }
         let third = challenges.issue_wait(&client(3), 0);
-        assert_eq!(challenges.redeem_wait(&third, &client(3), WAIT_SECS), Err(RedeemError::Full));
+        assert_eq!(
+            challenges.redeem_wait(&third, &client(3), WAIT_SECS),
+            Err(RedeemError::Full)
+        );
         // Once the remembered ones expire there is room again.
         let fourth = challenges.issue_wait(&client(4), 1000);
-        assert_eq!(challenges.redeem_wait(&fourth, &client(4), 1000 + WAIT_SECS), Ok(()));
+        assert_eq!(
+            challenges.redeem_wait(&fourth, &client(4), 1000 + WAIT_SECS),
+            Ok(())
+        );
     }
 
     #[test]

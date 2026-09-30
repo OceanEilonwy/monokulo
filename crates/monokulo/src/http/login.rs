@@ -5,14 +5,14 @@
 //! "wrong password" - a client must not be able to tell the two apart via
 //! status code or message (standard account-enumeration defense). The
 //! obvious way to get this wrong is an early return for an unknown email
-//! that skips `verify_password` entirely, which is also observable via
+//! that skips `Hasher::verify` entirely, which is also observable via
 //! timing; to avoid that specific short-circuit, an unknown email still
-//! runs a full `verify_password` call against a fixed dummy hash before
+//! runs a full `Hasher::verify` call against a fixed dummy hash before
 //! failing. This isn't a hard constant-time guarantee (allocation, cache
 //! effects, etc. can still differ) but it keeps the two code paths doing
 //! the same expensive work rather than one of them being obviously cheaper.
 
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -36,10 +36,10 @@ pub struct LoginResponse {
 
 /// A real Argon2id hash of a fixed, nobody-has-this-password string,
 /// computed once and reused - just something for the "unknown email" path
-/// to run `verify_password` against so it does comparable work to the
+/// to run `Hasher::verify` against so it does comparable work to the
 /// real-user path instead of short-circuiting. See module doc comment.
-static DUMMY_PASSWORD_HASH: LazyLock<String> =
-    LazyLock::new(|| shared::password::hash_password("not-a-real-account-dummy-password").unwrap());
+/// Made by the first login's own password job (`shared::password::run`).
+static DUMMY_PASSWORD_HASH: OnceLock<String> = OnceLock::new();
 
 /// The two ways login can fail - kept separate from [`ApiError`] so the
 /// browser-facing form handler (`http/dashboard.rs`, WBS 1.3.1) can map a
@@ -63,11 +63,37 @@ pub(super) enum LoginError {
 /// token, since the caller needs both: `POST /login`'s JSON body only ever
 /// contains the token, while `POST /dashboard/login` also wants the user for
 /// its own confirmation page.
-pub(super) fn authenticate(state: &AppState, email: &str, password: &str) -> Result<(crate::db::UserRow, String), LoginError> {
-    let user = state.db.lock().get_user_by_email(email).map_err(|_| LoginError::Internal)?;
+pub(super) async fn authenticate(
+    state: &AppState,
+    email: &str,
+    password: &str,
+) -> Result<(crate::db::UserRow, shared::auth::RawToken), LoginError> {
+    let email = email.to_string();
+    let user = state
+        .db
+        .read(move |db| db.get_user_by_email(&email))
+        .await
+        .map_err(|_| LoginError::Internal)?;
 
-    let password_hash = user.as_ref().map(|u| u.password_hash.as_str()).unwrap_or(&DUMMY_PASSWORD_HASH);
-    let password_ok = shared::password::verify_password(password, password_hash);
+    // Off the async threads (`shared::password::run`), the dummy hash's
+    // one-time computation included.
+    let (password, stored) = (
+        password.to_string(),
+        user.as_ref().map(|u| u.password_hash.clone()),
+    );
+    let password_ok = shared::password::run(move |hasher| {
+        let hash = match &stored {
+            Some(hash) => hash.as_str(),
+            None => DUMMY_PASSWORD_HASH.get_or_init(|| {
+                hasher
+                    .hash("not-a-real-account-dummy-password")
+                    .unwrap_or_default()
+            }),
+        };
+        hasher.verify(&password, hash)
+    })
+    .await
+    .ok_or(LoginError::Internal)?;
 
     // Require both a real user *and* a correct password - checking
     // `password_ok` alone would (in the astronomically unlikely case
@@ -78,14 +104,15 @@ pub(super) fn authenticate(state: &AppState, email: &str, password: &str) -> Res
     };
 
     let raw_token = shared::auth::generate_session_token();
-    let token_hash = shared::auth::hash_secret_token(&raw_token);
+    let token_hash = raw_token.hash();
+    let (hash, user_id) = (token_hash.clone(), user.id.clone());
     state
         .db
-        .lock()
-        .create_session(&token_hash, &user.id, now_unix())
+        .write(move |db| db.create_session(&hash, &user_id, now_unix()))
+        .await
         .map_err(|_| LoginError::Internal)?;
     // The sign-in's own lines start the session's.
-    super::record_identity(&user.id, &token_hash);
+    super::record_identity(user.id.as_str(), &token_hash);
 
     Ok((user, raw_token))
 }
@@ -94,8 +121,13 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<(StatusCode, Json<LoginResponse>), ApiError> {
-    match authenticate(&state, &req.email, &req.password) {
-        Ok((_user, raw_token)) => Ok((StatusCode::OK, Json(LoginResponse { session_token: raw_token }))),
+    match authenticate(&state, &req.email, &req.password).await {
+        Ok((_user, raw_token)) => Ok((
+            StatusCode::OK,
+            Json(LoginResponse {
+                session_token: raw_token.expose().to_string(),
+            }),
+        )),
         Err(LoginError::Unauthorized) => Err(ApiError::Unauthorized),
         Err(LoginError::Internal) => Err(ApiError::Internal),
     }

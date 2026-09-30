@@ -9,7 +9,7 @@ use super::{layout, layout_with_head, PageChrome};
 /// One row of the orders list page - just the fields the table shows, not
 /// the full engine `OrderView`.
 pub struct OrderRowViewModel {
-    pub order_id: String,
+    pub order_id: crate::db::OrderId,
     /// The shop's own reference (a POS note, a WooCommerce order number) -
     /// caller-supplied text, always escaped.
     pub reference: Option<String>,
@@ -17,14 +17,14 @@ pub struct OrderRowViewModel {
     pub source: String,
     /// The engine's status, or "cancelled" for an unpaid order the POS
     /// cancelled (the engine does not know about POS cancellations).
-    pub status: String,
+    pub status: super::DisplayStatus,
     pub amount: String,
     pub currency: String,
     pub created_at: i64,
 }
 
 pub struct OrdersViewModel {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub orders: Vec<OrderRowViewModel>,
     /// The search as typed (empty for none).
@@ -38,7 +38,11 @@ pub const ORDERS_PER_PAGE: u32 = 50;
 
 /// The orders table shared by the Orders page and the store page's
 /// "Recent orders".
-pub fn orders_table(connection_id: &str, orders: &[OrderRowViewModel], clock: &super::time::Clock) -> Markup {
+pub fn orders_table(
+    connection_id: &str,
+    orders: &[OrderRowViewModel],
+    clock: &super::time::Clock,
+) -> Markup {
     html! {
         // On a phone each row is a card (`.table-cards`): order and status,
         // then amount and date, then reference and source.
@@ -47,10 +51,10 @@ pub fn orders_table(connection_id: &str, orders: &[OrderRowViewModel], clock: &s
             tbody {
                 @for order in orders {
                     tr {
-                        td class="card-title" { a class="order-id" href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::order_id_short(&order.order_id)) } }
+                        td class="card-title" { a class="order-id" href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::order_id_short(order.order_id.as_str())) } }
                         td class="card-meta" { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } }
                         td class="card-meta" { (order.source) }
-                        td class="card-status" { (super::state_badge(&order.status)) }
+                        td class="card-status" { (super::state_badge(order.status)) }
                         td class="card-amount nowrap" { (super::display_amount(&order.amount, &order.currency)) }
                         td class="card-when" { (clock.time(order.created_at)) }
                     }
@@ -121,7 +125,11 @@ pub fn list_results(data: &OrdersViewModel, clock: &super::time::Clock) -> Marku
         if page > 0 {
             query.push(format!("page={page}"));
         }
-        if query.is_empty() { base.clone() } else { format!("{base}?{}", query.join("&")) }
+        if query.is_empty() {
+            base.clone()
+        } else {
+            format!("{base}?{}", query.join("&"))
+        }
     };
     html! {
         div id="orders-results" {
@@ -130,7 +138,7 @@ pub fn list_results(data: &OrdersViewModel, clock: &super::time::Clock) -> Marku
                     @if data.search.is_empty() { "No orders yet." } @else { "No orders match “" (data.search) "”." }
                 }
             } @else {
-                (orders_table(&data.connection_id, &data.orders, clock))
+                (orders_table(data.connection_id.as_str(), &data.orders, clock))
             }
             @if data.page > 0 || data.has_more {
                 p class="orders-pages" {
@@ -151,7 +159,7 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
     let base = orders_base(data);
     let body = html! {
         div class="wrap" {
-            (super::store_breadcrumb(&data.connection_id, &data.display_name, false))
+            (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, false))
             h1 { "Orders" }
             form method="get" action=(base) class="orders-search" role="search"
                 fx-action=(base) fx-target="#orders-results" fx-push-url fx-replace {
@@ -163,37 +171,45 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
             (list_results(data, &chrome.clock))
         }
     };
-    layout(chrome, &format!("Orders - {} - Monokulo", data.display_name), body)
+    layout(
+        chrome,
+        &format!("Orders - {} - Monokulo", data.display_name),
+        body,
+    )
 }
 
 /// Percent-encodes a query value (a search term).
 fn urlencoding(value: &str) -> String {
-    value.bytes().map(|b| match b {
-        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-        _ => format!("%{b:02X}"),
-    }).collect()
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// One payment row inside the order detail page's `payments` table - mirrors
 /// the engine's own `PaymentView`, but with every timestamp/optional field
 /// already rendered to a display string (`Option<i64>` -> human-readable UTC
-/// or a muted dash) rather than left for the view to interpret. The display
-/// strings are trusted HTML (a dash fallback carries a real `<span>`), so
-/// they're rendered via `PreEscaped` below, same as every other
-/// already-rendered display string on this page.
+/// or a muted dash) rather than left for the view to interpret. Values that
+/// may be a dash are `Markup` (`templates::display_or_dash`), escaped when
+/// built, so nothing here is rendered unescaped from a string.
 pub struct PaymentRowViewModel {
     pub txid: String,
     pub output_index: i64,
     pub amount_piconero: u64,
     pub first_seen_at: i64,
-    pub block_height_display: String,
+    pub block_height_display: maud::Markup,
     pub voided_at: Option<i64>,
 }
 
 pub struct OrderDetailData {
     /// Taken on the POS: admins get a link to its session's timeline.
     pub from_pos: bool,
-    pub order_id: String,
+    pub order_id: crate::db::OrderId,
     /// Raw, *not* pre-rendered to a trusted-HTML display string like the
     /// timestamp fields below - a merchant order id is caller-supplied free
     /// text, so it must stay ordinary escaped output, never `PreEscaped`.
@@ -205,7 +221,7 @@ pub struct OrderDetailData {
     pub rate_provider: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
-    pub status: String,
+    pub status: super::DisplayStatus,
     pub confirmations: u64,
     pub confirmations_required_display: String,
     pub base_currency_display: String,
@@ -218,11 +234,11 @@ pub struct OrderDetailData {
     pub updated_at: i64,
     pub payments: Vec<PaymentRowViewModel>,
     pub payment_link: String,
-    pub scan_range_display: String,
+    pub scan_range_display: maud::Markup,
 }
 
 pub struct OrderDetailViewModel {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub order: Option<OrderDetailData>,
 }
@@ -291,7 +307,7 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
                 tr { th { "Rate provider" } td { (order.rate_provider) } }
                 tr { th { "XMR amount (piconero)" } td { (order.xmr_amount_piconero) } }
                 tr { th { "Amount received (piconero)" } td { (order.amount_received_piconero) } }
-                tr { th { "Status" } td { (super::state_badge(&order.status)) } }
+                tr { th { "Status" } td { (super::state_badge(order.status)) } }
                 tr { th { "Confirmations" } td { (order.confirmations) } }
                 tr { th { "Confirmations required" } td { (order.confirmations_required_display) } }
                 tr { th { "Store base currency (at order creation)" } td { (order.base_currency_display) } }
@@ -308,7 +324,7 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
                 tr { th { "Created at" } td { (clock.time(order.created_at)) } }
                 tr { th { "Expires at" } td { (clock.time(order.expires_at)) } }
                 tr { th { "Updated at" } td { (clock.time(order.updated_at)) } }
-                tr { th { "Scan range" } td { (PreEscaped(&order.scan_range_display)) } }
+                tr { th { "Scan range" } td { (order.scan_range_display) } }
             }
             h2 { "Payments" }
             div class="table-scroll" { table class="payments-table" {
@@ -325,7 +341,7 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
                             td { (payment.output_index) }
                             td { (payment.amount_piconero) }
                             td { (clock.time(payment.first_seen_at)) }
-                            td { (PreEscaped(&payment.block_height_display)) }
+                            td { (payment.block_height_display) }
                             td { (clock.time_or_dash(payment.voided_at)) }
                         }
                     }
@@ -342,10 +358,10 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
 
     let body = html! {
         div class="wrap" {
-            (super::store_breadcrumb(&data.connection_id, &data.display_name, true))
+            (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, true))
             @if let Some(order) = &data.order {
                 h1 class="order-title" {
-                    span { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::order_id_short(&order.order_id)) } }
+                    span { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::order_id_short(order.order_id.as_str())) } }
                     a class="share-btn" id="share-payment-link" href=(order.payment_link) target="_blank" rel="noopener"
                        aria-label="Share payment link" title="Share payment link" {
                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -362,10 +378,10 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                     "Share the payment link (icon above) with whoever needs to pay this order. "
                     (super::reload_button(&chrome.current_path))
                     " "
-                    (super::logs_link(chrome, "order.id", &order.order_id, "Logs for this order"))
+                    (super::logs_link(chrome, "order.id", order.order_id.as_str(), "Logs for this order"))
                     @if order.from_pos && chrome.is_admin {
                         " "
-                        a class="logs-link" href=(format!("/dashboard/admin/logs/pos?order={}", url::form_urlencoded::byte_serialize(order.order_id.as_bytes()).collect::<String>())) {
+                        a class="logs-link" href=(format!("/dashboard/admin/logs/pos?order={}", url::form_urlencoded::byte_serialize(order.order_id.as_str().as_bytes()).collect::<String>())) {
                             "POS session"
                         }
                     }
@@ -387,7 +403,10 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
     };
 
     let title = match &data.order {
-        Some(order) => format!("Order {} - {} - Monokulo", order.order_id, data.display_name),
+        Some(order) => format!(
+            "Order {} - {} - Monokulo",
+            order.order_id, data.display_name
+        ),
         None => format!("Order not found - {} - Monokulo", data.display_name),
     };
     layout_with_head(chrome, &title, extra_head, body)
@@ -404,13 +423,13 @@ mod tests {
     #[test]
     fn list_page_links_to_each_order_detail_page() {
         let data = OrdersViewModel {
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             orders: vec![OrderRowViewModel {
-                order_id: "pay_xyz".to_string(),
+                order_id: shared::ids::OrderId::new("pay_xyz".to_string()),
                 reference: Some("wc-1042".to_string()),
                 source: "WooCommerce".to_string(),
-                status: "paid".to_string(),
+                status: shared::order_status::OrderStatus::Paid.into(),
                 amount: "25.00".to_string(),
                 currency: "USD".to_string(),
                 created_at: 1000,
@@ -422,13 +441,16 @@ mod tests {
         let html = list_page(&chrome(), &data).into_string();
         assert!(html.contains("pay_xyz"));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/pay_xyz""#));
-        assert!(html.contains(r#"href="/dashboard/stores/conn_1""#), "expected a back-to-store link");
+        assert!(
+            html.contains(r#"href="/dashboard/stores/conn_1""#),
+            "expected a back-to-store link"
+        );
     }
 
     fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
         OrderDetailData {
             from_pos: false,
-            order_id: "pay_abc123".to_string(),
+            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             merchant_order_id: None,
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             currency: "XMR".to_string(),
@@ -437,7 +459,7 @@ mod tests {
             rate_provider: "xmr".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 0,
-            status: "pending".to_string(),
+            status: shared::order_status::OrderStatus::Pending.into(),
             confirmations: 0,
             confirmations_required_display: "10".to_string(),
             base_currency_display: "XMR".to_string(),
@@ -449,23 +471,34 @@ mod tests {
             updated_at: 1000,
             payments: vec![],
             payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
-            scan_range_display: "<span class=\"muted\">-</span>".to_string(),
+            scan_range_display: maud::html! { span class="muted" { "-" } },
         }
     }
 
     #[test]
     fn detail_page_hides_the_double_spend_row_entirely_when_none_was_detected() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)) };
+        let data = OrderDetailViewModel {
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            display_name: "shop.example.com".to_string(),
+            order: Some(test_order_detail_data(None)),
+        };
         let html = detail_page(&chrome(), &data).into_string();
         // The real point of this follow-up: no dash, no row at all - a
         // permanently-visible "Double-spend detected at" label reads as a
         // warning even when it says nothing happened.
-        assert!(!html.contains("Double-spend detected at"), "expected the row fully absent when no double-spend occurred, got: {html}");
+        assert!(
+            !html.contains("Double-spend detected at"),
+            "expected the row fully absent when no double-spend occurred, got: {html}"
+        );
     }
 
     #[test]
     fn detail_page_uses_order_breadcrumb() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)) };
+        let data = OrderDetailViewModel {
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            display_name: "shop.example.com".to_string(),
+            order: Some(test_order_detail_data(None)),
+        };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><span class="breadcrumb-sep" aria-hidden="true">›</span><a href="/dashboard/stores/conn_1/orders">Orders</a></nav>"#));
         assert!(html.contains(r#"<span class="order-title-label">Order · </span><code class="order-title-id"><span class="mid-ellipsis" title="pay_abc123"><span class="mid-head">pay_</span><span class="mid-tail">abc123</span></span></code>"#), "{html}");
@@ -473,21 +506,38 @@ mod tests {
 
     #[test]
     fn detail_page_shows_the_double_spend_row_when_one_was_detected() {
-        let data =
-            OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(Some(1_700_000_000))) };
+        let data = OrderDetailViewModel {
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            display_name: "shop.example.com".to_string(),
+            order: Some(test_order_detail_data(Some(1_700_000_000))),
+        };
         let html = detail_page(&chrome(), &data).into_string();
-        assert!(html.contains("Double-spend detected at"), "expected the row present when a double-spend was detected, got: {html}");
-        assert!(html.contains(r#"datetime="2023-11-14T22:13:20Z""#) && html.contains(">14 Nov 2023, 22:13</time>"), "expected the real detected-at time shown, got: {html}");
+        assert!(
+            html.contains("Double-spend detected at"),
+            "expected the row present when a double-spend was detected, got: {html}"
+        );
+        assert!(
+            html.contains(r#"datetime="2023-11-14T22:13:20Z""#)
+                && html.contains(">14 Nov 2023, 22:13</time>"),
+            "expected the real detected-at time shown, got: {html}"
+        );
     }
 
     #[test]
     fn detail_page_shows_a_not_found_state_when_order_is_none() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: None };
+        let data = OrderDetailViewModel {
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            display_name: "shop.example.com".to_string(),
+            order: None,
+        };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.to_lowercase().contains("not found"));
         // The nav's own status-dot poll script always renders regardless -
         // it's the order-specific share-button script that must be absent
         // with no order to attach it to.
-        assert!(!html.contains("share-payment-link"), "no order means no share button to enhance");
+        assert!(
+            !html.contains("share-payment-link"),
+            "no order means no share button to enhance"
+        );
     }
 }

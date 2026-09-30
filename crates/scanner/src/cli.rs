@@ -13,12 +13,18 @@ use crate::local_admin::BootstrapWalletArgs;
 
 #[derive(Debug)]
 pub enum Action {
-    RunServer { strict_tls: bool },
+    RunServer {
+        strict_tls: bool,
+    },
     /// Mints a fresh admin secret for a tenant, invalidating the old one - see
     /// `local_admin::rotate_secret`.
-    RotateSecret { pk: Option<String> },
+    RotateSecret {
+        pk: Option<String>,
+    },
     /// Prints a tenant's non-secret settings - see `local_admin::show_tenant`.
-    ShowTenant { pk: Option<String> },
+    ShowTenant {
+        pk: Option<String>,
+    },
     /// Provisions the one tenant a self-hosted deployment needs, replacing what
     /// used to be the `[wallet]` section of the (now-removed) TOML config file -
     /// see `local_admin::bootstrap_wallet`.
@@ -103,7 +109,9 @@ EXAMPLES:
 /// is that same idea with the "next to a config file" half removed, since
 /// there is no config file to be next to).
 pub fn database_path() -> std::path::PathBuf {
-    std::env::var("SCANNER_DB_PATH").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("scanner.db"))
+    std::env::var("SCANNER_DB_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("scanner.db"))
 }
 
 /// Parses the full process argv (excluding argv[0]). `--help`/`-h` short-circuits
@@ -116,16 +124,24 @@ pub fn parse_args(args: &[String]) -> Result<Action, String> {
         return parse_bootstrap_wallet_args(args).map(Action::BootstrapWallet);
     }
     if args.iter().any(|a| a == "--rotate-secret") {
-        return Ok(Action::RotateSecret { pk: parse_pk_arg(args)? });
+        return Ok(Action::RotateSecret {
+            pk: parse_pk_arg(args)?,
+        });
     }
     if args.iter().any(|a| a == "--show-tenant") {
-        return Ok(Action::ShowTenant { pk: parse_pk_arg(args)? });
+        return Ok(Action::ShowTenant {
+            pk: parse_pk_arg(args)?,
+        });
     }
     let mut strict_tls = false;
     for arg in args {
         match arg.as_str() {
             "--strict-tls" => strict_tls = true,
-            other => return Err(format!("unrecognized argument {other:?} - run with --help for usage")),
+            other => {
+                return Err(format!(
+                    "unrecognized argument {other:?} - run with --help for usage"
+                ))
+            }
         }
     }
     Ok(Action::RunServer { strict_tls })
@@ -137,7 +153,11 @@ fn parse_pk_arg(args: &[String]) -> Result<Option<String>, String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--pk" {
-            pk = Some(iter.next().ok_or_else(|| "--pk needs a value".to_string())?.clone());
+            pk = Some(
+                iter.next()
+                    .ok_or_else(|| "--pk needs a value".to_string())?
+                    .clone(),
+            );
         }
     }
     Ok(pk)
@@ -152,15 +172,33 @@ fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, S
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--primary-address" => primary_address = Some(iter.next().ok_or("--primary-address needs a value")?.clone()),
-            "--view-key" => view_key_hex = Some(iter.next().ok_or("--view-key needs a value")?.clone()),
-            "--spend-pubkey" => spend_pubkey_hex = Some(iter.next().ok_or("--spend-pubkey needs a value")?.clone()),
+            "--primary-address" => {
+                primary_address = Some(
+                    iter.next()
+                        .ok_or("--primary-address needs a value")?
+                        .clone(),
+                )
+            }
+            "--view-key" => {
+                view_key_hex = Some(iter.next().ok_or("--view-key needs a value")?.clone())
+            }
+            "--spend-pubkey" => {
+                spend_pubkey_hex = Some(iter.next().ok_or("--spend-pubkey needs a value")?.clone())
+            }
             "--network" => network = iter.next().ok_or("--network needs a value")?.clone(),
             "--key-custody-backend" => {
-                key_custody_backend = Some(iter.next().ok_or("--key-custody-backend needs a value")?.clone())
+                key_custody_backend = Some(
+                    iter.next()
+                        .ok_or("--key-custody-backend needs a value")?
+                        .clone(),
+                )
             }
             "--bootstrap-wallet" => {}
-            other => return Err(format!("unrecognized argument {other:?} for --bootstrap-wallet")),
+            other => {
+                return Err(format!(
+                    "unrecognized argument {other:?} for --bootstrap-wallet"
+                ))
+            }
         }
     }
     Ok(BootstrapWalletArgs {
@@ -173,6 +211,7 @@ fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, S
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -206,18 +245,38 @@ mod tests {
 
     #[test]
     fn help_flag_wins_over_everything_else_wherever_it_appears() {
-        assert!(matches!(parse_args(&args(&["--help"])).unwrap(), Action::Help));
+        assert!(matches!(
+            parse_args(&args(&["--help"])).unwrap(),
+            Action::Help
+        ));
         assert!(matches!(parse_args(&args(&["-h"])).unwrap(), Action::Help));
-        assert!(matches!(parse_args(&args(&["--bootstrap-wallet", "--help"])).unwrap(), Action::Help));
-        assert!(matches!(parse_args(&args(&["--rotate-secret", "--help"])).unwrap(), Action::Help));
-        assert!(matches!(parse_args(&args(&["--show-tenant", "--help"])).unwrap(), Action::Help));
+        assert!(matches!(
+            parse_args(&args(&["--bootstrap-wallet", "--help"])).unwrap(),
+            Action::Help
+        ));
+        assert!(matches!(
+            parse_args(&args(&["--rotate-secret", "--help"])).unwrap(),
+            Action::Help
+        ));
+        assert!(matches!(
+            parse_args(&args(&["--show-tenant", "--help"])).unwrap(),
+            Action::Help
+        ));
     }
 
     #[test]
     fn help_text_documents_every_real_flag() {
         for flag in [
-            "--strict-tls", "--bootstrap-wallet", "--primary-address", "--view-key", "--spend-pubkey", "--network",
-            "--rotate-secret", "--show-tenant", "--pk", "--help",
+            "--strict-tls",
+            "--bootstrap-wallet",
+            "--primary-address",
+            "--view-key",
+            "--spend-pubkey",
+            "--network",
+            "--rotate-secret",
+            "--show-tenant",
+            "--pk",
+            "--help",
         ] {
             assert!(HELP_TEXT.contains(flag), "help text should mention {flag}");
         }
@@ -245,9 +304,12 @@ mod tests {
         assert!(parse_args(&args(&["--bootstrap-wallet", "--primary-address", "4abc"])).is_err());
         assert!(parse_args(&args(&[
             "--bootstrap-wallet",
-            "--primary-address", "4abc",
-            "--view-key", "aa",
-            "--spend-pubkey", "bb",
+            "--primary-address",
+            "4abc",
+            "--view-key",
+            "aa",
+            "--spend-pubkey",
+            "bb",
         ]))
         .is_ok());
     }
@@ -256,9 +318,12 @@ mod tests {
     fn bootstrap_wallet_defaults_network_to_mainnet_and_origins_to_empty() {
         match parse_args(&args(&[
             "--bootstrap-wallet",
-            "--primary-address", "4abc",
-            "--view-key", "aa",
-            "--spend-pubkey", "bb",
+            "--primary-address",
+            "4abc",
+            "--view-key",
+            "aa",
+            "--spend-pubkey",
+            "bb",
         ]))
         .unwrap()
         {
@@ -273,10 +338,14 @@ mod tests {
     fn bootstrap_wallet_parses_network_and_refuses_the_removed_origins_flag() {
         match parse_args(&args(&[
             "--bootstrap-wallet",
-            "--primary-address", "4abc",
-            "--view-key", "aa",
-            "--spend-pubkey", "bb",
-            "--network", "stagenet",
+            "--primary-address",
+            "4abc",
+            "--view-key",
+            "aa",
+            "--spend-pubkey",
+            "bb",
+            "--network",
+            "stagenet",
         ]))
         .unwrap()
         {
@@ -287,10 +356,14 @@ mod tests {
         // monokulo's), so the old flag is an error rather than silently ignored.
         let refused = parse_args(&args(&[
             "--bootstrap-wallet",
-            "--primary-address", "4abc",
-            "--view-key", "aa",
-            "--spend-pubkey", "bb",
-            "--allowed-origins", "https://a.example",
+            "--primary-address",
+            "4abc",
+            "--view-key",
+            "aa",
+            "--spend-pubkey",
+            "bb",
+            "--allowed-origins",
+            "https://a.example",
         ]));
         assert!(refused.is_err());
     }
@@ -301,7 +374,10 @@ mod tests {
         assert_eq!(database_path(), std::path::PathBuf::from("scanner.db"));
 
         std::env::set_var("SCANNER_DB_PATH", "/tmp/somewhere/custom.db");
-        assert_eq!(database_path(), std::path::PathBuf::from("/tmp/somewhere/custom.db"));
+        assert_eq!(
+            database_path(),
+            std::path::PathBuf::from("/tmp/somewhere/custom.db")
+        );
         std::env::remove_var("SCANNER_DB_PATH");
     }
 }

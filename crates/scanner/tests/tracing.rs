@@ -35,13 +35,20 @@ fn lines() -> Vec<Value> {
     let lines = LINES.get_or_init(|| {
         let lines = Lines::default();
         let writer = lines.clone();
-        let (_telemetry, subscriber) =
-            telemetry::build("scanner", telemetry::Format::Json, false, "info", move || writer.clone());
+        let (_telemetry, subscriber) = telemetry::build(
+            "scanner",
+            telemetry::Format::Json,
+            false,
+            "info",
+            move || writer.clone(),
+        );
         tracing::subscriber::set_global_default(subscriber).unwrap();
         lines
     });
     let text = String::from_utf8(lines.0.lock().clone()).unwrap();
-    text.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    text.lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
 }
 
 #[tokio::test]
@@ -54,7 +61,10 @@ async fn a_webhook_attempt_is_logged_in_its_own_trace_and_the_merchant_gets_that
         post(move |headers: HeaderMap| {
             let received = received_for_server.clone();
             async move {
-                *received.lock() = headers.get("traceparent").and_then(|v| v.to_str().ok()).map(str::to_string);
+                *received.lock() = headers
+                    .get("traceparent")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
                 StatusCode::OK
             }
         }),
@@ -78,7 +88,9 @@ async fn a_webhook_attempt_is_logged_in_its_own_trace_and_the_merchant_gets_that
         )
         .unwrap()
         .tenant;
-    let webhook = store.create_webhook(&tenant.id, &url, "{}", "whsec", 1).unwrap();
+    let webhook = store
+        .create_webhook(&tenant.id, &url, "{}", "whsec", 1)
+        .unwrap();
     let index = store.allocate_minor_index(&tenant.id).unwrap();
     let order = store
         .create_order(NewOrder {
@@ -93,12 +105,25 @@ async fn a_webhook_attempt_is_logged_in_its_own_trace_and_the_merchant_gets_that
             expires_at: 10_000_000_000,
         })
         .unwrap();
-    store.enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 100).unwrap();
+    store
+        .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 100)
+        .unwrap();
     let store = store.into_shared();
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
 
-    let sent =
-        scanner::webhook_delivery::run_delivery_tick(&store, &client, true, Duration::from_secs(5), 8, 1000).await.unwrap();
+    let sent = scanner::webhook_delivery::run_delivery_tick(
+        &store,
+        &client,
+        true,
+        Duration::from_secs(5),
+        8,
+        1000,
+    )
+    .await
+    .unwrap();
     assert_eq!(sent, 1);
 
     let line = lines()
@@ -108,6 +133,12 @@ async fn a_webhook_attempt_is_logged_in_its_own_trace_and_the_merchant_gets_that
     assert_eq!(line["message"], "webhook delivered");
     assert_eq!(line["attributes"]["order.id"], order.id.as_str());
     assert_eq!(line["attributes"]["attempt"], 1);
-    let traceparent = received.lock().clone().expect("the merchant got a traceparent");
-    assert!(traceparent.contains(line["trace_id"].as_str().unwrap()), "{traceparent} vs {line}");
+    let traceparent = received
+        .lock()
+        .clone()
+        .expect("the merchant got a traceparent");
+    assert!(
+        traceparent.contains(line["trace_id"].as_str().unwrap()),
+        "{traceparent} vs {line}"
+    );
 }

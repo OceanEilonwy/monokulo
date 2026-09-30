@@ -23,7 +23,16 @@ struct Seen {
     held_back: u64,
 }
 
+#[cfg(not(any(test, feature = "test-support")))]
 static SEEN: LazyLock<Mutex<HashMap<String, Seen>>> = LazyLock::new(Default::default);
+
+// Under test, each thread (each test) has its own throttle state, so one
+// test's event can't hold back another's: every test sees the first event
+// of each kind logged, whatever ran before it in the same binary.
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static SEEN: LazyLock<Mutex<HashMap<String, Seen>>> = LazyLock::new(Default::default);
+}
 
 /// Logs a `tracing` event unless one with the same key was logged less than
 /// [`INTERVAL`] ago. The key names the kind of problem and what it is about
@@ -52,7 +61,14 @@ pub fn admit(key: &str) -> Option<u64> {
 }
 
 fn admit_at(key: &str, now: Instant) -> Option<u64> {
-    let mut seen = SEEN.lock();
+    #[cfg(not(any(test, feature = "test-support")))]
+    return admit_in(&SEEN, key, now);
+    #[cfg(any(test, feature = "test-support"))]
+    return SEEN.with(|seen| admit_in(seen, key, now));
+}
+
+fn admit_in(seen: &Mutex<HashMap<String, Seen>>, key: &str, now: Instant) -> Option<u64> {
+    let mut seen = seen.lock();
     // Bounded: a key per tenant is fine, a key per transaction would not be.
     if seen.len() > 10_000 {
         seen.retain(|_, s| now.duration_since(s.last_logged) < INTERVAL);
@@ -69,7 +85,13 @@ fn admit_at(key: &str, now: Instant) -> Option<u64> {
             Some(held_back)
         }
         None => {
-            seen.insert(key.to_string(), Seen { last_logged: now, held_back: 0 });
+            seen.insert(
+                key.to_string(),
+                Seen {
+                    last_logged: now,
+                    held_back: 0,
+                },
+            );
             Some(0)
         }
     }
@@ -86,8 +108,14 @@ mod tests {
         assert_eq!(admit_at(key, start), Some(0));
         assert_eq!(admit_at(key, start + Duration::from_secs(1)), None);
         assert_eq!(admit_at(key, start + Duration::from_secs(30)), None);
-        assert_eq!(admit_at(key, start + INTERVAL + Duration::from_secs(1)), Some(2));
-        assert_eq!(admit_at("test:other", start + Duration::from_secs(2)), Some(0));
+        assert_eq!(
+            admit_at(key, start + INTERVAL + Duration::from_secs(1)),
+            Some(2)
+        );
+        assert_eq!(
+            admit_at("test:other", start + Duration::from_secs(2)),
+            Some(0)
+        );
     }
 
     #[test]

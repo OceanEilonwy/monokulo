@@ -57,8 +57,8 @@ use std::time::Duration;
 
 use monero::{Address, Transaction};
 use shared::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex, WalletHandle,
-    WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex,
+    WalletHandle, WalletMaterial,
 };
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
@@ -66,9 +66,9 @@ use tokio::sync::Mutex;
 use crate::protocol::{read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse};
 use crate::{
     DeriveSubaddressRequest, MatchedOutputWire, NetworkWire, RangeWire, RegisterWalletRequest,
-    RemoveWalletRequest, ScanTxOutputsForIndicesRequest, ScanTxOutputsRequest, SealRequest, SealedMaterialWire,
-    SubaddressIndexWire, TransactionWire, UnsealAndRegisterRequest, WalletHandleWire,
-    WalletMaterialWire,
+    RemoveWalletRequest, ScanTxOutputsForIndicesRequest, ScanTxOutputsRequest, SealRequest,
+    SealedMaterialWire, SubaddressIndexWire, TransactionWire, UnsealAndRegisterRequest,
+    WalletHandleWire, WalletMaterialWire,
 };
 
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -82,8 +82,8 @@ pub const DEFAULT_POOL_SIZE: usize = 4;
 /// client registers so it can later ask whether the server still has it. If
 /// not, the server lost its memory and every handle it issued is gone.
 const CANARY_VIEW_KEY: [u8; 32] = [
-    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01, 0x02, 0x03, 0x04,
-    0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x01,
+    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01,
+    0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x01,
 ];
 
 pub struct SocketKeyCustody {
@@ -123,7 +123,8 @@ impl SocketKeyCustody {
         let first = tokio::time::timeout(call_timeout, open(&socket_path))
             .await
             .map_err(|_| call_timed_out(call_timeout))??;
-        let mut slots: Vec<Mutex<Option<UnixStream>>> = (0..pool_size.max(1)).map(|_| Mutex::new(None)).collect();
+        let mut slots: Vec<Mutex<Option<UnixStream>>> =
+            (0..pool_size.max(1)).map(|_| Mutex::new(None)).collect();
         slots[0] = Mutex::new(Some(first));
         Ok(SocketKeyCustody {
             socket_path,
@@ -156,13 +157,21 @@ impl SocketKeyCustody {
     /// connection: removing a handle nobody has (answered "unknown wallet",
     /// and harmless).
     async fn answers_a_known_request(&self) -> bool {
-        let request = KeyCustodyRequest::RemoveWallet(RemoveWalletRequest { handle: WalletHandleWire::from(WalletHandle::new()) });
-        matches!(self.call_fresh(request).await, Ok(KeyCustodyResponse::RemoveWallet(_)))
+        let request = KeyCustodyRequest::RemoveWallet(RemoveWalletRequest {
+            handle: WalletHandleWire::from(WalletHandle::generate()),
+        });
+        matches!(
+            self.call_fresh(request).await,
+            Ok(KeyCustodyResponse::RemoveWallet(_))
+        )
     }
 
     /// One request on a connection opened for it and closed after, so a
     /// stale pooled connection can't be what fails.
-    async fn call_fresh(&self, request: KeyCustodyRequest) -> Result<KeyCustodyResponse, KeyCustodyError> {
+    async fn call_fresh(
+        &self,
+        request: KeyCustodyRequest,
+    ) -> Result<KeyCustodyResponse, KeyCustodyError> {
         let deadline = tokio::time::Instant::now() + self.call_timeout;
         let mut stream = tokio::time::timeout_at(deadline, open(&self.socket_path))
             .await
@@ -174,8 +183,12 @@ impl SocketKeyCustody {
         .await
         {
             Ok(Ok(Some(response))) => Ok(response),
-            Ok(Ok(None)) => Err(KeyCustodyError::BackendUnavailable("key-custody-service closed the connection".to_string())),
-            Ok(Err(e)) => Err(KeyCustodyError::BackendUnavailable(format!("key-custody-service connection failed: {e}"))),
+            Ok(Ok(None)) => Err(KeyCustodyError::BackendUnavailable(
+                "key-custody-service closed the connection".to_string(),
+            )),
+            Ok(Err(e)) => Err(KeyCustodyError::BackendUnavailable(format!(
+                "key-custody-service connection failed: {e}"
+            ))),
             Err(_) => Err(KeyCustodyError::BackendUnavailable(format!(
                 "key-custody-service did not respond within {:?}",
                 self.call_timeout
@@ -188,7 +201,10 @@ impl SocketKeyCustody {
     /// the first to come free. A transport failure closes that connection
     /// only.
     #[tracing::instrument(level = "debug", name = "key custody call", skip_all, fields(custody.request = request.name()))]
-    async fn call(&self, request: KeyCustodyRequest) -> Result<KeyCustodyResponse, KeyCustodyError> {
+    async fn call(
+        &self,
+        request: KeyCustodyRequest,
+    ) -> Result<KeyCustodyResponse, KeyCustodyError> {
         let deadline = tokio::time::Instant::now() + self.call_timeout;
         let mut guard = tokio::time::timeout_at(deadline, self.acquire())
             .await
@@ -266,18 +282,25 @@ impl SocketKeyCustody {
 
 async fn open(path: &Path) -> Result<UnixStream, KeyCustodyError> {
     UnixStream::connect(path).await.map_err(|e| {
-        KeyCustodyError::BackendUnavailable(format!("connecting to key-custody-service at {}: {e}", path.display()))
+        KeyCustodyError::BackendUnavailable(format!(
+            "connecting to key-custody-service at {}: {e}",
+            path.display()
+        ))
     })
 }
 
 fn call_timed_out(timeout: Duration) -> KeyCustodyError {
-    KeyCustodyError::BackendUnavailable(format!("key-custody-service call did not finish within {timeout:?}"))
+    KeyCustodyError::BackendUnavailable(format!(
+        "key-custody-service call did not finish within {timeout:?}"
+    ))
 }
 
 fn canary_material() -> WalletMaterial {
     // The canary's spend public key is the view key's public key: any valid
     // point does, since nothing is ever paid to it.
-    let view = monero::PrivateKey::from_slice(&CANARY_VIEW_KEY).map(|k| k.to_bytes()).unwrap_or([1u8; 32]);
+    let view = monero::PrivateKey::from_slice(&CANARY_VIEW_KEY)
+        .map(|k| k.to_bytes())
+        .unwrap_or([1u8; 32]);
     let spend = monero::PrivateKey::from_slice(&view)
         .map(|k| monero::PublicKey::from_private_key(&k).to_bytes())
         .unwrap_or([1u8; 32]);
@@ -292,7 +315,10 @@ fn mismatched_response(expected: &str, got: &KeyCustodyResponse) -> KeyCustodyEr
 
 #[async_trait::async_trait]
 impl KeyCustody for SocketKeyCustody {
-    async fn register_wallet(&self, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+    async fn register_wallet(
+        &self,
+        material: WalletMaterial,
+    ) -> Result<WalletHandle, KeyCustodyError> {
         let request = KeyCustodyRequest::RegisterWallet(RegisterWalletRequest {
             material: WalletMaterialWire::from(&material),
         });
@@ -320,7 +346,9 @@ impl KeyCustody for SocketKeyCustody {
     }
 
     async fn seal(&self, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
-        let request = KeyCustodyRequest::Seal(SealRequest { material: WalletMaterialWire::from(material) });
+        let request = KeyCustodyRequest::Seal(SealRequest {
+            material: WalletMaterialWire::from(material),
+        });
         match self.call(request).await? {
             KeyCustodyResponse::Seal(Ok(sealed)) => sealed.to_bytes().map_err(|e| {
                 KeyCustodyError::BackendUnavailable(format!(
@@ -349,14 +377,22 @@ impl KeyCustody for SocketKeyCustody {
         }
     }
 
-    async fn unseal_and_register_idempotent(&self, sealed: &[u8], registration_id: &str) -> Result<WalletHandle, KeyCustodyError> {
+    async fn unseal_and_register_idempotent(
+        &self,
+        sealed: &[u8],
+        registration_id: &str,
+    ) -> Result<WalletHandle, KeyCustodyError> {
         let request = KeyCustodyRequest::UnsealAndRegister(UnsealAndRegisterRequest {
             sealed: SealedMaterialWire::from(sealed),
             registration_id: Some(registration_id.to_string()),
         });
         match self.call(request).await? {
             KeyCustodyResponse::UnsealAndRegister(Ok(handle)) => WalletHandle::try_from(handle)
-                .map_err(|e| KeyCustodyError::BackendUnavailable(format!("key-custody-service returned a malformed handle: {e}"))),
+                .map_err(|e| {
+                    KeyCustodyError::BackendUnavailable(format!(
+                        "key-custody-service returned a malformed handle: {e}"
+                    ))
+                }),
             KeyCustodyResponse::UnsealAndRegister(Err(e)) => Err(e.into()),
             other => Err(mismatched_response("UnsealAndRegister", &other)),
         }
@@ -374,13 +410,12 @@ impl KeyCustody for SocketKeyCustody {
             network: NetworkWire::from(network),
         });
         match self.call(request).await? {
-            KeyCustodyResponse::DeriveSubaddress(Ok(address)) => {
-                Address::try_from(&address).map_err(|e| {
+            KeyCustodyResponse::DeriveSubaddress(Ok(address)) => Address::try_from(&address)
+                .map_err(|e| {
                     KeyCustodyError::BackendUnavailable(format!(
                         "key-custody-service returned a malformed address: {e}"
                     ))
-                })
-            }
+                }),
             KeyCustodyResponse::DeriveSubaddress(Err(e)) => Err(e.into()),
             other => Err(mismatched_response("DeriveSubaddress", &other)),
         }
@@ -420,7 +455,11 @@ impl KeyCustody for SocketKeyCustody {
         tx: &Transaction,
         indices: &ScanIndices,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-        let covering_range = |indices: &ScanIndices| indices.bounds().map(|(low, high)| low..high.saturating_add(1));
+        let covering_range = |indices: &ScanIndices| {
+            indices
+                .bounds()
+                .map(|(low, high)| low..high.saturating_add(1))
+        };
         if self.indices_unsupported.load(Ordering::Relaxed) {
             return match covering_range(indices) {
                 None => Ok(Vec::new()),
@@ -453,11 +492,12 @@ impl KeyCustody for SocketKeyCustody {
             // then the range request is used from now on. Otherwise the
             // original error stands and index-set requests carry on.
             Err(KeyCustodyError::BackendUnavailable(first)) => {
-                let retry = KeyCustodyRequest::ScanTxOutputsForIndices(ScanTxOutputsForIndicesRequest {
-                    handle: WalletHandleWire::from(handle),
-                    tx: TransactionWire::from(tx),
-                    minors: indices.minors().to_vec(),
-                });
+                let retry =
+                    KeyCustodyRequest::ScanTxOutputsForIndices(ScanTxOutputsForIndicesRequest {
+                        handle: WalletHandleWire::from(handle),
+                        tx: TransactionWire::from(tx),
+                        minors: indices.minors().to_vec(),
+                    });
                 let reason = match self.call_fresh(retry).await {
                     Ok(KeyCustodyResponse::ScanTxOutputsForIndices(Ok(matches))) => {
                         return matches
@@ -472,8 +512,14 @@ impl KeyCustody for SocketKeyCustody {
                             .collect();
                     }
                     Ok(KeyCustodyResponse::ScanTxOutputsForIndices(Err(e))) => return Err(e.into()),
-                    Ok(other) => return Err(mismatched_response("ScanTxOutputsForIndices", &other)),
-                    Err(KeyCustodyError::BackendUnavailable(reason)) if self.answers_a_known_request().await => reason,
+                    Ok(other) => {
+                        return Err(mismatched_response("ScanTxOutputsForIndices", &other))
+                    }
+                    Err(KeyCustodyError::BackendUnavailable(reason))
+                        if self.answers_a_known_request().await =>
+                    {
+                        reason
+                    }
                     Err(_) => return Err(KeyCustodyError::BackendUnavailable(first)),
                 };
                 tracing::warn!(
@@ -502,14 +548,20 @@ impl KeyCustody for SocketKeyCustody {
                 let handle = self.register_wallet(canary_material()).await?;
                 *self.canary.lock() = Some(handle);
             }
-            Some(handle) => match self.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await {
+            Some(handle) => match self
+                .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
+                .await
+            {
                 Ok(_) => {}
                 Err(KeyCustodyError::UnknownWallet) => {
                     let epoch = self.epoch.fetch_add(1, Ordering::Relaxed) + 1;
                     // A restarted server may be a newer one: try index-set
                     // scans again.
                     self.indices_unsupported.store(false, Ordering::Relaxed);
-                    tracing::warn!(epoch, "key-custody-service has lost its wallets (it restarted?)");
+                    tracing::warn!(
+                        epoch,
+                        "key-custody-service has lost its wallets (it restarted?)"
+                    );
                     let handle = self.register_wallet(canary_material()).await?;
                     *self.canary.lock() = Some(handle);
                 }
@@ -518,7 +570,6 @@ impl KeyCustody for SocketKeyCustody {
         }
         Ok(self.epoch.load(Ordering::Relaxed))
     }
-
 }
 
 #[cfg(test)]
@@ -531,7 +582,7 @@ mod cancellation_tests {
         let mut client = SocketKeyCustody::not_connected_yet("unused", Duration::from_secs(60));
         client.slots = vec![Mutex::new(Some(stream))];
         let request = KeyCustodyRequest::RemoveWallet(RemoveWalletRequest {
-            handle: WalletHandleWire::from(WalletHandle::new()),
+            handle: WalletHandleWire::from(WalletHandle::generate()),
         });
         let mut call = Box::pin(client.call(request));
         // The peer received the request, but has not sent its reply. Dropping
@@ -543,6 +594,9 @@ mod cancellation_tests {
             }
         }
         drop(call);
-        assert!(client.slots[0].lock().await.is_none(), "an unread reply must never reach the next caller");
+        assert!(
+            client.slots[0].lock().await.is_none(),
+            "an unread reply must never reach the next caller"
+        );
     }
 }

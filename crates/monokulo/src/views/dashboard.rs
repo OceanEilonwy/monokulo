@@ -15,7 +15,7 @@ use super::{layout, PageChrome};
 /// signal actually available without this service also probing the
 /// merchant's own `site_url`, which nothing here does).
 pub struct DashboardStoreRow {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub platform: String,
     pub site_url: String,
@@ -28,10 +28,10 @@ pub struct DashboardStoreRow {
 /// also carrying which store it belongs to, since the dashboard shows
 /// orders across every connected store, not just one.
 pub struct DashboardOrderRow {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
-    pub order_id: String,
-    pub status: String,
+    pub order_id: crate::db::OrderId,
+    pub status: super::DisplayStatus,
     pub amount: String,
     pub currency: String,
     pub created_at: i64,
@@ -98,10 +98,10 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                                     td class="col-optional" { (order.display_name) }
                                     td {
                                         a class="order-id" href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
-                                            (super::order_id_short(&order.order_id))
+                                            (super::order_id_short(order.order_id.as_str()))
                                         }
                                     }
-                                    td { (super::state_badge(&order.status)) }
+                                    td { (super::state_badge(order.status)) }
                                     td class="nowrap" { (super::display_amount(&order.amount, &order.currency)) }
                                     td class="col-optional" { (chrome.clock.time(order.created_at)) }
                                 }
@@ -174,7 +174,10 @@ mod tests {
     fn shows_the_add_store_cta_when_the_user_has_no_stores() {
         let html = page(&chrome(), &empty_data()).into_string();
         assert!(html.contains(r#"href="/dashboard/stores/new""#));
-        assert!(!html.contains("<table"), "an empty dashboard shouldn't render a store table at all");
+        assert!(
+            !html.contains("<table"),
+            "an empty dashboard shouldn't render a store table at all"
+        );
     }
 
     #[test]
@@ -182,7 +185,7 @@ mod tests {
         let data = DashboardViewModel {
             has_stores: true,
             stores: vec![DashboardStoreRow {
-                connection_id: "conn_1".to_string(),
+                connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
                 display_name: "shop.example.com".to_string(),
                 platform: "woocommerce".to_string(),
                 site_url: "https://shop.example.com".to_string(),
@@ -191,10 +194,10 @@ mod tests {
                 health_label: "healthy".to_string(),
             }],
             recent_orders: vec![DashboardOrderRow {
-                connection_id: "conn_1".to_string(),
+                connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
                 display_name: "shop.example.com".to_string(),
-                order_id: "pay_xyz".to_string(),
-                status: "paid".to_string(),
+                order_id: shared::ids::OrderId::new("pay_xyz".to_string()),
+                status: shared::order_status::OrderStatus::Paid.into(),
                 amount: "25.00".to_string(),
                 currency: "USD".to_string(),
                 created_at: 1000,

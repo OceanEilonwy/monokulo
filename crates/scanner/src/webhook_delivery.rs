@@ -56,7 +56,9 @@ async fn resolve_and_validate(
     if allow_private {
         return Ok(None);
     }
-    let host = url.host_str().ok_or_else(|| DeliveryError::UnresolvableHost("no host".into()))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| DeliveryError::UnresolvableHost("no host".into()))?;
     // `Url::host_str` hands back an IPv6 literal in its URL form, brackets and all
     // (`[::1]`), which is not something a resolver accepts: it parses as neither an
     // IP address nor a DNS name, so *every* IPv6-literal webhook URL failed with
@@ -64,7 +66,10 @@ async fn resolve_and_validate(
     // the brackets puts the literal back through the same `lookup_host` (and
     // therefore the same `is_disallowed_address`) path a hostname takes, rather than
     // leaving a whole address family permanently undeliverable.
-    let lookup_host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    let lookup_host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
     let port = url.port_or_known_default().unwrap_or(443);
     let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((lookup_host, port))
         .await
@@ -106,7 +111,11 @@ fn pinned_client(host: &str, addr: std::net::SocketAddr) -> reqwest::Result<reqw
 fn event_id_of(delivery: &DueDelivery) -> String {
     serde_json::from_str::<Value>(&delivery.payload_json)
         .ok()
-        .and_then(|v| v.get("event_id").and_then(Value::as_str).map(str::to_string))
+        .and_then(|v| {
+            v.get("event_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| delivery.delivery_id.to_string())
 }
 
@@ -128,7 +137,12 @@ pub async fn attempt_delivery(
     // This covers DNS validation as well as the HTTP exchange. A request-level
     // timeout alone starts too late: a stalled resolver could hold the worker
     // indefinitely before `send` was even called.
-    match tokio::time::timeout(timeout, attempt_delivery_inner(client, delivery, allow_private, timeout)).await {
+    match tokio::time::timeout(
+        timeout,
+        attempt_delivery_inner(client, delivery, allow_private, timeout),
+    )
+    .await
+    {
         Ok(outcome) => outcome,
         Err(_) => DeliveryOutcome {
             delivered: false,
@@ -147,13 +161,23 @@ async fn attempt_delivery_inner(
     let parsed_url = match url::Url::parse(&delivery.url) {
         Ok(u) => u,
         Err(e) => {
-            return DeliveryOutcome { delivered: false, response_status: None, error: Some(format!("invalid url: {e}")) };
+            return DeliveryOutcome {
+                delivered: false,
+                response_status: None,
+                error: Some(format!("invalid url: {e}")),
+            };
         }
     };
 
     let validated_addr = match resolve_and_validate(&parsed_url, allow_private).await {
         Ok(addr) => addr,
-        Err(e) => return DeliveryOutcome { delivered: false, response_status: None, error: Some(e.to_string()) },
+        Err(e) => {
+            return DeliveryOutcome {
+                delivered: false,
+                response_status: None,
+                error: Some(e.to_string()),
+            }
+        }
     };
 
     // Pin the connection to the address that was just validated. Without this the
@@ -180,8 +204,12 @@ async fn attempt_delivery_inner(
         None => client,
     };
 
-    let signature = sign_payload(&delivery.signing_secret, delivery.payload_json.as_bytes());
-    let extra_headers: Value = serde_json::from_str(&delivery.extra_headers_json).unwrap_or(Value::Null);
+    let signature = sign_payload(
+        delivery.signing_secret.expose(),
+        delivery.payload_json.as_bytes(),
+    );
+    let extra_headers: Value =
+        serde_json::from_str(&delivery.extra_headers_json).unwrap_or(Value::Null);
 
     let mut request = client
         .post(parsed_url)
@@ -212,10 +240,18 @@ async fn attempt_delivery_inner(
             DeliveryOutcome {
                 delivered: status.is_success(),
                 response_status: Some(status.as_u16()),
-                error: if status.is_success() { None } else { Some(format!("non-success status {status}")) },
+                error: if status.is_success() {
+                    None
+                } else {
+                    Some(format!("non-success status {status}"))
+                },
             }
         }
-        Err(e) => DeliveryOutcome { delivered: false, response_status: None, error: Some(e.to_string()) },
+        Err(e) => DeliveryOutcome {
+            delivered: false,
+            response_status: None,
+            error: Some(e.to_string()),
+        },
     }
 }
 
@@ -225,9 +261,17 @@ fn log_outcome(delivery: &DueDelivery, outcome: &DeliveryOutcome, max_attempts: 
     if outcome.delivered {
         tracing::info!(http.response.status_code = status, "webhook delivered");
     } else if delivery.attempt_count + 1 >= max_attempts {
-        tracing::warn!(http.response.status_code = status, error = outcome.error.as_deref(), "webhook delivery failed; no more attempts");
+        tracing::warn!(
+            http.response.status_code = status,
+            error = outcome.error.as_deref(),
+            "webhook delivery failed; no more attempts"
+        );
     } else {
-        tracing::info!(http.response.status_code = status, error = outcome.error.as_deref(), "webhook delivery failed; will retry");
+        tracing::info!(
+            http.response.status_code = status,
+            error = outcome.error.as_deref(),
+            "webhook delivery failed; will retry"
+        );
     }
 }
 
@@ -275,9 +319,27 @@ pub async fn run_delivery_tick(
     max_attempts: u32,
     now: i64,
 ) -> Result<usize, crate::store::StoreError> {
+    let db = crate::store::Db::over_shared(store.clone());
+    run_delivery_tick_on(&db, client, allow_private, timeout, max_attempts, now).await
+}
+
+/// `run_delivery_tick` through the database worker: the production path.
+pub async fn run_delivery_tick_on(
+    db: &crate::store::Db,
+    client: &reqwest::Client,
+    allow_private: bool,
+    timeout: Duration,
+    max_attempts: u32,
+    now: i64,
+) -> Result<usize, crate::store::StoreError> {
+    use crate::store::db::Class;
     use futures_util::stream::{self, StreamExt};
 
-    let due = store.lock().due_webhook_deliveries_fair(now, DELIVERY_PER_TENANT, DELIVERY_BATCH)?;
+    let due = db
+        .run(Class::Webhook, move |s| {
+            s.due_webhook_deliveries_fair(now, DELIVERY_PER_TENANT, DELIVERY_BATCH)
+        })
+        .await?;
     let count = due.len();
     let started = std::time::Instant::now();
 
@@ -308,29 +370,36 @@ pub async fn run_delivery_tick(
     // the batch. Still record later outcomes if an earlier write fails.
     let mut first_error = None;
     while let Some((delivery, outcome, at)) = outcomes.next().await {
-        let store = store.lock();
-        let written = if outcome.delivered {
-            store.mark_webhook_delivered(delivery.delivery_id, outcome.response_status.unwrap_or(0), at)
-        } else if delivery.attempt_count + 1 >= max_attempts {
-            // Give up: record the final failure but stop scheduling retries by
-            // pushing next_attempt_at far into the future rather than leaving it
-            // due forever. The row itself is never deleted - see docs/DESIGN.md §11.
-            store.schedule_webhook_retry(
-                delivery.delivery_id,
-                at + 100 * 365 * 24 * 60 * 60, // effectively "never again"
-                outcome.response_status,
-                outcome.error.as_deref(),
-                at,
-            )
-        } else {
-            store.schedule_webhook_retry(
-                delivery.delivery_id,
-                at + backoff_seconds(delivery.attempt_count),
-                outcome.response_status,
-                outcome.error.as_deref(),
-                at,
-            )
-        };
+        let written = db
+            .run(Class::Webhook, move |store| {
+                if outcome.delivered {
+                    store.mark_webhook_delivered(
+                        delivery.delivery_id,
+                        outcome.response_status.unwrap_or(0),
+                        at,
+                    )
+                } else if delivery.attempt_count + 1 >= max_attempts {
+                    // Give up: record the final failure but stop scheduling retries by
+                    // pushing next_attempt_at far into the future rather than leaving it
+                    // due forever. The row itself is never deleted - see docs/DESIGN.md §11.
+                    store.schedule_webhook_retry(
+                        delivery.delivery_id,
+                        at + 100 * 365 * 24 * 60 * 60, // effectively "never again"
+                        outcome.response_status,
+                        outcome.error.as_deref(),
+                        at,
+                    )
+                } else {
+                    store.schedule_webhook_retry(
+                        delivery.delivery_id,
+                        at + backoff_seconds(delivery.attempt_count),
+                        outcome.response_status,
+                        outcome.error.as_deref(),
+                        at,
+                    )
+                }
+            })
+            .await;
         if let Err(e) = written {
             first_error.get_or_insert(e);
         }
@@ -342,6 +411,7 @@ pub async fn run_delivery_tick(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::store::Store;
@@ -353,7 +423,10 @@ mod tests {
     use std::sync::Arc;
 
     fn test_client() -> reqwest::Client {
-        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap()
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
     }
 
     /// Spins up a real local HTTP server (no mocking library needed) whose handler
@@ -367,7 +440,11 @@ mod tests {
         struct Shared(Arc<dyn Fn(HeaderMap) -> axum::response::Response + Send + Sync>);
         let shared = Shared(Arc::new(handler));
 
-        async fn hook(State(shared): State<Shared>, headers: HeaderMap, _body: String) -> axum::response::Response {
+        async fn hook(
+            State(shared): State<Shared>,
+            headers: HeaderMap,
+            _body: String,
+        ) -> axum::response::Response {
             (shared.0)(headers)
         }
 
@@ -390,17 +467,21 @@ mod tests {
             attempt_count: 0,
             url: url.to_string(),
             extra_headers_json: "{}".into(),
-            signing_secret: signing_secret.to_string(),
+            signing_secret: live_settings::Secret::new(signing_secret),
         }
     }
 
     #[tokio::test]
     async fn successful_delivery_carries_a_verifiable_signature() {
         use axum::http::StatusCode;
-        let captured_signature: Arc<parking_lot::Mutex<Option<String>>> = Arc::new(parking_lot::Mutex::new(None));
+        let captured_signature: Arc<parking_lot::Mutex<Option<String>>> =
+            Arc::new(parking_lot::Mutex::new(None));
         let captured_clone = captured_signature.clone();
         let url = spawn_test_server(move |headers| {
-            let sig = headers.get("X-Monokulo-Signature").and_then(|v| v.to_str().ok()).map(str::to_string);
+            let sig = headers
+                .get("X-Monokulo-Signature")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
             *captured_clone.lock() = sig;
             StatusCode::OK.into_response()
         })
@@ -409,7 +490,8 @@ mod tests {
         let delivery = due_delivery(&url, "whsec_test");
         let expected_signature = sign_payload("whsec_test", delivery.payload_json.as_bytes());
 
-        let outcome = attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
+        let outcome =
+            attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
         assert!(outcome.delivered);
         assert_eq!(outcome.response_status, Some(200));
         assert_eq!(*captured_signature.lock(), Some(expected_signature));
@@ -418,11 +500,14 @@ mod tests {
     #[tokio::test]
     async fn delivery_advertises_the_signed_payloads_own_event_id_as_a_header() {
         use axum::http::StatusCode;
-        let captured: Arc<parking_lot::Mutex<Option<String>>> = Arc::new(parking_lot::Mutex::new(None));
+        let captured: Arc<parking_lot::Mutex<Option<String>>> =
+            Arc::new(parking_lot::Mutex::new(None));
         let captured_clone = captured.clone();
         let url = spawn_test_server(move |headers| {
-            *captured_clone.lock() =
-                headers.get("X-Monokulo-Event-Id").and_then(|v| v.to_str().ok()).map(str::to_string);
+            *captured_clone.lock() = headers
+                .get("X-Monokulo-Event-Id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
             StatusCode::OK.into_response()
         })
         .await;
@@ -432,7 +517,8 @@ mod tests {
             r#"{"order_id":"pay_1","status":"paid","event_id":"evt_abc123","event":"order.paid","created_at":1700000000}"#
                 .into();
 
-        let outcome = attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
+        let outcome =
+            attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
         assert!(outcome.delivered);
         assert_eq!(
             *captured.lock(),
@@ -452,10 +538,14 @@ mod tests {
         // so without disturbing the Host header (and, over TLS, the SNI name) the
         // merchant's server expects to see.
         use axum::http::StatusCode;
-        let captured_host: Arc<parking_lot::Mutex<Option<String>>> = Arc::new(parking_lot::Mutex::new(None));
+        let captured_host: Arc<parking_lot::Mutex<Option<String>>> =
+            Arc::new(parking_lot::Mutex::new(None));
         let captured_clone = captured_host.clone();
         let url = spawn_test_server(move |headers| {
-            *captured_clone.lock() = headers.get("host").and_then(|v| v.to_str().ok()).map(str::to_string);
+            *captured_clone.lock() = headers
+                .get("host")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
             StatusCode::OK.into_response()
         })
         .await;
@@ -468,7 +558,12 @@ mod tests {
         // A hostname that resolves to nothing at all, so the request can only
         // possibly arrive if the pinning - not DNS - decided where it went.
         let client = pinned_client("webhook.invalid", server_addr).unwrap();
-        let response = client.post("http://webhook.invalid/hook").body("{}").send().await.unwrap();
+        let response = client
+            .post("http://webhook.invalid/hook")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
 
         assert!(response.status().is_success());
         assert_eq!(
@@ -497,14 +592,22 @@ mod tests {
             .await
             .expect("a public IPv6 literal must validate")
             .expect("and must be pinned to a concrete address");
-        assert_eq!(addr.ip(), "2606:4700:4700::1111".parse::<std::net::IpAddr>().unwrap());
-        assert_eq!(addr.port(), 443, "the scheme's default port, since the URL named none");
+        assert_eq!(
+            addr.ip(),
+            "2606:4700:4700::1111".parse::<std::net::IpAddr>().unwrap()
+        );
+        assert_eq!(
+            addr.port(),
+            443,
+            "the scheme's default port, since the URL named none"
+        );
     }
 
     #[tokio::test]
     async fn failing_endpoint_is_rescheduled_with_backoff_and_incremented_attempt_count() {
         use axum::http::StatusCode;
-        let url = spawn_test_server(|_headers| StatusCode::INTERNAL_SERVER_ERROR.into_response()).await;
+        let url =
+            spawn_test_server(|_headers| StatusCode::INTERNAL_SERVER_ERROR.into_response()).await;
 
         let store = Store::open_in_memory().unwrap();
         let tenant = store
@@ -533,17 +636,31 @@ mod tests {
                 expires_at: 2000,
             })
             .unwrap();
-        let webhook = store.create_webhook(&tenant.tenant.id, &url, "{}", "whsec_test", 1000).unwrap();
+        let webhook = store
+            .create_webhook(&tenant.tenant.id, &url, "{}", "whsec_test", 1000)
+            .unwrap();
         let delivery_id = store
             .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{\"a\":1}", 1000)
             .unwrap();
         let store = store.into_shared();
 
-        let processed = run_delivery_tick(&store, &test_client(), true, Duration::from_secs(2), DEFAULT_MAX_ATTEMPTS, 1000).await.unwrap();
+        let processed = run_delivery_tick(
+            &store,
+            &test_client(),
+            true,
+            Duration::from_secs(2),
+            DEFAULT_MAX_ATTEMPTS,
+            1000,
+        )
+        .await
+        .unwrap();
         assert_eq!(processed, 1);
 
         let due_immediately = store.lock().due_webhook_deliveries(1001, 10).unwrap();
-        assert!(due_immediately.is_empty(), "must not be immediately due again - backoff must push it out");
+        assert!(
+            due_immediately.is_empty(),
+            "must not be immediately due again - backoff must push it out"
+        );
 
         let due_after_backoff = store.lock().due_webhook_deliveries(1000 + 61, 10).unwrap();
         assert_eq!(due_after_backoff.len(), 1);
@@ -557,18 +674,21 @@ mod tests {
         let url = spawn_test_server(|_headers| StatusCode::OK.into_response()).await;
         let delivery = due_delivery(&url, "whsec_test");
 
-        let blocked = attempt_delivery(&test_client(), &delivery, false, Duration::from_secs(2)).await;
+        let blocked =
+            attempt_delivery(&test_client(), &delivery, false, Duration::from_secs(2)).await;
         assert!(!blocked.delivered);
         assert!(blocked.error.unwrap().contains("disallowed"));
 
-        let allowed = attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
+        let allowed =
+            attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
         assert!(allowed.delivered);
     }
 
     #[tokio::test]
     async fn giving_up_after_max_attempts_stops_scheduling_further_retries_soon() {
         use axum::http::StatusCode;
-        let url = spawn_test_server(|_headers| StatusCode::INTERNAL_SERVER_ERROR.into_response()).await;
+        let url =
+            spawn_test_server(|_headers| StatusCode::INTERNAL_SERVER_ERROR.into_response()).await;
 
         let store = Store::open_in_memory().unwrap();
         let tenant = store
@@ -597,18 +717,40 @@ mod tests {
                 expires_at: 2000,
             })
             .unwrap();
-        let webhook = store.create_webhook(&tenant.tenant.id, &url, "{}", "whsec_test", 1000).unwrap();
-        store.enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 1000).unwrap();
+        let webhook = store
+            .create_webhook(&tenant.tenant.id, &url, "{}", "whsec_test", 1000)
+            .unwrap();
+        store
+            .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 1000)
+            .unwrap();
         let store = store.into_shared();
 
         let mut now = 1000i64;
         for _ in 0..DEFAULT_MAX_ATTEMPTS {
-            run_delivery_tick(&store, &test_client(), true, Duration::from_secs(2), DEFAULT_MAX_ATTEMPTS, now).await.unwrap();
+            run_delivery_tick(
+                &store,
+                &test_client(),
+                true,
+                Duration::from_secs(2),
+                DEFAULT_MAX_ATTEMPTS,
+                now,
+            )
+            .await
+            .unwrap();
             now += 100_000; // comfortably past any backoff window
         }
 
         // One more tick, far in the future, should find nothing due - it gave up.
-        let processed = run_delivery_tick(&store, &test_client(), true, Duration::from_secs(2), DEFAULT_MAX_ATTEMPTS, now + 10_000_000).await.unwrap();
+        let processed = run_delivery_tick(
+            &store,
+            &test_client(),
+            true,
+            Duration::from_secs(2),
+            DEFAULT_MAX_ATTEMPTS,
+            now + 10_000_000,
+        )
+        .await
+        .unwrap();
         assert_eq!(processed, 0);
     }
 
@@ -626,7 +768,8 @@ mod tests {
         // to tell "the config is wired up" apart from "the config happens to equal
         // the constant".
         use axum::http::StatusCode;
-        let url = spawn_test_server(|_headers| StatusCode::INTERNAL_SERVER_ERROR.into_response()).await;
+        let url =
+            spawn_test_server(|_headers| StatusCode::INTERNAL_SERVER_ERROR.into_response()).await;
 
         let configured_ceiling = 3u32;
         assert_ne!(
@@ -661,26 +804,46 @@ mod tests {
                 expires_at: 2000,
             })
             .unwrap();
-        let webhook = store.create_webhook(&tenant.tenant.id, &url, "{}", "whsec_test", 1000).unwrap();
-        store.enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 1000).unwrap();
+        let webhook = store
+            .create_webhook(&tenant.tenant.id, &url, "{}", "whsec_test", 1000)
+            .unwrap();
+        store
+            .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 1000)
+            .unwrap();
         let store = store.into_shared();
 
         // Every attempt short of the ceiling must still reschedule.
         let mut now = 1000i64;
         for attempt in 1..configured_ceiling {
-            let processed =
-                run_delivery_tick(&store, &test_client(), true, Duration::from_secs(2), configured_ceiling, now)
-                    .await
-                    .unwrap();
-            assert_eq!(processed, 1, "attempt {attempt} is below the ceiling and must still be retried");
+            let processed = run_delivery_tick(
+                &store,
+                &test_client(),
+                true,
+                Duration::from_secs(2),
+                configured_ceiling,
+                now,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                processed, 1,
+                "attempt {attempt} is below the ceiling and must still be retried"
+            );
             now += 100_000;
         }
 
         // The attempt that reaches the ceiling is the last one.
         assert_eq!(
-            run_delivery_tick(&store, &test_client(), true, Duration::from_secs(2), configured_ceiling, now)
-                .await
-                .unwrap(),
+            run_delivery_tick(
+                &store,
+                &test_client(),
+                true,
+                Duration::from_secs(2),
+                configured_ceiling,
+                now
+            )
+            .await
+            .unwrap(),
             1
         );
         assert_eq!(
@@ -702,7 +865,10 @@ mod tests {
     // -- Fair, concurrent delivery (admin_settings_v2.md task 7.8) ------------
 
     /// A local endpoint that waits `delay` then answers `status`, counting hits.
-    async fn spawn_endpoint(delay: Duration, status: u16) -> (String, Arc<std::sync::atomic::AtomicU64>) {
+    async fn spawn_endpoint(
+        delay: Duration,
+        status: u16,
+    ) -> (String, Arc<std::sync::atomic::AtomicU64>) {
         let hits = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let counter = hits.clone();
         let app = Router::new().route(
@@ -726,7 +892,12 @@ mod tests {
 
     /// A store with a webhook at `url` and `orders` orders, each with one due
     /// delivery. Returns the webhook id and the order ids.
-    fn store_with_deliveries(store: &Store, url: &str, orders: usize, due_at: i64) -> (String, Vec<String>) {
+    fn store_with_deliveries(
+        store: &Store,
+        url: &str,
+        orders: usize,
+        due_at: i64,
+    ) -> (crate::store::WebhookId, Vec<crate::store::OrderId>) {
         use crate::store::{NewOrder, NewTenant};
         let tenant = store
             .create_tenant(
@@ -742,7 +913,9 @@ mod tests {
             )
             .unwrap()
             .tenant;
-        let webhook = store.create_webhook(&tenant.id, url, "{}", "whsec", 1).unwrap();
+        let webhook = store
+            .create_webhook(&tenant.id, url, "{}", "whsec", 1)
+            .unwrap();
         let mut order_ids = vec![];
         for _ in 0..orders {
             let index = store.allocate_minor_index(&tenant.id).unwrap();
@@ -759,14 +932,22 @@ mod tests {
                     expires_at: 10_000_000_000,
                 })
                 .unwrap();
-            store.enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", due_at).unwrap();
+            store
+                .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", due_at)
+                .unwrap();
             order_ids.push(order.id);
         }
         (webhook.id, order_ids)
     }
 
-    fn pending_for(store: &SharedStore, webhook_id: &str) -> usize {
-        store.lock().due_webhook_deliveries(i64::MAX / 2, 10_000).unwrap().iter().filter(|d| d.webhook_id == webhook_id).count()
+    fn pending_for(store: &SharedStore, webhook_id: &crate::store::WebhookId) -> usize {
+        store
+            .lock()
+            .due_webhook_deliveries(i64::MAX / 2, 10_000)
+            .unwrap()
+            .iter()
+            .filter(|d| &d.webhook_id == webhook_id)
+            .count()
     }
 
     #[tokio::test]
@@ -781,29 +962,52 @@ mod tests {
         let store = store.into_shared();
 
         let started = std::time::Instant::now();
-        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
-        assert!(started.elapsed() < Duration::from_secs(4), "sent concurrently, not one after another: {:?}", started.elapsed());
+        run_delivery_tick(
+            &store,
+            &test_client(),
+            true,
+            Duration::from_secs(5),
+            8,
+            1000,
+        )
+        .await
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "sent concurrently, not one after another: {:?}",
+            started.elapsed()
+        );
 
-        assert_eq!(pending_for(&store, &fast_webhook), 0, "the other store's webhook went out in the first tick");
+        assert_eq!(
+            pending_for(&store, &fast_webhook),
+            0,
+            "the other store's webhook went out in the first tick"
+        );
         assert_eq!(
             slow_hits.load(std::sync::atomic::Ordering::SeqCst),
             DELIVERY_PER_TENANT as u64,
             "the busy store got its fair share, not the whole batch"
         );
-        assert_eq!(pending_for(&store, &slow_webhook), 40 - DELIVERY_PER_TENANT as usize);
+        assert_eq!(
+            pending_for(&store, &slow_webhook),
+            40 - DELIVERY_PER_TENANT as usize
+        );
     }
 
     #[tokio::test]
     async fn cancelling_a_batch_keeps_outcomes_that_already_completed() {
         let started = Arc::new(tokio::sync::Notify::new());
         let signal = started.clone();
-        let app = Router::new().route("/hook", post(move || {
-            let signal = signal.clone();
-            async move {
-                signal.notify_one();
-                std::future::pending::<axum::http::StatusCode>().await
-            }
-        }));
+        let app = Router::new().route(
+            "/hook",
+            post(move || {
+                let signal = signal.clone();
+                async move {
+                    signal.notify_one();
+                    std::future::pending::<axum::http::StatusCode>().await
+                }
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/hook", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -822,23 +1026,55 @@ mod tests {
             }
         }
         server.abort();
-        let deliveries = store.lock().due_webhook_deliveries(i64::MAX / 2, 100).unwrap();
+        let deliveries = store
+            .lock()
+            .due_webhook_deliveries(i64::MAX / 2, 100)
+            .unwrap();
         let completed = deliveries.iter().find(|d| d.webhook_id == fast).unwrap();
-        assert_eq!(completed.attempt_count, 1, "completed outcomes must survive cancellation of another delivery");
+        assert_eq!(
+            completed.attempt_count, 1,
+            "completed outcomes must survive cancellation of another delivery"
+        );
     }
 
     #[tokio::test]
     async fn many_stores_are_all_served_within_a_couple_of_ticks() {
         let (url, _) = spawn_endpoint(Duration::ZERO, 200).await;
         let store = Store::open_in_memory().unwrap();
-        let webhooks: Vec<String> = (0..60).map(|i| store_with_deliveries(&store, &url, 1, 100 + i).0).collect();
+        let webhooks: Vec<crate::store::WebhookId> = (0..60)
+            .map(|i| store_with_deliveries(&store, &url, 1, 100 + i).0)
+            .collect();
         let store = store.into_shared();
 
-        let first = run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
-        assert_eq!(first, DELIVERY_BATCH as usize, "a full batch, so the loop goes again straight away");
-        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
+        let first = run_delivery_tick(
+            &store,
+            &test_client(),
+            true,
+            Duration::from_secs(5),
+            8,
+            1000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            first, DELIVERY_BATCH as usize,
+            "a full batch, so the loop goes again straight away"
+        );
+        run_delivery_tick(
+            &store,
+            &test_client(),
+            true,
+            Duration::from_secs(5),
+            8,
+            1000,
+        )
+        .await
+        .unwrap();
         for webhook in &webhooks {
-            assert_eq!(pending_for(&store, webhook), 0);
+            assert_eq!(
+                pending_for(&store, &shared::ids::WebhookId::new(webhook.to_string())),
+                0
+            );
         }
     }
 
@@ -847,12 +1083,42 @@ mod tests {
         let (url, hits) = spawn_endpoint(Duration::ZERO, 200).await;
         let store = Store::open_in_memory().unwrap();
         let (webhook, orders) = store_with_deliveries(&store, &url, 1, 100);
-        store.enqueue_webhook_delivery(&webhook, &orders[0], "order.confirming", "{}", 101).unwrap();
+        store
+            .enqueue_webhook_delivery(
+                &shared::ids::WebhookId::new(webhook.to_string()),
+                &shared::ids::OrderId::new(orders[0].to_string()),
+                "order.confirming",
+                "{}",
+                101,
+            )
+            .unwrap();
         let store = store.into_shared();
 
-        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
-        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "the older one first, alone");
-        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
+        run_delivery_tick(
+            &store,
+            &test_client(),
+            true,
+            Duration::from_secs(5),
+            8,
+            1000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the older one first, alone"
+        );
+        run_delivery_tick(
+            &store,
+            &test_client(),
+            true,
+            Duration::from_secs(5),
+            8,
+            1000,
+        )
+        .await
+        .unwrap();
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(pending_for(&store, &webhook), 0);
     }
@@ -864,10 +1130,31 @@ mod tests {
         let (webhook, _) = store_with_deliveries(&store, &url, 1, 100);
         let store = store.into_shared();
 
-        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
+        run_delivery_tick(
+            &store,
+            &test_client(),
+            true,
+            Duration::from_secs(5),
+            8,
+            1000,
+        )
+        .await
+        .unwrap();
         // The attempt took over 2s; its first retry comes 60s after that.
-        let due_at = |t: i64| store.lock().due_webhook_deliveries(t, 10).unwrap().iter().filter(|d| d.webhook_id == webhook).count();
-        assert_eq!(due_at(1000 + 60 + 1), 0, "not 60s from the start of the tick");
+        let due_at = |t: i64| {
+            store
+                .lock()
+                .due_webhook_deliveries(t, 10)
+                .unwrap()
+                .iter()
+                .filter(|d| d.webhook_id == webhook)
+                .count()
+        };
+        assert_eq!(
+            due_at(1000 + 60 + 1),
+            0,
+            "not 60s from the start of the tick"
+        );
         assert_eq!(due_at(1000 + 2 + 60), 1);
     }
 }

@@ -30,12 +30,22 @@ use super::{resolve_authed_user, AppState, AuthedUser};
 /// pre-setup; only the very first thing a fresh install's operator sees when
 /// they actually load the site.
 pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if !state.db.lock().is_setup_complete().unwrap_or(true) {
+    let (setup_complete, signup_mode) = state
+        .db
+        .read(|db| {
+            Ok::<_, crate::db::DbError>((
+                db.is_setup_complete().unwrap_or(true),
+                crate::settings::signup_mode(db),
+            ))
+        })
+        .await
+        .unwrap_or((true, crate::settings::SignupMode::InviteOnly));
+    if !setup_complete {
         return redirect_302("/admin/setup");
     }
-    let authed = resolve_authed_user(&state, &headers);
-    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/");
-    let signup_public = { crate::settings::signup_mode(&state.db.lock()) == crate::settings::SignupMode::Public };
+    let authed = resolve_authed_user(&state, &headers).await;
+    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/").await;
+    let signup_public = signup_mode == crate::settings::SignupMode::Public;
     views::landing::page(&chrome, signup_public).into_response()
 }
 
@@ -43,8 +53,11 @@ pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Respo
 /// flows (WBS follow-up: "custom (advanced)" is the existing
 /// `/dashboard/connect` form; "simple -> woocommerce" is the guided page
 /// below). Behind [`AuthedUser`] like every other `/dashboard/*` route.
-pub async fn new_store_picker(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new");
+pub async fn new_store_picker(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+) -> Response {
+    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new").await;
     views::connect::new_store_picker_page(&chrome).into_response()
 }
 
@@ -55,8 +68,11 @@ pub async fn new_store_picker(State(state): State<AppState>, AuthedUser(user, _)
 /// dashboard has no way to manufacture a legitimate `return_url` back into
 /// someone else's WordPress admin. So this is instructions, not a form; see
 /// this page's own template for the reasoning restated for the merchant.
-pub async fn woocommerce_instructions(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new/woocommerce");
+pub async fn woocommerce_instructions(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+) -> Response {
+    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new/woocommerce").await;
     views::store_detail::woocommerce_instructions_page(&chrome).into_response()
 }
 
@@ -68,8 +84,16 @@ pub async fn woocommerce_instructions(State(state): State<AppState>, AuthedUser(
 /// (the expected number of stores per user is small; this is not the place
 /// to add concurrency complexity for a case with no evidence it matters
 /// yet).
-pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
-    let rows = match state.db.lock().list_store_connections_for_user(&user.id) {
+pub async fn dashboard_home(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+) -> Response {
+    let user_id = user.id.clone();
+    let rows = match state
+        .db
+        .read(move |db| db.list_store_connections_for_user(&user_id))
+        .await
+    {
         Ok(rows) => rows,
         Err(_) => return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -79,7 +103,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
     let mut total_received_piconero: u128 = 0;
 
     for row in rows {
-        let sk = match crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted) {
+        let sk = match crate::http::orders::decrypt_sk(&state.encryption_key, &row) {
             Ok(sk) => sk,
             // A row this service itself encrypted failing to decrypt with
             // its own key is an internal-consistency problem, not this
@@ -88,7 +112,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
             Err(_) => continue,
         };
 
-        let tenant_result = state.engine_client.get_tenant(&sk).await;
+        let tenant_result = state.engine.client.get_tenant(&sk).await;
         let (health, health_label) = health_of_tenant_lookup(&tenant_result);
         let display_name = display_name_for(&row.site_url);
 
@@ -102,12 +126,16 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
             health_label,
         });
 
-        if let Ok(orders) = state.engine_client.list_orders(&sk).await {
+        if let Ok(orders) = state.engine.client.list_orders(&sk).await {
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
             // Phase 3) - fiat display comes entirely from monokulo's own
             // local `order_currency_metadata`.
-            let fiat_metadata =
-                state.db.lock().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
+            let id = row.id.clone();
+            let fiat_metadata = state
+                .db
+                .read(move |db| db.list_order_currency_metadata_for_connection(&id))
+                .await
+                .unwrap_or_default();
             for o in orders {
                 total_received_piconero += o.amount_received_piconero as u128;
                 let (amount, currency) = match fiat_metadata.get(&o.order_id) {
@@ -118,7 +146,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
                     connection_id: row.id.clone(),
                     display_name: display_name.clone(),
                     order_id: o.order_id,
-                    status: o.status,
+                    status: o.status.into(),
                     amount,
                     currency,
                     created_at: o.created_at,
@@ -130,7 +158,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
     all_orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     all_orders.truncate(10);
 
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard");
+    let chrome = super::page_chrome(&state, Some(&user), "/dashboard").await;
     let view_model = DashboardViewModel {
         has_stores: !stores.is_empty(),
         stores,
@@ -190,18 +218,21 @@ mod tests {
 
         use super::super::super::{build_router, AppState};
 
-        const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-        const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+        const TEST_VIEW_KEY_HEX: &str =
+            "0707070707070707070707070707070707070707070707070707070707070707";
+        const TEST_SPEND_PUBKEY_HEX: &str =
+            "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
         const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
-        async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
+        async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle)
+        {
             let engine = scanner_test_support::TestEngineConfig::new()
                 .with_networks(&[monero::Network::Mainnet])
                 .spawn()
                 .await;
             let engine_client = EngineClient::new(format!("http://{}", engine.addr));
             let state = AppState {
-                engine_client,
+                engine: crate::http::Engine::new(engine_client),
                 ..AppState::for_tests()
             };
             (state, engine)
@@ -217,7 +248,11 @@ mod tests {
             serde_json::from_slice(&bytes).unwrap()
         }
 
-        async fn signed_up_and_logged_in_session_token(router: &Router, email: &str, password: &str) -> String {
+        async fn signed_up_and_logged_in_session_token(
+            router: &Router,
+            email: &str,
+            password: &str,
+        ) -> String {
             let signup = router
                 .clone()
                 .oneshot(
@@ -225,7 +260,9 @@ mod tests {
                         .method("POST")
                         .uri("/signup")
                         .header("content-type", "application/json")
-                        .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+                        .body(Body::from(
+                            serde_json::json!({ "email": email, "password": password }).to_string(),
+                        ))
                         .unwrap(),
                 )
                 .await
@@ -239,13 +276,23 @@ mod tests {
                         .method("POST")
                         .uri("/login")
                         .header("content-type", "application/json")
-                        .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+                        .body(Body::from(
+                            serde_json::json!({ "email": email, "password": password }).to_string(),
+                        ))
                         .unwrap(),
                 )
                 .await
                 .unwrap();
             assert_eq!(login.status(), StatusCode::OK);
-            body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string()
+            body_json(login)
+                .await
+                .as_object()
+                .unwrap()
+                .get("session_token")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
         }
 
         async fn create_connection(router: &Router, session_token: &str) -> (String, String) {
@@ -275,7 +322,11 @@ mod tests {
             let body = body_json(response).await;
             let obj = body.as_object().unwrap();
             (
-                obj.get("connection_id").unwrap().as_str().unwrap().to_string(),
+                obj.get("connection_id")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
                 obj.get("public_key").unwrap().as_str().unwrap().to_string(),
             )
         }
@@ -286,26 +337,56 @@ mod tests {
         /// itself reaches the engine. Deliberately bypasses monokulo's own order
         /// creation, so no local currency metadata exists for the order. 10.00 at
         /// `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD); the engine only knows XMR.
-        async fn seed_real_order(state: &AppState, engine_addr: std::net::SocketAddr, public_key: &str) -> String {
-            let row = state.db.lock().get_store_connection_by_public_key(public_key).unwrap().expect("connection exists");
-            let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        async fn seed_real_order(
+            state: &AppState,
+            engine_addr: std::net::SocketAddr,
+            public_key: &str,
+        ) -> String {
+            let row = state
+                .db
+                .lock()
+                .get_store_connection_by_public_key(public_key)
+                .unwrap()
+                .expect("connection exists");
+            let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
             let response = reqwest::Client::new()
                 .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
-                .bearer_auth(sk)
-                .json(&serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }))
+                .bearer_auth(sk.expose())
+                .json(
+                    &serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }),
+                )
                 .send()
                 .await
                 .expect("seeding a real order against the engine's admin API failed");
-            assert_eq!(response.status(), reqwest::StatusCode::OK, "expected the engine to accept the seeded order");
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::OK,
+                "expected the engine to accept the seeded order"
+            );
             let body: serde_json::Value = response.json().await.unwrap();
-            body.as_object().unwrap().get("order_id").unwrap().as_str().unwrap().to_string()
+            body.as_object()
+                .unwrap()
+                .get("order_id")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
         }
 
         #[tokio::test]
         async fn landing_page_is_reachable_without_any_session() {
             let (state, _engine) = test_state_with_real_engine().await;
             let router = build_router(state);
-            let response = router.oneshot(Request::builder().method("GET").uri("/").body(Body::empty()).unwrap()).await.unwrap();
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             let html = body_text(response).await;
             assert!(html.contains(r#"href="/dashboard/signup""#));
@@ -315,8 +396,16 @@ mod tests {
         async fn dashboard_without_a_session_is_rejected() {
             let (state, _engine) = test_state_with_real_engine().await;
             let router = build_router(state);
-            let response =
-                router.oneshot(Request::builder().method("GET").uri("/dashboard").body(Body::empty()).unwrap()).await.unwrap();
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/dashboard")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
 
@@ -324,8 +413,12 @@ mod tests {
         async fn dashboard_with_no_stores_shows_the_empty_state_cta() {
             let (state, _engine) = test_state_with_real_engine().await;
             let router = build_router(state);
-            let session_token =
-                signed_up_and_logged_in_session_token(&router, "empty-dashboard@example.com", "correct horse battery staple").await;
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "empty-dashboard@example.com",
+                "correct horse battery staple",
+            )
+            .await;
 
             let response = router
                 .oneshot(
@@ -340,15 +433,22 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             let html = body_text(response).await;
-            assert!(html.contains(r#"href="/dashboard/stores/new""#), "expected the add-a-store CTA, got: {html}");
+            assert!(
+                html.contains(r#"href="/dashboard/stores/new""#),
+                "expected the add-a-store CTA, got: {html}"
+            );
         }
 
         #[tokio::test]
         async fn dashboard_with_a_connected_store_and_a_real_order_shows_the_real_total_received() {
             let (state, engine) = test_state_with_real_engine().await;
             let router = build_router(state.clone());
-            let session_token =
-                signed_up_and_logged_in_session_token(&router, "full-dashboard@example.com", "correct horse battery staple").await;
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "full-dashboard@example.com",
+                "correct horse battery staple",
+            )
+            .await;
             let (connection_id, public_key) = create_connection(&router, &session_token).await;
             let order_id = seed_real_order(&state, engine.addr, &public_key).await;
 
@@ -366,11 +466,26 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK);
             let html = body_text(response).await;
 
-            assert!(html.contains(&public_key), "expected the store's public key listed, got: {html}");
-            assert!(html.contains(&format!("/dashboard/stores/{connection_id}")), "expected a link to the store, got: {html}");
-            assert!(html.contains(&order_id), "expected the seeded order in the recent-orders feed, got: {html}");
-            assert!(html.contains("tag-ok"), "the engine is genuinely reachable, so health must render as ok, got: {html}");
-            assert!(html.contains("Total received"), "expected the total-received summary, got: {html}");
+            assert!(
+                html.contains(&public_key),
+                "expected the store's public key listed, got: {html}"
+            );
+            assert!(
+                html.contains(&format!("/dashboard/stores/{connection_id}")),
+                "expected a link to the store, got: {html}"
+            );
+            assert!(
+                html.contains(&order_id),
+                "expected the seeded order in the recent-orders feed, got: {html}"
+            );
+            assert!(
+                html.contains("tag-ok"),
+                "the engine is genuinely reachable, so health must render as ok, got: {html}"
+            );
+            assert!(
+                html.contains("Total received"),
+                "expected the total-received summary, got: {html}"
+            );
         }
 
         #[tokio::test]
@@ -380,13 +495,23 @@ mod tests {
 
             let unauthed = router
                 .clone()
-                .oneshot(Request::builder().method("GET").uri("/dashboard/stores/new").body(Body::empty()).unwrap())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/dashboard/stores/new")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
             assert_eq!(unauthed.status(), StatusCode::UNAUTHORIZED);
 
-            let session_token =
-                signed_up_and_logged_in_session_token(&router, "picker@example.com", "correct horse battery staple").await;
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "picker@example.com",
+                "correct horse battery staple",
+            )
+            .await;
             let response = router
                 .oneshot(
                     Request::builder()
@@ -411,13 +536,23 @@ mod tests {
 
             let unauthed = router
                 .clone()
-                .oneshot(Request::builder().method("GET").uri("/dashboard/stores/new/woocommerce").body(Body::empty()).unwrap())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/dashboard/stores/new/woocommerce")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
             assert_eq!(unauthed.status(), StatusCode::UNAUTHORIZED);
 
-            let session_token =
-                signed_up_and_logged_in_session_token(&router, "wc-instructions@example.com", "correct horse battery staple").await;
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "wc-instructions@example.com",
+                "correct horse battery staple",
+            )
+            .await;
             let response = router
                 .oneshot(
                     Request::builder()

@@ -99,9 +99,18 @@ impl AbuseConfig {
     /// refused past it.
     pub fn limits_for(&self, client: &ClientIdentity) -> Limits {
         match client {
-            ClientIdentity::User(_) => Limits { soft_per_min: self.signed_in_per_min, hard_per_min: self.signed_in_per_min },
-            ClientIdentity::Store(_) => Limits { soft_per_min: self.per_store_key_per_min, hard_per_min: self.per_store_key_per_min },
-            _ => Limits { soft_per_min: self.soft_per_min, hard_per_min: self.hard_per_min },
+            ClientIdentity::User(_) => Limits {
+                soft_per_min: self.signed_in_per_min,
+                hard_per_min: self.signed_in_per_min,
+            },
+            ClientIdentity::Store(_) => Limits {
+                soft_per_min: self.per_store_key_per_min,
+                hard_per_min: self.per_store_key_per_min,
+            },
+            _ => Limits {
+                soft_per_min: self.soft_per_min,
+                hard_per_min: self.hard_per_min,
+            },
         }
     }
 }
@@ -155,7 +164,8 @@ impl AbuseProtection {
     pub fn check(&self, client: &ClientIdentity, challengeable: bool, now: i64) -> Tier {
         let config = self.config();
         let force_soft = challengeable && config.under_attack && !client.is_authenticated();
-        self.limiter.check(client, config.limits_for(client), force_soft, now)
+        self.limiter
+            .check(client, config.limits_for(client), force_soft, now)
     }
 
     /// Counts one log report from `client`. `Err(retry_after_secs)` past
@@ -164,7 +174,15 @@ impl AbuseProtection {
     /// absurd, and the page that sent it keeps working either way.
     pub fn check_logs(&self, client: &ClientIdentity, now: i64) -> Result<(), u64> {
         let per_min = self.config().client_logs_per_min;
-        match self.log_limiter.check(client, Limits { soft_per_min: per_min, hard_per_min: per_min }, false, now) {
+        match self.log_limiter.check(
+            client,
+            Limits {
+                soft_per_min: per_min,
+                hard_per_min: per_min,
+            },
+            false,
+            now,
+        ) {
             Tier::Blocked { retry_after_secs } => Err(retry_after_secs),
             Tier::Allowed | Tier::Challenge => Ok(()),
         }

@@ -26,7 +26,9 @@ pub struct ChallengeStats {
 
 impl Default for ChallengeStats {
     fn default() -> Self {
-        ChallengeStats { buckets: Mutex::new([(i64::MIN, HourCounts::default()); 60]) }
+        ChallengeStats {
+            buckets: Mutex::new([(i64::MIN, HourCounts::default()); 60]),
+        }
     }
 }
 
@@ -48,11 +50,14 @@ impl ChallengeStats {
     pub fn last_hour(&self, now: i64) -> HourCounts {
         let minute = now.div_euclid(60);
         let buckets = self.buckets.lock();
-        buckets.iter().filter(|(m, _)| *m <= minute && minute.saturating_sub(*m) < 60).fold(HourCounts::default(), |sum, (_, c)| HourCounts {
-            issued: sum.issued + c.issued,
-            solved: sum.solved + c.solved,
-            refused: sum.refused + c.refused,
-        })
+        buckets
+            .iter()
+            .filter(|(m, _)| *m <= minute && minute.saturating_sub(*m) < 60)
+            .fold(HourCounts::default(), |sum, (_, c)| HourCounts {
+                issued: sum.issued + c.issued,
+                solved: sum.solved + c.solved,
+                refused: sum.refused + c.refused,
+            })
     }
 }
 
@@ -67,8 +72,22 @@ mod tests {
         stats.record(Event::Issued, 1_000_000 + 30 * 60);
         stats.record(Event::Solved, 1_000_000 + 30 * 60);
         stats.record(Event::Refused, 1_000_000 + 59 * 60);
-        assert_eq!(stats.last_hour(1_000_000 + 59 * 60), HourCounts { issued: 2, solved: 1, refused: 1 });
-        assert_eq!(stats.last_hour(1_000_000 + 61 * 60), HourCounts { issued: 1, solved: 1, refused: 1 });
+        assert_eq!(
+            stats.last_hour(1_000_000 + 59 * 60),
+            HourCounts {
+                issued: 2,
+                solved: 1,
+                refused: 1
+            }
+        );
+        assert_eq!(
+            stats.last_hour(1_000_000 + 61 * 60),
+            HourCounts {
+                issued: 1,
+                solved: 1,
+                refused: 1
+            }
+        );
         assert_eq!(stats.last_hour(1_000_000 + 200 * 60), HourCounts::default());
     }
 }

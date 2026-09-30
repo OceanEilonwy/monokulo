@@ -17,7 +17,9 @@ use monero::Transaction;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::daemon::{DaemonError, DaemonInfo, KeyImageStatus, MoneroDaemonClient, TxLocation};
+use crate::daemon::{
+    ChainBlock, DaemonError, DaemonInfo, KeyImageStatus, MoneroDaemonClient, TxLocation,
+};
 
 pub struct RpcDaemonClient {
     client: reqwest::Client,
@@ -34,14 +36,29 @@ pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Reads a response body, refusing one larger than `cap` bytes, whether or
 /// not it declared its length.
-async fn read_capped(mut response: reqwest::Response, cap: usize, what: &str) -> Result<Vec<u8>, DaemonError> {
-    if response.content_length().is_some_and(|len| len > cap as u64) {
-        return Err(DaemonError::Request(format!("response from {what} is larger than the {cap}-byte limit")));
+async fn read_capped(
+    mut response: reqwest::Response,
+    cap: usize,
+    what: &str,
+) -> Result<Vec<u8>, DaemonError> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > cap as u64)
+    {
+        return Err(DaemonError::Request(format!(
+            "response from {what} is larger than the {cap}-byte limit"
+        )));
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| DaemonError::Request(format!("reading response from {what}: {e}")))? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| DaemonError::Request(format!("reading response from {what}: {e}")))?
+    {
         if body.len() + chunk.len() > cap {
-            return Err(DaemonError::Request(format!("response from {what} is larger than the {cap}-byte limit")));
+            return Err(DaemonError::Request(format!(
+                "response from {what} is larger than the {cap}-byte limit"
+            )));
         }
         body.extend_from_slice(&chunk);
     }
@@ -60,14 +77,23 @@ impl RpcDaemonClient {
     /// wrong-hostname certificates, so it is not scoped to self-signed
     /// specifically. A self-hoster pointing at a node with a real CA-signed cert
     /// (or running their own node over plain HTTP on localhost) never needs it.
-    pub fn new(host: &str, port: u16, ssl: bool, danger_accept_invalid_certs: bool) -> Result<Self, DaemonError> {
+    pub fn new(
+        host: &str,
+        port: u16,
+        ssl: bool,
+        danger_accept_invalid_certs: bool,
+    ) -> Result<Self, DaemonError> {
         let scheme = if ssl { "https" } else { "http" };
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(danger_accept_invalid_certs)
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|e| DaemonError::Request(format!("failed to build HTTP client: {e}")))?;
-        Ok(RpcDaemonClient { client, base_url: format!("{scheme}://{host}:{port}"), max_response_bytes: MAX_RESPONSE_BYTES })
+        Ok(RpcDaemonClient {
+            client,
+            base_url: format!("{scheme}://{host}:{port}"),
+            max_response_bytes: MAX_RESPONSE_BYTES,
+        })
     }
 
     /// Lowers the response size cap, for tests.
@@ -76,7 +102,11 @@ impl RpcDaemonClient {
         self
     }
 
-    async fn post_json_rpc<T: for<'de> Deserialize<'de>>(&self, method: &str, params: Value) -> Result<T, DaemonError> {
+    async fn post_json_rpc<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<T, DaemonError> {
         let body = json!({ "jsonrpc": "2.0", "id": "0", "method": method, "params": params });
         let response = self
             .client
@@ -86,19 +116,25 @@ impl RpcDaemonClient {
             .await
             .map_err(|e| DaemonError::Request(e.to_string()))?;
         let bytes = read_capped(response, self.max_response_bytes, method).await?;
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|e| DaemonError::Request(format!("invalid JSON response: {e}")))?;
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| DaemonError::Request(format!("invalid JSON response: {e}")))?;
         if let Some(err) = value.get("error") {
-            return Err(DaemonError::Request(format!("daemon RPC error calling {method}: {err}")));
+            return Err(DaemonError::Request(format!(
+                "daemon RPC error calling {method}: {err}"
+            )));
         }
-        let result = value
-            .get("result")
-            .ok_or_else(|| DaemonError::Request(format!("missing 'result' field calling {method}")))?;
+        let result = value.get("result").ok_or_else(|| {
+            DaemonError::Request(format!("missing 'result' field calling {method}"))
+        })?;
         serde_json::from_value(result.clone())
             .map_err(|e| DaemonError::Request(format!("failed to parse result of {method}: {e}")))
     }
 
-    async fn post_plain<T: for<'de> Deserialize<'de>>(&self, path: &str, body: Value) -> Result<T, DaemonError> {
+    async fn post_plain<T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        body: Value,
+    ) -> Result<T, DaemonError> {
         let response = self
             .client
             .post(format!("{}{path}", self.base_url))
@@ -111,7 +147,9 @@ impl RpcDaemonClient {
             .map_err(|e| DaemonError::Request(format!("invalid JSON response from {path}: {e}")))?;
         if let Some(status) = value.get("status").and_then(|s| s.as_str()) {
             if status != "OK" {
-                return Err(DaemonError::Request(format!("daemon returned status {status} from {path}")));
+                return Err(DaemonError::Request(format!(
+                    "daemon returned status {status} from {path}"
+                )));
             }
         }
         // A field-shape mismatch here means the response was valid JSON but didn't
@@ -124,9 +162,20 @@ impl RpcDaemonClient {
             let full = value.to_string();
             // `String` slicing panics off a char boundary; `char_indices` finds the
             // nearest safe cut at or before 500 bytes rather than assuming ASCII.
-            let cut = full.char_indices().map(|(i, _)| i).take_while(|&i| i <= 500).last().unwrap_or(0);
-            let snippet = if full.len() > cut { format!("{}…", &full[..cut]) } else { full };
-            DaemonError::Request(format!("failed to parse response from {path}: {e}\nresponse body was: {snippet}"))
+            let cut = full
+                .char_indices()
+                .map(|(i, _)| i)
+                .take_while(|&i| i <= 500)
+                .last()
+                .unwrap_or(0);
+            let snippet = if full.len() > cut {
+                format!("{}…", &full[..cut])
+            } else {
+                full
+            };
+            DaemonError::Request(format!(
+                "failed to parse response from {path}: {e}\nresponse body was: {snippet}"
+            ))
         })
     }
 
@@ -154,7 +203,10 @@ impl RpcDaemonClient {
             return Ok(vec![]);
         }
         let resp: GetTransactionsResponse = self
-            .post_plain("/get_transactions", json!({ "txs_hashes": hashes, "decode_as_json": false }))
+            .post_plain(
+                "/get_transactions",
+                json!({ "txs_hashes": hashes, "decode_as_json": false }),
+            )
             .await?;
         decode_all_or_fail(hashes, resp)
     }
@@ -164,7 +216,24 @@ impl RpcDaemonClient {
     /// before ever calling this). Builds the request, posts it, parses the
     /// response - see `get_blocks_bin_request`/`parse_get_blocks_bin_response`'s
     /// own doc comments for the wire format itself.
-    async fn get_blocks_bin_range(&self, start_height: u64, max_block_count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+    async fn get_blocks_bin_range(
+        &self,
+        start_height: u64,
+        max_block_count: u64,
+    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+        Ok(self
+            .get_blocks_bin(start_height, max_block_count)
+            .await?
+            .into_iter()
+            .map(|block| block.txs)
+            .collect())
+    }
+
+    async fn get_blocks_bin(
+        &self,
+        start_height: u64,
+        max_block_count: u64,
+    ) -> Result<Vec<BinBlock>, DaemonError> {
         let request = get_blocks_bin_request(start_height, max_block_count);
         let response = self.post_bin("/get_blocks.bin", request).await?;
         parse_get_blocks_bin_response(&response)
@@ -207,7 +276,10 @@ fn decode_all_or_fail(
             hashes.len()
         )));
     }
-    entries.iter().map(|entry| decode_tx_hex(&entry.as_hex)).collect()
+    entries
+        .iter()
+        .map(|entry| decode_tx_hex(&entry.as_hex))
+        .collect()
 }
 
 /// Turns a single-hash `/get_transactions` response into a [`TxLocation`], insisting
@@ -311,8 +383,10 @@ fn decode_tx_hex(hex_str: &str) -> Result<Transaction, DaemonError> {
             "transaction has no as_hex data (likely pruned on this node)".to_string(),
         ));
     }
-    let bytes = hex::decode(hex_str).map_err(|e| DaemonError::Request(format!("invalid tx hex: {e}")))?;
-    deserialize(&bytes).map_err(|e| DaemonError::Request(format!("failed to parse transaction blob: {e}")))
+    let bytes =
+        hex::decode(hex_str).map_err(|e| DaemonError::Request(format!("invalid tx hex: {e}")))?;
+    deserialize(&bytes)
+        .map_err(|e| DaemonError::Request(format!("failed to parse transaction blob: {e}")))
 }
 
 /// Builds an epee-encoded `get_blocks.bin` request body: a flat object with
@@ -341,7 +415,10 @@ fn decode_tx_hex(hex_str: &str) -> Result<Transaction, DaemonError> {
 /// object's count always fits the varint's 1-byte form (`3 << 2`), so this
 /// never needs the format's multi-byte varint case.
 fn get_blocks_bin_request(start_height: u64, max_block_count: u64) -> Vec<u8> {
-    #[allow(clippy::expect_used, reason = "only called with short field-name literals")]
+    #[allow(
+        clippy::expect_used,
+        reason = "only called with short field-name literals"
+    )]
     fn push_field_name(buf: &mut Vec<u8>, name: &str) {
         buf.push(u8::try_from(name.len()).expect("field name literal longer than 255 bytes"));
         buf.extend_from_slice(name.as_bytes());
@@ -382,7 +459,42 @@ fn get_blocks_bin_request(start_height: u64, max_block_count: u64) -> Vec<u8> {
 /// just batched. Un-consumed fields (`block` itself, `prunable_hash`, `pruned`,
 /// `block_weight`, `output_indices`) are skipped automatically by
 /// `monero_epee`'s own `Drop`-based cursor advance - see its own module docs.
-fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+/// One entry of a `get_blocks.bin` response: the block blob (header, miner
+/// transaction and transaction hashes) and the transactions themselves.
+struct BinBlock {
+    block: Option<Vec<u8>>,
+    txs: Vec<Transaction>,
+}
+
+impl BinBlock {
+    /// The block's identity from its own blob, with its transactions.
+    fn into_chain_block(self, height: u64) -> Result<ChainBlock, DaemonError> {
+        let blob = self.block.ok_or_else(|| {
+            DaemonError::Request(format!("get_blocks.bin: block {height} had no block blob"))
+        })?;
+        let block: monero::Block = deserialize(&blob).map_err(|e| {
+            DaemonError::Request(format!(
+                "get_blocks.bin: block {height} could not be decoded: {e}"
+            ))
+        })?;
+        if block.tx_hashes.len() != self.txs.len() {
+            return Err(DaemonError::Request(format!(
+                "get_blocks.bin: block {height} lists {} transactions but {} came with it",
+                block.tx_hashes.len(),
+                self.txs.len()
+            )));
+        }
+        Ok(ChainBlock {
+            height,
+            hash: hex::encode(block.id().0),
+            prev_hash: hex::encode(block.header.prev_id.0),
+            timestamp: block.header.timestamp.0,
+            txs: self.txs,
+        })
+    }
+}
+
+fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonError> {
     fn epee_err(e: monero_epee::EpeeError) -> DaemonError {
         DaemonError::Request(format!("invalid get_blocks.bin response: {e:?}"))
     }
@@ -391,7 +503,7 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, 
     let mut fields = epee.entry().map_err(epee_err)?.fields().map_err(epee_err)?;
 
     let mut status: Option<Vec<u8>> = None;
-    let mut blocks: Option<Vec<Vec<Transaction>>> = None;
+    let mut blocks: Option<Vec<BinBlock>> = None;
 
     while let Some(entry) = fields.next() {
         let (key, value) = entry.map_err(epee_err)?;
@@ -403,12 +515,23 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, 
                 let mut block_entries = value.iterate().map_err(epee_err)?;
                 let mut out = Vec::new();
                 while let Some(block_entry) = block_entries.next() {
-                    let mut block_fields = block_entry.map_err(epee_err)?.fields().map_err(epee_err)?;
+                    let mut block_fields =
+                        block_entry.map_err(epee_err)?.fields().map_err(epee_err)?;
                     let mut txs = Vec::new();
+                    let mut block_blob = None;
                     while let Some(field) = block_fields.next() {
                         let (field_key, field_value) = field.map_err(epee_err)?;
-                        if field_key.consume() != b"txs" {
-                            continue; // "block" (the header+coinbase blob), etc. - not needed here
+                        match field_key.consume() {
+                            b"txs" => {}
+                            // The header, coinbase and transaction hashes: the
+                            // block's identity.
+                            b"block" => {
+                                block_blob = Some(
+                                    field_value.to_str().map_err(epee_err)?.consume().to_vec(),
+                                );
+                                continue;
+                            }
+                            _ => continue,
                         }
                         // `txs`' own element shape genuinely differs by monerod
                         // version, confirmed against a real response, not assumed:
@@ -424,14 +547,23 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, 
                         while let Some(tx_entry) = tx_entries.next() {
                             let tx_entry = tx_entry.map_err(epee_err)?;
                             let blob = match element_kind {
-                                monero_epee::Type::String => tx_entry.to_str().map_err(epee_err)?.consume().to_vec(),
+                                monero_epee::Type::String => {
+                                    tx_entry.to_str().map_err(epee_err)?.consume().to_vec()
+                                }
                                 monero_epee::Type::Object => {
                                     let mut tx_fields = tx_entry.fields().map_err(epee_err)?;
                                     let mut blob: Option<Vec<u8>> = None;
                                     while let Some(tx_field) = tx_fields.next() {
-                                        let (tx_field_key, tx_field_value) = tx_field.map_err(epee_err)?;
+                                        let (tx_field_key, tx_field_value) =
+                                            tx_field.map_err(epee_err)?;
                                         if tx_field_key.consume() == b"blob" {
-                                            blob = Some(tx_field_value.to_str().map_err(epee_err)?.consume().to_vec());
+                                            blob = Some(
+                                                tx_field_value
+                                                    .to_str()
+                                                    .map_err(epee_err)?
+                                                    .consume()
+                                                    .to_vec(),
+                                            );
                                         }
                                     }
                                     blob.ok_or_else(|| {
@@ -453,7 +585,10 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, 
                             })?);
                         }
                     }
-                    out.push(txs);
+                    out.push(BinBlock {
+                        block: block_blob,
+                        txs,
+                    });
                 }
                 blocks = Some(out);
             }
@@ -469,10 +604,16 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<Vec<Transaction>>, 
                 std::string::String::from_utf8_lossy(&s)
             )));
         }
-        None => return Err(DaemonError::Request("get_blocks.bin response had no status field".to_string())),
+        None => {
+            return Err(DaemonError::Request(
+                "get_blocks.bin response had no status field".to_string(),
+            ))
+        }
     }
 
-    blocks.ok_or_else(|| DaemonError::Request("get_blocks.bin response had no blocks field".to_string()))
+    blocks.ok_or_else(|| {
+        DaemonError::Request("get_blocks.bin response had no blocks field".to_string())
+    })
 }
 
 /// Matches `COMMAND_RPC_GET_HEIGHT::response_t`: `uint64_t height`, plain
@@ -647,16 +788,22 @@ impl MoneroDaemonClient for RpcDaemonClient {
     /// same 15s timeout and response cap) as every other call.
     async fn get_info(&self) -> Result<DaemonInfo, DaemonError> {
         let result: GetInfoResult = self.post_json_rpc("get_info", json!({})).await?;
-        Ok(DaemonInfo { nettype: result.nettype() })
+        Ok(DaemonInfo {
+            nettype: result.nettype(),
+        })
     }
 
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
-        let resp: GetBlockResult = self.post_json_rpc("get_block", json!({ "height": height })).await?;
+        let resp: GetBlockResult = self
+            .post_json_rpc("get_block", json!({ "height": height }))
+            .await?;
         Ok(resp.block_header.hash)
     }
 
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
-        let block: GetBlockResult = self.post_json_rpc("get_block", json!({ "height": height })).await?;
+        let block: GetBlockResult = self
+            .post_json_rpc("get_block", json!({ "height": height }))
+            .await?;
         self.fetch_transactions(&block.tx_hashes).await
     }
 
@@ -672,7 +819,11 @@ impl MoneroDaemonClient for RpcDaemonClient {
     /// node in this change; `live_node_tests::real_node_get_blocks_range_matches_
     /// get_block_transactions_for_the_same_range` below exists to do exactly that
     /// (`cargo test --ignored daemon_rpc::`) before this ships to a real node.
-    async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+    async fn get_blocks_range(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -692,13 +843,58 @@ impl MoneroDaemonClient for RpcDaemonClient {
         self.get_blocks_bin_range(start_height, count).await
     }
 
+    /// `get_blocks.bin`, decoding each block's own header: one round trip
+    /// for the range, and every block's id computed from the same blob its
+    /// transactions came with. Genesis the ordinary way, as for
+    /// `get_blocks_range`.
+    async fn get_chain_blocks(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainBlock>, DaemonError> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        let mut from = start_height;
+        if start_height == 0 {
+            let hash = self.get_block_hash(0).await?;
+            let timestamp = self.get_block_timestamp(0).await?;
+            let txs = self.get_block_transactions(0).await?;
+            out.push(ChainBlock {
+                height: 0,
+                hash,
+                prev_hash: String::new(),
+                timestamp,
+                txs,
+            });
+            from = 1;
+        }
+        let wanted = count - out.len() as u64;
+        if wanted > 0 {
+            let blocks = self.get_blocks_bin(from, wanted).await?;
+            for (offset, block) in blocks.into_iter().take(wanted as usize).enumerate() {
+                out.push(block.into_chain_block(from + offset as u64)?);
+            }
+        }
+        if out.is_empty() {
+            return Err(DaemonError::Request(format!(
+                "get_blocks.bin returned no blocks from height {start_height}"
+            )));
+        }
+        Ok(out)
+    }
+
     async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
-        let resp: GetBlockResult = self.post_json_rpc("get_block", json!({ "height": height })).await?;
+        let resp: GetBlockResult = self
+            .post_json_rpc("get_block", json!({ "height": height }))
+            .await?;
         Ok(resp.block_header.timestamp)
     }
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        let resp: GetTransactionPoolResponse = self.post_plain("/get_transaction_pool", json!({})).await?;
+        let resp: GetTransactionPoolResponse =
+            self.post_plain("/get_transaction_pool", json!({})).await?;
         Ok(decode_pool_best_effort(&resp.transactions))
     }
 
@@ -708,7 +904,9 @@ impl MoneroDaemonClient for RpcDaemonClient {
             #[serde(default)]
             tx_hashes: Vec<String>,
         }
-        let resp: PoolHashes = self.post_plain("/get_transaction_pool_hashes", json!({})).await?;
+        let resp: PoolHashes = self
+            .post_plain("/get_transaction_pool_hashes", json!({}))
+            .await?;
         Ok(resp.tx_hashes)
     }
 
@@ -723,7 +921,10 @@ impl MoneroDaemonClient for RpcDaemonClient {
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         let resp: GetTransactionsResponse = self
-            .post_plain("/get_transactions", json!({ "txs_hashes": [txid], "decode_as_json": false }))
+            .post_plain(
+                "/get_transactions",
+                json!({ "txs_hashes": [txid], "decode_as_json": false }),
+            )
             .await?;
         classify_located_transaction(txid, resp)
     }
@@ -732,16 +933,23 @@ impl MoneroDaemonClient for RpcDaemonClient {
         // Reuses `fetch_transactions` - already exactly this shape
         // (`get_block_transactions` above already calls it with a block's own
         // hash list), just with a single-element list here.
-        let mut txs = self.fetch_transactions(std::slice::from_ref(&txid.to_string())).await?;
-        txs.pop().ok_or_else(|| DaemonError::Request(format!("no such transaction: {txid}")))
+        let mut txs = self
+            .fetch_transactions(std::slice::from_ref(&txid.to_string()))
+            .await?;
+        txs.pop()
+            .ok_or_else(|| DaemonError::Request(format!("no such transaction: {txid}")))
     }
 
-    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+    async fn is_key_image_spent(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
         if key_images.is_empty() {
             return Ok(vec![]);
         }
-        let resp: IsKeyImageSpentResponse =
-            self.post_plain("/is_key_image_spent", json!({ "key_images": key_images })).await?;
+        let resp: IsKeyImageSpentResponse = self
+            .post_plain("/is_key_image_spent", json!({ "key_images": key_images }))
+            .await?;
         // A caller correlates this response with `key_images` positionally (e.g. by
         // `zip`ping the two, as the scanner's double-spend check and
         // `tests/support/mod.rs`'s spendable-output filter both do) - a short
@@ -767,6 +975,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     //! Hermetic counterparts to the `#[ignore]`d live tests below: the response
     //! shapes a real node can produce, exercised without a network.
@@ -775,8 +984,60 @@ mod tests {
 
     const FIXTURE_TX_HEX: &str = include_str!("../tests/fixtures/subaddress_tx.hex");
 
+    /// A real mainnet block with only its coinbase (from the `monero` crate's
+    /// own serialisation test).
+    const COINBASE_ONLY_BLOCK_HEX: &str = "0c0c94debaf805beb3489c722a285c092a32e7c6893abfc7d069699c8326fc3445a749c5276b6200000000029b892201ffdf882201b699d4c8b1ec020223df524af2a2ef5f870adb6e1ceb03a475c39f8b9ef76aa50b46ddd2a18349402b012839bfa19b7524ec7488917714c216ca254b38ed0424ca65ae828a7c006aeaf10208f5316a7f6b99cca60000";
+
+    /// A block's identity comes from its own blob: the id the node reports
+    /// for it, its parent's id and its timestamp. A blob that doesn't match
+    /// the transactions sent with it, or is missing, is an error, never a
+    /// block with made-up identity.
+    #[test]
+    fn a_get_blocks_bin_entry_carries_its_own_block_identity() {
+        let blob = hex::decode(COINBASE_ONLY_BLOCK_HEX).unwrap();
+        let decoded: monero::Block = deserialize(&blob).unwrap();
+        let block = BinBlock {
+            block: Some(blob.clone()),
+            txs: vec![],
+        }
+        .into_chain_block(1_000)
+        .unwrap();
+        assert_eq!(block.height, 1_000);
+        assert_eq!(block.hash, hex::encode(decoded.id().0));
+        assert_eq!(
+            block.prev_hash,
+            "beb3489c722a285c092a32e7c6893abfc7d069699c8326fc3445a749c5276b62"
+        );
+        assert_eq!(block.timestamp, decoded.header.timestamp.0);
+        assert!(block.txs.is_empty());
+
+        let tx: Transaction = deserialize(&hex::decode(FIXTURE_TX_HEX.trim()).unwrap()).unwrap();
+        let extra = BinBlock {
+            block: Some(blob),
+            txs: vec![tx],
+        }
+        .into_chain_block(1_000);
+        assert!(extra.is_err(), "a transaction the block doesn't list");
+        assert!(BinBlock {
+            block: None,
+            txs: vec![]
+        }
+        .into_chain_block(1_000)
+        .is_err());
+        assert!(BinBlock {
+            block: Some(vec![1, 2, 3]),
+            txs: vec![]
+        }
+        .into_chain_block(1_000)
+        .is_err());
+    }
+
     fn entry(as_hex: &str) -> TxEntry {
-        TxEntry { as_hex: as_hex.to_string(), in_pool: false, block_height: Some(1) }
+        TxEntry {
+            as_hex: as_hex.to_string(),
+            in_pool: false,
+            block_height: Some(1),
+        }
     }
 
     /// `get_info` from a current monerod (`nettype`), from an older one
@@ -784,37 +1045,58 @@ mod tests {
     /// nothing about its network.
     #[test]
     fn get_info_says_which_network_a_node_is_on() {
-        let nettype = |value: Value| serde_json::from_value::<GetInfoResult>(value).unwrap().nettype();
-        assert_eq!(nettype(json!({ "nettype": "stagenet", "height": 5, "status": "OK" })), "stagenet");
+        let nettype = |value: Value| {
+            serde_json::from_value::<GetInfoResult>(value)
+                .unwrap()
+                .nettype()
+        };
+        assert_eq!(
+            nettype(json!({ "nettype": "stagenet", "height": 5, "status": "OK" })),
+            "stagenet"
+        );
         assert_eq!(nettype(json!({ "nettype": "Mainnet" })), "mainnet");
-        assert_eq!(nettype(json!({ "mainnet": false, "stagenet": false, "testnet": true })), "testnet");
+        assert_eq!(
+            nettype(json!({ "mainnet": false, "stagenet": false, "testnet": true })),
+            "testnet"
+        );
         assert_eq!(nettype(json!({ "nettype": "fakechain" })), "fakechain");
         assert_eq!(nettype(json!({ "height": 5 })), "unknown");
-        let info = |nettype: &str| DaemonInfo { nettype: nettype.to_string() };
+        let info = |nettype: &str| DaemonInfo {
+            nettype: nettype.to_string(),
+        };
         assert_eq!(info("testnet").network(), Some(monero::Network::Testnet));
-        assert_eq!(info("fakechain").network(), None, "a regtest node is never on the wrong network");
+        assert_eq!(
+            info("fakechain").network(),
+            None,
+            "a regtest node is never on the wrong network"
+        );
         assert_eq!(DaemonInfo::unknown().network(), None);
     }
 
     #[test]
-    fn an_empty_mempool_response_omitting_the_transactions_key_entirely_parses_as_empty_not_an_error() {
+    fn an_empty_mempool_response_omitting_the_transactions_key_entirely_parses_as_empty_not_an_error(
+    ) {
         // Reported live against a real public testnet node: an empty pool came back
         // as `{"status":"OK",...}` with no "transactions" key at all, rather than
         // `"transactions": []` - and without `#[serde(default)]` that's a hard parse
         // error on *every* poll of a genuinely empty mempool, not a one-off. This
         // pins the fix directly against the response shape that broke, without
         // needing a live node or an HTTP mock.
-        let resp: GetTransactionPoolResponse = serde_json::from_str(r#"{"status":"OK","untrusted":false}"#).unwrap();
+        let resp: GetTransactionPoolResponse =
+            serde_json::from_str(r#"{"status":"OK","untrusted":false}"#).unwrap();
         assert!(resp.transactions.is_empty());
         assert!(decode_pool_best_effort(&resp.transactions).is_empty());
 
         // The ordinary shape - an explicit empty array - still works too.
-        let resp: GetTransactionPoolResponse = serde_json::from_str(r#"{"status":"OK","transactions":[]}"#).unwrap();
+        let resp: GetTransactionPoolResponse =
+            serde_json::from_str(r#"{"status":"OK","transactions":[]}"#).unwrap();
         assert!(resp.transactions.is_empty());
 
         // And a real entry still deserializes correctly alongside the fix.
-        let resp: GetTransactionPoolResponse =
-            serde_json::from_str(&format!(r#"{{"status":"OK","transactions":[{{"tx_blob":"{FIXTURE_TX_HEX}"}}]}}"#)).unwrap();
+        let resp: GetTransactionPoolResponse = serde_json::from_str(&format!(
+            r#"{{"status":"OK","transactions":[{{"tx_blob":"{FIXTURE_TX_HEX}"}}]}}"#
+        ))
+        .unwrap();
         assert_eq!(decode_pool_best_effort(&resp.transactions).len(), 1);
     }
 
@@ -837,11 +1119,20 @@ mod tests {
         // Same loss of a payment, arrived at without the node admitting anything is
         // missing - so the `missed_tx` check alone isn't sufficient.
         let hashes = vec!["aa".repeat(32), "bb".repeat(32)];
-        let resp = GetTransactionsResponse { txs: Some(vec![entry(FIXTURE_TX_HEX)]), missed_tx: vec![] };
+        let resp = GetTransactionsResponse {
+            txs: Some(vec![entry(FIXTURE_TX_HEX)]),
+            missed_tx: vec![],
+        };
         let err = decode_all_or_fail(&hashes, resp).unwrap_err();
-        assert!(err.to_string().contains("for 2 requested hashes"), "got {err}");
+        assert!(
+            err.to_string().contains("for 2 requested hashes"),
+            "got {err}"
+        );
 
-        let resp = GetTransactionsResponse { txs: None, missed_tx: vec![] };
+        let resp = GetTransactionsResponse {
+            txs: None,
+            missed_tx: vec![],
+        };
         assert!(decode_all_or_fail(&hashes, resp).is_err());
     }
 
@@ -859,9 +1150,15 @@ mod tests {
 
     #[test]
     fn an_empty_request_needs_no_round_trip_and_yields_nothing() {
-        assert!(decode_all_or_fail(&[], GetTransactionsResponse { txs: None, missed_tx: vec![] })
-            .unwrap()
-            .is_empty());
+        assert!(decode_all_or_fail(
+            &[],
+            GetTransactionsResponse {
+                txs: None,
+                missed_tx: vec![]
+            }
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
@@ -869,7 +1166,10 @@ mod tests {
         let err = decode_tx_hex("").unwrap_err();
         assert!(err.to_string().contains("no as_hex data"), "got {err}");
         assert!(decode_tx_hex("not hex at all").is_err());
-        assert!(decode_tx_hex("deadbeef").is_err(), "valid hex that isn't a transaction");
+        assert!(
+            decode_tx_hex("deadbeef").is_err(),
+            "valid hex that isn't a transaction"
+        );
     }
 
     #[test]
@@ -885,7 +1185,10 @@ mod tests {
         assert_eq!(
             classify_located_transaction(
                 &txid,
-                GetTransactionsResponse { txs: None, missed_tx: vec![txid.clone()] }
+                GetTransactionsResponse {
+                    txs: None,
+                    missed_tx: vec![txid.clone()]
+                }
             )
             .unwrap(),
             TxLocation::NotFound
@@ -896,7 +1199,11 @@ mod tests {
             classify_located_transaction(
                 &txid,
                 GetTransactionsResponse {
-                    txs: Some(vec![TxEntry { as_hex: String::new(), in_pool: false, block_height: Some(3_755_690) }]),
+                    txs: Some(vec![TxEntry {
+                        as_hex: String::new(),
+                        in_pool: false,
+                        block_height: Some(3_755_690)
+                    }]),
                     missed_tx: vec![],
                 }
             )
@@ -907,7 +1214,11 @@ mod tests {
             classify_located_transaction(
                 &txid,
                 GetTransactionsResponse {
-                    txs: Some(vec![TxEntry { as_hex: String::new(), in_pool: true, block_height: None }]),
+                    txs: Some(vec![TxEntry {
+                        as_hex: String::new(),
+                        in_pool: true,
+                        block_height: None
+                    }]),
                     missed_tx: vec![],
                 }
             )
@@ -924,10 +1235,16 @@ mod tests {
         // double-spend.
         let err = classify_located_transaction(
             &txid,
-            GetTransactionsResponse { txs: None, missed_tx: vec![] },
+            GetTransactionsResponse {
+                txs: None,
+                missed_tx: vec![],
+            },
         )
         .unwrap_err();
-        assert!(err.to_string().contains("neither a transaction nor a miss"), "got {err}");
+        assert!(
+            err.to_string().contains("neither a transaction nor a miss"),
+            "got {err}"
+        );
         assert!(
             serde_json::from_value::<GetTransactionsResponse>(json!({ "status": "OK" })).is_ok(),
             "the empty-but-valid response this guards against must really parse - otherwise the guard is moot"
@@ -935,19 +1252,24 @@ mod tests {
 
         // ...and a miss reported for some *other* hash is equally not an answer about
         // this one.
-        assert!(
-            classify_located_transaction(
-                &txid,
-                GetTransactionsResponse { txs: None, missed_tx: vec!["bb".repeat(32)] },
-            )
-            .is_err()
-        );
+        assert!(classify_located_transaction(
+            &txid,
+            GetTransactionsResponse {
+                txs: None,
+                missed_tx: vec!["bb".repeat(32)]
+            },
+        )
+        .is_err());
 
         // "Confirmed, but I won't say where" is self-contradictory, not a miss.
         let err = classify_located_transaction(
             &txid,
             GetTransactionsResponse {
-                txs: Some(vec![TxEntry { as_hex: String::new(), in_pool: false, block_height: None }]),
+                txs: Some(vec![TxEntry {
+                    as_hex: String::new(),
+                    in_pool: false,
+                    block_height: None,
+                }]),
                 missed_tx: vec![],
             },
         )
@@ -971,14 +1293,28 @@ mod tests {
         // transactions loses a payment permanently. Nothing about the mempool is ever
         // marked done, and an undecodable transaction can never be matched anyway.
         let entries = vec![
-            PoolTx { tx_blob: FIXTURE_TX_HEX.to_string() },
-            PoolTx { tx_blob: "not hex at all".to_string() },
-            PoolTx { tx_blob: String::new() }, // pruned: present, no blob
-            PoolTx { tx_blob: "deadbeef".to_string() }, // valid hex, not a transaction
-            PoolTx { tx_blob: FIXTURE_TX_HEX.to_string() },
+            PoolTx {
+                tx_blob: FIXTURE_TX_HEX.to_string(),
+            },
+            PoolTx {
+                tx_blob: "not hex at all".to_string(),
+            },
+            PoolTx {
+                tx_blob: String::new(),
+            }, // pruned: present, no blob
+            PoolTx {
+                tx_blob: "deadbeef".to_string(),
+            }, // valid hex, not a transaction
+            PoolTx {
+                tx_blob: FIXTURE_TX_HEX.to_string(),
+            },
         ];
         let decoded = decode_pool_best_effort(&entries);
-        assert_eq!(decoded.len(), 2, "every decodable transaction must survive its undecodable neighbours");
+        assert_eq!(
+            decoded.len(),
+            2,
+            "every decodable transaction must survive its undecodable neighbours"
+        );
         for tx in &decoded {
             assert!(!tx.prefix.outputs.is_empty());
         }
@@ -986,7 +1322,10 @@ mod tests {
         // A pool of nothing but junk is an empty mempool, not an error - there is
         // genuinely nothing to scan, and reporting that as a failed poll would be
         // indistinguishable from an unreachable node.
-        assert!(decode_pool_best_effort(&[PoolTx { tx_blob: "zz".into() }]).is_empty());
+        assert!(decode_pool_best_effort(&[PoolTx {
+            tx_blob: "zz".into()
+        }])
+        .is_empty());
         assert!(decode_pool_best_effort(&[]).is_empty());
     }
 
@@ -1011,9 +1350,10 @@ mod tests {
         // `tx_hashes` is absent on an empty block, and `missed_tx` is absent when
         // nothing was missed - a hard `Vec` on either would turn a normal response
         // into a parse error and stall the scanner.
-        let block: GetBlockResult =
-            serde_json::from_value(json!({ "block_header": { "hash": "abc", "timestamp": 1_700_000_000u64 } }))
-                .unwrap();
+        let block: GetBlockResult = serde_json::from_value(
+            json!({ "block_header": { "hash": "abc", "timestamp": 1_700_000_000u64 } }),
+        )
+        .unwrap();
         assert_eq!(block.block_header.hash, "abc");
         assert_eq!(block.block_header.timestamp, 1_700_000_000);
         assert!(block.tx_hashes.is_empty());
@@ -1023,9 +1363,10 @@ mod tests {
         assert!(txs.txs.is_none() && txs.missed_tx.is_empty());
 
         // A pool entry reports no block height at all.
-        let pool: TxEntry =
-            serde_json::from_value(json!({ "as_hex": "ab", "in_pool": true, "block_height": null }))
-                .unwrap();
+        let pool: TxEntry = serde_json::from_value(
+            json!({ "as_hex": "ab", "in_pool": true, "block_height": null }),
+        )
+        .unwrap();
         assert!(pool.in_pool && pool.block_height.is_none());
     }
 
@@ -1040,7 +1381,8 @@ mod tests {
         // behavior for `Option<T>` fields (defaults to `None` when the key is
         // missing, with no `#[serde(default)]` needed) actually holds here, rather
         // than trusting that behavior from memory.
-        let entry: TxEntry = serde_json::from_value(json!({ "as_hex": "ab", "in_pool": true })).unwrap();
+        let entry: TxEntry =
+            serde_json::from_value(json!({ "as_hex": "ab", "in_pool": true })).unwrap();
         assert!(entry.in_pool);
         assert!(entry.block_height.is_none());
     }
@@ -1055,17 +1397,20 @@ mod tests {
         // so this specific overflow was never observed live (unlike the two bugs
         // above, both found from a real error message) - this is a type-fidelity
         // fix caught by checking the source directly, not a reported failure.
-        let resp: IsKeyImageSpentResponse = serde_json::from_value(json!({ "spent_status": [0, 1, 2, -1, 300] })).unwrap();
+        let resp: IsKeyImageSpentResponse =
+            serde_json::from_value(json!({ "spent_status": [0, 1, 2, -1, 300] })).unwrap();
         assert_eq!(resp.spent_status, vec![0, 1, 2, -1, 300]);
 
         // And, consistent with every other vector field in this file, an absent
         // key parses as empty rather than a hard error.
-        let resp: IsKeyImageSpentResponse = serde_json::from_value(json!({ "status": "OK" })).unwrap();
+        let resp: IsKeyImageSpentResponse =
+            serde_json::from_value(json!({ "status": "OK" })).unwrap();
         assert!(resp.spent_status.is_empty());
     }
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod live_node_tests {
     //! These hit a real public Monero node over the network and are excluded from
     //! the default `cargo test` run (`#[ignore]`) so the main suite stays hermetic
@@ -1092,7 +1437,10 @@ mod live_node_tests {
         // Mainnet passed height 3,700,000 in mid-2026; a sane lower bound that
         // won't need updating for a long time, without hardcoding an exact value
         // that would go stale on every run.
-        assert!(height > 3_700_000, "height {height} looks implausible for current mainnet");
+        assert!(
+            height > 3_700_000,
+            "height {height} looks implausible for current mainnet"
+        );
     }
 
     #[tokio::test]
@@ -1101,7 +1449,10 @@ mod live_node_tests {
         // Captured live against this exact node while building this client - at
         // 5+ confirmations deep at the time, this block's hash is permanent.
         let hash = client().get_block_hash(3_755_690).await.unwrap();
-        assert_eq!(hash, "61dcf348728fd124895e5e9e5188cc34a13c483f84ddfb5d3998f38d0ae55aa4");
+        assert_eq!(
+            hash,
+            "61dcf348728fd124895e5e9e5188cc34a13c483f84ddfb5d3998f38d0ae55aa4"
+        );
     }
 
     #[tokio::test]
@@ -1122,7 +1473,10 @@ mod live_node_tests {
         // fake - proves the binary search itself, not just its two
         // primitives, works against the real node's actual (not perfectly
         // monotonic) timestamps.
-        let height = client().find_height_at_or_before(1_788_593_344).await.unwrap();
+        let height = client()
+            .find_height_at_or_before(1_788_593_344)
+            .await
+            .unwrap();
         assert_eq!(height, 3_755_690);
     }
 
@@ -1164,7 +1518,11 @@ mod live_node_tests {
         let count = 3;
 
         let batched = c.get_blocks_range(start, count).await.unwrap();
-        assert_eq!(batched.len() as u64, count, "a real node should honor a small max_block_count");
+        assert_eq!(
+            batched.len() as u64,
+            count,
+            "a real node should honor a small max_block_count"
+        );
 
         use monero::cryptonote::hash::Hashable;
         for (offset, block_txs) in batched.iter().enumerate() {
@@ -1240,8 +1598,13 @@ mod live_node_tests {
     #[tokio::test]
     #[ignore]
     async fn real_node_get_transaction_errors_for_a_bogus_hash() {
-        let result = client().get_transaction("0000000000000000000000000000000000000000000000000000000000000000").await;
-        assert!(result.is_err(), "a nonexistent txid must be a real error, not a silently empty/default transaction");
+        let result = client()
+            .get_transaction("0000000000000000000000000000000000000000000000000000000000000000")
+            .await;
+        assert!(
+            result.is_err(),
+            "a nonexistent txid must be a real error, not a silently empty/default transaction"
+        );
     }
 
     #[tokio::test]
@@ -1258,7 +1621,9 @@ mod live_node_tests {
     #[ignore]
     async fn real_node_is_key_image_spent_reports_unspent_for_a_null_image() {
         let statuses = client()
-            .is_key_image_spent(&["0000000000000000000000000000000000000000000000000000000000000000".to_string()])
+            .is_key_image_spent(&[
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ])
             .await
             .unwrap();
         assert_eq!(statuses, vec![KeyImageStatus::Unspent]);
@@ -1288,7 +1653,10 @@ mod live_node_tests {
 
         let key_custody = PlainKeyCustody::default();
         let handle = key_custody
-            .register_wallet(WalletMaterial::new(view_key.to_bytes(), spend_pubkey.to_bytes()))
+            .register_wallet(WalletMaterial::new(
+                view_key.to_bytes(),
+                spend_pubkey.to_bytes(),
+            ))
             .await
             .unwrap();
         let store = Store::open_in_memory().unwrap();
@@ -1307,7 +1675,10 @@ mod live_node_tests {
             .unwrap();
 
         let txs = client().get_mempool_transactions().await.unwrap();
-        assert!(!txs.is_empty(), "test needs a non-empty live mempool to be meaningful");
+        assert!(
+            !txs.is_empty(),
+            "test needs a non-empty live mempool to be meaningful"
+        );
 
         for tx in &txs {
             let touched = crate::scanner::scan_transaction_for_tenant(
@@ -1331,17 +1702,25 @@ mod live_node_tests {
         use axum::routing::post;
         // Any endpoint: a valid-looking answer padded to 10kB.
         let app = axum::Router::new().fallback(post(|| async {
-            format!("{{\"status\":\"OK\",\"height\":1,\"count\":1,\"pad\":\"{}\"}}", "x".repeat(10_000))
+            format!(
+                "{{\"status\":\"OK\",\"height\":1,\"count\":1,\"pad\":\"{}\"}}",
+                "x".repeat(10_000)
+            )
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let small = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap().with_max_response_bytes(1_000);
+        let small = RpcDaemonClient::new("127.0.0.1", port, false, false)
+            .unwrap()
+            .with_max_response_bytes(1_000);
         let err = small.get_height().await.unwrap_err();
         assert!(err.to_string().contains("larger than"), "got: {err}");
 
         let roomy = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap();
-        assert!(roomy.get_height().await.is_ok(), "the same response is fine under the default cap");
+        assert!(
+            roomy.get_height().await.is_ok(),
+            "the same response is fine under the default cap"
+        );
     }
 }

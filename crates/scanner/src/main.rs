@@ -16,14 +16,15 @@
 // (a listener that can't bind), which is marked where it happens.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-use std::collections::HashMap;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use scanner::cli::{self, Action};
 use scanner::engine_settings::{
-    migrate_key_custody_setting, CustodyConfig, CustodyReloadable, Daemons, EngineSettings, RuntimeConfig, StoreSettings,
+    migrate_key_custody_setting, CustodyConfig, CustodyReloadable, Daemons, EngineSettings,
+    RuntimeConfig, StoreSettings,
 };
 use scanner::http::instance_admin::ensure_admin_token_seeded;
 use scanner::http::rate_limit::RateLimiter;
@@ -73,7 +74,11 @@ fn main() {
         }
         _ => 2,
     };
-    let runtime = match tokio::runtime::Builder::new_multi_thread().worker_threads(worker_threads).enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(e) => {
             tracing::error!(worker_threads, error = %e, "failed to start the async runtime");
@@ -83,9 +88,11 @@ fn main() {
     runtime.block_on(run(action));
 }
 
-#[allow(clippy::expect_used, reason = "boot-time: a listener that can't bind or a server that can't start ends the process")]
+#[allow(
+    clippy::expect_used,
+    reason = "boot-time: a listener that can't bind or a server that can't start ends the process"
+)]
 async fn run(action: Action) {
-
     let strict_tls = match action {
         Action::Help => {
             print!("{}", cli::HELP_TEXT);
@@ -114,7 +121,10 @@ async fn run(action: Action) {
                     println!("Network:               {}", s.network);
                     println!("Primary address:       {}", s.primary_address);
                     println!("Confirmations required: {}", s.confirmations_required);
-                    println!("Order expiry:          {} minutes", s.order_expiry_seconds / 60);
+                    println!(
+                        "Order expiry:          {} minutes",
+                        s.order_expiry_seconds / 60
+                    );
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -137,17 +147,15 @@ async fn run(action: Action) {
                 std::process::exit(1);
             }
             let key_custody: Arc<dyn KeyCustody> = router;
-            let bootstrapped = {
-                let store = store.lock();
-                local_admin::bootstrap_wallet(&store, &key_custody, &backend, args).await
-            };
+            let bootstrapped =
+                local_admin::bootstrap_wallet(&store, &key_custody, &backend, args).await;
             match bootstrapped {
                 Ok(created) => {
                     println!(
                         "bootstrapped self-hosted tenant: public_key={} (save this - it goes in your site's JS)",
                         created.tenant.public_key
                     );
-                    println!("bootstrap admin secret: {} (shown once - store it now, e.g. in a password manager)", created.secret_token);
+                    println!("bootstrap admin secret: {} (shown once - store it now, e.g. in a password manager)", created.secret_token.expose());
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -165,9 +173,10 @@ async fn run(action: Action) {
 
     if let Some(token) = ensure_admin_token_seeded(&store.lock()) {
         println!(
-            "==> generated a new instance admin token (shown once - it is stored only as a hash from here on):\n    {token}\n\
+            "==> generated a new instance admin token (shown once - it is stored only as a hash from here on):\n    {}\n\
              Set the SCANNER_ADMIN_TOKEN environment variable to this value on future boots if you'd rather manage it \
-             that way than let it live in the database."
+             that way than let it live in the database.",
+            token.expose()
         );
     }
 
@@ -187,9 +196,15 @@ async fn run(action: Action) {
     let daemons = Daemons::default();
     let admin_rate_limiter = Arc::new(RateLimiter::new(1));
     let router = Arc::new(CustodyRouter::default());
-    let engine_settings =
-        match EngineSettings::load(store.clone(), daemons.clone(), strict_tls, router.clone(), admin_rate_limiter.clone()).await
-        {
+    let engine_settings = match EngineSettings::load(
+        store.clone(),
+        daemons.clone(),
+        strict_tls,
+        router.clone(),
+        admin_rate_limiter.clone(),
+    )
+    .await
+    {
         Ok(settings) => settings,
         Err(e) => {
             tracing::error!(error = %e, "failed to load settings");
@@ -210,7 +225,10 @@ async fn run(action: Action) {
     let stranded: Vec<(String, usize)> = {
         let tenants = store.lock().tenant_custody_backends().unwrap_or_default();
         let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
-        for (_, _, backend) in tenants.into_iter().filter(|(_, _, backend)| !enabled.contains(backend)) {
+        for (_, _, backend) in tenants
+            .into_iter()
+            .filter(|(_, _, backend)| !enabled.contains(backend))
+        {
             *counts.entry(backend).or_default() += 1;
         }
         counts.into_iter().collect()
@@ -228,32 +246,61 @@ async fn run(action: Action) {
     let key_custody: Arc<dyn KeyCustody> = router.clone();
     let key_custody_backend = router.default_backend();
     let scanner_status = scanner_status::new_scanner_status_map();
-    let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
+    let wallet_handles = Arc::new(RwLock::new(
+        register_all_tenants(&store, &key_custody).await,
+    ));
 
+    // The database worker: its own connection, on its own thread, for the
+    // scanner, webhook delivery and API writes (docs/scanner_microtasks.md).
+    let db = scanner::store::Db::open(&cli::database_path().to_string_lossy(), &store.lock())
+        .unwrap_or_else(|e| {
+            eprintln!("failed to start the database worker: {e}");
+            std::process::exit(1)
+        });
+
+    let read_pool = scanner::store::ReadStorePool::open(
+        &cli::database_path().to_string_lossy(),
+        live_settings::read_sync::<RuntimeConfig>(&StoreSettings(store.clone())).read_connections,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("failed to open database read pool: {e}");
+        std::process::exit(1)
+    });
     let app_state = AppState {
-        store: store.clone(),
-        read_pool: Some(scanner::store::ReadStorePool::open(&cli::database_path().to_string_lossy(), 2)
-            .unwrap_or_else(|e| { eprintln!("failed to open database read pool: {e}"); std::process::exit(1) })),
-        key_custody: key_custody.clone(),
-        key_custody_backend,
-        wallet_handles: wallet_handles.clone(),
+        db: scanner::store::Database::from_parts(db.clone(), read_pool, &store.lock()),
         admin_rate_limiter,
-        daemons: daemons.clone(),
-        scanner_status: scanner_status.clone(),
         log_store: log_store.clone(),
         settings: engine_settings.clone(),
+        custody: scanner::http::Custody {
+            backends: key_custody.clone(),
+            default_backend: key_custody_backend,
+            wallet_handles: wallet_handles.clone(),
+        },
+        networks: scanner::http::Networks {
+            daemons: daemons.clone(),
+            scanner_status: scanner_status.clone(),
+        },
     };
 
-    let delivery_store = store.clone();
+    let delivery_db = db.clone();
     let delivery_settings = engine_settings.clone();
-    supervise("webhook delivery", move || loops::run_webhook_delivery_loop(delivery_store.clone(), delivery_settings.clone()));
+    // Woken by the scanner as soon as it enqueues a webhook.
+    let webhook_wake = Arc::new(tokio::sync::Notify::new());
+    let delivery_wake = webhook_wake.clone();
+    supervise("webhook delivery", move || {
+        loops::run_webhook_delivery_loop(
+            delivery_db.clone(),
+            delivery_settings.clone(),
+            delivery_wake.clone(),
+        )
+    });
 
-    // One scanner loop and one revalidation loop per configured network
+    // One scanner loop per configured network
     // (task 7.4), started and stopped as node settings are saved (task 2.1).
     // Supervised like the loops it starts: if it panics, dropping it stops
     // them, and its restart starts them again.
-    let (loops_store, loops_custody, loops_daemons, loops_handles, loops_status, loops_settings) = (
-        store.clone(),
+    let (loops_db, loops_custody, loops_daemons, loops_handles, loops_status, loops_settings) = (
+        db.clone(),
         key_custody.clone(),
         daemons.clone(),
         wallet_handles.clone(),
@@ -262,7 +309,8 @@ async fn run(action: Action) {
     );
     supervise("network loop manager", move || {
         loops::manage_network_loops(
-            loops_store.clone(),
+            loops_db.clone(),
+            webhook_wake.clone(),
             loops_custody.clone(),
             loops_daemons.clone(),
             loops_handles.clone(),
@@ -274,7 +322,9 @@ async fn run(action: Action) {
     // Read once: the listen address is restart-only (decision D8).
     let bind = engine_settings.runtime.load().bind;
     let router = build_router(app_state, MAX_BODY_CEILING);
-    let listener = tokio::net::TcpListener::bind(&bind).await.expect("failed to bind server address");
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .expect("failed to bind server address");
     tracing::info!(server.address = %bind, "engine listening");
     // The engine is private: only monokulo, on this machine or a private
     // network, should ever reach it. Nothing stops an operator binding it
@@ -296,8 +346,11 @@ async fn run(action: Action) {
     // safe to interrupt (payments are recorded idempotently, a block is only
     // marked scanned after everything in it is recorded, webhooks are marked
     // delivered only after they went out), so the next start carries on.
-    let server = axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal());
+    let server = axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal());
     let served = tokio::spawn(async move { server.await });
     let _ = shutdown_signal().await;
     tracing::info!(grace = ?SHUTDOWN_GRACE, "shutting down: finishing requests in flight");
@@ -305,7 +358,9 @@ async fn run(action: Action) {
         Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),
         Ok(Ok(Err(e))) => tracing::error!(error = %e, "server error while shutting down"),
         Ok(Err(e)) => tracing::error!(error = %e, "server task failed while shutting down"),
-        Err(_) => tracing::warn!(grace = ?SHUTDOWN_GRACE, "requests still running after the grace period, exiting anyway"),
+        Err(_) => {
+            tracing::warn!(grace = ?SHUTDOWN_GRACE, "requests still running after the grace period, exiting anyway")
+        }
     }
 }
 
@@ -322,8 +377,13 @@ async fn run(action: Action) {
 /// commands (the server applies them through its settings registry).
 async fn apply_custody(router: &Arc<CustodyRouter>, custody: &CustodyConfig) -> Result<(), String> {
     use live_settings::Reloadable;
-    let reloadable = CustodyReloadable { router: router.clone() };
-    let (prepared, warnings) = reloadable.prepare(custody, custody).await.map_err(|e| e.to_string())?;
+    let reloadable = CustodyReloadable {
+        router: router.clone(),
+    };
+    let (prepared, warnings) = reloadable
+        .prepare(custody, custody)
+        .await
+        .map_err(|e| e.to_string())?;
     for warning in warnings {
         tracing::warn!("{}", warning.message);
     }
@@ -334,14 +394,24 @@ async fn apply_custody(router: &Arc<CustodyRouter>, custody: &CustodyConfig) -> 
 /// Eagerly registers every non-disabled tenant's sealed key material with
 /// `KeyCustody`, so `AppState::wallet_handles` starts populated rather than relying
 /// solely on the lazy on-first-use path in `http::resolve_wallet_handle`.
-async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCustody>) -> HashMap<String, WalletHandle> {
+async fn register_all_tenants(
+    store: &SharedStore,
+    key_custody: &Arc<dyn KeyCustody>,
+) -> HashMap<scanner::store::TenantId, WalletHandle> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     // A database error here must not kill the engine at boot: retry with
     // backoff until the store answers, logging each failure.
     let mut delay = Duration::from_millis(500);
     let tenants = loop {
         // Bound first: the lock must not be held through the retry's sleep.
-        let listed = store.lock().list_active_tenants();
+        let listed = {
+            let store = store.clone();
+            tokio::task::spawn_blocking(move || store.lock().list_active_tenants())
+                .await
+                .unwrap_or_else(|e| {
+                    Err(scanner::store::StoreError::WorkerUnavailable(e.to_string()))
+                })
+        };
         match listed {
             Ok(tenants) => break tenants,
             Err(e) => {
@@ -359,13 +429,23 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
         }
         match tokio::time::timeout_at(
             deadline.min(tokio::time::Instant::now() + Duration::from_secs(10)),
-            key_custody.unseal_and_register_in_idempotent(&tenant.key_custody_backend, &tenant.sealed_key_material, &tenant.id),
-        ).await {
+            key_custody.unseal_and_register_in_idempotent(
+                &tenant.key_custody_backend,
+                &tenant.sealed_key_material,
+                tenant.id.as_str(),
+            ),
+        )
+        .await
+        {
             Ok(Ok(handle)) => {
                 handles.insert(tenant.id, handle);
             }
-            Ok(Err(e)) => tracing::error!(store.id = %tenant.id, error = %e, "failed to register store with key custody"),
-            Err(_) => tracing::error!(store.id = %tenant.id, "registering a store with key custody exceeded its deadline"),
+            Ok(Err(e)) => {
+                tracing::error!(store.id = %tenant.id, error = %e, "failed to register store with key custody")
+            }
+            Err(_) => {
+                tracing::error!(store.id = %tenant.id, "registering a store with key custody exceeded its deadline")
+            }
         }
     }
     handles

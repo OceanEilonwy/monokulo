@@ -13,21 +13,28 @@
 /// but a resubmitted form is still untrusted input) selects none of them,
 /// same as an unrecognized value would render in a plain `<select>` anyway.
 pub fn network_selected_flags(network: &str) -> (bool, bool, bool) {
-    (network == "mainnet", network == "stagenet", network == "testnet")
+    (
+        network == "mainnet",
+        network == "stagenet",
+        network == "testnet",
+    )
 }
 
-/// A muted placeholder for a field with nothing to show - same
-/// `<span class="muted">-</span>` convention the status page already uses
-/// for "no value" (`height_display`, `_nav.html.hbs`'s own "Active" column),
-/// applied here to every optional order/payment field so a merchant never
-/// sees a bare, unexplained empty table cell.
-const NO_VALUE: &str = "<span class=\"muted\">-</span>";
-
-pub fn display_or_dash(value: Option<&str>) -> String {
+/// `value`, escaped, or a muted placeholder for a field with nothing to
+/// show - same `<span class="muted">-</span>` convention the status page
+/// already uses for "no value", applied here to every optional
+/// order/payment field so a merchant never sees a bare, unexplained empty
+/// table cell.
+pub fn display_or_dash(value: Option<&str>) -> maud::Markup {
     match value {
-        Some(v) if !v.is_empty() => v.to_string(),
-        _ => NO_VALUE.to_string(),
+        Some(v) if !v.is_empty() => maud::html! { (v) },
+        _ => no_value(),
     }
+}
+
+/// The muted dash shown for a value there isn't.
+fn no_value() -> maud::Markup {
+    maud::html! { span class="muted" { "-" } }
 }
 
 /// `docs/order_rescan_wbs.md` Phase 5.4 - the order-detail page's "Scan range"
@@ -39,15 +46,15 @@ pub fn display_scan_range(
     first_scanned_height: Option<i64>,
     last_scanned_height: Option<i64>,
     currently_scanning: bool,
-) -> String {
+) -> maud::Markup {
     let Some(first) = first_scanned_height else {
-        return NO_VALUE.to_string();
+        return no_value();
     };
     let last = last_scanned_height.unwrap_or(first);
     if currently_scanning {
-        format!("{first}+")
+        maud::html! { (first) "+" }
     } else {
-        format!("{first} - {last}")
+        maud::html! { (first) " - " (last) }
     }
 }
 
@@ -101,19 +108,39 @@ pub fn format_duration_until(target_unix: i64, now_unix: i64) -> String {
 mod tests {
     use super::*;
 
+    const NO_VALUE: &str = "<span class=\"muted\">-</span>";
+
     #[test]
     fn display_or_dash_shows_the_muted_placeholder_for_none_or_empty() {
-        assert_eq!(display_or_dash(Some("real value")), "real value");
-        assert_eq!(display_or_dash(None), NO_VALUE);
-        assert_eq!(display_or_dash(Some("")), NO_VALUE, "an empty string is not a real value either");
+        assert_eq!(
+            display_or_dash(Some("real value")).into_string(),
+            "real value"
+        );
+        assert_eq!(
+            display_or_dash(Some("<b>")).into_string(),
+            "&lt;b&gt;",
+            "a value is escaped"
+        );
+        assert_eq!(display_or_dash(None).into_string(), NO_VALUE);
+        assert_eq!(
+            display_or_dash(Some("")).into_string(),
+            NO_VALUE,
+            "an empty string is not a real value either"
+        );
     }
 
     #[test]
     fn format_duration_until_matches_the_moment_js_style_examples() {
         let now = 1_700_000_000;
         assert_eq!(format_duration_until(now + 12 * 3600, now), "12h");
-        assert_eq!(format_duration_until(now + 4 * 3600 + 15 * 60, now), "4h 15m");
-        assert_eq!(format_duration_until(now + 2 * 86400 + 4 * 3600, now), "2d 4h");
+        assert_eq!(
+            format_duration_until(now + 4 * 3600 + 15 * 60, now),
+            "4h 15m"
+        );
+        assert_eq!(
+            format_duration_until(now + 2 * 86400 + 4 * 3600, now),
+            "2d 4h"
+        );
     }
 
     #[test]
@@ -128,7 +155,10 @@ mod tests {
     fn format_duration_until_never_shows_more_than_two_parts() {
         let now = 1_700_000_000;
         // 2 days, 4 hours, 30 minutes - minutes is dropped, not appended as a third part.
-        assert_eq!(format_duration_until(now + 2 * 86400 + 4 * 3600 + 30 * 60, now), "2d 4h");
+        assert_eq!(
+            format_duration_until(now + 2 * 86400 + 4 * 3600 + 30 * 60, now),
+            "2d 4h"
+        );
     }
 
     #[test]
@@ -136,7 +166,11 @@ mod tests {
         let now = 1_700_000_000;
         assert_eq!(format_duration_until(now + 30, now), "<1m");
         assert_eq!(format_duration_until(now, now), "any moment");
-        assert_eq!(format_duration_until(now - 100, now), "any moment", "an already-passed target must not show a negative duration");
+        assert_eq!(
+            format_duration_until(now - 100, now),
+            "any moment",
+            "an already-passed target must not show a negative duration"
+        );
     }
 
     // Signup/login page tests moved to `views::auth`'s own test module -

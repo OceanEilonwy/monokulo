@@ -16,7 +16,13 @@ use std::process::Command;
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let ui = manifest.join("pos-ui");
-    for input in ["src", "package.json", "package-lock.json", "vite.config.ts", "tsconfig.json"] {
+    for input in [
+        "src",
+        "package.json",
+        "package-lock.json",
+        "vite.config.ts",
+        "tsconfig.json",
+    ] {
         println!("cargo:rerun-if-changed={}", ui.join(input).display());
     }
     println!("cargo:rerun-if-env-changed=MONOKULO_POS_BUILD");
@@ -24,7 +30,9 @@ fn main() {
     let mode = match std::env::var("MONOKULO_POS_BUILD").ok().as_deref() {
         Some("development") => "development",
         Some("production") => "production",
-        Some(other) => panic!("MONOKULO_POS_BUILD must be \"development\" or \"production\", got {other:?}"),
+        Some(other) => {
+            panic!("MONOKULO_POS_BUILD must be \"development\" or \"production\", got {other:?}")
+        }
         None if std::env::var("PROFILE").as_deref() == Ok("release") => "production",
         None => "development",
     };
@@ -41,9 +49,24 @@ fn main() {
 
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("pos-ui");
     run(&ui, &tsc, &["--noEmit"], mode);
-    run(&ui, &vite, &["build", "--mode", mode, "--outDir", out.to_str().unwrap(), "--emptyOutDir"], mode);
+    run(
+        &ui,
+        &vite,
+        &[
+            "build",
+            "--mode",
+            mode,
+            "--outDir",
+            out.to_str().unwrap(),
+            "--emptyOutDir",
+        ],
+        mode,
+    );
     for file in ["pos-app.js", "pos-app.css"] {
-        assert!(out.join(file).exists(), "the POS build did not produce {file}");
+        assert!(
+            out.join(file).exists(),
+            "the POS build did not produce {file}"
+        );
     }
 }
 
@@ -54,6 +77,13 @@ fn run(ui: &Path, script: &Path, args: &[&str], mode: &str) {
         .current_dir(ui)
         .env("NODE_ENV", mode)
         .status()
-        .unwrap_or_else(|e| panic!("could not run node (Node 24 or later is required to build monokulo): {e}"));
-    assert!(status.success(), "{} {} failed", script.display(), args.join(" "));
+        .unwrap_or_else(|e| {
+            panic!("could not run node (Node 24 or later is required to build monokulo): {e}")
+        });
+    assert!(
+        status.success(),
+        "{} {} failed",
+        script.display(),
+        args.join(" ")
+    );
 }

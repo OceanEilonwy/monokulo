@@ -69,7 +69,7 @@ pub struct PlatformConnectViewModel {
 
 /// One entry in the "use an existing store" picker.
 pub struct ExistingStoreOption {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub platform: String,
 }
@@ -337,10 +337,16 @@ mod tests {
 
     #[test]
     fn connect_page_shows_the_error_when_present() {
-        let data = ConnectViewModel { error: Some("bad view key hex".to_string()), ..default_connect_data() };
+        let data = ConnectViewModel {
+            error: Some("bad view key hex".to_string()),
+            ..default_connect_data()
+        };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("bad view key hex"));
-        assert!(html.contains("<form"), "the form must still be present on error");
+        assert!(
+            html.contains("<form"),
+            "the form must still be present on error"
+        );
     }
 
     /// The actual bug being fixed: a rejected submission used to lose every
@@ -351,21 +357,36 @@ mod tests {
         let data = ConnectViewModel {
             error: Some("bad view key hex".to_string()),
             site_url: "https://shop.example.com".to_string(),
-            view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
+            view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707"
+                .to_string(),
             spend_pubkey_hex: "deadbeef".to_string(),
             network_mainnet_selected: false,
             network_stagenet_selected: true,
             ..default_connect_data()
         };
         let html = page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"value="https://shop.example.com""#), "expected site_url echoed back, got: {html}");
         assert!(
-            html.contains(r#"value="0707070707070707070707070707070707070707070707070707070707070707""#),
+            html.contains(r#"value="https://shop.example.com""#),
+            "expected site_url echoed back, got: {html}"
+        );
+        assert!(
+            html.contains(
+                r#"value="0707070707070707070707070707070707070707070707070707070707070707""#
+            ),
             "expected view_key_hex echoed back, got: {html}"
         );
-        assert!(html.contains(r#"value="deadbeef""#), "expected spend_pubkey_hex echoed back, got: {html}");
-        assert!(!html.contains("allowed_origins"), "allowed origins are no longer asked for, got: {html}");
-        assert!(html.contains(r#"value="stagenet" selected"#), "expected the stagenet option marked selected, got: {html}");
+        assert!(
+            html.contains(r#"value="deadbeef""#),
+            "expected spend_pubkey_hex echoed back, got: {html}"
+        );
+        assert!(
+            !html.contains("allowed_origins"),
+            "allowed origins are no longer asked for, got: {html}"
+        );
+        assert!(
+            html.contains(r#"value="stagenet" selected"#),
+            "expected the stagenet option marked selected, got: {html}"
+        );
         assert!(!html.contains(r#"value="mainnet" selected"#), "mainnet must not stay marked selected once stagenet was actually submitted, got: {html}");
     }
 
@@ -380,8 +401,14 @@ mod tests {
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains(r#"href="/dashboard/stores/conn_1""#));
         assert!(html.contains("pk_deadbeef"));
-        assert!(!html.contains("id=\"connect-form\""), "the confirmation view should not still show the connect form");
-        assert!(html.contains("https://pay.example.com/static/monokulo-client.js"), "snippets use the public address, got: {html}");
+        assert!(
+            !html.contains("id=\"connect-form\""),
+            "the confirmation view should not still show the connect form"
+        );
+        assert!(
+            html.contains("https://pay.example.com/static/monokulo-client.js"),
+            "snippets use the public address, got: {html}"
+        );
         assert!(html.contains("POST https://pay.example.com/pay/pk_deadbeef/orders"));
     }
 
@@ -406,10 +433,16 @@ mod tests {
 
     #[test]
     fn platform_page_shows_why_it_cannot_connect_and_no_form_when_unavailable() {
-        let data = PlatformConnectViewModel { unavailable: Some("No public address yet.".to_string()), ..default_platform_data() };
+        let data = PlatformConnectViewModel {
+            unavailable: Some("No public address yet.".to_string()),
+            ..default_platform_data()
+        };
         let html = platform_page(&chrome(), &data).into_string();
         assert!(html.contains("No public address yet."));
-        assert!(!html.contains("<form"), "no form while connecting is impossible, got: {html}");
+        assert!(
+            !html.contains("<form"),
+            "no form while connecting is impossible, got: {html}"
+        );
     }
 
     #[test]
@@ -424,17 +457,24 @@ mod tests {
 
     #[test]
     fn platform_page_shows_the_error_when_present() {
-        let data = PlatformConnectViewModel { error: Some("bad view key hex".to_string()), ..default_platform_data() };
+        let data = PlatformConnectViewModel {
+            error: Some("bad view key hex".to_string()),
+            ..default_platform_data()
+        };
         let html = platform_page(&chrome(), &data).into_string();
         assert!(html.contains("bad view key hex"));
-        assert!(html.contains("<form"), "the form must still be present on error");
+        assert!(
+            html.contains("<form"),
+            "the form must still be present on error"
+        );
     }
 
     #[test]
     fn platform_page_re_fills_every_submitted_field_when_re_rendered_after_a_rejected_submission() {
         let data = PlatformConnectViewModel {
             error: Some("bad view key hex".to_string()),
-            view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
+            view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707"
+                .to_string(),
             spend_pubkey_hex: "deadbeef".to_string(),
             network_stagenet_selected: true,
             network_mainnet_selected: false,
@@ -442,12 +482,23 @@ mod tests {
         };
         let html = platform_page(&chrome(), &data).into_string();
         assert!(
-            html.contains(r#"value="0707070707070707070707070707070707070707070707070707070707070707""#),
+            html.contains(
+                r#"value="0707070707070707070707070707070707070707070707070707070707070707""#
+            ),
             "expected view_key_hex echoed back, got: {html}"
         );
-        assert!(html.contains(r#"value="deadbeef""#), "expected spend_pubkey_hex echoed back, got: {html}");
-        assert!(!html.contains("allowed_origins"), "allowed origins are no longer asked for, got: {html}");
-        assert!(html.contains(r#"value="stagenet" selected"#), "expected the stagenet option marked selected, got: {html}");
+        assert!(
+            html.contains(r#"value="deadbeef""#),
+            "expected spend_pubkey_hex echoed back, got: {html}"
+        );
+        assert!(
+            !html.contains("allowed_origins"),
+            "allowed origins are no longer asked for, got: {html}"
+        );
+        assert!(
+            html.contains(r#"value="stagenet" selected"#),
+            "expected the stagenet option marked selected, got: {html}"
+        );
     }
 
     #[test]

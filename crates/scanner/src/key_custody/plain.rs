@@ -1,15 +1,15 @@
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{compiler_fence, Ordering};
-use parking_lot::RwLock;
 
 use monero::cryptonote::onetime_key::SubKeyChecker;
 use monero::{Address, PrivateKey, PublicKey, Transaction, ViewPair};
 use zeroize::Zeroize;
 
 use super::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex, WalletHandle,
-    WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex,
+    WalletHandle, WalletMaterial,
 };
 
 /// Ceiling on `major_range.len() * minor_range.len()` for one scan. Table
@@ -47,8 +47,10 @@ impl KeyTable {
             return 0;
         }
         if self.building_generation != Some(indices.generation()) {
-            let wanted: std::collections::BTreeSet<u32> = indices.minors().iter().copied().collect();
-            self.table.retain(|_, index| wanted.contains(&index.minor) && index.major == 0);
+            let wanted: std::collections::BTreeSet<u32> =
+                indices.minors().iter().copied().collect();
+            self.table
+                .retain(|_, index| wanted.contains(&index.minor) && index.major == 0);
             self.indices.retain(|index| wanted.contains(index));
             self.pending_indices = wanted.difference(&self.indices).copied().collect();
             self.building_generation = Some(indices.generation());
@@ -56,9 +58,14 @@ impl KeyTable {
         }
         let mut derived = 0;
         for _ in 0..SCAN_TABLE_BUILD_BATCH {
-            let Some(minor) = self.pending_indices.pop() else { break };
+            let Some(minor) = self.pending_indices.pop() else {
+                break;
+            };
             let index = SubaddressIndex { major: 0, minor };
-            self.table.insert(monero::cryptonote::subaddress::get_spend_public_key(view_pair, index), index);
+            self.table.insert(
+                monero::cryptonote::subaddress::get_spend_public_key(view_pair, index),
+                index,
+            );
             self.indices.insert(minor);
             derived += 1;
         }
@@ -82,7 +89,12 @@ struct RangeTable {
 }
 
 impl RangeTable {
-    fn update_batch(&mut self, view_pair: &ViewPair, major: &Range<u32>, minor: &Range<u32>) -> usize {
+    fn update_batch(
+        &mut self,
+        view_pair: &ViewPair,
+        major: &Range<u32>,
+        minor: &Range<u32>,
+    ) -> usize {
         let range = (major.start, major.end, minor.start, minor.end);
         if self.range != Some(range) {
             self.range = Some(range);
@@ -93,9 +105,17 @@ impl RangeTable {
         }
         let mut derived = 0;
         for _ in 0..SCAN_TABLE_BUILD_BATCH {
-            if self.complete { break; }
-            let index = SubaddressIndex { major: self.next_major, minor: self.next_minor };
-            self.table.insert(monero::cryptonote::subaddress::get_spend_public_key(view_pair, index), index);
+            if self.complete {
+                break;
+            }
+            let index = SubaddressIndex {
+                major: self.next_major,
+                minor: self.next_minor,
+            };
+            self.table.insert(
+                monero::cryptonote::subaddress::get_spend_public_key(view_pair, index),
+                index,
+            );
             derived += 1;
             if self.next_minor + 1 < minor.end {
                 self.next_minor += 1;
@@ -140,10 +160,13 @@ impl WalletEntry {
 /// Scans are elliptic-curve work. They run on the blocking pool (task 7.2),
 /// never on the async workers that serve requests, and at most one per core
 /// at a time.
-static SCAN_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::LazyLock::new(|| {
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
-    std::sync::Arc::new(tokio::sync::Semaphore::new(cores))
-});
+static SCAN_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        std::sync::Arc::new(tokio::sync::Semaphore::new(cores))
+    });
 
 /// Best-effort scrub of the one *long-lived* copy of a tenant's view key: the one
 /// this registry holds for the life of the process, and the one still sitting in
@@ -187,7 +210,7 @@ impl KeyCustody for PlainKeyCustody {
         material: WalletMaterial,
     ) -> Result<WalletHandle, KeyCustodyError> {
         let view_pair = material.to_view_pair()?;
-        let handle = WalletHandle::new();
+        let handle = WalletHandle::generate();
         self.wallets
             .write()
             .insert(handle, std::sync::Arc::new(WalletEntry::new(view_pair)));
@@ -196,7 +219,9 @@ impl KeyCustody for PlainKeyCustody {
 
     async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
         // Keep lock order the same as idempotent registration.
-        self.registration_ids.write().retain(|_, registered| *registered != handle);
+        self.registration_ids
+            .write()
+            .retain(|_, registered| *registered != handle);
         self.wallets
             .write()
             .remove(&handle)
@@ -225,9 +250,15 @@ impl KeyCustody for PlainKeyCustody {
         self.register_wallet(material).await
     }
 
-    async fn unseal_and_register_idempotent(&self, sealed: &[u8], registration_id: &str) -> Result<WalletHandle, KeyCustodyError> {
+    async fn unseal_and_register_idempotent(
+        &self,
+        sealed: &[u8],
+        registration_id: &str,
+    ) -> Result<WalletHandle, KeyCustodyError> {
         if registration_id.is_empty() || registration_id.len() > 128 {
-            return Err(KeyCustodyError::InvalidKeyMaterial("invalid registration id".into()));
+            return Err(KeyCustodyError::InvalidKeyMaterial(
+                "invalid registration id".into(),
+            ));
         }
         let material = WalletMaterial::from_raw_bytes(sealed)?;
         let view_pair = material.to_view_pair()?;
@@ -236,13 +267,15 @@ impl KeyCustody for PlainKeyCustody {
         if let Some(&handle) = registrations.get(registration_id) {
             if let Some(existing) = wallets.get(&handle) {
                 if existing.view_pair != view_pair {
-                    return Err(KeyCustodyError::InvalidKeyMaterial("registration id belongs to another wallet".into()));
+                    return Err(KeyCustodyError::InvalidKeyMaterial(
+                        "registration id belongs to another wallet".into(),
+                    ));
                 }
                 return Ok(handle);
             }
             registrations.remove(registration_id);
         }
-        let handle = WalletHandle::new();
+        let handle = WalletHandle::generate();
         wallets.insert(handle, std::sync::Arc::new(WalletEntry::new(view_pair)));
         registrations.insert(registration_id.to_string(), handle);
         Ok(handle)
@@ -304,7 +337,15 @@ impl KeyCustody for PlainKeyCustody {
         // batch stays in the cache even if the caller is cancelled while the
         // blocking worker runs; a retry resumes instead of starting at zero.
         let mut lookup = entry.lookup.clone().lock_owned().await;
-        while lookup.range != Some((major_range.start, major_range.end, minor_range.start, minor_range.end)) || !lookup.complete {
+        while lookup.range
+            != Some((
+                major_range.start,
+                major_range.end,
+                minor_range.start,
+                minor_range.end,
+            ))
+            || !lookup.complete
+        {
             let view_pair = entry.view_pair;
             let major = major_range.clone();
             let minor = minor_range.clone();
@@ -315,13 +356,19 @@ impl KeyCustody for PlainKeyCustody {
                 (lookup, derived)
             })
             .await
-            .map_err(|e| KeyCustodyError::ScanFailed(format!("building the scan table failed: {e}")))?;
+            .map_err(|e| {
+                KeyCustodyError::ScanFailed(format!("building the scan table failed: {e}"))
+            })?;
             lookup = returned;
             #[cfg(test)]
-            entry.derivations.fetch_add(derived as u64, std::sync::atomic::Ordering::Relaxed);
+            entry
+                .derivations
+                .fetch_add(derived as u64, std::sync::atomic::Ordering::Relaxed);
             #[cfg(not(test))]
             let _ = derived;
-            if !lookup.complete { tokio::task::yield_now().await; }
+            if !lookup.complete {
+                tokio::task::yield_now().await;
+            }
         }
         let view_pair = entry.view_pair;
         let tx = tx.clone();
@@ -331,13 +378,19 @@ impl KeyCustody for PlainKeyCustody {
             let keys = std::mem::take(&mut lookup.table);
             let cached_range = lookup.range.take();
             lookup.complete = false;
-            let checker = SubKeyChecker { table: keys, keys: &view_pair };
+            let checker = SubKeyChecker {
+                table: keys,
+                keys: &view_pair,
+            };
             let result = match tx.check_outputs_with(&checker) {
-                Ok(owned) => Ok(owned.into_iter().map(|o| MatchedOutput {
-                    output_index: o.index(),
-                    subaddress_index: o.sub_index(),
-                    amount_piconero: o.amount().map(|a| a.as_pico()),
-                }).collect()),
+                Ok(owned) => Ok(owned
+                    .into_iter()
+                    .map(|o| MatchedOutput {
+                        output_index: o.index(),
+                        subaddress_index: o.sub_index(),
+                        amount_piconero: o.amount().map(|a| a.as_pico()),
+                    })
+                    .collect()),
                 Err(monero::blockdata::transaction::Error::NoTxPublicKey)
                 | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
                 Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
@@ -379,10 +432,14 @@ impl KeyCustody for PlainKeyCustody {
                 (live, derived)
             })
             .await
-            .map_err(|e| KeyCustodyError::ScanFailed(format!("updating the scan table failed: {e}")))?;
+            .map_err(|e| {
+                KeyCustodyError::ScanFailed(format!("updating the scan table failed: {e}"))
+            })?;
             live = returned;
             #[cfg(test)]
-            entry.derivations.fetch_add(derived, std::sync::atomic::Ordering::Relaxed);
+            entry
+                .derivations
+                .fetch_add(derived, std::sync::atomic::Ordering::Relaxed);
             #[cfg(not(test))]
             let _ = derived;
             if live.generation != Some(indices.generation()) {
@@ -400,13 +457,19 @@ impl KeyCustody for PlainKeyCustody {
             let keys = std::mem::take(&mut live.table);
             let cached_indices = std::mem::take(&mut live.indices);
             live.generation = None;
-            let checker = SubKeyChecker { table: keys, keys: &view_pair };
+            let checker = SubKeyChecker {
+                table: keys,
+                keys: &view_pair,
+            };
             let result = match tx.check_outputs_with(&checker) {
-                Ok(owned) => Ok(owned.into_iter().map(|o| MatchedOutput {
-                    output_index: o.index(),
-                    subaddress_index: o.sub_index(),
-                    amount_piconero: o.amount().map(|a| a.as_pico()),
-                }).collect()),
+                Ok(owned) => Ok(owned
+                    .into_iter()
+                    .map(|o| MatchedOutput {
+                        output_index: o.index(),
+                        subaddress_index: o.sub_index(),
+                        amount_piconero: o.amount().map(|a| a.as_pico()),
+                    })
+                    .collect()),
                 Err(monero::blockdata::transaction::Error::NoTxPublicKey)
                 | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
                 Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
@@ -429,11 +492,16 @@ impl PlainKeyCustody {
     }
 
     fn entry(&self, handle: WalletHandle) -> Result<std::sync::Arc<WalletEntry>, KeyCustodyError> {
-        self.wallets.read().get(&handle).cloned().ok_or(KeyCustodyError::UnknownWallet)
+        self.wallets
+            .read()
+            .get(&handle)
+            .cloned()
+            .ok_or(KeyCustodyError::UnknownWallet)
     }
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::key_custody::WalletMaterial;
@@ -528,10 +596,7 @@ mod tests {
         assert_eq!(matches[0].output_index, 1);
         assert_eq!(
             matches[0].subaddress_index,
-            SubaddressIndex {
-                major: 0,
-                minor: 1
-            }
+            SubaddressIndex { major: 0, minor: 1 }
         );
         assert!(matches[0].amount_piconero.unwrap() > 0);
     }
@@ -565,39 +630,69 @@ mod tests {
         // three keys are derived once.
         let window = ScanIndices::new([1, 5, 9]);
         for _ in 0..3 {
-            let matches = custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap();
+            let matches = custody
+                .scan_tx_outputs_for_indices(handle, &tx, &window)
+                .await
+                .unwrap();
             assert_eq!(matches.len(), 1);
         }
         assert_eq!(derivations(&custody, handle), 3, "same set, no rebuild");
 
         // One order opens and one closes: one new derivation, not a rebuild.
         let window = ScanIndices::new([1, 9, 12]);
-        custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap();
+        custody
+            .scan_tx_outputs_for_indices(handle, &tx, &window)
+            .await
+            .unwrap();
         assert_eq!(derivations(&custody, handle), 4);
 
         // An index no longer in the window no longer matches.
         let without = ScanIndices::new([9, 12]);
-        assert!(custody.scan_tx_outputs_for_indices(handle, &tx, &without).await.unwrap().is_empty());
+        assert!(custody
+            .scan_tx_outputs_for_indices(handle, &tx, &without)
+            .await
+            .unwrap()
+            .is_empty());
 
         // A one-off range scan (payment lookup) builds its own table and leaves
         // the live one alone: scanning the live window again derives nothing.
         let before = derivations(&custody, handle);
-        assert_eq!(custody.scan_tx_outputs(handle, &tx, 0..1, 0..3).await.unwrap().len(), 1);
+        assert_eq!(
+            custody
+                .scan_tx_outputs(handle, &tx, 0..1, 0..3)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         let after_lookup = derivations(&custody, handle);
         assert_eq!(after_lookup - before, 3, "the lookup's own table");
-        custody.scan_tx_outputs_for_indices(handle, &tx, &without).await.unwrap();
-        assert_eq!(derivations(&custody, handle), after_lookup, "the live table survived the lookup");
+        custody
+            .scan_tx_outputs_for_indices(handle, &tx, &without)
+            .await
+            .unwrap();
+        assert_eq!(
+            derivations(&custody, handle),
+            after_lookup,
+            "the live table survived the lookup"
+        );
     }
 
     #[test]
     fn a_large_lookup_range_builds_in_reusable_bounded_batches() {
-        let material = WalletMaterial::new(random_scalar_bytes(71),
-            PublicKey::from_private_key(&PrivateKey::from_slice(&random_scalar_bytes(72)).unwrap()).to_bytes());
+        let material = WalletMaterial::new(
+            random_scalar_bytes(71),
+            PublicKey::from_private_key(&PrivateKey::from_slice(&random_scalar_bytes(72)).unwrap())
+                .to_bytes(),
+        );
         let pair = material.to_view_pair().unwrap();
         let mut table = RangeTable::default();
         let major = 0..1;
         let minor = 0..(SCAN_TABLE_BUILD_BATCH as u32 + 3);
-        assert_eq!(table.update_batch(&pair, &major, &minor), SCAN_TABLE_BUILD_BATCH);
+        assert_eq!(
+            table.update_batch(&pair, &major, &minor),
+            SCAN_TABLE_BUILD_BATCH
+        );
         assert!(!table.complete);
         assert_eq!(table.update_batch(&pair, &major, &minor), 3);
         assert!(table.complete);
@@ -616,18 +711,35 @@ mod tests {
         runtime.block_on(async {
             let tx: Transaction = deserialize(
                 &hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap(),
-            ).unwrap();
-            let view = hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")
-                .unwrap().try_into().unwrap();
+            )
+            .unwrap();
+            let view =
+                hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
             let spend = PrivateKey::from_slice(
-                &hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907").unwrap(),
-            ).unwrap();
+                &hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907")
+                    .unwrap(),
+            )
+            .unwrap();
             let custody = PlainKeyCustody::default();
-            let handle = custody.register_wallet(WalletMaterial::new(
-                view, PublicKey::from_private_key(&spend).to_bytes(),
-            )).await.unwrap();
+            let handle = custody
+                .register_wallet(WalletMaterial::new(
+                    view,
+                    PublicKey::from_private_key(&spend).to_bytes(),
+                ))
+                .await
+                .unwrap();
             let window = ScanIndices::new([1]);
-            assert_eq!(custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap().len(), 1);
+            assert_eq!(
+                custody
+                    .scan_tx_outputs_for_indices(handle, &tx, &window)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
 
             // Exercise cancellation with an unchanged cache and during a window
             // update. In either case the very next scan must find the payment.
@@ -643,12 +755,17 @@ mod tests {
                 std::future::poll_fn(|cx| {
                     assert!(scan.as_mut().poll(cx).is_pending());
                     std::task::Poll::Ready(())
-                }).await;
+                })
+                .await;
                 drop(scan);
                 drop(release);
                 blocker.await.unwrap();
                 assert_eq!(
-                    custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap().len(),
+                    custody
+                        .scan_tx_outputs_for_indices(handle, &tx, &window)
+                        .await
+                        .unwrap()
+                        .len(),
                     1,
                     "the first scan after cancellation must still find the payment",
                 );
@@ -664,8 +781,15 @@ mod tests {
         let mut handles = vec![];
         for seed in 10..18u8 {
             let view = PrivateKey::from_slice(&random_scalar_bytes(seed)).unwrap();
-            let spend = PublicKey::from_private_key(&PrivateKey::from_slice(&random_scalar_bytes(seed + 40)).unwrap());
-            handles.push(custody.register_wallet(WalletMaterial::new(view.to_bytes(), spend.to_bytes())).await.unwrap());
+            let spend = PublicKey::from_private_key(
+                &PrivateKey::from_slice(&random_scalar_bytes(seed + 40)).unwrap(),
+            );
+            handles.push(
+                custody
+                    .register_wallet(WalletMaterial::new(view.to_bytes(), spend.to_bytes()))
+                    .await
+                    .unwrap(),
+            );
         }
         // All at once on a current-thread runtime: if scans ran on the async
         // worker they would still complete, but this checks nothing deadlocks
@@ -679,7 +803,10 @@ mod tests {
             async move { custody.scan_tx_outputs_for_indices(h, &tx, &window).await }
         });
         for result in futures_util::future::join_all(scans).await {
-            assert!(result.unwrap().is_empty(), "none of these wallets is paid by the fixture");
+            assert!(
+                result.unwrap().is_empty(),
+                "none of these wallets is paid by the fixture"
+            );
         }
     }
 
@@ -692,9 +819,16 @@ mod tests {
 
         // "Before restart": register, derive an address, seal what we'd persist.
         let custody_before = PlainKeyCustody::default();
-        let handle_before = custody_before.register_wallet(material.clone()).await.unwrap();
+        let handle_before = custody_before
+            .register_wallet(material.clone())
+            .await
+            .unwrap();
         let address_before = custody_before
-            .derive_subaddress(handle_before, SubaddressIndex { major: 0, minor: 7 }, Network::Mainnet)
+            .derive_subaddress(
+                handle_before,
+                SubaddressIndex { major: 0, minor: 7 },
+                Network::Mainnet,
+            )
             .await
             .unwrap();
         let sealed = custody_before.seal(&material).await.unwrap();
@@ -707,7 +841,11 @@ mod tests {
         assert_ne!(handle_before, handle_after);
 
         let address_after = custody_after
-            .derive_subaddress(handle_after, SubaddressIndex { major: 0, minor: 7 }, Network::Mainnet)
+            .derive_subaddress(
+                handle_after,
+                SubaddressIndex { major: 0, minor: 7 },
+                Network::Mainnet,
+            )
             .await
             .unwrap();
         assert_eq!(address_before, address_after);
@@ -729,7 +867,10 @@ mod tests {
 
         let custody = PlainKeyCustody::default();
         let handle = custody
-            .register_wallet(WalletMaterial::new(view_key.to_bytes(), spend_pubkey.to_bytes()))
+            .register_wallet(WalletMaterial::new(
+                view_key.to_bytes(),
+                spend_pubkey.to_bytes(),
+            ))
             .await
             .unwrap();
 
@@ -742,11 +883,14 @@ mod tests {
             monero::AddressType::Standard,
             "0/0 must encode as a standard address; a subaddress-tagged root key pair is unpayable"
         );
-        assert_eq!(primary, monero::Address::standard(
-            Network::Mainnet,
-            spend_pubkey,
-            PublicKey::from_private_key(&view_key),
-        ));
+        assert_eq!(
+            primary,
+            monero::Address::standard(
+                Network::Mainnet,
+                spend_pubkey,
+                PublicKey::from_private_key(&view_key),
+            )
+        );
         // Mainnet standard addresses start with '4'; subaddresses start with '8'.
         // Asserting the rendered form too, since that string is what a merchant
         // actually copies out of the admin API.
@@ -754,10 +898,17 @@ mod tests {
 
         // Every non-zero index must still take the real subaddress path.
         let first_order_address = custody
-            .derive_subaddress(handle, SubaddressIndex { major: 0, minor: 1 }, Network::Mainnet)
+            .derive_subaddress(
+                handle,
+                SubaddressIndex { major: 0, minor: 1 },
+                Network::Mainnet,
+            )
             .await
             .unwrap();
-        assert_eq!(first_order_address.addr_type, monero::AddressType::SubAddress);
+        assert_eq!(
+            first_order_address.addr_type,
+            monero::AddressType::SubAddress
+        );
         assert_ne!(first_order_address.public_spend, spend_pubkey);
     }
 
@@ -780,7 +931,10 @@ mod tests {
         let extreme = custody
             .derive_subaddress(
                 handle,
-                SubaddressIndex { major: u32::MAX, minor: u32::MAX },
+                SubaddressIndex {
+                    major: u32::MAX,
+                    minor: u32::MAX,
+                },
                 Network::Mainnet,
             )
             .await
@@ -791,7 +945,10 @@ mod tests {
         let neighbour = custody
             .derive_subaddress(
                 handle,
-                SubaddressIndex { major: u32::MAX, minor: u32::MAX - 1 },
+                SubaddressIndex {
+                    major: u32::MAX,
+                    minor: u32::MAX - 1,
+                },
                 Network::Mainnet,
             )
             .await
@@ -824,7 +981,10 @@ mod tests {
         assert!(matches!(err, KeyCustodyError::ScanFailed(_)), "got {err:?}");
 
         // A realistic range is of course still accepted.
-        custody.scan_tx_outputs(handle, &tx, 0..1, 0..64).await.unwrap();
+        custody
+            .scan_tx_outputs(handle, &tx, 0..1, 0..64)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -855,7 +1015,10 @@ mod tests {
         let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
         assert!(matches!(
-            custody.scan_tx_outputs(handle, &tx, 0..1, 0..2).await.unwrap_err(),
+            custody
+                .scan_tx_outputs(handle, &tx, 0..1, 0..2)
+                .await
+                .unwrap_err(),
             KeyCustodyError::UnknownWallet
         ));
     }
@@ -869,8 +1032,10 @@ mod tests {
         // shared or recycled handle space would break exactly that.
         let view_key = PrivateKey::from_slice(&random_scalar_bytes(13)).unwrap();
         let spend_key = PrivateKey::from_slice(&random_scalar_bytes(14)).unwrap();
-        let material =
-            WalletMaterial::new(view_key.to_bytes(), PublicKey::from_private_key(&spend_key).to_bytes());
+        let material = WalletMaterial::new(
+            view_key.to_bytes(),
+            PublicKey::from_private_key(&spend_key).to_bytes(),
+        );
 
         let custody = PlainKeyCustody::default();
         let sealed = custody.seal(&material).await.unwrap();
@@ -879,13 +1044,22 @@ mod tests {
         assert_ne!(first, second, "each registration must get its own handle");
 
         let index = SubaddressIndex { major: 0, minor: 3 };
-        let from_first = custody.derive_subaddress(first, index, Network::Mainnet).await.unwrap();
-        let from_second = custody.derive_subaddress(second, index, Network::Mainnet).await.unwrap();
+        let from_first = custody
+            .derive_subaddress(first, index, Network::Mainnet)
+            .await
+            .unwrap();
+        let from_second = custody
+            .derive_subaddress(second, index, Network::Mainnet)
+            .await
+            .unwrap();
         assert_eq!(from_first, from_second);
 
         custody.remove_wallet(first).await.unwrap();
         assert_eq!(
-            custody.derive_subaddress(second, index, Network::Mainnet).await.unwrap(),
+            custody
+                .derive_subaddress(second, index, Network::Mainnet)
+                .await
+                .unwrap(),
             from_second,
             "removing one registration must not invalidate an independent one"
         );
@@ -899,7 +1073,10 @@ mod tests {
         // scan cleanly and simply never match a real payment.
         for bad_len in [0usize, 31, 32, 63, 65, 128] {
             let custody = PlainKeyCustody::default();
-            let err = custody.unseal_and_register(&vec![7u8; bad_len]).await.unwrap_err();
+            let err = custody
+                .unseal_and_register(&vec![7u8; bad_len])
+                .await
+                .unwrap_err();
             assert!(
                 matches!(err, KeyCustodyError::InvalidKeyMaterial(_)),
                 "{bad_len} bytes should be rejected, got {err:?}"
@@ -917,10 +1094,9 @@ mod tests {
             *b = i as u8;
         }
         view_bytes[31] &= 0x0f; // keep it a canonical scalar
-        let spend_bytes = PublicKey::from_private_key(
-            &PrivateKey::from_slice(&random_scalar_bytes(15)).unwrap(),
-        )
-        .to_bytes();
+        let spend_bytes =
+            PublicKey::from_private_key(&PrivateKey::from_slice(&random_scalar_bytes(15)).unwrap())
+                .to_bytes();
 
         let material = WalletMaterial::new(view_bytes, spend_bytes);
         let sealed = PlainKeyCustody::default().seal(&material).await.unwrap();
@@ -950,11 +1126,17 @@ mod tests {
             let spend_key = PrivateKey::from_slice(&random_scalar_bytes(seed + 40)).unwrap();
             let spend_pubkey = PublicKey::from_private_key(&spend_key);
             let handle = custody
-                .register_wallet(WalletMaterial::new(view_key.to_bytes(), spend_pubkey.to_bytes()))
+                .register_wallet(WalletMaterial::new(
+                    view_key.to_bytes(),
+                    spend_pubkey.to_bytes(),
+                ))
                 .await
                 .unwrap();
             let index = SubaddressIndex { major: 0, minor: 1 };
-            let address = custody.derive_subaddress(handle, index, Network::Mainnet).await.unwrap();
+            let address = custody
+                .derive_subaddress(handle, index, Network::Mainnet)
+                .await
+                .unwrap();
             expected.push((handle, address));
         }
 
@@ -965,7 +1147,10 @@ mod tests {
                 tasks.push(tokio::spawn(async move {
                     let index = SubaddressIndex { major: 0, minor: 1 };
                     assert_eq!(
-                        custody.derive_subaddress(handle, index, Network::Mainnet).await.unwrap(),
+                        custody
+                            .derive_subaddress(handle, index, Network::Mainnet)
+                            .await
+                            .unwrap(),
                         address,
                         "a handle resolved to another wallet's key material"
                     );
@@ -997,13 +1182,22 @@ mod tests {
         for (handle, address) in expected {
             let index = SubaddressIndex { major: 0, minor: 1 };
             assert_eq!(
-                custody.derive_subaddress(handle, index, Network::Mainnet).await.unwrap(),
+                custody
+                    .derive_subaddress(handle, index, Network::Mainnet)
+                    .await
+                    .unwrap(),
                 address
             );
         }
     }
 
     fn derivations(custody: &PlainKeyCustody, handle: WalletHandle) -> u64 {
-        custody.wallets.read().get(&handle).unwrap().derivations.load(Ordering::Relaxed)
+        custody
+            .wallets
+            .read()
+            .get(&handle)
+            .unwrap()
+            .derivations
+            .load(Ordering::Relaxed)
     }
 }

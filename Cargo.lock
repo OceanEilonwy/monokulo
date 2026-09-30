@@ -3429,6 +3429,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
  "zeroize",
@@ -3449,6 +3450,7 @@ dependencies = [
  "reqwest",
  "scanner",
  "serde_json",
+ "shared",
  "telemetry",
  "tokio",
 ]
@@ -3667,6 +3669,7 @@ dependencies = [
  "reqwest",
  "reqwest-middleware",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
  "telemetry",
@@ -4781,7 +4784,9 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@
 //! hashed password. Unauthenticated by necessity — nobody has an account yet.
 //!
 //! Gated on this instance's `signup.mode` setting (`crate::settings::SIGNUP_MODE`)
-//! - `"public"` (any visitor may sign up, the original behavior) or
+//! — `"public"` (any visitor may sign up, the original behavior) or
 //! `"invite_only"` (the default: a valid, unused invite token is required -
 //! see `Db::redeem_invite_and_create_user`'s own doc comment for the
 //! single-use guarantee). The first-run admin setup wizard
@@ -60,15 +60,15 @@ pub(super) enum CreateAccountError {
 }
 
 /// The actual account-creation logic - `Db::create_user`/
-/// `Db::redeem_invite_and_create_user` plus `shared::password::hash_password`
-/// - shared by `POST /signup` (below), `POST /dashboard/signup`
+/// `Db::redeem_invite_and_create_user` plus `shared::password::Hasher::hash`
+/// — shared by `POST /signup` (below), `POST /dashboard/signup`
 /// (`http/dashboard.rs`), and the first-run admin setup wizard
 /// (`http/admin_setup.rs`, the one caller that ever passes `is_admin: true`),
 /// so all three surfaces can never drift apart on what "creating an account"
 /// means. `invite_token` is only ever consulted when `is_admin` is `false`
 /// and this instance's `signup.mode` is `"invite_only"` - ignored
 /// (regardless of whether it's `Some` or `None`) in every other case.
-pub(super) fn create_account(
+pub(super) async fn create_account(
     state: &AppState,
     email: &str,
     password: &str,
@@ -78,29 +78,59 @@ pub(super) fn create_account(
     // Argon2id (`shared::password`, WBS 0.4) — deliberately not
     // `shared::auth`'s SHA-256, which is the wrong tool for a low-entropy,
     // human-chosen password (see that module's own doc comment).
-    let password_hash = shared::password::hash_password(password).map_err(|_| CreateAccountError::Internal)?;
-    let id = Uuid::new_v4().to_string();
+    // Off the async threads (`shared::password::run`): a hash takes tens of
+    // milliseconds of CPU.
+    let password = password.to_string();
+    let password_hash = shared::password::run(move |hasher| hasher.hash(&password))
+        .await
+        .and_then(Result::ok)
+        .ok_or(CreateAccountError::Internal)?;
+    let id = crate::db::UserId::new(Uuid::new_v4().to_string());
     let created_at = now_unix();
 
-    if !is_admin && crate::settings::signup_mode(&state.db.lock()) == SignupMode::InviteOnly {
-        let token = match invite_token.map(str::trim) {
-            Some(t) if !t.is_empty() => t,
-            _ => return Err(CreateAccountError::InviteRequired),
-        };
-        let token_hash = shared::auth::hash_secret_token(token);
-        return match state.db.lock().redeem_invite_and_create_user(&token_hash, &id, email, &password_hash, created_at) {
-            Ok(RedeemInviteResult::Created) => Ok(id),
-            Ok(RedeemInviteResult::DuplicateEmail) => Err(CreateAccountError::DuplicateEmail),
-            Ok(RedeemInviteResult::InvalidOrAlreadyUsed) => Err(CreateAccountError::InvalidOrUsedInvite),
-            Err(_) => Err(CreateAccountError::Internal),
-        };
-    }
+    let token_hash = invite_token
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|token| shared::auth::RawToken::presented(token).hash());
+    let email = email.to_string();
+    // One write job: the signup mode is read under the same writer as the
+    // account is created.
+    state
+        .db
+        .write(move |db| {
+            if !is_admin && crate::settings::signup_mode(db) == SignupMode::InviteOnly {
+                let Some(token_hash) = token_hash else {
+                    return Err(CreateAccountError::InviteRequired);
+                };
+                return match db.redeem_invite_and_create_user(
+                    &token_hash,
+                    &id,
+                    &email,
+                    &password_hash,
+                    created_at,
+                ) {
+                    Ok(RedeemInviteResult::Created) => Ok(id.into_string()),
+                    Ok(RedeemInviteResult::DuplicateEmail) => {
+                        Err(CreateAccountError::DuplicateEmail)
+                    }
+                    Ok(RedeemInviteResult::InvalidOrAlreadyUsed) => {
+                        Err(CreateAccountError::InvalidOrUsedInvite)
+                    }
+                    Err(_) => Err(CreateAccountError::Internal),
+                };
+            }
+            match db.create_user(&id, &email, &password_hash, is_admin, created_at) {
+                Ok(()) => Ok(id.into_string()),
+                Err(e) if e.is_unique_violation() => Err(CreateAccountError::DuplicateEmail),
+                Err(_) => Err(CreateAccountError::Internal),
+            }
+        })
+        .await
+}
 
-    let result = state.db.lock().create_user(&id, email, &password_hash, is_admin, created_at);
-    match result {
-        Ok(()) => Ok(id),
-        Err(e) if e.is_unique_violation() => Err(CreateAccountError::DuplicateEmail),
-        Err(_) => Err(CreateAccountError::Internal),
+impl From<shared::sqlite::PoolError> for CreateAccountError {
+    fn from(_: shared::sqlite::PoolError) -> Self {
+        CreateAccountError::Internal
     }
 }
 
@@ -108,13 +138,23 @@ pub async fn signup(
     State(state): State<AppState>,
     Json(req): Json<SignupRequest>,
 ) -> Result<(StatusCode, Json<SignupResponse>), ApiError> {
-    match create_account(&state, &req.email, &req.password, false, req.invite_token.as_deref()) {
+    match create_account(
+        &state,
+        &req.email,
+        &req.password,
+        false,
+        req.invite_token.as_deref(),
+    )
+    .await
+    {
         Ok(id) => Ok((StatusCode::CREATED, Json(SignupResponse { user_id: id }))),
         Err(CreateAccountError::DuplicateEmail) => Err(ApiError::Conflict),
         Err(CreateAccountError::Internal) => Err(ApiError::Internal),
-        Err(CreateAccountError::InviteRequired) => Err(ApiError::BadRequest("an invite token is required to sign up".to_string())),
-        Err(CreateAccountError::InvalidOrUsedInvite) => {
-            Err(ApiError::BadRequest("that invite link is invalid or has already been used".to_string()))
-        }
+        Err(CreateAccountError::InviteRequired) => Err(ApiError::BadRequest(
+            "an invite token is required to sign up".to_string(),
+        )),
+        Err(CreateAccountError::InvalidOrUsedInvite) => Err(ApiError::BadRequest(
+            "that invite link is invalid or has already been used".to_string(),
+        )),
     }
 }

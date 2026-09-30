@@ -36,11 +36,14 @@ mod store;
 mod value;
 
 pub use registry::{
-    read_sync, read_sync_with_env, BootError, BootReport, BuildError, Changes, Registry, RegistryBuilder, SaveError,
-    SaveReport, SettingView,
+    read_sync, read_sync_with_env, BootError, BootReport, BuildError, Changes, Registry,
+    RegistryBuilder, SaveError, SaveReport, SettingView,
 };
 pub use section::{BootPolicy, FieldError, Live, Reloadable, Section, Warning};
-pub use setting::{parsed_default, range, AnySetting, Applies, Bounds, Check, Env, Problem, Setting, SettingSource, Snapshot};
+pub use setting::{
+    parsed_default, range, AnySetting, Applies, Bounds, Check, Env, Problem, Setting,
+    SettingSource, Snapshot,
+};
 pub use store::{MemoryStore, SettingsStore, StoreError};
 pub use value::{BindAddr, CommaList, HttpUrl, Json, Secret, SettingKind, SettingValue, MASK};
 

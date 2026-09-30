@@ -11,7 +11,7 @@ use maud::{html, Markup};
 use super::{layout, PageChrome};
 
 pub struct CreateOrderData {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     /// Set only when a submission from this exact page was just rejected -
     /// the engine's own validation error, surfaced verbatim. `None` on a
@@ -29,7 +29,7 @@ pub struct CreateOrderData {
 pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
     let body = html! {
         div class="wrap" {
-            (super::store_breadcrumb(&data.connection_id, &data.display_name, true))
+            (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, true))
             h1 { "Create order" }
             p class="hint" { "Creates a real order on the engine and takes you straight to its payment page." }
             @if let Some(error) = &data.order_creation_error {
@@ -66,7 +66,11 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
             }
         }
     };
-    layout(chrome, &format!("Create order - {} - Monokulo", data.display_name), body)
+    layout(
+        chrome,
+        &format!("Create order - {} - Monokulo", data.display_name),
+        body,
+    )
 }
 
 #[cfg(test)]
@@ -79,7 +83,7 @@ mod tests {
 
     fn data() -> CreateOrderData {
         CreateOrderData {
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             order_creation_error: None,
             order_currency_options: vec!["XMR".to_string(), "USD".to_string()],
@@ -97,7 +101,10 @@ mod tests {
 
     #[test]
     fn shows_the_create_order_error_when_present() {
-        let store = CreateOrderData { order_creation_error: Some("unsupported currency: XYZ".to_string()), ..data() };
+        let store = CreateOrderData {
+            order_creation_error: Some("unsupported currency: XYZ".to_string()),
+            ..data()
+        };
         let html = page(&chrome(), &store).into_string();
         assert!(html.contains("unsupported currency: XYZ"));
         assert!(html.contains("<form"));
@@ -105,7 +112,11 @@ mod tests {
 
     #[test]
     fn locks_currency_to_xmr_when_no_provider_is_available() {
-        let store = CreateOrderData { order_currency_options: vec!["XMR".to_string()], order_currency_is_locked_to_xmr: true, ..data() };
+        let store = CreateOrderData {
+            order_currency_options: vec!["XMR".to_string()],
+            order_currency_is_locked_to_xmr: true,
+            ..data()
+        };
         let html = page(&chrome(), &store).into_string();
         assert!(html.contains(r#"value="XMR" readonly"#));
     }

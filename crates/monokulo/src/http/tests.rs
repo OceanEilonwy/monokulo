@@ -2,15 +2,15 @@
 //! `Router` via `tower::ServiceExt::oneshot` — no bound socket needed, same
 //! pattern as `scanner::http::tests`.
 
-use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::Router;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use crate::engine_client::EngineClient;
 
-use super::{AppState, build_router};
+use super::{build_router, AppState};
 
 fn test_router() -> Router {
     build_router(AppState::for_tests())
@@ -21,7 +21,9 @@ fn signup_request(email: &str, password: &str) -> Request<Body> {
         .method("POST")
         .uri("/signup")
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+        .body(Body::from(
+            serde_json::json!({ "email": email, "password": password }).to_string(),
+        ))
         .unwrap()
 }
 
@@ -30,7 +32,9 @@ fn login_request(email: &str, password: &str) -> Request<Body> {
         .method("POST")
         .uri("/login")
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+        .body(Body::from(
+            serde_json::json!({ "email": email, "password": password }).to_string(),
+        ))
         .unwrap()
 }
 
@@ -59,12 +63,21 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
 async fn a_valid_signup_succeeds_and_does_not_return_the_password_or_hash() {
     let router = test_router();
 
-    let response = router.oneshot(signup_request("alice@example.com", "correct horse battery staple")).await.unwrap();
+    let response = router
+        .oneshot(signup_request(
+            "alice@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
 
     let body = body_json(response).await;
     let obj = body.as_object().unwrap();
-    assert!(obj.get("user_id").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()));
+    assert!(obj
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty()));
     // Nothing password-shaped leaked into the response.
     assert!(!obj.contains_key("password"));
     assert!(!obj.contains_key("password_hash"));
@@ -77,10 +90,17 @@ async fn a_valid_signup_succeeds_and_does_not_return_the_password_or_hash() {
 async fn signing_up_the_same_email_twice_returns_conflict_on_the_second_attempt() {
     let router = test_router();
 
-    let first = router.clone().oneshot(signup_request("bob@example.com", "first password")).await.unwrap();
+    let first = router
+        .clone()
+        .oneshot(signup_request("bob@example.com", "first password"))
+        .await
+        .unwrap();
     assert_eq!(first.status(), StatusCode::CREATED);
 
-    let second = router.oneshot(signup_request("bob@example.com", "a different password")).await.unwrap();
+    let second = router
+        .oneshot(signup_request("bob@example.com", "a different password"))
+        .await
+        .unwrap();
     assert_eq!(second.status(), StatusCode::CONFLICT);
 }
 
@@ -90,31 +110,57 @@ async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_passwo
     let router = build_router(state.clone());
 
     let plaintext = "correct horse battery staple";
-    let response = router.oneshot(signup_request("carol@example.com", plaintext)).await.unwrap();
+    let response = router
+        .oneshot(signup_request("carol@example.com", plaintext))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    let row = state.db.lock().get_user_by_email("carol@example.com").unwrap().unwrap();
-    assert_ne!(row.password_hash, plaintext, "the plaintext password must never be stored as-is");
+    let row = state
+        .db
+        .lock()
+        .get_user_by_email("carol@example.com")
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        row.password_hash, plaintext,
+        "the plaintext password must never be stored as-is"
+    );
     assert!(
         row.password_hash.starts_with("$argon2"),
         "expected a PHC-format Argon2 hash, got: {}",
         row.password_hash
     );
-    assert!(shared::password::verify_password(plaintext, &row.password_hash));
+    let stored = row.password_hash.clone();
+    assert_eq!(
+        shared::password::run(move |hasher| hasher.verify(plaintext, &stored)).await,
+        Some(true)
+    );
 }
 
 #[tokio::test]
 async fn a_correct_login_returns_a_non_empty_session_token() {
     let router = test_router();
 
-    let signup = router.clone().oneshot(signup_request("dave@example.com", "hunter2hunter2")).await.unwrap();
+    let signup = router
+        .clone()
+        .oneshot(signup_request("dave@example.com", "hunter2hunter2"))
+        .await
+        .unwrap();
     assert_eq!(signup.status(), StatusCode::CREATED);
 
-    let response = router.oneshot(login_request("dave@example.com", "hunter2hunter2")).await.unwrap();
+    let response = router
+        .oneshot(login_request("dave@example.com", "hunter2hunter2"))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = body_json(response).await;
-    let token = body.as_object().unwrap().get("session_token").and_then(|v| v.as_str());
+    let token = body
+        .as_object()
+        .unwrap()
+        .get("session_token")
+        .and_then(|v| v.as_str());
     assert!(token.is_some_and(|t| !t.is_empty()));
 }
 
@@ -122,10 +168,17 @@ async fn a_correct_login_returns_a_non_empty_session_token() {
 async fn a_wrong_password_returns_unauthorized() {
     let router = test_router();
 
-    let signup = router.clone().oneshot(signup_request("erin@example.com", "the real password")).await.unwrap();
+    let signup = router
+        .clone()
+        .oneshot(signup_request("erin@example.com", "the real password"))
+        .await
+        .unwrap();
     assert_eq!(signup.status(), StatusCode::CREATED);
 
-    let response = router.oneshot(login_request("erin@example.com", "not the real password")).await.unwrap();
+    let response = router
+        .oneshot(login_request("erin@example.com", "not the real password"))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -135,16 +188,25 @@ async fn an_unknown_email_returns_the_same_unauthorized_response_as_a_wrong_pass
 
     let unknown_email_response = router
         .clone()
-        .oneshot(login_request("nobody-has-this-account@example.com", "whatever"))
+        .oneshot(login_request(
+            "nobody-has-this-account@example.com",
+            "whatever",
+        ))
         .await
         .unwrap();
     assert_eq!(unknown_email_response.status(), StatusCode::UNAUTHORIZED);
     let unknown_email_body = body_json(unknown_email_response).await;
 
-    let signup = router.clone().oneshot(signup_request("frank@example.com", "the real password")).await.unwrap();
+    let signup = router
+        .clone()
+        .oneshot(signup_request("frank@example.com", "the real password"))
+        .await
+        .unwrap();
     assert_eq!(signup.status(), StatusCode::CREATED);
-    let wrong_password_response =
-        router.oneshot(login_request("frank@example.com", "not the real password")).await.unwrap();
+    let wrong_password_response = router
+        .oneshot(login_request("frank@example.com", "not the real password"))
+        .await
+        .unwrap();
     assert_eq!(wrong_password_response.status(), StatusCode::UNAUTHORIZED);
     let wrong_password_body = body_json(wrong_password_response).await;
 
@@ -157,20 +219,59 @@ async fn an_unknown_email_returns_the_same_unauthorized_response_as_a_wrong_pass
 async fn a_valid_session_token_reaches_the_protected_test_route_as_the_right_user() {
     let router = test_router();
 
-    let signup = router.clone().oneshot(signup_request("grace@example.com", "correct horse battery staple")).await.unwrap();
+    let signup = router
+        .clone()
+        .oneshot(signup_request(
+            "grace@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
     assert_eq!(signup.status(), StatusCode::CREATED);
-    let user_id = body_json(signup).await.as_object().unwrap().get("user_id").unwrap().as_str().unwrap().to_string();
+    let user_id = body_json(signup)
+        .await
+        .as_object()
+        .unwrap()
+        .get("user_id")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let login =
-        router.clone().oneshot(login_request("grace@example.com", "correct horse battery staple")).await.unwrap();
+    let login = router
+        .clone()
+        .oneshot(login_request(
+            "grace@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
     assert_eq!(login.status(), StatusCode::OK);
-    let session_token =
-        body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string();
+    let session_token = body_json(login)
+        .await
+        .as_object()
+        .unwrap()
+        .get("session_token")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let response = router.oneshot(whoami_request(Some(&session_token))).await.unwrap();
+    let response = router
+        .oneshot(whoami_request(Some(&session_token)))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body.as_object().unwrap().get("user_id").unwrap().as_str().unwrap(), user_id);
+    assert_eq!(
+        body.as_object()
+            .unwrap()
+            .get("user_id")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        user_id
+    );
 }
 
 #[tokio::test]
@@ -183,7 +284,10 @@ async fn the_protected_test_route_rejects_a_missing_authorization_header() {
 #[tokio::test]
 async fn the_protected_test_route_rejects_an_unknown_bearer_token() {
     let router = test_router();
-    let response = router.oneshot(whoami_request(Some("garbage-token-nobody-issued"))).await.unwrap();
+    let response = router
+        .oneshot(whoami_request(Some("garbage-token-nobody-issued")))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -191,17 +295,39 @@ async fn the_protected_test_route_rejects_an_unknown_bearer_token() {
 async fn logging_out_a_valid_session_returns_no_content() {
     let router = test_router();
 
-    let signup =
-        router.clone().oneshot(signup_request("henry@example.com", "correct horse battery staple")).await.unwrap();
+    let signup = router
+        .clone()
+        .oneshot(signup_request(
+            "henry@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
     assert_eq!(signup.status(), StatusCode::CREATED);
 
-    let login =
-        router.clone().oneshot(login_request("henry@example.com", "correct horse battery staple")).await.unwrap();
+    let login = router
+        .clone()
+        .oneshot(login_request(
+            "henry@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
     assert_eq!(login.status(), StatusCode::OK);
-    let session_token =
-        body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string();
+    let session_token = body_json(login)
+        .await
+        .as_object()
+        .unwrap()
+        .get("session_token")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let response = router.oneshot(logout_request(Some(&session_token))).await.unwrap();
+    let response = router
+        .oneshot(logout_request(Some(&session_token)))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
@@ -209,29 +335,59 @@ async fn logging_out_a_valid_session_returns_no_content() {
 async fn after_logging_out_the_same_session_token_no_longer_reaches_a_protected_route() {
     let router = test_router();
 
-    let signup =
-        router.clone().oneshot(signup_request("iris@example.com", "correct horse battery staple")).await.unwrap();
+    let signup = router
+        .clone()
+        .oneshot(signup_request(
+            "iris@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
     assert_eq!(signup.status(), StatusCode::CREATED);
 
-    let login =
-        router.clone().oneshot(login_request("iris@example.com", "correct horse battery staple")).await.unwrap();
+    let login = router
+        .clone()
+        .oneshot(login_request(
+            "iris@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
     assert_eq!(login.status(), StatusCode::OK);
-    let session_token =
-        body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string();
+    let session_token = body_json(login)
+        .await
+        .as_object()
+        .unwrap()
+        .get("session_token")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Prove the session actually works before logout, so the post-logout
     // 401 below demonstrates revocation rather than a token that never
     // worked in the first place.
-    let before = router.clone().oneshot(whoami_request(Some(&session_token))).await.unwrap();
+    let before = router
+        .clone()
+        .oneshot(whoami_request(Some(&session_token)))
+        .await
+        .unwrap();
     assert_eq!(before.status(), StatusCode::OK);
 
-    let logout_response = router.clone().oneshot(logout_request(Some(&session_token))).await.unwrap();
+    let logout_response = router
+        .clone()
+        .oneshot(logout_request(Some(&session_token)))
+        .await
+        .unwrap();
     assert_eq!(logout_response.status(), StatusCode::NO_CONTENT);
 
     // The same token, reused against the same protected route, must now be
     // rejected - the session was genuinely deleted, not just "the logout
     // call returned 204".
-    let after = router.oneshot(whoami_request(Some(&session_token))).await.unwrap();
+    let after = router
+        .oneshot(whoami_request(Some(&session_token)))
+        .await
+        .unwrap();
     assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -245,7 +401,10 @@ async fn logout_rejects_a_missing_authorization_header() {
 #[tokio::test]
 async fn logout_rejects_an_unknown_bearer_token() {
     let router = test_router();
-    let response = router.oneshot(logout_request(Some("garbage-token-nobody-issued"))).await.unwrap();
+    let response = router
+        .oneshot(logout_request(Some("garbage-token-nobody-issued")))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -272,7 +431,9 @@ fn urlencoding_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -288,11 +449,24 @@ async fn body_text(response: axum::response::Response) -> String {
 #[tokio::test]
 async fn get_dashboard_signup_returns_html() {
     let router = test_router();
-    let request = Request::builder().method("GET").uri("/dashboard/signup").body(Body::empty()).unwrap();
+    let request = Request::builder()
+        .method("GET")
+        .uri("/dashboard/signup")
+        .body(Body::empty())
+        .unwrap();
     let response = router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response.headers().get("content-type").unwrap().to_str().unwrap().to_string();
-    assert!(content_type.contains("text/html"), "expected text/html, got {content_type}");
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        content_type.contains("text/html"),
+        "expected text/html, got {content_type}"
+    );
     let html = body_text(response).await;
     assert!(html.contains("<form"));
     assert!(html.contains("/dashboard/signup"));
@@ -301,11 +475,24 @@ async fn get_dashboard_signup_returns_html() {
 #[tokio::test]
 async fn get_dashboard_login_returns_html() {
     let router = test_router();
-    let request = Request::builder().method("GET").uri("/dashboard/login").body(Body::empty()).unwrap();
+    let request = Request::builder()
+        .method("GET")
+        .uri("/dashboard/login")
+        .body(Body::empty())
+        .unwrap();
     let response = router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response.headers().get("content-type").unwrap().to_str().unwrap().to_string();
-    assert!(content_type.contains("text/html"), "expected text/html, got {content_type}");
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        content_type.contains("text/html"),
+        "expected text/html, got {content_type}"
+    );
     let html = body_text(response).await;
     assert!(html.contains("<form"));
     assert!(html.contains("/dashboard/login"));
@@ -317,12 +504,24 @@ async fn posting_valid_form_encoded_signup_data_redirects_to_the_login_page() {
     let response = router
         .oneshot(form_request(
             "/dashboard/signup",
-            &[("email", "form-signup@example.com"), ("password", "correct horse battery staple")],
+            &[
+                ("email", "form-signup@example.com"),
+                ("password", "correct horse battery staple"),
+            ],
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::FOUND, "expected a 302 redirect");
-    let location = response.headers().get("location").unwrap().to_str().unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FOUND,
+        "expected a 302 redirect"
+    );
+    let location = response
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert_eq!(location, "/dashboard/login");
 }
 
@@ -334,7 +533,10 @@ async fn posting_a_duplicate_email_to_dashboard_signup_rerenders_the_form_with_a
         .clone()
         .oneshot(form_request(
             "/dashboard/signup",
-            &[("email", "dupe-form@example.com"), ("password", "first password here")],
+            &[
+                ("email", "dupe-form@example.com"),
+                ("password", "first password here"),
+            ],
         ))
         .await
         .unwrap();
@@ -343,15 +545,24 @@ async fn posting_a_duplicate_email_to_dashboard_signup_rerenders_the_form_with_a
     let second = router
         .oneshot(form_request(
             "/dashboard/signup",
-            &[("email", "dupe-form@example.com"), ("password", "a different password")],
+            &[
+                ("email", "dupe-form@example.com"),
+                ("password", "a different password"),
+            ],
         ))
         .await
         .unwrap();
     // Still a 200 re-render of the form, not a redirect and not a bare JSON 409.
     assert_eq!(second.status(), StatusCode::OK);
     let html = body_text(second).await;
-    assert!(html.contains("already registered"), "expected a visible duplicate-email error, got: {html}");
-    assert!(html.contains("<form"), "the signup form must still be present: {html}");
+    assert!(
+        html.contains("already registered"),
+        "expected a visible duplicate-email error, got: {html}"
+    );
+    assert!(
+        html.contains("<form"),
+        "the signup form must still be present: {html}"
+    );
 }
 
 #[tokio::test]
@@ -362,7 +573,10 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
         .clone()
         .oneshot(form_request(
             "/dashboard/signup",
-            &[("email", "form-login@example.com"), ("password", "correct horse battery staple")],
+            &[
+                ("email", "form-login@example.com"),
+                ("password", "correct horse battery staple"),
+            ],
         ))
         .await
         .unwrap();
@@ -371,7 +585,10 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
     let response = router
         .oneshot(form_request(
             "/dashboard/login",
-            &[("email", "form-login@example.com"), ("password", "correct horse battery staple")],
+            &[
+                ("email", "form-login@example.com"),
+                ("password", "correct horse battery staple"),
+            ],
         ))
         .await
         .unwrap();
@@ -380,10 +597,24 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
     // `dashboard::login_submit`'s own doc comment.
     assert_eq!(response.status(), StatusCode::FOUND);
     assert_eq!(response.headers().get("location").unwrap(), "/dashboard");
-    let set_cookie = response.headers().get("set-cookie").unwrap().to_str().unwrap();
-    assert!(set_cookie.starts_with("session="), "expected a `session` cookie, got: {set_cookie}");
-    assert!(set_cookie.to_lowercase().contains("httponly"), "expected HttpOnly, got: {set_cookie}");
-    assert!(set_cookie.to_lowercase().contains("samesite=lax"), "expected SameSite=Lax, got: {set_cookie}");
+    let set_cookie = response
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        set_cookie.starts_with("session="),
+        "expected a `session` cookie, got: {set_cookie}"
+    );
+    assert!(
+        set_cookie.to_lowercase().contains("httponly"),
+        "expected HttpOnly, got: {set_cookie}"
+    );
+    assert!(
+        set_cookie.to_lowercase().contains("samesite=lax"),
+        "expected SameSite=Lax, got: {set_cookie}"
+    );
 }
 
 #[tokio::test]
@@ -394,7 +625,10 @@ async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protect
         .clone()
         .oneshot(form_request(
             "/dashboard/signup",
-            &[("email", "cookie-auth@example.com"), ("password", "correct horse battery staple")],
+            &[
+                ("email", "cookie-auth@example.com"),
+                ("password", "correct horse battery staple"),
+            ],
         ))
         .await
         .unwrap();
@@ -404,12 +638,21 @@ async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protect
         .clone()
         .oneshot(form_request(
             "/dashboard/login",
-            &[("email", "cookie-auth@example.com"), ("password", "correct horse battery staple")],
+            &[
+                ("email", "cookie-auth@example.com"),
+                ("password", "correct horse battery staple"),
+            ],
         ))
         .await
         .unwrap();
     assert_eq!(login.status(), StatusCode::FOUND);
-    let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    let set_cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     // Extract just `session=<value>` from the full `Set-Cookie` line (which
     // also carries `; HttpOnly; SameSite=Lax; Path=/`) - that's what a
     // browser would send back in a `Cookie` request header.
@@ -426,9 +669,18 @@ async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protect
         .body(Body::empty())
         .unwrap();
     let response = router.oneshot(whoami_request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK, "the session cookie must authenticate via AuthedUser");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the session cookie must authenticate via AuthedUser"
+    );
     let body = body_json(response).await;
-    assert!(body.as_object().unwrap().get("user_id").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()));
+    assert!(body
+        .as_object()
+        .unwrap()
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty()));
 }
 
 #[tokio::test]
@@ -437,18 +689,33 @@ async fn the_landing_page_shows_log_out_instead_of_log_in_once_a_session_cookie_
 
     let no_session = router
         .clone()
-        .oneshot(Request::builder().method("GET").uri("/").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let html = body_text(no_session).await;
-    assert!(html.contains(r#"href="/dashboard/login""#), "expected a log-in link with no session, got: {html}");
-    assert!(!html.contains("log out"), "expected no log-out link with no session, got: {html}");
+    assert!(
+        html.contains(r#"href="/dashboard/login""#),
+        "expected a log-in link with no session, got: {html}"
+    );
+    assert!(
+        !html.contains("log out"),
+        "expected no log-out link with no session, got: {html}"
+    );
 
     let signup = router
         .clone()
         .oneshot(form_request(
             "/dashboard/signup",
-            &[("email", "nav-auth-state@example.com"), ("password", "correct horse battery staple")],
+            &[
+                ("email", "nav-auth-state@example.com"),
+                ("password", "correct horse battery staple"),
+            ],
         ))
         .await
         .unwrap();
@@ -457,15 +724,31 @@ async fn the_landing_page_shows_log_out_instead_of_log_in_once_a_session_cookie_
         .clone()
         .oneshot(form_request(
             "/dashboard/login",
-            &[("email", "nav-auth-state@example.com"), ("password", "correct horse battery staple")],
+            &[
+                ("email", "nav-auth-state@example.com"),
+                ("password", "correct horse battery staple"),
+            ],
         ))
         .await
         .unwrap();
-    let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    let set_cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let session_pair = set_cookie.split(';').next().unwrap().to_string();
 
     let with_session = router
-        .oneshot(Request::builder().method("GET").uri("/").header("cookie", session_pair).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/")
+                .header("cookie", session_pair)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let html = body_text(with_session).await;
@@ -475,9 +758,18 @@ async fn the_landing_page_shows_log_out_instead_of_log_in_once_a_session_cookie_
     // bar's own lowercase, unstyled "log in"/"sign up" links are checked
     // here, matched by their exact nav markup rather than a generic `href`
     // substring that would also match those body CTAs.
-    assert!(html.contains(r#">log out<"#), "expected a log-out link once a real session cookie is presented, got: {html}");
-    assert!(!html.contains(r#"href="/dashboard/login">log in<"#), "the nav's log-in link must be gone once logged in, got: {html}");
-    assert!(!html.contains(r#"href="/dashboard/signup">sign up<"#), "the nav's sign-up link must be gone once logged in, got: {html}");
+    assert!(
+        html.contains(r#">log out<"#),
+        "expected a log-out link once a real session cookie is presented, got: {html}"
+    );
+    assert!(
+        !html.contains(r#"href="/dashboard/login">log in<"#),
+        "the nav's log-in link must be gone once logged in, got: {html}"
+    );
+    assert!(
+        !html.contains(r#"href="/dashboard/signup">sign up<"#),
+        "the nav's sign-up link must be gone once logged in, got: {html}"
+    );
 }
 
 #[tokio::test]
@@ -488,7 +780,10 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_redirects
         .clone()
         .oneshot(form_request(
             "/dashboard/signup",
-            &[("email", "dashboard-logout@example.com"), ("password", "correct horse battery staple")],
+            &[
+                ("email", "dashboard-logout@example.com"),
+                ("password", "correct horse battery staple"),
+            ],
         ))
         .await
         .unwrap();
@@ -497,11 +792,20 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_redirects
         .clone()
         .oneshot(form_request(
             "/dashboard/login",
-            &[("email", "dashboard-logout@example.com"), ("password", "correct horse battery staple")],
+            &[
+                ("email", "dashboard-logout@example.com"),
+                ("password", "correct horse battery staple"),
+            ],
         ))
         .await
         .unwrap();
-    let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    let set_cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let session_pair = set_cookie.split(';').next().unwrap().to_string();
 
     let logout = router
@@ -516,7 +820,11 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_redirects
         )
         .await
         .unwrap();
-    assert_eq!(logout.status(), StatusCode::FOUND, "expected a redirect after logging out");
+    assert_eq!(
+        logout.status(),
+        StatusCode::FOUND,
+        "expected a redirect after logging out"
+    );
     assert_eq!(logout.headers().get("location").unwrap(), "/");
 
     // The same, now-deleted session cookie must no longer authenticate.
@@ -531,7 +839,11 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_redirects
         )
         .await
         .unwrap();
-    assert_eq!(whoami_after.status(), StatusCode::UNAUTHORIZED, "the logged-out session must no longer authenticate");
+    assert_eq!(
+        whoami_after.status(),
+        StatusCode::UNAUTHORIZED,
+        "the logged-out session must no longer authenticate"
+    );
 }
 
 #[tokio::test]
@@ -542,7 +854,10 @@ async fn posting_a_wrong_password_to_dashboard_login_rerenders_the_form_with_a_g
         .clone()
         .oneshot(form_request(
             "/dashboard/signup",
-            &[("email", "wrong-pw-form@example.com"), ("password", "the real password")],
+            &[
+                ("email", "wrong-pw-form@example.com"),
+                ("password", "the real password"),
+            ],
         ))
         .await
         .unwrap();
@@ -551,15 +866,24 @@ async fn posting_a_wrong_password_to_dashboard_login_rerenders_the_form_with_a_g
     let response = router
         .oneshot(form_request(
             "/dashboard/login",
-            &[("email", "wrong-pw-form@example.com"), ("password", "not the real password")],
+            &[
+                ("email", "wrong-pw-form@example.com"),
+                ("password", "not the real password"),
+            ],
         ))
         .await
         .unwrap();
     // Still a 200 re-render, not a redirect and not a bare JSON 401.
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(response.headers().get("set-cookie").is_none(), "no session cookie on a failed login");
+    assert!(
+        response.headers().get("set-cookie").is_none(),
+        "no session cookie on a failed login"
+    );
     let html = body_text(response).await;
-    assert!(html.contains("Invalid email or password"), "expected a generic login error, got: {html}");
+    assert!(
+        html.contains("Invalid email or password"),
+        "expected a generic login error, got: {html}"
+    );
 }
 
 #[tokio::test]
@@ -568,13 +892,19 @@ async fn an_unknown_email_at_dashboard_login_gets_the_same_generic_error_as_a_wr
     let response = router
         .oneshot(form_request(
             "/dashboard/login",
-            &[("email", "nobody-has-this-account@example.com"), ("password", "whatever")],
+            &[
+                ("email", "nobody-has-this-account@example.com"),
+                ("password", "whatever"),
+            ],
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
-    assert!(html.contains("Invalid email or password"), "expected the same generic login error, got: {html}");
+    assert!(
+        html.contains("Invalid email or password"),
+        "expected the same generic login error, got: {html}"
+    );
 }
 
 // -- WBS 1.3.2: browser-facing wallet-connection form ------------------------
@@ -588,13 +918,15 @@ async fn an_unknown_email_at_dashboard_login_gets_the_same_generic_error_as_a_wr
 /// own tests use - see those modules for why these particular values pass
 /// the engine's real wallet-material validation.
 const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+const TEST_SPEND_PUBKEY_HEX: &str =
+    "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
 async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
-    let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+    let engine =
+        scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let engine_client = EngineClient::new(format!("http://{}", engine.addr));
     let state = AppState {
-        engine_client,
+        engine: crate::http::Engine::new(engine_client),
         ..AppState::for_tests()
     };
     (state, engine)
@@ -628,21 +960,37 @@ fn connect_post_request(cookie: &str, fields: &[(&str, &str)]) -> Request<Body> 
 /// browser would send back as a `Cookie` header - same extraction
 /// `the_session_cookie_from_dashboard_login_authenticates_against_a_protected_route`
 /// above uses.
-async fn signed_up_and_logged_in_session_cookie(router: &Router, email: &str, password: &str) -> String {
+async fn signed_up_and_logged_in_session_cookie(
+    router: &Router,
+    email: &str,
+    password: &str,
+) -> String {
     let signup = router
         .clone()
-        .oneshot(form_request("/dashboard/signup", &[("email", email), ("password", password)]))
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", email), ("password", password)],
+        ))
         .await
         .unwrap();
     assert_eq!(signup.status(), StatusCode::FOUND);
 
     let login = router
         .clone()
-        .oneshot(form_request("/dashboard/login", &[("email", email), ("password", password)]))
+        .oneshot(form_request(
+            "/dashboard/login",
+            &[("email", email), ("password", password)],
+        ))
         .await
         .unwrap();
     assert_eq!(login.status(), StatusCode::FOUND);
-    let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    let set_cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     set_cookie.split(';').next().unwrap().to_string()
 }
 
@@ -656,13 +1004,17 @@ async fn get_dashboard_connect_without_a_session_is_rejected() {
 }
 
 #[tokio::test]
-async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_page_and_a_real_store_connections_row() {
+async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_page_and_a_real_store_connections_row(
+) {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state.clone());
 
-    let cookie =
-        signed_up_and_logged_in_session_cookie(&router, "connect-form@example.com", "correct horse battery staple")
-            .await;
+    let cookie = signed_up_and_logged_in_session_cookie(
+        &router,
+        "connect-form@example.com",
+        "correct horse battery staple",
+    )
+    .await;
 
     let response = router
         .oneshot(connect_post_request(
@@ -672,7 +1024,10 @@ async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_pag
                 ("view_key_hex", TEST_VIEW_KEY_HEX),
                 ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                 ("network", "mainnet"),
-                ("allowed_origins", "https://shop.example.com, https://admin.example.com"),
+                (
+                    "allowed_origins",
+                    "https://shop.example.com, https://admin.example.com",
+                ),
                 ("base_currency", "XMR"),
             ],
         ))
@@ -681,13 +1036,23 @@ async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_pag
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
 
-    let public_key_start = html.find("pk_").expect("expected a real pk_ value in the confirmation page");
-    let public_key: String =
-        html[public_key_start..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-    assert!(public_key.len() > 3, "expected a real pk_... value, got: {public_key}");
+    let public_key_start = html
+        .find("pk_")
+        .expect("expected a real pk_ value in the confirmation page");
+    let public_key: String = html[public_key_start..]
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    assert!(
+        public_key.len() > 3,
+        "expected a real pk_... value, got: {public_key}"
+    );
 
     // The secret token must never be shown on the confirmation page.
-    assert!(!html.contains("sk_"), "the confirmation page must never contain the secret token");
+    assert!(
+        !html.contains("sk_"),
+        "the confirmation page must never contain the secret token"
+    );
 
     // Confirm the row that actually landed in `store_connections`. The
     // browser form flow never hands the connection id back to the caller
@@ -721,9 +1086,12 @@ async fn submitting_an_invalid_view_key_rerenders_the_form_with_a_visible_error(
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state);
 
-    let cookie =
-        signed_up_and_logged_in_session_cookie(&router, "bad-view-key@example.com", "correct horse battery staple")
-            .await;
+    let cookie = signed_up_and_logged_in_session_cookie(
+        &router,
+        "bad-view-key@example.com",
+        "correct horse battery staple",
+    )
+    .await;
 
     let response = router
         .oneshot(connect_post_request(
@@ -744,9 +1112,18 @@ async fn submitting_an_invalid_view_key_rerenders_the_form_with_a_visible_error(
     // A visible, re-rendered form - not a raw 500 and not a panic.
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
-    assert!(html.contains("<form"), "expected the connect form to be re-rendered, got: {html}");
-    assert!(html.contains("class=\"error\""), "expected a visible error message, got: {html}");
-    assert!(!html.contains("pk_"), "a rejected submission must not show a public key");
+    assert!(
+        html.contains("<form"),
+        "expected the connect form to be re-rendered, got: {html}"
+    );
+    assert!(
+        html.contains("class=\"error\""),
+        "expected a visible error message, got: {html}"
+    );
+    assert!(
+        !html.contains("pk_"),
+        "a rejected submission must not show a public key"
+    );
 }
 
 /// The real UX bug: losing every field on a rejected submission - a
@@ -761,9 +1138,12 @@ async fn a_rejected_connect_submission_re_fills_every_field_the_merchant_typed()
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state);
 
-    let cookie =
-        signed_up_and_logged_in_session_cookie(&router, "keep-my-inputs@example.com", "correct horse battery staple")
-            .await;
+    let cookie = signed_up_and_logged_in_session_cookie(
+        &router,
+        "keep-my-inputs@example.com",
+        "correct horse battery staple",
+    )
+    .await;
 
     let response = router
         .oneshot(connect_post_request(
@@ -778,7 +1158,10 @@ async fn a_rejected_connect_submission_re_fills_every_field_the_merchant_typed()
                 // catch before ever reaching the server.
                 ("spend_pubkey_hex", &"ff".repeat(32)),
                 ("network", "stagenet"),
-                ("allowed_origins", "https://my-real-shop.example.com, https://admin.example.com"),
+                (
+                    "allowed_origins",
+                    "https://my-real-shop.example.com, https://admin.example.com",
+                ),
                 ("base_currency", "XMR"),
             ],
         ))
@@ -787,27 +1170,48 @@ async fn a_rejected_connect_submission_re_fills_every_field_the_merchant_typed()
 
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
-    assert!(html.contains("class=\"error\""), "expected a visible error, got: {html}");
+    assert!(
+        html.contains("class=\"error\""),
+        "expected a visible error, got: {html}"
+    );
 
     assert!(
         html.contains(r#"value="https://my-real-shop.example.com""#),
         "expected site_url re-filled, got: {html}"
     );
-    assert!(html.contains(&format!(r#"value="{TEST_VIEW_KEY_HEX}""#)), "expected the valid view key kept, got: {html}");
+    assert!(
+        html.contains(&format!(r#"value="{TEST_VIEW_KEY_HEX}""#)),
+        "expected the valid view key kept, got: {html}"
+    );
     assert!(
         html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),
         "expected the rejected spend key re-filled too, so the merchant can see and fix exactly it, got: {html}"
     );
-    assert!(!html.contains("allowed_origins"), "allowed origins are no longer asked for, got: {html}");
-    assert!(html.contains(r#"value="stagenet" selected"#), "expected stagenet to stay selected, got: {html}");
-    assert!(!html.contains(r#"value="mainnet" selected"#), "mainnet must not silently reappear as selected, got: {html}");
+    assert!(
+        !html.contains("allowed_origins"),
+        "allowed origins are no longer asked for, got: {html}"
+    );
+    assert!(
+        html.contains(r#"value="stagenet" selected"#),
+        "expected stagenet to stay selected, got: {html}"
+    );
+    assert!(
+        !html.contains(r#"value="mainnet" selected"#),
+        "mainnet must not silently reappear as selected, got: {html}"
+    );
 }
 
 #[tokio::test]
-async fn an_unknown_base_currency_on_the_dashboard_connect_form_is_rejected_before_provisioning_a_tenant() {
+async fn an_unknown_base_currency_on_the_dashboard_connect_form_is_rejected_before_provisioning_a_tenant(
+) {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state.clone());
-    let cookie = signed_up_and_logged_in_session_cookie(&router, "bad-currency-form@example.com", "correct horse battery staple").await;
+    let cookie = signed_up_and_logged_in_session_cookie(
+        &router,
+        "bad-currency-form@example.com",
+        "correct horse battery staple",
+    )
+    .await;
 
     let response = router
         .oneshot(connect_post_request(
@@ -823,10 +1227,20 @@ async fn an_unknown_base_currency_on_the_dashboard_connect_form_is_rejected_befo
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK, "a rejected submission re-renders the form, not a redirect");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a rejected submission re-renders the form, not a redirect"
+    );
     let html = body_text(response).await;
-    assert!(html.contains("class=\"error\""), "expected a visible error, got: {html}");
-    assert!(!html.contains("pk_"), "no tenant should have been provisioned for a rejected submission");
+    assert!(
+        html.contains("class=\"error\""),
+        "expected a visible error, got: {html}"
+    );
+    assert!(
+        !html.contains("pk_"),
+        "no tenant should have been provisioned for a rejected submission"
+    );
 }
 
 // -- WBS 1.4.1: `next`-redirect support on dashboard::login_submit ----------
@@ -840,18 +1254,37 @@ async fn an_unknown_base_currency_on_the_dashboard_connect_form_is_rejected_befo
 // them ever send a `next` field and all still pass unchanged).
 
 #[tokio::test]
-async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_confirmation_not_a_redirect() {
+async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_confirmation_not_a_redirect(
+) {
     let router = test_router();
 
     let email = "malicious-next@example.com";
     let password = "correct horse battery staple";
-    let signup = router.clone().oneshot(form_request("/dashboard/signup", &[("email", email), ("password", password)])).await.unwrap();
+    let signup = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", email), ("password", password)],
+        ))
+        .await
+        .unwrap();
     assert_eq!(signup.status(), StatusCode::FOUND);
 
-    for malicious_next in ["//evil.example.com", "https://evil.example.com", "/\\evil.example.com"] {
+    for malicious_next in [
+        "//evil.example.com",
+        "https://evil.example.com",
+        "/\\evil.example.com",
+    ] {
         let response = router
             .clone()
-            .oneshot(form_request("/dashboard/login", &[("email", email), ("password", password), ("next", malicious_next)]))
+            .oneshot(form_request(
+                "/dashboard/login",
+                &[
+                    ("email", email),
+                    ("password", password),
+                    ("next", malicious_next),
+                ],
+            ))
             .await
             .unwrap();
         // A malicious `next` must be silently ignored, falling back to the
@@ -869,12 +1302,21 @@ async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_conf
     }
 }
 
-fn invite_token_signup_request(email: &str, password: &str, invite_token: Option<&str>) -> Request<Body> {
+fn invite_token_signup_request(
+    email: &str,
+    password: &str,
+    invite_token: Option<&str>,
+) -> Request<Body> {
     let mut body = serde_json::json!({ "email": email, "password": password });
     if let Some(token) = invite_token {
         body["invite_token"] = serde_json::Value::String(token.to_string());
     }
-    Request::builder().method("POST").uri("/signup").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap()
+    Request::builder()
+        .method("POST")
+        .uri("/signup")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 /// `signup.mode` gating for the JSON `POST /signup` API - the browser-facing
@@ -890,7 +1332,14 @@ async fn public_mode_signup_needs_no_invite_token_at_all() {
     // `"public"` - this is the harness default every other test in this
     // file already relies on, asserted explicitly here as documentation.
     let router = test_router();
-    let response = router.oneshot(invite_token_signup_request("nobody-needs-an-invite@example.com", "correct horse battery staple", None)).await.unwrap();
+    let response = router
+        .oneshot(invite_token_signup_request(
+            "nobody-needs-an-invite@example.com",
+            "correct horse battery staple",
+            None,
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
@@ -901,10 +1350,20 @@ async fn invite_only_mode_rejects_a_signup_with_no_token() {
     let router = build_router(state);
     db.lock().set_setting("signup.mode", "invite_only").unwrap();
 
-    let response = router.oneshot(invite_token_signup_request("hopeful@example.com", "correct horse battery staple", None)).await.unwrap();
+    let response = router
+        .oneshot(invite_token_signup_request(
+            "hopeful@example.com",
+            "correct horse battery staple",
+            None,
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response).await;
-    assert!(body["error"].as_str().unwrap().contains("invite"), "expected a clear invite-required error, got: {body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("invite"),
+        "expected a clear invite-required error, got: {body}"
+    );
 }
 
 #[tokio::test]
@@ -914,11 +1373,17 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
     let router = build_router(state);
     db.lock().set_setting("signup.mode", "invite_only").unwrap();
     let raw_token = shared::auth::generate_invite_token();
-    db.lock().create_invite_link("link-1", &shared::auth::hash_secret_token(&raw_token), None, None, crate::now_unix()).unwrap();
+    db.lock()
+        .create_invite_link("link-1", &raw_token.hash(), None, None, crate::now_unix())
+        .unwrap();
 
     let first = router
         .clone()
-        .oneshot(invite_token_signup_request("first@example.com", "correct horse battery staple", Some(&raw_token)))
+        .oneshot(invite_token_signup_request(
+            "first@example.com",
+            "correct horse battery staple",
+            Some(raw_token.expose()),
+        ))
         .await
         .unwrap();
     assert_eq!(first.status(), StatusCode::CREATED);
@@ -926,12 +1391,22 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
     // The literal ask: "more than one account cannot be registered using
     // the same link".
     let second = router
-        .oneshot(invite_token_signup_request("second@example.com", "correct horse battery staple", Some(&raw_token)))
+        .oneshot(invite_token_signup_request(
+            "second@example.com",
+            "correct horse battery staple",
+            Some(raw_token.expose()),
+        ))
         .await
         .unwrap();
     assert_eq!(second.status(), StatusCode::BAD_REQUEST);
     let body = body_json(second).await;
-    assert!(body["error"].as_str().unwrap().contains("already been used"), "expected a clear already-used error, got: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("already been used"),
+        "expected a clear already-used error, got: {body}"
+    );
 }
 
 /// An embed works on any site - clearnet or `.onion` - so the public
@@ -958,11 +1433,21 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
         )
         .await
         .unwrap();
-    assert!(preflight.status().is_success(), "got {}", preflight.status());
+    assert!(
+        preflight.status().is_success(),
+        "got {}",
+        preflight.status()
+    );
     let headers = preflight.headers();
     assert_eq!(headers["access-control-allow-origin"], onion);
-    assert!(headers["access-control-allow-methods"].to_str().unwrap().contains("POST"));
-    assert!(headers["access-control-allow-headers"].to_str().unwrap().contains("content-type"));
+    assert!(headers["access-control-allow-methods"]
+        .to_str()
+        .unwrap()
+        .contains("POST"));
+    assert!(headers["access-control-allow-headers"]
+        .to_str()
+        .unwrap()
+        .contains("content-type"));
     assert_eq!(headers["access-control-allow-private-network"], "true");
     assert!(!headers.contains_key("access-control-allow-credentials"));
 
@@ -974,44 +1459,128 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
     ] {
         let response = router
             .clone()
-            .oneshot(Request::builder().uri(uri).header("origin", "https://shop.example").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("origin", "https://shop.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        assert_eq!(response.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()), Some(allowed), "{uri}");
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .map(|v| v.to_str().unwrap()),
+            Some(allowed),
+            "{uri}"
+        );
     }
 
     let dashboard = router
-        .oneshot(Request::builder().uri("/dashboard").header("origin", "https://shop.example").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard")
+                .header("origin", "https://shop.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    assert!(!dashboard.headers().contains_key("access-control-allow-origin"));
+    assert!(!dashboard
+        .headers()
+        .contains_key("access-control-allow-origin"));
 }
 
 // -- Alerts for stores that can't be scanned (admin_settings_v2.md task 3.7) --
 
-fn state_with_owner_and_store(tenant_public_key: &str) -> (AppState, crate::db::UserRow, crate::db::UserRow) {
+/// A store row becomes an `OwnedStore` only for its own owner.
+#[test]
+fn a_store_is_owned_only_by_the_user_it_belongs_to() {
+    let (state, owner, other) = state_with_owner_and_store("pk_owned");
+    let row = || {
+        state
+            .db
+            .lock()
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("c1"))
+            .unwrap()
+            .unwrap()
+    };
+    let owned = super::OwnedStore::check(row(), &owner.id).expect("the owner owns it");
+    assert_eq!(owned.id, "c1");
+    assert!(super::OwnedStore::check(row(), &other.id).is_none());
+}
+
+fn state_with_owner_and_store(
+    tenant_public_key: &str,
+) -> (AppState, crate::db::UserRow, crate::db::UserRow) {
     let state = AppState::for_tests();
     {
         let db = state.db.lock();
-        db.create_user("u_owner", "owner@example.com", "x", false, 1).unwrap();
-        db.create_user("u_other", "other@example.com", "x", false, 1).unwrap();
-        db.create_store_connection("c1", "u_owner", "woocommerce", "https://shop.example.com", tenant_public_key, "enc", "http://engine", 1, "XMR")
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("u_owner"),
+            "owner@example.com",
+            "x",
+            false,
+            1,
+        )
+        .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("u_other"),
+            "other@example.com",
+            "x",
+            false,
+            1,
+        )
+        .unwrap();
+        db.create_store_connection(
+            &shared::ids::ConnectionId::new("c1"),
+            &shared::ids::UserId::new("u_owner"),
+            "woocommerce",
+            "https://shop.example.com",
+            tenant_public_key,
+            "enc",
+            "http://engine",
+            1,
+            "XMR",
+        )
+        .unwrap();
     }
-    let owner = state.db.lock().get_user_by_email("owner@example.com").unwrap().unwrap();
-    let other = state.db.lock().get_user_by_email("other@example.com").unwrap().unwrap();
+    let owner = state
+        .db
+        .lock()
+        .get_user_by_email("owner@example.com")
+        .unwrap()
+        .unwrap();
+    let other = state
+        .db
+        .lock()
+        .get_user_by_email("other@example.com")
+        .unwrap()
+        .unwrap();
     (state, owner, other)
 }
 
-fn status_with(unserved: Vec<crate::engine_client::UnservedTenant>) -> crate::engine_client::EngineStatusResponse {
-    crate::engine_client::EngineStatusResponse { networks: vec![], poll_interval_secs: 1, generated_at: 0, unserved_tenants: unserved, key_custody: vec![], key_custody_default: None }
+fn status_with(
+    unserved: Vec<crate::engine_client::UnservedTenant>,
+) -> crate::engine_client::EngineStatusResponse {
+    crate::engine_client::EngineStatusResponse {
+        networks: vec![],
+        poll_interval_secs: 1,
+        generated_at: 0,
+        unserved_tenants: unserved,
+        key_custody: vec![],
+        key_custody_default: None,
+    }
 }
 
 #[tokio::test]
-async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_page_but_nobody_else_is() {
+async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_page_but_nobody_else_is(
+) {
     let (state, owner, other) = state_with_owner_and_store("pk_shop");
     crate::http::status_page::seed_status_for_tests(
-        &state,
+        &state.engine,
         status_with(vec![crate::engine_client::UnservedTenant {
             public_key: "pk_shop".into(),
             network: "stagenet".into(),
@@ -1020,25 +1589,54 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
         }]),
     );
 
-    let chrome = super::page_chrome(&state, Some(&owner), "/dashboard");
+    let chrome = super::page_chrome(&state, Some(&owner), "/dashboard").await;
     assert_eq!(chrome.alerts.len(), 1);
-    assert!(chrome.alerts[0].contains("shop.example.com") && chrome.alerts[0].contains("stagenet"), "{:?}", chrome.alerts);
+    assert!(
+        chrome.alerts[0].contains("shop.example.com") && chrome.alerts[0].contains("stagenet"),
+        "{:?}",
+        chrome.alerts
+    );
 
-    assert!(super::page_chrome(&state, Some(&other), "/dashboard").alerts.is_empty(), "not someone else's store");
-    assert!(super::page_chrome(&state, None, "/").alerts.is_empty(), "never for a visitor");
+    assert!(
+        super::page_chrome(&state, Some(&other), "/dashboard")
+            .await
+            .alerts
+            .is_empty(),
+        "not someone else's store"
+    );
+    assert!(
+        super::page_chrome(&state, None, "/")
+            .await
+            .alerts
+            .is_empty(),
+        "never for a visitor"
+    );
 
     // Rendered under the nav on normal pages, never in the bare POS layout.
     let page = crate::views::layout(&chrome, "t", maud::html! { p { "body" } }).into_string();
-    assert!(page.contains(r#"<p class="error" role="alert">shop.example.com"#), "{page}");
-    let pos = crate::views::layout_bare_with_head(&chrome, "t", "width=device-width", maud::html! {}, maud::html! {}).into_string();
-    assert!(!pos.contains("shop.example.com"), "the POS terminal shows no alerts");
+    assert!(
+        page.contains(r#"<p class="error" role="alert">shop.example.com"#),
+        "{page}"
+    );
+    let pos = crate::views::layout_bare_with_head(
+        &chrome,
+        "t",
+        "width=device-width",
+        maud::html! {},
+        maud::html! {},
+    )
+    .into_string();
+    assert!(
+        !pos.contains("shop.example.com"),
+        "the POS terminal shows no alerts"
+    );
 }
 
 #[tokio::test]
 async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has() {
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
     crate::http::status_page::seed_status_for_tests(
-        &state,
+        &state.engine,
         status_with(vec![crate::engine_client::UnservedTenant {
             public_key: "pk_shop".into(),
             network: "mainnet".into(),
@@ -1046,19 +1644,27 @@ async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has()
             blocks_behind: Some(12),
         }]),
     );
-    let alerts = super::page_chrome(&state, Some(&owner), "/dashboard").alerts;
+    let alerts = super::page_chrome(&state, Some(&owner), "/dashboard")
+        .await
+        .alerts;
     assert!(alerts[0].contains("catching up 12 block"), "{alerts:?}");
 
-    crate::http::status_page::seed_status_for_tests(&state, status_with(vec![]));
-    assert!(super::page_chrome(&state, Some(&owner), "/dashboard").alerts.is_empty());
+    crate::http::status_page::seed_status_for_tests(&state.engine, status_with(vec![]));
+    assert!(super::page_chrome(&state, Some(&owner), "/dashboard")
+        .await
+        .alerts
+        .is_empty());
 }
 
 #[tokio::test]
 async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
-    for (reason, expected) in [("custody_disabled", "turned off"), ("custody_unavailable", "isn't answering")] {
+    for (reason, expected) in [
+        ("custody_disabled", "turned off"),
+        ("custody_unavailable", "isn't answering"),
+    ] {
         crate::http::status_page::seed_status_for_tests(
-            &state,
+            &state.engine,
             status_with(vec![crate::engine_client::UnservedTenant {
                 public_key: "pk_shop".into(),
                 network: "mainnet".into(),
@@ -1066,9 +1672,14 @@ async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
                 blocks_behind: None,
             }]),
         );
-        let alerts = super::page_chrome(&state, Some(&owner), "/dashboard").alerts;
+        let alerts = super::page_chrome(&state, Some(&owner), "/dashboard")
+            .await
+            .alerts;
         assert_eq!(alerts.len(), 1);
-        assert!(alerts[0].contains("shop.example.com") && alerts[0].contains(expected), "{alerts:?}");
+        assert!(
+            alerts[0].contains("shop.example.com") && alerts[0].contains(expected),
+            "{alerts:?}"
+        );
     }
 }
 
@@ -1076,7 +1687,7 @@ async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
 async fn a_status_cached_from_the_old_engine_is_not_shown_after_the_engine_url_changes() {
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
     crate::http::status_page::seed_status_for_tests(
-        &state,
+        &state.engine,
         status_with(vec![crate::engine_client::UnservedTenant {
             public_key: "pk_shop".into(),
             network: "stagenet".into(),
@@ -1084,9 +1695,18 @@ async fn a_status_cached_from_the_old_engine_is_not_shown_after_the_engine_url_c
             blocks_behind: None,
         }]),
     );
-    assert_eq!(super::page_chrome(&state, Some(&owner), "/dashboard").alerts.len(), 1);
-    state.engine_client.retarget("http://127.0.0.1:2", 1024);
-    assert!(crate::http::status_page::known_unserved(&state).is_empty(), "the old engine's status is gone");
+    assert_eq!(
+        super::page_chrome(&state, Some(&owner), "/dashboard")
+            .await
+            .alerts
+            .len(),
+        1
+    );
+    state.engine.client.retarget("http://127.0.0.1:2", 1024);
+    assert!(
+        crate::http::status_page::known_unserved(&state.engine).is_empty(),
+        "the old engine's status is gone"
+    );
 }
 
 #[tokio::test]
@@ -1101,13 +1721,29 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
             .unwrap()
     };
     let small = r#"{"kind":"error","message":"x is undefined","page":"/dashboard"}"#.to_string();
-    assert_eq!(router.clone().oneshot(report(small)).await.unwrap().status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(report(small))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NO_CONTENT
+    );
     let big = format!(r#"{{"kind":"error","message":"{}"}}"#, "x".repeat(20_000));
-    assert_eq!(router.clone().oneshot(report(big)).await.unwrap().status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        router.clone().oneshot(report(big)).await.unwrap().status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
 
     let script = router
         .clone()
-        .oneshot(Request::builder().uri("/static/telemetry.js").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/static/telemetry.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(script.status(), StatusCode::OK);
@@ -1116,24 +1752,33 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
     let page = crate::views::layout(&chrome, "t", maud::html! {}).into_string();
     assert!(page.contains(r#"src="/static/telemetry.js""#), "{page}");
     let bare = crate::views::layout_bare(&chrome, "t", maud::html! {}).into_string();
-    assert!(!bare.contains("telemetry.js"), "not on the checkout, challenge or POS pages: {bare}");
+    assert!(
+        !bare.contains("telemetry.js"),
+        "not on the checkout, challenge or POS pages: {bare}"
+    );
 }
 
 #[tokio::test]
 async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin_pages_always_do() {
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
-    let with_script = |path: &str| {
-        let chrome = super::page_chrome(&state, Some(&owner), path);
-        crate::views::layout(&chrome, "t", maud::html! {}).into_string().contains("/static/telemetry.js")
+    let with_script = async |path: &str| {
+        let chrome = super::page_chrome(&state, Some(&owner), path).await;
+        crate::views::layout(&chrome, "t", maud::html! {})
+            .into_string()
+            .contains("/static/telemetry.js")
     };
-    assert!(with_script("/dashboard/admin/logs"));
-    assert!(with_script("/dashboard"));
-    assert!(with_script("/dashboard/stores/new"));
-    assert!(!with_script("/dashboard/stores/c1"));
-    assert!(!with_script("/dashboard/stores/c1/settings"));
-    state.db.lock().set_client_logging("c1", true).unwrap();
-    assert!(with_script("/dashboard/stores/c1"));
-    assert!(with_script("/dashboard/stores/c1/orders?page=2"));
+    assert!(with_script("/dashboard/admin/logs").await);
+    assert!(with_script("/dashboard").await);
+    assert!(with_script("/dashboard/stores/new").await);
+    assert!(!with_script("/dashboard/stores/c1").await);
+    assert!(!with_script("/dashboard/stores/c1/settings").await);
+    state
+        .db
+        .lock()
+        .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        .unwrap();
+    assert!(with_script("/dashboard/stores/c1").await);
+    assert!(with_script("/dashboard/stores/c1/orders?page=2").await);
 }
 
 #[tokio::test]
@@ -1141,10 +1786,27 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
     let state = AppState::for_tests();
     {
         let db = state.db.lock();
-        db.create_user("u_owner", "owner@example.com", "x", false, 1).unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("u_owner"),
+            "owner@example.com",
+            "x",
+            false,
+            1,
+        )
+        .unwrap();
         let encrypted = crate::crypto::encrypt(&state.encryption_key, "sk_shop");
-        db.create_store_connection("c1", "u_owner", "woocommerce", "https://shop.example.com", "pk_shop", &encrypted, "http://engine", 1, "XMR")
-            .unwrap();
+        db.create_store_connection(
+            &shared::ids::ConnectionId::new("c1"),
+            &shared::ids::UserId::new("u_owner"),
+            "woocommerce",
+            "https://shop.example.com",
+            "pk_shop",
+            &encrypted,
+            "http://engine",
+            1,
+            "XMR",
+        )
+        .unwrap();
     }
     let router = build_router(state.clone());
     let forward = || {
@@ -1153,12 +1815,25 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
             .uri("/pay/pk_shop/logs")
             .header("content-type", "application/json")
             .header("authorization", "Bearer sk_shop")
-            .body(Body::from(r#"{"entries":[{"level":"error","message":"webhook signature mismatch"}]}"#))
+            .body(Body::from(
+                r#"{"entries":[{"level":"error","message":"webhook signature mismatch"}]}"#,
+            ))
             .unwrap()
     };
-    assert_eq!(router.clone().oneshot(forward()).await.unwrap().status(), StatusCode::FORBIDDEN, "off by default, whatever the plugin says");
-    state.db.lock().set_client_logging("c1", true).unwrap();
-    assert_eq!(router.clone().oneshot(forward()).await.unwrap().status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        router.clone().oneshot(forward()).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "off by default, whatever the plugin says"
+    );
+    state
+        .db
+        .lock()
+        .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(forward()).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
 }
 
 #[tokio::test]
@@ -1166,8 +1841,18 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
     let (state, _, _) = state_with_owner_and_store("pk_shop");
     {
         let db = state.db.lock();
-        db.create_session(&shared::auth::hash_secret_token("owner-token"), "u_owner", crate::now_unix()).unwrap();
-        db.create_session(&shared::auth::hash_secret_token("other-token"), "u_other", crate::now_unix()).unwrap();
+        db.create_session(
+            &shared::auth::RawToken::presented("owner-token").hash(),
+            &shared::ids::UserId::new("u_owner"),
+            crate::now_unix(),
+        )
+        .unwrap();
+        db.create_session(
+            &shared::auth::RawToken::presented("other-token").hash(),
+            &shared::ids::UserId::new("u_other"),
+            crate::now_unix(),
+        )
+        .unwrap();
     }
     let router = build_router(state.clone());
     let send = |token: &str, body: String| {
@@ -1183,34 +1868,93 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
         let events: Vec<_> = (1..=events)
             .map(|seq| serde_json::json!({ "seq": seq, "t": 1_790_000_000_000i64 + seq as i64, "kind": "network.offline", "detail": { "online": false } }))
             .collect();
-        serde_json::json!({ "session": "0f8e2c1a-3b4d-4e5f-9a6b-7c8d9e0f1a2b", "events": events }).to_string()
+        serde_json::json!({ "session": "0f8e2c1a-3b4d-4e5f-9a6b-7c8d9e0f1a2b", "events": events })
+            .to_string()
     };
-    let status = |request: Request<Body>| { let router = router.clone(); async move { router.oneshot(request).await.unwrap().status() } };
-    assert_eq!(status(send("owner-token", batch(2))).await, StatusCode::FORBIDDEN, "Diagnostics is off");
-    state.db.lock().set_client_logging("c1", true).unwrap();
-    assert_eq!(status(send("owner-token", batch(2))).await, StatusCode::NO_CONTENT);
-    assert_eq!(status(send("owner-token", batch(101))).await, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(status(send("owner-token", r#"{"session":"x","events":[]}"#.into())).await, StatusCode::BAD_REQUEST);
-    assert_eq!(status(send("other-token", batch(1))).await, StatusCode::NOT_FOUND, "someone else's store");
+    let status = |request: Request<Body>| {
+        let router = router.clone();
+        async move { router.oneshot(request).await.unwrap().status() }
+    };
+    assert_eq!(
+        status(send("owner-token", batch(2))).await,
+        StatusCode::FORBIDDEN,
+        "Diagnostics is off"
+    );
+    state
+        .db
+        .lock()
+        .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        .unwrap();
+    assert_eq!(
+        status(send("owner-token", batch(2))).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        status(send("owner-token", batch(101))).await,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(
+        status(send("owner-token", r#"{"session":"x","events":[]}"#.into())).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        status(send("other-token", batch(1))).await,
+        StatusCode::NOT_FOUND,
+        "someone else's store"
+    );
 }
 
 #[tokio::test]
 async fn the_status_page_names_its_stream_and_the_stream_sends_the_page_content() {
     let router = test_router();
-    let page = body_text(router.clone().oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap()).await.unwrap()).await;
-    assert!(page.contains(r#"fx-action="/status/events" fx-trigger="fx:inited""#), "{page}");
-    assert!(page.contains(r#"<div id="status-live">"#) && page.contains(r#"class="btn btn-secondary reload""#), "{page}");
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        page.contains(r#"fx-action="/status/events" fx-trigger="fx:inited""#),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"<div id="status-live">"#)
+            && page.contains(r#"class="btn btn-secondary reload""#),
+        "{page}"
+    );
 
-    let response = router.oneshot(Request::builder().uri("/status/events").body(Body::empty()).unwrap()).await.unwrap();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/status/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(response.headers()["content-type"], "text/event-stream");
     let mut body = response.into_body();
     let mut text = String::new();
     while !text.contains("\n\n") {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), body.frame()).await.unwrap().unwrap().unwrap();
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), body.frame())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         if let Some(data) = frame.data_ref() {
             text.push_str(std::str::from_utf8(data).unwrap());
         }
     }
-    assert!(text.starts_with(r##"event: {"target":"#status-live","swap":"outerHTML"}"##), "{text}");
+    assert!(
+        text.starts_with(r##"event: {"target":"#status-live","swap":"outerHTML"}"##),
+        "{text}"
+    );
     assert!(text.contains(r#"data: <div id="status-live">"#), "{text}");
 }

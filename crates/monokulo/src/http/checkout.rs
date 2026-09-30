@@ -22,11 +22,10 @@
 //! simply shows a dash rather than a fabricated amount.
 
 use axum::extract::{Form, Path, Query, State};
-use axum::response::{IntoResponse, Json, Response};
 use axum::http::{HeaderMap, StatusCode};
-use qrcode::render::svg;
-use qrcode::QrCode;
+use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
+use shared::order_status::OrderStatus;
 use std::str::FromStr;
 
 use crate::db::StoreConnectionRow;
@@ -50,36 +49,26 @@ fn checkout_payment_message(order: &OrderView) -> Option<String> {
         return super::pos::derive_payment_error(order);
     }
     // Amounts without trailing zeros: this is read by the customer.
-    let xmr = |piconero: u64| crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(piconero)).to_string();
+    let xmr = |piconero: u64| {
+        crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(piconero)).to_string()
+    };
     let requested = xmr(order.xmr_amount_piconero);
     let received = xmr(order.amount_received_piconero);
-    match order.status.as_str() {
-        "partial" => {
-            let remaining = xmr(order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero));
+    match order.status {
+        OrderStatus::Partial => {
+            let remaining = xmr(order
+                .xmr_amount_piconero
+                .saturating_sub(order.amount_received_piconero));
             Some(format!("{received} XMR received of {requested} XMR. Send the remaining {remaining} XMR to the address below."))
         }
-        "overpaid" => {
-            let extra = xmr(order.amount_received_piconero.saturating_sub(order.xmr_amount_piconero));
+        OrderStatus::Overpaid => {
+            let extra = xmr(order
+                .amount_received_piconero
+                .saturating_sub(order.xmr_amount_piconero));
             Some(format!("{received} XMR received for a {requested} XMR order ({extra} XMR extra). Do not send more. Contact the merchant about the extra amount."))
         }
         _ => super::pos::derive_payment_error(order),
     }
-}
-
-/// Same SVG-trimming/accessibility treatment as the engine's own (soon-
-/// removed) `qr_svg_for_html` - see that function's own doc comment
-/// (`src/http/public.rs` at the repo root) for the full reasoning, ported
-/// verbatim.
-pub(super) fn qr_svg_for_html(data: &str) -> Result<String, ApiError> {
-    let full = QrCode::new(data.as_bytes())
-        .map_err(|e| ApiError::BadRequest(format!("failed to encode QR code: {e}")))?
-        .render::<svg::Color>()
-        .build();
-    let svg = match full.find("<svg") {
-        Some(idx) => &full[idx..],
-        None => &full[..],
-    };
-    Ok(svg.replacen("<svg", r#"<svg role="presentation" aria-hidden="true" focusable="false""#, 1))
 }
 
 /// What an order's QR code holds: while the customer still owes something
@@ -89,18 +78,27 @@ pub(super) fn qr_svg_for_html(data: &str) -> Result<String, ApiError> {
 /// address never changes, so a code scanned before a partial payment still
 /// pays the right order - only the amount it asks for differs.
 pub(super) fn payment_uri(order: &crate::engine_client::OrderView) -> String {
-    let due = order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero);
-    if matches!(order.status.as_str(), "pending" | "partial") && due > 0 {
+    let due = order
+        .xmr_amount_piconero
+        .saturating_sub(order.amount_received_piconero);
+    if matches!(order.status, OrderStatus::Pending | OrderStatus::Partial) && due > 0 {
         let amount = shared::exchange_rate::format_piconero_as_xmr(due);
-        format!("monero:{}?tx_amount={}", order.address, crate::views::trim_xmr(&amount))
+        format!(
+            "monero:{}?tx_amount={}",
+            order.address,
+            crate::views::trim_xmr(&amount)
+        )
     } else {
         order.address.clone()
     }
 }
 
 /// The order's QR code ([`payment_uri`]), as page-ready SVG.
-pub(super) fn payment_qr_svg(order: &crate::engine_client::OrderView) -> Result<String, ApiError> {
-    qr_svg_for_html(&payment_uri(order))
+pub(super) fn payment_qr_svg(
+    order: &crate::engine_client::OrderView,
+) -> Result<crate::qr::QrSvg, ApiError> {
+    crate::qr::encode(&payment_uri(order))
+        .map_err(|e| ApiError::BadRequest(format!("failed to encode QR code: {e}")))
 }
 
 enum LoadError {
@@ -120,20 +118,34 @@ enum LoadError {
 async fn load_order(
     state: &AppState,
     pk: &str,
-    order_id: &str,
-) -> Result<(StoreConnectionRow, String, OrderDetailResponse), LoadError> {
-    let row = match state.db.lock().get_store_connection_by_public_key(pk) {
+    order_id: &crate::db::OrderId,
+) -> Result<
+    (
+        StoreConnectionRow,
+        shared::auth::RawToken,
+        OrderDetailResponse,
+    ),
+    LoadError,
+> {
+    let key = pk.to_string();
+    let row = match state
+        .db
+        .read(move |db| db.get_store_connection_by_public_key(&key))
+        .await
+    {
         Ok(Some(row)) => row,
         Ok(None) => return Err(LoadError::NotFound),
         Err(_) => return Err(LoadError::Internal),
     };
-    let sk = match crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted) {
+    let sk = match super::orders::decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(_) => return Err(LoadError::Internal),
     };
-    match state.engine_client.get_order_detail(&sk, order_id).await {
+    match state.engine.client.get_order_detail(&sk, order_id).await {
         Ok(detail) => Ok((row, sk, detail)),
-        Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
+        Err(EngineClientError::EngineError { status, .. })
+            if status == reqwest::StatusCode::NOT_FOUND =>
+        {
             Err(LoadError::NotFound)
         }
         Err(_) => Err(LoadError::Internal),
@@ -172,36 +184,71 @@ pub struct CheckoutOptions {
 impl CheckoutOptions {
     /// The zone named by `timezone`, if it names a real one.
     fn zone(&self) -> Option<&str> {
-        self.timezone.as_deref().filter(|name| jiff::tz::TimeZone::get(name).is_ok())
+        self.timezone
+            .as_deref()
+            .filter(|name| jiff::tz::TimeZone::get(name).is_ok())
     }
-    fn clock(&self) -> views::time::Clock { views::time::Clock::new(self.zone(), None, crate::now_unix()) }
-    fn theme(&self) -> crate::db::Theme { crate::db::Theme::from_db_str(self.theme.as_deref().unwrap_or("")) }
-    fn is_compact(&self) -> bool { self.view.as_deref() == Some("compact") }
-    fn refund_enabled(&self) -> bool { self.refund != Some(false) }
-    fn auto_refresh(&self) -> bool { self.refresh != Some(false) }
+    fn clock(&self) -> views::time::Clock {
+        views::time::Clock::new(self.zone(), None, crate::now_unix())
+    }
+    fn theme(&self) -> crate::db::Theme {
+        crate::db::Theme::from_db_str(self.theme.as_deref().unwrap_or(""))
+    }
+    fn is_compact(&self) -> bool {
+        self.view.as_deref() == Some("compact")
+    }
+    fn refund_enabled(&self) -> bool {
+        self.refund != Some(false)
+    }
+    fn auto_refresh(&self) -> bool {
+        self.refresh != Some(false)
+    }
     fn suffix(&self) -> String {
         let mut params = Vec::new();
-        if self.is_compact() { params.push("view=compact"); }
-        if !self.refund_enabled() { params.push("refund=false"); }
-        if !self.auto_refresh() { params.push("refresh=false"); }
+        if self.is_compact() {
+            params.push("view=compact");
+        }
+        if !self.refund_enabled() {
+            params.push("refund=false");
+        }
+        if !self.auto_refresh() {
+            params.push("refresh=false");
+        }
         match self.theme() {
             crate::db::Theme::Light => params.push("theme=light"),
             crate::db::Theme::Dark => params.push("theme=dark"),
             crate::db::Theme::System => {}
         }
-        let timezone = self.zone().map(|zone| format!("timezone={}", url::form_urlencoded::byte_serialize(zone.as_bytes()).collect::<String>()));
+        let timezone = self.zone().map(|zone| {
+            format!(
+                "timezone={}",
+                url::form_urlencoded::byte_serialize(zone.as_bytes()).collect::<String>()
+            )
+        });
         let params: Vec<&str> = params.into_iter().chain(timezone.as_deref()).collect();
-        if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) }
+        if params.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", params.join("&"))
+        }
     }
     /// The same page's query string with auto refresh flipped.
     fn toggled_refresh_suffix(&self) -> String {
-        CheckoutOptions { refresh: if self.auto_refresh() { Some(false) } else { None }, ..self.clone() }.suffix()
+        CheckoutOptions {
+            refresh: if self.auto_refresh() {
+                Some(false)
+            } else {
+                None
+            },
+            ..self.clone()
+        }
+        .suffix()
     }
 }
 
 pub async fn checkout_page(
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
     Query(options): Query<CheckoutOptions>,
     headers: HeaderMap,
 ) -> Response {
@@ -210,7 +257,7 @@ pub async fn checkout_page(
         Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    if must_open_from_shop(&state, &row, &order_id, &headers) {
+    if must_open_from_shop(&state, &row, &order_id, &headers).await {
         return open_from_shop_response(&pk, &order_id);
     }
     with_vary_on_fetch_dest(render_checkout_page(&state, pk, row, sk, detail, None, &options).await)
@@ -234,33 +281,65 @@ pub async fn checkout_page(
 /// orders created with the key (WooCommerce, the dashboard, the POS and
 /// payment links shared from it), orders monokulo has no record of, and
 /// every order of an unrestricted store.
-fn must_open_from_shop(state: &AppState, row: &StoreConnectionRow, order_id: &str, headers: &HeaderMap) -> bool {
-    let Some(dest) = headers.get("sec-fetch-dest").and_then(|value| value.to_str().ok()) else { return false };
+async fn must_open_from_shop(
+    state: &AppState,
+    row: &StoreConnectionRow,
+    order_id: &crate::db::OrderId,
+    headers: &HeaderMap,
+) -> bool {
+    let Some(dest) = headers
+        .get("sec-fetch-dest")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
     if dest.eq_ignore_ascii_case("iframe") || dest.eq_ignore_ascii_case("frame") {
         return false;
     }
-    let db = state.db.lock();
-    if !db.embed_restricted(&row.id).unwrap_or(false) {
-        return false;
-    }
-    matches!(db.get_order_currency_metadata(&row.id, order_id), Ok(Some(metadata)) if !metadata.created_with_key)
+    let (id, order_id) = (row.id.clone(), order_id.clone());
+    state
+        .db
+        .read(move |db| {
+            if !db.embed_restricted(&id).unwrap_or(false) {
+                return Ok(false);
+            }
+            Ok::<_, crate::db::DbError>(matches!(
+                db.get_order_currency_metadata(&id, &order_id),
+                Ok(Some(metadata)) if !metadata.created_with_key
+            ))
+        })
+        .await
+        .unwrap_or(false)
 }
 
-fn open_from_shop_response(pk: &str, order_id: &str) -> Response {
+fn open_from_shop_response(pk: &str, order_id: &crate::db::OrderId) -> Response {
     let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
-    with_vary_on_fetch_dest((StatusCode::FORBIDDEN, views::checkout::open_from_shop_page(&chrome)).into_response())
+    with_vary_on_fetch_dest(
+        (
+            StatusCode::FORBIDDEN,
+            views::checkout::open_from_shop_page(&chrome),
+        )
+            .into_response(),
+    )
 }
 
 /// The checkout and share pages answer differently depending on
 /// `Sec-Fetch-Dest` ([`must_open_from_shop`]), so any cache must key on it.
 fn with_vary_on_fetch_dest(mut response: Response) -> Response {
-    response.headers_mut().append(axum::http::header::VARY, axum::http::HeaderValue::from_static("Sec-Fetch-Dest"));
+    response.headers_mut().append(
+        axum::http::header::VARY,
+        axum::http::HeaderValue::from_static("Sec-Fetch-Dest"),
+    );
     response
 }
 
 fn not_found_response() -> Response {
     let chrome = views::PageChrome::from_user(None, "/");
-    (StatusCode::NOT_FOUND, views::checkout::not_found_page(&chrome)).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        views::checkout::not_found_page(&chrome),
+    )
+        .into_response()
 }
 
 /// The real body of the checkout page, shared by the plain `GET` above and
@@ -272,7 +351,7 @@ async fn render_checkout_page(
     state: &AppState,
     pk: String,
     row: StoreConnectionRow,
-    sk: String,
+    sk: shared::auth::RawToken,
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
     options: &CheckoutOptions,
@@ -281,11 +360,17 @@ async fn render_checkout_page(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     let order_id = detail.order.order_id.clone();
-    let view = build_checkout_view(state, &pk, &row, &sk, detail, refund_address_error, options).await;
+    let view =
+        build_checkout_view(state, &pk, &row, &sk, detail, refund_address_error, options).await;
     let mut chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
     chrome.theme = options.theme();
     // Browser problem reports only from a store that opted in (D8).
-    chrome.browser_reports = state.db.lock().client_logging(&row.id).unwrap_or(false);
+    let id = row.id.clone();
+    chrome.browser_reports = state
+        .db
+        .read(move |db| db.client_logging(&id))
+        .await
+        .unwrap_or(false);
     views::checkout::checkout_page(&chrome, &view).into_response()
 }
 
@@ -297,7 +382,7 @@ async fn build_checkout_view(
     state: &AppState,
     pk: &str,
     row: &StoreConnectionRow,
-    sk: &str,
+    sk: &shared::auth::RawToken,
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
     options: &CheckoutOptions,
@@ -307,15 +392,21 @@ async fn build_checkout_view(
     // above, so this page still shows something real rather than failing
     // outright over a field that only affects the confirmation-progress
     // display.
-    let confirmations_required = super::pos::resolve_confirmations_required(state, &row.id, sk, &detail.order.order_id).await;
+    let confirmations_required =
+        super::pos::resolve_confirmations_required(state, &row.id, sk, &detail.order.order_id)
+            .await;
 
-    let (amount, currency) =
-        match state.db.lock().get_order_currency_metadata(&row.id, &detail.order.order_id) {
-            Ok(Some(metadata)) => (metadata.amount, metadata.currency),
-            _ => ("—".to_string(), "".to_string()),
-        };
+    let (id, order_id) = (row.id.clone(), detail.order.order_id.clone());
+    let (amount, currency) = match state
+        .db
+        .read(move |db| db.get_order_currency_metadata(&id, &order_id))
+        .await
+    {
+        Ok(Some(metadata)) => (metadata.amount, metadata.currency),
+        _ => ("—".to_string(), "".to_string()),
+    };
 
-    let (status_text, status_class, is_terminal) = crate::views::order_state(&detail.order.status);
+    let (status_text, status_class, is_terminal) = crate::views::order_state(detail.order.status);
     // A subtle, progressive color shift as expiry nears (research on real
     // crypto-checkout UIs: a big alarming red countdown creates anxiety: a
     // quiet color change at 5 minutes, then 2, communicates urgency without
@@ -336,22 +427,36 @@ async fn build_checkout_view(
     // HTML and after a status refresh. `confirmations_required ==
     // 0` (zero-conf trusted) means any receipt already counts as done.
     let progress_percent: u8 = if confirmations_required == 0 {
-        if matches!(detail.order.status.as_str(), "paid" | "overpaid") { 100 } else { 0 }
+        if matches!(
+            detail.order.status,
+            OrderStatus::Paid | OrderStatus::Overpaid
+        ) {
+            100
+        } else {
+            0
+        }
     } else {
-        ((detail.order.confirmations as f64 / confirmations_required as f64) * 100.0).round().min(100.0) as u8
+        ((detail.order.confirmations as f64 / confirmations_required as f64) * 100.0)
+            .round()
+            .min(100.0) as u8
     };
     CheckoutViewModel {
         order_id: detail.order.order_id.clone(),
         status_label: status_text.to_string(),
-        status: detail.order.status.clone(),
+        status: detail.order.status.into(),
         status_class: status_class.to_string(),
         address: detail.order.address.clone(),
         qr_code_svg: payment_qr_svg(&detail.order).unwrap_or_default(),
         amount_due_xmr: shared::exchange_rate::format_piconero_as_xmr(
-            detail.order.xmr_amount_piconero.saturating_sub(detail.order.amount_received_piconero),
+            detail
+                .order
+                .xmr_amount_piconero
+                .saturating_sub(detail.order.amount_received_piconero),
         ),
         xmr_amount: shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero),
-        amount_received_xmr: shared::exchange_rate::format_piconero_as_xmr(detail.order.amount_received_piconero),
+        amount_received_xmr: shared::exchange_rate::format_piconero_as_xmr(
+            detail.order.amount_received_piconero,
+        ),
         amount,
         currency,
         confirmations: detail.order.confirmations,
@@ -361,7 +466,10 @@ async fn build_checkout_view(
         double_spend_detected_at: detail.order.double_spend_detected_at,
         clock: options.clock(),
         local_times: options.zone().is_none(),
-        expires_in_display: crate::templates::format_duration_until(detail.order.expires_at, crate::now_unix()),
+        expires_in_display: crate::templates::format_duration_until(
+            detail.order.expires_at,
+            crate::now_unix(),
+        ),
         expiry_urgency_class,
         refund_address: detail.order.refund_address.clone(),
         refund_address_error,
@@ -406,12 +514,15 @@ pub struct SetRefundAddressForm {
 /// without JavaScript: it redirects on success and re-renders inline errors.
 pub async fn set_refund_address(
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
     Query(options): Query<CheckoutOptions>,
     headers: HeaderMap,
     Form(form): Form<SetRefundAddressForm>,
 ) -> Response {
-    let wants_json = headers.get(axum::http::header::ACCEPT).and_then(|value| value.to_str().ok()).is_some_and(|value| value.contains("application/json"));
+    let wants_json = headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("application/json"));
     let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
@@ -420,31 +531,74 @@ pub async fn set_refund_address(
 
     let refund_address = form.refund_address.trim();
     if refund_address.is_empty() {
-        if wants_json { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Enter a refund address."}))).into_response(); }
-        return render_checkout_page(&state, pk, row, sk, detail, Some("Enter a refund address.".to_string()), &options).await;
+        if wants_json {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Enter a refund address."})),
+            )
+                .into_response();
+        }
+        return render_checkout_page(
+            &state,
+            pk,
+            row,
+            sk,
+            detail,
+            Some("Enter a refund address.".to_string()),
+            &options,
+        )
+        .await;
     }
 
     let parsed = monero::Address::from_str(refund_address);
     let payment_address = monero::Address::from_str(&detail.order.address);
-    if !matches!((&parsed, &payment_address), (Ok(refund), Ok(payment)) if refund.network == payment.network) {
-        if wants_json { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Enter a valid Monero address for this store's network."}))).into_response(); }
-        return render_checkout_page(&state, pk, row, sk, detail, Some("Enter a valid Monero address for this store's network.".to_string()), &options).await;
+    if !matches!((&parsed, &payment_address), (Ok(refund), Ok(payment)) if refund.network == payment.network)
+    {
+        if wants_json {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Enter a valid Monero address for this store's network."}))).into_response();
+        }
+        return render_checkout_page(
+            &state,
+            pk,
+            row,
+            sk,
+            detail,
+            Some("Enter a valid Monero address for this store's network.".to_string()),
+            &options,
+        )
+        .await;
     }
 
-    match state.engine_client.set_refund_address(&sk, &order_id, refund_address).await {
+    match state
+        .engine
+        .client
+        .set_refund_address(&sk, &order_id, refund_address)
+        .await
+    {
         Ok(()) if wants_json => Json(serde_json::json!({"ok": true})).into_response(),
         Ok(()) => redirect_302(&format!("/pay/{pk}/orders/{order_id}{}", options.suffix())),
         Err(e) => {
             tracing::error!(order.id = %order_id, store.id = %row.id, error = %e, "failed to set a refund address");
-            if wants_json { return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "Something went wrong saving that. Please try again."}))).into_response(); }
-            render_checkout_page(&state, pk, row, sk, detail, Some("Something went wrong saving that. Please try again.".to_string()), &options).await
+            if wants_json {
+                return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "Something went wrong saving that. Please try again."}))).into_response();
+            }
+            render_checkout_page(
+                &state,
+                pk,
+                row,
+                sk,
+                detail,
+                Some("Something went wrong saving that. Please try again.".to_string()),
+                &options,
+            )
+            .await
         }
     }
 }
 
 #[derive(Serialize)]
 pub struct CheckoutStatusResponse {
-    pub status: String,
+    pub status: crate::views::DisplayStatus,
     pub confirmations: u64,
     pub confirmations_required: u64,
     pub is_terminal: bool,
@@ -455,14 +609,23 @@ pub struct CheckoutStatusResponse {
 /// page's own polling script reads (`status`/`confirmations` only - the
 /// same two fields the engine's old polling JS ever read from its
 /// equivalent response).
-pub async fn checkout_status(State(state): State<AppState>, Path((pk, order_id)): Path<(String, String)>) -> Response {
+pub async fn checkout_status(
+    State(state): State<AppState>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
+) -> Response {
     match load_order(&state, &pk, &order_id).await {
         Ok((row, sk, detail)) => {
-            let confirmations_required = super::pos::resolve_confirmations_required(&state, &row.id, &sk, &detail.order.order_id).await;
+            let confirmations_required = super::pos::resolve_confirmations_required(
+                &state,
+                &row.id,
+                &sk,
+                &detail.order.order_id,
+            )
+            .await;
             let error = checkout_payment_message(&detail.order);
-            let (_, _, is_terminal) = crate::views::order_state(&detail.order.status);
+            let (_, _, is_terminal) = crate::views::order_state(detail.order.status);
             Json(CheckoutStatusResponse {
-                status: detail.order.status,
+                status: detail.order.status.into(),
                 confirmations: detail.order.confirmations,
                 confirmations_required,
                 is_terminal,
@@ -490,7 +653,7 @@ pub async fn checkout_status(State(state): State<AppState>, Path((pk, order_id))
 /// (`crate::abuse::streams`); past that the request gets `429`.
 pub async fn checkout_events(
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
     Query(options): Query<CheckoutOptions>,
     extensions: axum::http::Extensions,
 ) -> Response {
@@ -504,60 +667,93 @@ pub async fn checkout_events(
     let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
         Some(client) => match state.abuse.streams.try_acquire(client, &pk) {
             Some(permit) => Some(permit),
-            None => return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": "too many open update streams" }))).into_response(),
+            None => {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({ "error": "too many open update streams" })),
+                )
+                    .into_response()
+            }
         },
         None => None,
     };
-    let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
+    let subscription = state.engine.client.subscribe_order(&row.id, &sk, &order_id);
     let fragments = options.fragments == Some(true);
     let routed = options.routed == Some(true);
     // What each routed part last looked like on this stream, so only
     // changed ones are sent.
-    let sent: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<&'static str, String>>> = Default::default();
-    crate::live::live_events(subscription, std::time::Duration::from_secs(30), move || {
-        let sent = sent.clone();
-        // Held by the stream, so the slot frees when the stream ends.
-        let _permit = &permit;
-        let (state, pk, order_id, options) = (state.clone(), pk.clone(), order_id.clone(), options.clone());
-        async move {
-            let (row, sk, detail) = load_order(&state, &pk, &order_id).await.ok()?;
-            let view = build_checkout_view(&state, &pk, &row, &sk, detail, None, &options).await;
-            let status = CheckoutStatusResponse {
-                status: view.status.clone(),
-                confirmations: view.confirmations,
-                confirmations_required: view.confirmations_required,
-                is_terminal: view.is_terminal,
-                error: view.payment_error.clone(),
-            };
-            let status_json = serde_json::to_string(&status).ok()?;
-            let mut fingerprint = status_json.clone();
-            let mut events = Vec::new();
-            // Fragment first: a client may close the stream on seeing a
-            // terminal `status`, and must have the final page state by then.
-            if fragments {
-                let html = views::checkout::live_fragment(&view).into_string();
-                fingerprint.push_str(&html);
-                events.push(axum::response::sse::Event::default().event("fragment").data(html));
-            }
-            if routed {
-                let mut sent = sent.lock();
-                for (id, part) in views::checkout::live_parts(&view) {
-                    let html = part.into_string();
+    let sent: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<&'static str, String>>> =
+        Default::default();
+    crate::live::live_events(
+        subscription,
+        std::time::Duration::from_secs(30),
+        move || {
+            let sent = sent.clone();
+            // Held by the stream, so the slot frees when the stream ends.
+            let _permit = &permit;
+            let (state, pk, order_id, options) =
+                (state.clone(), pk.clone(), order_id.clone(), options.clone());
+            async move {
+                let (row, sk, detail) = load_order(&state, &pk, &order_id).await.ok()?;
+                let view =
+                    build_checkout_view(&state, &pk, &row, &sk, detail, None, &options).await;
+                let status = CheckoutStatusResponse {
+                    status: view.status,
+                    confirmations: view.confirmations,
+                    confirmations_required: view.confirmations_required,
+                    is_terminal: view.is_terminal,
+                    error: view.payment_error.clone(),
+                };
+                let status_json = serde_json::to_string(&status).ok()?;
+                let mut fingerprint = status_json.clone();
+                let mut events = Vec::new();
+                // Fragment first: a client may close the stream on seeing a
+                // terminal `status`, and must have the final page state by then.
+                if fragments {
+                    let html = views::checkout::live_fragment(&view).into_string();
                     fingerprint.push_str(&html);
-                    if sent.get(id) != Some(&html) {
-                        let route = format!(r##"{{"target":"#{id}","swap":"outerHTML"}}"##);
-                        events.push(axum::response::sse::Event::default().event(route).data(html.clone()));
-                        sent.insert(id, html);
+                    events.push(
+                        axum::response::sse::Event::default()
+                            .event("fragment")
+                            .data(html),
+                    );
+                }
+                if routed {
+                    let mut sent = sent.lock();
+                    for (id, part) in views::checkout::live_parts(&view) {
+                        let html = part.into_string();
+                        fingerprint.push_str(&html);
+                        if sent.get(id) != Some(&html) {
+                            let route = format!(r##"{{"target":"#{id}","swap":"outerHTML"}}"##);
+                            events.push(
+                                axum::response::sse::Event::default()
+                                    .event(route)
+                                    .data(html.clone()),
+                            );
+                            sent.insert(id, html);
+                        }
                     }
                 }
+                events.push(
+                    axum::response::sse::Event::default()
+                        .event("status")
+                        .data(status_json),
+                );
+                if routed && view.is_terminal {
+                    events.push(
+                        axum::response::sse::Event::default()
+                            .event("done")
+                            .data("final"),
+                    );
+                }
+                Some(crate::live::LiveSnapshot {
+                    events,
+                    fingerprint,
+                    terminal: view.is_terminal,
+                })
             }
-            events.push(axum::response::sse::Event::default().event("status").data(status_json));
-            if routed && view.is_terminal {
-                events.push(axum::response::sse::Event::default().event("done").data("final"));
-            }
-            Some(crate::live::LiveSnapshot { events, fingerprint, terminal: view.is_terminal })
-        }
-    })
+        },
+    )
 }
 
 /// `GET /pay/{pk}/orders/{order_id}/share` - a real follow-up to
@@ -581,7 +777,7 @@ pub async fn checkout_events(
 /// content is a broken iframe.
 pub async fn checkout_share_page(
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
     headers: HeaderMap,
 ) -> Response {
     let found = match load_order(&state, &pk, &order_id).await {
@@ -589,7 +785,7 @@ pub async fn checkout_share_page(
             // The share page frames the checkout from monokulo itself, so it
             // would otherwise show a browser-created order of a restricted
             // store as a full page - the same rule applies to it.
-            if must_open_from_shop(&state, &row, &order_id, &headers) {
+            if must_open_from_shop(&state, &row, &order_id, &headers).await {
                 return open_from_shop_response(&pk, &order_id);
             }
             true
@@ -597,11 +793,20 @@ pub async fn checkout_share_page(
         Err(LoadError::NotFound) => false,
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let status = if found { StatusCode::OK } else { StatusCode::NOT_FOUND };
-    let authed = super::resolve_authed_user(&state, &headers);
+    let status = if found {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    };
+    let authed = super::resolve_authed_user(&state, &headers).await;
     let current_path = format!("/pay/{pk}/orders/{order_id}/share");
-    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), current_path);
-    let view = CheckoutShareViewModel { pk, order_id, found };
+    let chrome =
+        super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), current_path).await;
+    let view = CheckoutShareViewModel {
+        pk,
+        order_id,
+        found,
+    };
     with_vary_on_fetch_dest((status, views::checkout::share_page(&chrome, &view)).into_response())
 }
 
@@ -609,12 +814,18 @@ pub async fn checkout_share_page(
 mod tests {
     #[test]
     fn a_known_timezone_is_kept_in_the_pages_own_links_and_an_unknown_one_is_dropped() {
-        let options = |zone: &str| super::CheckoutOptions { timezone: Some(zone.to_string()), ..Default::default() };
+        let options = |zone: &str| super::CheckoutOptions {
+            timezone: Some(zone.to_string()),
+            ..Default::default()
+        };
         assert_eq!(options("Asia/Tokyo").suffix(), "?timezone=Asia%2FTokyo");
         assert_eq!(options("Asia/Tokyo").clock().name(), "Asia/Tokyo");
         assert_eq!(options("Not/AZone").suffix(), "");
         assert_eq!(options("Not/AZone").clock().name(), "UTC");
-        let compact = super::CheckoutOptions { view: Some("compact".into()), ..options("Europe/London") };
+        let compact = super::CheckoutOptions {
+            view: Some("compact".into()),
+            ..options("Europe/London")
+        };
         assert_eq!(compact.suffix(), "?view=compact&timezone=Europe%2FLondon");
     }
 
@@ -629,32 +840,51 @@ mod tests {
             }))
             .unwrap()
         };
-        assert_eq!(super::payment_uri(&order("pending", 0)), "monero:4Addr?tx_amount=0.001");
+        assert_eq!(
+            super::payment_uri(&order("pending", 0)),
+            "monero:4Addr?tx_amount=0.001"
+        );
         // After a partial payment, the code asks for the rest.
-        assert_eq!(super::payment_uri(&order("partial", 400_000_000)), "monero:4Addr?tx_amount=0.0006");
+        assert_eq!(
+            super::payment_uri(&order("partial", 400_000_000)),
+            "monero:4Addr?tx_amount=0.0006"
+        );
         // Nothing is due once paid, or while a payment confirms.
         assert_eq!(super::payment_uri(&order("paid", 1_000_000_000)), "4Addr");
-        assert_eq!(super::payment_uri(&order("confirming", 1_000_000_000)), "4Addr");
+        assert_eq!(
+            super::payment_uri(&order("confirming", 1_000_000_000)),
+            "4Addr"
+        );
     }
 
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::Router;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use crate::engine_client::EngineClient;
 
-    use super::super::{AppState, build_router};
+    use super::super::{build_router, AppState};
     use super::CheckoutOptions;
 
     #[test]
     fn the_auto_refresh_toggle_flips_only_the_refresh_parameter() {
-        let on = CheckoutOptions { view: Some("compact".to_string()), refund: Some(false), ..Default::default() };
+        let on = CheckoutOptions {
+            view: Some("compact".to_string()),
+            refund: Some(false),
+            ..Default::default()
+        };
         assert_eq!(on.suffix(), "?view=compact&refund=false");
-        assert_eq!(on.toggled_refresh_suffix(), "?view=compact&refund=false&refresh=false");
+        assert_eq!(
+            on.toggled_refresh_suffix(),
+            "?view=compact&refund=false&refresh=false"
+        );
 
-        let off = CheckoutOptions { refresh: Some(false), ..Default::default() };
+        let off = CheckoutOptions {
+            refresh: Some(false),
+            ..Default::default()
+        };
         assert!(!off.auto_refresh());
         assert_eq!(off.suffix(), "?refresh=false");
         assert_eq!(off.toggled_refresh_suffix(), "");
@@ -664,12 +894,12 @@ mod tests {
     #[test]
     fn checkout_amount_messages_use_exact_received_remaining_and_extra_xmr() {
         let mut order = crate::engine_client::OrderView {
-            order_id: "pay_test".to_string(),
+            order_id: shared::ids::OrderId::new("pay_test".to_string()),
             merchant_order_id: None,
             address: "address".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 200_000_000_000,
-            status: "partial".to_string(),
+            status: shared::order_status::OrderStatus::Partial,
             confirmations: 0,
             double_spend_detected_at: None,
             refund_address: None,
@@ -680,18 +910,25 @@ mod tests {
             last_scanned_height: None,
             currently_scanning: true,
         };
-        assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below."));
+        assert_eq!(
+            checkout_payment_message(&order).as_deref(),
+            Some("0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below.")
+        );
 
-        order.status = "overpaid".to_string();
+        order.status = shared::order_status::OrderStatus::Overpaid;
         order.amount_received_piconero = 600_000_000_000;
         assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount."));
 
         order.double_spend_detected_at = Some(123);
-        assert!(checkout_payment_message(&order).unwrap().contains("Double-spend"));
+        assert!(checkout_payment_message(&order)
+            .unwrap()
+            .contains("Double-spend"));
     }
 
-    const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+    const TEST_VIEW_KEY_HEX: &str =
+        "0707070707070707070707070707070707070707070707070707070707070707";
+    const TEST_SPEND_PUBKEY_HEX: &str =
+        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     // `"XMR"`, not a fiat currency - this module's tests are about the
     // checkout page's own rendering, not about exercising a real (mocked)
     // fiat provider (`pay.rs`'s own tests do that), and an XMR-denominated
@@ -705,7 +942,7 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            engine_client,
+            engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
         };
         (state, engine)
@@ -721,7 +958,11 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
-    async fn signed_up_and_logged_in_session_token(router: &Router, email: &str, password: &str) -> String {
+    async fn signed_up_and_logged_in_session_token(
+        router: &Router,
+        email: &str,
+        password: &str,
+    ) -> String {
         let signup = router
             .clone()
             .oneshot(
@@ -729,7 +970,9 @@ mod tests {
                     .method("POST")
                     .uri("/signup")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "email": email, "password": password }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -743,13 +986,23 @@ mod tests {
                     .method("POST")
                     .uri("/login")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "email": email, "password": password }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(login.status(), StatusCode::OK);
-        body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string()
+        body_json(login)
+            .await
+            .as_object()
+            .unwrap()
+            .get("session_token")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     async fn create_connection(router: &Router, session_token: &str) -> String {
@@ -762,7 +1015,8 @@ mod tests {
             "domains": [],
             "base_currency": "XMR",
         });
-        let response = router.clone()
+        let response = router
+            .clone()
             .clone()
             .oneshot(
                 Request::builder()
@@ -776,7 +1030,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
-        body_json(response).await.as_object().unwrap().get("public_key").unwrap().as_str().unwrap().to_string()
+        body_json(response)
+            .await
+            .as_object()
+            .unwrap()
+            .get("public_key")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     async fn create_order(router: &Router, pk: &str, amount: &str) -> String {
@@ -788,14 +1050,23 @@ mod tests {
                     .uri(format!("/pay/{pk}/orders"))
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        serde_json::json!({ "amount": amount, "currency": TEST_CURRENCY }).to_string(),
+                        serde_json::json!({ "amount": amount, "currency": TEST_CURRENCY })
+                            .to_string(),
                     ))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        body_json(response).await.as_object().unwrap().get("order_id").unwrap().as_str().unwrap().to_string()
+        body_json(response)
+            .await
+            .as_object()
+            .unwrap()
+            .get("order_id")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     #[tokio::test]
@@ -803,12 +1074,17 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "checkout-page@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-page@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let pk = create_connection(&router, &session_token).await;
         let order_id = create_order(&router, &pk, "25.00").await;
 
-        let response = router.clone()
+        let response = router
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -820,13 +1096,34 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains(&order_id), "expected the real order_id shown, got: {html}");
-        assert!(html.contains("25.00"), "expected the real fiat amount shown, got: {html}");
-        assert!(html.contains(TEST_CURRENCY), "expected the real fiat currency shown, got: {html}");
-        assert!(html.contains("<svg"), "expected a real rendered QR code, got: {html}");
-        let pos_response = router.clone().oneshot(
-            Request::builder().uri(format!("/pay/{pk}/orders/{order_id}?view=compact&refund=false")).body(Body::empty()).unwrap()
-        ).await.unwrap();
+        assert!(
+            html.contains(&order_id),
+            "expected the real order_id shown, got: {html}"
+        );
+        assert!(
+            html.contains("25.00"),
+            "expected the real fiat amount shown, got: {html}"
+        );
+        assert!(
+            html.contains(TEST_CURRENCY),
+            "expected the real fiat currency shown, got: {html}"
+        );
+        assert!(
+            html.contains("<svg"),
+            "expected a real rendered QR code, got: {html}"
+        );
+        let pos_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/pay/{pk}/orders/{order_id}?view=compact&refund=false"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(pos_response.status(), StatusCode::OK);
         let pos_html = body_text(pos_response).await;
         assert!(pos_html.contains("pay-wrap checkout-compact"));
@@ -837,20 +1134,35 @@ mod tests {
         // false-positive on those comments even with no nav actually
         // rendered. `_nav.html.hbs`'s own real opening tag is the one
         // string that can only appear if `{{> nav}}` genuinely ran.
-        assert!(!html.contains(r#"<nav class="site-nav">"#), "the checkout page must not carry the site nav, got: {html}");
-        assert!(!html.contains("Monokulo"), "the checkout page must not carry the site brand/logo, got: {html}");
+        assert!(
+            !html.contains(r#"<nav class="site-nav">"#),
+            "the checkout page must not carry the site nav, got: {html}"
+        );
+        assert!(
+            !html.contains("Monokulo"),
+            "the checkout page must not carry the site brand/logo, got: {html}"
+        );
         // The payment deadline must be a real,
         // already-formatted relative duration baked into the server
         // response - this page must stay meaningful with JavaScript
         // disabled, so nothing on it may rely on `data-timestamp` +
         // client-side formatting any more.
-        assert!(html.contains(" left</span>"), "expected a server-rendered payment deadline, got: {html}");
-        assert!(!html.contains("data-timestamp"), "the checkout page must not depend on JS to format any timestamp, got: {html}");
+        assert!(
+            html.contains(" left</span>"),
+            "expected a server-rendered payment deadline, got: {html}"
+        );
+        assert!(
+            !html.contains("data-timestamp"),
+            "the checkout page must not depend on JS to format any timestamp, got: {html}"
+        );
         // The server-rendered page remains meaningful without JavaScript.
         assert!(html.contains("/static/checkout.js"));
         assert!(html.contains("Auto Refresh: ON"));
         assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60""#));
-        assert!(html.contains("style=\"width: 0%\""), "expected a real, already-computed progress-bar fill, got: {html}");
+        assert!(
+            html.contains("style=\"width: 0%\""),
+            "expected a real, already-computed progress-bar fill, got: {html}"
+        );
     }
 
     /// The checkout's refund-address form, a plain form POST with no JS,
@@ -858,7 +1170,8 @@ mod tests {
     /// (`POST /api/v1/admin/tenant/orders/{order_id}/refund-address`) and
     /// the address really is stored there.
     #[tokio::test]
-    async fn setting_a_refund_address_through_the_checkout_pages_own_form_persists_it_on_the_engine() {
+    async fn setting_a_refund_address_through_the_checkout_pages_own_form_persists_it_on_the_engine(
+    ) {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -885,34 +1198,62 @@ mod tests {
             .await
             .unwrap();
         let before_html = body_text(before).await;
-        assert!(before_html.contains("id=\"refund_address\""), "expected the refund-address form present before one is set, got: {before_html}");
+        assert!(
+            before_html.contains("id=\"refund_address\""),
+            "expected the refund-address form present before one is set, got: {before_html}"
+        );
 
-        let invalid = router.clone().oneshot(
-            Request::builder().method("POST").uri(format!("/pay/{pk}/orders/{order_id}/refund-address?view=compact"))
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from("refund_address=not-an-address")).unwrap()
-        ).await.unwrap();
+        let invalid = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/pay/{pk}/orders/{order_id}/refund-address?view=compact"
+                    ))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from("refund_address=not-an-address"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(invalid.status(), StatusCode::OK);
         let invalid_html = body_text(invalid).await;
         assert!(invalid_html.contains("Enter a valid Monero address"));
         assert!(invalid_html.contains("refund-address?view=compact"));
 
-        let invalid_json = router.clone().oneshot(
-            Request::builder().method("POST").uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
-                .header("accept", "application/json")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from("refund_address=not-an-address")).unwrap()
-        ).await.unwrap();
+        let invalid_json = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
+                    .header("accept", "application/json")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from("refund_address=not-an-address"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(invalid_json.status(), StatusCode::BAD_REQUEST);
-        assert!(body_text(invalid_json).await.contains("valid Monero address"));
+        assert!(body_text(invalid_json)
+            .await
+            .contains("valid Monero address"));
 
         let refund_address = "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC";
-        let valid_json = router.clone().oneshot(
-            Request::builder().method("POST").uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
-                .header("accept", "application/json")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!("refund_address={refund_address}"))).unwrap()
-        ).await.unwrap();
+        let valid_json = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
+                    .header("accept", "application/json")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("refund_address={refund_address}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(valid_json.status(), StatusCode::OK);
         assert!(body_text(valid_json).await.contains("\"ok\":true"));
         let submit = router
@@ -927,7 +1268,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(submit.status(), StatusCode::FOUND, "expected a redirect back to the plain checkout page");
+        assert_eq!(
+            submit.status(),
+            StatusCode::FOUND,
+            "expected a redirect back to the plain checkout page"
+        );
 
         let after = router
             .oneshot(
@@ -940,8 +1285,14 @@ mod tests {
             .await
             .unwrap();
         let after_html = body_text(after).await;
-        assert!(after_html.contains(refund_address), "expected the real, just-saved refund address shown, got: {after_html}");
-        assert!(after_html.contains("id=\"refund_address\""), "expected the saved address to remain editable, got: {after_html}");
+        assert!(
+            after_html.contains(refund_address),
+            "expected the real, just-saved refund address shown, got: {after_html}"
+        );
+        assert!(
+            after_html.contains("id=\"refund_address\""),
+            "expected the saved address to remain editable, got: {after_html}"
+        );
         assert!(after_html.contains("refund-field is-saved"));
     }
 
@@ -970,10 +1321,20 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "a rejected submission re-renders the page, it doesn't redirect");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a rejected submission re-renders the page, it doesn't redirect"
+        );
         let html = body_text(response).await;
-        assert!(html.contains("Enter a refund address."), "expected a clear inline error, got: {html}");
-        assert!(html.contains(&order_id), "the real checkout page must still be shown, not a bare error, got: {html}");
+        assert!(
+            html.contains("Enter a refund address."),
+            "expected a clear inline error, got: {html}"
+        );
+        assert!(
+            html.contains(&order_id),
+            "the real checkout page must still be shown, not a bare error, got: {html}"
+        );
     }
 
     #[tokio::test]
@@ -1011,10 +1372,14 @@ mod tests {
     #[tokio::test]
     async fn the_checkout_events_stream_pushes_a_change_made_on_the_engine() {
         let (state, engine) = test_state_with_real_engine().await;
-        let engine_client = state.engine_client.clone();
+        let engine_client = state.engine.client.clone();
         let router = build_router(state);
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "checkout-events@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-events@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let pk = create_connection(&router, &session_token).await;
         let order_id = create_order(&router, &pk, "10.00").await;
 
@@ -1033,29 +1398,52 @@ mod tests {
         let mut body = response.into_body();
         let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
 
-        let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
         assert_eq!(event, "fragment");
         assert!(fragment.contains(r#"id="live-status""#), "got: {fragment}");
         assert!(!fragment.contains("state-double-spend"));
-        let (event, status) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        let (event, status) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
         assert_eq!(event, "status");
         let status: serde_json::Value = serde_json::from_str(&status).unwrap();
         assert_eq!(status["status"], "pending");
         assert_eq!(status["is_terminal"], false);
-        assert_eq!(engine_client.live_upstream_count(), 1, "one engine stream for this store");
+        assert_eq!(
+            engine_client.live_upstream_count(),
+            1,
+            "one engine stream for this store"
+        );
 
         // A change the engine makes on its own, not through monokulo.
-        assert!(engine.store().lock().mark_double_spend_detected(&order_id, crate::now_unix()).unwrap());
+        assert!(engine
+            .store()
+            .lock()
+            .mark_double_spend_detected(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                crate::now_unix()
+            )
+            .unwrap());
 
-        let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
         assert_eq!(event, "fragment");
         assert!(fragment.contains("state-double-spend"), "got: {fragment}");
-        let (event, status) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        let (event, status) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
         assert_eq!(event, "status");
         assert!(status.contains("Double-spend"), "got: {status}");
 
         drop(body);
-        assert_eq!(engine_client.live_upstream_count(), 0, "the engine stream closes with its last watcher");
+        assert_eq!(
+            engine_client.live_upstream_count(),
+            0,
+            "the engine stream closes with its last watcher"
+        );
     }
 
     /// The checkout page's own stream (`routed=true`, structured_logging.md
@@ -1065,23 +1453,67 @@ mod tests {
     async fn the_routed_checkout_stream_sends_only_changed_parts_to_their_elements() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(&router, "checkout-routed@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-routed@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let pk = create_connection(&router, &session_token).await;
         let order_id = create_order(&router, &pk, "10.00").await;
 
-        let page = router.clone().oneshot(Request::builder().uri(format!("/pay/{pk}/orders/{order_id}")).body(Body::empty()).unwrap()).await.unwrap();
-        let html = String::from_utf8(page.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        let page = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pay/{pk}/orders/{order_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = String::from_utf8(
+            page.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
         let events_url = format!("/pay/{pk}/orders/{order_id}/events?routed=true");
-        assert!(html.contains(&format!(r#"id="checkout-stream" hidden fx-action="{events_url}" fx-trigger="fx:inited""#)), "{html}");
-        assert!(html.contains(r#"fx-trigger="refund:save""#) && html.contains("/static/ssexi.js"), "{html}");
-        assert!(!html.contains("/static/telemetry.js"), "no browser reports from the checkout (D8)");
+        assert!(
+            html.contains(&format!(
+                r#"id="checkout-stream" hidden fx-action="{events_url}" fx-trigger="fx:inited""#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"fx-trigger="refund:save""#) && html.contains("/static/ssexi.js"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("/static/telemetry.js"),
+            "no browser reports from the checkout (D8)"
+        );
 
-        let response = router.clone().oneshot(Request::builder().uri(&events_url).body(Body::empty()).unwrap()).await.unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&events_url)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let mut body = response.into_body();
         let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
         let mut first = Vec::new();
         loop {
-            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+                .await
+                .unwrap();
             if event == "status" {
                 break;
             }
@@ -1098,38 +1530,76 @@ mod tests {
                 r##"{"target":"#live-payments","swap":"outerHTML"}"##,
             ]
         );
-        assert!(first[0].1.starts_with(r#"<div id="live-status" class="stage-slot" data-live"#), "{}", first[0].1);
+        assert!(
+            first[0]
+                .1
+                .starts_with(r#"<div id="live-status" class="stage-slot" data-live"#),
+            "{}",
+            first[0].1
+        );
 
-        assert!(engine.store().lock().mark_double_spend_detected(&order_id, crate::now_unix()).unwrap());
-        let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
-        assert_eq!(event, r##"{"target":"#live-status","swap":"outerHTML"}"##, "only what changed");
+        assert!(engine
+            .store()
+            .lock()
+            .mark_double_spend_detected(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                crate::now_unix()
+            )
+            .unwrap());
+        let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
+        assert_eq!(
+            event, r##"{"target":"#live-status","swap":"outerHTML"}"##,
+            "only what changed"
+        );
         assert!(data.contains("state-double-spend"), "{data}");
-        let (event, _) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        let (event, _) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
         assert_eq!(event, "status");
     }
 
     #[tokio::test]
     async fn one_source_may_hold_only_so_many_open_streams_per_store() {
         let (mut state, _engine) = test_state_with_real_engine().await;
-        state.abuse = std::sync::Arc::new(crate::abuse::AbuseProtection::new(crate::abuse::AbuseConfig {
-            stream_cap: 1,
-            ..Default::default()
-        }));
+        state.abuse = std::sync::Arc::new(crate::abuse::AbuseProtection::new(
+            crate::abuse::AbuseConfig {
+                stream_cap: 1,
+                ..Default::default()
+            },
+        ));
         let router = build_router(state);
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "checkout-events-cap@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-events-cap@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let pk = create_connection(&router, &session_token).await;
         let order_id = create_order(&router, &pk, "10.00").await;
         let open = |ip: [u8; 4]| {
-            let mut request = Request::builder().uri(format!("/pay/{pk}/orders/{order_id}/events")).body(Body::empty()).unwrap();
-            request.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((ip, 40000))));
+            let mut request = Request::builder()
+                .uri(format!("/pay/{pk}/orders/{order_id}/events"))
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                std::net::SocketAddr::from((ip, 40000)),
+            ));
             router.clone().oneshot(request)
         };
 
         let first = open([192, 0, 2, 1]).await.unwrap();
         assert_eq!(first.status(), StatusCode::OK);
-        assert_eq!(open([192, 0, 2, 1]).await.unwrap().status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(open([192, 0, 2, 2]).await.unwrap().status(), StatusCode::OK, "another source has its own allowance");
+        assert_eq!(
+            open([192, 0, 2, 1]).await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            open([192, 0, 2, 2]).await.unwrap().status(),
+            StatusCode::OK,
+            "another source has its own allowance"
+        );
 
         // Closing the stream frees its slot.
         drop(first);
@@ -1140,11 +1610,20 @@ mod tests {
     async fn the_checkout_events_stream_404s_for_an_unknown_order() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "checkout-events-404@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-events-404@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let pk = create_connection(&router, &session_token).await;
         let response = router
-            .oneshot(Request::builder().uri(format!("/pay/{pk}/orders/pay_missing/events")).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pay/{pk}/orders/pay_missing/events"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -1201,8 +1680,12 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "checkout-share@example.com", "correct horse battery staple").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-share@example.com",
+            "correct horse battery staple",
+        )
+        .await;
         let pk = create_connection(&router, &session_token).await;
         let order_id = create_order(&router, &pk, "25.00").await;
 
@@ -1220,8 +1703,14 @@ mod tests {
         let html = body_text(response).await;
         // Unlike the bare checkout page itself, this one *does* carry the
         // real site nav - the whole point of this page's existence.
-        assert!(html.contains(r#"<nav class="site-nav">"#), "expected the real site nav, got: {html}");
-        assert!(html.contains("Monokulo"), "expected the real site brand, got: {html}");
+        assert!(
+            html.contains(r#"<nav class="site-nav">"#),
+            "expected the real site nav, got: {html}"
+        );
+        assert!(
+            html.contains("Monokulo"),
+            "expected the real site brand, got: {html}"
+        );
         // The iframe must point at the real, unwrapped checkout page for
         // this exact order - not a second copy of the payment UI.
         assert!(
@@ -1258,7 +1747,13 @@ mod tests {
         assert!(html.to_lowercase().contains("not found"), "got: {html}");
         // Unlike the bare checkout page's own not-found state, this one
         // still carries the site nav - it's never meant to be iframed.
-        assert!(html.contains(r#"<nav class="site-nav">"#), "expected the real site nav even on the not-found state, got: {html}");
-        assert!(!html.contains("<iframe"), "must not render a broken iframe pointing at a nonexistent order");
+        assert!(
+            html.contains(r#"<nav class="site-nav">"#),
+            "expected the real site nav even on the not-found state, got: {html}"
+        );
+        assert!(
+            !html.contains("<iframe"),
+            "must not render a broken iframe pointing at a nonexistent order"
+        );
     }
 }

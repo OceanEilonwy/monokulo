@@ -39,8 +39,17 @@ impl MemoryStore {
     }
 
     /// A store that already holds `values`.
-    pub fn with<K: Into<String>, V: Into<String>>(values: impl IntoIterator<Item = (K, V)>) -> Self {
-        MemoryStore { values: Mutex::new(values.into_iter().map(|(k, v)| (k.into(), v.into())).collect()) }
+    pub fn with<K: Into<String>, V: Into<String>>(
+        values: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        MemoryStore {
+            values: Mutex::new(
+                values
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v.into()))
+                    .collect(),
+            ),
+        }
     }
 
     /// One stored value.

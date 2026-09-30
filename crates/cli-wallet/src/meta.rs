@@ -82,7 +82,11 @@ impl WalletMeta {
     /// Every account, always at least the primary one.
     pub fn accounts(&self) -> Vec<AccountMeta> {
         if self.accounts.is_empty() {
-            vec![AccountMeta { label: PRIMARY_ACCOUNT_LABEL.to_string(), tag: None, subaddress_labels: vec![PRIMARY_ACCOUNT_LABEL.to_string()] }]
+            vec![AccountMeta {
+                label: PRIMARY_ACCOUNT_LABEL.to_string(),
+                tag: None,
+                subaddress_labels: vec![PRIMARY_ACCOUNT_LABEL.to_string()],
+            }]
         } else {
             self.accounts.clone()
         }
@@ -96,14 +100,23 @@ impl WalletMeta {
     }
 
     pub fn account(&self, index: u32) -> Result<AccountMeta, String> {
-        self.accounts().get(index as usize).cloned().ok_or_else(|| format!("specify an index between 0 and {}", self.accounts().len() - 1))
+        self.accounts().get(index as usize).cloned().ok_or_else(|| {
+            format!(
+                "specify an index between 0 and {}",
+                self.accounts().len() - 1
+            )
+        })
     }
 
     /// `account new <label>`: adds an account with its own address 0 and
     /// returns its index.
     pub fn add_account(&mut self, label: &str) -> u32 {
         let accounts = self.accounts_mut();
-        accounts.push(AccountMeta { label: label.to_string(), tag: None, subaddress_labels: vec![label.to_string()] });
+        accounts.push(AccountMeta {
+            label: label.to_string(),
+            tag: None,
+            subaddress_labels: vec![label.to_string()],
+        });
         (accounts.len() - 1) as u32
     }
 
@@ -136,7 +149,12 @@ impl WalletMeta {
         Ok((labels.len() - 1) as u32)
     }
 
-    pub fn label_subaddress(&mut self, account: u32, index: u32, label: &str) -> Result<(), String> {
+    pub fn label_subaddress(
+        &mut self,
+        account: u32,
+        index: u32,
+        label: &str,
+    ) -> Result<(), String> {
         let count = self.account(account)?.subaddress_labels.len();
         if index as usize >= count {
             return Err(format!("specify an index between 0 and {}", count - 1));
@@ -154,7 +172,9 @@ impl WalletMeta {
         self.accounts()
             .iter()
             .enumerate()
-            .flat_map(|(account, meta)| (0..meta.subaddress_labels.len() as u32).map(move |index| (account as u32, index)))
+            .flat_map(|(account, meta)| {
+                (0..meta.subaddress_labels.len() as u32).map(move |index| (account as u32, index))
+            })
             .collect()
     }
 }
@@ -168,7 +188,11 @@ mod tests {
         let meta: WalletMeta = serde_json::from_str("{}").unwrap();
         assert_eq!(meta.accounts().len(), 1);
         assert_eq!(meta.subaddress_indexes(), [(0, 0)]);
-        assert_eq!(serde_json::to_string(&meta).unwrap(), "{}", "nothing set writes nothing");
+        assert_eq!(
+            serde_json::to_string(&meta).unwrap(),
+            "{}",
+            "nothing set writes nothing"
+        );
     }
 
     #[test]
@@ -183,7 +207,8 @@ mod tests {
         assert!(meta.add_subaddress(2, "x").is_err());
         assert!(meta.label_subaddress(0, 5, "x").is_err());
 
-        let reloaded: WalletMeta = serde_json::from_value(serde_json::to_value(&meta).unwrap()).unwrap();
+        let reloaded: WalletMeta =
+            serde_json::from_value(serde_json::to_value(&meta).unwrap()).unwrap();
         assert_eq!(reloaded.subaddress_indexes(), meta.subaddress_indexes());
     }
 }

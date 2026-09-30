@@ -20,8 +20,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
+use crate::db::Database;
 use crate::db::Db;
-use crate::http::AppState;
 
 /// Most bytes a report may have; the route's body limit.
 pub const MAX_BODY_BYTES: usize = 8 * 1024;
@@ -39,14 +39,19 @@ struct ClientReport {
 /// Up to `MAX_TEXT` characters, control characters replaced, so a report
 /// can't forge extra lines in the readable output format.
 fn clip(text: &str) -> String {
-    text.chars().take(MAX_TEXT).map(|c| if c.is_control() { ' ' } else { c }).collect()
+    text.chars()
+        .take(MAX_TEXT)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 /// Whether reports from `page` may be kept: `false` for a page about a
 /// store that hasn't opted in to client logs.
 pub fn page_may_report(db: &Db, page: &str) -> bool {
     if let Some(store) = super::store_of_path(page) {
-        return db.client_logging(store).unwrap_or(false);
+        return db
+            .client_logging(&crate::db::ConnectionId::new(store))
+            .unwrap_or(false);
     }
     if let Some(pk) = super::embed_domains::public_key_of_pay_path(page) {
         return db.client_logging_by_public_key(pk).unwrap_or(false);
@@ -54,13 +59,18 @@ pub fn page_may_report(db: &Db, page: &str) -> bool {
     true
 }
 
-pub async fn client_report(State(state): State<AppState>, body: Bytes) -> StatusCode {
+pub async fn client_report(State(db): State<Database>, body: Bytes) -> StatusCode {
     // Parsed from the bytes, not with the `Json` extractor, so the content
     // type doesn't matter (a beacon's can vary).
     let Ok(report) = serde_json::from_slice::<ClientReport>(&body) else {
         return StatusCode::BAD_REQUEST;
     };
-    if !page_may_report(&state.db.lock(), report.page.as_deref().unwrap_or("")) {
+    let page = report.page.clone().unwrap_or_default();
+    let may_report = db
+        .read(move |db| Ok::<_, crate::db::DbError>(page_may_report(db, &page)))
+        .await
+        .unwrap_or(false);
+    if !may_report {
         // Accepted and dropped, as a store that opted out would expect.
         return StatusCode::NO_CONTENT;
     }
@@ -69,7 +79,11 @@ pub async fn client_report(State(state): State<AppState>, body: Bytes) -> Status
         telemetry::trace::set_remote_parent(&span, traceparent);
     }
     let _entered = span.enter();
-    let (kind, page, detail) = (clip(&report.kind), report.page.as_deref().map(clip), report.detail.as_deref().map(clip));
+    let (kind, page, detail) = (
+        clip(&report.kind),
+        report.page.as_deref().map(clip),
+        report.detail.as_deref().map(clip),
+    );
     tracing::warn!(browser.kind = %kind, url.path = page, detail, "{}", clip(&report.message));
     StatusCode::NO_CONTENT
 }
@@ -86,22 +100,47 @@ mod tests {
 
     fn db_with_store() -> Db {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("u1", "a@example.com", "hash", false, 0).unwrap();
-        db.create_store_connection("c1", "u1", "woocommerce", "https://shop.example.com", "pk_1", "sk_1", "http://127.0.0.1:1", 0, "XMR").unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("u1"),
+            "a@example.com",
+            "hash",
+            false,
+            0,
+        )
+        .unwrap();
+        db.create_store_connection(
+            &shared::ids::ConnectionId::new("c1"),
+            &shared::ids::UserId::new("u1"),
+            "woocommerce",
+            "https://shop.example.com",
+            "pk_1",
+            "sk_1",
+            "http://127.0.0.1:1",
+            0,
+            "XMR",
+        )
+        .unwrap();
         db
     }
 
     #[test]
     fn pages_about_a_store_report_only_once_it_opted_in() {
         let db = db_with_store();
-        assert!(page_may_report(&db, "/dashboard/admin/logs"), "admin pages always report");
+        assert!(
+            page_may_report(&db, "/dashboard/admin/logs"),
+            "admin pages always report"
+        );
         assert!(page_may_report(&db, "/dashboard"));
         assert!(page_may_report(&db, ""));
         assert!(!page_may_report(&db, "/dashboard/stores/c1/settings"));
         assert!(!page_may_report(&db, "/dashboard/stores/c1/pos"));
         assert!(!page_may_report(&db, "/pay/pk_1/orders/o1"));
-        assert!(!page_may_report(&db, "/dashboard/stores/unknown/orders"), "no store, no reports");
-        db.set_client_logging("c1", true).unwrap();
+        assert!(
+            !page_may_report(&db, "/dashboard/stores/unknown/orders"),
+            "no store, no reports"
+        );
+        db.set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+            .unwrap();
         assert!(page_may_report(&db, "/dashboard/stores/c1/settings"));
         assert!(page_may_report(&db, "/pay/pk_1/orders/o1"));
     }
@@ -148,11 +187,21 @@ pub mod plugin {
         trace_id: Option<String>,
     }
 
-    pub async fn forward(State(state): State<AppState>, Path(pk): Path<String>, headers: HeaderMap, Json(logs): Json<PluginLogs>) -> StatusCode {
-        if store_key::check(&state, &pk, &headers) != KeyCheck::Valid {
+    pub async fn forward(
+        State(state): State<AppState>,
+        Path(pk): Path<String>,
+        headers: HeaderMap,
+        Json(logs): Json<PluginLogs>,
+    ) -> StatusCode {
+        if store_key::check(&state, &pk, &headers).await != KeyCheck::Valid {
             return StatusCode::UNAUTHORIZED;
         }
-        let Ok(Some(store)) = state.db.lock().get_store_connection_by_public_key(&pk) else {
+        let key = pk.clone();
+        let Ok(Some(store)) = state
+            .db
+            .read(move |db| db.get_store_connection_by_public_key(&key))
+            .await
+        else {
             return StatusCode::UNAUTHORIZED;
         };
         if logs.entries.len() > MAX_ENTRIES {
@@ -161,14 +210,27 @@ pub mod plugin {
         // The store's own setting wins over the plugin's option: refused
         // unless the store opted in to client logs. (403, not a silent 204:
         // the shop's server is authenticated, so it can be told why.)
-        if !state.db.lock().client_logging(&store.id).unwrap_or(false) {
+        let id = store.id.clone();
+        if !state
+            .db
+            .read(move |db| db.client_logging(&id))
+            .await
+            .unwrap_or(false)
+        {
             return StatusCode::FORBIDDEN;
         }
         for entry in logs.entries {
             let span = tracing::info_span!(parent: None, "woocommerce report", source = "woocommerce", store.id = %store.id);
-            if let Some(trace_id) = entry.trace_id.as_deref().filter(|t| telemetry::store::api::is_trace_id(t)) {
+            if let Some(trace_id) = entry
+                .trace_id
+                .as_deref()
+                .filter(|t| telemetry::store::api::is_trace_id(t))
+            {
                 // The plugin names only its trace, not a span in it.
-                telemetry::trace::set_remote_parent(&span, &format!("00-{trace_id}-0000000000000001-01"));
+                telemetry::trace::set_remote_parent(
+                    &span,
+                    &format!("00-{trace_id}-0000000000000001-01"),
+                );
             }
             let _entered = span.enter();
             let message = clip(&entry.message);

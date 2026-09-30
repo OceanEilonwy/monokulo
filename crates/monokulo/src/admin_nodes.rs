@@ -13,10 +13,12 @@
 //! list is a normal save and works without JavaScript: the submitted rows
 //! are the list, in order, and the button says what to do to it first.
 
+use monero::Network;
+use shared::network::{network_str, parse_network};
 use std::collections::{HashMap, HashSet};
 
 /// The networks the engine can scan, in the order the page shows them.
-pub const NETWORKS: [&str; 3] = ["mainnet", "stagenet", "testnet"];
+pub const NETWORKS: [Network; 3] = [Network::Mainnet, Network::Stagenet, Network::Testnet];
 
 /// One node row as submitted (or as saved): what the admin typed and
 /// ticked, and what's wrong with it, if anything.
@@ -78,17 +80,25 @@ pub fn parse_address(input: &str) -> Result<NodeAddress, String> {
     // part of a node's address.
     let rest = rest.strip_suffix('/').unwrap_or(rest);
     if rest.contains(['/', '?', '#']) {
-        return Err("Leave out the path: just the host and port, like node.example.com:18081.".to_string());
+        return Err(
+            "Leave out the path: just the host and port, like node.example.com:18081.".to_string(),
+        );
     }
     if rest.contains(char::is_whitespace) || rest.contains('@') {
-        return Err("An address has no spaces or @: just the host and port, like node.example.com:18081.".to_string());
+        return Err(
+            "An address has no spaces or @: just the host and port, like node.example.com:18081."
+                .to_string(),
+        );
     }
     let (host, port) = if let Some(bracketed) = rest.strip_prefix('[') {
         let Some((ip, after)) = bracketed.split_once(']') else {
             return Err("An IPv6 address needs its closing bracket, like [::1]:18081.".to_string());
         };
         if ip.parse::<std::net::Ipv6Addr>().is_err() {
-            return Err("That isn't an IPv6 address between the brackets. Use one like [::1]:18081.".to_string());
+            return Err(
+                "That isn't an IPv6 address between the brackets. Use one like [::1]:18081."
+                    .to_string(),
+            );
         }
         let Some(port) = after.strip_prefix(':') else {
             return Err("Add the port after the brackets, like [::1]:18081.".to_string());
@@ -132,15 +142,15 @@ pub fn format_address(host: &str, port: u16) -> String {
 /// one submitted row are here: a tab without the node form sends none.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NodeForm {
-    pub networks: Vec<(String, Vec<NodeRow>)>,
+    pub networks: Vec<(Network, Vec<NodeRow>)>,
 }
 
 /// A row button: what to do to the submitted rows before saving them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeAction {
-    Remove { network: String, index: usize },
-    Up { network: String, index: usize },
-    Down { network: String, index: usize },
+    Remove { network: Network, index: usize },
+    Up { network: Network, index: usize },
+    Down { network: Network, index: usize },
 }
 
 impl NodeAction {
@@ -148,8 +158,12 @@ impl NodeAction {
     /// `down:<network>:<index>`, the value of the button pressed.
     pub fn parse(value: &str) -> Option<NodeAction> {
         let mut parts = value.split(':');
-        let (verb, network, index) = (parts.next()?, parts.next()?.to_string(), parts.next()?.parse().ok()?);
-        if parts.next().is_some() || network.is_empty() {
+        let (verb, network, index) = (
+            parts.next()?,
+            parse_network(parts.next()?).ok()?,
+            parts.next()?.parse().ok()?,
+        );
+        if parts.next().is_some() {
             return None;
         }
         match verb {
@@ -163,22 +177,24 @@ impl NodeAction {
     /// The button's value: the inverse of [`NodeAction::parse`].
     pub fn value(&self) -> String {
         match self {
-            NodeAction::Remove { network, index } => format!("remove:{network}:{index}"),
-            NodeAction::Up { network, index } => format!("up:{network}:{index}"),
-            NodeAction::Down { network, index } => format!("down:{network}:{index}"),
+            NodeAction::Remove { network, index } => {
+                format!("remove:{}:{index}", network_str(*network))
+            }
+            NodeAction::Up { network, index } => format!("up:{}:{index}", network_str(*network)),
+            NodeAction::Down { network, index } => {
+                format!("down:{}:{index}", network_str(*network))
+            }
         }
     }
 }
 
-/// One `node_<network>_<index>_<field>` form name, split.
-fn node_field(name: &str) -> Option<(&str, usize, &str)> {
+/// One `node_<network>_<index>_<field>` form name, split; `None` for a
+/// network there isn't.
+fn node_field(name: &str) -> Option<(Network, usize, &str)> {
     let rest = name.strip_prefix("node_")?;
     let (network, rest) = rest.split_once('_')?;
     let (index, field) = rest.split_once('_')?;
-    if network.is_empty() || !network.chars().all(|c| c.is_ascii_lowercase()) {
-        return None;
-    }
-    Some((network, index.parse().ok()?, field))
+    Some((parse_network(network).ok()?, index.parse().ok()?, field))
 }
 
 /// Whether a form field belongs to the node form: a row field or a row
@@ -194,31 +210,49 @@ impl NodeForm {
     /// the order networks are shown in; any other network submitted comes
     /// after them. A checkbox that isn't ticked isn't sent, so a row's boxes
     /// are ticked only when their field is there.
-    pub fn from_form(form: &HashMap<String, String>, order: &[&str]) -> NodeForm {
-        let mut by_network: HashMap<&str, Vec<(usize, NodeRow)>> = HashMap::new();
+    pub fn from_form(form: &HashMap<String, String>, order: &[Network]) -> NodeForm {
+        let mut by_network: HashMap<Network, Vec<(usize, NodeRow)>> = HashMap::new();
         for (name, value) in form {
-            let Some((network, index, "address")) = node_field(name) else { continue };
-            let ticked = |field: &str| form.contains_key(&format!("node_{network}_{index}_{field}"));
+            let Some((network, index, "address")) = node_field(name) else {
+                continue;
+            };
+            let name = network_str(network);
+            let ticked = |field: &str| form.contains_key(&format!("node_{name}_{index}_{field}"));
             by_network.entry(network).or_default().push((
                 index,
-                NodeRow { address: value.trim().to_string(), ssl: ticked("ssl"), self_signed: ticked("self_signed"), error: None },
+                NodeRow {
+                    address: value.trim().to_string(),
+                    ssl: ticked("ssl"),
+                    self_signed: ticked("self_signed"),
+                    error: None,
+                },
             ));
         }
-        let mut names: Vec<&str> = by_network.keys().copied().collect();
-        names.sort_by_key(|name| (order.iter().position(|o| o == name).unwrap_or(usize::MAX), name.to_string()));
-        let action = form.get("node_action").and_then(|value| NodeAction::parse(value));
+        let mut names: Vec<Network> = by_network.keys().copied().collect();
+        names.sort_by_key(|name| {
+            (
+                order.iter().position(|o| o == name).unwrap_or(usize::MAX),
+                network_str(*name),
+            )
+        });
+        let action = form
+            .get("node_action")
+            .and_then(|value| NodeAction::parse(value));
         let networks = names
             .into_iter()
             .map(|network| {
-                let mut rows = by_network.remove(network).unwrap_or_default();
+                let mut rows = by_network.remove(&network).unwrap_or_default();
                 rows.sort_by_key(|(index, _)| *index);
-                let rows: Vec<(usize, NodeRow)> = rows.into_iter().filter(|(_, row)| !row.is_blank()).collect();
+                let rows: Vec<(usize, NodeRow)> = rows
+                    .into_iter()
+                    .filter(|(_, row)| !row.is_blank())
+                    .collect();
                 let mut rows = match &action {
                     Some(action) => apply_action(rows, network, action),
                     None => rows.into_iter().map(|(_, row)| row).collect(),
                 };
                 check_rows(&mut rows);
-                (network.to_string(), rows)
+                (network, rows)
             })
             .collect();
         NodeForm { networks }
@@ -226,12 +260,17 @@ impl NodeForm {
 
     /// Whether any row has something to fix.
     pub fn has_errors(&self) -> bool {
-        self.networks.iter().any(|(_, rows)| rows.iter().any(|row| row.error.is_some()))
+        self.networks
+            .iter()
+            .any(|(_, rows)| rows.iter().any(|row| row.error.is_some()))
     }
 
     /// One network's rows, if it was submitted.
-    pub fn rows(&self, network: &str) -> Option<&[NodeRow]> {
-        self.networks.iter().find(|(n, _)| n == network).map(|(_, rows)| rows.as_slice())
+    pub fn rows(&self, network: Network) -> Option<&[NodeRow]> {
+        self.networks
+            .iter()
+            .find(|(n, _)| *n == network)
+            .map(|(_, rows)| rows.as_slice())
     }
 }
 
@@ -239,12 +278,16 @@ impl NodeForm {
 /// index). A button for another network, or for a row that isn't there
 /// (a blank one), changes nothing; so do Up on the first row and Down on
 /// the last.
-fn apply_action(rows: Vec<(usize, NodeRow)>, network: &str, action: &NodeAction) -> Vec<NodeRow> {
+fn apply_action(
+    rows: Vec<(usize, NodeRow)>,
+    network: Network,
+    action: &NodeAction,
+) -> Vec<NodeRow> {
     let position = |index: usize| rows.iter().position(|(i, _)| *i == index);
     let (at, verb) = match action {
-        NodeAction::Remove { network: n, index } if n == network => (position(*index), 'r'),
-        NodeAction::Up { network: n, index } if n == network => (position(*index), 'u'),
-        NodeAction::Down { network: n, index } if n == network => (position(*index), 'd'),
+        NodeAction::Remove { network: n, index } if *n == network => (position(*index), 'r'),
+        NodeAction::Up { network: n, index } if *n == network => (position(*index), 'u'),
+        NodeAction::Down { network: n, index } if *n == network => (position(*index), 'd'),
         _ => (None, ' '),
     };
     let mut rows: Vec<NodeRow> = rows.into_iter().map(|(_, row)| row).collect();
@@ -306,8 +349,14 @@ fn saved_node(value: &serde_json::Value) -> Option<(String, u16, NodeRow)> {
     let port = u16::try_from(value.get("port")?.as_u64()?).ok()?;
     let row = NodeRow {
         address: format_address(&host, port),
-        ssl: value.get("ssl").and_then(serde_json::Value::as_bool).unwrap_or(false),
-        self_signed: value.get("accept_self_signed_certs").and_then(serde_json::Value::as_bool).unwrap_or(true),
+        ssl: value
+            .get("ssl")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        self_signed: value
+            .get("accept_self_signed_certs")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
         error: None,
     };
     Some((host, port, row))
@@ -318,8 +367,14 @@ fn saved_node(value: &serde_json::Value) -> Option<(String, u16, NodeRow)> {
 /// `/status`. A fallback's own `fallbacks` are dropped: the engine never
 /// uses them, and the form has no place for them.
 pub fn rows_from_setting(value: Option<&serde_json::Value>) -> Vec<(String, NodeRow)> {
-    let Some(value) = value.filter(|v| !v.is_null()) else { return Vec::new() };
-    let fallbacks = value.get("fallbacks").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return Vec::new();
+    };
+    let fallbacks = value
+        .get("fallbacks")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     std::iter::once(value)
         .chain(fallbacks.iter())
         .filter_map(saved_node)
@@ -332,37 +387,74 @@ mod tests {
     use super::*;
 
     fn address(host: &str, port: u16, https: bool) -> NodeAddress {
-        NodeAddress { host: host.to_string(), port, https }
+        NodeAddress {
+            host: host.to_string(),
+            port,
+            https,
+        }
     }
 
     #[test]
     fn addresses_are_host_and_port_with_an_optional_scheme() {
-        assert_eq!(parse_address("node.example.com:18081"), Ok(address("node.example.com", 18081, false)));
-        assert_eq!(parse_address("  node.example.com:18081  "), Ok(address("node.example.com", 18081, false)));
-        assert_eq!(parse_address("http://node.example.com:18081"), Ok(address("node.example.com", 18081, false)));
-        assert_eq!(parse_address("HTTPS://node.example.com:18089/"), Ok(address("node.example.com", 18089, true)));
-        assert_eq!(parse_address("127.0.0.1:1"), Ok(address("127.0.0.1", 1, false)));
-        assert_eq!(parse_address("[::1]:18081"), Ok(address("[::1]", 18081, false)));
-        assert_eq!(parse_address("https://[2001:db8::1]:443"), Ok(address("[2001:db8::1]", 443, true)));
+        assert_eq!(
+            parse_address("node.example.com:18081"),
+            Ok(address("node.example.com", 18081, false))
+        );
+        assert_eq!(
+            parse_address("  node.example.com:18081  "),
+            Ok(address("node.example.com", 18081, false))
+        );
+        assert_eq!(
+            parse_address("http://node.example.com:18081"),
+            Ok(address("node.example.com", 18081, false))
+        );
+        assert_eq!(
+            parse_address("HTTPS://node.example.com:18089/"),
+            Ok(address("node.example.com", 18089, true))
+        );
+        assert_eq!(
+            parse_address("127.0.0.1:1"),
+            Ok(address("127.0.0.1", 1, false))
+        );
+        assert_eq!(
+            parse_address("[::1]:18081"),
+            Ok(address("[::1]", 18081, false))
+        );
+        assert_eq!(
+            parse_address("https://[2001:db8::1]:443"),
+            Ok(address("[2001:db8::1]", 443, true))
+        );
         assert_eq!(parse_address("[::1]:18081").unwrap().label(), "[::1]:18081");
     }
 
     #[test]
     fn a_bad_address_says_what_to_fix() {
         let error = |input: &str| parse_address(input).unwrap_err();
-        assert!(error("node.example.com").contains("Add the port"), "missing port");
-        assert!(error("https://node.example.com").contains("Add the port"), "the port is needed with a scheme too");
+        assert!(
+            error("node.example.com").contains("Add the port"),
+            "missing port"
+        );
+        assert!(
+            error("https://node.example.com").contains("Add the port"),
+            "the port is needed with a scheme too"
+        );
         assert!(error("node.example.com:0").contains("from 1 to 65535"));
         assert!(error("node.example.com:65536").contains("from 1 to 65535"));
         assert!(error("node.example.com:port").contains("from 1 to 65535"));
         assert!(error("node.example.com:+80").contains("from 1 to 65535"));
-        assert!(error(":18081").contains("host name or IP address"), "empty host");
+        assert!(
+            error(":18081").contains("host name or IP address"),
+            "empty host"
+        );
         assert!(error("[::1:18081").contains("closing bracket"));
         assert!(error("::1]:18081").contains("opening bracket"));
         assert!(error("[::1]18081").contains("port after the brackets"));
         assert!(error("[not-ipv6]:18081").contains("isn't an IPv6 address"));
         assert!(error("::1:18081").contains("in brackets"), "bare IPv6");
-        assert!(error("node.example.com:18081/json_rpc").contains("Leave out the path"), "a stray path");
+        assert!(
+            error("node.example.com:18081/json_rpc").contains("Leave out the path"),
+            "a stray path"
+        );
         assert!(error("http://node.example.com:18081/get_info?x=1").contains("Leave out the path"));
         assert!(error("ftp://node.example.com:21").contains("http:// or https://"));
         assert!(error("node example.com:18081").contains("no spaces"));
@@ -370,13 +462,20 @@ mod tests {
     }
 
     fn form(fields: &[(&str, &str)]) -> HashMap<String, String> {
-        fields.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        fields
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
-    const ORDER: &[&str] = &["mainnet", "stagenet", "testnet"];
+    const ORDER: &[Network] = &NETWORKS;
 
     fn addresses(form: &NodeForm, network: &str) -> Vec<String> {
-        form.rows(network).unwrap().iter().map(|row| row.address.clone()).collect()
+        form.rows(shared::network::parse_network(network).unwrap())
+            .unwrap()
+            .iter()
+            .map(|row| row.address.clone())
+            .collect()
     }
 
     /// Three stagenet rows plus the blank "Add a node" row, as the page
@@ -397,52 +496,136 @@ mod tests {
 
     #[test]
     fn submitted_rows_keep_their_order_and_boxes_and_the_blank_row_is_ignored() {
-        let nodes = NodeForm::from_form(&three_rows(&[("node_mainnet_0_address", ""), ("payment.x", "1"), ("tab", "nodes")]), ORDER);
-        assert_eq!(nodes.networks.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["mainnet", "stagenet"]);
-        assert!(nodes.rows("mainnet").unwrap().is_empty(), "only the blank row: an empty list");
-        let rows = nodes.rows("stagenet").unwrap();
-        assert_eq!(addresses(&nodes, "stagenet"), ["a.example:1", "b.example:2", "c.example:3"]);
+        let nodes = NodeForm::from_form(
+            &three_rows(&[
+                ("node_mainnet_0_address", ""),
+                ("payment.x", "1"),
+                ("tab", "nodes"),
+            ]),
+            ORDER,
+        );
+        assert_eq!(
+            nodes
+                .networks
+                .iter()
+                .map(|(n, _)| network_str(*n))
+                .collect::<Vec<_>>(),
+            ["mainnet", "stagenet"]
+        );
+        assert!(
+            nodes.rows(monero::Network::Mainnet).unwrap().is_empty(),
+            "only the blank row: an empty list"
+        );
+        let rows = nodes.rows(monero::Network::Stagenet).unwrap();
+        assert_eq!(
+            addresses(&nodes, "stagenet"),
+            ["a.example:1", "b.example:2", "c.example:3"]
+        );
         assert!(!rows[0].ssl && rows[0].self_signed);
         assert!(rows[1].ssl && !rows[1].self_signed);
         assert!(!nodes.has_errors());
-        assert_eq!(nodes.rows("testnet"), None, "not submitted");
+        assert_eq!(nodes.rows(monero::Network::Testnet), None, "not submitted");
     }
 
     #[test]
     fn rows_are_ordered_by_their_index_not_the_forms_order() {
-        let nodes = NodeForm::from_form(&form(&[("node_testnet_10_address", "late.example:1"), ("node_testnet_2_address", "early.example:1")]), ORDER);
-        assert_eq!(addresses(&nodes, "testnet"), ["early.example:1", "late.example:1"]);
+        let nodes = NodeForm::from_form(
+            &form(&[
+                ("node_testnet_10_address", "late.example:1"),
+                ("node_testnet_2_address", "early.example:1"),
+            ]),
+            ORDER,
+        );
+        assert_eq!(
+            addresses(&nodes, "testnet"),
+            ["early.example:1", "late.example:1"]
+        );
     }
 
     #[test]
     fn every_row_button_including_at_the_edges() {
-        let with = |action: &str| addresses(&NodeForm::from_form(&three_rows(&[("node_action", action)]), ORDER), "stagenet");
+        let with = |action: &str| {
+            addresses(
+                &NodeForm::from_form(&three_rows(&[("node_action", action)]), ORDER),
+                "stagenet",
+            )
+        };
         assert_eq!(with("remove:stagenet:1"), ["a.example:1", "c.example:3"]);
-        assert_eq!(with("up:stagenet:2"), ["a.example:1", "c.example:3", "b.example:2"]);
-        assert_eq!(with("down:stagenet:0"), ["b.example:2", "a.example:1", "c.example:3"]);
-        assert_eq!(with("up:stagenet:0"), ["a.example:1", "b.example:2", "c.example:3"], "up on the first row");
-        assert_eq!(with("down:stagenet:2"), ["a.example:1", "b.example:2", "c.example:3"], "down on the last row");
-        assert_eq!(with("down:stagenet:3"), ["a.example:1", "b.example:2", "c.example:3"], "the blank row has no buttons");
-        assert_eq!(with("remove:mainnet:0"), ["a.example:1", "b.example:2", "c.example:3"], "another network's button");
-        assert_eq!(with("nonsense"), ["a.example:1", "b.example:2", "c.example:3"]);
+        assert_eq!(
+            with("up:stagenet:2"),
+            ["a.example:1", "c.example:3", "b.example:2"]
+        );
+        assert_eq!(
+            with("down:stagenet:0"),
+            ["b.example:2", "a.example:1", "c.example:3"]
+        );
+        assert_eq!(
+            with("up:stagenet:0"),
+            ["a.example:1", "b.example:2", "c.example:3"],
+            "up on the first row"
+        );
+        assert_eq!(
+            with("down:stagenet:2"),
+            ["a.example:1", "b.example:2", "c.example:3"],
+            "down on the last row"
+        );
+        assert_eq!(
+            with("down:stagenet:3"),
+            ["a.example:1", "b.example:2", "c.example:3"],
+            "the blank row has no buttons"
+        );
+        assert_eq!(
+            with("remove:mainnet:0"),
+            ["a.example:1", "b.example:2", "c.example:3"],
+            "another network's button"
+        );
+        assert_eq!(
+            with("nonsense"),
+            ["a.example:1", "b.example:2", "c.example:3"]
+        );
         // A moved row takes its boxes with it.
         let moved = NodeForm::from_form(&three_rows(&[("node_action", "up:stagenet:1")]), ORDER);
-        assert!(moved.rows("stagenet").unwrap()[0].ssl);
+        assert!(moved.rows(monero::Network::Stagenet).unwrap()[0].ssl);
 
-        let only = form(&[("node_testnet_0_address", "only.example:1"), ("node_testnet_1_address", ""), ("node_action", "remove:testnet:0")]);
-        assert!(NodeForm::from_form(&only, ORDER).rows("testnet").unwrap().is_empty(), "removing the only row leaves none");
+        let only = form(&[
+            ("node_testnet_0_address", "only.example:1"),
+            ("node_testnet_1_address", ""),
+            ("node_action", "remove:testnet:0"),
+        ]);
+        assert!(
+            NodeForm::from_form(&only, ORDER)
+                .rows(monero::Network::Testnet)
+                .unwrap()
+                .is_empty(),
+            "removing the only row leaves none"
+        );
     }
 
     #[test]
     fn a_button_value_round_trips() {
         for action in [
-            NodeAction::Remove { network: "stagenet".into(), index: 2 },
-            NodeAction::Up { network: "mainnet".into(), index: 1 },
-            NodeAction::Down { network: "testnet".into(), index: 0 },
+            NodeAction::Remove {
+                network: Network::Stagenet,
+                index: 2,
+            },
+            NodeAction::Up {
+                network: Network::Mainnet,
+                index: 1,
+            },
+            NodeAction::Down {
+                network: Network::Testnet,
+                index: 0,
+            },
         ] {
             assert_eq!(NodeAction::parse(&action.value()), Some(action));
         }
-        for bad in ["remove:stagenet", "up::1", "down:testnet:x", "swap:testnet:1", "up:testnet:1:2"] {
+        for bad in [
+            "remove:stagenet",
+            "up::1",
+            "down:testnet:x",
+            "swap:testnet:1",
+            "up:testnet:1:2",
+        ] {
             assert_eq!(NodeAction::parse(bad), None, "{bad}");
         }
     }
@@ -458,16 +641,28 @@ mod tests {
             ]),
             ORDER,
         );
-        let rows = nodes.rows("mainnet").unwrap();
+        let rows = nodes.rows(monero::Network::Mainnet).unwrap();
         assert!(nodes.has_errors());
-        assert_eq!(rows[0].error, None, "the first of a repeated address is fine");
+        assert_eq!(
+            rows[0].error, None,
+            "the first of a repeated address is fine"
+        );
         assert!(rows[1].error.as_deref().unwrap().contains("Add the port"));
-        assert_eq!(rows[2].error.as_deref(), Some("This node is already listed above."));
+        assert_eq!(
+            rows[2].error.as_deref(),
+            Some("This node is already listed above.")
+        );
         assert_eq!(rows[3].error, None);
-        assert_eq!(rows[1].address, "node.example.com", "what was typed is kept");
+        assert_eq!(
+            rows[1].address, "node.example.com",
+            "what was typed is kept"
+        );
 
         // Removing the bad row with its button leaves nothing to fix.
-        let mut fields = form(&[("node_mainnet_0_address", "node.example.com:18081"), ("node_mainnet_1_address", "node.example.com")]);
+        let mut fields = form(&[
+            ("node_mainnet_0_address", "node.example.com:18081"),
+            ("node_mainnet_1_address", "node.example.com"),
+        ]);
         fields.insert("node_action".into(), "remove:mainnet:1".into());
         assert!(!NodeForm::from_form(&fields, ORDER).has_errors());
     }
@@ -475,10 +670,30 @@ mod tests {
     #[test]
     fn rows_become_the_engines_json_and_back_with_every_field_in_order() {
         let rows = vec![
-            NodeRow { address: "https://primary.example:18089".into(), ssl: false, self_signed: false, error: None },
-            NodeRow { address: "one.example:18081".into(), ssl: false, self_signed: true, error: None },
-            NodeRow { address: "[::1]:18081".into(), ssl: true, self_signed: true, error: None },
-            NodeRow { address: "three.example:18081".into(), ssl: true, self_signed: false, error: None },
+            NodeRow {
+                address: "https://primary.example:18089".into(),
+                ssl: false,
+                self_signed: false,
+                error: None,
+            },
+            NodeRow {
+                address: "one.example:18081".into(),
+                ssl: false,
+                self_signed: true,
+                error: None,
+            },
+            NodeRow {
+                address: "[::1]:18081".into(),
+                ssl: true,
+                self_signed: true,
+                error: None,
+            },
+            NodeRow {
+                address: "three.example:18081".into(),
+                ssl: true,
+                self_signed: false,
+                error: None,
+            },
         ];
         let json = rows_to_setting(&rows).unwrap();
         assert_eq!(
@@ -493,26 +708,67 @@ mod tests {
             })
         );
         let back = rows_from_setting(Some(&json));
-        assert_eq!(back.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>(), ["primary.example:18089", "one.example:18081", "[::1]:18081", "three.example:18081"]);
+        assert_eq!(
+            back.iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "primary.example:18089",
+                "one.example:18081",
+                "[::1]:18081",
+                "three.example:18081"
+            ]
+        );
         let back: Vec<NodeRow> = back.into_iter().map(|(_, row)| row).collect();
-        assert_eq!(back[0], NodeRow { address: "primary.example:18089".into(), ssl: true, self_signed: false, error: None }, "https:// became TLS");
+        assert_eq!(
+            back[0],
+            NodeRow {
+                address: "primary.example:18089".into(),
+                ssl: true,
+                self_signed: false,
+                error: None
+            },
+            "https:// became TLS"
+        );
         assert_eq!(back[1..], rows[1..]);
         assert_eq!(rows_to_setting(&[]), None, "no rows clears the network");
     }
 
     #[test]
     fn a_saved_node_uses_the_engines_defaults_and_its_label() {
-        let rows = rows_from_setting(Some(&serde_json::json!({ "host": "::1", "port": 18081, "fallbacks": [{ "host": "n", "port": 1, "fallbacks": [{ "host": "deep", "port": 2 }] }] })));
-        assert_eq!(rows.len(), 2, "a fallback's own fallbacks aren't used by the engine");
+        let rows = rows_from_setting(Some(
+            &serde_json::json!({ "host": "::1", "port": 18081, "fallbacks": [{ "host": "n", "port": 1, "fallbacks": [{ "host": "deep", "port": 2 }] }] }),
+        ));
+        assert_eq!(
+            rows.len(),
+            2,
+            "a fallback's own fallbacks aren't used by the engine"
+        );
         assert_eq!(rows[0].0, "::1:18081", "the engine's label, as saved");
-        assert_eq!(rows[0].1, NodeRow { address: "[::1]:18081".into(), ssl: false, self_signed: true, error: None });
+        assert_eq!(
+            rows[0].1,
+            NodeRow {
+                address: "[::1]:18081".into(),
+                ssl: false,
+                self_signed: true,
+                error: None
+            }
+        );
         assert!(rows_from_setting(None).is_empty());
         assert!(rows_from_setting(Some(&serde_json::Value::Null)).is_empty());
     }
 
     #[test]
     fn only_node_form_fields_are_node_fields() {
-        assert!(is_node_field("node_stagenet_0_address") && is_node_field("node_action") && is_node_field("node_mainnet_12_self_signed"));
-        assert!(!is_node_field("node.stagenet") && !is_node_field("nodes_stagenet_0_address") && !is_node_field("node_Stagenet_0_address"));
+        assert!(
+            is_node_field("node_stagenet_0_address")
+                && is_node_field("node_action")
+                && is_node_field("node_mainnet_12_self_signed")
+        );
+        assert!(
+            !is_node_field("node.stagenet")
+                && !is_node_field("nodes_stagenet_0_address")
+                && !is_node_field("node_Stagenet_0_address")
+        );
     }
 }

@@ -1,0 +1,3 @@
+# rustfmt's defaults, on purpose: `cargo fmt --all` formats the workspace,
+# and CI checks it (`cargo fmt --all --check`). The edition comes from each
+# crate's Cargo.toml.

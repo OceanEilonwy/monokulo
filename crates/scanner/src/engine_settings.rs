@@ -14,7 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use live_settings::{
-    choice_value, settings, AnySetting, BindAddr, CommaList, FieldError, Json, Live, Registry, Section, Snapshot,
+    choice_value, settings, AnySetting, BindAddr, CommaList, FieldError, Json, Live, Registry,
+    Section, Snapshot,
 };
 
 use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
@@ -137,6 +138,15 @@ settings! {
         example: "2",
         applies: Restart,
     },
+    DATABASE_READ_CONNECTIONS: usize {
+        key: "database.read_connections",
+        env: "SCANNER_DATABASE_READ_CONNECTIONS",
+        default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
+        check: range(1, 64),
+        description: "Read-only connections the engine opens to its database, each on its own thread. Reads run side by side, so more help up to the number of CPU cores; each keeps its own cache of about 2 MB. Takes effect after a restart.",
+        example: "4",
+        applies: Restart,
+    },
     SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN: u32 {
         key: "server.rate_limit_per_token_per_min",
         env: "SCANNER_SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN",
@@ -224,8 +234,14 @@ settings! {
 }
 
 /// The networks the engine can scan, with their node setting.
-pub const NETWORKS: [(&str, &live_settings::Setting<Option<Json<MoneroNodeSetting>>>); 3] =
-    [("mainnet", &MONERO_NODE_MAINNET), ("stagenet", &MONERO_NODE_STAGENET), ("testnet", &MONERO_NODE_TESTNET)];
+pub const NETWORKS: [(
+    &str,
+    &live_settings::Setting<Option<Json<MoneroNodeSetting>>>,
+); 3] = [
+    ("mainnet", &MONERO_NODE_MAINNET),
+    ("stagenet", &MONERO_NODE_STAGENET),
+    ("testnet", &MONERO_NODE_TESTNET),
+];
 
 /// Log level and development mode (structured_logging.md task 1.3), applied
 /// to the process-wide subscriber by `telemetry::LogReloadable`.
@@ -241,7 +257,14 @@ impl AsRef<telemetry::LogConfig> for LoggingConfig {
 impl Section for LoggingConfig {
     const NAME: &'static str = "logging";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&LOGGING_LEVEL, &LOGGING_DEV_MODE_UNTIL, &LOGGING_RETENTION_DAYS, &LOGGING_MAX_MB, &LOGGING_OTLP_ENDPOINT, &LOGGING_OTLP_HEADERS]
+        &[
+            &LOGGING_LEVEL,
+            &LOGGING_DEV_MODE_UNTIL,
+            &LOGGING_RETENTION_DAYS,
+            &LOGGING_MAX_MB,
+            &LOGGING_OTLP_ENDPOINT,
+            &LOGGING_OTLP_HEADERS,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(LoggingConfig(telemetry::LogConfig {
@@ -264,7 +287,11 @@ pub struct NodeConfig {
 impl Section for NodeConfig {
     const NAME: &'static str = "nodes";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&MONERO_NODE_MAINNET, &MONERO_NODE_STAGENET, &MONERO_NODE_TESTNET]
+        &[
+            &MONERO_NODE_MAINNET,
+            &MONERO_NODE_STAGENET,
+            &MONERO_NODE_TESTNET,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         let mut nodes = HashMap::new();
@@ -300,7 +327,9 @@ impl Section for ScanConfig {
         Ok(ScanConfig {
             reorg_check_depth: snapshot.get(&PAYMENT_REORG_CHECK_DEPTH),
             poll_interval: Duration::from_millis(snapshot.get(&PAYMENT_MEMPOOL_POLL_INTERVAL_MS)),
-            expired_order_grace_period_seconds: snapshot.get(&PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES) * 60,
+            expired_order_grace_period_seconds: snapshot
+                .get(&PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES)
+                * 60,
             scan_chunk_memory_budget_mb: snapshot.get(&PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB),
         })
     }
@@ -317,7 +346,11 @@ pub struct WebhookConfig {
 impl Section for WebhookConfig {
     const NAME: &'static str = "webhooks";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&WEBHOOKS_ALLOW_PRIVATE_URLS, &WEBHOOKS_DELIVERY_TIMEOUT_MS, &WEBHOOKS_MAX_ATTEMPTS]
+        &[
+            &WEBHOOKS_ALLOW_PRIVATE_URLS,
+            &WEBHOOKS_DELIVERY_TIMEOUT_MS,
+            &WEBHOOKS_MAX_ATTEMPTS,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(WebhookConfig {
@@ -358,7 +391,10 @@ pub struct TenantDefaults {
 impl Section for TenantDefaults {
     const NAME: &'static str = "tenant defaults";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&PAYMENT_CONFIRMATIONS_REQUIRED, &PAYMENT_ORDER_EXPIRY_MINUTES]
+        &[
+            &PAYMENT_CONFIRMATIONS_REQUIRED,
+            &PAYMENT_ORDER_EXPIRY_MINUTES,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(TenantDefaults {
@@ -368,21 +404,30 @@ impl Section for TenantDefaults {
     }
 }
 
-/// Read once at start: the listen address and the thread count (tasks 2.7,
-/// 2.8, decisions D1 and D8).
+/// Read once at start: the listen address, the thread count (tasks 2.7,
+/// 2.8, decisions D1 and D8) and the database's read connections.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeConfig {
     pub bind: std::net::SocketAddr,
     pub worker_threads: usize,
+    pub read_connections: usize,
 }
 
 impl Section for RuntimeConfig {
     const NAME: &'static str = "runtime";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&SERVER_BIND, &SERVER_WORKER_THREADS]
+        &[
+            &SERVER_BIND,
+            &SERVER_WORKER_THREADS,
+            &DATABASE_READ_CONNECTIONS,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        Ok(RuntimeConfig { bind: snapshot.get(&SERVER_BIND).0, worker_threads: snapshot.get(&SERVER_WORKER_THREADS) })
+        Ok(RuntimeConfig {
+            bind: snapshot.get(&SERVER_BIND).0,
+            worker_threads: snapshot.get(&SERVER_WORKER_THREADS),
+            read_connections: snapshot.get(&DATABASE_READ_CONNECTIONS),
+        })
     }
 }
 
@@ -398,7 +443,11 @@ pub struct CustodyConfig {
 impl Section for CustodyConfig {
     const NAME: &'static str = "key custody";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&KEY_CUSTODY_ENABLED_BACKENDS, &KEY_CUSTODY_DEFAULT_BACKEND, &KEY_CUSTODY_SOCKET_PATH]
+        &[
+            &KEY_CUSTODY_ENABLED_BACKENDS,
+            &KEY_CUSTODY_DEFAULT_BACKEND,
+            &KEY_CUSTODY_SOCKET_PATH,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         let mut enabled = snapshot.get(&KEY_CUSTODY_ENABLED_BACKENDS).0;
@@ -407,11 +456,17 @@ impl Section for CustodyConfig {
         let socket_path = snapshot.get(&KEY_CUSTODY_SOCKET_PATH);
         let mut errors = Vec::new();
         if enabled.is_empty() {
-            errors.push(FieldError::new(KEY_CUSTODY_ENABLED_BACKENDS.key, "Enable at least one backend."));
+            errors.push(FieldError::new(
+                KEY_CUSTODY_ENABLED_BACKENDS.key,
+                "Enable at least one backend.",
+            ));
         } else if !enabled.contains(&default) {
             errors.push(FieldError::new(
                 KEY_CUSTODY_DEFAULT_BACKEND.key,
-                format!("The default backend ({}) must be one of the enabled ones.", default.as_str()),
+                format!(
+                    "The default backend ({}) must be one of the enabled ones.",
+                    default.as_str()
+                ),
             ));
         }
         if enabled.contains(&CustodyBackend::Socket) && socket_path.is_none() {
@@ -421,7 +476,11 @@ impl Section for CustodyConfig {
             ));
         }
         if errors.is_empty() {
-            Ok(CustodyConfig { enabled, default, socket_path })
+            Ok(CustodyConfig {
+                enabled,
+                default,
+                socket_path,
+            })
         } else {
             Err(errors)
         }
@@ -441,23 +500,38 @@ pub struct CustodyReloadable {
 #[live_settings::async_trait]
 impl live_settings::Reloadable for CustodyReloadable {
     type Config = CustodyConfig;
-    type Prepared = (HashMap<String, Arc<dyn crate::key_custody::KeyCustody>>, String);
+    type Prepared = (
+        HashMap<String, Arc<dyn crate::key_custody::KeyCustody>>,
+        String,
+    );
 
-    async fn prepare(&self, new: &CustodyConfig, old: &CustodyConfig) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
+    async fn prepare(
+        &self,
+        new: &CustodyConfig,
+        old: &CustodyConfig,
+    ) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
         let current = self.router.backends();
         let mut backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>> = HashMap::new();
         let mut warnings = Vec::new();
         for backend in &new.enabled {
             let name = backend.as_str().to_string();
-            let reuse = current.get(&name).filter(|_| *backend != CustodyBackend::Socket || new.socket_path == old.socket_path);
+            let reuse = current.get(&name).filter(|_| {
+                *backend != CustodyBackend::Socket || new.socket_path == old.socket_path
+            });
             let custody: Arc<dyn crate::key_custody::KeyCustody> = match (reuse, backend) {
                 (Some(existing), _) => existing.clone(),
-                (None, CustodyBackend::Plain) => Arc::new(crate::key_custody::PlainKeyCustody::default()),
+                (None, CustodyBackend::Plain) => {
+                    Arc::new(crate::key_custody::PlainKeyCustody::default())
+                }
                 (None, CustodyBackend::Socket) => {
                     // `CustodyConfig` guarantees the path when socket is on.
                     let path = new.socket_path.clone().unwrap_or_default();
                     let timeout = key_custody_service::client::DEFAULT_CALL_TIMEOUT;
-                    match key_custody_service::client::SocketKeyCustody::connect_with_timeout(&path, timeout).await {
+                    match key_custody_service::client::SocketKeyCustody::connect_with_timeout(
+                        &path, timeout,
+                    )
+                    .await
+                    {
                         Ok(client) => Arc::new(client),
                         Err(e) => {
                             warnings.push(live_settings::Warning::for_key(
@@ -467,7 +541,11 @@ impl live_settings::Reloadable for CustodyReloadable {
                                     path.display()
                                 ),
                             ));
-                            Arc::new(key_custody_service::client::SocketKeyCustody::not_connected_yet(&path, timeout))
+                            Arc::new(
+                                key_custody_service::client::SocketKeyCustody::not_connected_yet(
+                                    &path, timeout,
+                                ),
+                            )
                         }
                     }
                 }
@@ -500,9 +578,13 @@ const KEY_CUSTODY_MIGRATION_MARKER: &str = "migration.key_custody_per_store";
 /// same way, so this moves no key material. A marker row keeps it from
 /// running again, so a still-set old environment variable can't undo stores
 /// switched since. Returns what it did, for the log.
-pub fn migrate_key_custody_setting(store: &crate::store::Store) -> Result<Option<String>, crate::store::StoreError> {
+pub fn migrate_key_custody_setting(
+    store: &crate::store::Store,
+) -> Result<Option<String>, crate::store::StoreError> {
     if store.get_setting(KEY_CUSTODY_MIGRATION_MARKER)?.is_some() {
-        if shared::settings::env_value("SCANNER_KEY_CUSTODY_BACKEND").is_some_and(|v| !v.trim().is_empty()) {
+        if shared::settings::env_value("SCANNER_KEY_CUSTODY_BACKEND")
+            .is_some_and(|v| !v.trim().is_empty())
+        {
             tracing::warn!(
                 "SCANNER_KEY_CUSTODY_BACKEND is set but no longer used; key custody is chosen per store now \
                  (key_custody.enabled_backends and key_custody.default_backend)"
@@ -528,7 +610,9 @@ pub fn migrate_key_custody_setting(store: &crate::store::Store) -> Result<Option
         s.delete_setting("key_custody.backend")?;
         s.set_setting(KEY_CUSTODY_MIGRATION_MARKER, "done")
     })?;
-    Ok(Some(format!("key custody is now per store; existing stores use {backend}")))
+    Ok(Some(format!(
+        "key custody is now per store; existing stores use {backend}"
+    )))
 }
 
 /// The engine's settings store, over its own `settings` table.
@@ -536,10 +620,16 @@ pub struct StoreSettings(pub SharedStore);
 
 impl live_settings::SettingsStore for StoreSettings {
     fn read_all(&self) -> Result<HashMap<String, String>, live_settings::StoreError> {
-        self.0.lock().list_settings().map_err(live_settings::StoreError::new)
+        self.0
+            .lock()
+            .list_settings()
+            .map_err(live_settings::StoreError::new)
     }
 
-    fn write_all(&self, changes: &[(&str, Option<String>)]) -> Result<(), live_settings::StoreError> {
+    fn write_all(
+        &self,
+        changes: &[(&str, Option<String>)],
+    ) -> Result<(), live_settings::StoreError> {
         let store = self.0.lock();
         store
             .in_transaction(|s| -> Result<(), crate::store::StoreError> {
@@ -597,9 +687,15 @@ fn defaults_of<S: Section>() -> S {
     }
 }
 
-#[allow(clippy::panic, reason = "the tests prove every section builds from its defaults")]
+#[allow(
+    clippy::panic,
+    reason = "the tests prove every section builds from its defaults"
+)]
 fn unreachable_defaults<S: Section>(errors: Vec<FieldError>) -> S {
-    panic!("{} doesn't build from its own defaults: {errors:?}", S::NAME)
+    panic!(
+        "{} doesn't build from its own defaults: {errors:?}",
+        S::NAME
+    )
 }
 
 impl EngineSettings {
@@ -619,19 +715,22 @@ impl EngineSettings {
     }
 }
 
+/// A daemon client per configured network.
+pub type DaemonMap = HashMap<monero::Network, Arc<FallbackDaemonClient>>;
+
 /// The daemon client for each configured network, swapped whole when node
 /// settings are saved (task 2.1). Readers take a snapshot per request or per
 /// tick; nobody holds the lock across an `.await`.
 #[derive(Clone, Default)]
-pub struct Daemons(Arc<parking_lot::RwLock<Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>>>>);
+pub struct Daemons(Arc<parking_lot::RwLock<Arc<DaemonMap>>>);
 
 impl Daemons {
     /// A fixed set, for tests and tools that don't change nodes.
-    pub fn fixed(map: HashMap<monero::Network, Arc<FallbackDaemonClient>>) -> Self {
+    pub fn fixed(map: DaemonMap) -> Self {
         Daemons(Arc::new(parking_lot::RwLock::new(Arc::new(map))))
     }
 
-    pub fn snapshot(&self) -> Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>> {
+    pub fn snapshot(&self) -> Arc<DaemonMap> {
         self.0.read().clone()
     }
 
@@ -647,7 +746,7 @@ impl Daemons {
         self.0.read().keys().copied().collect()
     }
 
-    fn replace(&self, map: HashMap<monero::Network, Arc<FallbackDaemonClient>>) {
+    fn replace(&self, map: DaemonMap) {
         *self.0.write() = Arc::new(map);
     }
 }
@@ -662,7 +761,10 @@ pub fn build_daemon_client(
         let accept_self_signed = node.accept_self_signed_certs && !strict_tls;
         let client = RpcDaemonClient::new(&node.host, node.port, node.ssl, accept_self_signed)
             .map_err(|e| format!("can't set up a client for {}:{}: {e}", node.host, node.port))?;
-        Ok(FallbackNode { label: format!("{}:{}", node.host, node.port), client: Arc::new(client) })
+        Ok(FallbackNode {
+            label: format!("{}:{}", node.host, node.port),
+            client: Arc::new(client),
+        })
     };
     let mut nodes = vec![build(node)?];
     for fallback in &node.fallbacks {
@@ -682,18 +784,30 @@ pub struct NodesReloadable {
 #[live_settings::async_trait]
 impl live_settings::Reloadable for NodesReloadable {
     type Config = NodeConfig;
-    type Prepared = HashMap<monero::Network, Arc<FallbackDaemonClient>>;
+    type Prepared = DaemonMap;
 
-    async fn prepare(&self, new: &NodeConfig, old: &NodeConfig) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
+    async fn prepare(
+        &self,
+        new: &NodeConfig,
+        old: &NodeConfig,
+    ) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
         let current = self.daemons.snapshot();
         let mut map = HashMap::new();
         for (name, node) in &new.nodes {
-            let setting = NETWORKS.iter().find(|(n, _)| n == name).map(|(_, s)| s.key).unwrap_or("monero_node");
-            let network = crate::network::parse_network(name).map_err(|e| FieldError::new(setting, e.to_string()))?;
+            let setting = NETWORKS
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, s)| s.key)
+                .unwrap_or("monero_node");
+            let network = crate::network::parse_network(name)
+                .map_err(|e| FieldError::new(setting, e.to_string()))?;
             let unchanged = old.nodes.get(name) == Some(node);
             let client = match current.get(&network) {
                 Some(existing) if unchanged => existing.clone(),
-                _ => Arc::new(build_daemon_client(node, self.strict_tls).map_err(|e| FieldError::new(setting, e))?),
+                _ => Arc::new(
+                    build_daemon_client(node, self.strict_tls)
+                        .map_err(|e| FieldError::new(setting, e))?,
+                ),
             };
             map.insert(network, client);
         }
@@ -720,12 +834,17 @@ impl live_settings::Reloadable for LimitsReloadable {
     type Config = ApiLimits;
     type Prepared = ApiLimits;
 
-    async fn prepare(&self, new: &ApiLimits, _old: &ApiLimits) -> Result<(ApiLimits, Vec<live_settings::Warning>), FieldError> {
+    async fn prepare(
+        &self,
+        new: &ApiLimits,
+        _old: &ApiLimits,
+    ) -> Result<(ApiLimits, Vec<live_settings::Warning>), FieldError> {
         Ok((new.clone(), Vec::new()))
     }
 
     async fn install(&self, limits: ApiLimits) {
-        self.rate_limiter.set_limit(limits.rate_limit_per_token_per_min);
+        self.rate_limiter
+            .set_limit(limits.rate_limit_per_token_per_min);
     }
 
     fn boot_policy(&self) -> live_settings::BootPolicy {
@@ -746,7 +865,10 @@ impl EngineSettings {
     ) -> Result<Arc<Self>, String> {
         Self::load_full(
             store,
-            Some(NodesReloadable { daemons, strict_tls }),
+            Some(NodesReloadable {
+                daemons,
+                strict_tls,
+            }),
             Some(CustodyReloadable { router }),
             rate_limiter,
             live_settings::Env::process(),
@@ -793,12 +915,20 @@ impl EngineSettings {
         let registry = builder.build().map_err(|e| e.to_string())?;
         let report = registry.boot().await.map_err(|e| e.to_string())?;
         for warning in &report.warnings {
-            tracing::warn!(setting = warning.key.as_deref(), "settings: {}", warning.message);
+            tracing::warn!(
+                setting = warning.key.as_deref(),
+                "settings: {}",
+                warning.message
+            );
         }
         for (section, error) in &report.degraded {
             tracing::warn!(section = %section, error = %error, "settings: could not be applied at start, carrying on without it");
         }
-        for (key, problem) in registry.describe().iter().filter_map(|v| v.problem.as_ref().map(|p| (v.key, p))) {
+        for (key, problem) in registry
+            .describe()
+            .iter()
+            .filter_map(|v| v.problem.as_ref().map(|p| (v.key, p)))
+        {
             tracing::warn!(setting = %key, "settings: {}", problem.message);
         }
         Ok(Arc::new(EngineSettings {
@@ -815,6 +945,7 @@ impl EngineSettings {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -824,7 +955,11 @@ mod tests {
         let node: Option<Json<MoneroNodeSetting>> =
             MONERO_NODE_STAGENET.parse(r#"{"host":"node.monerodevs.org","port":38089,"ssl":false,"accept_self_signed_certs":true,"fallbacks":[]}"#).unwrap();
         assert_eq!(node.unwrap().0.port, 38089);
-        assert_eq!(MONERO_NODE_STAGENET.parse("").unwrap(), None, "empty means not configured");
+        assert_eq!(
+            MONERO_NODE_STAGENET.parse("").unwrap(),
+            None,
+            "empty means not configured"
+        );
     }
 
     #[test]
@@ -857,22 +992,60 @@ mod tests {
             .unwrap()
             .tenant;
         assert!(migrate_key_custody_setting(&store).unwrap().is_some());
-        assert_eq!(store.get_setting("key_custody.enabled_backends").unwrap().as_deref(), Some("socket"));
-        assert_eq!(store.get_setting("key_custody.default_backend").unwrap().as_deref(), Some("socket"));
+        assert_eq!(
+            store
+                .get_setting("key_custody.enabled_backends")
+                .unwrap()
+                .as_deref(),
+            Some("socket")
+        );
+        assert_eq!(
+            store
+                .get_setting("key_custody.default_backend")
+                .unwrap()
+                .as_deref(),
+            Some("socket")
+        );
         assert_eq!(store.get_setting("key_custody.backend").unwrap(), None);
-        assert_eq!(store.get_tenant_by_id(&tenant.id).unwrap().unwrap().key_custody_backend, "socket");
+        assert_eq!(
+            store
+                .get_tenant_by_id(&tenant.id)
+                .unwrap()
+                .unwrap()
+                .key_custody_backend,
+            "socket"
+        );
 
         // Once only: a store switched since keeps its backend.
         store.relabel_all_tenants_key_custody("plain").unwrap();
         assert!(migrate_key_custody_setting(&store).unwrap().is_none());
-        assert_eq!(store.get_tenant_by_id(&tenant.id).unwrap().unwrap().key_custody_backend, "plain");
+        assert_eq!(
+            store
+                .get_tenant_by_id(&tenant.id)
+                .unwrap()
+                .unwrap()
+                .key_custody_backend,
+            "plain"
+        );
     }
 
     #[test]
     fn with_nothing_saved_the_migration_enables_plain() {
         let store = crate::store::Store::open_in_memory().unwrap();
         migrate_key_custody_setting(&store).unwrap();
-        assert_eq!(store.get_setting("key_custody.enabled_backends").unwrap().as_deref(), Some("plain"));
-        assert_eq!(store.get_setting("key_custody.default_backend").unwrap().as_deref(), Some("plain"));
+        assert_eq!(
+            store
+                .get_setting("key_custody.enabled_backends")
+                .unwrap()
+                .as_deref(),
+            Some("plain")
+        );
+        assert_eq!(
+            store
+                .get_setting("key_custody.default_backend")
+                .unwrap()
+                .as_deref(),
+            Some("plain")
+        );
     }
 }

@@ -34,13 +34,21 @@ pub enum ScannerError {
 
 type Result<T> = std::result::Result<T, ScannerError>;
 
-fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
-    let images: Vec<String> = serde_json::from_str(raw).map_err(|e| ScannerError::InvalidPaymentEvidence(e.to_string()))?;
+pub(crate) fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
+    let images: Vec<String> = serde_json::from_str(raw)
+        .map_err(|e| ScannerError::InvalidPaymentEvidence(e.to_string()))?;
     if images.is_empty() {
-        return Err(ScannerError::InvalidPaymentEvidence("empty key-image list".to_string()));
+        return Err(ScannerError::InvalidPaymentEvidence(
+            "empty key-image list".to_string(),
+        ));
     }
-    if images.iter().any(|image| image.len() != 64 || !image.bytes().all(|byte| byte.is_ascii_hexdigit())) {
-        return Err(ScannerError::InvalidPaymentEvidence("malformed key image".to_string()));
+    if images
+        .iter()
+        .any(|image| image.len() != 64 || !image.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(ScannerError::InvalidPaymentEvidence(
+            "malformed key image".to_string(),
+        ));
     }
     Ok(images)
 }
@@ -87,11 +95,13 @@ pub async fn scan_transaction(
     tx: &Transaction,
     minor_range: Range<u32>,
 ) -> Result<ScanResult> {
-    let matches = key_custody.scan_tx_outputs(handle, tx, 0..1, minor_range).await?;
+    let matches = key_custody
+        .scan_tx_outputs(handle, tx, 0..1, minor_range)
+        .await?;
     Ok(ScanResult {
         matches,
         txid: tx_id_hex(tx),
-        key_images_json: serde_json::to_string(&key_images_of(tx)).map_err(|e| ScannerError::Internal(e.to_string()))?,
+        key_images_json: serde_json::Value::from(key_images_of(tx)).to_string(),
     })
 }
 
@@ -103,11 +113,13 @@ pub async fn scan_transaction_in_window(
     tx: &Transaction,
     window: &ScanIndices,
 ) -> Result<ScanResult> {
-    let matches = key_custody.scan_tx_outputs_for_indices(handle, tx, window).await?;
+    let matches = key_custody
+        .scan_tx_outputs_for_indices(handle, tx, window)
+        .await?;
     Ok(ScanResult {
         matches,
         txid: tx_id_hex(tx),
-        key_images_json: serde_json::to_string(&key_images_of(tx)).map_err(|e| ScannerError::Internal(e.to_string()))?,
+        key_images_json: serde_json::Value::from(key_images_of(tx)).to_string(),
     })
 }
 
@@ -118,30 +130,39 @@ pub async fn scan_transaction_in_window(
 pub const SCAN_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Most tenants scanned for one transaction at the same time.
-const SCAN_CONCURRENCY: usize = 32;
+pub(crate) const SCAN_CONCURRENCY: usize = 32;
 
 /// Scans one transaction for many tenants at once, each with
 /// `SCAN_CALL_DEADLINE`, so a slow tenant (a slow key-custody backend)
 /// doesn't hold up the others. Results come back in the order given.
-async fn scan_for_tenants(
+pub(crate) async fn scan_for_tenants(
     key_custody: &dyn KeyCustody,
     tx: &Transaction,
-    tenants: &[&(String, WalletHandle, ScanIndices)],
-) -> Vec<(String, Result<ScanResult>)> {
+    tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
+) -> Vec<(crate::store::TenantId, Result<ScanResult>)> {
     use futures_util::stream::{self, StreamExt};
-    let owned: Vec<(String, WalletHandle, ScanIndices)> = tenants.iter().map(|t| (*t).clone()).collect();
-    stream::iter(owned)
-        .map(|(tenant_id, handle, window)| {
+    // By index: a closure over borrowed tuples trips a rustc limitation that
+    // makes the future not `Send`.
+    stream::iter(0..tenants.len())
+        .map(|i| {
+            let (tenant_id, handle, window) = tenants[i];
             let span = tracing::debug_span!("scan for store", store.id = %tenant_id);
             tracing::Instrument::instrument(
                 async move {
-                    let result = match tokio::time::timeout(SCAN_CALL_DEADLINE, scan_transaction_in_window(key_custody, handle, tx, &window)).await {
+                    let result = match tokio::time::timeout(
+                        SCAN_CALL_DEADLINE,
+                        scan_transaction_in_window(key_custody, *handle, tx, window),
+                    )
+                    .await
+                    {
                         Ok(result) => result,
-                        Err(_) => Err(ScannerError::KeyCustody(KeyCustodyError::BackendUnavailable(format!(
-                            "scan took longer than {SCAN_CALL_DEADLINE:?}"
-                        )))),
+                        Err(_) => Err(ScannerError::KeyCustody(
+                            KeyCustodyError::BackendUnavailable(format!(
+                                "scan took longer than {SCAN_CALL_DEADLINE:?}"
+                            )),
+                        )),
                     };
-                    (tenant_id, result)
+                    (tenant_id.clone(), result)
                 },
                 span,
             )
@@ -157,14 +178,15 @@ async fn scan_for_tenants(
 /// `Store::recompute_order_status`.
 pub fn record_scan_match(
     store: &Store,
-    tenant_id: &str,
+    tenant_id: &crate::store::TenantId,
     scan: &ScanResult,
     seen_at: i64,
     block_height: Option<u64>,
-) -> Result<HashSet<String>> {
+) -> Result<HashSet<crate::store::OrderId>> {
     let mut touched = HashSet::new();
     for m in &scan.matches {
-        let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)? else {
+        let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)?
+        else {
             continue; // a match against an index with no order row is not this scanner's problem to solve
         };
         // An output whose amount couldn't be decrypted is skipped, not recorded as
@@ -188,11 +210,11 @@ pub fn record_scan_match(
         store.record_payment_match(
             &order.id,
             &scan.txid,
-            m.output_index as i64,
+            output_index(m.output_index)?,
             amount,
             &scan.key_images_json,
             seen_at,
-            block_height.map(|h| h as i64),
+            block_height.map(crate::store::sql_height).transpose()?,
         )?;
         touched.insert(order.id);
     }
@@ -201,20 +223,49 @@ pub fn record_scan_match(
 
 /// Store a match from an unfinished block without making it visible as a
 /// payment. The caller commits this and the transaction checkpoint together.
-fn stage_block_match(store: &Store, network: &str, tenant_id: &str, scan: &ScanResult, seen_at: i64) -> Result<()> {
+pub(crate) fn stage_block_match(
+    store: &Store,
+    network: monero::Network,
+    tenant_id: &crate::store::TenantId,
+    scan: &ScanResult,
+    seen_at: i64,
+) -> Result<()> {
     for m in &scan.matches {
-        let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)? else { continue };
+        let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)?
+        else {
+            continue;
+        };
         let Some(amount) = m.amount_piconero else {
-            tracing::warn!("scanner: output {} of tx {} matched order {} but its amount could not be decrypted", m.output_index, scan.txid, order.id);
+            tracing::warn!(
+                order.id = %order.id,
+                tx.id = %scan.txid,
+                output_index = m.output_index,
+                "an output matched an order but its amount could not be decrypted - not staging it"
+            );
             continue;
         };
         store.stage_partial_match(crate::store::StagedMatch {
-            network, tenant_id, order_id: &order.id, txid: &scan.txid,
-            output_index: m.output_index as i64, amount,
-            key_images_json: &scan.key_images_json, seen_at,
+            network,
+            tenant_id,
+            order_id: &order.id,
+            txid: &scan.txid,
+            output_index: output_index(m.output_index)?,
+            amount,
+            key_images_json: &scan.key_images_json,
+            seen_at,
         })?;
     }
     Ok(())
+}
+
+/// An output's index as SQLite stores it. A transaction has a handful of
+/// outputs; one past `i64::MAX` is refused rather than wrapped.
+fn output_index(index: usize) -> Result<i64> {
+    i64::try_from(index).map_err(|e| {
+        ScannerError::Store(crate::store::StoreError::Sqlite(
+            rusqlite::Error::ToSqlConversionFailure(Box::new(e)),
+        ))
+    })
 }
 
 /// Convenience wrapper combining `scan_transaction` + `record_scan_match`, for
@@ -227,12 +278,12 @@ pub async fn scan_transaction_for_tenant(
     store: &Store,
     key_custody: &dyn KeyCustody,
     handle: WalletHandle,
-    tenant_id: &str,
+    tenant_id: &crate::store::TenantId,
     tx: &Transaction,
     minor_range: Range<u32>,
     seen_at: i64,
     block_height: Option<u64>,
-) -> Result<HashSet<String>> {
+) -> Result<HashSet<crate::store::OrderId>> {
     let scan = scan_transaction(key_custody, handle, tx, minor_range).await?;
     record_scan_match(store, tenant_id, &scan, seen_at, block_height)
 }
@@ -242,29 +293,30 @@ pub struct ReconcileReport {
     /// previously scanned, if any reorg was detected this call.
     pub reorg_detected_at: Option<u64>,
     /// Orders whose payments changed in a way that warrants a status recompute.
-    pub dirty_orders: Vec<String>,
+    pub dirty_orders: Vec<crate::store::OrderId>,
     /// The subset of `dirty_orders` where the change was specifically a proven
     /// double-spend (a payment voided because its key image was confirmed spent by
     /// a different transaction) - callers use this to enqueue the independent
     /// `order.double_spend_detected` webhook event (see `docs/DESIGN.md` §11),
     /// separate from whatever `order.<status>` event the recompute may also imply.
-    pub double_spent_orders: Vec<String>,
+    pub double_spent_orders: Vec<crate::store::OrderId>,
 }
 
 /// Checks for a reorg within the last `reorg_check_depth` blocks and, if one is
-/// found, re-evaluates every payment whose recorded `block_height` falls in the
-/// affected range. Never voids a payment on ambiguous evidence (§DESIGN.md 7.5) -
-/// only when `is_key_image_spent` affirmatively proves a different transaction
-/// consumed the same inputs. Safe to call unconditionally on every scan tick: with
-/// no reorg, this is just a handful of hash comparisons against the stored window.
+/// found (or one is already being reconciled), runs its reconciliation as far
+/// as it can go now: every affected payment re-examined, then the rewind to
+/// the common ancestor. Never voids a payment on ambiguous evidence
+/// (§DESIGN.md 7.5) - only when `is_key_image_spent` affirmatively proves a
+/// different transaction consumed the same inputs.
 ///
-/// Takes `&SharedStore`, locking only around each brief synchronous call and never
-/// across a daemon RPC `.await` - this function can make many sequential network
-/// calls (a hash check per block in the window, then a `locate_transaction` and
-/// possibly an `is_key_image_spent` per affected payment), so holding the store
-/// lock for its whole duration would block every other request touching the store
-/// for as long as all of that network I/O takes. Same reasoning as
-/// `webhook_delivery::run_delivery_tick`.
+/// The scheduler runs the same work in bounded units (`work::chain`); this
+/// drives it to completion in one call, for callers and tests that want
+/// "reconcile now". The job is durable: a failure partway (an unreachable
+/// node) returns the error and leaves the job, and the losing chain's
+/// hashes, for the next call to finish.
+///
+/// Not called by the engine: its scheduler's chain tier does this work a
+/// bounded unit at a time. For tests and tools.
 pub async fn check_for_reorg_and_reconcile(
     store: &crate::store::SharedStore,
     daemon: &dyn MoneroDaemonClient,
@@ -272,178 +324,62 @@ pub async fn check_for_reorg_and_reconcile(
     reorg_check_depth: u64,
     now: i64,
 ) -> Result<ReconcileReport> {
-    let height = daemon.get_height().await?;
-    let window_start = height.saturating_sub(reorg_check_depth);
-
-    // Detection is read-only against the store: the corrected hashes are *not*
-    // written back here. Writing them mid-detection (as this loop used to) makes the
-    // reorg undetectable to any later attempt - stored and actual hashes now agree -
-    // while the payments it affects have not been reconciled yet. A crash, or any
-    // `?` further down (a `locate_transaction` against a briefly-unreachable node is
-    // enough), then left those payments permanently stranded on the old chain with
-    // nothing to tell the next tick anything had happened.
-    let mut reorg_point: Option<u64> = None;
-    for h in window_start..=height {
-        let stored_hash = store.lock().get_scanned_block_hash(network, h)?;
-        if let Some(stored_hash) = stored_hash {
-            let actual_hash = daemon.get_block_hash(h).await?;
-            if actual_hash != stored_hash {
-                reorg_point = Some(h);
-                break; // the first divergence is the reorg point; everything above it is re-scanned wholesale
-            }
-        }
+    use crate::work::chain::{Chain, JobStep};
+    let tip = daemon.get_height().await?;
+    let db = crate::store::Db::over_shared(store.clone());
+    let parsed = crate::network::parse_network(network)
+        .map_err(|e| ScannerError::Internal(e.to_string()))?;
+    let chain = Chain::new(&db, daemon, parsed, reorg_check_depth, now);
+    if let Some(fork) = chain.detect(tip).await? {
+        chain.open(fork).await?;
     }
-
+    let reorg_detected_at = store.lock().reorg_job(parsed)?.map(|job| job.fork_height);
     let mut dirty_orders = HashSet::new();
     let mut double_spent_orders = HashSet::new();
-
-    if let Some(reorg_point) = reorg_point {
-        let affected = store.lock().find_payments_at_or_after_height(network, reorg_point)?;
-        for payment in affected {
-            match daemon.locate_transaction(&payment.txid).await? {
-                TxLocation::InBlock(new_height) => {
-                    store.lock().update_payment_block_height(
-                        &payment.order_id,
-                        &payment.txid,
-                        payment.output_index,
-                        Some(new_height as i64),
-                    )?;
-                    dirty_orders.insert(payment.order_id.clone());
-                }
-                TxLocation::InPool => {
-                    store.lock().update_payment_block_height(
-                        &payment.order_id,
-                        &payment.txid,
-                        payment.output_index,
-                        None,
-                    )?;
-                    dirty_orders.insert(payment.order_id.clone());
-                }
-                TxLocation::NotFound => {
-                    if void_if_double_spend_proven(store, daemon, &payment, height, now).await? {
-                        dirty_orders.insert(payment.order_id.clone());
-                        double_spent_orders.insert(payment.order_id.clone());
-                    }
+    let mut attempted = HashSet::new();
+    let mut failure = None;
+    loop {
+        match chain
+            .advance_job(
+                tip,
+                &mut attempted,
+                tokio::time::Instant::now() + crate::work::ROUND_BUDGET,
+            )
+            .await
+        {
+            Ok(Some(JobStep::Collected)) => {}
+            Ok(Some(JobStep::Processed {
+                reconciled,
+                failure: page_failure,
+            })) => {
+                dirty_orders.extend(reconciled.dirty_orders);
+                double_spent_orders.extend(reconciled.double_spent_orders);
+                if let Some(error) = page_failure {
+                    failure.get_or_insert(error);
                 }
             }
-        }
-
-        // The reverse direction: a payment an earlier pass voided as a proven
-        // double-spend, whose transaction has since come back to the canonical chain
-        // because the *replacement* was itself reorged out. Voiding is a conclusion
-        // drawn from a chain state that can change, so it can't be treated as final;
-        // without this, a merchant's genuinely-paid order stays permanently short by
-        // the voided amount. `double_spend_detected_at` stays set regardless - it
-        // records that an incident occurred, not that it is currently in effect.
-        let previously_voided = store.lock().find_voided_payments_at_or_after_height(network, reorg_point)?;
-        for payment in previously_voided {
-            if let TxLocation::InBlock(new_height) = daemon.locate_transaction(&payment.txid).await? {
-                let s = store.lock();
-                if s.unvoid_payment(&payment.order_id, &payment.txid, payment.output_index)? {
-                    s.update_payment_block_height(
-                        &payment.order_id,
-                        &payment.txid,
-                        payment.output_index,
-                        Some(new_height as i64),
-                    )?;
-                    dirty_orders.insert(payment.order_id.clone());
-                }
+            Ok(None | Some(JobStep::Waiting) | Some(JobStep::Rewound)) => break,
+            Err(error) => {
+                failure.get_or_insert(error);
+                break;
             }
         }
     }
-
+    // The notifying recompute: a reorg-driven transition (`paid` ->
+    // `confirming` when a tx falls back to the mempool, say) is as
+    // webhook-worthy as a forward-scan-driven one. While the job is still
+    // open, the store holds back any new settlement.
     {
         let s = store.lock();
-        // The notifying recompute, not the bare one: a reorg-driven transition
-        // (`paid` -> `confirming` when a tx falls back to the mempool, say) is
-        // exactly as webhook-worthy as a forward-scan-driven one, and a merchant
-        // discovering by polling that an order silently stopped being paid is the
-        // worst possible way to learn about it.
         for order_id in &dirty_orders {
-            recompute_and_notify(&s, order_id, height, now)?;
+            recompute_and_notify(&s, order_id, tip, now)?;
         }
     }
-
-    // Only now that every affected payment has been re-evaluated is it safe to let
-    // the stored view of the chain catch up. Dropping the rows at and above the
-    // reorg point (rather than overwriting them with the new hashes) does double
-    // duty: the next detection pass sees nothing to re-reconcile, *and*
-    // `max_scanned_height` falls back to `reorg_point - 1` so the next tick's
-    // forward scan re-covers `reorg_point..tip` against the replacement chain,
-    // picking up any payment that exists only there. Should this tick die before
-    // reaching this line, nothing has been written, and the next tick simply detects
-    // the same reorg again and redoes the work - reconciliation is idempotent.
-    if let Some(reorg_point) = reorg_point {
-        // ...with one thing to be careful about: "walks back to `reorg_point - 1`"
-        // is only true while a row still exists at or below that height. When the
-        // reorg point is the *lowest* block this network has a row for - routine on a
-        // recently-started scanner, whose window begins at the tip it bootstrapped
-        // from - the delete empties the table outright, and an empty table is exactly
-        // what `run_scan_tick` reads as "this network has never been scanned", which
-        // makes it re-seed at the current tip. Every replacement block between the
-        // reorg point and the tip would then be skipped forever, taking any payment
-        // that exists only in the winning chain with it - the precise failure
-        // dropping these rows was introduced to prevent.
-        //
-        // Re-anchoring the common ancestor fixes the high-water mark in place. Its
-        // hash is fetched before the lock is taken, since nothing may `.await` while
-        // holding the store mutex; one extra RPC per detected reorg is not worth
-        // conditionalising.
-        //
-        // The anchor is fetched *before* anything is deleted, and a failure to fetch
-        // it abandons the delete entirely rather than proceeding without it. Treating
-        // a failed lookup as "no anchor" (which an `.ok()` here quietly did) reaches
-        // precisely the outcome the paragraph above exists to prevent, just via a
-        // transient RPC error instead of a missing row: the rows are gone, the table
-        // can now be empty, and the next tick reads that as "never scanned" and
-        // re-seeds at the tip - skipping every replacement block between the reorg
-        // point and the tip, permanently and silently. Leaving the stored hashes
-        // untouched instead costs nothing: they still describe the losing chain, so
-        // the next tick detects the same reorg and redoes this whole step, exactly
-        // as it does when reconciliation itself fails partway.
-        let anchor = reorg_point.checked_sub(1);
-        let anchor_hash = match anchor {
-            Some(h) => match daemon.get_block_hash(h).await {
-                Ok(hash) => Some(hash),
-                Err(e) => {
-                    tracing::warn!(
-                        network = %network,
-                        reorg_at = reorg_point,
-                        height = h,
-                        error = %e,
-                        "reorg: could not read the hash of the common ancestor - leaving the scanned-block window \
-                         untouched so the next tick re-detects this reorg, rather than dropping rows this tick can no \
-                         longer re-anchor"
-                    );
-                    return Ok(ReconcileReport {
-                        reorg_detected_at: Some(reorg_point),
-                        dirty_orders: dirty_orders.into_iter().collect(),
-                        double_spent_orders: double_spent_orders.into_iter().collect(),
-                    });
-                }
-            },
-            // A divergence at height 0 means the genesis block changed, which cannot
-            // happen on any real chain. There is no ancestor to anchor to and nothing
-            // to preserve, so the delete goes ahead and the next tick re-seeds.
-            None => None,
-        };
-        // The rewind, the re-anchor and the tenant cursor clamp happen
-        // together: every tenant at or above the reorg point goes back to
-        // `reorg_point - 1`, so the replacement block at `reorg_point` itself
-        // is scanned for it too.
-        store.lock().in_transaction(|s| -> std::result::Result<(), StoreError> {
-            s.forget_scanned_blocks_at_or_above(network, reorg_point)?;
-            if s.max_scanned_height(network)?.is_none() {
-                if let (Some(h), Some(hash)) = (anchor, anchor_hash.as_deref()) {
-                    s.set_scanned_block(network, h, hash)?;
-                }
-            }
-            s.clamp_cursors(network, anchor)
-        })?;
+    if let Some(error) = failure {
+        return Err(error);
     }
-
     Ok(ReconcileReport {
-        reorg_detected_at: reorg_point,
+        reorg_detected_at,
         dirty_orders: dirty_orders.into_iter().collect(),
         double_spent_orders: double_spent_orders.into_iter().collect(),
     })
@@ -454,58 +390,14 @@ pub async fn check_for_reorg_and_reconcile(
 /// changing shape).
 pub struct VanishedPoolReport {
     /// Orders whose payments changed and therefore need a status recompute.
-    pub dirty_orders: Vec<String>,
+    pub dirty_orders: Vec<crate::store::OrderId>,
     /// The subset of `dirty_orders` where a payment was voided on affirmative
     /// double-spend proof - the `order.double_spend_detected` webhook's trigger.
-    pub double_spent_orders: Vec<String>,
+    pub double_spent_orders: Vec<crate::store::OrderId>,
 }
 
-/// Re-examines every payment that is still mempool-only (`block_height IS NULL`)
-/// and whose transaction is no longer in the mempool snapshot this tick polled.
-///
-/// This exists because reorg reconciliation cannot cover the most ordinary
-/// double-spend there is. `check_for_reorg_and_reconcile` only re-examines existing
-/// payments when a *stored block hash stops matching*, which is a reorg and nothing
-/// else. But the textbook attack on a merchant watching the mempool involves no
-/// reorg at all: broadcast transaction A to the merchant's node (the order is
-/// matched at zero confirmations, and on a tier whose own `confirmations_required`
-/// is 0 immediately reads as `paid`), then get transaction B, spending the same inputs,
-/// mined instead. A is never mined, so no block the scanner recorded ever changes,
-/// so nothing ever looked at that payment again: it sat at `block_height IS NULL`
-/// forever, counting in full towards an order the customer never actually paid, with
-/// no `order.double_spend_detected` webhook ever fired. The same blind spot swallows
-/// the honest version of the story - a transaction that is dropped or evicted from
-/// the pool (Monero has no replace-by-fee, but a transaction can still expire out of
-/// the pool after `CRYPTONOTE_MEMPOOL_TX_LIVETIME`, or simply never propagate) -
-/// which is why the "gone but not proven double-spent" case is deliberately left
-/// re-checkable rather than resolved.
-///
-/// Cheap by construction: a payment whose transaction is still in the pool costs
-/// nothing (the snapshot the tick already fetched answers it), and one that has just
-/// been mined normally has its height set by this same tick's block scan before this
-/// runs, so it isn't in the query's result set either. Only a genuinely vanished
-/// transaction costs an RPC, and the evidence rule is identical to
-/// `check_for_reorg_and_reconcile`'s: never void on absence, only on an affirmative
-/// `SpentInBlockchain` for one of the payment's own key images.
-///
-/// `mempool_txids` must be a snapshot of an *actually successful* poll. A failed
-/// poll must skip this sweep entirely rather than pass an empty set, which would
-/// read as "every unconfirmed payment has vanished" and burn one RPC per payment
-/// re-establishing that they hadn't.
-pub async fn check_vanished_mempool_payments(
-    store: &crate::store::SharedStore,
-    daemon: &dyn MoneroDaemonClient,
-    network: &str,
-    mempool_txids: &HashSet<String>,
-    current_height: u64,
-    now: i64,
-) -> Result<VanishedPoolReport> {
-    let unconfirmed = store.lock().find_unconfirmed_payments(network)?;
-    check_vanished_candidates(store, daemon, mempool_txids, current_height, now, unconfirmed).await
-}
-
-async fn check_vanished_candidates(
-    store: &crate::store::SharedStore,
+pub(crate) async fn check_vanished_candidates(
+    db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
     mempool_txids: &HashSet<String>,
     current_height: u64,
@@ -525,12 +417,20 @@ async fn check_vanished_candidates(
             // height here is the same write the block scan would have made, and
             // costs the payment nothing if the block scan gets there first.
             TxLocation::InBlock(new_height) => {
-                store.lock().update_payment_block_height(
-                    &payment.order_id,
-                    &payment.txid,
+                let (order_id, txid, output) = (
+                    payment.order_id.clone(),
+                    payment.txid.clone(),
                     payment.output_index,
-                    Some(new_height as i64),
-                )?;
+                );
+                db.run(crate::store::db::Class::Scanner, move |s| {
+                    s.update_payment_block_height(
+                        &order_id,
+                        &txid,
+                        output,
+                        Some(crate::store::sql_height(new_height)?),
+                    )
+                })
+                .await?;
                 dirty_orders.insert(payment.order_id.clone());
             }
             // The daemon's live pool disagrees with the snapshot taken at the top of
@@ -544,7 +444,7 @@ async fn check_vanished_candidates(
                 // same way `check_for_reorg_and_reconcile` resolves the identical
                 // question. Voiding on anything less would write off a payment the
                 // customer really made.
-                if void_if_double_spend_proven(store, daemon, &payment, current_height, now).await? {
+                if void_if_double_spend_proven(db, daemon, &payment, current_height, now).await? {
                     dirty_orders.insert(payment.order_id.clone());
                     double_spent_orders.insert(payment.order_id.clone());
                 }
@@ -573,21 +473,34 @@ async fn check_vanished_candidates(
 /// timestamp being inside the signed body (rather than only an unsigned header) is
 /// what stops a captured delivery from being replayable against the merchant
 /// indefinitely.
-fn enqueue_webhook_event(store: &Store, order_id: &str, event_type: &str, payload: &serde_json::Value, now: i64) -> Result<()> {
-    let Some(tenant_id) = store.get_order_tenant_id(order_id)? else { return Ok(()) };
-    let webhooks: Vec<_> = store.list_webhooks(&tenant_id)?.into_iter().filter(|w| w.enabled).collect();
+fn enqueue_webhook_event(
+    store: &Store,
+    order_id: &crate::store::OrderId,
+    event_type: &str,
+    fields: &[(&str, &str)],
+    now: i64,
+) -> Result<()> {
+    // The caller has just written this order in the same transaction.
+    let tenant_id = store
+        .get_order_tenant_id(order_id)?
+        .ok_or(crate::store::StoreError::NotFound)?;
+    let webhooks: Vec<_> = store
+        .list_webhooks(&tenant_id)?
+        .into_iter()
+        .filter(|w| w.enabled)
+        .collect();
     if webhooks.is_empty() {
         return Ok(());
     }
 
-    let mut envelope = payload.clone();
-    let Some(fields) = envelope.as_object_mut() else {
-        return Err(ScannerError::Internal(format!("webhook payload for {event_type} is not a JSON object")));
-    };
-    fields.insert("event_id".into(), serde_json::json!(new_event_id()));
-    fields.insert("event".into(), serde_json::json!(event_type));
-    fields.insert("created_at".into(), serde_json::json!(now));
-    let body = envelope.to_string();
+    let mut envelope: serde_json::Map<String, serde_json::Value> = fields
+        .iter()
+        .map(|(name, value)| ((*name).to_string(), serde_json::Value::from(*value)))
+        .collect();
+    envelope.insert("event_id".into(), serde_json::json!(new_event_id()));
+    envelope.insert("event".into(), serde_json::json!(event_type));
+    envelope.insert("created_at".into(), serde_json::json!(now));
+    let body = serde_json::Value::Object(envelope).to_string();
 
     for webhook in webhooks {
         store.enqueue_webhook_delivery(&webhook.id, order_id, event_type, &body, now)?;
@@ -616,7 +529,12 @@ fn new_event_id() -> String {
 ///
 /// Public so `scanner-test-support` can settle an order the same way a real
 /// scan does (`TestEngineHandle::mark_order_paid`).
-pub fn recompute_and_notify(store: &Store, order_id: &str, current_height: u64, now: i64) -> Result<()> {
+pub fn recompute_and_notify(
+    store: &Store,
+    order_id: &crate::store::OrderId,
+    current_height: u64,
+    now: i64,
+) -> Result<()> {
     store.in_transaction(|store| recompute_and_notify_in_tx(store, order_id, current_height, now))
 }
 
@@ -624,13 +542,25 @@ pub fn recompute_and_notify(store: &Store, order_id: &str, current_height: u64, 
 /// already inside one - `Store::in_transaction` uses `unchecked_transaction`, so
 /// nesting it would fail at SQLite's "cannot start a transaction within a
 /// transaction" rather than composing.
-fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64, now: i64) -> Result<()> {
+pub(crate) fn recompute_and_notify_in_tx(
+    store: &Store,
+    order_id: &crate::store::OrderId,
+    current_height: u64,
+    now: i64,
+) -> Result<()> {
     let (old_status, new_status) = store.recompute_order_status(order_id, current_height, now)?;
     if old_status != new_status {
-        let payload = serde_json::json!({ "order_id": order_id, "status": new_status.as_str() });
-        enqueue_webhook_event(store, order_id, &format!("order.{new_status}"), &payload, now)?;
+        enqueue_webhook_event(
+            store,
+            order_id,
+            &format!("order.{new_status}"),
+            &[
+                ("order_id", order_id.as_str()),
+                ("status", new_status.as_str()),
+            ],
+            now,
+        )?;
     }
-    store.clear_pending_payment_recompute(order_id)?;
     Ok(())
 }
 
@@ -649,13 +579,22 @@ fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64
 /// this file is kept brief: `is_key_image_spent` is network I/O, and nothing may
 /// `.await` while holding the store mutex.
 async fn void_if_double_spend_proven(
-    store: &crate::store::SharedStore,
+    db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
     payment: &crate::store::OrderPaymentRow,
     current_height: u64,
     now: i64,
 ) -> Result<bool> {
-    let key_images = parse_payment_key_images(&payment.key_images_json)?;
+    // Invalid stored evidence is never proof, and never an error that would
+    // stop the check for every other payment: log it and leave the payment.
+    let key_images = match parse_payment_key_images(&payment.key_images_json) {
+        Ok(images) => images,
+        Err(error) => {
+            tracing::warn!(payment.id = payment.id, order.id = %payment.order_id, error = %error,
+                "a vanished payment's stored key images are invalid - never voiding it on that");
+            return Ok(false);
+        }
+    };
     // Corroborated, not the bare call: this is the one place a false accusation
     // permanently voids real money, so a `daemon` that knows about more than one
     // node (`daemon_fallback::FallbackDaemonClient`) cross-checks them here rather
@@ -667,8 +606,15 @@ async fn void_if_double_spend_proven(
         // - never void on this evidence alone.
         return Ok(false);
     }
-    let s = store.lock();
-    void_and_notify(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now)?;
+    let (order_id, txid, output) = (
+        payment.order_id.clone(),
+        payment.txid.clone(),
+        payment.output_index,
+    );
+    db.run(crate::store::db::Class::Scanner, move |s| {
+        void_and_notify(s, &order_id, &txid, output, current_height, now)
+    })
+    .await?;
     Ok(true)
 }
 
@@ -688,26 +634,39 @@ async fn void_if_double_spend_proven(
 /// double-spent, with no event ever sent.
 fn void_and_notify(
     store: &Store,
-    order_id: &str,
+    order_id: &crate::store::OrderId,
     txid: &str,
     output_index: i64,
     current_height: u64,
     now: i64,
 ) -> Result<()> {
     store.in_transaction(|store| {
-        store.void_payment(order_id, txid, output_index, now)?;
-        store.mark_double_spend_detected(order_id, now)?;
-        recompute_and_notify_in_tx(store, order_id, current_height, now)?;
-        // One event per voided payment row (docs/DESIGN.md §11), independent of
-        // whatever status transition the recompute above may also have announced.
-        enqueue_webhook_event(
-            store,
-            order_id,
-            "order.double_spend_detected",
-            &serde_json::json!({ "order_id": order_id }),
-            now,
-        )
+        void_and_notify_in_tx(store, order_id, txid, output_index, current_height, now)
     })
+}
+
+/// The body of `void_and_notify`, for callers already inside a transaction
+/// (the reorg job commits the void and the removal of its candidate together).
+pub(crate) fn void_and_notify_in_tx(
+    store: &Store,
+    order_id: &crate::store::OrderId,
+    txid: &str,
+    output_index: i64,
+    current_height: u64,
+    now: i64,
+) -> Result<()> {
+    store.void_payment(order_id, txid, output_index, now)?;
+    store.mark_double_spend_detected(order_id, now)?;
+    recompute_and_notify_in_tx(store, order_id, current_height, now)?;
+    // One event per voided payment row (docs/DESIGN.md §11), independent of
+    // whatever status transition the recompute above may also have announced.
+    enqueue_webhook_event(
+        store,
+        order_id,
+        "order.double_spend_detected",
+        &[("order_id", order_id.as_str())],
+        now,
+    )
 }
 
 /// Reverses a payment void that a later, corroborated re-check no longer supports -
@@ -730,7 +689,7 @@ fn void_and_notify(
 /// the whole point of the correction is transparency, not a quiet undo.
 fn unvoid_as_false_positive(
     store: &Store,
-    order_id: &str,
+    order_id: &crate::store::OrderId,
     txid: &str,
     output_index: i64,
     current_height: u64,
@@ -740,7 +699,11 @@ fn unvoid_as_false_positive(
         if !store.unvoid_payment(order_id, txid, output_index)? {
             return Ok(false);
         }
-        if store.get_all_payments(order_id)?.iter().all(|p| p.voided_at.is_none()) {
+        if store
+            .get_all_payments(order_id)?
+            .iter()
+            .all(|p| p.voided_at.is_none())
+        {
             store.clear_double_spend_flag(order_id)?;
         }
         recompute_and_notify_in_tx(store, order_id, current_height, now)?;
@@ -748,87 +711,65 @@ fn unvoid_as_false_positive(
             store,
             order_id,
             "order.double_spend_reversed",
-            &serde_json::json!({ "order_id": order_id, "txid": txid }),
+            &[("order_id", order_id.as_str()), ("txid", txid)],
             now,
         )?;
         Ok(true)
     })
 }
 
-/// How far back [`revalidate_recent_double_spend_voids`] looks for voided payments
-/// to recheck. Bounded deliberately: a void that turns out to have been a false
+/// How far back the upkeep tier's void recheck (`work::upkeep`, `docs/DESIGN.md`
+/// §7.7) looks for voided payments to recheck. Bounded deliberately: a void that turns out to have been a false
 /// accusation is exactly as worth correcting a day later as a minute later - unlike
 /// zero-conf detection, there is no latency requirement to trade away here - and an
 /// old, long-settled void is not worth the cost of rechecking forever: if it were
 /// wrong, the merchant and customer have long since moved on regardless.
 pub const DOUBLE_SPEND_RECHECK_WINDOW_SECS: i64 = 48 * 3600;
 
-/// Re-examines every payment on `network` voided within the last
-/// [`DOUBLE_SPEND_RECHECK_WINDOW_SECS`] and reverses the void
-/// (`unvoid_as_false_positive`) if a fresh call to
-/// [`MoneroDaemonClient::is_key_image_spent_corroborated`] no longer supports the
-/// original accusation.
-///
-/// This is the *only* other path that can ever reverse a void, alongside
-/// `check_for_reorg_and_reconcile`'s own reverse check - and that one only runs when
-/// a reorg (a block-hash mismatch) is *also* independently detected, which a lying
-/// `is_key_image_spent` answer alone would never trigger, since it has nothing to do
-/// with block hashes. Without this sweep, a false accusation from an uncorroborated
-/// single answer would never be revisited by anything ever again (`docs/DESIGN.md`
-/// §7.7).
-///
-/// Deliberately its own, much slower background loop (see `main.rs`), never called
-/// from `run_scan_tick`'s tight per-second loop: double-spend voids are healthily
-/// rare, so the cost of this sweep is proportional to how many voids happened
-/// recently, not to how often it runs - checking every few minutes instead of every
-/// second loses nothing a merchant would notice (see the constant above) and keeps
-/// the extra per-payment RPCs entirely off the hot scanning path.
-///
-/// A failure rechecking one payment's key images is logged and skipped, leaving that
-/// payment voided for the next sweep to retry - the same per-item resilience shape
-/// as every other loop in this file - but a failure to read the chain height at all
-/// (needed for the status recompute a reversal implies) aborts the sweep for this
-/// network this round, since nothing here can proceed without one.
-pub async fn revalidate_recent_double_spend_voids(
-    store: &crate::store::SharedStore,
+/// Rechecks one voided payment and restores it if fresh, corroborated
+/// evidence no longer supports the double-spend accusation. Returns whether
+/// it was restored. Invalid evidence or an inconclusive answer leaves the
+/// payment voided (`Ok(false)`); a node or storage failure is an error, so a
+/// caller can stop asking a node that isn't answering.
+pub(crate) async fn recheck_voided_payment(
+    db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
-    network: &str,
+    network: monero::Network,
+    payment: &crate::store::OrderPaymentRow,
+    current_height: u64,
     now: i64,
-) -> Result<Vec<String>> {
-    let current_height = daemon.get_height().await?;
-    let candidates = store.lock().find_payments_voided_since(network, now - DOUBLE_SPEND_RECHECK_WINDOW_SECS)?;
-
-    let mut recovered_orders = Vec::new();
-    for payment in candidates {
-        let key_images = match parse_payment_key_images(&payment.key_images_json) {
-            Ok(images) => images,
-            Err(e) => {
-                tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: leaving the order voided because its stored evidence is invalid");
-                continue;
-            }
-        };
-        let statuses = match daemon.is_key_image_spent_corroborated(&key_images).await {
-            Ok(statuses) => statuses,
-            Err(e) => {
-                tracing::warn!(
-                    order.id = %payment.order_id,
-                    network = %network,
-                    error = %e,
-                    "double-spend revalidation: rechecking a voided payment failed - leaving it voided, will retry next sweep"
-                );
-                continue;
-            }
-        };
-        if statuses.len() != key_images.len() || !statuses.iter().all(|status| *status == KeyImageStatus::Unspent) {
-            tracing::info!(order.id = %payment.order_id, "double-spend revalidation: inconclusive key-image statuses; leaving the order voided");
-            continue;
+) -> Result<bool> {
+    let key_images = match parse_payment_key_images(&payment.key_images_json) {
+        Ok(images) => images,
+        Err(e) => {
+            tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: leaving the order voided because its stored evidence is invalid");
+            return Ok(false);
         }
-        let s = store.lock();
-        if unvoid_as_false_positive(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now)? {
-            recovered_orders.push(payment.order_id.clone());
-        }
+    };
+    let statuses =
+        crate::work::bounded(daemon.is_key_image_spent_corroborated(&key_images)).await?;
+    if statuses.len() != key_images.len()
+        || !statuses
+            .iter()
+            .all(|status| *status == KeyImageStatus::Unspent)
+    {
+        tracing::info!(order.id = %payment.order_id, "double-spend revalidation: inconclusive key-image statuses; leaving the order voided");
+        return Ok(false);
     }
-    Ok(recovered_orders)
+    let (order_id, txid, output) = (
+        payment.order_id.clone(),
+        payment.txid.clone(),
+        payment.output_index,
+    );
+    let restored = db
+        .run(crate::store::db::Class::Scanner, move |s| {
+            unvoid_as_false_positive(s, &order_id, &txid, output, current_height, now)
+        })
+        .await?;
+    if restored {
+        tracing::info!(order.id = %payment.order_id, network = crate::network::network_str(network), "double-spend revalidation reversed a void");
+    }
+    Ok(restored)
 }
 
 /// Never request fewer than this many blocks in one `get_blocks_range` call,
@@ -856,754 +797,114 @@ const SCAN_CHUNK_EWMA_ALPHA: f64 = 0.3;
 /// first chunk of a catch-up walk undershoots `scan_chunk_memory_budget_mb`
 /// rather than overshoots it. Self-correcting from the second chunk onward
 /// regardless.
-const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = 50_000.0;
+pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = 50_000.0;
 
 /// Pure sizing decision, extracted from `run_scan_tick`'s own loop specifically
 /// so it's directly, cheaply unit-testable - the real behavior lives entirely
 /// in arithmetic over three numbers, and proving "a larger average yields a
 /// smaller chunk" shouldn't require driving real transactions through real
 /// crypto to observe.
-fn next_scan_chunk_size(budget_bytes: u64, avg_bytes_per_block: f64, remaining: u64) -> u64 {
+pub(crate) fn next_scan_chunk_size(
+    budget_bytes: u64,
+    avg_bytes_per_block: f64,
+    remaining: u64,
+) -> u64 {
     let by_budget = ((budget_bytes as f64) / avg_bytes_per_block).floor() as u64;
-    by_budget.clamp(SCAN_CHUNK_MIN_BLOCKS, SCAN_CHUNK_MAX_BLOCKS).min(remaining)
+    by_budget
+        .clamp(SCAN_CHUNK_MIN_BLOCKS, SCAN_CHUNK_MAX_BLOCKS)
+        .min(remaining)
 }
 
 /// Pure EWMA update, same reasoning as `next_scan_chunk_size` above - `chunk_
 /// bytes`/`block_count` are already known before this is called, so this is
 /// just the averaging formula on its own, testable without any daemon or
 /// store at all.
-fn update_avg_bytes_per_block(avg_bytes_per_block: f64, chunk_bytes: usize, block_count: usize) -> f64 {
+pub(crate) fn update_avg_bytes_per_block(
+    avg_bytes_per_block: f64,
+    chunk_bytes: usize,
+    block_count: usize,
+) -> f64 {
     let observed_avg = chunk_bytes as f64 / block_count as f64;
     SCAN_CHUNK_EWMA_ALPHA * observed_avg + (1.0 - SCAN_CHUNK_EWMA_ALPHA) * avg_bytes_per_block
 }
 
-/// One full scan tick for one network: mempool, any new confirmed blocks, then a
-/// reorg check - composing the primitives above into what a production scanner
-/// loop actually runs on an interval. `network` scopes everything to one chain: the
-/// `daemon` passed in must be the client for that same network, `tenants` should be
-/// pre-filtered (or filters itself further, see below) to that network's tenants,
-/// and every `scanned_blocks`/reorg call is keyed by it. A multi-network instance
-/// (§DESIGN.md §7) calls this once per configured network per round, each with its
-/// own daemon and its own independent block-height bookkeeping - mixing them under
-/// one call would compare block hashes across unrelated chains.
-///
-/// Takes `&SharedStore` and holds the lock only for synchronous persistence;
-/// key-custody scans and daemon calls run without it.
+/// One scan round for one network (docs/scanner_microtasks.md): reorg
+/// detection and reconciliation, new and lagging blocks, the mempool, status
+/// recomputes and upkeep, each a bounded unit with a share of the round's
+/// time. `network` scopes everything to one chain: the `daemon` passed in must
+/// be the client for that same network, and `tenants` are the tenants whose
+/// keys are registered (only those on `network` are ever scanned).
 ///
 /// On first run (no `scanned_blocks` history at all), seeds at the current chain
 /// tip rather than replaying the entire chain from genesis - this is a payment
 /// gateway watching for new incoming payments, not a block explorer backfilling
 /// history.
+///
+/// Returns the first unit failure of the round, after every other tier ran.
+///
+/// Not the engine's own loop: `loops::run_scanner_loop` keeps a
+/// `work::ScanState` across rounds, runs them back to back while work is
+/// left, and shares the state with the fast mempool path. This runs one
+/// round from empty in-memory state, over an inline store, for tests, the
+/// e2e harness and tools that want "scan once now".
 pub async fn run_scan_tick(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
     daemon: &dyn MoneroDaemonClient,
     network: &str,
-    tenants: &[(String, WalletHandle)],
+    tenants: &[(crate::store::TenantId, WalletHandle)],
     reorg_check_depth: u64,
     expired_order_grace_period_seconds: i64,
 ) -> Result<()> {
-    let memory = MempoolMemory::default();
-    let budget = crate::engine_settings::EngineSettings::defaults().scan.load().scan_chunk_memory_budget_mb;
-    run_scan_tick_with(&memory, store, key_custody, daemon, network, tenants, reorg_check_depth, expired_order_grace_period_seconds, budget)
-        .await
-}
-
-/// What one network's scan loop remembers about the mempool between ticks
-/// (task 7.3), so a transaction sitting in the pool is fetched once and
-/// scanned once per store, not every second:
-/// - the bodies of transactions still in the pool;
-/// - which (transaction, store, scan window) have been scanned
-///   *successfully*. A failed scan isn't remembered, so it's retried next
-///   tick; a store whose window changed is scanned again.
-///
-/// Entries go when their transaction leaves the pool.
-#[derive(Default)]
-pub struct MempoolMemory {
-    inner: parking_lot::Mutex<MempoolMemoryInner>,
-    next_tx_offset: std::sync::atomic::AtomicUsize,
-    next_tenant_offset: std::sync::atomic::AtomicUsize,
-    pending_order_cursor: parking_lot::Mutex<String>,
-    active_order_cursor: parking_lot::Mutex<String>,
-    unconfirmed_payment_cursor: parking_lot::Mutex<i64>,
-}
-
-#[derive(Default)]
-struct MempoolMemoryInner {
-    bodies: HashMap<String, std::sync::Arc<Transaction>>,
-    scanned: HashMap<String, HashMap<String, u64>>,
-}
-
-/// Most mempool transaction bodies remembered; beyond this (a spam wave) new
-/// ones are scanned but not kept.
-const MEMPOOL_MEMORY_MAX_BODIES: usize = 20_000;
-const MEMPOOL_TXS_PER_TICK: usize = 64;
-const MEMPOOL_TENANTS_PER_TX: usize = 32;
-const MEMPOOL_PHASE_TIME: std::time::Duration = std::time::Duration::from_secs(15);
-/// A cancellation may replay this many no-match transactions. Batching the
-/// checkpoint avoids one SQLite commit per tenant and transaction in a large
-/// block, while every actual match still commits atomically with its position.
-const PARTIAL_CHECKPOINT_EVERY_TXS: usize = 16;
-
-/// `run_scan_tick` with mempool memory kept by the caller between ticks.
-#[allow(clippy::too_many_arguments)] // one tick's genuinely independent inputs
-pub async fn run_scan_tick_with(
-    memory: &MempoolMemory,
-    store: &crate::store::SharedStore,
-    key_custody: &dyn KeyCustody,
-    daemon: &dyn MoneroDaemonClient,
-    network: &str,
-    tenants: &[(String, WalletHandle)],
-    reorg_check_depth: u64,
-    expired_order_grace_period_seconds: i64,
-    scan_chunk_memory_budget_mb: u32,
-) -> Result<()> {
-    let now = crate::now_unix();
-
-    // The active watchlist (docs/DESIGN.md §7.3): only tenants with at least one
-    // order still capable of receiving a *new* detected payment are worth the
-    // scalar-multiplication cost of scanning. `active_tenant_ids` is a fresh query
-    // against the one mutex-serialized Store, not a separately-maintained cache -
-    // see its doc comment in `store.rs` for why that's a deliberate choice, not a
-    // missed optimization: an incrementally add/removed cache has a real TOCTOU
-    // race (a tenant's last order can settle and a brand-new order can arrive for
-    // the same tenant in the wrong order relative to an out-of-band "remove"
-    // decision, wrongly dropping a tenant with a genuinely pending order), and
-    // paying for a fresh indexed query every tick is negligible next to the EC
-    // math it avoids. Taking both queries (`active_tenant_ids` and each
-    // `get_tenant_by_id`) under one lock hold keeps them mutually consistent -
-    // no writer can slip in between deciding a tenant is active and reading its
-    // current `next_minor_index`.
-    //
-    // Also filters by `t.network == network` even though `active_tenant_ids`
-    // already scopes by network at the query level - a defensive second check
-    // against whatever `tenants` the caller happened to pass in (e.g. a boot-time
-    // snapshot spanning every configured network), so a mismatched daemon can never
-    // be handed a tenant that belongs to a different chain.
-    //
-    // Each tenant's own scan cursor (task 5.0) is read in the same lock hold.
-    // Before that, two cheap repairs keep cursors consistent with the
-    // network's high-water mark whatever happened last time (a crash between
-    // a reorg's rewind and its cursor clamp, or a tenant created before the
-    // network was seeded): no cursor may be ahead of the network, and an
-    // unset one is anchored to it.
-    let (ranges, cursors, active_ids): (Vec<(String, WalletHandle, ScanIndices)>, HashMap<String, Option<u64>>, Vec<String>) = {
-        let s = store.lock();
-        if let Some(high_water) = s.max_scanned_height(network)? {
-            s.clamp_cursors(network, Some(high_water))?;
-            s.anchor_unset_cursors(network, high_water)?;
-        }
-        let active_ids: Vec<String> = s.active_tenant_ids(network, now, expired_order_grace_period_seconds)?;
-        let active: HashSet<&String> = active_ids.iter().collect();
-        let mut cursors = HashMap::new();
-        let ranges = tenants
-            .iter()
-            .filter(|(tenant_id, _)| active.contains(tenant_id))
-            .filter_map(|(tenant_id, handle)| {
-                let t = s.get_tenant_by_id(tenant_id).ok().flatten()?;
-                if t.network != network {
-                    return None;
-                }
-                cursors.insert(tenant_id.clone(), t.scanned_through_height);
-                // Only the store's open and recently closed orders (D10).
-                let window = s.scan_window(tenant_id, now, expired_order_grace_period_seconds).ok()?;
-                Some((tenant_id.clone(), *handle, ScanIndices::new(window)))
-            })
-            .collect();
-        (ranges, cursors, active_ids)
-    };
-
-    let mut touched: HashSet<String> = HashSet::new();
-
-    // A failed mempool poll is survivable (the next tick re-polls a second later) but
-    // must not be *silent*: if it keeps failing, zero-conf detection is simply off for
-    // this network, and an operator whose orders never leave `pending` before a block
-    // arrives has nothing anywhere to tell them why.
-    let pool_txids = match daemon.get_mempool_txids().await {
-        Ok(txids) => Some(txids),
-        Err(e) => {
-            shared::throttled!(
-                format!("mempool-poll:{network}"),
-                warn,
-                network = %network,
-                error = %e,
-                "polling the mempool failed - no zero-conf detection this tick"
-            );
-            None
-        }
-    };
-    // The txids of an *actually successful* poll, kept for the vanished-payment
-    // sweep below - `None` (a failed poll) makes that sweep skip entirely rather
-    // than mistake "we didn't look" for "the pool is empty".
-    let mut mempool_txids: Option<HashSet<String>> = None;
-    if let Some(pool_txids) = pool_txids {
-        let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
-        // Rotate a bounded slice of the pool. Both the fetch and the EC work
-        // must leave room for blocks even if the pool is very large.
-        let mut selected = pool_txids;
-        selected.sort_unstable();
-        if !selected.is_empty() {
-            let offset = memory.next_tx_offset.load(std::sync::atomic::Ordering::Relaxed) % selected.len();
-            selected.rotate_left(offset);
-            selected.truncate(MEMPOOL_TXS_PER_TICK);
-        }
-        // Forget what left the pool; fetch only selected bodies not already held.
-        let missing: Vec<String> = {
-            let mut memory = memory.inner.lock();
-            memory.bodies.retain(|txid, _| in_pool.contains(txid));
-            memory.scanned.retain(|txid, _| in_pool.contains(txid));
-            selected.iter().filter(|txid| !memory.bodies.contains_key(*txid)).cloned().collect()
-        };
-        let mut fresh: Vec<std::sync::Arc<Transaction>> = Vec::new();
-        if !missing.is_empty() {
-            match daemon.get_transactions(&missing).await {
-                Ok(txs) => fresh = txs.into_iter().map(std::sync::Arc::new).collect(),
-                Err(e) => tracing::warn!(
-                    network = %network,
-                    transactions = missing.len(),
-                    error = %e,
-                    "fetching new mempool transactions failed (retried next tick)"
-                ),
-            }
-        }
-        let pool: Vec<std::sync::Arc<Transaction>> = {
-            let mut memory = memory.inner.lock();
-            let mut fetched = HashMap::new();
-            for tx in &fresh {
-                let txid = tx_id_hex(tx);
-                fetched.insert(txid.clone(), tx.clone());
-                if memory.bodies.len() < MEMPOOL_MEMORY_MAX_BODIES {
-                    memory.bodies.insert(txid, tx.clone());
-                }
-            }
-            selected.iter().filter_map(|txid| memory.bodies.get(txid).or_else(|| fetched.get(txid)).cloned()).collect()
-        };
-        mempool_txids = Some(in_pool);
-
-        // Retry a failed tenant next tick, not once per pool transaction. A
-        // single unresponsive backend must not spend the entire tick budget
-        // on repeated deadlines before block scanning even gets a turn.
-        let mut failed_in_pool = HashSet::new();
-        let phase_end = tokio::time::Instant::now() + MEMPOOL_PHASE_TIME;
-        let mut attempted_txs = 0;
-        for tx in &pool {
-            if tokio::time::Instant::now() >= phase_end {
-                break;
-            }
-            attempted_txs += 1;
-            let txid = tx_id_hex(tx);
-            // Only the stores this transaction hasn't been scanned for, with
-            // the store's current window, yet.
-            let mut due: Vec<&(String, WalletHandle, ScanIndices)> = {
-                let memory = memory.inner.lock();
-                let done = memory.scanned.get(&txid);
-                ranges
-                    .iter()
-                    .filter(|(tenant_id, _, _)| !failed_in_pool.contains(tenant_id))
-                    .filter(|(tenant_id, _, window)| done.and_then(|d| d.get(tenant_id)) != Some(&window.generation()))
-                    .collect()
-            };
-            due.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            if !due.is_empty() {
-                let offset = memory.next_tenant_offset.fetch_add(MEMPOOL_TENANTS_PER_TX, std::sync::atomic::Ordering::Relaxed) % due.len();
-                due.rotate_left(offset);
-                due.truncate(MEMPOOL_TENANTS_PER_TX);
-            }
-            if due.is_empty() {
-                continue;
-            }
-            // Compute (async, no Store - see ScanResult's doc comment) then
-            // persist (sync, no .await) as two separate steps, never a single
-            // await-spanning call holding a &Store.
-            //
-            // A failure here is genuinely recoverable by doing nothing: the
-            // transaction isn't marked as scanned for that store, so the next
-            // tick tries again. It still gets logged rather than silently
-            // swallowed - a persistently failing scan or store call that never
-            // surfaces anywhere is indistinguishable from "no payments are
-            // arriving".
-            let generations: HashMap<&String, u64> = due.iter().map(|(id, _, w)| (id, w.generation())).collect();
-            for (tenant_id, result) in scan_for_tenants(key_custody, tx, &due).await {
-                let tenant_id = &tenant_id;
-                match result {
-                    Ok(scan) => {
-                        let recorded = record_scan_match(&store.lock(), tenant_id, &scan, now, None);
-                        match recorded {
-                            Ok(order_ids) => {
-                                touched.extend(order_ids);
-                                if let Some(generation) = generations.get(tenant_id) {
-                                    memory.inner.lock().scanned.entry(txid.clone()).or_default().insert(tenant_id.clone(), *generation);
-                                }
-                            }
-                            Err(e) => tracing::warn!(
-                                store.id = %tenant_id,
-                                network = %network,
-                                error = %e,
-                                "recording a mempool match failed (will retry next tick)"
-                            ),
-                        }
-                    }
-                    Err(e) => {
-                        failed_in_pool.insert(tenant_id.clone());
-                        shared::throttled!(
-                            format!("mempool-scan:{tenant_id}"),
-                            warn,
-                            store.id = %tenant_id,
-                            network = %network,
-                            error = %e,
-                            "scanning a mempool transaction failed"
-                        );
-                    }
-                }
-            }
-        }
-        // Advance by work actually attempted. Advancing by the whole selected
-        // slice would revisit its slow first member forever when the pool size
-        // exactly equals the slice size and the time allowance stops us early.
-        memory.next_tx_offset.fetch_add(
-            if attempted_txs == 0 { selected.len() } else { attempted_txs },
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    }
-
-    // A failure anywhere in here means "skip block scanning this tick, try again
-    // next time" - it must never discard the mempool-scan results already
-    // gathered above by short-circuiting the whole function. An earlier version of
-    // this function did exactly that (`return Ok(())` from inside this block),
-    // which silently dropped a real mempool match's status recompute + webhook
-    // whenever the tip-seeding bootstrap below hit the lagging-backend condition
-    // it exists to handle - caught only by a test asserting the mempool match's
-    // *end-to-end* effect (status + webhook), not just that scanning didn't error.
-    let current_height = daemon.get_height().await?;
-    let last_scanned = store.lock().max_scanned_height(network)?;
-    let scan_range = match last_scanned {
-        Some(h) => Some((h + 1, current_height)),
-        None => {
-            // Seeds one block behind the reported tip as a small safety margin
-            // against a daemon momentarily reporting a height it can't yet serve a
-            // block for (e.g. genuine replication lag across a pool of backend
-            // nodes behind a public endpoint). This margin was originally added to
-            // work around what turned out to be a different, deterministic bug -
-            // `RpcDaemonClient::get_height` misreading monerod's block-count
-            // convention as the tip height itself, now fixed at its source in
-            // `daemon_rpc.rs`. Kept anyway as cheap, genuine defense for the
-            // scenario it actually describes, now that a real bug isn't hiding
-            // behind it.
-            let seed_height = current_height.saturating_sub(1);
-            match daemon.get_block_hash(seed_height).await {
-                Ok(hash) => {
-                    let s = store.lock();
-                    s.set_scanned_block(network, seed_height, &hash)?;
-                    s.anchor_unset_cursors(network, seed_height)?;
-                    Some((seed_height + 1, current_height))
-                }
-                Err(_) => None,
-            }
-        }
-    };
-
-    // Unlike the mempool loop above, a failure here is *not* self-healing: a block is
-    // scanned exactly once, and `set_scanned_block` moves the high-water mark past it
-    // whether or not anything in it was successfully recorded. So a single transient
-    // store error while recording a match used to lose that payment permanently and
-    // without a trace - the block was marked scanned regardless, and nothing ever
-    // looked at it again. Any failure at a height therefore abandons the rest of the
-    // block range *without* marking that height scanned, leaving the next tick to
-    // retry it from the same place; re-recording an already-recorded match is a no-op
-    // thanks to `UNIQUE(order_id, txid, output_index)`.
-    //
-    // Deliberately a `break` rather than an early `return Err(..)`: the mempool
-    // matches already gathered above still need their status recompute and webhooks,
-    // which returning here would discard (a bug this function has had once before -
-    // see the comment above `current_height`).
-    // A tenant with an order in scope but no usable keys this tick (not in
-    // `tenants`: its wallet isn't registered) starts out left behind, so its
-    // cursor doesn't move past blocks nobody checked for it.
-    let in_ranges: HashSet<&String> = ranges.iter().map(|(tenant_id, _, _)| tenant_id).collect();
-    let mut left_behind: HashSet<String> =
-        active_ids.iter().filter(|tenant_id| !in_ranges.contains(tenant_id)).cloned().collect();
-    if let Some((scan_from, scan_to)) = scan_range {
-        let block_phase_end = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        // Fetches transactions in `get_blocks_range` chunks sized against
-        // `payment.scan_chunk_memory_budget_mb` (passed in each tick from the
-        // live scan settings, so a saved change applies to the next) rather than
-        // one `get_block_transactions` call per height - the catch-up walk after
-        // real downtime can span thousands of blocks, and each one used to cost
-        // its own daemon round trip. `avg_bytes_per_block` is a per-tick-local
-        // EWMA seeded from `SCAN_CHUNK_INITIAL_AVG_BYTES`, updated from each
-        // chunk's own real transaction sizes as it goes - see the constants'
-        // own doc comments above for the reasoning. Deliberately *not*
-        // batching `get_block_hash` below - see `docs/txid_lookup_and_scan_
-        // chunking_wbs.md`'s "scope limit" for why real block-hash computation
-        // stays out of this change entirely.
-        let budget_bytes = (scan_chunk_memory_budget_mb as u64).saturating_mul(1024 * 1024);
-        let mut avg_bytes_per_block = SCAN_CHUNK_INITIAL_AVG_BYTES;
-
-        // Only tenants caught up to the network take part in the live scan.
-        // One whose scan fails is left behind for the rest of this pass (its
-        // cursor stays where it was) instead of stopping the network for
-        // everyone; catch-up below brings it back. Failures that affect every
-        // tenant (fetching blocks, reading a hash, a store write) still stop
-        // the pass, as before.
-        let live: Vec<&(String, WalletHandle, ScanIndices)> = ranges
-            .iter()
-            .filter(|(tenant_id, _, _)| cursors.get(tenant_id).copied().flatten().is_none_or(|c| c + 1 >= scan_from))
-            .collect();
-
-        let mut height = scan_from;
-        'heights: while height <= scan_to {
-            if tokio::time::Instant::now() >= block_phase_end { break; }
-            let remaining = scan_to - height + 1;
-            let chunk_size = next_scan_chunk_size(budget_bytes, avg_bytes_per_block, remaining);
-
-            // Same danger as the old per-block `get_block_transactions` failure
-            // this replaces: silence here is not necessarily transient (a
-            // pruned node with no blob for this range, or an undecodable
-            // transaction, fails identically forever), so it's logged loudly,
-            // and the range is abandoned here rather than marking anything
-            // scanned - the next tick retries from the same place.
-            let chunk = match daemon.get_blocks_range(height, chunk_size).await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(
-                        network = %network,
-                        height,
-                        chunk_size,
-                        error = %e,
-                        "fetching blocks failed - leaving the block unscanned so the next tick retries it. If this \
-                         repeats at the same height, the scanner is stuck there and no payment on this network is \
-                         being detected"
-                    );
-                    break 'heights;
-                }
-            };
-            if chunk.is_empty() {
-                tracing::warn!(
-                    network = %network,
-                    height,
-                    chunk_size,
-                    "get_blocks_range returned zero blocks - leaving the chunk unscanned so the next tick retries it"
-                );
-                break 'heights;
-            }
-
-            // `get_blocks_range` may return fewer than `chunk_size` (an older
-            // node ignoring monerod's own `max_block_count` hint, or simply
-            // running short of the requested range) - update the running
-            // average and advance by however many blocks actually came back,
-            // never by `chunk_size` itself, so an under-delivering node can't
-            // desync progress from what was truly recorded.
-            let chunk_bytes: usize =
-                chunk.iter().flatten().map(|tx| monero::consensus::encode::serialize(tx).len()).sum();
-            avg_bytes_per_block = update_avg_bytes_per_block(avg_bytes_per_block, chunk_bytes, chunk.len());
-
-            for (offset, block_txs) in chunk.iter().enumerate() {
-                if tokio::time::Instant::now() >= block_phase_end { break 'heights; }
-                let height = height + offset as u64;
-                let hash = match daemon.get_block_hash(height).await {
-                    Ok(hash) => hash,
-                    Err(e) => {
-                        tracing::warn!("reading the hash of block {height} on {network} failed: {e}");
-                        break 'heights;
-                    }
-                };
-                let still_live: Vec<&(String, WalletHandle, ScanIndices)> =
-                    live.iter().copied().filter(|(tenant_id, _, _)| !left_behind.contains(tenant_id)).collect();
-                let mut next_tx = HashMap::new();
-                for (tenant_id, _, window) in &still_live {
-                    match store.lock().start_partial_block(network, tenant_id, height, &hash, window.generation()) {
-                        Ok(next) if next <= block_txs.len() => { next_tx.insert(tenant_id.clone(), next); }
-                        Ok(_) => {
-                            tracing::warn!("invalid partial-block checkpoint for tenant {tenant_id} at {height}");
-                            break 'heights;
-                        }
-                        Err(e) => {
-                            tracing::warn!("starting partial-block checkpoint for tenant {tenant_id} at {height} failed: {e}");
-                            break 'heights;
-                        }
-                    }
-                }
-                for (tx_index, tx) in block_txs.iter().enumerate() {
-                    let due: Vec<_> = still_live.iter().copied()
-                        .filter(|(id, _, _)| !left_behind.contains(id) && next_tx.get(id).is_some_and(|next| *next <= tx_index))
-                        .collect();
-                    for batch in due.chunks(SCAN_CONCURRENCY) {
-                        if tokio::time::Instant::now() >= block_phase_end { break 'heights; }
-                        for (tenant_id, result) in scan_for_tenants(key_custody, tx, batch).await {
-                            match result {
-                                Ok(scan) => {
-                                    if scan.matches.is_empty()
-                                        && (tx_index + 1) % PARTIAL_CHECKPOINT_EVERY_TXS != 0
-                                        && tx_index + 1 != block_txs.len() {
-                                        continue;
-                                    }
-                                    let written = store.lock().in_transaction(|s| -> Result<()> {
-                                        stage_block_match(s, network, &tenant_id, &scan, now)?;
-                                        s.advance_partial_block(network, &tenant_id, tx_index + 1)?;
-                                        Ok(())
-                                    });
-                                    if let Err(e) = written {
-                                        tracing::warn!("staging a match in block {height} for tenant {tenant_id} failed: {e}");
-                                        break 'heights;
-                                    }
-                                }
-                                Err(e) => {
-                                    shared::throttled!(format!("block-scan:{tenant_id}"), warn, "scanning block {height} on {network} for tenant {tenant_id} failed; tenant left behind: {e}");
-                                    left_behind.insert(tenant_id);
-                                }
-                            }
-                        }
-                    }
-                }
-                // The block may have changed while its transactions were
-                // scanned. Staged matches are promoted only for the same hash.
-                match daemon.get_block_hash(height).await {
-                    Ok(current_hash) if current_hash == hash => {}
-                    Ok(_) => { tracing::warn!("block {height} changed during scanning on {network}; retrying it"); break 'heights; }
-                    Err(e) => { tracing::warn!("rechecking block {height} on {network} failed: {e}"); break 'heights; }
-                }
-                let left_behind_ids: Vec<String> = left_behind.iter().cloned().collect();
-                let written = store.lock().in_transaction(|s| -> Result<Vec<String>> {
-                    let mut block_touched = Vec::new();
-                    for (tenant_id, _, _) in &still_live {
-                        if !left_behind.contains(tenant_id) {
-                            block_touched.extend(s.promote_partial_block(network, tenant_id, height, &hash, block_txs.len())?);
-                        }
-                    }
-                    s.set_scanned_block(network, height, &hash)?;
-                    s.advance_caught_up_cursors(network, height, &left_behind_ids, now)?;
-                    Ok(block_touched)
-                });
-                match written {
-                    Ok(block_touched) => touched.extend(block_touched),
-                    Err(e) => {
-                        tracing::warn!("committing block {height} on {network} failed; retrying: {e}");
-                        break 'heights;
-                    }
-                }
-            }
-
-            height += chunk.len() as u64;
-        }
-    }
-
-    // `docs/order_rescan_wbs.md` Phase 5.1: bumps every currently-in-scope order's
-    // scanned-range bookkeeping to whatever height is now confirmed-scanned on this
-    // network - once per active tenant, not a per-order loop. Runs unconditionally
-    // every tick, not only when this tick's own block-scanning pass made progress:
-    // `max_scanned_height` still reflects genuine prior coverage on a tick where no
-    // new block happened to arrive, which is exactly what lets a brand-new order
-    // get its `first_scanned_height` set on its own very first eligible tick
-    // (`ranges` is a fresh query every tick) rather than only on a tick that
-    // happens to also process a new block. `None` (nothing has ever been scanned on
-    // this network at all yet) is skipped entirely, correctly leaving every order's
-    // range still `NULL`.
-    if let Err(e) = catch_up_lagging_tenants(
+    let state = crate::work::ScanState::default();
+    let budget = crate::engine_settings::EngineSettings::defaults()
+        .scan
+        .load()
+        .scan_chunk_memory_budget_mb;
+    run_scan_tick_with(
+        &state,
         store,
         key_custody,
         daemon,
         network,
         tenants,
-        &left_behind,
+        reorg_check_depth,
         expired_order_grace_period_seconds,
-        now,
-        &mut touched,
+        budget,
     )
     .await
-    {
-        tracing::warn!(network = %network, error = %e, "catching up lagging stores failed (retried next tick)");
-    }
+}
 
-    // Each tenant's orders show the range scanned *for that tenant*, which is
-    // its own cursor, not the network's height: a tenant that is behind hasn't
-    // been checked against the blocks above its cursor.
-    for (tenant_id, _, _) in &ranges {
-        let cursor = store.lock().get_tenant_by_id(tenant_id).ok().flatten().and_then(|t| t.scanned_through_height);
-        if let Some(scanned_through) = cursor {
-            if let Err(e) = store.lock().bump_scanned_heights_for_tenant(
-                tenant_id,
-                scanned_through,
-                now,
-                expired_order_grace_period_seconds,
-            ) {
-                tracing::warn!(
-                    store.id = %tenant_id,
-                    network = %network,
-                    error = %e,
-                    "failed to bump scanned-range bookkeeping - the store's orders' displayed scan range may lag until \
-                     a later tick succeeds"
-                );
-            }
-        }
-    }
-
-    // Reconciliation runs *before* the recompute sweep below, not after it. Both
-    // orderings recompute the same orders; only this one recomputes them from payment
-    // rows the chain still agrees with. Sweeping first means that on the one tick
-    // where a reorg is detected, every non-terminal order is evaluated against
-    // heights reconciliation is about to invalidate - so an order whose payment was
-    // just orphaned can cross its confirmation threshold and fire `order.paid`
-    // moments before the same tick voids that payment and fires the retraction. A
-    // merchant acting on `order.paid` ships goods; "we sent it, then took it back a
-    // second later" is not a recoverable webhook. Reconciling first costs nothing:
-    // with no reorg this is a handful of hash comparisons, and the orders it marks
-    // dirty simply recompute to the same value again in the sweep, which enqueues
-    // nothing when nothing changed.
-    let report = check_for_reorg_and_reconcile(store, daemon, network, reorg_check_depth, now).await;
-
-    // The blind spot reorg detection structurally cannot cover: a zero-conf payment
-    // whose transaction quietly leaves the pool without ever being mined, because a
-    // conflicting transaction won instead. No stored block hash changes in that
-    // story, so nothing above would ever look at that payment again. Runs after the
-    // block scan deliberately - a transaction mined this tick already has its height
-    // recorded by then and is not a candidate at all - and, like reconciliation,
-    // before the recompute sweep, so a voided payment can never be announced as a
-    // settlement moments before it is retracted.
-    let mut vanished_failure: Option<ScannerError> = None;
-    let vanished: Result<VanishedPoolReport> = match &mempool_txids {
-        Some(txids) => {
-            let previous_cursor = *memory.unconfirmed_payment_cursor.lock();
-            let page: std::result::Result<_, crate::store::StoreError> = {
-                let s = store.lock();
-                s.unconfirmed_payments_page(network, previous_cursor, 64).and_then(|page| {
-                    if page.is_empty() && previous_cursor != 0 {
-                        s.unconfirmed_payments_page(network, 0, 64)
-                    } else {
-                        Ok(page)
-                    }
-                })
-            };
-            match page {
-                Ok(page) => {
-                    if page.is_empty() {
-                        *memory.unconfirmed_payment_cursor.lock() = 0;
-                    }
-                    let mut report = VanishedPoolReport { dirty_orders: Vec::new(), double_spent_orders: Vec::new() };
-                    let phase_end = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-                    for (id, payment) in page {
-                        if tokio::time::Instant::now() >= phase_end {
-                            break;
-                        }
-                        match tokio::time::timeout_at(
-                            phase_end.min(tokio::time::Instant::now() + std::time::Duration::from_secs(2)),
-                            check_vanished_candidates(store, daemon, txids, current_height, now, vec![payment]),
-                        ).await {
-                            Ok(Ok(one)) => {
-                                report.dirty_orders.extend(one.dirty_orders);
-                                report.double_spent_orders.extend(one.double_spent_orders);
-                            }
-                            Ok(Err(error)) => {
-                                tracing::warn!("checking vanished mempool payments on {network} failed (retried next tick): {error}");
-                                if vanished_failure.is_none() { vanished_failure = Some(error); }
-                            }
-                            Err(_) => {
-                                tracing::warn!("checking a vanished mempool payment on {network} exceeded its deadline");
-                                if vanished_failure.is_none() {
-                                    vanished_failure = Some(ScannerError::Internal("vanished mempool lookup exceeded its deadline".into()));
-                                }
-                            }
-                        }
-                        // A failed row remains eligible on the next circuit;
-                        // moving past it lets other payments make progress.
-                        *memory.unconfirmed_payment_cursor.lock() = id;
-                    }
-                    Ok(report)
-                }
-                Err(error) => Err(error.into()),
-            }
-        }
-        None => Ok(VanishedPoolReport { dirty_orders: vec![], double_spent_orders: vec![] }),
+/// `run_scan_tick` with the scheduler's in-memory state kept by the caller
+/// between rounds. For tests and tools, like `run_scan_tick`.
+#[allow(clippy::too_many_arguments)] // one round's genuinely independent inputs
+pub async fn run_scan_tick_with(
+    state: &crate::work::ScanState,
+    store: &crate::store::SharedStore,
+    key_custody: &dyn KeyCustody,
+    daemon: &dyn MoneroDaemonClient,
+    network: &str,
+    tenants: &[(crate::store::TenantId, WalletHandle)],
+    reorg_check_depth: u64,
+    expired_order_grace_period_seconds: i64,
+    scan_chunk_memory_budget_mb: u32,
+) -> Result<()> {
+    let db = crate::store::Db::over_shared(store.clone());
+    let network = crate::network::parse_network(network)
+        .map_err(|e| ScannerError::Internal(e.to_string()))?;
+    let inputs = crate::work::RoundInputs {
+        db: &db,
+        custody: key_custody,
+        daemon,
+        network,
+        tenants,
+        reorg_check_depth,
+        grace_period_seconds: expired_order_grace_period_seconds,
+        scan_chunk_memory_budget_mb,
     };
-    if let Ok(report) = &vanished {
-        // Unioned into `touched` rather than recomputed here: an order whose only
-        // payment was just voided may well be terminal (`paid` off the zero-conf
-        // native 0-conf threshold is exactly the case this sweep exists for), so it is absent from
-        // the non-terminal set the sweep below iterates and would otherwise never be
-        // recomputed at all.
-        touched.extend(report.dirty_orders.iter().cloned());
-    }
-
-    // A rotating page of non-terminal orders on this network is recomputed, along
-    // with pending payment obligations and orders touched this tick. An order's status depends on the
-    // current chain height (confirmations are derived, never stored per payment) and
-    // on wall-clock time (expiry), so an order with entirely unchanged payments still
-    // changes status as the chain grows. Recomputing only the `touched` set meant an
-    // order was recomputed exactly once - at one confirmation - and then stayed
-    // `confirming` forever no matter how deeply buried its payment became, and an
-    // unpaid order never became `expired` at all. `touched` is unioned in rather than
-    // replaced because a just-matched order may already be terminal (and so absent
-    // from the non-terminal set) yet still need its amounts refreshed. The set union
-    // is also what keeps this from double-firing webhooks: each order is recomputed
-    // at most once per tick, and `recompute_and_notify` only enqueues on an actual
-    // status change.
-    //
-    // The page cursor resumes on the next tick; a large order population may
-    // therefore take multiple ticks to reflect a new height or expiry.
-    // Deliberately still runs when reconciliation above failed (its result is only
-    // unwrapped afterwards): a node that went unreachable partway through
-    // reconciliation leaves a pure retry for the next tick, and holding every order's
-    // expiry and confirmation growth hostage to it would turn a transient node blip
-    // into orders that silently stop advancing.
-    const PENDING_STATUS_BATCH: usize = 128;
-    const ACTIVE_STATUS_BATCH: usize = 256;
-    let pending_cursor = memory.pending_order_cursor.lock().clone();
-    let active_cursor = memory.active_order_cursor.lock().clone();
-    let (pending, active): (Vec<String>, Vec<String>) = {
-        let s = store.lock();
-        let mut pending = s.pending_payment_recomputes_page(network, &pending_cursor, PENDING_STATUS_BATCH)?;
-        if pending.is_empty() && !pending_cursor.is_empty() {
-            pending = s.pending_payment_recomputes_page(network, "", PENDING_STATUS_BATCH)?;
-        }
-        let mut active = s.non_terminal_order_ids_page(
-            network, now, expired_order_grace_period_seconds, &active_cursor, ACTIVE_STATUS_BATCH,
-        )?;
-        if active.is_empty() && !active_cursor.is_empty() {
-            active = s.non_terminal_order_ids_page(network, now, expired_order_grace_period_seconds, "", ACTIVE_STATUS_BATCH)?;
-        }
-        (pending, active)
-    };
-    *memory.pending_order_cursor.lock() = pending.last().cloned().unwrap_or_default();
-    *memory.active_order_cursor.lock() = active.last().cloned().unwrap_or_default();
-    let to_recompute: HashSet<String> = pending.into_iter().chain(active).chain(touched).collect();
-    for order_id in &to_recompute {
-        let s = store.lock();
-        recompute_and_notify(&s, order_id, current_height, now)?;
-    }
-
-    // Both reports' `double_spent_orders` are informational here: the
-    // `order.double_spend_detected` event for each voided payment was already
-    // enqueued by `void_and_notify`, in the same transaction as the void itself, so
-    // that a failure later in the same pass can neither lose the event nor leave the
-    // order's status describing money that has been written off. Unwrapped only now,
-    // after the recompute sweep above, so a node that died mid-reconciliation still
-    // leaves every other order's confirmations and expiry advancing.
-    let _ = report?;
-    let _ = vanished?;
-    if let Some(error) = vanished_failure { return Err(error); }
-
-    // Nothing reads a scanned-block row from further back than the reorg window, so
-    // keeping every row this service has ever written is pure growth - a block every
-    // two minutes, forever, on hardware whose storage is often an SD card. The
-    // retention is measured from *this scanner's own* high-water mark rather than the
-    // daemon's reported height, so a node briefly claiming an absurd tip cannot talk
-    // the scanner into deleting the window it needs, and it is deliberately several
-    // times `reorg_check_depth`: the only thing that has to survive is enough history
-    // for the deepest reorg the window claims to handle, plus room for a rewind to
-    // find its common ancestor below that.
-    //
-    // Last in the tick, and non-fatal: this is housekeeping, and a tick that detected
-    // a payment must not be reported as failed because a delete didn't land.
-    {
-        let s = store.lock();
-        if let Ok(Some(high_water)) = s.max_scanned_height(network) {
-            let keep_from = high_water.saturating_sub(reorg_check_depth.saturating_mul(4));
-            if let Err(e) = s.prune_scanned_blocks_below(network, keep_from) {
-                tracing::info!(network = %network, keep_from, error = %e, "pruning scanned blocks failed (harmless, retried next tick)");
-            }
-        }
-    }
-
-    Ok(())
+    crate::work::run_round(state, &inputs, crate::work::ROUND_BUDGET)
+        .await
+        .into_result()
 }
 
 /// Registers the keys of every enabled tenant on `network` that has none
@@ -1620,8 +921,8 @@ pub async fn run_scan_tick_with(
 pub async fn register_missing_wallets(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
-    wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
-    network: &str,
+    wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
+    network: monero::Network,
 ) -> usize {
     register_missing_wallets_checking_state(store, key_custody, wallet_handles, None, network).await
 }
@@ -1636,27 +937,31 @@ pub async fn register_missing_wallets(
 pub async fn register_missing_wallets_checking_state(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
-    wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
+    wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
-    network: &str,
+    network: monero::Network,
 ) -> usize {
-    register_missing_wallets_reporting(store, key_custody, wallet_handles, handled_epoch, network).await.registered
+    let db = crate::store::Db::over_shared(store.clone());
+    register_missing_wallets_reporting(&db, key_custody, wallet_handles, handled_epoch, network)
+        .await
+        .registered
 }
 
 /// [`register_missing_wallets_checking_state`], also saying how many
 /// registrations failed.
 pub async fn register_missing_wallets_reporting(
-    store: &crate::store::SharedStore,
+    db: &crate::store::Db,
     key_custody: &dyn KeyCustody,
-    wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
+    wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
-    network: &str,
+    network: monero::Network,
 ) -> Registration {
     const REGISTRATION_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
     const REGISTRATION_PASS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
     const REGISTRATIONS_PER_PASS: usize = 16;
-    static NEXT_REGISTRATION_OFFSET: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, usize>>> =
-        std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+    static NEXT_REGISTRATION_OFFSET: std::sync::LazyLock<
+        parking_lot::Mutex<HashMap<String, usize>>,
+    > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
     let pass_end = tokio::time::Instant::now() + REGISTRATION_PASS_DEADLINE;
     if let Some(handled_epoch) = handled_epoch {
         match tokio::time::timeout_at(
@@ -1664,12 +969,9 @@ pub async fn register_missing_wallets_reporting(
             key_custody.check_state(),
         ).await {
             Ok(Ok(epoch)) => {
-                let seen = handled_epoch.load(std::sync::atomic::Ordering::SeqCst);
-                if epoch > seen
-                    && handled_epoch
-                        .compare_exchange(seen, epoch, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
-                        .is_ok()
-                {
+                // Whichever loop moves the handled epoch up acts on it; the
+                // others see it already there.
+                if handled_epoch.fetch_max(epoch, std::sync::atomic::Ordering::SeqCst) < epoch {
                     // A single backend can't say which handles it lost, so
                     // they all go; a router forgets just the lost backend's
                     // (`handle_is_live` below).
@@ -1688,12 +990,23 @@ pub async fn register_missing_wallets_reporting(
             Err(_) => tracing::warn!("checking the key custody backend's state exceeded {REGISTRATION_CALL_DEADLINE:?} (retried later)"),
         }
     }
-    let listed = store.lock().list_active_tenants();
+    // On the database worker: this runs from the async scanner loop.
+    let listed = db
+        .run(crate::store::db::Class::Scanner, |s| {
+            s.list_active_tenants()
+        })
+        .await;
     let on_network: Vec<crate::store::Tenant> = match listed {
-        Ok(tenants) => tenants.into_iter().filter(|t| t.network == network).collect(),
+        Ok(tenants) => tenants
+            .into_iter()
+            .filter(|t| t.network == crate::network::network_str(network))
+            .collect(),
         Err(e) => {
-            tracing::warn!(network = %network, error = %e, "listing stores to register their keys failed (retried later)");
-            return Registration { registered: 0, failed: 1 };
+            tracing::warn!(network = crate::network::network_str(network), error = %e, "listing stores to register their keys failed (retried later)");
+            return Registration {
+                registered: 0,
+                failed: 1,
+            };
         }
     };
     // This network's handles in a backend that was turned off, or that lost
@@ -1702,11 +1015,16 @@ pub async fn register_missing_wallets_reporting(
     // another network's loop notices its own lost handles and retries soon.
     {
         let ids: HashSet<&str> = on_network.iter().map(|t| t.id.as_str()).collect();
-        wallet_handles.write().retain(|id, handle| !ids.contains(id.as_str()) || key_custody.handle_is_live(*handle));
+        wallet_handles
+            .write()
+            .retain(|id, handle| !ids.contains(id.as_str()) || key_custody.handle_is_live(*handle));
     }
     let mut missing: Vec<crate::store::Tenant> = {
         let handles = wallet_handles.read();
-        on_network.into_iter().filter(|t| !handles.contains_key(&t.id)).collect()
+        on_network
+            .into_iter()
+            .filter(|t| !handles.contains_key(&t.id))
+            .collect()
     };
     // Rotate a bounded pass. A failed tenant at the front must not prevent
     // later tenants from ever getting a registration attempt or block scan.
@@ -1717,7 +1035,9 @@ pub async fn register_missing_wallets_reporting(
         // network when two loops alternate and both have 32 missing tenants.
         let offset = {
             let mut offsets = NEXT_REGISTRATION_OFFSET.lock();
-            let next = offsets.entry(network.to_string()).or_default();
+            let next = offsets
+                .entry(crate::network::network_str(network).to_string())
+                .or_default();
             let offset = *next % missing.len();
             *next = next.wrapping_add(REGISTRATIONS_PER_PASS);
             offset
@@ -1739,10 +1059,19 @@ pub async fn register_missing_wallets_reporting(
         }
         match tokio::time::timeout_at(
             pass_end.min(tokio::time::Instant::now() + REGISTRATION_CALL_DEADLINE),
-            key_custody.unseal_and_register_in_idempotent(&tenant.key_custody_backend, &tenant.sealed_key_material, &tenant.id),
-        ).await {
+            key_custody.unseal_and_register_in_idempotent(
+                &tenant.key_custody_backend,
+                &tenant.sealed_key_material,
+                tenant.id.as_str(),
+            ),
+        )
+        .await
+        {
             Ok(Ok(handle)) => {
-                let winner = *wallet_handles.write().entry(tenant.id.clone()).or_insert(handle);
+                let winner = *wallet_handles
+                    .write()
+                    .entry(tenant.id.clone())
+                    .or_insert(handle);
                 if winner != handle {
                     let _ = key_custody.remove_wallet(handle).await;
                 } else {
@@ -1751,11 +1080,16 @@ pub async fn register_missing_wallets_reporting(
             }
             Ok(Err(e)) => {
                 failed += 1;
-                first_error.get_or_insert_with(|| (tenant.id.clone(), e.to_string()));
+                first_error.get_or_insert_with(|| (tenant.id.to_string(), e.to_string()));
             }
             Err(_) => {
                 failed += 1;
-                first_error.get_or_insert_with(|| (tenant.id.clone(), format!("registration exceeded {REGISTRATION_CALL_DEADLINE:?}")));
+                first_error.get_or_insert_with(|| {
+                    (
+                        tenant.id.to_string(),
+                        format!("registration exceeded {REGISTRATION_CALL_DEADLINE:?}"),
+                    )
+                });
             }
         }
     }
@@ -1763,9 +1097,9 @@ pub async fn register_missing_wallets_reporting(
         // One line per network, and not every retry: a backend that is down
         // would otherwise log every store it holds every few seconds.
         shared::throttled!(
-            format!("register-failed:{network}"),
+            format!("register-failed:{}", crate::network::network_str(network)),
             warn,
-            network = %network,
+            network = crate::network::network_str(network),
             stores = failed,
             store.id = %first_store,
             error = %first_error,
@@ -1783,227 +1117,9 @@ pub struct Registration {
     pub failed: usize,
 }
 
-/// Most blocks caught up per tick across all lagging tenants, shared between
-/// the groups, so a long gap (or many groups) is closed over several ticks
-/// without holding up the live scan.
-const CATCH_UP_BLOCKS_PER_TICK: u64 = 200;
-/// Floor for each group's share of `CATCH_UP_BLOCKS_PER_TICK`, so every
-/// group still makes progress when there are many.
-const CATCH_UP_MIN_BLOCKS_PER_GROUP: u64 = 10;
-/// Most blocks fetched in one `get_blocks_range` call during catch-up.
-const CATCH_UP_FETCH_BLOCKS: u64 = 50;
-
-/// Brings tenants whose cursor is behind the network back up to it
-/// (task 5.0). A tenant falls behind when its scan failed during the live
-/// scan (its key custody backend was down, say) or its keys weren't
-/// registered for a while.
-///
-/// - Disabled tenants are moved straight along: nothing is scanned for them.
-/// - A lagging tenant with no order that could have been paid since its
-///   cursor's block (by the time of that block, not now: an order that was
-///   in scope during the gap still counts) has nothing to find, so it is
-///   moved straight to the network's height.
-/// - The rest, if their keys are registered (they are in `tenants`), are
-///   grouped by cursor so tenants that fell behind together share one block
-///   fetch. The groups share a per-tick block budget.
-/// - Each block is checked against the hash the live scan stored for that
-///   height, where one is still stored. A mismatch means the node answering
-///   now is on another fork, so this group stops for this tick; the reorg
-///   check sorts it out.
-/// - A tenant whose scan fails again stays where it is. Nothing here stops
-///   the live scan or other groups.
-///
-/// Tenants left behind during this tick's live scan are skipped until next
-/// tick: whatever just failed for them almost certainly still does. Orders
-/// touched are added to `touched` as they are found, so they're kept even
-/// if a later step fails.
-#[allow(clippy::too_many_arguments)] // one tick's genuinely independent inputs, as for `run_scan_tick`
-async fn catch_up_lagging_tenants(
-    store: &crate::store::SharedStore,
-    key_custody: &dyn KeyCustody,
-    daemon: &dyn MoneroDaemonClient,
-    network: &str,
-    tenants: &[(String, WalletHandle)],
-    left_behind: &HashSet<String>,
-    expired_order_grace_period_seconds: i64,
-    now: i64,
-    touched: &mut HashSet<String>,
-) -> Result<()> {
-    let (high_water, lagging) = {
-        let s = store.lock();
-        let Some(high_water) = s.max_scanned_height(network)? else { return Ok(()) };
-        s.snap_disabled_cursors(network, high_water)?;
-        (high_water, s.lagging_tenants(network)?)
-    };
-    if lagging.is_empty() {
-        return Ok(());
-    }
-
-    let handles: HashMap<&String, &WalletHandle> = tenants.iter().map(|(id, handle)| (id, handle)).collect();
-    let mut cursor_times: HashMap<u64, i64> = HashMap::new();
-    let mut groups: std::collections::BTreeMap<u64, Vec<(String, WalletHandle, ScanIndices)>> = Default::default();
-    for (tenant_id, cursor) in &lagging {
-        // A tenant with no order that could be paid at any time at all needs
-        // no block time to decide: it has nothing to find.
-        if !store.lock().tenant_has_orders_in_scope_since(tenant_id, i64::MIN / 2, expired_order_grace_period_seconds)? {
-            store.lock().snap_cursor(tenant_id, high_water)?;
-            continue;
-        }
-        // When the gap began, as the chain tells it. If that can't be read,
-        // this tenant is left for next tick rather than guessed about.
-        let cursor_time = match cursor_times.get(cursor) {
-            Some(t) => *t,
-            None => match daemon.get_block_timestamp(*cursor).await {
-                Ok(t) => {
-                    cursor_times.insert(*cursor, t as i64);
-                    t as i64
-                }
-                Err(e) => {
-                    tracing::warn!(network = %network, height = cursor, error = %e, "catch-up: reading a block's time failed (retried next tick)");
-                    continue;
-                }
-            },
-        };
-        // The window as it was since the gap began: orders that closed
-        // during the gap are still looked for (D10).
-        let window = store.lock().scan_window(tenant_id, cursor_time.min(now), expired_order_grace_period_seconds)?;
-        if window.is_empty() {
-            store.lock().snap_cursor(tenant_id, high_water)?;
-            continue;
-        }
-        if left_behind.contains(tenant_id) {
-            continue;
-        }
-        if let Some(handle) = handles.get(tenant_id) {
-            groups.entry(*cursor).or_default().push((tenant_id.clone(), **handle, ScanIndices::new(window)));
-        }
-    }
-    if groups.is_empty() {
-        return Ok(());
-    }
-
-    let per_group = (CATCH_UP_BLOCKS_PER_TICK / groups.len() as u64).max(CATCH_UP_MIN_BLOCKS_PER_GROUP);
-    static NEXT_CATCHUP_GROUP: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, usize>>> =
-        std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
-    let mut groups: Vec<_> = groups.into_iter().collect();
-    let start = {
-        let mut offsets = NEXT_CATCHUP_GROUP.lock();
-        let next = offsets.entry(network.to_string()).or_default();
-        let start = *next % groups.len();
-        *next = next.wrapping_add(1);
-        start
-    };
-    groups.rotate_left(start);
-    let phase_end = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    for (cursor, mut group) in groups {
-        let end = high_water.min(cursor + per_group);
-        let mut height = cursor + 1;
-        'group: while height <= end && !group.is_empty() {
-            if tokio::time::Instant::now() >= phase_end { return Ok(()); }
-            let count = (end - height + 1).min(CATCH_UP_FETCH_BLOCKS);
-            let chunk = match daemon.get_blocks_range(height, count).await {
-                Ok(chunk) if !chunk.is_empty() => chunk,
-                Ok(_) => break 'group,
-                Err(e) => {
-                    shared::throttled!(
-                        format!("catch-up-fetch:{network}"),
-                        warn,
-                        network = %network,
-                        height,
-                        error = %e,
-                        "catch-up: fetching blocks failed (retried next tick)"
-                    );
-                    break 'group;
-                }
-            };
-            for block_txs in &chunk {
-                // Bound first: a guard in the `if let` scrutinee would be held
-                // across the `.await` below.
-                let stored_hash = store.lock().get_scanned_block_hash(network, height)?;
-                let hash = match daemon.get_block_hash(height).await {
-                    Ok(actual) if stored_hash.as_ref().is_none_or(|stored| *stored == actual) => actual,
-                    Ok(_) => {
-                        tracing::warn!("catch-up on {network}: block {height} differs from the stored hash; waiting for reorg reconciliation");
-                        break 'group;
-                    }
-                    Err(e) => {
-                        tracing::warn!("catch-up on {network}: reading the hash of block {height} failed: {e}");
-                        break 'group;
-                    }
-                };
-                let mut next_tx = HashMap::new();
-                for (tenant_id, _, window) in &group {
-                    let next = store.lock().start_partial_block(network, tenant_id, height, &hash, window.generation())?;
-                    if next > block_txs.len() { return Err(ScannerError::Internal(format!("invalid partial-block checkpoint for tenant {tenant_id} at {height}"))); }
-                    next_tx.insert(tenant_id.clone(), next);
-                }
-                let mut failed: HashSet<String> = HashSet::new();
-                for (tx_index, tx) in block_txs.iter().enumerate() {
-                    let refs: Vec<&(String, WalletHandle, ScanIndices)> =
-                        group.iter().filter(|(tenant_id, _, _)| !failed.contains(tenant_id) && next_tx.get(tenant_id).is_some_and(|next| *next <= tx_index)).collect();
-                    for batch in refs.chunks(SCAN_CONCURRENCY) {
-                        if tokio::time::Instant::now() >= phase_end { return Ok(()); }
-                        for (tenant_id, result) in scan_for_tenants(key_custody, tx, batch).await {
-                            match result {
-                                Ok(scan) => {
-                                    if scan.matches.is_empty()
-                                        && (tx_index + 1) % PARTIAL_CHECKPOINT_EVERY_TXS != 0
-                                        && tx_index + 1 != block_txs.len() {
-                                        continue;
-                                    }
-                                    let written = store.lock().in_transaction(|s| -> Result<()> {
-                                        stage_block_match(s, network, &tenant_id, &scan, now)?;
-                                        s.advance_partial_block(network, &tenant_id, tx_index + 1)?;
-                                        Ok(())
-                                    });
-                                    if let Err(e) = written {
-                                        tracing::warn!("catch-up on {network}: staging a match in block {height} failed: {e}");
-                                        return Ok(());
-                                    }
-                                }
-                                Err(e) => {
-                                    shared::throttled!(format!("catch-up-scan:{tenant_id}"), warn, "catch-up on {network}: scanning block {height} for tenant {tenant_id} failed: {e}");
-                                    failed.insert(tenant_id);
-                                }
-                            }
-                        }
-                    }
-                }
-                match daemon.get_block_hash(height).await {
-                    Ok(current) if current == hash => {}
-                    Ok(_) => { tracing::warn!("catch-up on {network}: block {height} changed while scanning"); break 'group; }
-                    Err(e) => { tracing::warn!("catch-up on {network}: rechecking block {height} failed: {e}"); break 'group; }
-                }
-                group.retain(|(tenant_id, _, _)| {
-                    if failed.contains(tenant_id) {
-                        return false;
-                    }
-                    let committed = store.lock().in_transaction(|s| -> Result<Option<Vec<String>>> {
-                        // The cursor guard also protects promotion: a reorg
-                        // clamp cannot commit results for the wrong height.
-                        let promoted = s.promote_partial_block(network, tenant_id, height, &hash, block_txs.len())?;
-                        if !s.advance_tenant_cursor(tenant_id, height - 1, height)? {
-                            return Err(ScannerError::Internal("tenant cursor moved during catch-up".into()));
-                        }
-                        Ok(Some(promoted))
-                    });
-                    match committed {
-                        Ok(Some(orders)) => { touched.extend(orders); true }
-                        _ => false,
-                    }
-                });
-                height += 1;
-                if group.is_empty() {
-                    break 'group;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
-mod tests {
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) mod tests {
     //! Scenario coverage checklist for the scanner.
     //!
     //! Reorgs, double-spends and hostile or broken nodes are rare in production and
@@ -2112,11 +1228,16 @@ mod tests {
         assert!(parse_payment_key_images("[]").is_err());
         assert!(parse_payment_key_images("[\"image\"]").is_err());
         let image = "a".repeat(64);
-        assert_eq!(parse_payment_key_images(&serde_json::json!([image.clone()]).to_string()).unwrap(), vec![image]);
+        assert_eq!(
+            parse_payment_key_images(&serde_json::json!([image.clone()]).to_string()).unwrap(),
+            vec![image]
+        );
     }
     use crate::daemon::fake::FakeDaemonClient;
     use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
-    use crate::key_custody::{KeyCustodyError, MatchedOutput, Network, PlainKeyCustody, SubaddressIndex, WalletMaterial};
+    use crate::key_custody::{
+        KeyCustodyError, MatchedOutput, Network, PlainKeyCustody, SubaddressIndex, WalletMaterial,
+    };
     use crate::store::{NewOrder, NewTenant};
     use monero::consensus::encode::deserialize;
     use monero::{Address, PrivateKey, PublicKey};
@@ -2134,16 +1255,28 @@ mod tests {
 
     #[async_trait::async_trait]
     impl KeyCustody for CountingKeyCustody {
-        async fn register_wallet(&self, material: WalletMaterial) -> std::result::Result<WalletHandle, KeyCustodyError> {
+        async fn register_wallet(
+            &self,
+            material: WalletMaterial,
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
             self.inner.register_wallet(material).await
         }
-        async fn remove_wallet(&self, handle: WalletHandle) -> std::result::Result<(), KeyCustodyError> {
+        async fn remove_wallet(
+            &self,
+            handle: WalletHandle,
+        ) -> std::result::Result<(), KeyCustodyError> {
             self.inner.remove_wallet(handle).await
         }
-        async fn seal(&self, material: &WalletMaterial) -> std::result::Result<Vec<u8>, KeyCustodyError> {
+        async fn seal(
+            &self,
+            material: &WalletMaterial,
+        ) -> std::result::Result<Vec<u8>, KeyCustodyError> {
             self.inner.seal(material).await
         }
-        async fn unseal_and_register(&self, sealed: &[u8]) -> std::result::Result<WalletHandle, KeyCustodyError> {
+        async fn unseal_and_register(
+            &self,
+            sealed: &[u8],
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
             self.inner.unseal_and_register(sealed).await
         }
         async fn derive_subaddress(
@@ -2162,7 +1295,9 @@ mod tests {
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
             self.scan_calls.fetch_add(1, Ordering::SeqCst);
-            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+            self.inner
+                .scan_tx_outputs(handle, tx, major_range, minor_range)
+                .await
         }
     }
 
@@ -2185,19 +1320,35 @@ mod tests {
         async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
             self.inner.get_block_timestamp(height).await
         }
-        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_block_transactions(
+            &self,
+            height: u64,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await
         }
-        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_mempool_transactions(
+            &self,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_mempool_transactions().await
         }
-        async fn locate_transaction(&self, _txid: &str) -> std::result::Result<TxLocation, DaemonError> {
-            Err(DaemonError::Request("simulated node failure mid-reconciliation".into()))
+        async fn locate_transaction(
+            &self,
+            _txid: &str,
+        ) -> std::result::Result<TxLocation, DaemonError> {
+            Err(DaemonError::Request(
+                "simulated node failure mid-reconciliation".into(),
+            ))
         }
-        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+        async fn get_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<Transaction, DaemonError> {
             self.inner.get_transaction(txid).await
         }
-        async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             self.inner.is_key_image_spent(key_images).await
         }
     }
@@ -2224,26 +1375,42 @@ mod tests {
         }
         async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
             if height == self.failing_height.load(Ordering::SeqCst) {
-                return Err(DaemonError::Request(format!("simulated failure reading the hash of block {height}")));
+                return Err(DaemonError::Request(format!(
+                    "simulated failure reading the hash of block {height}"
+                )));
             }
             self.inner.get_block_hash(height).await
         }
         async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
             self.inner.get_block_timestamp(height).await
         }
-        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_block_transactions(
+            &self,
+            height: u64,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await
         }
-        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_mempool_transactions(
+            &self,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_mempool_transactions().await
         }
-        async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
+        async fn locate_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<TxLocation, DaemonError> {
             self.inner.locate_transaction(txid).await
         }
-        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+        async fn get_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<Transaction, DaemonError> {
             self.inner.get_transaction(txid).await
         }
-        async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             self.inner.is_key_image_spent(key_images).await
         }
     }
@@ -2265,6 +1432,9 @@ mod tests {
         /// what lets a test assert "the chunked scan loop issued N real batched
         /// calls," not just "N blocks were eventually fetched somehow."
         BlocksRange,
+        /// Counts calls to `get_chain_blocks`, the block scan's one fetch for a
+        /// run of blocks with their ids.
+        ChainBlocks,
         /// Counts calls to `get_block_hash` - proves the deliberate scope limit
         /// (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A's own "why the
         /// target moved" section): block-hash fetching for `scanned_blocks`
@@ -2307,13 +1477,31 @@ mod tests {
 
     impl<D: MoneroDaemonClient> DaemonFailingFrom<D> {
         fn counting(inner: D, method: DaemonCall) -> Self {
-            Self { inner, method, fail_from: AtomicU64::new(NO_FAILING_CALL), calls: AtomicU64::new(0), delay_ms: 0 }
+            Self {
+                inner,
+                method,
+                fail_from: AtomicU64::new(NO_FAILING_CALL),
+                calls: AtomicU64::new(0),
+                delay_ms: 0,
+            }
         }
         fn failing_from(inner: D, method: DaemonCall, nth: u64) -> Self {
-            Self { inner, method, fail_from: AtomicU64::new(nth), calls: AtomicU64::new(0), delay_ms: 0 }
+            Self {
+                inner,
+                method,
+                fail_from: AtomicU64::new(nth),
+                calls: AtomicU64::new(0),
+                delay_ms: 0,
+            }
         }
         fn timing_out_from(inner: D, method: DaemonCall, nth: u64, delay_ms: u64) -> Self {
-            Self { inner, method, fail_from: AtomicU64::new(nth), calls: AtomicU64::new(0), delay_ms }
+            Self {
+                inner,
+                method,
+                fail_from: AtomicU64::new(nth),
+                calls: AtomicU64::new(0),
+                delay_ms,
+            }
         }
         fn call_count(&self) -> u64 {
             self.calls.load(Ordering::SeqCst)
@@ -2330,7 +1518,9 @@ mod tests {
                 if self.delay_ms > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
                 }
-                return Err(DaemonError::Request(format!("simulated {method:?} failure on call {nth}")));
+                return Err(DaemonError::Request(format!(
+                    "simulated {method:?} failure on call {nth}"
+                )));
             }
             Ok(())
         }
@@ -2349,11 +1539,18 @@ mod tests {
         async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
             self.inner.get_block_timestamp(height).await
         }
-        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_block_transactions(
+            &self,
+            height: u64,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.gate(DaemonCall::BlockTransactions).await?;
             self.inner.get_block_transactions(height).await
         }
-        async fn get_blocks_range(&self, start_height: u64, count: u64) -> std::result::Result<Vec<Vec<Transaction>>, DaemonError> {
+        async fn get_blocks_range(
+            &self,
+            start_height: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<Vec<Transaction>>, DaemonError> {
             self.gate(DaemonCall::BlocksRange).await?;
             // Deliberately *not* `self.inner.get_blocks_range(...)`: that would call
             // `inner`'s own `get_block_transactions` directly for each height,
@@ -2372,7 +1569,28 @@ mod tests {
             }
             Ok(out)
         }
-        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        /// Straight to the inner node (its blocks are one consistent snapshot),
+        /// unless a test injects failures into individual transaction fetches:
+        /// then composed from this wrapper's own calls, so that gate applies.
+        async fn get_chain_blocks(
+            &self,
+            start_height: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+            self.gate(DaemonCall::ChainBlocks).await?;
+            if self.method != DaemonCall::BlockTransactions {
+                return self.inner.get_chain_blocks(start_height, count).await;
+            }
+            let mut out = Vec::new();
+            for block in self.inner.get_chain_blocks(start_height, count).await? {
+                let txs = self.get_block_transactions(block.height).await?;
+                out.push(crate::daemon::ChainBlock { txs, ..block });
+            }
+            Ok(out)
+        }
+        async fn get_mempool_transactions(
+            &self,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.gate(DaemonCall::Mempool).await?;
             self.inner.get_mempool_transactions().await
         }
@@ -2382,17 +1600,29 @@ mod tests {
             self.gate(DaemonCall::Mempool).await?;
             self.inner.get_mempool_txids().await
         }
-        async fn get_transactions(&self, txids: &[String]) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_transactions(
+            &self,
+            txids: &[String],
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_transactions(txids).await
         }
-        async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
+        async fn locate_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<TxLocation, DaemonError> {
             self.gate(DaemonCall::Locate).await?;
             self.inner.locate_transaction(txid).await
         }
-        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+        async fn get_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<Transaction, DaemonError> {
             self.inner.get_transaction(txid).await
         }
-        async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             self.gate(DaemonCall::KeyImageSpent).await?;
             self.inner.is_key_image_spent(key_images).await
         }
@@ -2402,14 +1632,15 @@ mod tests {
     /// `src/key_custody/plain.rs`'s tests - it pays subaddress 0/1. Reused here so
     /// scanner-level tests exercise real crypto end to end, not a stub that assumes
     /// matching works.
-    fn fixture_tx() -> Transaction {
+    pub(crate) fn fixture_tx() -> Transaction {
         let raw_tx = hex::decode(include_str!("../tests/fixtures/subaddress_tx.hex")).unwrap();
         deserialize(&raw_tx).unwrap()
     }
 
     fn fixture_view_key() -> [u8; 32] {
         PrivateKey::from_slice(
-            &hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07").unwrap(),
+            &hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")
+                .unwrap(),
         )
         .unwrap()
         .to_bytes()
@@ -2417,7 +1648,8 @@ mod tests {
 
     fn fixture_spend_pubkey() -> [u8; 32] {
         let secret_spend = PrivateKey::from_slice(
-            &hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907").unwrap(),
+            &hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907")
+                .unwrap(),
         )
         .unwrap();
         PublicKey::from_private_key(&secret_spend).to_bytes()
@@ -2437,7 +1669,10 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let key_custody = PlainKeyCustody::default();
         let handle = key_custody
-            .register_wallet(WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey()))
+            .register_wallet(WalletMaterial::new(
+                fixture_view_key(),
+                fixture_spend_pubkey(),
+            ))
             .await
             .unwrap();
 
@@ -2461,9 +1696,19 @@ mod tests {
         // would (order creation happens to land on minor index 1 here since the
         // tenant starts at next_minor_index = 1).
         let index = store.allocate_minor_index(&tenant_id).unwrap();
-        assert_eq!(index, 1, "fixture tx pays minor index 1 - keep this in sync with the order below");
+        assert_eq!(
+            index, 1,
+            "fixture tx pays minor index 1 - keep this in sync with the order below"
+        );
         let address = key_custody
-            .derive_subaddress(handle, SubaddressIndex { major: 0, minor: index }, Network::Mainnet)
+            .derive_subaddress(
+                handle,
+                SubaddressIndex {
+                    major: 0,
+                    minor: index,
+                },
+                Network::Mainnet,
+            )
             .await
             .unwrap();
 
@@ -2484,18 +1729,31 @@ mod tests {
             })
             .unwrap();
 
-        (store, key_custody, handle, tenant_id, order.id)
+        (
+            store,
+            key_custody,
+            handle,
+            tenant_id.into_string(),
+            order.id.into_string(),
+        )
     }
 
     /// `setup()` with a caller-controlled `expires_at`, for the grace-period tests
     /// below - they need an order whose deadline sits at a specific real-wall-clock
     /// offset (recently past, or long past), which `setup()`'s own fixed
     /// `now_unix() + 3600` can't express.
-    async fn setup_with_expiry(expires_at: i64) -> (Store, PlainKeyCustody, WalletHandle, String, String) {
+    async fn setup_with_expiry(
+        expires_at: i64,
+    ) -> (Store, PlainKeyCustody, WalletHandle, String, String) {
         let store = Store::open_in_memory().unwrap();
         let key_custody = PlainKeyCustody::default();
-        let handle =
-            key_custody.register_wallet(WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey())).await.unwrap();
+        let handle = key_custody
+            .register_wallet(WalletMaterial::new(
+                fixture_view_key(),
+                fixture_spend_pubkey(),
+            ))
+            .await
+            .unwrap();
 
         let created = store
             .create_tenant(
@@ -2513,9 +1771,21 @@ mod tests {
         let tenant_id = created.tenant.id.clone();
 
         let index = store.allocate_minor_index(&tenant_id).unwrap();
-        assert_eq!(index, 1, "fixture tx pays minor index 1 - keep this in sync with the order below");
-        let address =
-            key_custody.derive_subaddress(handle, SubaddressIndex { major: 0, minor: index }, Network::Mainnet).await.unwrap();
+        assert_eq!(
+            index, 1,
+            "fixture tx pays minor index 1 - keep this in sync with the order below"
+        );
+        let address = key_custody
+            .derive_subaddress(
+                handle,
+                SubaddressIndex {
+                    major: 0,
+                    minor: index,
+                },
+                Network::Mainnet,
+            )
+            .await
+            .unwrap();
 
         let order = store
             .create_order(NewOrder {
@@ -2531,7 +1801,13 @@ mod tests {
             })
             .unwrap();
 
-        (store, key_custody, handle, tenant_id, order.id)
+        (
+            store,
+            key_custody,
+            handle,
+            tenant_id.into_string(),
+            order.id.into_string(),
+        )
     }
 
     /// `docs/order_rescan_wbs.md` Phase 4 - the default grace period for
@@ -2544,23 +1820,45 @@ mod tests {
         // A prior tick already flipped this order to `Expired` - the exact state
         // the grace-period widening needs to matter at all (a still-`pending`
         // order is already covered by the base four-status clause regardless).
-        let (_, status) = store.recompute_order_status(&order_id, 0, now).unwrap();
-        assert_eq!(status, crate::status::OrderStatus::Expired, "test setup must actually produce an expired order");
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 0, now)
+            .unwrap();
+        assert_eq!(
+            status,
+            crate::status::OrderStatus::Expired,
+            "test setup must actually produce an expired order"
+        );
 
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         daemon.set_mempool(vec![fixture_tx()]);
 
         // A generous grace period - the order expired moments ago, well inside it.
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 3600).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            3600,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&order_id).unwrap().len(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().len(),
             1,
             "a late payment within the grace period must still be matched by ordinary live scanning"
         );
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         // No native 0-conf threshold configured (`setup_with_expiry`), so a mempool-only
         // sighting correctly settles at `Unconfirmed`, not `Paid` - the real point
         // here is that the order came alive again at all (it must not still read
@@ -2575,10 +1873,17 @@ mod tests {
     #[tokio::test]
     async fn a_payment_arriving_after_the_grace_period_has_elapsed_is_genuinely_not_matched() {
         let now = crate::now_unix();
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_expiry(now - 10_000).await;
+        let (store, key_custody, handle, tenant_id, order_id) =
+            setup_with_expiry(now - 10_000).await;
 
-        let (_, status) = store.recompute_order_status(&order_id, 0, now).unwrap();
-        assert_eq!(status, crate::status::OrderStatus::Expired, "test setup must actually produce an expired order");
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 0, now)
+            .unwrap();
+        assert_eq!(
+            status,
+            crate::status::OrderStatus::Expired,
+            "test setup must actually produce an expired order"
+        );
 
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
@@ -2587,57 +1892,146 @@ mod tests {
         // A short grace period the order's 10,000-second-old expiry is well past -
         // proving the boundary is real, not just documented (exactly the gap the
         // manual rescan exists to close).
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 60).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            60,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&order_id).unwrap().len(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().len(),
             0,
             "a payment arriving after the grace period has elapsed must not be matched by ordinary live scanning"
         );
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-        assert_eq!(order.status, crate::status::OrderStatus::Expired, "must remain untouched");
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            order.status,
+            crate::status::OrderStatus::Expired,
+            "must remain untouched"
+        );
     }
 
     // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) ---------
 
+    /// A block interrupted partway keeps its matches staged, never as
+    /// payments; they come back only for the same block (height and hash),
+    /// once, at commit. A checkpoint for a changed block is dropped with its
+    /// matches.
     #[tokio::test]
-    async fn partial_block_checkpoint_stages_matches_and_discards_a_changed_hash() {
+    async fn a_block_checkpoint_stages_matches_until_commit_and_a_changed_hash_drops_them() {
         let (store, custody, handle, tenant_id, order_id) = setup().await;
         let window = ScanIndices::new([1]);
-        let scan = scan_transaction_in_window(&custody, handle, &fixture_tx(), &window).await.unwrap();
+        let scan = scan_transaction_in_window(&custody, handle, &fixture_tx(), &window)
+            .await
+            .unwrap();
         assert!(!scan.matches.is_empty());
+        let checkpoint = |hash: &str| crate::store::BlockCheckpoint {
+            height: 10,
+            hash: hash.into(),
+            next_tx: 1,
+        };
+        let stage = |hash: &str| {
+            store
+                .in_transaction(|s| -> Result<()> {
+                    s.save_block_checkpoint(
+                        monero::Network::Mainnet,
+                        &shared::ids::TenantId::new(tenant_id.to_string()),
+                        &checkpoint(hash),
+                    )?;
+                    stage_block_match(
+                        s,
+                        monero::Network::Mainnet,
+                        &shared::ids::TenantId::new(tenant_id.to_string()),
+                        &scan,
+                        1500,
+                    )
+                })
+                .unwrap()
+        };
 
-        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "old_hash", window.generation()).unwrap(), 0);
-        store.in_transaction(|s| -> Result<()> {
-            stage_block_match(s, "mainnet", &tenant_id, &scan, 1500)?;
-            s.advance_partial_block("mainnet", &tenant_id, 1)?;
-            Ok(())
-        }).unwrap();
-        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "old_hash", window.generation()).unwrap(), 1);
-        assert!(store.get_all_payments(&order_id).unwrap().is_empty(), "an unfinished block must not announce payment");
+        stage("old_hash");
+        assert_eq!(
+            store
+                .block_checkpoint(
+                    monero::Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.to_string())
+                )
+                .unwrap(),
+            Some(checkpoint("old_hash"))
+        );
+        assert!(
+            store
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty(),
+            "an unfinished block must not announce payment"
+        );
+        assert!(
+            store
+                .take_staged_payments(
+                    monero::Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    "new_hash"
+                )
+                .unwrap()
+                .is_empty(),
+            "the old fork's matches are dropped"
+        );
+        assert_eq!(
+            store
+                .block_checkpoint(
+                    monero::Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.to_string())
+                )
+                .unwrap(),
+            None
+        );
 
-        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "new_hash", window.generation()).unwrap(), 0);
-        assert!(store.promote_partial_block("mainnet", &tenant_id, 10, "new_hash", 1).is_err(), "an incomplete block cannot be promoted");
-        store.advance_partial_block("mainnet", &tenant_id, 1).unwrap();
-        assert!(store.promote_partial_block("mainnet", &tenant_id, 10, "new_hash", 1).unwrap().is_empty(), "the old fork's matches were discarded");
-        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "new_hash", window.generation()).unwrap(), 0);
-        store.in_transaction(|s| -> Result<()> {
-            stage_block_match(s, "mainnet", &tenant_id, &scan, 1500)?;
-            s.advance_partial_block("mainnet", &tenant_id, 1)?;
-            Ok(())
-        }).unwrap();
-        let promoted = store.in_transaction(|s| -> Result<Vec<String>> {
-            let promoted = s.promote_partial_block("mainnet", &tenant_id, 10, "new_hash", 1)?;
-            s.set_scanned_block("mainnet", 10, "new_hash")?;
-            Ok(promoted)
-        }).unwrap();
-        assert_eq!(promoted, vec![order_id.clone()]);
-        assert_eq!(store.get_all_payments(&order_id).unwrap().len(), 1);
+        stage("old_hash");
+        stage("new_hash");
+        let staged = store
+            .take_staged_payments(
+                monero::Network::Mainnet,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "new_hash",
+            )
+            .unwrap();
+        assert_eq!(
+            staged
+                .iter()
+                .map(|p| p.order_id.clone())
+                .collect::<Vec<_>>(),
+            vec![order_id.clone()]
+        );
+        assert!(
+            store
+                .take_staged_payments(
+                    monero::Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    "new_hash"
+                )
+                .unwrap()
+                .is_empty(),
+            "taken once"
+        );
     }
 
     #[tokio::test]
-    async fn a_fresh_orders_first_scanned_height_is_set_on_its_very_first_tick_not_backfilled_to_created_at() {
+    async fn a_fresh_orders_first_scanned_height_is_set_on_its_very_first_tick_not_backfilled_to_created_at(
+    ) {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let daemon = FakeDaemonClient::new();
         for h in 1..=500 {
@@ -2645,9 +2039,26 @@ mod tests {
         }
         let store = store.into_shared();
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
-        let order = store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = store
+            .lock()
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_ne!(
             order.first_scanned_height,
             Some(1000),
@@ -2660,7 +2071,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn last_scanned_height_advances_tick_over_tick_then_freezes_once_the_order_leaves_scope() {
+    async fn last_scanned_height_advances_tick_over_tick_then_freezes_once_the_order_leaves_scope()
+    {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let daemon = FakeDaemonClient::new();
         for h in 1..=100 {
@@ -2668,9 +2080,27 @@ mod tests {
         }
         let store = store.into_shared();
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap().last_scanned_height,
+            store
+                .lock()
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
+                .unwrap()
+                .unwrap()
+                .last_scanned_height,
             Some(100)
         );
 
@@ -2678,10 +2108,28 @@ mod tests {
             daemon.push_block(&format!("blk_{h}"), vec![]);
         }
         for _ in 0..7 {
-            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+            run_scan_tick(
+                &store,
+                &key_custody,
+                &daemon,
+                "mainnet",
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                20,
+                0,
+            )
+            .await
+            .unwrap();
         }
         assert_eq!(
-            store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap().last_scanned_height,
+            store
+                .lock()
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
+                .unwrap()
+                .unwrap()
+                .last_scanned_height,
             Some(150),
             "must have advanced with the chain while still in scope"
         );
@@ -2695,24 +2143,66 @@ mod tests {
             daemon.push_block(&format!("blk_{h}"), vec![]);
         }
         for _ in 0..2 {
-            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+            run_scan_tick(
+                &store,
+                &key_custody,
+                &daemon,
+                "mainnet",
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                20,
+                0,
+            )
+            .await
+            .unwrap();
         }
-        let settled = store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let settled = store
+            .lock()
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert!(
-            matches!(settled.status, crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid),
+            matches!(
+                settled.status,
+                crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid
+            ),
             "expected a terminal status after 10 confirmations, got {:?}",
             settled.status
         );
         assert_eq!(settled.last_scanned_height, Some(160));
         // A paid order stays in scope for the grace period after it closes
         // (D10); move its close time back so that period is over.
-        store.lock().execute_raw_for_test(&format!("UPDATE orders SET closed_at_utc = 1 WHERE id = '{order_id}'")).unwrap();
+        store
+            .lock()
+            .execute_raw_for_test(&format!(
+                "UPDATE orders SET closed_at_utc = 1 WHERE id = '{order_id}'"
+            ))
+            .unwrap();
 
         for h in 161..=200 {
             daemon.push_block(&format!("blk_{h}"), vec![]);
         }
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
-        let frozen = store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        let frozen = store
+            .lock()
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             frozen.last_scanned_height,
             Some(160),
@@ -2725,12 +2215,26 @@ mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
 
-        let touched = scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, None)
-            .await
-            .unwrap();
+        let touched = scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            None,
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(touched, HashSet::from([order_id.clone()]));
-        let payments = store.get_all_payments(&order_id).unwrap();
+        assert_eq!(
+            touched,
+            HashSet::from([crate::store::OrderId::new(order_id.clone())])
+        );
+        let payments = store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert!(payments[0].amount_piconero > 0);
         assert_eq!(payments[0].block_height, None); // mempool-only
@@ -2742,11 +2246,26 @@ mod tests {
         let tx = fixture_tx();
 
         for _ in 0..3 {
-            scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, None)
-                .await
-                .unwrap();
+            scan_transaction_for_tenant(
+                &store,
+                &key_custody,
+                handle,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &tx,
+                0..3,
+                1500,
+                None,
+            )
+            .await
+            .unwrap();
         }
-        assert_eq!(store.get_all_payments(&order_id).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -2754,10 +2273,21 @@ mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
 
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
 
         let daemon = FakeDaemonClient::new();
         // Fast-forward the fake daemon's internal height counter to 49 by pushing
@@ -2766,31 +2296,56 @@ mod tests {
         while last_height < 49 {
             last_height = daemon.push_block(&format!("filler_{last_height}"), vec![]);
         }
-        daemon.reorg_from(50, vec![("hash_50_v2", vec![]), ("hash_51_v2", vec![tx.clone()])]);
+        daemon.reorg_from(
+            50,
+            vec![("hash_50_v2", vec![]), ("hash_51_v2", vec![tx.clone()])],
+        );
 
         let store = store.into_shared();
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
-        assert!(report.dirty_orders.contains(&order_id));
+        assert!(report
+            .dirty_orders
+            .contains(&shared::ids::OrderId::new(order_id.to_string())));
         assert!(report.double_spent_orders.is_empty());
 
-        let payments = store.lock().get_all_payments(&order_id).unwrap();
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments[0].block_height, Some(51));
         assert!(payments[0].voided_at.is_none());
     }
 
     #[tokio::test]
-    async fn reorg_where_tx_vanishes_and_key_image_proven_spent_elsewhere_voids_and_flags_double_spend() {
+    async fn reorg_where_tx_vanishes_and_key_image_proven_spent_elsewhere_voids_and_flags_double_spend(
+    ) {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
         let txid = tx_id_hex(&tx);
         let key_images = key_images_of(&tx);
-        assert!(!key_images.is_empty(), "fixture tx must have at least one input to test key-image proof");
+        assert!(
+            !key_images.is_empty(),
+            "fixture tx must have at least one input to test key-image proof"
+        );
 
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
 
         let daemon = FakeDaemonClient::new();
         let mut last_height = 0;
@@ -2805,15 +2360,25 @@ mod tests {
         }
 
         let store = store.into_shared();
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
         assert_eq!(report.dirty_orders, vec![order_id.clone()]);
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let store = store.lock();
-        let payments = store.get_all_payments(&order_id).unwrap();
+        let payments = store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert!(payments[0].voided_at.is_some());
-        let order = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = store
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert!(order.double_spend_detected_at.is_some());
         let _ = txid; // kept for readability of the scenario, not asserted on directly
     }
@@ -2826,10 +2391,21 @@ mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
 
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
 
         let daemon = FakeDaemonClient::new();
         let mut last_height = 0;
@@ -2840,26 +2416,42 @@ mod tests {
         // Deliberately do NOT mark the key images as spent - default is Unspent.
 
         let store = store.into_shared();
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert!(report.double_spent_orders.is_empty());
 
-        let payments = store.lock().get_all_payments(&order_id).unwrap();
-        assert!(payments[0].voided_at.is_none(), "must not void on ambiguous (unspent) evidence");
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert!(
+            payments[0].voided_at.is_none(),
+            "must not void on ambiguous (unspent) evidence"
+        );
     }
 
     #[tokio::test]
     async fn no_reorg_when_hashes_still_match_is_a_cheap_no_op() {
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50")
+            .unwrap();
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         let mut last_height = 0;
         while last_height < 50 {
-            let h = if last_height == 49 { "hash_50" } else { "filler" };
+            let h = if last_height == 49 {
+                "hash_50"
+            } else {
+                "filler"
+            };
             last_height = daemon.push_block(h, vec![]);
         }
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, None);
         assert!(report.dirty_orders.is_empty());
     }
@@ -2872,17 +2464,41 @@ mod tests {
         // a 0-conf-only match with a nonzero confirmation requirement), and
         // exactly one webhook delivery is enqueued for that transition.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        let webhook = store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        let webhook = store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]); // the fake starts at height 0 with no block there at all; give the first-run tip bootstrap something real to seed from
         daemon.set_mempool(vec![fixture_tx()]);
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.status, crate::status::OrderStatus::Unconfirmed);
         assert!(order.amount_received_piconero > 0);
 
@@ -2901,8 +2517,11 @@ mod tests {
         key_custody: &dyn KeyCustody,
         view_key: [u8; 32],
         spend_pubkey: [u8; 32],
-    ) -> (String, WalletHandle, String) {
-        let handle = key_custody.register_wallet(WalletMaterial::new(view_key, spend_pubkey)).await.unwrap();
+    ) -> (crate::store::TenantId, WalletHandle, crate::store::OrderId) {
+        let handle = key_custody
+            .register_wallet(WalletMaterial::new(view_key, spend_pubkey))
+            .await
+            .unwrap();
         let tenant = store
             .create_tenant(
                 NewTenant {
@@ -2918,7 +2537,14 @@ mod tests {
             .unwrap();
         let index = store.allocate_minor_index(&tenant.tenant.id).unwrap();
         let address = key_custody
-            .derive_subaddress(handle, SubaddressIndex { major: 0, minor: index }, Network::Mainnet)
+            .derive_subaddress(
+                handle,
+                SubaddressIndex {
+                    major: 0,
+                    minor: index,
+                },
+                Network::Mainnet,
+            )
             .await
             .unwrap();
         let order = store
@@ -2937,7 +2563,11 @@ mod tests {
                 expires_at: crate::now_unix() + 3600,
             })
             .unwrap();
-        (tenant.tenant.id, handle, order.id)
+        (
+            shared::ids::TenantId::new(tenant.tenant.id.into_string()),
+            handle,
+            shared::ids::OrderId::new(order.id.into_string()),
+        )
     }
 
     fn arbitrary_wallet_material(seed: u8) -> ([u8; 32], [u8; 32]) {
@@ -2946,7 +2576,10 @@ mod tests {
         let mut spend_seed = [seed.wrapping_add(1); 32];
         spend_seed[31] &= 0x0f;
         let secret_spend = PrivateKey::from_slice(&spend_seed).unwrap();
-        (view_bytes, PublicKey::from_private_key(&secret_spend).to_bytes())
+        (
+            view_bytes,
+            PublicKey::from_private_key(&secret_spend).to_bytes(),
+        )
     }
 
     #[tokio::test]
@@ -2959,11 +2592,19 @@ mod tests {
         let key_custody = CountingKeyCustody::default();
         let store = Store::open_in_memory().unwrap();
 
-        let (tenant_a, handle_a, _order_a) =
-            tenant_with_pending_order(&store, &key_custody, fixture_view_key(), fixture_spend_pubkey()).await;
+        let (tenant_a, handle_a, _order_a) = tenant_with_pending_order(
+            &store,
+            &key_custody,
+            fixture_view_key(),
+            fixture_spend_pubkey(),
+        )
+        .await;
 
         let (view_b, spend_b) = arbitrary_wallet_material(0x70);
-        let handle_b = key_custody.register_wallet(WalletMaterial::new(view_b, spend_b)).await.unwrap();
+        let handle_b = key_custody
+            .register_wallet(WalletMaterial::new(view_b, spend_b))
+            .await
+            .unwrap();
         let tenant_b = store
             .create_tenant(
                 NewTenant {
@@ -2983,9 +2624,17 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.set_mempool(vec![fixture_tx()]);
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_a, handle_a), (tenant_b.tenant.id, handle_b)], 20, 0)
-            .await
-            .unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(tenant_a, handle_a), (tenant_b.tenant.id, handle_b)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             key_custody.scan_calls.load(Ordering::SeqCst),
@@ -2995,7 +2644,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_scan_tick_never_scans_a_tenant_on_a_different_network_even_if_included_in_the_input_list() {
+    async fn run_scan_tick_never_scans_a_tenant_on_a_different_network_even_if_included_in_the_input_list(
+    ) {
         // Defense-in-depth for the multi-network design (§DESIGN.md §7): a
         // mainnet-network tick must not touch a pending stagenet tenant's data at
         // all, even though `active_tenant_ids` already scopes by network - this
@@ -3006,11 +2656,19 @@ mod tests {
         let key_custody = CountingKeyCustody::default();
         let store = Store::open_in_memory().unwrap();
 
-        let (mainnet_tenant, mainnet_handle, _order) =
-            tenant_with_pending_order(&store, &key_custody, fixture_view_key(), fixture_spend_pubkey()).await;
+        let (mainnet_tenant, mainnet_handle, _order) = tenant_with_pending_order(
+            &store,
+            &key_custody,
+            fixture_view_key(),
+            fixture_spend_pubkey(),
+        )
+        .await;
 
         let (view_b, spend_b) = arbitrary_wallet_material(0x50);
-        let stagenet_handle = key_custody.register_wallet(WalletMaterial::new(view_b, spend_b)).await.unwrap();
+        let stagenet_handle = key_custody
+            .register_wallet(WalletMaterial::new(view_b, spend_b))
+            .await
+            .unwrap();
         let stagenet_tenant = store
             .create_tenant(
                 NewTenant {
@@ -3031,7 +2689,9 @@ mod tests {
                 confirmations_required_override: None,
                 tenant_id: stagenet_tenant.tenant.id.clone(),
                 merchant_order_id: None,
-                minor_index: store.allocate_minor_index(&stagenet_tenant.tenant.id).unwrap(),
+                minor_index: store
+                    .allocate_minor_index(&stagenet_tenant.tenant.id)
+                    .unwrap(),
                 address: "5someaddress".into(),
                 xmr_amount_piconero: 1,
                 description: None,
@@ -3056,7 +2716,10 @@ mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(mainnet_tenant, mainnet_handle), (stagenet_tenant.tenant.id, stagenet_handle)],
+            &[
+                (mainnet_tenant, mainnet_handle),
+                (stagenet_tenant.tenant.id, stagenet_handle),
+            ],
             20,
             0,
         )
@@ -3080,10 +2743,18 @@ mod tests {
         // sitting there.
         let key_custody = CountingKeyCustody::default();
         let store = Store::open_in_memory().unwrap();
-        let (tenant_id, _handle, order_id) =
-            tenant_with_pending_order(&store, &key_custody, fixture_view_key(), fixture_spend_pubkey()).await;
+        let (tenant_id, _handle, order_id) = tenant_with_pending_order(
+            &store,
+            &key_custody,
+            fixture_view_key(),
+            fixture_spend_pubkey(),
+        )
+        .await;
         let handle = key_custody
-            .register_wallet(WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey()))
+            .register_wallet(WalletMaterial::new(
+                fixture_view_key(),
+                fixture_spend_pubkey(),
+            ))
             .await
             .unwrap();
         // (Re-registering under the same key material is fine for this test - only
@@ -3095,7 +2766,17 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.set_mempool(vec![fixture_tx()]);
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(tenant_id.clone(), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(key_custody.scan_calls.load(Ordering::SeqCst), 1);
 
         // Force the order to a terminal state the way "10 confirmations later"
@@ -3106,12 +2787,33 @@ mod tests {
         {
             let s = store.lock();
             let txid = tx_id_hex(&fixture_tx());
-            s.update_payment_block_height(&order_id, &txid, 1, Some(1)).unwrap(); // output_index 1, per the fixture's known match (see key_custody::plain's tests)
-            let (_, new_status) = s.recompute_order_status(&order_id, 100, 1600).unwrap(); // 100 confirmations
-            assert!(matches!(new_status, crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid));
+            s.update_payment_block_height(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                &txid,
+                1,
+                Some(1),
+            )
+            .unwrap(); // output_index 1, per the fixture's known match (see key_custody::plain's tests)
+            let (_, new_status) = s
+                .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+                .unwrap(); // 100 confirmations
+            assert!(matches!(
+                new_status,
+                crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid
+            ));
         }
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(tenant_id, handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             key_custody.scan_calls.load(Ordering::SeqCst),
             1,
@@ -3120,7 +2822,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_scan_tick_on_first_run_seeds_near_the_current_tip_instead_of_scanning_all_history() {
+    async fn run_scan_tick_on_first_run_seeds_near_the_current_tip_instead_of_scanning_all_history()
+    {
         // A fresh scanner (no scanned_blocks yet) must not try to replay the
         // entire chain. It seeds one block behind the reported tip (see the next
         // test for why) but then immediately scans forward through the real tip
@@ -3134,9 +2837,25 @@ mod tests {
             daemon.push_block(&format!("h{i}"), vec![]);
         }
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(10));
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(10)
+        );
     }
 
     #[tokio::test]
@@ -3156,17 +2875,51 @@ mod tests {
         // block-serving backend: report height 11, but no block 11 exists yet.
         daemon.advance_height_without_a_block();
 
-        let result = run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
-        assert!(result.is_ok(), "must not hard-fail the tick just because the tip block isn't fetchable yet");
+        let result = run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "must not hard-fail the tick just because the tip block isn't fetchable yet"
+        );
         // Falls back to seeding one behind the (unfetchable) reported tip, i.e.
         // height 10, which *does* exist.
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(10));
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(10)
+        );
 
         // Once the block-serving backend catches up, a later tick proceeds
         // normally from where the fallback seeded it.
         daemon.push_block("h10_actual", vec![]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(11));
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(11)
+        );
     }
 
     #[tokio::test]
@@ -3192,22 +2945,42 @@ mod tests {
             key_images_json: "[]".into(),
         };
 
-        let touched = record_scan_match(&store, &tenant_id, &scan, 1500, Some(50)).unwrap();
-        assert!(touched.is_empty(), "an unmeasurable output must not even mark the order as needing a recompute");
+        let touched = record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &scan,
+            1500,
+            Some(50),
+        )
+        .unwrap();
         assert!(
-            store.get_all_payments(&order_id).unwrap().is_empty(),
+            touched.is_empty(),
+            "an unmeasurable output must not even mark the order as needing a recompute"
+        );
+        assert!(
+            store
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty(),
             "nothing may be persisted for an output whose amount could not be recovered"
         );
 
         // The order is untouched, so a later tick that *can* decrypt the amount is
         // still free to record it properly.
-        let order = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = store
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.status, crate::status::OrderStatus::Pending);
         assert_eq!(order.amount_received_piconero, 0);
     }
 
     #[tokio::test]
-    async fn a_store_failure_recording_a_block_match_leaves_that_block_unscanned_for_the_next_tick() {
+    async fn a_store_failure_recording_a_block_match_leaves_that_block_unscanned_for_the_next_tick()
+    {
         // The highest-consequence silent failure in this file: block scanning used
         // to discard the error from `record_scan_match` (`if let Ok(..)`) and then
         // call `set_scanned_block` for that height regardless. Blocks are scanned
@@ -3232,21 +3005,60 @@ mod tests {
             )
             .unwrap();
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        let result = run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a storage failure is reported, not swallowed"
+        );
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
             Some(1),
             "block 2's match failed to record - marking it scanned would lose that payment permanently"
         );
-        assert!(store.lock().get_all_payments(&order_id).unwrap().is_empty());
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .is_empty());
 
         // Once the store is healthy again, the very next tick re-covers the block it
         // deliberately left behind.
-        store.lock().execute_raw_for_test("DROP TRIGGER simulated_write_failure;").unwrap();
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+        store
+            .lock()
+            .execute_raw_for_test("DROP TRIGGER simulated_write_failure;")
+            .unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
-        let payments = store.lock().get_all_payments(&order_id).unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(2)
+        );
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(payments[0].block_height, Some(2));
     }
@@ -3261,28 +3073,72 @@ mod tests {
         // `confirming` forever no matter how deeply its payment was buried, with the
         // `order.paid` webhook the merchant is waiting on never firing.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
-        let webhook = store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        let webhook = store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![fixture_tx()]); // the payment lands at height 2
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-            assert_eq!(order.status, crate::status::OrderStatus::Confirming, "one confirmation, ten required");
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                order.status,
+                crate::status::OrderStatus::Confirming,
+                "one confirmation, ten required"
+            );
         }
 
         // Nine more blocks, none of which contain anything for this order at all.
         for i in 3..=11 {
             daemon.push_block(&format!("h{i}"), vec![]);
         }
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.status,
             crate::status::OrderStatus::Overpaid, // the fixture tx pays more than this order's trivially-small expected amount
@@ -3312,15 +3168,25 @@ mod tests {
         // is never in the `touched` set, so it was never recomputed and stayed
         // `pending` indefinitely.
         let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-        let webhook = store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        let webhook = store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
 
         // A second order on the same tenant, already past its deadline and never paid.
         let stale = store
             .create_order(NewOrder {
                 confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
+                tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
-                minor_index: store.allocate_minor_index(&tenant_id).unwrap(),
+                minor_index: store
+                    .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+                    .unwrap(),
                 address: "sub_expired".into(),
                 xmr_amount_piconero: 1_000_000,
                 description: None,
@@ -3334,11 +3200,27 @@ mod tests {
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]); // an entirely uneventful tick: no mempool, no matches
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
         assert_eq!(
-            s.get_order(&tenant_id, &stale.id).unwrap().unwrap().status,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &stale.id
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             crate::status::OrderStatus::Expired
         );
         let expired_events = s
@@ -3361,15 +3243,40 @@ mod tests {
         // remined shallower updated silently, and the merchant's only way to find
         // out was to poll.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        let webhook = store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        let webhook = store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let tx = fixture_tx();
 
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
-        let (_, status) = store.recompute_order_status(&order_id, 100, 1600).unwrap();
-        assert_eq!(status, crate::status::OrderStatus::Overpaid, "51 confirmations deep before the reorg");
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+            .unwrap();
+        assert_eq!(
+            status,
+            crate::status::OrderStatus::Overpaid,
+            "51 confirmations deep before the reorg"
+        );
 
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
@@ -3379,19 +3286,37 @@ mod tests {
         }
         // The transaction survives the reorg but is remined at the new tip, so it is
         // suddenly one confirmation deep again instead of fifty-one.
-        daemon.reorg_from(50, vec![("hash_50_v2", vec![]), ("hash_51_v2", vec![tx.clone()])]);
+        daemon.reorg_from(
+            50,
+            vec![("hash_50_v2", vec![]), ("hash_51_v2", vec![tx.clone()])],
+        );
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
-        assert!(report.double_spent_orders.is_empty(), "a remined transaction is not a double-spend");
+        assert!(
+            report.double_spent_orders.is_empty(),
+            "a remined transaction is not a double-spend"
+        );
 
         let s = store.lock();
         assert_eq!(
-            s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             crate::status::OrderStatus::Confirming
         );
         let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
-        assert_eq!(due.len(), 1, "the paid -> confirming transition must be announced exactly once");
+        assert_eq!(
+            due.len(),
+            1,
+            "the paid -> confirming transition must be announced exactly once"
+        );
         assert_eq!(due[0].event_type, "order.confirming");
         assert_eq!(due[0].webhook_id, webhook.id);
     }
@@ -3406,10 +3331,21 @@ mod tests {
         // only after reconciliation succeeds makes a failed pass a pure retry.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
         let store = store.into_shared();
 
         let inner = FakeDaemonClient::new();
@@ -3417,29 +3353,47 @@ mod tests {
         while last_height < 49 {
             last_height = inner.push_block(&format!("filler_{last_height}"), vec![]);
         }
-        inner.reorg_from(50, vec![("hash_50_v2", vec![]), ("hash_51_v2", vec![tx.clone()])]);
+        inner.reorg_from(
+            50,
+            vec![("hash_50_v2", vec![]), ("hash_51_v2", vec![tx.clone()])],
+        );
 
         let failing = DaemonFailingLocate { inner };
         assert!(
-            check_for_reorg_and_reconcile(&store, &failing, "mainnet", 20, 2000).await.is_err(),
+            check_for_reorg_and_reconcile(&store, &failing, "mainnet", 20, 2000)
+                .await
+                .is_err(),
             "the node failure must surface, not be swallowed"
         );
         assert_eq!(
-            store.lock().get_scanned_block_hash("mainnet", 50).unwrap(),
+            store.lock().get_scanned_block_hash(monero::Network::Mainnet, 50).unwrap(),
             Some("hash_50_v1".to_string()),
             "the stored hash must still describe the old chain, or nothing will ever notice the reorg again"
         );
         assert_eq!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             Some(50),
             "and the payment is still unreconciled, as the failed pass left it"
         );
 
         // The retry a healthy next tick performs now works, because the evidence the
         // detection depends on is still there.
-        let report = check_for_reorg_and_reconcile(&store, &failing.inner, "mainnet", 20, 2100).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &failing.inner, "mainnet", 20, 2100)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
-        assert_eq!(store.lock().get_all_payments(&order_id).unwrap()[0].block_height, Some(51));
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
+            Some(51)
+        );
     }
 
     #[tokio::test]
@@ -3453,7 +3407,9 @@ mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         // A scanner that has already worked its way up to height 51 on the old chain.
         for h in 40..=51 {
-            store.set_scanned_block("mainnet", h, &format!("old_{h}")).unwrap();
+            store
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("old_{h}"))
+                .unwrap();
         }
         let store = store.into_shared();
 
@@ -3466,23 +3422,58 @@ mod tests {
         // the high-water mark, so nothing would ever look there again on its own.
         daemon.reorg_from(50, vec![("new_50", vec![fixture_tx()]), ("new_51", vec![])]);
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(49),
                 "the high-water mark must fall back below the reorg point"
             );
-            assert!(s.get_all_payments(&order_id).unwrap().is_empty(), "nothing found yet - this tick only rewound");
+            assert!(
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap()
+                    .is_empty(),
+                "nothing found yet - this tick only rewound"
+            );
         }
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(51), "and forward scanning caught back up");
-        let payments = s.get_all_payments(&order_id).unwrap();
-        assert_eq!(payments.len(), 1, "the payment that exists only in the replacement chain was found");
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(51),
+            "and forward scanning caught back up"
+        );
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert_eq!(
+            payments.len(),
+            1,
+            "the payment that exists only in the replacement chain was found"
+        );
         assert_eq!(payments[0].block_height, Some(50));
     }
 
@@ -3498,10 +3489,21 @@ mod tests {
         let tx = fixture_tx();
         let key_images = key_images_of(&tx);
 
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
@@ -3514,27 +3516,55 @@ mod tests {
             daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain); // ...and is proven double-spent
         }
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .voided_at
+            .is_some());
 
         // Now the attacker's replacement chain loses, and the original transaction is
         // back in a block. (The forward scan would have recorded the new hash for
         // height 50 between the two reconciliations; do that by hand here.)
-        store.lock().set_scanned_block("mainnet", 50, "hash_50_v2").unwrap();
+        store
+            .lock()
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v2")
+            .unwrap();
         daemon.reorg_from(50, vec![("hash_50_v3", vec![tx.clone()])]);
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2100).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2100)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
-        assert!(report.dirty_orders.contains(&order_id));
+        assert!(report
+            .dirty_orders
+            .contains(&shared::ids::OrderId::new(order_id.to_string())));
 
         let s = store.lock();
-        let payment = s.get_all_payments(&order_id).unwrap().remove(0);
-        assert!(payment.voided_at.is_none(), "the payment is canonical again and must count towards the order");
+        let payment = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .remove(0);
+        assert!(
+            payment.voided_at.is_none(),
+            "the payment is canonical again and must count towards the order"
+        );
         assert_eq!(payment.block_height, Some(50));
         // Sticky by design: a double-spend attempt was genuinely observed on this
         // order, and that remains true regardless of how the chain settled.
-        assert!(s.get_order(&tenant_id, &order_id).unwrap().unwrap().double_spend_detected_at.is_some());
+        assert!(s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_some());
     }
 
     #[tokio::test]
@@ -3545,13 +3575,31 @@ mod tests {
         // with (a captured delivery stays valid forever). Both the id and the
         // timestamp live *inside* the signed body, not only in headers.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![fixture_tx()]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let first_payload: serde_json::Value = {
             let s = store.lock();
@@ -3561,21 +3609,37 @@ mod tests {
         };
         assert_eq!(first_payload["order_id"], serde_json::json!(order_id));
         assert_eq!(first_payload["status"], serde_json::json!("confirming"));
-        assert_eq!(first_payload["event"], serde_json::json!("order.confirming"));
+        assert_eq!(
+            first_payload["event"],
+            serde_json::json!("order.confirming")
+        );
         assert!(
-            first_payload["event_id"].as_str().is_some_and(|id| id.starts_with("evt_")),
+            first_payload["event_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("evt_")),
             "every event needs an id a receiver can dedupe on: {first_payload}"
         );
-        assert!(first_payload["created_at"].as_i64().is_some(), "and a timestamp to bound replays with");
+        assert!(
+            first_payload["created_at"].as_i64().is_some(),
+            "and a timestamp to bound replays with"
+        );
 
         // A retry of the same delivery re-sends the identical, identically-signed
         // body - the id must identify the *event*, not the attempt.
         {
             let s = store.lock();
             let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
-            s.schedule_webhook_retry(due[0].delivery_id, 0, Some(500), Some("boom"), crate::now_unix()).unwrap();
+            s.schedule_webhook_retry(
+                due[0].delivery_id,
+                0,
+                Some(500),
+                Some("boom"),
+                crate::now_unix(),
+            )
+            .unwrap();
             let retried = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
-            let retried_payload: serde_json::Value = serde_json::from_str(&retried[0].payload_json).unwrap();
+            let retried_payload: serde_json::Value =
+                serde_json::from_str(&retried[0].payload_json).unwrap();
             assert_eq!(retried_payload["event_id"], first_payload["event_id"]);
         }
 
@@ -3583,7 +3647,17 @@ mod tests {
         for i in 3..=11 {
             daemon.push_block(&format!("h{i}"), vec![]);
         }
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         let s = store.lock();
         let paid = s
             .due_webhook_deliveries(crate::now_unix() + 1, 10)
@@ -3610,27 +3684,44 @@ mod tests {
         // on counting towards their order at a height that no longer exists) and
         // block H of the replacement chain is never rescanned.
         let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-        store.set_scanned_block("mainnet", 1, "h1").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+            .unwrap();
         let store = store.into_shared();
 
         let inner = FakeDaemonClient::new();
         for i in 1..=5 {
             inner.push_block(&format!("h{i}"), vec![]);
         }
-        let daemon = DaemonFailingBlockHashAt { inner, failing_height: AtomicU64::new(3) };
+        let daemon = DaemonFailingBlockHashAt {
+            inner,
+            failing_height: AtomicU64::new(3),
+        };
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(2),
                 "the range must stop at the height whose hash could not be read, not step over it"
             );
             for h in 3..=5 {
                 assert!(
-                    s.get_scanned_block_hash("mainnet", h).unwrap().is_none(),
+                    s.get_scanned_block_hash(monero::Network::Mainnet, h)
+                        .unwrap()
+                        .is_none(),
                     "block {h} must not be recorded once the range was abandoned at 3"
                 );
             }
@@ -3638,13 +3729,33 @@ mod tests {
 
         // And the next healthy tick re-covers the whole abandoned range, leaving a
         // contiguous window with nothing missing from the middle of it.
-        daemon.failing_height.store(NO_FAILING_HEIGHT, Ordering::SeqCst);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+        daemon
+            .failing_height
+            .store(NO_FAILING_HEIGHT, Ordering::SeqCst);
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(5));
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(5)
+        );
         for h in 1..=5 {
-            assert!(s.get_scanned_block_hash("mainnet", h).unwrap().is_some(), "block {h} must be recorded");
+            assert!(
+                s.get_scanned_block_hash(monero::Network::Mainnet, h)
+                    .unwrap()
+                    .is_some(),
+                "block {h} must be recorded"
+            );
         }
     }
 
@@ -3666,7 +3777,9 @@ mod tests {
         // `a_reconciliation_that_fails_partway_leaves_the_reorg_still_detectable`
         // relies on.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .unwrap();
         let store = store.into_shared();
 
         let inner = FakeDaemonClient::new();
@@ -3678,39 +3791,86 @@ mod tests {
         inner.reorg_from(50, vec![("new_50", vec![fixture_tx()]), ("new_51", vec![])]);
         // 49 is the common ancestor the rewind must re-anchor to - and the one hash
         // this node will not serve.
-        let daemon = DaemonFailingBlockHashAt { inner, failing_height: AtomicU64::new(49) };
+        let daemon = DaemonFailingBlockHashAt {
+            inner,
+            failing_height: AtomicU64::new(49),
+        };
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
             assert_eq!(
-                s.get_scanned_block_hash("mainnet", 50).unwrap().as_deref(),
+                s.get_scanned_block_hash(monero::Network::Mainnet, 50).unwrap().as_deref(),
                 Some("hash_50_v1"),
                 "with no anchor available, the losing chain's hash must stay put so the reorg stays detectable"
             );
             assert!(
-                s.max_scanned_height("mainnet").unwrap().is_some(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap().is_some(),
                 "the window must never be emptied by a rewind that cannot re-anchor - an empty window reads \
                  as 'never scanned' and re-seeds at the tip"
             );
         }
 
         // The node recovers; the very next tick completes the rewind it deferred.
-        daemon.failing_height.store(NO_FAILING_HEIGHT, Ordering::SeqCst);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        daemon
+            .failing_height
+            .store(NO_FAILING_HEIGHT, Ordering::SeqCst);
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(49),
             "the rewind must now land on the common ancestor"
         );
 
         // ...and the tick after that forward-scans the replacement chain and finds the
         // payment that only ever existed there.
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(51));
-        let payments = s.get_all_payments(&order_id).unwrap();
-        assert_eq!(payments.len(), 1, "the payment that exists only in the replacement chain must still be found");
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(51)
+        );
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert_eq!(
+            payments.len(),
+            1,
+            "the payment that exists only in the replacement chain must still be found"
+        );
         assert_eq!(payments[0].block_height, Some(50));
     }
 
@@ -3730,11 +3890,20 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool(vec![fixture_tx()]); // the payment arrives zero-conf
-        store.lock().set_scanned_block("mainnet", 1, "h1").unwrap();
+        store
+            .lock()
+            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+            .unwrap();
 
         let webhook = store
             .lock()
-            .create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000)
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
             .unwrap();
 
         // Fail only writes to `scanned_blocks`, leaving every other table (and every
@@ -3748,23 +3917,45 @@ mod tests {
             )
             .unwrap();
 
-        let result = run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
-        assert!(result.is_ok(), "a failure marking a block scanned must abandon the range, not the whole tick");
+        // The storage failure is reported, but it stops only block scanning:
+        // every other kind of work in the round still runs.
+        let result = run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a storage failure is reported, not swallowed"
+        );
 
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(1),
                 "block 2 must stay unscanned so the next tick retries it"
             );
             // The mempool half of the tick must have survived intact: the payment is
             // recorded, the status was recomputed off it, and the transition was
             // announced.
-            let payments = s.get_all_payments(&order_id).unwrap();
+            let payments = s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap();
             assert_eq!(payments.len(), 1);
             assert_eq!(payments[0].block_height, None, "still mempool-only");
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
             assert_ne!(
                 order.status,
                 crate::status::OrderStatus::Pending,
@@ -3772,7 +3963,8 @@ mod tests {
             );
             let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
             assert!(
-                due.iter().any(|d| d.webhook_id == webhook.id && d.event_type.starts_with("order.")),
+                due.iter()
+                    .any(|d| d.webhook_id == webhook.id && d.event_type.starts_with("order.")),
                 "the mempool match's status-transition webhook must not have been discarded"
             );
         }
@@ -3783,12 +3975,29 @@ mod tests {
             .lock()
             .execute_raw_for_test("DROP TRIGGER simulated_scanned_block_write_failure;")
             .unwrap();
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(2)
+        );
     }
 
     #[tokio::test]
-    async fn a_reorg_back_to_the_oldest_recorded_block_does_not_look_like_a_scanner_that_never_ran() {
+    async fn a_reorg_back_to_the_oldest_recorded_block_does_not_look_like_a_scanner_that_never_ran()
+    {
         // `forget_scanned_blocks_at_or_above` walks the high-water mark back to
         // `reorg_point - 1` - but only while a row still exists at or below that
         // height. When the reorg point *is* the oldest block this network has a row
@@ -3801,7 +4010,9 @@ mod tests {
         // exact loss dropping those rows was introduced to prevent.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         // A scanner whose entire history is one block: height 50, on the old chain.
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .unwrap();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
@@ -3812,24 +4023,54 @@ mod tests {
         // The fork replaces 50 and 51, and the payment lives only in the new 50.
         daemon.reorg_from(50, vec![("new_50", vec![fixture_tx()]), ("new_51", vec![])]);
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
             Some(49),
             "the rewind must leave the high-water mark at the common ancestor, not at nothing at all"
         );
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(51));
-        let payments = s.get_all_payments(&order_id).unwrap();
-        assert_eq!(payments.len(), 1, "the payment that exists only in the replacement chain was found");
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(51)
+        );
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert_eq!(
+            payments.len(),
+            1,
+            "the payment that exists only in the replacement chain was found"
+        );
         assert_eq!(payments[0].block_height, Some(50));
     }
 
     #[tokio::test]
-    async fn a_tick_that_detects_a_reorg_never_announces_paid_from_the_chain_it_is_about_to_discard() {
+    async fn a_tick_that_detects_a_reorg_never_announces_paid_from_the_chain_it_is_about_to_discard(
+    ) {
         // Ordering, not logic: reconciliation and the per-tick recompute sweep both
         // ran, but the sweep ran first, so on the one tick where a reorg is detected
         // every non-terminal order was evaluated against heights reconciliation was
@@ -3838,16 +4079,41 @@ mod tests {
         // before the same tick voided that payment and fired the retraction - and a
         // merchant who acted on `order.paid` has already shipped.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
-        store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let tx = fixture_tx();
         let key_images = key_images_of(&tx);
 
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
-        let (_, status) = store.recompute_order_status(&order_id, 50, 1600).unwrap();
-        assert_eq!(status, crate::status::OrderStatus::Confirming, "one confirmation, ten required");
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 50, 1600)
+            .unwrap();
+        assert_eq!(
+            status,
+            crate::status::OrderStatus::Confirming,
+            "one confirmation, ten required"
+        );
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
@@ -3859,25 +4125,50 @@ mod tests {
         // transaction at all - so counted against the *stale* height 50 the payment
         // now looks eleven confirmations deep, comfortably past the threshold, while
         // in reality it has been double-spent.
-        let replacement: Vec<(&str, Vec<Transaction>)> =
-            ["v2_50", "v2_51", "v2_52", "v2_53", "v2_54", "v2_55", "v2_56", "v2_57", "v2_58", "v2_59", "v2_60"]
-                .into_iter()
-                .map(|h| (h, vec![]))
-                .collect();
+        let replacement: Vec<(&str, Vec<Transaction>)> = [
+            "v2_50", "v2_51", "v2_52", "v2_53", "v2_54", "v2_55", "v2_56", "v2_57", "v2_58",
+            "v2_59", "v2_60",
+        ]
+        .into_iter()
+        .map(|h| (h, vec![]))
+        .collect();
         daemon.reorg_from(50, replacement);
         for ki in &key_images {
             daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-        assert_eq!(order.amount_received_piconero, 0, "the voided payment must not count towards the order");
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            order.amount_received_piconero, 0,
+            "the voided payment must not count towards the order"
+        );
         assert!(order.double_spend_detected_at.is_some());
 
-        let events: Vec<String> =
-            s.due_webhook_deliveries(crate::now_unix() + 1, 20).unwrap().into_iter().map(|d| d.event_type).collect();
+        let events: Vec<String> = s
+            .due_webhook_deliveries(crate::now_unix() + 1, 20)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.event_type)
+            .collect();
         assert!(
             !events.iter().any(|e| e == "order.paid" || e == "order.overpaid"),
             "no settlement may ever be announced from payment data the same tick is in the middle of retracting, got: {events:?}"
@@ -3885,7 +4176,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_payment_a_reorg_dropped_to_the_mempool_can_still_be_voided_when_later_proven_double_spent() {
+    async fn a_payment_a_reorg_dropped_to_the_mempool_can_still_be_voided_when_later_proven_double_spent(
+    ) {
         // Reconciliation itself writes `block_height = NULL` when the daemon reports
         // a payment's transaction back in the pool - and the query that finds
         // payments to re-examine filtered on `block_height >= ?`, which SQL's
@@ -3897,10 +4189,21 @@ mod tests {
         let tx = fixture_tx();
         let key_images = key_images_of(&tx);
 
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50_v1").unwrap();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
@@ -3912,9 +4215,15 @@ mod tests {
         daemon.set_mempool(vec![tx.clone()]);
         daemon.reorg_from(50, vec![("hash_50_v2", vec![])]);
 
-        check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             None,
             "reconciliation itself is what puts the row into the state that used to hide it"
         );
@@ -3925,15 +4234,30 @@ mod tests {
         for ki in &key_images {
             daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
-        store.lock().set_scanned_block("mainnet", 50, "hash_50_v2").unwrap();
+        store
+            .lock()
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v2")
+            .unwrap();
         daemon.reorg_from(50, vec![("hash_50_v3", vec![])]);
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2100).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2100)
+            .await
+            .unwrap();
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let s = store.lock();
-        assert!(s.get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert!(s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .voided_at
+            .is_some());
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.amount_received_piconero, 0);
         assert!(order.double_spend_detected_at.is_some());
     }
@@ -3947,7 +4271,15 @@ mod tests {
         // therefore didn't delay the merchant's `order.confirming`, it destroyed it:
         // no later tick could ever re-derive that a transition had happened.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         // Fail only enqueues, leaving every other write working, so this reproduces
         // the specific window rather than a broken database.
         store
@@ -3962,29 +4294,77 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![fixture_tx()]);
 
-        let result = run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
-        assert!(result.is_err(), "the enqueue failure must surface, not be swallowed");
+        let result = run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "the enqueue failure must surface, not be swallowed"
+        );
         assert_eq!(
-            store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            store
+                .lock()
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
+                .unwrap()
+                .unwrap()
+                .status,
             crate::status::OrderStatus::Pending,
             "the status must not have advanced past a transition nothing will ever announce"
         );
 
-        assert_eq!(store.lock().pending_payment_recomputes("mainnet").unwrap(), vec![order_id.clone()]);
+        assert_eq!(
+            store
+                .lock()
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
+            vec![order_id.clone()]
+        );
 
         // Once the store is healthy again, the next tick performs both halves.
-        store.lock().execute_raw_for_test("DROP TRIGGER simulated_enqueue_failure;").unwrap();
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        store
+            .lock()
+            .execute_raw_for_test("DROP TRIGGER simulated_enqueue_failure;")
+            .unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
         assert_eq!(
-            s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             crate::status::OrderStatus::Confirming
         );
         let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].event_type, "order.confirming");
-        assert!(s.pending_payment_recomputes("mainnet").unwrap().is_empty());
+        assert!(s
+            .pending_payment_recomputes(monero::Network::Mainnet)
+            .unwrap()
+            .is_empty());
     }
 
     // ---------------------------------------------------------------------
@@ -4014,20 +4394,32 @@ mod tests {
     /// Pushes `1..=height` onto a fresh fake chain, each block empty and hashed
     /// `{prefix}_{h}`, and records the same hashes into `store` for `from..=height`
     /// - i.e. a scanner that has already worked its way up this chain.
-    fn chain_scanned_to(store: &Store, height: u64, recorded_from: u64, prefix: &str) -> FakeDaemonClient {
+    fn chain_scanned_to(
+        store: &Store,
+        height: u64,
+        recorded_from: u64,
+        prefix: &str,
+    ) -> FakeDaemonClient {
         let daemon = FakeDaemonClient::new();
         for h in 1..=height {
             daemon.push_block(&format!("{prefix}_{h}"), vec![]);
         }
         for h in recorded_from..=height {
-            store.set_scanned_block("mainnet", h, &format!("{prefix}_{h}")).unwrap();
+            store
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("{prefix}_{h}"))
+                .unwrap();
         }
         daemon
     }
 
     /// Replaces `fork..=tip` with a chain whose hashes are prefixed `new_`, keeping
     /// the (hash, txs) plumbing of `reorg_from`'s `&str` API out of every caller.
-    fn reorg_to_new_chain(daemon: &FakeDaemonClient, fork: u64, tip: u64, tx_at: Option<(u64, Transaction)>) {
+    fn reorg_to_new_chain(
+        daemon: &FakeDaemonClient,
+        fork: u64,
+        tip: u64,
+        tx_at: Option<(u64, Transaction)>,
+    ) {
         reorg_to_chain(daemon, fork, tip, "new", tx_at)
     }
 
@@ -4095,7 +4487,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_reorg_deeper_than_the_window_is_reported_at_the_window_edge_and_leaves_older_payments_alone() {
+    async fn a_reorg_deeper_than_the_window_is_reported_at_the_window_edge_and_leaves_older_payments_alone(
+    ) {
         // The documented limitation (§DESIGN.md 3: "defending against reorgs deeper
         // than a configured window" is a non-goal), pinned down as executable
         // behavior rather than left as prose. What actually happens is worth being
@@ -4120,15 +4513,29 @@ mod tests {
         // And the payment orphaned below the window is left untouched by that pass.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let daemon = chain_scanned_to(&store, tip, tip - 30, "old");
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &fixture_tx(), 0..3, 1500, Some(79))
-            .await
-            .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &fixture_tx(),
+            0..3,
+            1500,
+            Some(79),
+        )
+        .await
+        .unwrap();
         reorg_to_new_chain(&daemon, 79, tip, None);
         let store = store.into_shared();
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(80));
-        let payments = store.lock().get_all_payments(&order_id).unwrap();
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments[0].block_height,
             Some(79),
@@ -4138,7 +4545,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_settled_order_is_walked_back_when_a_reorg_deeper_than_confirmations_required_orphans_its_payment() {
+    async fn a_settled_order_is_walked_back_when_a_reorg_deeper_than_confirmations_required_orphans_its_payment(
+    ) {
         // The September 2025 shape, at this system's defaults: an 18-block reorg
         // against `confirmations_required = 10` reverts blocks the merchant was
         // already told were final. Nothing in the reorg path branches on
@@ -4147,15 +4555,38 @@ mod tests {
         // reached a terminal, shipped-against status is walked back, and the merchant
         // is told, rather than the retraction being visible only to a poller.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
-        store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let tx = fixture_tx();
         let daemon = chain_scanned_to(&store, 100, 70, "old");
         // Payment 18 blocks deep - comfortably "final" at ten confirmations.
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(83))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(83),
+        )
+        .await
+        .unwrap();
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
             .unwrap();
-        let (_, status) = store.recompute_order_status(&order_id, 100, 1600).unwrap();
-        assert_eq!(status, crate::status::OrderStatus::Overpaid, "18 confirmations deep before the reorg");
+        assert_eq!(
+            status,
+            crate::status::OrderStatus::Overpaid,
+            "18 confirmations deep before the reorg"
+        );
 
         // An 18-block reorg that does not carry the transaction, and whose inputs are
         // proven consumed by something else.
@@ -4165,17 +4596,32 @@ mod tests {
         reorg_to_new_chain(&daemon, 83, 100, None);
         let store = store.into_shared();
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(83));
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-        assert_eq!(order.amount_received_piconero, 0, "the orphaned payment must stop counting");
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            order.amount_received_piconero, 0,
+            "the orphaned payment must stop counting"
+        );
         assert_eq!(order.status, crate::status::OrderStatus::Pending);
         assert!(order.double_spend_detected_at.is_some());
-        let events: Vec<String> =
-            s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap().into_iter().map(|d| d.event_type).collect();
+        let events: Vec<String> = s
+            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.event_type)
+            .collect();
         assert!(
             events.contains(&"order.pending".to_string()),
             "a merchant told `overpaid` must be told when that stops being true: {events:?}"
@@ -4200,25 +4646,59 @@ mod tests {
             daemon.push_block(&format!("old_{h}"), vec![]);
         }
         for h in 50..=52 {
-            store.set_scanned_block("mainnet", h, &format!("old_{h}")).unwrap();
+            store
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("old_{h}"))
+                .unwrap();
         }
         // The fork is at 45 - five blocks below anything this scanner recorded - and
         // the payment exists only in the replacement chain.
         reorg_to_new_chain(&daemon, 45, 52, Some((51, fixture_tx())));
         let store = store.into_shared();
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(49),
             "the rewind must land just below the oldest recorded block, never on an empty window"
         );
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(52));
-        let payments = s.get_all_payments(&order_id).unwrap();
-        assert_eq!(payments.len(), 1, "the payment that exists only in the replacement chain must be found");
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(52)
+        );
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert_eq!(
+            payments.len(),
+            1,
+            "the payment that exists only in the replacement chain must be found"
+        );
         assert_eq!(payments[0].block_height, Some(51));
     }
 
@@ -4228,7 +4708,7 @@ mod tests {
     /// attacker's side of a Monero double-spend, which is always "same key images,
     /// different transaction" (there is no replace-by-fee to express it any other
     /// way).
-    fn conflicting_tx(seed: u64) -> Transaction {
+    pub(crate) fn conflicting_tx(seed: u64) -> Transaction {
         let mut tx = fixture_tx_variant(seed);
         tx.prefix.outputs.clear();
         tx
@@ -4264,21 +4744,53 @@ mod tests {
         let conflicting = conflicting_tx(42);
         let independent = independent_payment_tx(3);
 
-        assert_ne!(tx_id_hex(&base), tx_id_hex(&variant), "a different unlock_time must be a different txid");
+        assert_ne!(
+            tx_id_hex(&base),
+            tx_id_hex(&variant),
+            "a different unlock_time must be a different txid"
+        );
         assert_ne!(tx_id_hex(&base), tx_id_hex(&conflicting));
         assert_ne!(tx_id_hex(&base), tx_id_hex(&independent));
 
-        assert_eq!(key_images_of(&base), key_images_of(&variant), "a variant spends the same inputs");
-        assert_eq!(key_images_of(&base), key_images_of(&conflicting), "a conflicting tx is one sharing key images");
-        assert_ne!(key_images_of(&base), key_images_of(&independent), "an independent payment spends other inputs");
+        assert_eq!(
+            key_images_of(&base),
+            key_images_of(&variant),
+            "a variant spends the same inputs"
+        );
+        assert_eq!(
+            key_images_of(&base),
+            key_images_of(&conflicting),
+            "a conflicting tx is one sharing key images"
+        );
+        assert_ne!(
+            key_images_of(&base),
+            key_images_of(&independent),
+            "an independent payment spends other inputs"
+        );
 
         for (label, tx, expected) in [
             ("the fixture itself", &base, 1),
-            ("changing unlock_time must not break output matching", &variant, 1),
-            ("changing key images must not break output matching", &independent, 1),
-            ("the attacker's transaction pays somebody else", &conflicting, 0),
+            (
+                "changing unlock_time must not break output matching",
+                &variant,
+                1,
+            ),
+            (
+                "changing key images must not break output matching",
+                &independent,
+                1,
+            ),
+            (
+                "the attacker's transaction pays somebody else",
+                &conflicting,
+                0,
+            ),
         ] {
-            let matches = scan_transaction(&key_custody, handle, tx, 0..3).await.unwrap().matches.len();
+            let matches = scan_transaction(&key_custody, handle, tx, 0..3)
+                .await
+                .unwrap()
+                .matches
+                .len();
             assert_eq!(matches, expected, "{label}");
         }
     }
@@ -4302,9 +4814,18 @@ mod tests {
         let daemon = chain_scanned_to(&store, 51, 40, "c0");
         // The payment starts life mined at height 50 on the chain the scanner has
         // already recorded.
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
-            .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
         let store = store.into_shared();
 
         // Three rounds of the tip trading places: the withheld chain wins and the
@@ -4317,29 +4838,72 @@ mod tests {
             let public = format!("p{round}");
             reorg_to_chain(&daemon, 50, 52 + round, &withheld, None); // the tx vanishes entirely
             for _ in 0..2 {
-                run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0)
-                    .await
-                    .unwrap();
+                run_scan_tick(
+                    &store,
+                    &key_custody,
+                    &daemon,
+                    "mainnet",
+                    &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                    20,
+                    0,
+                )
+                .await
+                .unwrap();
             }
-            reorg_to_chain(&daemon, 50, 53 + round, &public, Some((51 + round, tx.clone()))); // ...and comes back, deeper each time
+            reorg_to_chain(
+                &daemon,
+                50,
+                53 + round,
+                &public,
+                Some((51 + round, tx.clone())),
+            ); // ...and comes back, deeper each time
             for _ in 0..2 {
-                run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0)
-                    .await
-                    .unwrap();
+                run_scan_tick(
+                    &store,
+                    &key_custody,
+                    &daemon,
+                    "mainnet",
+                    &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                    20,
+                    0,
+                )
+                .await
+                .unwrap();
             }
 
             let s = store.lock();
-            let payments = s.get_all_payments(&order_id).unwrap();
-            assert_eq!(payments.len(), 1, "round {round}: one transaction is one payment row, however often it moves");
-            assert!(payments[0].voided_at.is_none(), "round {round}: a remined transaction is not a double-spend");
+            let payments = s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap();
+            assert_eq!(
+                payments.len(),
+                1,
+                "round {round}: one transaction is one payment row, however often it moves"
+            );
+            assert!(
+                payments[0].voided_at.is_none(),
+                "round {round}: a remined transaction is not a double-spend"
+            );
             assert_eq!(
                 payments[0].block_height,
                 Some((51 + round) as i64),
                 "round {round}: at the height the chain last agreed on"
             );
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-            assert!(order.double_spend_detected_at.is_none(), "round {round}: nothing here was ever double-spent");
-            assert_eq!(order.amount_received_piconero, payments[0].amount_piconero, "round {round}: counted exactly once");
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
+            assert!(
+                order.double_spend_detected_at.is_none(),
+                "round {round}: nothing here was ever double-spent"
+            );
+            assert_eq!(
+                order.amount_received_piconero, payments[0].amount_piconero,
+                "round {round}: counted exactly once"
+            );
         }
     }
 
@@ -4356,9 +4920,18 @@ mod tests {
         let tx = fixture_tx();
         let attacker = conflicting_tx(9);
         let daemon = chain_scanned_to(&store, 51, 40, "old");
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
-            .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
         for ki in &key_images_of(&tx) {
             daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
@@ -4367,14 +4940,31 @@ mod tests {
         reorg_to_new_chain(&daemon, 50, 53, Some((53, attacker)));
         let store = store.into_shared();
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
-        assert_eq!(payments.len(), 1, "the attacker's transaction pays nobody here - it must not become a payment row");
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert_eq!(
+            payments.len(),
+            1,
+            "the attacker's transaction pays nobody here - it must not become a payment row"
+        );
         assert!(payments[0].voided_at.is_some());
-        assert_eq!(s.get_order(&tenant_id, &order_id).unwrap().unwrap().amount_received_piconero, 0);
+        assert_eq!(
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .amount_received_piconero,
+            0
+        );
     }
 
     #[tokio::test]
@@ -4389,13 +4979,37 @@ mod tests {
         let first = fixture_tx();
         let second = independent_payment_tx(5);
         let daemon = chain_scanned_to(&store, 51, 40, "old");
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &first, 0..3, 1500, Some(50))
-            .await
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &first,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &second,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        let total_before = store
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
             .unwrap();
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &second, 0..3, 1500, Some(50))
-            .await
-            .unwrap();
-        let total_before = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
         let _ = total_before;
 
         // Only the first transaction is double-spent; the second is remined at 51.
@@ -4405,20 +5019,44 @@ mod tests {
         reorg_to_new_chain(&daemon, 50, 51, Some((51, second.clone())));
         let store = store.into_shared();
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 2);
         let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
-        assert_eq!(voided.len(), 1, "exactly the double-spent transaction is written off");
+        assert_eq!(
+            voided.len(),
+            1,
+            "exactly the double-spent transaction is written off"
+        );
         assert_eq!(voided[0].txid, tx_id_hex(&first));
         assert_eq!(kept[0].txid, tx_id_hex(&second));
-        assert_eq!(kept[0].block_height, Some(51), "the survivor follows the chain to its new height");
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-        assert_eq!(order.amount_received_piconero, kept[0].amount_piconero, "only the survivor's amount counts");
-        assert!(order.double_spend_detected_at.is_some(), "the incident is recorded regardless of the resulting status");
+        assert_eq!(
+            kept[0].block_height,
+            Some(51),
+            "the survivor follows the chain to its new height"
+        );
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            order.amount_received_piconero, kept[0].amount_piconero,
+            "only the survivor's amount counts"
+        );
+        assert!(
+            order.double_spend_detected_at.is_some(),
+            "the incident is recorded regardless of the resulting status"
+        );
     }
 
     #[tokio::test]
@@ -4436,34 +5074,67 @@ mod tests {
         let tx = fixture_tx();
         let key_images = key_images_of(&tx);
         let daemon = chain_scanned_to(&store, 50, 40, "old");
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
-            .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
         for ki in &key_images {
             daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
         reorg_to_chain(&daemon, 50, 50, "b", Some((50, conflicting_tx(1)))); // the second transaction wins
         let store = store.into_shared();
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .voided_at
+            .is_some());
 
         // The second transaction's block loses in turn, but a third one - not the
         // original - takes the inputs.
-        store.lock().set_scanned_block("mainnet", 50, "b_50").unwrap();
+        store
+            .lock()
+            .set_scanned_block(monero::Network::Mainnet, 50, "b_50")
+            .unwrap();
         reorg_to_chain(&daemon, 50, 50, "c", Some((50, conflicting_tx(2))));
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2100).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2100)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
 
         let s = store.lock();
-        let payment = s.get_all_payments(&order_id).unwrap().remove(0);
+        let payment = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .remove(0);
         assert!(
             payment.voided_at.is_some(),
             "the original never returned to the chain - its replacement being replaced changes nothing"
         );
-        assert_eq!(s.get_order(&tenant_id, &order_id).unwrap().unwrap().amount_received_piconero, 0);
+        assert_eq!(
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .amount_received_piconero,
+            0
+        );
     }
 
     #[tokio::test]
@@ -4479,19 +5150,48 @@ mod tests {
         // - never runs. The payment sat at `block_height IS NULL` forever, counting
         // in full towards an order that was never paid, and no
         // `order.double_spend_detected` webhook ever fired.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
-        store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        let (store, key_custody, handle, tenant_id, order_id) =
+            setup_with_confirmations_override(Some(0)).await;
+        store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let tx = fixture_tx();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.set_mempool(vec![tx.clone()]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-            assert_eq!(order.status, crate::status::OrderStatus::Overpaid, "settled off the mempool sighting alone");
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                order.status,
+                crate::status::OrderStatus::Overpaid,
+                "settled off the mempool sighting alone"
+            );
         }
 
         // The attack lands: A leaves the pool without ever being mined, and a
@@ -4502,79 +5202,199 @@ mod tests {
             daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
-        assert!(payments[0].voided_at.is_some(), "a proven double-spend must be written off with or without a reorg");
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert!(
+            payments[0].voided_at.is_some(),
+            "a proven double-spend must be written off with or without a reorg"
+        );
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.amount_received_piconero, 0);
         assert_eq!(order.status, crate::status::OrderStatus::Pending);
         assert!(order.double_spend_detected_at.is_some());
-        let events: Vec<String> =
-            s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap().into_iter().map(|d| d.event_type).collect();
+        let events: Vec<String> = s
+            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.event_type)
+            .collect();
         assert!(
             events.contains(&"order.double_spend_detected".to_string()),
             "the merchant who shipped against this needs telling: {events:?}"
         );
-        assert!(events.contains(&"order.pending".to_string()), "and the status retraction is its own event: {events:?}");
+        assert!(
+            events.contains(&"order.pending".to_string()),
+            "and the status retraction is its own event: {events:?}"
+        );
+    }
+
+    /// The chain `setup_with_one_voided_double_spend` builds, on a fresh node: a
+    /// recheck asks a node that agrees about the blocks (so no reorg is
+    /// detected) but whose key-image answers each test chooses.
+    fn chain_replica() -> FakeDaemonClient {
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![conflicting_tx(11)]);
+        daemon
     }
 
     /// Builds a store with one order whose single zero-conf payment has already been
     /// voided as a proven double-spend, via the exact same real path
     /// `a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
-    /// proves is reachable. For `revalidate_recent_double_spend_voids`'s own tests
-    /// below, which start from an already-voided payment and exercise only the
-    /// *recheck*, not how it got voided in the first place.
+    /// proves is reachable. For the void recheck's own tests below, which start
+    /// from an already-voided payment and exercise only the *recheck*, not how
+    /// it got voided in the first place.
     async fn setup_with_one_voided_double_spend() -> (crate::store::SharedStore, String, String) {
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
-        store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        let (store, key_custody, handle, tenant_id, order_id) =
+            setup_with_confirmations_override(Some(0)).await;
+        store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let tx = fixture_tx();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.set_mempool(vec![tx.clone()]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         daemon.drop_from_mempool(&tx);
         daemon.push_block("h2", vec![conflicting_tx(11)]);
         for ki in &key_images_of(&tx) {
             daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         assert!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some(),
+            store.lock().get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap()[0].voided_at.is_some(),
             "test setup sanity check: the payment must actually be voided before these tests exercise the recheck"
         );
         (store, tenant_id, order_id)
     }
 
+    /// One scheduler round with a void recheck pass due now (a pass starts at
+    /// most every few minutes; the setup's own rounds started one). The
+    /// recheck is the upkeep tier's; nothing else in the round touches a
+    /// void.
+    async fn round_with_void_recheck_due(
+        store: &crate::store::SharedStore,
+        daemon: &dyn MoneroDaemonClient,
+    ) -> Result<()> {
+        {
+            let s = store.lock();
+            s.set_scheduler_position::<crate::store::position::VoidRecheckPassStarted>(
+                monero::Network::Mainnet,
+                &i64::MIN,
+            )
+            .unwrap();
+            s.set_scheduler_position::<crate::store::position::VoidRecheck>(
+                monero::Network::Mainnet,
+                &0,
+            )
+            .unwrap();
+        }
+        run_scan_tick(
+            store,
+            &PlainKeyCustody::default(),
+            daemon,
+            "mainnet",
+            &[],
+            20,
+            0,
+        )
+        .await
+    }
+
+    fn voided(store: &crate::store::SharedStore, order_id: &str) -> Vec<bool> {
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .iter()
+            .map(|p| p.voided_at.is_some())
+            .collect()
+    }
+
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_reverses_a_void_no_longer_supported_by_fresh_evidence() {
+    async fn the_void_recheck_reverses_a_void_no_longer_supported_by_fresh_evidence() {
         let (store, tenant_id, order_id) = setup_with_one_voided_double_spend().await;
 
-        // A fresh daemon for the recheck - every key image defaults to `Unspent`
-        // unless explicitly told otherwise, so simply not calling
-        // `set_key_image_status` models the original accusation no longer holding up.
-        let recheck_daemon = FakeDaemonClient::new();
-
-        let recovered =
-            revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", crate::now_unix()).await.unwrap();
-        assert_eq!(recovered, vec![order_id.clone()]);
+        // Every key image defaults to `Unspent` unless explicitly told otherwise, so
+        // simply not calling `set_key_image_status` models the original accusation
+        // no longer holding up.
+        round_with_void_recheck_due(&store, &chain_replica())
+            .await
+            .unwrap();
 
         let s = store.lock();
-        let payment = &s.get_all_payments(&order_id).unwrap()[0];
+        let payment = &s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0];
         assert!(payment.voided_at.is_none(), "the void should be reversed");
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert!(
             order.double_spend_detected_at.is_none(),
             "the only voided payment on the order was cleared - the sticky flag should clear too"
         );
-        let events: Vec<String> =
-            s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap().into_iter().map(|d| d.event_type).collect();
+        let events: Vec<String> = s
+            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.event_type)
+            .collect();
         assert!(
             events.contains(&"order.double_spend_reversed".to_string()),
             "the merchant told about the original accusation deserves to be told it was wrong too: {events:?}"
@@ -4585,75 +5405,124 @@ mod tests {
     async fn malformed_or_empty_stored_key_images_never_restore_a_void() {
         for raw in ["not json", "[]"] {
             let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-            store.lock().overwrite_payment_key_images_for_test(&order_id, raw);
-            let daemon = FakeDaemonClient::new();
-            let recovered = revalidate_recent_double_spend_voids(&store, &daemon, "mainnet", crate::now_unix()).await.unwrap();
-            assert!(recovered.is_empty());
-            assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+            store.lock().overwrite_payment_key_images_for_test(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                raw,
+            );
+            round_with_void_recheck_due(&store, &chain_replica())
+                .await
+                .unwrap();
+            assert_eq!(voided(&store, &order_id), vec![true]);
         }
     }
 
     #[tokio::test]
     async fn node_disagreement_never_restores_a_void() {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
         let images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
-        let spent = FakeDaemonClient::new();
-        let unspent = FakeDaemonClient::new();
+        let spent = chain_replica();
+        let unspent = chain_replica();
         for image in &images {
             spent.set_key_image_status(image, KeyImageStatus::SpentInBlockchain);
             unspent.set_key_image_status(image, KeyImageStatus::Unspent);
         }
         let daemon = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "spent".to_string(), client: std::sync::Arc::new(spent) },
-            FallbackNode { label: "unspent".to_string(), client: std::sync::Arc::new(unspent) },
+            FallbackNode {
+                label: "spent".to_string(),
+                client: std::sync::Arc::new(spent),
+            },
+            FallbackNode {
+                label: "unspent".to_string(),
+                client: std::sync::Arc::new(unspent),
+            },
         ]);
-        let recovered = revalidate_recent_double_spend_voids(&store, &daemon, "mainnet", crate::now_unix()).await.unwrap();
-        assert!(recovered.is_empty());
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+        round_with_void_recheck_due(&store, &daemon).await.unwrap();
+        assert_eq!(voided(&store, &order_id), vec![true]);
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_leaves_a_still_supported_void_alone() {
+    async fn the_void_recheck_leaves_a_still_supported_void_alone() {
         let (store, tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
         let key_images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
 
-        let recheck_daemon = FakeDaemonClient::new();
+        let recheck_daemon = chain_replica();
         for ki in &key_images {
             recheck_daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
 
-        let recovered =
-            revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", crate::now_unix()).await.unwrap();
-        assert!(recovered.is_empty(), "a still-supported void must not be reversed");
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
-        assert!(store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap().double_spend_detected_at.is_some());
+        round_with_void_recheck_due(&store, &recheck_daemon)
+            .await
+            .unwrap();
+        assert_eq!(
+            voided(&store, &order_id),
+            vec![true],
+            "a still-supported void must not be reversed"
+        );
+        assert!(store
+            .lock()
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_some());
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_ignores_a_void_outside_the_recheck_window() {
+    async fn the_void_recheck_ignores_a_void_outside_the_recheck_window() {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
 
         // Backdate the void to well outside the recheck window - fresh evidence would
-        // clear it if only the sweep looked, but it's aged out.
+        // clear it if only the recheck looked, but it's aged out.
         let old_timestamp = crate::now_unix() - DOUBLE_SPEND_RECHECK_WINDOW_SECS - 3600;
         {
             let s = store.lock();
-            assert!(s.unvoid_payment(&order_id, &payment.txid, payment.output_index).unwrap());
-            assert!(s.void_payment(&order_id, &payment.txid, payment.output_index, old_timestamp).unwrap());
+            assert!(s
+                .unvoid_payment(
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &payment.txid,
+                    payment.output_index
+                )
+                .unwrap());
+            assert!(s
+                .void_payment(
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &payment.txid,
+                    payment.output_index,
+                    old_timestamp
+                )
+                .unwrap());
         }
 
-        let recheck_daemon = FakeDaemonClient::new(); // would say Unspent if asked
-        let recovered =
-            revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", crate::now_unix()).await.unwrap();
-        assert!(recovered.is_empty(), "a void outside the recheck window must not be touched");
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+        round_with_void_recheck_due(&store, &chain_replica())
+            .await
+            .unwrap(); // would say Unspent if asked
+        assert_eq!(
+            voided(&store, &order_id),
+            vec![true],
+            "a void outside the recheck window must not be touched"
+        );
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_keeps_the_flag_set_while_another_voided_payment_still_justifies_it() {
+    async fn the_void_recheck_keeps_the_flag_set_while_another_voided_payment_still_justifies_it() {
         // Two independent payments on one order, both voided - only one is a false
         // accusation. The order-level sticky flag must survive the correction of the
         // first, since the second remains a genuine, still-supported incident.
@@ -4661,60 +5530,99 @@ mod tests {
         let first = fixture_tx();
         let second = independent_payment_tx(5);
         let now = crate::now_unix();
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &first, 0..3, now, Some(50)).await.unwrap();
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &second, 0..3, now, Some(50)).await.unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &first,
+            0..3,
+            now,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &second,
+            0..3,
+            now,
+            Some(50),
+        )
+        .await
+        .unwrap();
         // Void both by their *actual* recorded output_index - not assumed to be 0,
         // since that depends on which output of each fixture transaction matched.
-        for payment in store.get_all_payments(&order_id).unwrap() {
-            store.void_payment(&order_id, &payment.txid, payment.output_index, now).unwrap();
+        for payment in store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+        {
+            store
+                .void_payment(
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &payment.txid,
+                    payment.output_index,
+                    now,
+                )
+                .unwrap();
         }
-        store.mark_double_spend_detected(&order_id, now).unwrap();
+        store
+            .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.to_string()), now)
+            .unwrap();
 
         let store = store.into_shared();
         let recheck_daemon = FakeDaemonClient::new();
         for ki in &key_images_of(&second) {
-            recheck_daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain); // still genuinely spent
+            recheck_daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
+            // still genuinely spent
         }
         // `first`'s key images default to Unspent - the accusation being corrected.
 
-        let recovered = revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", now).await.unwrap();
-        assert_eq!(recovered, vec![order_id.clone()]);
+        round_with_void_recheck_due(&store, &recheck_daemon)
+            .await
+            .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
         assert_eq!(voided.len(), 1, "the still-justified void must remain");
         assert_eq!(voided[0].txid, tx_id_hex(&second));
-        assert_eq!(kept[0].txid, tx_id_hex(&first), "the false accusation is reversed");
+        assert_eq!(
+            kept[0].txid,
+            tx_id_hex(&first),
+            "the false accusation is reversed"
+        );
         assert!(
-            s.get_order(&tenant_id, &order_id).unwrap().unwrap().double_spend_detected_at.is_some(),
+            s.get_order(&shared::ids::TenantId::new(tenant_id.to_string()), &shared::ids::OrderId::new(order_id.to_string())).unwrap().unwrap().double_spend_detected_at.is_some(),
             "the other voided payment still genuinely justifies the flag - it must not be cleared as a side effect"
         );
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_aborts_the_sweep_cleanly_if_the_chain_height_is_unreachable() {
-        let (store, _tenant_id, _order_id) = setup_with_one_voided_double_spend().await;
-        let payment_before = store.lock().get_all_payments(&_order_id).unwrap();
+    async fn the_void_recheck_does_nothing_while_the_chain_height_is_unreachable() {
+        let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
 
-        let recheck_daemon = FakeDaemonClient::new();
+        let recheck_daemon = chain_replica();
         recheck_daemon.set_online(false); // every call, including get_height, now fails
 
-        let result = revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", crate::now_unix()).await;
-        assert!(result.is_err(), "an unreachable node must fail the sweep, not silently do nothing");
-        let payment_after = store.lock().get_all_payments(&_order_id).unwrap();
+        // A node that is down is waited out, not reported as a round failure.
+        let _ = round_with_void_recheck_due(&store, &recheck_daemon).await;
         assert_eq!(
-            payment_after.iter().map(|p| p.voided_at).collect::<Vec<_>>(),
-            payment_before.iter().map(|p| p.voided_at).collect::<Vec<_>>(),
-            "a failed sweep must not touch anything"
+            voided(&store, &order_id),
+            vec![true],
+            "a recheck that can't run must not touch anything"
         );
     }
 
     /// Wraps a `FakeDaemonClient`, failing exactly the call index in `fail_on_call`
     /// (0-based, counted across `is_key_image_spent` calls only) and delegating to
-    /// `inner` for every other call - for proving a sweep that hits one payment's
-    /// recheck failure still processes the rest of the batch, rather than aborting
-    /// on the first error.
+    /// `inner` for every other call - for proving a recheck that fails leaves its
+    /// payment voided and is retried on the next pass.
     struct DaemonFailingOneKeyImageCall {
         inner: FakeDaemonClient,
         fail_on_call: u64,
@@ -4723,7 +5631,11 @@ mod tests {
 
     impl DaemonFailingOneKeyImageCall {
         fn new(inner: FakeDaemonClient, fail_on_call: u64) -> Self {
-            Self { inner, fail_on_call, calls: AtomicU64::new(0) }
+            Self {
+                inner,
+                fail_on_call,
+                calls: AtomicU64::new(0),
+            }
         }
     }
 
@@ -4738,57 +5650,122 @@ mod tests {
         async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
             self.inner.get_block_timestamp(height).await
         }
-        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_block_transactions(
+            &self,
+            height: u64,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await
         }
-        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_mempool_transactions(
+            &self,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_mempool_transactions().await
         }
-        async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
+        async fn locate_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<TxLocation, DaemonError> {
             self.inner.locate_transaction(txid).await
         }
-        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+        async fn get_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<Transaction, DaemonError> {
             self.inner.get_transaction(txid).await
         }
-        async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             if n == self.fail_on_call {
-                return Err(DaemonError::Request(format!("simulated key-image lookup failure on call {n}")));
+                return Err(DaemonError::Request(format!(
+                    "simulated key-image lookup failure on call {n}"
+                )));
             }
             self.inner.is_key_image_spent(key_images).await
         }
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_skips_a_failed_recheck_but_still_processes_the_rest_of_the_batch() {
+    async fn a_failed_recheck_leaves_its_payment_voided_and_the_next_pass_retries_it() {
+        let (_guard, logs) = crate::test_log::capture();
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let first = fixture_tx();
         let second = independent_payment_tx(5);
         let now = crate::now_unix();
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &first, 0..3, now, Some(50)).await.unwrap();
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &second, 0..3, now, Some(50)).await.unwrap();
-        for payment in store.get_all_payments(&order_id).unwrap() {
-            store.void_payment(&order_id, &payment.txid, payment.output_index, now).unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &first,
+            0..3,
+            now,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &second,
+            0..3,
+            now,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        for payment in store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+        {
+            store
+                .void_payment(
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &payment.txid,
+                    payment.output_index,
+                    now,
+                )
+                .unwrap();
         }
-        store.mark_double_spend_detected(&order_id, now).unwrap();
+        store
+            .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.to_string()), now)
+            .unwrap();
 
         let store = store.into_shared();
         // Both payments' key images default to Unspent (would clear both if asked),
-        // but the very first recheck call fails - it must not stop the second.
+        // but the very first recheck call fails: a node that fails for one payment
+        // would for the next, so the pass stops there, leaving both voided and
+        // nothing half-done.
         let recheck_daemon = DaemonFailingOneKeyImageCall::new(FakeDaemonClient::new(), 0);
+        round_with_void_recheck_due(&store, &recheck_daemon)
+            .await
+            .unwrap();
+        assert_eq!(
+            voided(&store, &order_id),
+            vec![true, true],
+            "the failed recheck restored nothing"
+        );
+        assert_eq!(
+            logs.count("rechecking a voided payment failed"),
+            1,
+            "{}",
+            logs.text()
+        );
 
-        let recovered = revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", now).await.unwrap();
-        assert_eq!(recovered.len(), 1, "exactly one of the two payments' rechecks succeeded");
-
-        let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
-        let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
-        assert_eq!(voided.len(), 1, "the payment whose recheck failed must be left voided, not lost or corrupted");
-        assert_eq!(kept.len(), 1, "the payment whose recheck succeeded must be reversed");
+        // The next pass retries from the start and reverses both.
+        round_with_void_recheck_due(&store, &recheck_daemon)
+            .await
+            .unwrap();
+        assert_eq!(voided(&store, &order_id), vec![false, false]);
     }
 
     #[tokio::test]
-    async fn a_fallback_daemon_that_disagrees_with_the_primary_prevents_the_wrongful_void_a_single_lying_node_would_cause() {
+    async fn a_fallback_daemon_that_disagrees_with_the_primary_prevents_the_wrongful_void_a_single_lying_node_would_cause(
+    ) {
         // The prevention half of the fix for `is_key_image_spent`'s single-node trust
         // boundary (docs/DESIGN.md §7.7): the exact same attack shape as
         // `a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
@@ -4797,8 +5774,17 @@ mod tests {
         // real `FallbackDaemonClient` (not a bare `FakeDaemonClient`), this must NOT
         // void the payment - a single node's say-so is no longer enough once a second
         // one is configured to disagree with it.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
-        store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        let (store, key_custody, handle, tenant_id, order_id) =
+            setup_with_confirmations_override(Some(0)).await;
+        store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let tx = fixture_tx();
         let store = store.into_shared();
 
@@ -4812,13 +5798,29 @@ mod tests {
             daemon.set_mempool(vec![tx.clone()]);
         }
         let client = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "primary".to_string(), client: std::sync::Arc::new(primary) },
-            FallbackNode { label: "fallback".to_string(), client: std::sync::Arc::new(fallback) },
+            FallbackNode {
+                label: "primary".to_string(),
+                client: std::sync::Arc::new(primary),
+            },
+            FallbackNode {
+                label: "fallback".to_string(),
+                client: std::sync::Arc::new(fallback),
+            },
         ]);
 
-        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            store.lock().get_order(&shared::ids::TenantId::new(tenant_id.to_string()), &shared::ids::OrderId::new(order_id.to_string())).unwrap().unwrap().status,
             crate::status::OrderStatus::Overpaid,
             "settled off the mempool sighting alone, same as the bare-daemon version of this scenario"
         );
@@ -4839,23 +5841,54 @@ mod tests {
             fallback.set_key_image_status(ki, KeyImageStatus::Unspent); // the truth
         }
         let client = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "primary".to_string(), client: std::sync::Arc::new(primary) },
-            FallbackNode { label: "fallback".to_string(), client: std::sync::Arc::new(fallback) },
+            FallbackNode {
+                label: "primary".to_string(),
+                client: std::sync::Arc::new(primary),
+            },
+            FallbackNode {
+                label: "fallback".to_string(),
+                client: std::sync::Arc::new(fallback),
+            },
         ]);
 
-        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert!(
             payments[0].voided_at.is_none(),
             "one node's false accusation must not void the payment once a second, disagreeing node is configured"
         );
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-        assert!(order.double_spend_detected_at.is_none(), "no incident occurred - nothing should be stamped");
-        let events: Vec<String> =
-            s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap().into_iter().map(|d| d.event_type).collect();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            order.double_spend_detected_at.is_none(),
+            "no incident occurred - nothing should be stamped"
+        );
+        let events: Vec<String> = s
+            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.event_type)
+            .collect();
         assert!(
             !events.contains(&"order.double_spend_detected".to_string()),
             "no false double-spend webhook should ever be sent to the merchant: {events:?}"
@@ -4868,7 +5901,8 @@ mod tests {
         // make genuine double-spend detection any less reliable when every
         // configured node honestly agrees, which is the overwhelmingly common case
         // even with a fallback configured.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
+        let (store, key_custody, handle, tenant_id, order_id) =
+            setup_with_confirmations_override(Some(0)).await;
         let tx = fixture_tx();
         let store = store.into_shared();
 
@@ -4879,10 +5913,26 @@ mod tests {
             daemon.set_mempool(vec![tx.clone()]);
         }
         let client = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "primary".to_string(), client: std::sync::Arc::new(primary) },
-            FallbackNode { label: "fallback".to_string(), client: std::sync::Arc::new(fallback) },
+            FallbackNode {
+                label: "primary".to_string(),
+                client: std::sync::Arc::new(primary),
+            },
+            FallbackNode {
+                label: "fallback".to_string(),
+                client: std::sync::Arc::new(fallback),
+            },
         ]);
-        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let primary = FakeDaemonClient::new();
         let fallback = FakeDaemonClient::new();
@@ -4894,14 +5944,33 @@ mod tests {
             fallback.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
         let client = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "primary".to_string(), client: std::sync::Arc::new(primary) },
-            FallbackNode { label: "fallback".to_string(), client: std::sync::Arc::new(fallback) },
+            FallbackNode {
+                label: "primary".to_string(),
+                client: std::sync::Arc::new(primary),
+            },
+            FallbackNode {
+                label: "fallback".to_string(),
+                client: std::sync::Arc::new(fallback),
+            },
         ]);
-        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
         assert!(
-            s.get_all_payments(&order_id).unwrap()[0].voided_at.is_some(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .voided_at
+                .is_some(),
             "a genuine, unanimously-corroborated double-spend must still be voided"
         );
     }
@@ -4916,32 +5985,84 @@ mod tests {
         // The customer's money may be perfectly fine and the transaction may be
         // remined or rebroadcast at any point, so absence proves nothing and must
         // never void: the same evidence rule reorg reconciliation follows.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
+        let (store, key_custody, handle, tenant_id, order_id) =
+            setup_with_confirmations_override(Some(0)).await;
         let tx = fixture_tx();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.set_mempool(vec![tx.clone()]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         daemon.drop_from_mempool(&tx); // vanished, with nothing proven about its inputs
         daemon.push_block("h2", vec![]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         {
             let s = store.lock();
-            let payments = s.get_all_payments(&order_id).unwrap();
-            assert!(payments[0].voided_at.is_none(), "an evicted or still-propagating transaction is not a double-spend");
-            assert_eq!(payments[0].block_height, None, "and it is left exactly as it was, re-checkable next tick");
-            assert!(s.get_order(&tenant_id, &order_id).unwrap().unwrap().double_spend_detected_at.is_none());
+            let payments = s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap();
+            assert!(
+                payments[0].voided_at.is_none(),
+                "an evicted or still-propagating transaction is not a double-spend"
+            );
+            assert_eq!(
+                payments[0].block_height, None,
+                "and it is left exactly as it was, re-checkable next tick"
+            );
+            assert!(s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
+                .unwrap()
+                .unwrap()
+                .double_spend_detected_at
+                .is_none());
         }
 
         // And when it does come back and get mined, it is picked up as normal.
         daemon.push_block("h3", vec![tx.clone()]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         let s = store.lock();
-        assert_eq!(s.get_all_payments(&order_id).unwrap()[0].block_height, Some(3));
+        assert_eq!(
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
+            Some(3)
+        );
     }
 
     #[tokio::test]
@@ -4961,15 +6082,46 @@ mod tests {
         let daemon = DaemonFailingFrom::counting(inner, DaemonCall::Locate);
 
         for _ in 0..3 {
-            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+            run_scan_tick(
+                &store,
+                &key_custody,
+                &daemon,
+                "mainnet",
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                20,
+                0,
+            )
+            .await
+            .unwrap();
         }
-        assert_eq!(daemon.call_count(), 0, "a transaction still in the pool must never be looked up");
+        assert_eq!(
+            daemon.call_count(),
+            0,
+            "a transaction still in the pool must never be looked up"
+        );
 
         // Mined, and out of the pool in the same tick - the ordinary lifecycle.
         daemon.inner.drop_from_mempool(&tx);
         daemon.inner.push_block("h2", vec![tx.clone()]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
-        assert_eq!(store.lock().get_all_payments(&order_id).unwrap()[0].block_height, Some(2));
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
+            Some(2)
+        );
         assert_eq!(
             daemon.call_count(),
             0,
@@ -4978,13 +6130,24 @@ mod tests {
 
         // And it stays free once the payment is confirmed, tick after tick.
         for _ in 0..3 {
-            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+            run_scan_tick(
+                &store,
+                &key_custody,
+                &daemon,
+                "mainnet",
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                20,
+                0,
+            )
+            .await
+            .unwrap();
         }
         assert_eq!(daemon.call_count(), 0);
     }
 
     #[tokio::test]
-    async fn a_failed_mempool_poll_skips_the_vanished_payment_sweep_rather_than_assuming_an_empty_pool() {
+    async fn a_failed_mempool_poll_skips_the_vanished_payment_sweep_rather_than_assuming_an_empty_pool(
+    ) {
         // The sweep's one dangerous input is the mempool snapshot: an empty set means
         // "every unconfirmed payment has vanished". A *failed* poll must therefore
         // skip it entirely rather than pass the empty set it has - not for
@@ -5002,22 +6165,71 @@ mod tests {
         // First tick polls the pool successfully and records the payment; from the
         // second call onwards the poll fails. The outer wrapper counts the lookups
         // the sweep would make.
-        let daemon =
-            DaemonFailingFrom::counting(DaemonFailingFrom::failing_from(fake, DaemonCall::Mempool, 1), DaemonCall::Locate);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
-        assert_eq!(store.lock().get_all_payments(&_order_id).unwrap().len(), 1);
+        let daemon = DaemonFailingFrom::counting(
+            DaemonFailingFrom::failing_from(fake, DaemonCall::Mempool, 1),
+            DaemonCall::Locate,
+        );
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(_order_id.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
 
-        let result = run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
-        assert!(result.is_ok(), "a failed mempool poll must not fail the tick - the rest of it still has work to do");
-        assert_eq!(daemon.call_count(), 0, "with no usable snapshot, the sweep must not run at all");
+        let result = run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "a failed mempool poll must not fail the tick - the rest of it still has work to do"
+        );
+        assert_eq!(
+            daemon.call_count(),
+            0,
+            "with no usable snapshot, the sweep must not run at all"
+        );
 
         // The node recovers, and the transaction really is gone from the pool this
         // time - now the sweep does run, which is what makes the assertion above a
         // statement about the failed poll rather than about there being no work.
         daemon.inner.stop_failing();
         daemon.inner.inner.drop_from_mempool(&tx);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
-        assert_eq!(daemon.call_count(), 1, "one lookup for the one payment that has genuinely vanished");
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            daemon.call_count(),
+            1,
+            "one lookup for the one payment that has genuinely vanished"
+        );
     }
 
     #[tokio::test]
@@ -5036,7 +6248,9 @@ mod tests {
         // coarser (and, in the default-daemon test-double case only, more repeated)
         // unit of retry than before.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        store.set_scanned_block("mainnet", 1, "h1").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+            .unwrap();
         let store = store.into_shared();
 
         let fake = FakeDaemonClient::new();
@@ -5052,24 +6266,56 @@ mod tests {
         // entire chunk before any of it is recorded.
         let daemon = DaemonFailingFrom::failing_from(fake, DaemonCall::BlockTransactions, 1);
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(1),
                 "the whole chunk failed, so the high-water mark stays exactly where it was before this tick"
             );
-            assert!(s.get_all_payments(&order_id).unwrap().is_empty());
+            assert!(s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty());
         }
 
         daemon.stop_failing();
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(4));
-        let payments = s.get_all_payments(&order_id).unwrap();
-        assert_eq!(payments.len(), 1, "exactly one payment - not lost by the failure, not duplicated by the retry");
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(4)
+        );
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert_eq!(
+            payments.len(),
+            1,
+            "exactly one payment - not lost by the failure, not duplicated by the retry"
+        );
         assert_eq!(payments[0].block_height, Some(3));
     }
 
@@ -5104,28 +6350,50 @@ mod tests {
 
         {
             let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-            store.set_scanned_block("mainnet", 1, "h1").unwrap();
+            store
+                .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+                .unwrap();
             let store = store.into_shared();
             let fake = FakeDaemonClient::new();
             fake.push_block("h1", vec![]); // the already-scanned baseline, mirrored into the daemon too
             for i in 0..NEW_BLOCK_COUNT {
                 fake.push_block(&format!("h{}", i + 2), vec![]); // small, empty blocks - cheap to batch heavily
             }
-            let daemon = DaemonFailingFrom::counting(fake, DaemonCall::BlocksRange);
+            let daemon = DaemonFailingFrom::counting(fake, DaemonCall::ChainBlocks);
 
             for _ in 0..5 {
-                run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
-                if store.lock().max_scanned_height("mainnet").unwrap() == Some(NEW_BLOCK_COUNT + 1) { break; }
+                run_scan_tick(
+                    &store,
+                    &key_custody,
+                    &daemon,
+                    "mainnet",
+                    &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                    20,
+                    0,
+                )
+                .await
+                .unwrap();
+                if store
+                    .lock()
+                    .max_scanned_height(monero::Network::Mainnet)
+                    .unwrap()
+                    == Some(NEW_BLOCK_COUNT + 1)
+                {
+                    break;
+                }
             }
 
             assert_eq!(
-                store.lock().max_scanned_height("mainnet").unwrap(),
+                store
+                    .lock()
+                    .max_scanned_height(monero::Network::Mainnet)
+                    .unwrap(),
                 Some(NEW_BLOCK_COUNT + 1),
                 "the wide range must be fully scanned across bounded ticks"
             );
             assert!(
                 daemon.call_count() < NEW_BLOCK_COUNT,
-                "expected far fewer than {NEW_BLOCK_COUNT} get_blocks_range calls for {NEW_BLOCK_COUNT} small \
+                "expected far fewer than {NEW_BLOCK_COUNT} get_chain_blocks calls for {NEW_BLOCK_COUNT} small \
                  blocks under the default memory budget, got {}",
                 daemon.call_count()
             );
@@ -5144,7 +6412,9 @@ mod tests {
         // second, genuinely unrelated mechanism's own calls.
         {
             let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-            store.set_scanned_block("mainnet", 1, "h1").unwrap();
+            store
+                .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+                .unwrap();
             let store = store.into_shared();
             let fake = FakeDaemonClient::new();
             fake.push_block("h1", vec![]);
@@ -5153,21 +6423,37 @@ mod tests {
             }
             let daemon = DaemonFailingFrom::counting(fake, DaemonCall::BlockHash);
 
+            let mut rounds = 0;
             for _ in 0..5 {
-                run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 0, 0).await.unwrap();
-                if store.lock().max_scanned_height("mainnet").unwrap() == Some(NEW_BLOCK_COUNT + 1) { break; }
+                rounds += 1;
+                run_scan_tick(
+                    &store,
+                    &key_custody,
+                    &daemon,
+                    "mainnet",
+                    &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                    0,
+                    0,
+                )
+                .await
+                .unwrap();
+                if store
+                    .lock()
+                    .max_scanned_height(monero::Network::Mainnet)
+                    .unwrap()
+                    == Some(NEW_BLOCK_COUNT + 1)
+                {
+                    break;
+                }
             }
 
+            // A block's id comes with its contents (`get_chain_blocks`), so the
+            // scan makes no hash lookups of its own: the only ones are reorg
+            // detection's, one per round when the chain agrees.
             assert_eq!(
                 daemon.call_count(),
-                // One more than the number of newly-arrived blocks: even with
-                // `reorg_check_depth = 0`, `check_for_reorg_and_reconcile`
-                // (unconditionally called at the end of every tick, unrelated to
-                // this change) still re-checks the current tip's own hash -
-                // `>= tip - 0` includes the tip itself. A real, pre-existing
-                // extra call, not batching leaking through.
-                NEW_BLOCK_COUNT * 2 + 1,
-                "each block hash is checked before and after scanning, plus reconciliation's tip check"
+                rounds,
+                "one detection lookup per round, none per block"
             );
         }
     }
@@ -5202,17 +6488,24 @@ mod tests {
         // An average so small it would otherwise compute a chunk far larger
         // than `SCAN_CHUNK_MAX_BLOCKS` - the backstop `RESCAN_CHUNK_MAX_BLOCKS`'s
         // own doc comment names (an older node ignoring `max_block_count`).
-        assert_eq!(next_scan_chunk_size(budget_bytes, 1.0, u64::MAX), SCAN_CHUNK_MAX_BLOCKS);
+        assert_eq!(
+            next_scan_chunk_size(budget_bytes, 1.0, u64::MAX),
+            SCAN_CHUNK_MAX_BLOCKS
+        );
         // An average so large it would otherwise compute a chunk of `0`, which
         // must never happen (it would stall the catch-up walk forever).
-        assert_eq!(next_scan_chunk_size(budget_bytes, f64::MAX, u64::MAX), SCAN_CHUNK_MIN_BLOCKS);
+        assert_eq!(
+            next_scan_chunk_size(budget_bytes, f64::MAX, u64::MAX),
+            SCAN_CHUNK_MIN_BLOCKS
+        );
         // Never larger than what's actually left to scan, regardless of budget.
         assert_eq!(next_scan_chunk_size(budget_bytes, 1.0, 3), 3);
     }
 
     #[test]
     fn update_avg_bytes_per_block_weighs_recent_data_by_the_configured_alpha() {
-        let after_one_big_chunk = update_avg_bytes_per_block(SCAN_CHUNK_INITIAL_AVG_BYTES, 1_000_000, 1);
+        let after_one_big_chunk =
+            update_avg_bytes_per_block(SCAN_CHUNK_INITIAL_AVG_BYTES, 1_000_000, 1);
         assert!(
             after_one_big_chunk > SCAN_CHUNK_INITIAL_AVG_BYTES,
             "a chunk far bigger than the cold-start guess must pull the average up, not leave it unchanged"
@@ -5222,7 +6515,9 @@ mod tests {
         // zero in one step; a lone anomalous chunk shouldn't swing the very
         // next chunk's size wildly.
         let after_one_empty_chunk = update_avg_bytes_per_block(SCAN_CHUNK_INITIAL_AVG_BYTES, 0, 10);
-        assert!(after_one_empty_chunk > 0.0 && after_one_empty_chunk < SCAN_CHUNK_INITIAL_AVG_BYTES);
+        assert!(
+            after_one_empty_chunk > 0.0 && after_one_empty_chunk < SCAN_CHUNK_INITIAL_AVG_BYTES
+        );
     }
 
     #[tokio::test]
@@ -5243,23 +6538,70 @@ mod tests {
         fake.push_block("h2", vec![fixture_tx()]);
         let daemon = DaemonFailingFrom::timing_out_from(fake, DaemonCall::Height, 0, 20);
 
-        let result = run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
-        assert!(result.is_err(), "a tick that cannot learn the chain height has nothing to say about any order");
+        let result = run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a tick that cannot learn the chain height has nothing to say about any order"
+        );
         {
             let s = store.lock();
-            assert_eq!(s.max_scanned_height("mainnet").unwrap(), None, "nothing may be recorded as scanned");
             assert_eq!(
-                s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                None,
+                "nothing may be recorded as scanned"
+            );
+            assert_eq!(
+                s.get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
+                .unwrap()
+                .unwrap()
+                .status,
                 crate::status::OrderStatus::Pending,
                 "and no order may have advanced on evidence the tick never got"
             );
         }
 
         daemon.stop_failing();
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         let s = store.lock();
-        assert_eq!(s.get_all_payments(&order_id).unwrap().len(), 1, "the next tick recovers the payment exactly once");
-        assert_eq!(s.get_order(&tenant_id, &order_id).unwrap().unwrap().status, crate::status::OrderStatus::Confirming);
+        assert_eq!(
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .len(),
+            1,
+            "the next tick recovers the payment exactly once"
+        );
+        assert_eq!(
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
+            crate::status::OrderStatus::Confirming
+        );
     }
 
     #[tokio::test]
@@ -5273,9 +6615,18 @@ mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
         let fake = chain_scanned_to(&store, 50, 40, "old");
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(50))
-            .await
-            .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
         for ki in &key_images_of(&tx) {
             fake.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
@@ -5284,20 +6635,40 @@ mod tests {
         let daemon = DaemonFailingFrom::failing_from(fake, DaemonCall::KeyImageSpent, 0);
 
         assert!(
-            check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.is_err(),
+            check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+                .await
+                .is_err(),
             "the node failure must surface rather than be read as 'no proof of a double-spend'"
         );
         {
             let s = store.lock();
-            assert_eq!(s.get_scanned_block_hash("mainnet", 50).unwrap().as_deref(), Some("old_50"));
-            assert!(s.get_all_payments(&order_id).unwrap()[0].voided_at.is_none(), "nothing may be voided on no evidence");
+            assert_eq!(
+                s.get_scanned_block_hash(monero::Network::Mainnet, 50)
+                    .unwrap()
+                    .as_deref(),
+                Some("old_50")
+            );
+            assert!(
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap()[0]
+                    .voided_at
+                    .is_none(),
+                "nothing may be voided on no evidence"
+            );
         }
 
         daemon.stop_failing();
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2100).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2100)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .voided_at
+            .is_some());
     }
 
     #[tokio::test]
@@ -5326,9 +6697,29 @@ mod tests {
         honest.push_block("a_50", vec![tx.clone()]);
         honest.push_block("a_51", vec![]);
         let store = store.into_shared();
-        store.lock().set_scanned_block("mainnet", 49, "a_49").unwrap();
-        run_scan_tick(&store, &key_custody, &honest, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
-        assert_eq!(store.lock().get_all_payments(&order_id).unwrap()[0].block_height, Some(50));
+        store
+            .lock()
+            .set_scanned_block(monero::Network::Mainnet, 49, "a_49")
+            .unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &honest,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
+            Some(50)
+        );
 
         // A different node entirely: same network, chain diverging at 48, and the
         // payment nowhere in it. Nothing tells the scanner the daemon changed.
@@ -5340,17 +6731,29 @@ mod tests {
             other.push_block(&format!("b_{h}"), vec![]);
         }
 
-        run_scan_tick(&store, &key_custody, &other, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &other,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(48),
                 "the divergence is found and rewound, exactly as for a reorg - at 49 rather than the true fork at \
                  48 because 48 is a height this scanner never recorded a hash for, and detection can only ever be \
                  as fine-grained as the window it kept"
             );
-            let payment = &s.get_all_payments(&order_id).unwrap()[0];
+            let payment = &s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0];
             assert!(
                 payment.voided_at.is_none(),
                 "the new node not having the transaction proves nothing about it - never void on that"
@@ -5358,21 +6761,48 @@ mod tests {
         }
 
         // ...and the scanner then works forward over the new node's chain.
-        run_scan_tick(&store, &key_custody, &other, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(55));
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &other,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(55)
+        );
 
         // Swapping back is symmetric: the *first* node is now the one presenting a
         // divergent history, and gets reconciled the same way.
-        run_scan_tick(&store, &key_custody, &honest, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &honest,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
             Some(47),
             "no daemon is privileged - the stored chain is re-validated against whoever is answering"
         );
     }
 
     #[tokio::test]
-    async fn failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg() {
+    async fn failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg(
+    ) {
         // The composed version of `swapping_to_a_daemon_serving_a_different_chain_
         // reconciles_exactly_like_a_reorg` above: that test proves the *scanner*
         // doesn't care which daemon answers, by handing it two raw `FakeDaemonClient`s
@@ -5391,7 +6821,10 @@ mod tests {
         }
         primary.push_block("a_50", vec![tx.clone()]);
         let store = store.into_shared();
-        store.lock().set_scanned_block("mainnet", 49, "a_49").unwrap();
+        store
+            .lock()
+            .set_scanned_block(monero::Network::Mainnet, 49, "a_49")
+            .unwrap();
 
         let fallback = std::sync::Arc::new(FakeDaemonClient::new());
         for h in 1..=47 {
@@ -5402,13 +6835,33 @@ mod tests {
         }
 
         let client = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "primary".to_string(), client: primary.clone() },
-            FallbackNode { label: "fallback".to_string(), client: fallback.clone() },
+            FallbackNode {
+                label: "primary".to_string(),
+                client: primary.clone(),
+            },
+            FallbackNode {
+                label: "fallback".to_string(),
+                client: fallback.clone(),
+            },
         ]);
 
-        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             Some(50),
             "the primary is healthy and used first, exactly like a bare RpcDaemonClient would be"
         );
@@ -5417,30 +6870,54 @@ mod tests {
         // it discovers this itself on the next call and moves to the fallback, which
         // happens to disagree with recorded history from height 48 on.
         primary.set_online(false);
-        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(48),
                 "failover to a genuinely diverging fallback reconciles exactly like the raw-swap test above"
             );
             assert!(
-                s.get_all_payments(&order_id).unwrap()[0].voided_at.is_none(),
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap()[0].voided_at.is_none(),
                 "the fallback not having the transaction proves nothing about it - never void on that"
             );
         }
 
-        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(52),
             "scanning continues forward on the fallback's own chain"
         );
     }
 
     #[tokio::test]
-    async fn failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window() {
+    async fn failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window()
+    {
         // The much more likely real-world case than an actively diverging fallback:
         // a self-hoster's backup node is simply a bit behind (still catching up after
         // a restart, or just slower to relay), reporting the *same* history so far,
@@ -5457,10 +6934,29 @@ mod tests {
         }
         primary.push_block("a_60", vec![tx.clone()]);
         let store = store.into_shared();
-        store.lock().set_scanned_block("mainnet", 59, "a_59").unwrap();
+        store
+            .lock()
+            .set_scanned_block(monero::Network::Mainnet, 59, "a_59")
+            .unwrap();
 
-        run_scan_tick(&store, &key_custody, primary.as_ref(), "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(60));
+        run_scan_tick(
+            &store,
+            &key_custody,
+            primary.as_ref(),
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(60)
+        );
 
         // A fallback with the identical history, just not caught up yet.
         let fallback = std::sync::Arc::new(FakeDaemonClient::new());
@@ -5469,51 +6965,53 @@ mod tests {
         }
 
         let client = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "primary".to_string(), client: primary.clone() },
-            FallbackNode { label: "fallback".to_string(), client: fallback.clone() },
+            FallbackNode {
+                label: "primary".to_string(),
+                client: primary.clone(),
+            },
+            FallbackNode {
+                label: "fallback".to_string(),
+                client: fallback.clone(),
+            },
         ]);
 
         primary.set_online(false);
-        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(60),
                 "a lagging fallback must not rewind the window back to where it currently is"
             );
             assert!(
-                s.get_all_payments(&order_id).unwrap()[0].voided_at.is_none(),
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap()[0].voided_at.is_none(),
                 "a lagging fallback not yet having the transaction proves nothing - never void on that"
             );
         }
     }
 
     #[tokio::test]
-    async fn a_node_that_dies_between_fetching_a_blocks_transactions_and_its_hash_can_pair_them_with_a_different_nodes_hash(
+    async fn a_node_that_dies_as_a_block_is_read_has_its_hash_and_contents_come_from_the_same_fallback(
     ) {
-        // A real, narrow correctness gap `FallbackDaemonClient` introduces rather
-        // than merely inherits: `run_scan_tick` fetches a block's transactions and
-        // its hash as two *separate* daemon calls (see the long comment above
-        // `daemon.get_block_hash(height)` in `run_scan_tick` on why - a hole would
-        // otherwise be left in the reorg window). Per-call failover means those two
-        // calls for the *same height* are not guaranteed to come from the same node:
-        // if the first call succeeds against the primary and the primary dies before
-        // the second, the second is transparently served by the fallback instead -
-        // pairing one node's transactions with a different node's hash for what is
-        // recorded as a single scanned block.
-        //
-        // This is a sharper version of a risk already accepted for a single node
-        // (see the "genuine replication lag across a pool of backend nodes behind a
-        // public endpoint" comment on `run_scan_tick`'s bootstrap branch, and
-        // `docs/DESIGN.md` §7.7's now-updated note on fallback nodes): there,
-        // inconsistency is bounded by how out-of-sync one public endpoint's own
-        // backends are. Here, it is bounded only by how different two *independently
-        // operated* nodes' chains are allowed to be, which for a fallback added
-        // specifically to survive a primary that has gone badly wrong (not just
-        // "slightly behind") could be a lot. This test exists to pin the actual
-        // behavior down precisely rather than leave it as an unverified worry - see
-        // `docs/DESIGN.md` §7.7 for the accepted-tradeoff writeup this backs.
+        // A block's hash and its transactions are two daemon calls, and
+        // `FallbackDaemonClient` fails over per call. The legacy tick read the
+        // transactions first: a primary that died between the two calls paired
+        // its own block contents with the fallback's hash for the same height,
+        // recorded as one scanned block (the gap `docs/DESIGN.md` §7.7 used to
+        // accept). The block scan now reads the hash first; once a call fails
+        // over, the client stays on the node that answered, so the contents come
+        // from the node whose hash was recorded.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
 
@@ -5525,41 +7023,64 @@ mod tests {
         // transaction - the fallback's own block 51 is a different block entirely.
         primary_inner.push_block("a_51", vec![tx.clone()]);
         let store = store.into_shared();
-        store.lock().set_scanned_block("mainnet", 50, "a_50").unwrap();
+        store
+            .lock()
+            .set_scanned_block(monero::Network::Mainnet, 50, "a_50")
+            .unwrap();
 
         let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        // The fallback shares block 50 (so its 51 extends the recorded chain)
+        // and has its own, different 51.
+        fallback.seed_block_at(50, "a_50", vec![]);
         fallback.seed_block_at(51, "b_51", vec![]);
 
         // `get_block_transactions(51)` succeeds normally against the primary; only
         // its `get_block_hash(51)` call - for that same height, moments later - is
         // made to fail, which is exactly what fails over to the fallback for that one
         // call alone.
-        let primary =
-            std::sync::Arc::new(DaemonFailingBlockHashAt { inner: primary_inner, failing_height: AtomicU64::new(51) });
+        let primary = std::sync::Arc::new(DaemonFailingBlockHashAt {
+            inner: primary_inner,
+            failing_height: AtomicU64::new(51),
+        });
         let client = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "primary".to_string(), client: primary },
-            FallbackNode { label: "fallback".to_string(), client: fallback.clone() },
+            FallbackNode {
+                label: "primary".to_string(),
+                client: primary,
+            },
+            FallbackNode {
+                label: "fallback".to_string(),
+                client: fallback.clone(),
+            },
         ]);
 
-        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
         assert_eq!(
-            s.get_scanned_block_hash("mainnet", 51).unwrap(),
+            s.get_scanned_block_hash(monero::Network::Mainnet, 51).unwrap(),
             Some("b_51".to_string()),
             "the recorded hash for height 51 came from the fallback, whose get_block_hash call is what failed over"
         );
-        assert_eq!(
-            s.get_all_payments(&order_id).unwrap()[0].block_height,
-            Some(51),
-            "but the payment recorded at height 51 came from the primary's block content, fetched moments earlier - \
-             this is the actual inconsistency: the stored (height, hash) pair for 51 does not correspond to any \
-             single node's real block 51, and there is no detection for this today"
+        assert!(
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().is_empty(),
+            "and so did the block's contents: the fallback's block 51 pays nobody, and the primary's block 51 (which \
+             it can no longer vouch for) was never paired with the fallback's hash"
         );
     }
 
     #[tokio::test]
-    async fn every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state() {
+    async fn every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state()
+    {
         // Total node loss for a network (every configured node, primary and every
         // fallback, unreachable at once) must surface as an ordinary `Err` for that
         // tick - not a panic, and not a partially-written, inconsistent store state
@@ -5572,36 +7093,73 @@ mod tests {
         let primary = std::sync::Arc::new(FakeDaemonClient::new());
         primary.push_block("a_1", vec![tx.clone()]);
         let store = store.into_shared();
-        run_scan_tick(&store, &key_custody, primary.as_ref(), "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            primary.as_ref(),
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         let payments_before: Vec<(String, Option<i64>)> = store
             .lock()
-            .get_all_payments(&order_id)
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap()
             .into_iter()
             .map(|p| (p.txid, p.block_height))
             .collect();
-        let scanned_before = store.lock().max_scanned_height("mainnet").unwrap();
+        let scanned_before = store
+            .lock()
+            .max_scanned_height(monero::Network::Mainnet)
+            .unwrap();
 
         let fallback = std::sync::Arc::new(FakeDaemonClient::new());
         primary.set_online(false);
         fallback.set_online(false);
         let client = FallbackDaemonClient::new(vec![
-            FallbackNode { label: "primary".to_string(), client: primary.clone() },
-            FallbackNode { label: "fallback".to_string(), client: fallback.clone() },
+            FallbackNode {
+                label: "primary".to_string(),
+                client: primary.clone(),
+            },
+            FallbackNode {
+                label: "fallback".to_string(),
+                client: fallback.clone(),
+            },
         ]);
 
-        let result = run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
-        assert!(result.is_err(), "every node down must surface as an error, not a silent no-op or a panic");
+        let result = run_scan_tick(
+            &store,
+            &key_custody,
+            &client,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "every node down must surface as an error, not a silent no-op or a panic"
+        );
         let payments_after: Vec<(String, Option<i64>)> = store
             .lock()
-            .get_all_payments(&order_id)
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap()
             .into_iter()
             .map(|p| (p.txid, p.block_height))
             .collect();
-        assert_eq!(payments_after, payments_before, "a failed tick must not touch previously-recorded payments");
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            payments_after, payments_before,
+            "a failed tick must not touch previously-recorded payments"
+        );
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             scanned_before,
             "a failed tick must not move the scanned watermark"
         );
@@ -5622,21 +7180,70 @@ mod tests {
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         // The transaction is genuinely in flight, but this node's pool never shows it.
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
-            assert!(s.get_all_payments(&order_id).unwrap().is_empty(), "nothing to see - only zero-conf is lost");
-            assert_eq!(s.get_order(&tenant_id, &order_id).unwrap().unwrap().status, crate::status::OrderStatus::Pending);
+            assert!(
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap()
+                    .is_empty(),
+                "nothing to see - only zero-conf is lost"
+            );
+            assert_eq!(
+                s.get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
+                .unwrap()
+                .unwrap()
+                .status,
+                crate::status::OrderStatus::Pending
+            );
         }
 
         daemon.push_block("h2", vec![tx]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
-        assert_eq!(payments.len(), 1, "the payment is detected in full the moment it is mined");
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert_eq!(
+            payments.len(),
+            1,
+            "the payment is detected in full the moment it is mined"
+        );
         assert_eq!(payments[0].block_height, Some(2));
-        assert_eq!(s.get_order(&tenant_id, &order_id).unwrap().unwrap().status, crate::status::OrderStatus::Confirming);
+        assert_eq!(
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
+            crate::status::OrderStatus::Confirming
+        );
     }
 
     #[tokio::test]
@@ -5651,7 +7258,8 @@ mod tests {
         let key_custody = PlainKeyCustody::default();
         let store = Store::open_in_memory().unwrap();
         let (view, spend) = arbitrary_wallet_material(0x33); // a tenant this fixture does *not* pay
-        let (tenant_id, handle, order_id) = tenant_with_pending_order(&store, &key_custody, view, spend).await;
+        let (tenant_id, handle, order_id) =
+            tenant_with_pending_order(&store, &key_custody, view, spend).await;
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
@@ -5659,16 +7267,50 @@ mod tests {
         daemon.push_block("h2", vec![fixture_tx()]);
         daemon.set_mempool(vec![fixture_tx_variant(77)]);
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(tenant_id.clone(), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        assert!(s.get_all_payments(&order_id).unwrap().is_empty(), "no wallet matched, so no payment exists");
-        assert_eq!(s.get_order(&tenant_id, &order_id).unwrap().unwrap().status, crate::status::OrderStatus::Pending);
-        assert_eq!(s.get_order(&tenant_id, &order_id).unwrap().unwrap().amount_received_piconero, 0);
+        assert!(
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty(),
+            "no wallet matched, so no payment exists"
+        );
+        assert_eq!(
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
+            crate::status::OrderStatus::Pending
+        );
+        assert_eq!(
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .amount_received_piconero,
+            0
+        );
     }
 
     #[tokio::test]
-    async fn an_inflated_reported_height_inflates_confirmations_which_is_an_accepted_trust_boundary() {
+    async fn an_inflated_reported_height_inflates_confirmations_which_is_an_accepted_trust_boundary(
+    ) {
         // Recorded here as executable documentation of a boundary, not as a bug: the
         // confirmation count is `current_height - block_height + 1` off whatever
         // `get_height` returns, and nothing cross-checks that against the blocks the
@@ -5689,25 +7331,61 @@ mod tests {
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![fixture_tx()]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
             assert_eq!(order.status, crate::status::OrderStatus::Confirming);
             assert_eq!(order.confirmations, 1, "one real block, one confirmation");
         }
 
         daemon.report_height(1_000); // the node asserts a tip it has no blocks for
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-        assert_eq!(order.confirmations, 999, "taken at face value - the documented trust boundary");
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            order.confirmations, 999,
+            "taken at face value - the documented trust boundary"
+        );
         assert_eq!(order.status, crate::status::OrderStatus::Overpaid);
     }
 
     #[tokio::test]
-    async fn a_daemon_far_behind_the_recorded_high_water_mark_neither_rescans_nor_discards_its_window() {
+    async fn a_daemon_far_behind_the_recorded_high_water_mark_neither_rescans_nor_discards_its_window(
+    ) {
         // The opposite lie, which is usually not a lie at all: a node reporting a
         // height *below* what this scanner has already recorded. The overwhelmingly
         // common cause is honest - a node resyncing from scratch, or a freshly
@@ -5721,14 +7399,31 @@ mod tests {
         // `swapping_to_a_daemon_serving_a_different_chain_reconciles_exactly_like_a_reorg`).
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
-        scan_transaction_for_tenant(&store, &key_custody, handle, &tenant_id, &tx, 0..3, 1500, Some(95))
-            .await
-            .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(95),
+        )
+        .await
+        .unwrap();
         for h in 70..=100 {
-            store.set_scanned_block("mainnet", h, &format!("old_{h}")).unwrap();
+            store
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("old_{h}"))
+                .unwrap();
         }
-        let (_, status) = store.recompute_order_status(&order_id, 100, 1600).unwrap();
-        assert_eq!(status, crate::status::OrderStatus::Confirming, "six confirmations, ten required");
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+            .unwrap();
+        assert_eq!(
+            status,
+            crate::status::OrderStatus::Confirming,
+            "six confirmations, ten required"
+        );
         let store = store.into_shared();
 
         // The node is at height 30, three quarters of the way through a resync.
@@ -5737,17 +7432,37 @@ mod tests {
             daemon.push_block(&format!("old_{h}"), vec![]);
         }
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
         assert_eq!(
-            s.max_scanned_height("mainnet").unwrap(),
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
             Some(100),
             "the window belongs to the chain, not to whichever node is currently answering"
         );
-        assert_eq!(s.get_scanned_block_hash("mainnet", 95).unwrap().as_deref(), Some("old_95"));
-        let payment = &s.get_all_payments(&order_id).unwrap()[0];
-        assert!(payment.voided_at.is_none(), "a node that hasn't got there yet proves nothing about a payment");
+        assert_eq!(
+            s.get_scanned_block_hash(monero::Network::Mainnet, 95)
+                .unwrap()
+                .as_deref(),
+            Some("old_95")
+        );
+        let payment = &s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0];
+        assert!(
+            payment.voided_at.is_none(),
+            "a node that hasn't got there yet proves nothing about a payment"
+        );
         assert_eq!(payment.block_height, Some(95));
     }
 
@@ -5759,9 +7474,15 @@ mod tests {
         // arithmetic has to hold: three rows, three amounts, one total, one status
         // recompute.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        let txs = vec![fixture_tx(), independent_payment_tx(1), independent_payment_tx(2)];
+        let txs = vec![
+            fixture_tx(),
+            independent_payment_tx(1),
+            independent_payment_tx(2),
+        ];
         let per_tx_amount = {
-            let scan = scan_transaction(&key_custody, handle, &txs[0], 0..3).await.unwrap();
+            let scan = scan_transaction(&key_custody, handle, &txs[0], 0..3)
+                .await
+                .unwrap();
             scan.matches[0].amount_piconero.unwrap()
         };
         let store = store.into_shared();
@@ -5770,15 +7491,41 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", txs);
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
-        assert_eq!(payments.len(), 3, "three distinct transactions are three payments, not one deduplicated row");
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
+        assert_eq!(
+            payments.len(),
+            3,
+            "three distinct transactions are three payments, not one deduplicated row"
+        );
         assert!(payments.iter().all(|p| p.block_height == Some(2)));
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.amount_received_piconero, per_tx_amount * 3);
-        assert_eq!(order.status, crate::status::OrderStatus::Confirming, "one confirmation, ten required");
+        assert_eq!(
+            order.status,
+            crate::status::OrderStatus::Confirming,
+            "one confirmation, ten required"
+        );
     }
 
     #[tokio::test]
@@ -5796,12 +7543,14 @@ mod tests {
         // (which is what the stagenet end-to-end test exists for). The routing logic
         // being tested is entirely on this side of the crypto.
         let (store, _key_custody, _handle, tenant_id, first_order) = setup().await;
-        let second_index = store.allocate_minor_index(&tenant_id).unwrap();
+        let second_index = store
+            .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+            .unwrap();
         assert_eq!(second_index, 2);
         let second_order = store
             .create_order(NewOrder {
                 confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
+                tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
                 minor_index: second_index,
                 address: "sub_2".into(),
@@ -5814,29 +7563,60 @@ mod tests {
 
         let scan = ScanResult {
             matches: vec![
-                MatchedOutput { output_index: 0, subaddress_index: SubaddressIndex { major: 0, minor: 1 }, amount_piconero: Some(700) },
-                MatchedOutput { output_index: 1, subaddress_index: SubaddressIndex { major: 0, minor: 2 }, amount_piconero: Some(900) },
+                MatchedOutput {
+                    output_index: 0,
+                    subaddress_index: SubaddressIndex { major: 0, minor: 1 },
+                    amount_piconero: Some(700),
+                },
+                MatchedOutput {
+                    output_index: 1,
+                    subaddress_index: SubaddressIndex { major: 0, minor: 2 },
+                    amount_piconero: Some(900),
+                },
                 // An index no order was ever issued for - a tenant's own older
                 // subaddress, say. Must be dropped, not attributed to anything.
-                MatchedOutput { output_index: 2, subaddress_index: SubaddressIndex { major: 0, minor: 9 }, amount_piconero: Some(100) },
+                MatchedOutput {
+                    output_index: 2,
+                    subaddress_index: SubaddressIndex { major: 0, minor: 9 },
+                    amount_piconero: Some(100),
+                },
             ],
             txid: "tx_paying_two_orders".into(),
             key_images_json: "[]".into(),
         };
 
-        let touched = record_scan_match(&store, &tenant_id, &scan, 1500, Some(50)).unwrap();
-        assert_eq!(touched, HashSet::from([first_order.clone(), second_order.id.clone()]));
+        let touched = record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &scan,
+            1500,
+            Some(50),
+        )
+        .unwrap();
+        assert_eq!(
+            touched,
+            HashSet::from([
+                crate::store::OrderId::new(first_order.clone()),
+                second_order.id.clone()
+            ])
+        );
 
-        let first = store.get_all_payments(&first_order).unwrap();
+        let first = store
+            .get_all_payments(&shared::ids::OrderId::new(first_order.to_string()))
+            .unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].amount_piconero, 700, "each order gets its own output's amount, never the transaction total");
+        assert_eq!(
+            first[0].amount_piconero, 700,
+            "each order gets its own output's amount, never the transaction total"
+        );
         let second = store.get_all_payments(&second_order.id).unwrap();
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].amount_piconero, 900);
     }
 
     #[tokio::test]
-    async fn one_tick_can_void_a_double_spent_payment_for_one_order_and_record_a_new_one_for_another() {
+    async fn one_tick_can_void_a_double_spent_payment_for_one_order_and_record_a_new_one_for_another(
+    ) {
         // Two facts arriving in the same block, on the same tick, for different
         // orders: an older payment is orphaned and proven double-spent, while the
         // replacement chain carries a brand-new payment. Neither may contaminate the
@@ -5846,18 +7626,37 @@ mod tests {
         // transaction legitimately pays two different orders.
         let key_custody = PlainKeyCustody::default();
         let store = Store::open_in_memory().unwrap();
-        let (tenant_a, handle_a, order_a) =
-            tenant_with_pending_order(&store, &key_custody, fixture_view_key(), fixture_spend_pubkey()).await;
-        let (tenant_b, handle_b, order_b) =
-            tenant_with_pending_order(&store, &key_custody, fixture_view_key(), fixture_spend_pubkey()).await;
+        let (tenant_a, handle_a, order_a) = tenant_with_pending_order(
+            &store,
+            &key_custody,
+            fixture_view_key(),
+            fixture_spend_pubkey(),
+        )
+        .await;
+        let (tenant_b, handle_b, order_b) = tenant_with_pending_order(
+            &store,
+            &key_custody,
+            fixture_view_key(),
+            fixture_spend_pubkey(),
+        )
+        .await;
 
         let doomed = fixture_tx();
         let fresh = independent_payment_tx(6);
         let daemon = chain_scanned_to(&store, 51, 40, "old");
         // Only tenant A had a payment before the reorg.
-        scan_transaction_for_tenant(&store, &key_custody, handle_a, &tenant_a, &doomed, 0..3, 1500, Some(50))
-            .await
-            .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle_a,
+            &shared::ids::TenantId::new(tenant_a.to_string()),
+            &doomed,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
         for ki in &key_images_of(&doomed) {
             daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
@@ -5865,28 +7664,67 @@ mod tests {
         let store = store.into_shared();
 
         let tenants = [(tenant_a.clone(), handle_a), (tenant_b.clone(), handle_b)];
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap(); // detects, voids, rewinds
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap(); // rescans the replacement chain
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap(); // detects, voids, rewinds
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap(); // rescans the replacement chain
 
         let s = store.lock();
-        let a_payments = s.get_all_payments(&order_a).unwrap();
-        assert_eq!(a_payments.len(), 2, "the voided one and the new one both belong to A's audit trail");
-        let voided: Vec<_> = a_payments.iter().filter(|p| p.voided_at.is_some()).collect();
+        let a_payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_a.to_string()))
+            .unwrap();
+        assert_eq!(
+            a_payments.len(),
+            2,
+            "the voided one and the new one both belong to A's audit trail"
+        );
+        let voided: Vec<_> = a_payments
+            .iter()
+            .filter(|p| p.voided_at.is_some())
+            .collect();
         assert_eq!(voided.len(), 1);
         assert_eq!(voided[0].txid, tx_id_hex(&doomed));
-        let order_a_row = s.get_order(&tenant_a, &order_a).unwrap().unwrap();
+        let order_a_row = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_a.to_string()),
+                &shared::ids::OrderId::new(order_a.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert!(
             order_a_row.double_spend_detected_at.is_some(),
             "the incident stays recorded even though a later payment covered the order"
         );
-        assert_eq!(order_a_row.amount_received_piconero, a_payments.iter().find(|p| p.voided_at.is_none()).unwrap().amount_piconero);
+        assert_eq!(
+            order_a_row.amount_received_piconero,
+            a_payments
+                .iter()
+                .find(|p| p.voided_at.is_none())
+                .unwrap()
+                .amount_piconero
+        );
 
-        let b_payments = s.get_all_payments(&order_b).unwrap();
-        assert_eq!(b_payments.len(), 1, "B gets its own row for the same output - the constraint is per order");
+        let b_payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_b.to_string()))
+            .unwrap();
+        assert_eq!(
+            b_payments.len(),
+            1,
+            "B gets its own row for the same output - the constraint is per order"
+        );
         assert_eq!(b_payments[0].txid, tx_id_hex(&fresh));
         assert!(b_payments[0].voided_at.is_none());
         assert!(
-            s.get_order(&tenant_b, &order_b).unwrap().unwrap().double_spend_detected_at.is_none(),
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_b.to_string()),
+                &shared::ids::OrderId::new(order_b.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_none(),
             "another order's double-spend is not B's problem"
         );
     }
@@ -5920,22 +7758,62 @@ mod tests {
             key_images_json: "[]".into(),
         };
 
-        record_scan_match(&store, &tenant_id, &undecryptable, 1500, Some(50)).unwrap();
-        assert!(store.get_all_payments(&order_id).unwrap().is_empty());
+        record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &undecryptable,
+            1500,
+            Some(50),
+        )
+        .unwrap();
+        assert!(store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .is_empty());
 
-        let touched = record_scan_match(&store, &tenant_id, &decrypted, 1600, Some(50)).unwrap();
-        assert_eq!(touched, HashSet::from([order_id.clone()]), "the later success records it in full");
-        assert_eq!(store.get_all_payments(&order_id).unwrap()[0].amount_piconero, 4_242);
+        let touched = record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &decrypted,
+            1600,
+            Some(50),
+        )
+        .unwrap();
+        assert_eq!(
+            touched,
+            HashSet::from([crate::store::OrderId::new(order_id.clone())]),
+            "the later success records it in full"
+        );
+        assert_eq!(
+            store
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .amount_piconero,
+            4_242
+        );
 
-        record_scan_match(&store, &tenant_id, &undecryptable, 1700, Some(50)).unwrap();
-        let payments = store.get_all_payments(&order_id).unwrap();
+        record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &undecryptable,
+            1700,
+            Some(50),
+        )
+        .unwrap();
+        let payments = store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
-        assert_eq!(payments[0].amount_piconero, 4_242, "a later failure to decrypt must not disturb a recorded payment");
+        assert_eq!(
+            payments[0].amount_piconero, 4_242,
+            "a later failure to decrypt must not disturb a recorded payment"
+        );
         assert!(payments[0].voided_at.is_none());
     }
 
     #[tokio::test]
-    async fn a_payment_completing_an_order_in_the_tick_its_deadline_passes_settles_rather_than_expiring() {
+    async fn a_payment_completing_an_order_in_the_tick_its_deadline_passes_settles_rather_than_expiring(
+    ) {
         // Expiry and payment are evaluated in one place, from one snapshot, so their
         // relative ordering within a tick is not a race - but it is worth an
         // executable statement, because "the customer paid at the last second" is
@@ -5945,7 +7823,10 @@ mod tests {
         // however late it was covered.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store
-            .execute_raw_for_test(&format!("UPDATE orders SET expires_at_utc = {} WHERE id = '{order_id}'", crate::now_unix() - 1))
+            .execute_raw_for_test(&format!(
+                "UPDATE orders SET expires_at_utc = {} WHERE id = '{order_id}'",
+                crate::now_unix() - 1
+            ))
             .unwrap();
         let store = store.into_shared();
 
@@ -5953,10 +7834,26 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.set_mempool(vec![fixture_tx()]);
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.status,
             crate::status::OrderStatus::Unconfirmed,
@@ -5970,9 +7867,11 @@ mod tests {
         let partial = s
             .create_order(NewOrder {
                 confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
+                tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
-                minor_index: s.allocate_minor_index(&tenant_id).unwrap(),
+                minor_index: s
+                    .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+                    .unwrap(),
                 address: "sub_partial".into(),
                 xmr_amount_piconero: 10_000_000,
                 description: None,
@@ -5980,8 +7879,11 @@ mod tests {
                 expires_at: crate::now_unix() - 1,
             })
             .unwrap();
-        s.record_payment_match(&partial.id, "tx_partial", 0, 1, "[]", 1500, None).unwrap();
-        let (_, status) = s.recompute_order_status(&partial.id, 1, crate::now_unix()).unwrap();
+        s.record_payment_match(&partial.id, "tx_partial", 0, 1, "[]", 1500, None)
+            .unwrap();
+        let (_, status) = s
+            .recompute_order_status(&partial.id, 1, crate::now_unix())
+            .unwrap();
         assert_eq!(status, crate::status::OrderStatus::Expired);
     }
 
@@ -5998,19 +7900,50 @@ mod tests {
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
-            assert_eq!(s.max_scanned_height("mainnet").unwrap(), None, "nothing to seed from, so nothing recorded");
-            assert!(s.get_all_payments(&order_id).unwrap().is_empty());
+            assert_eq!(
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                None,
+                "nothing to seed from, so nothing recorded"
+            );
+            assert!(s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty());
         }
 
         // One block exists: the whole chain is height 1, and the tick must still
         // behave (seeding one behind the tip lands on height 0, which does not exist
         // here, so it degrades to "try again next tick" rather than erroring).
         daemon.push_block("only_block", vec![fixture_tx()]);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
-        assert!(check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.is_ok());
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert!(
+            check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -6022,18 +7955,24 @@ mod tests {
         // nobody has ever run. The delete goes ahead with nothing to re-anchor to,
         // leaving an empty window that the next tick re-seeds from the tip.
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 0, "genesis_v0").unwrap();
-        store.set_scanned_block("mainnet", 1, "block_1_v0").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 0, "genesis_v0")
+            .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 1, "block_1_v0")
+            .unwrap();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
         daemon.seed_block_at(0, "genesis_v1", vec![]);
         daemon.push_block("block_1_v1", vec![]);
 
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(0));
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
             None,
             "there is no ancestor to preserve below genesis, so the window is emptied and re-seeded next tick"
         );
@@ -6060,15 +7999,40 @@ mod tests {
         let depth = 5;
         for i in 2..=60 {
             daemon.push_block(&format!("h{i}"), vec![]);
-            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], depth, 0).await.unwrap();
+            run_scan_tick(
+                &store,
+                &key_custody,
+                &daemon,
+                "mainnet",
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                depth,
+                0,
+            )
+            .await
+            .unwrap();
         }
 
         {
             let s = store.lock();
-            assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(60));
-            let retained: u64 = (0..=60).filter(|h| s.get_scanned_block_hash("mainnet", *h).unwrap().is_some()).count() as u64;
-            assert!(retained > depth, "the window must always comfortably cover the configured reorg depth: {retained}");
-            assert!(retained <= depth * 4 + 2, "and must not grow with the chain: {retained} rows after 60 blocks");
+            assert_eq!(
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                Some(60)
+            );
+            let retained: u64 = (0..=60)
+                .filter(|h| {
+                    s.get_scanned_block_hash(monero::Network::Mainnet, *h)
+                        .unwrap()
+                        .is_some()
+                })
+                .count() as u64;
+            assert!(
+                retained > depth,
+                "the window must always comfortably cover the configured reorg depth: {retained}"
+            );
+            assert!(
+                retained <= depth * 4 + 2,
+                "and must not grow with the chain: {retained} rows after 60 blocks"
+            );
         }
 
         // A reorg at the deepest point the configured window claims to cover is still
@@ -6079,10 +8043,15 @@ mod tests {
         // `a_reorg_deeper_than_the_window_is_reported_at_the_window_edge_and_leaves_older_payments_alone`
         // covers.)
         reorg_to_new_chain(&daemon, 60 - depth, 60, None);
-        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", depth, 2000).await.unwrap();
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", depth, 2000)
+            .await
+            .unwrap();
         assert_eq!(report.reorg_detected_at, Some(60 - depth));
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(60 - depth - 1),
             "the rewind still finds an ancestor to anchor on below the pruned window"
         );
@@ -6103,12 +8072,23 @@ mod tests {
         // payment), and an order sitting in a terminal status is excluded from the
         // per-tick recompute too. The merchant is left looking at `paid` for an
         // order whose money was double-spent, permanently, with no event ever sent.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
-        store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        let (store, key_custody, handle, tenant_id, order_id) =
+            setup_with_confirmations_override(Some(0)).await;
+        store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "https://merchant.example/hook",
+                "{}",
+                "whsec_x",
+                1000,
+            )
+            .unwrap();
         let first = fixture_tx();
         let second = independent_payment_tx(8);
         let per_tx = {
-            let scan = scan_transaction(&key_custody, handle, &first, 0..3).await.unwrap();
+            let scan = scan_transaction(&key_custody, handle, &first, 0..3)
+                .await
+                .unwrap();
             scan.matches[0].amount_piconero.unwrap()
         };
         // An order that needs *both* payments, so voiding either one has to be
@@ -6125,30 +8105,83 @@ mod tests {
         fake.push_block("h1", vec![]);
         fake.set_mempool(vec![first.clone(), second.clone()]);
         let daemon = DaemonFailingFrom::counting(fake, DaemonCall::Locate);
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         {
             let s = store.lock();
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-            assert_eq!(order.status, crate::status::OrderStatus::Paid, "covered by both payments, trusted at zero-conf");
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                order.status,
+                crate::status::OrderStatus::Paid,
+                "covered by both payments, trusted at zero-conf"
+            );
         }
 
         // Both transactions are double-spent out of the pool at once, and the node
         // dies on the second lookup - after the first payment has already been voided.
         daemon.inner.drop_from_mempool(&first);
         daemon.inner.drop_from_mempool(&second);
-        for ki in key_images_of(&first).iter().chain(key_images_of(&second).iter()) {
-            daemon.inner.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
+        for ki in key_images_of(&first)
+            .iter()
+            .chain(key_images_of(&second).iter())
+        {
+            daemon
+                .inner
+                .set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
         daemon.fail_from.store(1, Ordering::SeqCst);
 
-        let result = run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
-        assert!(result.is_err(), "the node failure must surface");
+        // A node failure is retried next round, not a failed round (only this
+        // engine's own storage failures are); what matters is below.
+        let result = run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            0,
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            daemon.call_count(),
+            2,
+            "the second lookup failed, and the page stopped there"
+        );
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         let voided: Vec<_> = payments.iter().filter(|p| p.voided_at.is_some()).collect();
-        assert_eq!(voided.len(), 1, "exactly one payment was resolved before the node failed");
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_eq!(
+            voided.len(),
+            1,
+            "exactly one payment was resolved before the node failed"
+        );
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.amount_received_piconero, per_tx,
             "the order's total must reflect the void that actually committed"
@@ -6159,10 +8192,20 @@ mod tests {
             "an order whose money was voided must never be left reading `paid` because a later RPC failed"
         );
         assert!(order.double_spend_detected_at.is_some());
-        let events: Vec<String> =
-            s.due_webhook_deliveries(crate::now_unix() + 1, 20).unwrap().into_iter().map(|d| d.event_type).collect();
-        assert!(events.contains(&"order.double_spend_detected".to_string()), "and the merchant is told: {events:?}");
-        assert!(events.contains(&"order.partial".to_string()), "including the retraction of `paid`: {events:?}");
+        let events: Vec<String> = s
+            .due_webhook_deliveries(crate::now_unix() + 1, 20)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.event_type)
+            .collect();
+        assert!(
+            events.contains(&"order.double_spend_detected".to_string()),
+            "and the merchant is told: {events:?}"
+        );
+        assert!(
+            events.contains(&"order.partial".to_string()),
+            "including the retraction of `paid`: {events:?}"
+        );
     }
 
     #[test]
@@ -6182,8 +8225,16 @@ mod tests {
         let store = Store::open_in_memory().unwrap().into_shared();
         let key_custody = PlainKeyCustody::default();
         let daemon = FakeDaemonClient::new();
-        let tenants: Vec<(String, WalletHandle)> = vec![];
-        assert_send(run_scan_tick(&store, &key_custody, &daemon, "mainnet", &tenants, 20, 0));
+        let tenants: Vec<(crate::store::TenantId, WalletHandle)> = vec![];
+        assert_send(run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &tenants,
+            20,
+            0,
+        ));
     }
 
     // -- Per-tenant scan cursors (admin_settings_v2.md task 5.0) --------------
@@ -6194,7 +8245,7 @@ mod tests {
     /// replaced, so no wallet's derivation matches its outputs, and a txid of
     /// its own. Gap blocks need real transactions in them: a tenant is only
     /// found to be failing when there is something to scan for it.
-    fn unrelated_tx(seed: u8) -> Transaction {
+    pub(crate) fn unrelated_tx(seed: u8) -> Transaction {
         let mut tx = fixture_tx();
         let mut key_bytes = [seed.wrapping_add(7); 32];
         key_bytes[31] &= 0x0f;
@@ -6209,7 +8260,9 @@ mod tests {
                         monero::blockdata::transaction::SubField::TxPublicKey(other)
                     }
                     monero::blockdata::transaction::SubField::AdditionalPublickKey(keys) => {
-                        monero::blockdata::transaction::SubField::AdditionalPublickKey(keys.iter().map(|_| other).collect())
+                        monero::blockdata::transaction::SubField::AdditionalPublickKey(
+                            keys.iter().map(|_| other).collect(),
+                        )
                     }
                     field => field,
                 })
@@ -6223,32 +8276,51 @@ mod tests {
     /// `failing`, the way a key-custody backend that is down fails for the
     /// stores whose keys it holds, while other stores keep working.
     #[derive(Default)]
-    struct FlakyKeyCustody {
+    pub(crate) struct FlakyKeyCustody {
         inner: PlainKeyCustody,
         failing: parking_lot::Mutex<HashSet<WalletHandle>>,
+        /// Scan calls made for each handle, failed or not.
+        pub(crate) attempts: parking_lot::Mutex<HashMap<WalletHandle, u32>>,
+        /// Run once, at the next scan call: for changing the world mid-scan.
+        on_next_scan: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl FlakyKeyCustody {
-        fn fail(&self, handle: WalletHandle) {
+        pub(crate) fn on_next_scan(&self, hook: impl FnOnce() + Send + 'static) {
+            *self.on_next_scan.lock() = Some(Box::new(hook));
+        }
+        pub(crate) fn fail(&self, handle: WalletHandle) {
             self.failing.lock().insert(handle);
         }
-        fn recover(&self, handle: WalletHandle) {
+        pub(crate) fn recover(&self, handle: WalletHandle) {
             self.failing.lock().remove(&handle);
         }
     }
 
     #[async_trait::async_trait]
     impl KeyCustody for FlakyKeyCustody {
-        async fn register_wallet(&self, material: WalletMaterial) -> std::result::Result<WalletHandle, KeyCustodyError> {
+        async fn register_wallet(
+            &self,
+            material: WalletMaterial,
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
             self.inner.register_wallet(material).await
         }
-        async fn remove_wallet(&self, handle: WalletHandle) -> std::result::Result<(), KeyCustodyError> {
+        async fn remove_wallet(
+            &self,
+            handle: WalletHandle,
+        ) -> std::result::Result<(), KeyCustodyError> {
             self.inner.remove_wallet(handle).await
         }
-        async fn seal(&self, material: &WalletMaterial) -> std::result::Result<Vec<u8>, KeyCustodyError> {
+        async fn seal(
+            &self,
+            material: &WalletMaterial,
+        ) -> std::result::Result<Vec<u8>, KeyCustodyError> {
             self.inner.seal(material).await
         }
-        async fn unseal_and_register(&self, sealed: &[u8]) -> std::result::Result<WalletHandle, KeyCustodyError> {
+        async fn unseal_and_register(
+            &self,
+            sealed: &[u8],
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
             self.inner.unseal_and_register(sealed).await
         }
         async fn derive_subaddress(
@@ -6266,18 +8338,37 @@ mod tests {
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
-            if self.failing.lock().contains(&handle) {
-                return Err(KeyCustodyError::BackendUnavailable("simulated backend outage".into()));
+            *self.attempts.lock().entry(handle).or_default() += 1;
+            let hook = self.on_next_scan.lock().take();
+            if let Some(hook) = hook {
+                hook();
             }
-            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+            if self.failing.lock().contains(&handle) {
+                return Err(KeyCustodyError::BackendUnavailable(
+                    "simulated backend outage".into(),
+                ));
+            }
+            self.inner
+                .scan_tx_outputs(handle, tx, major_range, minor_range)
+                .await
         }
     }
 
     /// A tenant on the fixture wallet with one order at minor index 1, which
     /// `fixture_tx` pays. Several of these can share one store: each gets its
     /// own payment row from the same transaction.
-    async fn fixture_tenant(store: &Store, key_custody: &dyn KeyCustody, expires_at: i64) -> (String, WalletHandle, String) {
-        let handle = key_custody.register_wallet(WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey())).await.unwrap();
+    pub(crate) async fn fixture_tenant(
+        store: &Store,
+        key_custody: &dyn KeyCustody,
+        expires_at: i64,
+    ) -> (crate::store::TenantId, WalletHandle, crate::store::OrderId) {
+        let handle = key_custody
+            .register_wallet(WalletMaterial::new(
+                fixture_view_key(),
+                fixture_spend_pubkey(),
+            ))
+            .await
+            .unwrap();
         let tenant = store
             .create_tenant(
                 NewTenant {
@@ -6306,17 +8397,35 @@ mod tests {
                 expires_at,
             })
             .unwrap();
-        (tenant.tenant.id, handle, order.id)
+        (
+            shared::ids::TenantId::new(tenant.tenant.id.into_string()),
+            handle,
+            shared::ids::OrderId::new(order.id.into_string()),
+        )
     }
 
-    fn cursor_of(store: &crate::store::SharedStore, tenant_id: &str) -> Option<u64> {
-        store.lock().get_tenant_by_id(tenant_id).unwrap().unwrap().scanned_through_height
+    pub(crate) fn cursor_of(store: &crate::store::SharedStore, tenant_id: &str) -> Option<u64> {
+        store
+            .lock()
+            .get_tenant_by_id(&shared::ids::TenantId::new(tenant_id.to_string()))
+            .unwrap()
+            .unwrap()
+            .scanned_through_height
     }
 
-    fn order_status(store: &crate::store::SharedStore, order_id: &str) -> OrderStatus {
+    pub(crate) fn order_status(
+        store: &crate::store::SharedStore,
+        order_id: &crate::store::OrderId,
+    ) -> OrderStatus {
         let s = store.lock();
-        let tenant_id = s.get_order_tenant_id(order_id).unwrap().unwrap();
-        s.get_order(&tenant_id, order_id).unwrap().unwrap().status
+        let tenant_id = s
+            .get_order_tenant_id(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .unwrap();
+        s.get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .unwrap()
+            .status
     }
 
     #[tokio::test]
@@ -6334,31 +8443,87 @@ mod tests {
         daemon.push_block("h2", vec![fixture_tx()]); // pays both tenants
 
         custody.fail(a_handle);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
 
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2), "the network moved on");
-        assert_eq!(cursor_of(&store, &b), Some(2));
-        assert_eq!(store.lock().get_all_payments(&b_order).unwrap().len(), 1, "B was paid on time");
-        assert_eq!(cursor_of(&store, &a), Some(1), "A stays where its last good scan left it");
-        assert!(store.lock().get_all_payments(&a_order).unwrap().is_empty());
-        assert_eq!(store.lock().lagging_tenants("mainnet").unwrap(), vec![(a.clone(), 1)]);
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(2),
+            "the network moved on"
+        );
+        assert_eq!(cursor_of(&store, b.as_str()), Some(2));
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(b_order.to_string()))
+                .unwrap()
+                .len(),
+            1,
+            "B was paid on time"
+        );
+        assert_eq!(
+            cursor_of(&store, a.as_str()),
+            Some(1),
+            "A stays where its last good scan left it"
+        );
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .lock()
+                .lagging_tenants(monero::Network::Mainnet)
+                .unwrap(),
+            vec![(a.clone(), 1)]
+        );
 
         // More blocks arrive while A is still down.
         daemon.push_block("h3", vec![unrelated_tx(101)]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &b), Some(3));
-        assert_eq!(cursor_of(&store, &a), Some(1));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, b.as_str()), Some(3));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(1));
 
         custody.recover(a_handle);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
 
-        assert_eq!(cursor_of(&store, &a), Some(3), "caught up");
-        let a_payments = store.lock().get_all_payments(&a_order).unwrap();
-        assert_eq!(a_payments.len(), 1, "A's payment in the gap was found, once");
+        assert_eq!(cursor_of(&store, a.as_str()), Some(3), "caught up");
+        let a_payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap();
+        assert_eq!(
+            a_payments.len(),
+            1,
+            "A's payment in the gap was found, once"
+        );
         assert_eq!(a_payments[0].block_height, Some(2));
-        assert_eq!(store.lock().get_all_payments(&b_order).unwrap().len(), 1, "B's payment wasn't recorded twice");
-        assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(b_order.to_string()))
+                .unwrap()
+                .len(),
+            1,
+            "B's payment wasn't recorded twice"
+        );
+        assert!(store
+            .lock()
+            .lagging_tenants(monero::Network::Mainnet)
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -6373,14 +8538,29 @@ mod tests {
 
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(order_status(&store, &a_order), OrderStatus::Expired, "sanity: a caught-up tenant's order expires");
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
+            OrderStatus::Expired,
+            "sanity: a caught-up tenant's order expires"
+        );
 
         // A second tenant, expired the same way, whose backend is down while
         // the block with its payment goes by.
         let (c, c_handle, c_order) = {
+            let handle = custody
+                .register_wallet(WalletMaterial::new(
+                    fixture_view_key(),
+                    fixture_spend_pubkey(),
+                ))
+                .await
+                .unwrap();
             let s = store.lock();
-            let handle = custody.register_wallet(WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey())).await.unwrap();
             let tenant = s
                 .create_tenant(
                     NewTenant {
@@ -6410,16 +8590,38 @@ mod tests {
                 .unwrap();
             (tenant.tenant.id, handle, order.id)
         };
-        let tenants = [(a.clone(), a_handle), (c.clone(), c_handle)];
+        let tenants = [
+            (a.clone(), a_handle),
+            (
+                shared::ids::TenantId::new(c.clone().into_string()),
+                c_handle,
+            ),
+        ];
         custody.fail(c_handle);
         daemon.push_block("h2", vec![fixture_tx()]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &c), Some(1));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, c.as_str()), Some(1));
 
         // Its deadline passes while it is still behind.
-        store.lock().execute_raw_for_test(&format!("UPDATE orders SET expires_at_utc = 1 WHERE id = '{c_order}'")).unwrap();
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(order_status(&store, &c_order), OrderStatus::Pending, "no expiry while its blocks are unchecked");
+        store
+            .lock()
+            .execute_raw_for_test(&format!(
+                "UPDATE orders SET expires_at_utc = 1 WHERE id = '{c_order}'"
+            ))
+            .unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(c_order.as_str().to_string())
+            ),
+            OrderStatus::Pending,
+            "no expiry while its blocks are unchecked"
+        );
         let expired_events = store
             .lock()
             .due_webhook_deliveries(crate::now_unix() + 1, 100)
@@ -6431,54 +8633,119 @@ mod tests {
 
         // Once it catches up, the payment in the gap is found, so it never expires.
         custody.recover(c_handle);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &c), Some(2));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, c.as_str()), Some(2));
         assert_eq!(store.lock().get_all_payments(&c_order).unwrap().len(), 1);
-        assert_ne!(order_status(&store, &c_order), OrderStatus::Expired);
+        assert_ne!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(c_order.as_str().to_string())
+            ),
+            OrderStatus::Expired
+        );
     }
 
     #[tokio::test]
     async fn an_unpaid_lagging_tenants_order_expires_once_it_has_caught_up() {
         let store = Store::open_in_memory().unwrap();
         let custody = FlakyKeyCustody::default();
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let tenants = [(a.clone(), a_handle)];
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
 
         custody.fail(a_handle);
         daemon.push_block("h2", vec![unrelated_tx(102)]);
-        store.lock().execute_raw_for_test(&format!("UPDATE orders SET expires_at_utc = 1 WHERE id = '{a_order}'")).unwrap();
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(order_status(&store, &a_order), OrderStatus::Pending);
+        store
+            .lock()
+            .execute_raw_for_test(&format!(
+                "UPDATE orders SET expires_at_utc = 1 WHERE id = '{a_order}'"
+            ))
+            .unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
+            OrderStatus::Pending
+        );
 
         custody.recover(a_handle);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
-        assert_eq!(order_status(&store, &a_order), OrderStatus::Expired, "nothing was paid, so it expires as normal");
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
+            OrderStatus::Expired,
+            "nothing was paid, so it expires as normal"
+        );
     }
 
     #[tokio::test]
     async fn a_tenant_without_registered_keys_is_held_back_and_caught_up_once_they_are() {
         let store = Store::open_in_memory().unwrap();
         let custody = PlainKeyCustody::default();
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![fixture_tx()]);
 
         // A's keys aren't registered this time (it isn't in the tenant list).
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0).await.unwrap();
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0).await.unwrap();
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
-        assert_eq!(cursor_of(&store, &a), Some(1), "not moved past blocks nobody checked for it");
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0)
+            .await
+            .unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            cursor_of(&store, a.as_str()),
+            Some(1),
+            "not moved past blocks nobody checked for it"
+        );
 
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &[(a.clone(), a_handle)], 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
-        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
+        run_scan_tick(
+            &store,
+            &custody,
+            &daemon,
+            "mainnet",
+            &[(a.clone(), a_handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -6498,26 +8765,65 @@ mod tests {
             )
             .unwrap()
             .tenant;
-        assert_eq!(tenant.scanned_through_height, None, "network not seeded yet");
+        assert_eq!(
+            tenant.scanned_through_height, None,
+            "network not seeded yet"
+        );
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h1b", vec![]);
-        run_scan_tick(&store, &PlainKeyCustody::default(), &daemon, "mainnet", &[], 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &tenant.id), Some(2), "anchored when the network was seeded");
+        run_scan_tick(
+            &store,
+            &PlainKeyCustody::default(),
+            &daemon,
+            "mainnet",
+            &[],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cursor_of(&store, tenant.id.as_str()),
+            Some(2),
+            "anchored when the network was seeded"
+        );
 
         // Even from a cursor left far behind (say, by a bug or an old crash).
-        store.lock().execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = 0 WHERE id = '{}'", tenant.id)).unwrap();
+        store
+            .lock()
+            .execute_raw_for_test(&format!(
+                "UPDATE tenants SET scanned_through_height = 0 WHERE id = '{}'",
+                tenant.id
+            ))
+            .unwrap();
         daemon.push_block("h2", vec![unrelated_tx(103)]);
-        run_scan_tick(&store, &PlainKeyCustody::default(), &daemon, "mainnet", &[], 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &tenant.id), Some(3));
-        assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
+        run_scan_tick(
+            &store,
+            &PlainKeyCustody::default(),
+            &daemon,
+            "mainnet",
+            &[],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cursor_of(&store, tenant.id.as_str()), Some(3));
+        assert!(store
+            .lock()
+            .lagging_tenants(monero::Network::Mainnet)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn a_new_tenant_starts_at_its_networks_scanned_height() {
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 50, "h50").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "h50")
+            .unwrap();
         let new = |network: &str| {
             store
                 .create_tenant(
@@ -6534,16 +8840,27 @@ mod tests {
                 .unwrap()
                 .tenant
         };
-        assert_eq!(new("mainnet").scanned_through_height, Some(50), "not 0: catch-up must not replay the chain");
-        assert_eq!(new("stagenet").scanned_through_height, None, "a network never scanned leaves it unset");
+        assert_eq!(
+            new("mainnet").scanned_through_height,
+            Some(50),
+            "not 0: catch-up must not replay the chain"
+        );
+        assert_eq!(
+            new("stagenet").scanned_through_height,
+            None,
+            "a network never scanned leaves it unset"
+        );
     }
 
     #[tokio::test]
-    async fn a_reorg_rewinds_cursors_to_below_the_reorg_point_and_the_replacement_block_is_scanned_for_everyone() {
+    async fn a_reorg_rewinds_cursors_to_below_the_reorg_point_and_the_replacement_block_is_scanned_for_everyone(
+    ) {
         let store = Store::open_in_memory().unwrap();
         let custody = FlakyKeyCustody::default();
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-        let (b, b_handle, b_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (b, b_handle, b_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let tenants = [(a.clone(), a_handle), (b.clone(), b_handle)];
 
@@ -6551,28 +8868,62 @@ mod tests {
         for h in 1..=5 {
             daemon.push_block(&format!("old_{h}"), vec![unrelated_tx(h as u8)]);
         }
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(5));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(5));
 
         // B falls behind at 5 before the reorg.
         custody.fail(b_handle);
         daemon.push_block("old_6", vec![unrelated_tx(104)]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!((cursor_of(&store, &a), cursor_of(&store, &b)), (Some(6), Some(5)));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            (cursor_of(&store, a.as_str()), cursor_of(&store, b.as_str())),
+            (Some(6), Some(5))
+        );
 
         // The fork replaces 5 and 6; the payment exists only at the new 5.
-        daemon.reorg_from(5, vec![("new_5", vec![fixture_tx()]), ("new_6", vec![unrelated_tx(66)])]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(4));
-        assert_eq!(cursor_of(&store, &a), Some(4), "clamped to reorg_point - 1, not reorg_point");
-        assert_eq!(cursor_of(&store, &b), Some(4));
+        daemon.reorg_from(
+            5,
+            vec![
+                ("new_5", vec![fixture_tx()]),
+                ("new_6", vec![unrelated_tx(66)]),
+            ],
+        );
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(4)
+        );
+        assert_eq!(
+            cursor_of(&store, a.as_str()),
+            Some(4),
+            "clamped to reorg_point - 1, not reorg_point"
+        );
+        assert_eq!(cursor_of(&store, b.as_str()), Some(4));
 
         custody.recover(b_handle);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
         for (tenant, order) in [(&a, &a_order), (&b, &b_order)] {
-            assert_eq!(cursor_of(&store, tenant), Some(6));
-            let payments = store.lock().get_all_payments(order).unwrap();
-            assert_eq!(payments.len(), 1, "the payment in the replacement block at the reorg point was found");
+            assert_eq!(cursor_of(&store, tenant.as_str()), Some(6));
+            let payments = store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                .unwrap();
+            assert_eq!(
+                payments.len(),
+                1,
+                "the payment in the replacement block at the reorg point was found"
+            );
             assert_eq!(payments[0].block_height, Some(5));
         }
     }
@@ -6581,38 +8932,62 @@ mod tests {
     async fn catch_up_stops_at_a_block_that_differs_from_the_one_scanned_earlier() {
         let store = Store::open_in_memory().unwrap();
         let custody = FlakyKeyCustody::default();
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let (b, b_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let tenants = [(a.clone(), a_handle), (b.clone(), b_handle)];
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
 
         custody.fail(a_handle);
         daemon.push_block("h3", vec![unrelated_tx(105)]);
         daemon.push_block("h4", vec![unrelated_tx(106)]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
 
         // The chain from 3 up changes before A catches up, and the payment is
         // now at 3. Catch-up for A must not record from blocks that differ from
         // what the network scan stored; the reorg check rewinds, and A is
         // caught up against the new chain.
-        daemon.reorg_from(3, vec![("new_3", vec![fixture_tx()]), ("new_4", vec![unrelated_tx(33)])]);
+        daemon.reorg_from(
+            3,
+            vec![
+                ("new_3", vec![fixture_tx()]),
+                ("new_4", vec![unrelated_tx(33)]),
+            ],
+        );
         custody.recover(a_handle);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
         // Catch-up saw block 3's hash differ from the stored one and stopped
         // without moving A; the reorg check then rewound everyone to 2.
-        assert_eq!(cursor_of(&store, &a), Some(2));
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(2)
+        );
         for _ in 0..3 {
-            run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+            run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+                .await
+                .unwrap();
         }
-        assert_eq!(cursor_of(&store, &a), Some(4));
-        let payments = store.lock().get_all_payments(&a_order).unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(4));
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(payments[0].block_height, Some(3));
     }
@@ -6627,25 +9002,35 @@ mod tests {
             tenants.push((id, handle));
         }
         let store = store.into_shared();
-        let daemon = DaemonFailingFrom::counting(FakeDaemonClient::new(), DaemonCall::BlocksRange);
+        let daemon = DaemonFailingFrom::counting(FakeDaemonClient::new(), DaemonCall::ChainBlocks);
         daemon.inner.push_block("h1", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
 
         for (_, handle) in &tenants {
             custody.fail(*handle);
         }
         daemon.inner.push_block("h2", vec![fixture_tx()]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
         for (_, handle) in &tenants {
             custody.recover(*handle);
         }
 
         // No new block: this tick's only range fetches are catch-up's.
         let before = daemon.call_count();
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(daemon.call_count() - before, 1, "five tenants behind at the same block, one fetch");
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            daemon.call_count() - before,
+            1,
+            "five tenants behind at the same block, one fetch"
+        );
         for (id, _) in &tenants {
-            assert_eq!(cursor_of(&store, id), Some(2));
+            assert_eq!(cursor_of(&store, id.as_str()), Some(2));
         }
     }
 
@@ -6653,24 +9038,39 @@ mod tests {
     async fn a_lagging_tenant_whose_keys_work_is_still_matched_in_the_mempool() {
         let store = Store::open_in_memory().unwrap();
         let custody = FlakyKeyCustody::default();
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let tenants = [(a.clone(), a_handle)];
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
         custody.fail(a_handle);
         daemon.push_block("h2", vec![unrelated_tx(107)]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(1));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(1));
 
         // Put A a long way behind so one tick can't finish catching up, then
         // let its keys work again with a payment waiting in the pool.
-        store.lock().execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = 0 WHERE id = '{a}'")).unwrap();
+        store
+            .lock()
+            .execute_raw_for_test(&format!(
+                "UPDATE tenants SET scanned_through_height = 0 WHERE id = '{a}'"
+            ))
+            .unwrap();
         custody.recover(a_handle);
         daemon.set_mempool(vec![fixture_tx()]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        let payments = store.lock().get_all_payments(&a_order).unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(payments[0].block_height, None, "seen in the pool, 0-conf");
     }
@@ -6684,7 +9084,9 @@ mod tests {
         for seed in 1..=12u64 {
             let mut rng = seed;
             let mut next = move |n: u64| {
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                rng = rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (rng >> 33) % n
             };
             let store = Store::open_in_memory().unwrap();
@@ -6692,7 +9094,8 @@ mod tests {
             let mut tenants = vec![];
             let mut orders = vec![];
             for _ in 0..4 {
-                let (id, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+                let (id, handle, order) =
+                    fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
                 tenants.push((id, handle));
                 orders.push(order);
             }
@@ -6712,9 +9115,16 @@ mod tests {
                     }
                 }
                 match next(6) {
-                    0 | 1 | 2 => {
+                    0..=2 => {
                         let pay = payment_height.is_none() && next(3) == 0;
-                        tip = daemon.push_block(&format!("f{fork}_b{}", tip + 1), if pay { vec![fixture_tx()] } else { vec![unrelated_tx(tip as u8 + 50)] });
+                        tip = daemon.push_block(
+                            &format!("f{fork}_b{}", tip + 1),
+                            if pay {
+                                vec![fixture_tx()]
+                            } else {
+                                vec![unrelated_tx(tip as u8 + 50)]
+                            },
+                        );
                         if pay {
                             payment_height = Some(tip);
                         }
@@ -6726,9 +9136,24 @@ mod tests {
                         fork += 1;
                         let moved = payment_height.is_some_and(|h| h >= from);
                         let blocks: Vec<(String, Vec<Transaction>)> = (from..=tip)
-                            .map(|h| (format!("f{fork}_b{h}"), if moved && h == from { vec![fixture_tx()] } else { vec![unrelated_tx((h as u8).wrapping_add(fork as u8 * 17))] }))
+                            .map(|h| {
+                                (
+                                    format!("f{fork}_b{h}"),
+                                    if moved && h == from {
+                                        vec![fixture_tx()]
+                                    } else {
+                                        vec![unrelated_tx((h as u8).wrapping_add(fork as u8 * 17))]
+                                    },
+                                )
+                            })
                             .collect();
-                        daemon.reorg_from(from, blocks.iter().map(|(hash, txs)| (hash.as_str(), txs.clone())).collect());
+                        daemon.reorg_from(
+                            from,
+                            blocks
+                                .iter()
+                                .map(|(hash, txs)| (hash.as_str(), txs.clone()))
+                                .collect(),
+                        );
                         if moved {
                             payment_height = Some(from);
                         }
@@ -6736,29 +9161,56 @@ mod tests {
                     _ => {}
                 }
                 let _ = step;
-                run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+                run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+                    .await
+                    .unwrap();
             }
 
             for (_, handle) in &tenants {
                 custody.recover(*handle);
             }
             for _ in 0..10 {
-                run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+                run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+                    .await
+                    .unwrap();
             }
 
-            let high_water = store.lock().max_scanned_height("mainnet").unwrap();
+            let high_water = store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap();
             for ((tenant_id, _), order_id) in tenants.iter().zip(&orders) {
-                assert_eq!(cursor_of(&store, tenant_id), high_water, "seed {seed}: tenant caught up");
-                let payments: Vec<_> =
-                    store.lock().get_all_payments(order_id).unwrap().into_iter().filter(|p| p.voided_at.is_none()).collect();
+                assert_eq!(
+                    cursor_of(&store, tenant_id.as_str()),
+                    high_water,
+                    "seed {seed}: tenant caught up"
+                );
+                let payments: Vec<_> = store
+                    .lock()
+                    .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap()
+                    .into_iter()
+                    .filter(|p| p.voided_at.is_none())
+                    .collect();
                 match payment_height {
                     Some(h) => {
                         assert_eq!(payments.len(), 1, "seed {seed}: exactly one payment");
-                        assert_eq!(payments[0].block_height, Some(h as i64), "seed {seed}: at the height it's really at");
+                        assert_eq!(
+                            payments[0].block_height,
+                            Some(h as i64),
+                            "seed {seed}: at the height it's really at"
+                        );
                     }
                     None => assert!(payments.is_empty(), "seed {seed}"),
                 }
-                assert_ne!(order_status(&store, order_id), OrderStatus::Expired, "seed {seed}");
+                assert_ne!(
+                    order_status(
+                        &store,
+                        &shared::ids::OrderId::new(order_id.as_str().to_string())
+                    ),
+                    OrderStatus::Expired,
+                    "seed {seed}"
+                );
             }
         }
     }
@@ -6769,27 +9221,42 @@ mod tests {
     /// during registration, before any deadlines exist: paused-time tests must
     /// not wait on CPU slots held by other tests' independent runtimes.
     #[derive(Default)]
-    struct SlowKeyCustody {
+    pub(crate) struct SlowKeyCustody {
         inner: PlainKeyCustody,
-        delays: parking_lot::Mutex<HashMap<WalletHandle, Duration>>,
+        pub(crate) delays: parking_lot::Mutex<HashMap<WalletHandle, Duration>>,
         matches: parking_lot::Mutex<HashMap<WalletHandle, Vec<MatchedOutput>>>,
     }
 
     #[async_trait::async_trait]
     impl KeyCustody for SlowKeyCustody {
-        async fn register_wallet(&self, material: WalletMaterial) -> std::result::Result<WalletHandle, KeyCustodyError> {
+        async fn register_wallet(
+            &self,
+            material: WalletMaterial,
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
             let handle = self.inner.register_wallet(material).await?;
-            let matches = self.inner.scan_tx_outputs(handle, &fixture_tx(), 0..1, 1..2).await?;
+            let matches = self
+                .inner
+                .scan_tx_outputs(handle, &fixture_tx(), 0..1, 1..2)
+                .await?;
             self.matches.lock().insert(handle, matches);
             Ok(handle)
         }
-        async fn remove_wallet(&self, handle: WalletHandle) -> std::result::Result<(), KeyCustodyError> {
+        async fn remove_wallet(
+            &self,
+            handle: WalletHandle,
+        ) -> std::result::Result<(), KeyCustodyError> {
             self.inner.remove_wallet(handle).await
         }
-        async fn seal(&self, material: &WalletMaterial) -> std::result::Result<Vec<u8>, KeyCustodyError> {
+        async fn seal(
+            &self,
+            material: &WalletMaterial,
+        ) -> std::result::Result<Vec<u8>, KeyCustodyError> {
             self.inner.seal(material).await
         }
-        async fn unseal_and_register(&self, sealed: &[u8]) -> std::result::Result<WalletHandle, KeyCustodyError> {
+        async fn unseal_and_register(
+            &self,
+            sealed: &[u8],
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
             self.inner.unseal_and_register(sealed).await
         }
         async fn derive_subaddress(
@@ -6811,12 +9278,21 @@ mod tests {
             if let Some(delay) = delay {
                 tokio::time::sleep(delay).await;
             }
-            assert_eq!(tx_id_hex(tx), tx_id_hex(&fixture_tx()), "this backend only scans the fixture transaction");
+            assert_eq!(
+                tx_id_hex(tx),
+                tx_id_hex(&fixture_tx()),
+                "this backend only scans the fixture transaction"
+            );
             let matches = self.matches.lock();
             let matches = matches.get(&handle).ok_or(KeyCustodyError::UnknownWallet)?;
-            Ok(matches.iter().copied().filter(|m| {
-                major_range.contains(&m.subaddress_index.major) && minor_range.contains(&m.subaddress_index.minor)
-            }).collect())
+            Ok(matches
+                .iter()
+                .copied()
+                .filter(|m| {
+                    major_range.contains(&m.subaddress_index.major)
+                        && minor_range.contains(&m.subaddress_index.minor)
+                })
+                .collect())
         }
     }
 
@@ -6826,56 +9302,118 @@ mod tests {
     async fn a_tenant_whose_backend_answers_slowly_is_left_behind_and_holds_nobody_up() {
         let store = Store::open_in_memory().unwrap();
         let custody = SlowKeyCustody::default();
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-        let (b, b_handle, b_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (b, b_handle, b_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let tenants = [(a.clone(), a_handle), (b.clone(), b_handle)];
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
 
-        custody.delays.lock().insert(a_handle, Duration::from_secs(10 * 60));
+        custody
+            .delays
+            .lock()
+            .insert(a_handle, Duration::from_secs(10 * 60));
         daemon.push_block("h3", vec![fixture_tx()]);
         let started = tokio::time::Instant::now();
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert!(started.elapsed() < SCAN_CALL_DEADLINE * 3, "bounded by the per-call deadline: {:?}", started.elapsed());
-        assert_eq!(store.lock().get_all_payments(&b_order).unwrap().len(), 1, "B was paid on time");
-        assert_eq!(cursor_of(&store, &a), Some(2), "A left behind");
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < SCAN_CALL_DEADLINE * 3,
+            "bounded by the per-call deadline: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(b_order.to_string()))
+                .unwrap()
+                .len(),
+            1,
+            "B was paid on time"
+        );
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2), "A left behind");
 
         custody.delays.lock().clear();
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1, "and caught up once it answers normally");
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
+            1,
+            "and caught up once it answers normally"
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_failed_tenants_mempool_scans_do_not_consume_every_tick_before_blocks() {
         let store = Store::open_in_memory().unwrap();
         let custody = SlowKeyCustody::default();
-        let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (tenant, handle, order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let tenants = [(tenant, handle)];
         let daemon = FakeDaemonClient::new();
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
         daemon.push_block("b1", vec![]);
         daemon.push_block("b2", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        custody.delays.lock().insert(handle, Duration::from_secs(600));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        custody
+            .delays
+            .lock()
+            .insert(handle, Duration::from_secs(600));
         daemon.set_mempool((0..13).map(unrelated_tx).collect());
         let deadline = crate::loops::tick_deadline(Duration::from_secs(1));
         for height in 3..=4 {
             daemon.push_block(&format!("b{height}"), vec![]);
-            let result = tokio::time::timeout(deadline, run_scan_tick_with(
-                &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 64,
-            )).await;
-            assert!(result.is_ok(), "retrying the same failed tenant must not starve block scanning");
+            let result = tokio::time::timeout(
+                deadline,
+                run_scan_tick_with(
+                    &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 64,
+                ),
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "retrying the same failed tenant must not starve block scanning"
+            );
             result.unwrap().unwrap();
-            assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(height));
+            assert_eq!(
+                store
+                    .lock()
+                    .max_scanned_height(monero::Network::Mainnet)
+                    .unwrap(),
+                Some(height)
+            );
         }
         custody.delays.lock().clear();
         daemon.set_mempool(vec![fixture_tx()]);
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 64).await.unwrap();
-        assert_eq!(store.lock().get_all_payments(&order).unwrap().len(), 1, "the tenant is retried after recovery");
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 64,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                .unwrap()
+                .len(),
+            1,
+            "the tenant is retried after recovery"
+        );
     }
 
     // Real time, not a paused clock: the scans run on the blocking pool, one
@@ -6895,23 +9433,32 @@ mod tests {
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
 
         daemon.push_block("h3", vec![fixture_tx()]);
         let started = tokio::time::Instant::now();
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
         // 20 tenants x 1s each: about 1s at once (plus the mempool pass),
         // not 20s in a row.
-        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
         for (id, _) in &tenants {
-            assert_eq!(cursor_of(&store, id), Some(3));
+            assert_eq!(cursor_of(&store, id.as_str()), Some(3));
         }
     }
 
     // -- Fixes from the independent review of the per-tenant cursors ---------
 
     #[tokio::test]
-    async fn a_late_payment_in_the_grace_period_is_found_even_if_the_grace_period_ends_during_the_gap() {
+    async fn a_late_payment_in_the_grace_period_is_found_even_if_the_grace_period_ends_during_the_gap(
+    ) {
         let store = Store::open_in_memory().unwrap();
         let custody = FlakyKeyCustody::default();
         let now = crate::now_unix();
@@ -6923,25 +9470,46 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_block_timestamp(2, (now - 100) as u64);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600).await.unwrap();
-        assert_eq!(order_status(&store, &a_order), OrderStatus::Expired);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600)
+            .await
+            .unwrap();
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
+            OrderStatus::Expired
+        );
 
         // Backend down while the late payment is mined.
         custody.fail(a_handle);
         daemon.push_block("h3", vec![fixture_tx()]);
         daemon.set_block_timestamp(3, (now - 20) as u64);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
 
         // The grace period is over by now (modelled by a grace of 0), so the
         // order is no longer in scope today. It was in scope during the gap,
         // though, so the tenant must still be caught up rather than skipped.
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2), "not moved past the block with the payment");
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            cursor_of(&store, a.as_str()),
+            Some(2),
+            "not moved past the block with the payment"
+        );
         custody.recover(a_handle);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(3));
-        let payments = store.lock().get_all_payments(&a_order).unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(3));
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1, "the late payment was recorded");
         assert_eq!(payments[0].block_height, Some(3));
     }
@@ -6950,67 +9518,126 @@ mod tests {
     async fn a_disabled_tenants_orders_still_expire_and_it_never_counts_as_lagging() {
         let store = Store::open_in_memory().unwrap();
         let custody = PlainKeyCustody::default();
-        let (a, _a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, _a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0)
+            .await
+            .unwrap();
 
-        store.lock().disable_tenant(&a, crate::now_unix()).unwrap();
-        store.lock().execute_raw_for_test(&format!("UPDATE orders SET expires_at_utc = 1 WHERE id = '{a_order}'")).unwrap();
+        store
+            .lock()
+            .disable_tenant(
+                &shared::ids::TenantId::new(a.to_string()),
+                crate::now_unix(),
+            )
+            .unwrap();
+        store
+            .lock()
+            .execute_raw_for_test(&format!(
+                "UPDATE orders SET expires_at_utc = 1 WHERE id = '{a_order}'"
+            ))
+            .unwrap();
         daemon.push_block("h3", vec![unrelated_tx(90)]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0).await.unwrap();
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0).await.unwrap();
-        assert_eq!(order_status(&store, &a_order), OrderStatus::Expired);
-        assert_eq!(cursor_of(&store, &a), Some(3));
-        assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0)
+            .await
+            .unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
+            OrderStatus::Expired
+        );
+        assert_eq!(cursor_of(&store, a.as_str()), Some(3));
+        assert!(store
+            .lock()
+            .lagging_tenants(monero::Network::Mainnet)
+            .unwrap()
+            .is_empty());
     }
 
+    /// Only a tenant with nothing that could have been paid moves without a
+    /// scan, and "nothing in scope" is decided inside the transaction: a tenant
+    /// with an open order stays at its cursor (the block scan moves it, with a
+    /// `ScannedBlock`), as does one on another cursor or network.
     #[test]
-    fn a_tenant_or_order_created_after_the_tick_started_is_not_moved_past_the_block() {
+    fn only_tenants_with_nothing_in_scope_move_without_a_scan() {
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 10, "h10").unwrap();
-        let new_tenant = |created_at: i64| {
-            store
+        store
+            .set_scanned_block(monero::Network::Mainnet, 10, "h10")
+            .unwrap();
+        let tenant = |network: &str, cursor: i64, with_order: bool| {
+            let id = store
                 .create_tenant(
                     NewTenant {
                         key_custody_backend: "plain".into(),
                         sealed_key_material: vec![],
-                        primary_address: "4x".into(),
-                        network: "mainnet".into(),
+                        primary_address: format!("4{}", uuid::Uuid::new_v4().simple()),
+                        network: network.into(),
                         confirmations_required: None,
                         order_expiry_seconds: None,
                     },
-                    created_at,
+                    100,
                 )
                 .unwrap()
                 .tenant
-                .id
+                .id;
+            store
+                .execute_raw_for_test(&format!(
+                    "UPDATE tenants SET scanned_through_height = {cursor} WHERE id = '{id}'"
+                ))
+                .unwrap();
+            if with_order {
+                let index = store.allocate_minor_index(&id).unwrap();
+                store
+                    .create_order(NewOrder {
+                        confirmations_required_override: None,
+                        tenant_id: id.clone(),
+                        merchant_order_id: None,
+                        minor_index: index,
+                        address: format!("addr-{}", uuid::Uuid::new_v4().simple()),
+                        xmr_amount_piconero: 1,
+                        description: None,
+                        created_at: 100,
+                        expires_at: 10_000,
+                    })
+                    .unwrap();
+            }
+            id
         };
-        let old = new_tenant(100);
-        let with_new_order = new_tenant(100);
-        let created_mid_tick = new_tenant(500);
-        let index = store.allocate_minor_index(&with_new_order).unwrap();
-        store
-            .create_order(NewOrder {
-                confirmations_required_override: None,
-                tenant_id: with_new_order.clone(),
-                merchant_order_id: None,
-                minor_index: index,
-                address: "x".into(),
-                xmr_amount_piconero: 1,
-                description: None,
-                created_at: 500,
-                expires_at: 10_000,
-            })
-            .unwrap();
+        let idle = tenant("mainnet", 10, false);
+        let active = tenant("mainnet", 10, true);
+        let elsewhere = tenant("mainnet", 9, false);
+        let other_network = tenant("stagenet", 10, false);
 
-        store.advance_caught_up_cursors("mainnet", 11, &[], 500).unwrap();
-        let cursor = |id: &str| store.get_tenant_by_id(id).unwrap().unwrap().scanned_through_height;
-        assert_eq!(cursor(&old), Some(11));
-        assert_eq!(cursor(&with_new_order), Some(10), "its new address wasn't in this tick's scan");
-        assert_eq!(cursor(&created_mid_tick), Some(10));
+        assert_eq!(
+            store
+                .advance_idle_cursors(monero::Network::Mainnet, 10, 11, 500, 0)
+                .unwrap(),
+            1
+        );
+        let cursor = |id: &str| {
+            store
+                .get_tenant_by_id(&shared::ids::TenantId::new(id.to_string()))
+                .unwrap()
+                .unwrap()
+                .scanned_through_height
+        };
+        assert_eq!(cursor(idle.as_str()), Some(11));
+        assert_eq!(
+            cursor(active.as_str()),
+            Some(10),
+            "block 11 was never checked against its order"
+        );
+        assert_eq!(cursor(elsewhere.as_str()), Some(9));
+        assert_eq!(cursor(other_network.as_str()), Some(10));
     }
 
     #[tokio::test]
@@ -7018,8 +9645,17 @@ mod tests {
         let mut tx = fixture_tx();
         tx.prefix.extra = monero::blockdata::transaction::RawExtraField(vec![]);
         let custody = PlainKeyCustody::default();
-        let handle = custody.register_wallet(WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey())).await.unwrap();
-        let matches = custody.scan_tx_outputs(handle, &tx, 0..1, 0..10).await.unwrap();
+        let handle = custody
+            .register_wallet(WalletMaterial::new(
+                fixture_view_key(),
+                fixture_spend_pubkey(),
+            ))
+            .await
+            .unwrap();
+        let matches = custody
+            .scan_tx_outputs(handle, &tx, 0..1, 0..10)
+            .await
+            .unwrap();
         assert!(matches.is_empty());
     }
 
@@ -7045,38 +9681,67 @@ mod tests {
             .tenant;
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
-        assert_eq!(register_missing_wallets(&store, &custody, &handles, "stagenet").await, 0, "other networks untouched");
-        assert_eq!(register_missing_wallets(&store, &custody, &handles, "mainnet").await, 1);
+        assert_eq!(
+            register_missing_wallets(&store, &custody, &handles, monero::Network::Stagenet).await,
+            0,
+            "other networks untouched"
+        );
+        assert_eq!(
+            register_missing_wallets(&store, &custody, &handles, monero::Network::Mainnet).await,
+            1
+        );
         assert!(handles.read().contains_key(&tenant.id));
-        assert_eq!(register_missing_wallets(&store, &custody, &handles, "mainnet").await, 0, "nothing left to do");
+        assert_eq!(
+            register_missing_wallets(&store, &custody, &handles, monero::Network::Mainnet).await,
+            0,
+            "nothing left to do"
+        );
     }
 
     #[tokio::test]
     async fn catch_up_refuses_a_block_whose_hash_differs_even_when_the_reorg_check_cannot_see_it() {
         let store = Store::open_in_memory().unwrap();
         let custody = FlakyKeyCustody::default();
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let tenants = [(a.clone(), a_handle)];
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0)
+            .await
+            .unwrap();
 
         custody.fail(a_handle);
         for h in 3..=6 {
             daemon.push_block(&format!("h{h}"), vec![unrelated_tx(h as u8 + 120)]);
         }
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
 
         // Block 3 now answers with another hash and a payment, below a
         // reorg-check window of 1 block, so only catch-up can notice.
         daemon.seed_block_at(3, "other_3", vec![fixture_tx()]);
         custody.recover(a_handle);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2), "stopped at the block that differs");
-        assert!(store.lock().get_all_payments(&a_order).unwrap().is_empty(), "nothing recorded from it");
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            cursor_of(&store, a.as_str()),
+            Some(2),
+            "stopped at the block that differs"
+        );
+        assert!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .is_empty(),
+            "nothing recorded from it"
+        );
     }
 
     // -- Crash safety (task 7.11) ----------------------------------------------
@@ -7099,27 +9764,45 @@ mod tests {
             tokio::task::yield_now().await;
             self.0.get_block_timestamp(height).await
         }
-        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_block_transactions(
+            &self,
+            height: u64,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             tokio::task::yield_now().await;
             self.0.get_block_transactions(height).await
         }
-        async fn get_blocks_range(&self, start: u64, count: u64) -> std::result::Result<Vec<Vec<Transaction>>, DaemonError> {
+        async fn get_blocks_range(
+            &self,
+            start: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<Vec<Transaction>>, DaemonError> {
             tokio::task::yield_now().await;
             self.0.get_blocks_range(start, count).await
         }
-        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        async fn get_mempool_transactions(
+            &self,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             tokio::task::yield_now().await;
             self.0.get_mempool_transactions().await
         }
-        async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
+        async fn locate_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<TxLocation, DaemonError> {
             tokio::task::yield_now().await;
             self.0.locate_transaction(txid).await
         }
-        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+        async fn get_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<Transaction, DaemonError> {
             tokio::task::yield_now().await;
             self.0.get_transaction(txid).await
         }
-        async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             tokio::task::yield_now().await;
             self.0.is_key_image_spent(key_images).await
         }
@@ -7129,7 +9812,10 @@ mod tests {
     /// the in-process equivalent of the engine being killed at that point.
     /// Everything written before the cut stays written; nothing after it
     /// happens.
-    async fn run_until_killed<F: std::future::Future>(future: F, polls: usize) -> Option<F::Output> {
+    async fn run_until_killed<F: std::future::Future>(
+        future: F,
+        polls: usize,
+    ) -> Option<F::Output> {
         let mut future = Box::pin(future);
         let mut left = polls;
         std::future::poll_fn(move |cx| {
@@ -7143,57 +9829,124 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its_status_or_webhook() {
+    async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its_status_or_webhook(
+    ) {
         use std::future::Future;
         let store = Store::open_in_memory().unwrap();
         let custody = PlainKeyCustody::default();
         let now = crate::now_unix();
         let (tenant, handle, order) = fixture_tenant(&store, &custody, now + 3600).await;
-        store.execute_raw_for_test(&format!(
-            "UPDATE orders SET confirmations_required_override = 0 WHERE id = '{order}'"
-        )).unwrap();
-        store.create_webhook(&tenant, "https://shop.example/hook", "{}", "whsec", now).unwrap();
-        store.record_payment_match(&order, "original", 0, 1, "[]", now, Some(1)).unwrap();
-        recompute_and_notify(&store, &order, 2, now).unwrap();
+        store
+            .execute_raw_for_test(&format!(
+                "UPDATE orders SET confirmations_required_override = 0 WHERE id = '{order}'"
+            ))
+            .unwrap();
+        store
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant.to_string()),
+                "https://shop.example/hook",
+                "{}",
+                "whsec",
+                now,
+            )
+            .unwrap();
+        store
+            .record_payment_match(
+                &shared::ids::OrderId::new(order.to_string()),
+                "original",
+                0,
+                1,
+                "[]",
+                now,
+                Some(1),
+            )
+            .unwrap();
+        recompute_and_notify(
+            &store,
+            &shared::ids::OrderId::new(order.to_string()),
+            2,
+            now,
+        )
+        .unwrap();
         let store = store.into_shared();
-        assert_eq!(order_status(&store, &order), OrderStatus::Paid);
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(order.as_str().to_string())
+            ),
+            OrderStatus::Paid
+        );
         let tenants = [(tenant, handle)];
         let daemon = YieldingDaemon(FakeDaemonClient::new());
         daemon.0.push_block("b1", vec![]);
         daemon.0.push_block("b2", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600)
+            .await
+            .unwrap();
         daemon.0.push_block("b3", vec![fixture_tx()]);
         {
-            let mut tick = Box::pin(run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600));
+            let mut tick = Box::pin(run_scan_tick(
+                &store, &custody, &daemon, "mainnet", &tenants, 20, 3600,
+            ));
             std::future::poll_fn(|cx| {
                 assert!(tick.as_mut().poll(cx).is_pending());
-                if store.lock().get_all_payments(&order).unwrap().len() == 2 {
+                if store
+                    .lock()
+                    .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                    .unwrap()
+                    .len()
+                    == 2
+                {
                     std::task::Poll::Ready(())
                 } else {
                     std::task::Poll::Pending
                 }
-            }).await;
+            })
+            .await;
             // This tick's volatile `touched` set disappears here.
         }
         // Let the closed order fall outside the scan window before recovery.
         // Its already-persisted payment still needs a status update.
-        store.lock().execute_raw_for_test(&format!(
-            "UPDATE orders SET closed_at_utc = 1 WHERE id = '{order}'"
-        )).unwrap();
+        store
+            .lock()
+            .execute_raw_for_test(&format!(
+                "UPDATE orders SET closed_at_utc = 1 WHERE id = '{order}'"
+            ))
+            .unwrap();
         for _ in 0..2 {
-            run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+            run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+                .await
+                .unwrap();
         }
-        assert_eq!(order_status(&store, &order), OrderStatus::Overpaid);
-        let events = store.lock().due_webhook_deliveries(i64::MAX / 2, 100).unwrap();
-        assert_eq!(events.iter().filter(|d| d.order_id == order && d.event_type == "order.overpaid").count(), 1);
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(order.as_str().to_string())
+            ),
+            OrderStatus::Overpaid
+        );
+        let events = store
+            .lock()
+            .due_webhook_deliveries(i64::MAX / 2, 100)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|d| d.order_id == order && d.event_type == "order.overpaid")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
-    async fn killing_the_engine_at_any_point_in_a_tick_never_loses_or_duplicates_a_payment_or_its_webhook() {
+    async fn killing_the_engine_at_any_point_in_a_tick_never_loses_or_duplicates_a_payment_or_its_webhook(
+    ) {
         for seed in 1..=12u64 {
             let mut rng = seed;
             let mut next = move |n: u64| {
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                rng = rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (rng >> 33) % n
             };
             let store = Store::open_in_memory().unwrap();
@@ -7201,8 +9954,17 @@ mod tests {
             let mut tenants = vec![];
             let mut orders = vec![];
             for _ in 0..3 {
-                let (id, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-                store.create_webhook(&id, "https://shop.example/hook", "{}", "whsec", 1).unwrap();
+                let (id, handle, order) =
+                    fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+                store
+                    .create_webhook(
+                        &shared::ids::TenantId::new(id.to_string()),
+                        "https://shop.example/hook",
+                        "{}",
+                        "whsec",
+                        1,
+                    )
+                    .unwrap();
                 tenants.push((id, handle));
                 orders.push(order);
             }
@@ -7217,29 +9979,56 @@ mod tests {
                     if next(2) == 0 {
                         daemon.0.set_mempool(vec![fixture_tx()]);
                     }
-                    let h = daemon.0.push_block(&format!("b{}", step + 3), vec![fixture_tx()]);
+                    let h = daemon
+                        .0
+                        .push_block(&format!("b{}", step + 3), vec![fixture_tx()]);
                     daemon.0.set_mempool(vec![]);
                     paid_at = Some(h);
                 } else {
-                    daemon.0.push_block(&format!("b{}", step + 3), vec![unrelated_tx(step as u8 + 60)]);
+                    daemon.0.push_block(
+                        &format!("b{}", step + 3),
+                        vec![unrelated_tx(step as u8 + 60)],
+                    );
                 }
                 let polls = 1 + next(60) as usize;
-                let _ = run_until_killed(run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0), polls).await;
+                let _ = run_until_killed(
+                    run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0),
+                    polls,
+                )
+                .await;
             }
             for _ in 0..5 {
-                run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+                run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+                    .await
+                    .unwrap();
             }
 
-            let high_water = store.lock().max_scanned_height("mainnet").unwrap();
-            let events = store.lock().due_webhook_deliveries(i64::MAX / 2, 10_000).unwrap();
+            let high_water = store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap();
+            let events = store
+                .lock()
+                .due_webhook_deliveries(i64::MAX / 2, 10_000)
+                .unwrap();
             for ((tenant_id, _), order_id) in tenants.iter().zip(&orders) {
-                assert_eq!(cursor_of(&store, tenant_id), high_water, "seed {seed}");
-                let payments = store.lock().get_all_payments(order_id).unwrap();
+                assert_eq!(
+                    cursor_of(&store, tenant_id.as_str()),
+                    high_water,
+                    "seed {seed}"
+                );
+                let payments = store
+                    .lock()
+                    .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap();
                 match paid_at {
                     Some(h) => {
                         assert_eq!(payments.len(), 1, "seed {seed}: exactly one payment");
                         assert_eq!(payments[0].block_height, Some(h as i64), "seed {seed}");
-                        let status = order_status(&store, order_id);
+                        let status = order_status(
+                            &store,
+                            &shared::ids::OrderId::new(order_id.as_str().to_string()),
+                        );
                         assert!(
                             events.iter().any(|d| &d.order_id == order_id && d.event_type == format!("order.{status}")),
                             "seed {seed}: the webhook for the order's current status ({status}) was enqueued"
@@ -7254,11 +10043,13 @@ mod tests {
     // -- Scan window (task 7.3, decision D10) ----------------------------------
 
     #[tokio::test]
-    async fn a_payment_to_a_recently_closed_order_is_seen_but_one_closed_before_the_grace_period_is_left_to_lookup() {
+    async fn a_payment_to_a_recently_closed_order_is_seen_but_one_closed_before_the_grace_period_is_left_to_lookup(
+    ) {
         for (closed_ago, grace, expect_scanned) in [(100, 3600, true), (7200, 3600, false)] {
             let store = Store::open_in_memory().unwrap();
             let custody = PlainKeyCustody::default();
-            let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+            let (a, a_handle, a_order) =
+                fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
             // Paid (by some earlier payment) and closed `closed_ago` seconds ago.
             store
                 .execute_raw_for_test(&format!(
@@ -7267,7 +10058,9 @@ mod tests {
                 ))
                 .unwrap();
             // Another open order keeps the store active either way.
-            let index = store.allocate_minor_index(&a).unwrap();
+            let index = store
+                .allocate_minor_index(&shared::ids::TenantId::new(a.to_string()))
+                .unwrap();
             store
                 .create_order(NewOrder {
                     confirmations_required_override: None,
@@ -7285,25 +10078,74 @@ mod tests {
             let daemon = FakeDaemonClient::new();
             daemon.push_block("h1", vec![]);
             daemon.push_block("h2", vec![]);
-            run_scan_tick(&store, &custody, &daemon, "mainnet", &[(a.clone(), a_handle)], 20, grace).await.unwrap();
+            run_scan_tick(
+                &store,
+                &custody,
+                &daemon,
+                "mainnet",
+                &[(a.clone(), a_handle)],
+                20,
+                grace,
+            )
+            .await
+            .unwrap();
             daemon.push_block("h3", vec![fixture_tx()]);
-            run_scan_tick(&store, &custody, &daemon, "mainnet", &[(a.clone(), a_handle)], 20, grace).await.unwrap();
+            run_scan_tick(
+                &store,
+                &custody,
+                &daemon,
+                "mainnet",
+                &[(a.clone(), a_handle)],
+                20,
+                grace,
+            )
+            .await
+            .unwrap();
 
-            let payments = store.lock().get_all_payments(&a_order).unwrap();
-            assert_eq!(payments.len() == 1, expect_scanned, "closed {closed_ago}s ago, grace {grace}s");
+            let payments = store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap();
+            assert_eq!(
+                payments.len() == 1,
+                expect_scanned,
+                "closed {closed_ago}s ago, grace {grace}s"
+            );
             if !expect_scanned {
                 // The merchant's payment lookup scans every index the store has
                 // ever issued, and records it.
-                let next = store.lock().get_tenant_by_id(&a).unwrap().unwrap().next_minor_index;
-                let scan = scan_transaction(&custody, a_handle, &fixture_tx(), 0..next).await.unwrap();
-                record_scan_match(&store.lock(), &a, &scan, crate::now_unix(), Some(3)).unwrap();
-                assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
+                let next = store
+                    .lock()
+                    .get_tenant_by_id(&shared::ids::TenantId::new(a.to_string()))
+                    .unwrap()
+                    .unwrap()
+                    .next_minor_index;
+                let scan = scan_transaction(&custody, a_handle, &fixture_tx(), 0..next)
+                    .await
+                    .unwrap();
+                record_scan_match(
+                    &store.lock(),
+                    &shared::ids::TenantId::new(a.to_string()),
+                    &scan,
+                    crate::now_unix(),
+                    Some(3),
+                )
+                .unwrap();
+                assert_eq!(
+                    store
+                        .lock()
+                        .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                        .unwrap()
+                        .len(),
+                    1
+                );
             }
         }
     }
 
     #[tokio::test]
-    async fn catch_up_after_a_gap_longer_than_the_grace_period_still_finds_a_payment_to_an_order_that_closed_since() {
+    async fn catch_up_after_a_gap_longer_than_the_grace_period_still_finds_a_payment_to_an_order_that_closed_since(
+    ) {
         let store = Store::open_in_memory().unwrap();
         let custody = FlakyKeyCustody::default();
         let now = crate::now_unix();
@@ -7314,42 +10156,106 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_block_timestamp(2, (now - 1000) as u64);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60)
+            .await
+            .unwrap();
 
         custody.fail(a_handle);
         daemon.push_block("h3", vec![fixture_tx()]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
         // While it was behind, the order closed (say it was cancelled and
         // expired) 500s ago, well past a 60s grace period by now.
         store
             .lock()
-            .execute_raw_for_test(&format!("UPDATE orders SET status = 'expired', closed_at_utc = {} WHERE id = '{a_order}'", now - 500))
+            .execute_raw_for_test(&format!(
+                "UPDATE orders SET status = 'expired', closed_at_utc = {} WHERE id = '{a_order}'",
+                now - 500
+            ))
             .unwrap();
 
         custody.recover(a_handle);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(3));
-        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1, "it was open when the gap began");
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(3));
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
+            1,
+            "it was open when the gap began"
+        );
     }
 
     #[tokio::test]
     async fn a_store_with_over_a_million_orders_but_few_open_is_scanned_normally() {
         let store = Store::open_in_memory().unwrap();
         let custody = PlainKeyCustody::default();
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         // Its index counter is far past the old 1M-entry table limit.
-        store.execute_raw_for_test(&format!("UPDATE tenants SET next_minor_index = 1200000 WHERE id = '{a}'")).unwrap();
+        store
+            .execute_raw_for_test(&format!(
+                "UPDATE tenants SET next_minor_index = 1200000 WHERE id = '{a}'"
+            ))
+            .unwrap();
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &[(a.clone(), a_handle)], 20, 0).await.unwrap();
+        run_scan_tick(
+            &store,
+            &custody,
+            &daemon,
+            "mainnet",
+            &[(a.clone(), a_handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
         daemon.push_block("h3", vec![fixture_tx()]);
-        run_scan_tick(&store, &custody, &daemon, "mainnet", &[(a.clone(), a_handle)], 20, 0).await.unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(3), "not left behind by a scan failure");
-        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
-        assert_eq!(store.lock().scan_window(&a, crate::now_unix(), 0).unwrap(), vec![1], "the window is the open orders");
+        run_scan_tick(
+            &store,
+            &custody,
+            &daemon,
+            "mainnet",
+            &[(a.clone(), a_handle)],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cursor_of(&store, a.as_str()),
+            Some(3),
+            "not left behind by a scan failure"
+        );
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .lock()
+                .scan_window(
+                    &shared::ids::TenantId::new(a.to_string()),
+                    crate::now_unix(),
+                    0
+                )
+                .unwrap(),
+            vec![1],
+            "the window is the open orders"
+        );
     }
 
     // -- Mempool memory (task 7.3) ---------------------------------------------
@@ -7357,27 +10263,59 @@ mod tests {
     #[tokio::test]
     async fn an_unchanged_mempool_is_neither_fetched_nor_scanned_again() {
         let store = Store::open_in_memory().unwrap();
-        let custody = CountingKeyCustody { inner: PlainKeyCustody::default(), scan_calls: AtomicU64::new(0) };
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let custody = CountingKeyCustody {
+            inner: PlainKeyCustody::default(),
+            scan_calls: AtomicU64::new(0),
+        };
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool(vec![fixture_tx(), unrelated_tx(1), unrelated_tx(2)]);
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
         let tenants = [(a.clone(), a_handle)];
 
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
-        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
         let after_first = custody.scan_calls.load(Ordering::SeqCst);
         assert_eq!(after_first, 3);
 
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
-        assert_eq!(custody.scan_calls.load(Ordering::SeqCst), after_first, "nothing new, nothing scanned");
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            custody.scan_calls.load(Ordering::SeqCst),
+            after_first,
+            "nothing new, nothing scanned"
+        );
 
         // One new transaction: scanned once.
-        daemon.set_mempool(vec![fixture_tx(), unrelated_tx(1), unrelated_tx(2), unrelated_tx(3)]);
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
+        daemon.set_mempool(vec![
+            fixture_tx(),
+            unrelated_tx(1),
+            unrelated_tx(2),
+            unrelated_tx(3),
+        ]);
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
         assert_eq!(custody.scan_calls.load(Ordering::SeqCst), after_first + 1);
     }
 
@@ -7385,43 +10323,73 @@ mod tests {
     async fn a_failed_mempool_scan_is_retried_next_tick() {
         let store = Store::open_in_memory().unwrap();
         let custody = FlakyKeyCustody::default();
-        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (a, a_handle, a_order) =
+            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool(vec![fixture_tx()]);
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
         let tenants = [(a.clone(), a_handle)];
 
         custody.fail(a_handle);
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
-        assert!(store.lock().get_all_payments(&a_order).unwrap().is_empty());
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap()
+            .is_empty());
 
         custody.recover(a_handle);
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
-        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1, "not remembered as scanned after failing");
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
+            1,
+            "not remembered as scanned after failing"
+        );
     }
 
     #[tokio::test]
     async fn a_store_whose_window_changed_has_the_pool_scanned_again_for_it() {
         let store = Store::open_in_memory().unwrap();
-        let custody = CountingKeyCustody { inner: PlainKeyCustody::default(), scan_calls: AtomicU64::new(0) };
+        let custody = CountingKeyCustody {
+            inner: PlainKeyCustody::default(),
+            scan_calls: AtomicU64::new(0),
+        };
         let (a, a_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool(vec![unrelated_tx(1)]);
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
         let tenants = [(a.clone(), a_handle)];
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
         let before = custody.scan_calls.load(Ordering::SeqCst);
 
         // A new order: the window changes, so the pool is checked for it.
         {
             let s = store.lock();
-            let index = s.allocate_minor_index(&a).unwrap();
+            let index = s
+                .allocate_minor_index(&shared::ids::TenantId::new(a.to_string()))
+                .unwrap();
             s.create_order(NewOrder {
                 confirmations_required_override: None,
                 tenant_id: a.clone(),
@@ -7435,7 +10403,11 @@ mod tests {
             })
             .unwrap();
         }
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
         assert_eq!(custody.scan_calls.load(Ordering::SeqCst), before + 1);
     }
 
@@ -7449,16 +10421,28 @@ mod tests {
 
     #[async_trait::async_trait]
     impl KeyCustody for ForgetfulKeyCustody {
-        async fn register_wallet(&self, material: WalletMaterial) -> std::result::Result<WalletHandle, KeyCustodyError> {
+        async fn register_wallet(
+            &self,
+            material: WalletMaterial,
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
             self.inner.register_wallet(material).await
         }
-        async fn remove_wallet(&self, handle: WalletHandle) -> std::result::Result<(), KeyCustodyError> {
+        async fn remove_wallet(
+            &self,
+            handle: WalletHandle,
+        ) -> std::result::Result<(), KeyCustodyError> {
             self.inner.remove_wallet(handle).await
         }
-        async fn seal(&self, material: &WalletMaterial) -> std::result::Result<Vec<u8>, KeyCustodyError> {
+        async fn seal(
+            &self,
+            material: &WalletMaterial,
+        ) -> std::result::Result<Vec<u8>, KeyCustodyError> {
             self.inner.seal(material).await
         }
-        async fn unseal_and_register(&self, sealed: &[u8]) -> std::result::Result<WalletHandle, KeyCustodyError> {
+        async fn unseal_and_register(
+            &self,
+            sealed: &[u8],
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
             self.inner.unseal_and_register(sealed).await
         }
         async fn derive_subaddress(
@@ -7476,7 +10460,9 @@ mod tests {
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
-            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+            self.inner
+                .scan_tx_outputs(handle, tx, major_range, minor_range)
+                .await
         }
         async fn check_state(&self) -> std::result::Result<u64, KeyCustodyError> {
             Ok(self.epoch.load(Ordering::SeqCst))
@@ -7487,7 +10473,13 @@ mod tests {
     async fn when_the_backend_loses_its_wallets_every_tenant_is_registered_again_once() {
         let store = Store::open_in_memory().unwrap();
         let custody = ForgetfulKeyCustody::default();
-        let sealed = custody.seal(&WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey())).await.unwrap();
+        let sealed = custody
+            .seal(&WalletMaterial::new(
+                fixture_view_key(),
+                fixture_spend_pubkey(),
+            ))
+            .await
+            .unwrap();
         let mut ids = vec![];
         for _ in 0..3 {
             ids.push(
@@ -7511,18 +10503,58 @@ mod tests {
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
         let handled = AtomicU64::new(0);
-        assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "mainnet").await, 3);
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &custody,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            3
+        );
         let before: Vec<WalletHandle> = ids.iter().map(|id| handles.read()[id]).collect();
-        assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "mainnet").await, 0);
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &custody,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            0
+        );
 
         // The backend restarts and loses everything.
         custody.epoch.store(1, Ordering::SeqCst);
-        assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "mainnet").await, 3);
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &custody,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            3
+        );
         for (id, old) in ids.iter().zip(before) {
             assert_ne!(handles.read()[id], old, "a fresh handle");
         }
         // A second network's loop noticing the same epoch doesn't clear again.
-        assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "stagenet").await, 0);
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &custody,
+                &handles,
+                Some(&handled),
+                monero::Network::Stagenet
+            )
+            .await,
+            0
+        );
         assert_eq!(handles.read().len(), 3);
     }
 
@@ -7532,7 +10564,10 @@ mod tests {
         use std::sync::Arc;
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let socket: Arc<dyn KeyCustody> = Arc::new(ForgetfulKeyCustody::default());
-        let both = HashMap::from([("plain".to_string(), plain.clone()), ("socket".to_string(), socket.clone())]);
+        let both = HashMap::from([
+            ("plain".to_string(), plain.clone()),
+            ("socket".to_string(), socket.clone()),
+        ]);
         let router = CustodyRouter::new(both.clone(), "plain");
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
         let store = Store::open_in_memory().unwrap();
@@ -7558,32 +10593,76 @@ mod tests {
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
         let handled = AtomicU64::new(0);
-        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 2);
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            2
+        );
         let plain_handle = handles.read()[&ids["plain"]];
 
         // The socket backend is turned off: its store drops out, quietly,
         // and the other store keeps its handle.
-        router.replace(HashMap::from([("plain".to_string(), plain.clone())]), "plain");
-        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 0);
+        router.replace(
+            HashMap::from([("plain".to_string(), plain.clone())]),
+            "plain",
+        );
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            0
+        );
         assert!(!handles.read().contains_key(&ids["socket"]));
         assert_eq!(handles.read()[&ids["plain"]], plain_handle);
 
         // Turned back on: the store is registered again from its sealed keys.
         router.replace(both, "plain");
-        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 1);
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            1
+        );
         let socket_handle = handles.read()[&ids["socket"]];
-        assert!(router.derive_subaddress(socket_handle, SubaddressIndex::default(), Network::Mainnet).await.is_ok());
-        assert_eq!(handles.read()[&ids["plain"]], plain_handle, "never disturbed");
+        assert!(router
+            .derive_subaddress(socket_handle, SubaddressIndex::default(), Network::Mainnet)
+            .await
+            .is_ok());
+        assert_eq!(
+            handles.read()[&ids["plain"]],
+            plain_handle,
+            "never disturbed"
+        );
     }
 
     #[tokio::test]
-    async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_the_scan_loop_alone() {
+    async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_the_scan_loop_alone(
+    ) {
         use crate::key_custody::{CustodyRouter, PlainKeyCustody};
         use std::sync::Arc;
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let router = CustodyRouter::new(
-            HashMap::from([("plain".to_string(), plain.clone()), ("socket".to_string(), socket.clone())]),
+            HashMap::from([
+                ("plain".to_string(), plain.clone()),
+                ("socket".to_string(), socket.clone()),
+            ]),
             "plain",
         );
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
@@ -7605,7 +10684,17 @@ mod tests {
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
         let handled = AtomicU64::new(0);
-        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 1);
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            1
+        );
 
         // The backend loses the store without saying so (no epoch change):
         // the next scan call finds out, and the next tick registers it again.
@@ -7613,28 +10702,70 @@ mod tests {
         socket.remove_wallet(handle).await.unwrap();
         let tx = unrelated_tx(1);
         let window = ScanIndices::range(0..1);
-        assert!(scan_transaction_in_window(&router, handle, &tx, &window).await.is_err());
-        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 1);
+        assert!(scan_transaction_in_window(&router, handle, &tx, &window)
+            .await
+            .is_err());
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            1
+        );
         let handle = handles.read()[&tenant.id];
-        assert!(scan_transaction_in_window(&router, handle, &tx, &window).await.is_ok());
+        assert!(scan_transaction_in_window(&router, handle, &tx, &window)
+            .await
+            .is_ok());
 
         // The socket backend is pointed at another server (a new instance
         // under the same name): the store is registered there on the next tick.
         let new_socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        router.replace(HashMap::from([("plain".to_string(), plain), ("socket".to_string(), new_socket.clone())]), "plain");
-        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 1);
+        router.replace(
+            HashMap::from([
+                ("plain".to_string(), plain),
+                ("socket".to_string(), new_socket.clone()),
+            ]),
+            "plain",
+        );
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            1
+        );
         let handle = handles.read()[&tenant.id];
-        assert!(new_socket.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await.is_ok());
-        assert!(scan_transaction_in_window(&router, handle, &tx, &window).await.is_ok());
+        assert!(new_socket
+            .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
+            .await
+            .is_ok());
+        assert!(scan_transaction_in_window(&router, handle, &tx, &window)
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
-    async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for_that_network() {
+    async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for_that_network()
+    {
         use crate::key_custody::{CustodyRouter, PlainKeyCustody};
         use std::sync::Arc;
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        let router = CustodyRouter::new(HashMap::from([("plain".to_string(), plain.clone()), ("socket".to_string(), socket)]), "plain");
+        let router = CustodyRouter::new(
+            HashMap::from([
+                ("plain".to_string(), plain.clone()),
+                ("socket".to_string(), socket),
+            ]),
+            "plain",
+        );
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
         let store = Store::open_in_memory().unwrap();
         let mut ids = HashMap::new();
@@ -7658,16 +10789,61 @@ mod tests {
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
         for network in ["mainnet", "stagenet"] {
-            assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, None, network).await, 1);
+            assert_eq!(
+                register_missing_wallets_checking_state(
+                    &store,
+                    &router,
+                    &handles,
+                    None,
+                    shared::network::parse_network(network).unwrap()
+                )
+                .await,
+                1
+            );
         }
 
         // The stagenet store's backend is replaced; mainnet's loop runs first.
-        router.replace(HashMap::from([("plain".to_string(), plain), ("socket".to_string(), Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>)]), "plain");
-        let pass = register_missing_wallets_reporting(&store, &router, &handles, None, "mainnet").await;
-        assert_eq!(pass, Registration { registered: 0, failed: 0 });
+        router.replace(
+            HashMap::from([
+                ("plain".to_string(), plain),
+                (
+                    "socket".to_string(),
+                    Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
+                ),
+            ]),
+            "plain",
+        );
+        let pass = register_missing_wallets_reporting(
+            &crate::store::Db::over_shared(store.clone()),
+            &router,
+            &handles,
+            None,
+            monero::Network::Mainnet,
+        )
+        .await;
+        assert_eq!(
+            pass,
+            Registration {
+                registered: 0,
+                failed: 0
+            }
+        );
         let stale = handles.read()[&ids["stagenet"]];
-        assert!(!router.handle_is_live(stale), "still there, so stagenet's loop sees it lost and retries soon");
-        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, None, "stagenet").await, 1);
+        assert!(
+            !router.handle_is_live(stale),
+            "still there, so stagenet's loop sees it lost and retries soon"
+        );
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                None,
+                monero::Network::Stagenet
+            )
+            .await,
+            1
+        );
         assert!(router.handle_is_live(handles.read()[&ids["stagenet"]]));
     }
 
@@ -7677,14 +10853,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn scale_many_stores_a_busy_mempool_and_a_block_with_payments_for_all_of_them() {
-        let stores: usize = std::env::var("SCALE_STORES").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
+        let stores: usize = std::env::var("SCALE_STORES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000);
         let pool_size: u8 = 200;
         let store = Store::open_in_memory().unwrap();
         let custody = PlainKeyCustody::default();
         let mut tenants = vec![];
         let mut orders = vec![];
         for _ in 0..stores {
-            let (id, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+            let (id, handle, order) =
+                fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
             tenants.push((id, handle));
             orders.push(order);
         }
@@ -7693,27 +10873,839 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool((0..pool_size).map(unrelated_tx).collect());
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
 
         let started = std::time::Instant::now();
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
         let cold = started.elapsed();
 
         let started = std::time::Instant::now();
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
         let warm = started.elapsed();
 
         daemon.push_block("h3", vec![fixture_tx(), unrelated_tx(250)]);
         let started = std::time::Instant::now();
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
+        run_scan_tick_with(
+            &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+        )
+        .await
+        .unwrap();
         let block = started.elapsed();
 
-        let paid = orders.iter().filter(|o| store.lock().get_all_payments(o).unwrap().len() == 1).count();
+        let paid = orders
+            .iter()
+            .filter(|o| store.lock().get_all_payments(o).unwrap().len() == 1)
+            .count();
         println!(
             "scale: {stores} stores, {pool_size}-tx mempool: cold tick {cold:?}, warm tick {warm:?}, \
              block with a payment for every store {block:?}, {paid}/{stores} paid"
         );
-        assert_eq!(paid, stores, "every store's payment detected in the tick after its block");
-        assert!(warm < Duration::from_secs(2), "an unchanged pool costs almost nothing: {warm:?}");
+        assert_eq!(
+            paid, stores,
+            "every store's payment detected in the tick after its block"
+        );
+        assert!(
+            warm < Duration::from_secs(2),
+            "an unchanged pool costs almost nothing: {warm:?}"
+        );
+    }
+
+    // -- Remaining edges: coinbase inputs, undecryptable amounts, races --------
+
+    /// A coinbase input spends nothing, so it has no key image.
+    #[test]
+    fn a_coinbase_input_has_no_key_image() {
+        let mut tx = fixture_tx();
+        tx.prefix.inputs = vec![monero::blockdata::transaction::TxIn::Gen {
+            height: monero::VarInt(5),
+        }];
+        assert!(key_images_of(&tx).is_empty());
+    }
+
+    /// An output that matched but whose amount couldn't be decrypted is
+    /// neither recorded nor staged (a zero row would be worse than none),
+    /// and the skip is logged.
+    #[tokio::test]
+    async fn an_undecryptable_amount_is_neither_recorded_nor_staged() {
+        let (_guard, logs) = crate::test_log::capture();
+        let (store, _custody, _handle, tenant_id, order_id) = setup().await;
+        let scan = ScanResult {
+            matches: vec![MatchedOutput {
+                output_index: 0,
+                subaddress_index: SubaddressIndex { major: 0, minor: 1 },
+                amount_piconero: None,
+            }],
+            txid: "ab".repeat(32),
+            key_images_json: "[]".into(),
+        };
+        assert!(record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &scan,
+            100,
+            Some(5)
+        )
+        .unwrap()
+        .is_empty());
+        stage_block_match(
+            &store,
+            monero::Network::Mainnet,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &scan,
+            100,
+        )
+        .unwrap();
+        assert!(store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .take_staged_payments(
+                monero::Network::Mainnet,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "any"
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            logs.count("its amount could not be decrypted"),
+            2,
+            "{}",
+            logs.text()
+        );
+    }
+
+    /// Every SQL statement of the "reconcile now" entry point, failed in
+    /// turn: it reports the failure, and the next call finishes the job.
+    #[tokio::test]
+    async fn every_sql_failure_in_reconcile_now_is_recovered_from() {
+        let mut faults = 0;
+        for fault in 0.. {
+            let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+            let store = store.into_shared();
+            let daemon = FakeDaemonClient::new();
+            daemon.push_block("h1", vec![]);
+            daemon.push_block("h2", vec![fixture_tx()]);
+            run_scan_tick(
+                &store,
+                &key_custody,
+                &daemon,
+                "mainnet",
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                20,
+                0,
+            )
+            .await
+            .unwrap();
+            run_scan_tick(
+                &store,
+                &key_custody,
+                &daemon,
+                "mainnet",
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+                20,
+                0,
+            )
+            .await
+            .unwrap();
+            daemon.reorg_from(2, vec![("x2", vec![]), ("x3", vec![fixture_tx()])]);
+            let seen = store.lock().fail_nth_access(Some(fault));
+            let first =
+                check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, crate::now_unix())
+                    .await;
+            store.lock().fail_nth_access(None);
+            if seen.load(Ordering::Relaxed) <= fault {
+                first.unwrap();
+                break;
+            }
+            faults += 1;
+            if first.is_err() {
+                check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, crate::now_unix())
+                    .await
+                    .unwrap();
+            }
+            assert!(
+                store
+                    .lock()
+                    .reorg_job(monero::Network::Mainnet)
+                    .unwrap()
+                    .is_none(),
+                "fault {fault}"
+            );
+            assert_eq!(
+                store
+                    .lock()
+                    .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap()[0]
+                    .block_height,
+                Some(3),
+                "fault {fault}"
+            );
+        }
+        assert!(faults > 5, "reached {faults}");
+    }
+
+    /// A node that un-voids the payment (as the reorg path might) while the
+    /// void recheck is asking about its key images: the recheck finds nothing
+    /// left to restore and tells nobody twice.
+    struct UnvoidsWhileAsked {
+        inner: FakeDaemonClient,
+        store: crate::store::SharedStore,
+        order_id: String,
+    }
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for UnvoidsWhileAsked {
+        async fn get_height(&self) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_height().await
+        }
+        async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
+            self.inner.get_block_hash(height).await
+        }
+        async fn get_block_transactions(
+            &self,
+            height: u64,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.inner.get_block_transactions(height).await
+        }
+        async fn get_mempool_transactions(
+            &self,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.inner.get_mempool_transactions().await
+        }
+        async fn locate_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<TxLocation, DaemonError> {
+            self.inner.locate_transaction(txid).await
+        }
+        async fn get_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<Transaction, DaemonError> {
+            self.inner.get_transaction(txid).await
+        }
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+            {
+                let s = self.store.lock();
+                for payment in s
+                    .get_all_payments(&shared::ids::OrderId::new(self.order_id.to_string()))
+                    .unwrap()
+                {
+                    s.unvoid_payment(
+                        &shared::ids::OrderId::new(self.order_id.to_string()),
+                        &payment.txid,
+                        payment.output_index,
+                    )
+                    .unwrap();
+                }
+            }
+            self.inner.is_key_image_spent(key_images).await
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_block_timestamp(height).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_void_restored_while_rechecked_is_not_restored_twice() {
+        let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
+        let daemon = UnvoidsWhileAsked {
+            inner: chain_replica(),
+            store: store.clone(),
+            order_id: order_id.clone(),
+        };
+        let db = crate::store::Db::over_shared(store.clone());
+        let restored = recheck_voided_payment(
+            &db,
+            &daemon,
+            monero::Network::Mainnet,
+            &payment,
+            10,
+            crate::now_unix(),
+        )
+        .await
+        .unwrap();
+        assert!(!restored, "already restored by the time it was applied");
+        let events: Vec<String> = store
+            .lock()
+            .due_webhook_deliveries(i64::MAX / 2, 10)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.event_type)
+            .collect();
+        assert!(
+            !events.contains(&"order.double_spend_reversed".to_string()),
+            "{events:?}"
+        );
+    }
+
+    // -- Key registration's failure paths -------------------------------------
+
+    /// How a [`ScriptedCustody`] call behaves.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Behaviour {
+        Answer,
+        Fail,
+        Hang,
+    }
+
+    /// Plain key custody whose state check and registration a test scripts;
+    /// `on_register` runs before each registration answers.
+    struct ScriptedCustody {
+        inner: PlainKeyCustody,
+        check: Behaviour,
+        register: Behaviour,
+        on_register: Box<dyn Fn(&str) + Send + Sync>,
+    }
+
+    impl ScriptedCustody {
+        fn new(check: Behaviour, register: Behaviour) -> Self {
+            Self {
+                inner: PlainKeyCustody::default(),
+                check,
+                register,
+                on_register: Box::new(|_| {}),
+            }
+        }
+
+        async fn behave(behaviour: Behaviour) -> std::result::Result<(), KeyCustodyError> {
+            match behaviour {
+                Behaviour::Answer => Ok(()),
+                Behaviour::Fail => Err(KeyCustodyError::BackendUnavailable(
+                    "scripted failure".into(),
+                )),
+                Behaviour::Hang => std::future::pending().await,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KeyCustody for ScriptedCustody {
+        async fn register_wallet(
+            &self,
+            material: WalletMaterial,
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            self.inner.register_wallet(material).await
+        }
+        async fn remove_wallet(
+            &self,
+            handle: WalletHandle,
+        ) -> std::result::Result<(), KeyCustodyError> {
+            self.inner.remove_wallet(handle).await
+        }
+        async fn seal(
+            &self,
+            material: &WalletMaterial,
+        ) -> std::result::Result<Vec<u8>, KeyCustodyError> {
+            self.inner.seal(material).await
+        }
+        async fn unseal_and_register(
+            &self,
+            sealed: &[u8],
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            self.inner.unseal_and_register(sealed).await
+        }
+        async fn unseal_and_register_in_idempotent(
+            &self,
+            _backend: &str,
+            sealed: &[u8],
+            registration_id: &str,
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            Self::behave(self.register).await?;
+            (self.on_register)(registration_id);
+            self.inner.unseal_and_register(sealed).await
+        }
+        async fn derive_subaddress(
+            &self,
+            handle: WalletHandle,
+            index: SubaddressIndex,
+            network: Network,
+        ) -> std::result::Result<Address, KeyCustodyError> {
+            self.inner.derive_subaddress(handle, index, network).await
+        }
+        async fn scan_tx_outputs(
+            &self,
+            handle: WalletHandle,
+            tx: &Transaction,
+            major_range: Range<u32>,
+            minor_range: Range<u32>,
+        ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
+            self.inner
+                .scan_tx_outputs(handle, tx, major_range, minor_range)
+                .await
+        }
+        async fn check_state(&self) -> std::result::Result<u64, KeyCustodyError> {
+            Self::behave(self.check).await?;
+            Ok(0)
+        }
+    }
+
+    /// `count` stores on mainnet with sealed keys `custody` can open.
+    async fn stores_with_keys(
+        custody: &dyn KeyCustody,
+        count: usize,
+    ) -> (crate::store::SharedStore, Vec<crate::store::TenantId>) {
+        let store = Store::open_in_memory().unwrap();
+        let sealed = custody
+            .seal(&WalletMaterial::new(
+                fixture_view_key(),
+                fixture_spend_pubkey(),
+            ))
+            .await
+            .unwrap();
+        let ids = (0..count)
+            .map(|_| {
+                store
+                    .create_tenant(
+                        NewTenant {
+                            key_custody_backend: "plain".into(),
+                            sealed_key_material: sealed.clone(),
+                            primary_address: "4x".into(),
+                            network: "mainnet".into(),
+                            confirmations_required: None,
+                            order_expiry_seconds: None,
+                        },
+                        1,
+                    )
+                    .unwrap()
+                    .tenant
+                    .id
+            })
+            .collect();
+        (store.into_shared(), ids)
+    }
+
+    /// A state check that fails or never answers is logged and passed over:
+    /// the stores are still registered.
+    #[tokio::test(start_paused = true)]
+    async fn registration_carries_on_when_the_state_check_fails_or_hangs() {
+        for check in [Behaviour::Fail, Behaviour::Hang] {
+            let (_guard, logs) = crate::test_log::capture();
+            let custody = ScriptedCustody::new(check, Behaviour::Answer);
+            let (store, _) = stores_with_keys(&custody, 2).await;
+            let handles = parking_lot::RwLock::new(HashMap::new());
+            let epoch = AtomicU64::new(0);
+            let db = crate::store::Db::over_shared(store.clone());
+            let pass = register_missing_wallets_reporting(
+                &db,
+                &custody,
+                &handles,
+                Some(&epoch),
+                monero::Network::Mainnet,
+            )
+            .await;
+            assert_eq!(
+                pass,
+                Registration {
+                    registered: 2,
+                    failed: 0
+                }
+            );
+            let message = if check == Behaviour::Fail {
+                "state failed"
+            } else {
+                "state exceeded"
+            };
+            assert_eq!(logs.count(message), 1, "{}", logs.text());
+        }
+    }
+
+    /// Stores that can't be listed are one failure, retried soon.
+    #[tokio::test]
+    async fn registration_that_cannot_list_stores_is_retried() {
+        let (_guard, logs) = crate::test_log::capture();
+        let custody = ScriptedCustody::new(Behaviour::Answer, Behaviour::Answer);
+        let (store, _) = stores_with_keys(&custody, 1).await;
+        let handles = parking_lot::RwLock::new(HashMap::new());
+        let db = crate::store::Db::over_shared(store.clone());
+        store.lock().fail_nth_access(Some(0));
+        let pass = register_missing_wallets_reporting(
+            &db,
+            &custody,
+            &handles,
+            None,
+            monero::Network::Mainnet,
+        )
+        .await;
+        store.lock().fail_nth_access(None);
+        assert_eq!(
+            pass,
+            Registration {
+                registered: 0,
+                failed: 1
+            }
+        );
+        assert_eq!(
+            logs.count("listing stores to register their keys failed"),
+            1,
+            "{}",
+            logs.text()
+        );
+    }
+
+    /// Registrations that fail or hang are counted and logged once for the
+    /// pass (the first failure shown); a pass that runs out of time leaves
+    /// the rest for the next.
+    #[tokio::test(start_paused = true)]
+    async fn failed_registrations_are_counted_and_logged_once() {
+        registrations_fail(Behaviour::Fail).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hung_registrations_are_counted_and_the_pass_is_bounded() {
+        registrations_fail(Behaviour::Hang).await;
+    }
+
+    async fn registrations_fail(register: Behaviour) {
+        {
+            let (_guard, logs) = crate::test_log::capture();
+            let custody = ScriptedCustody::new(Behaviour::Answer, register);
+            let (store, _) = stores_with_keys(&custody, 3).await;
+            let handles = parking_lot::RwLock::new(HashMap::new());
+            let db = crate::store::Db::over_shared(store.clone());
+            let started = tokio::time::Instant::now();
+            let pass = register_missing_wallets_reporting(
+                &db,
+                &custody,
+                &handles,
+                None,
+                monero::Network::Mainnet,
+            )
+            .await;
+            assert_eq!(
+                pass,
+                Registration {
+                    registered: 0,
+                    failed: 3
+                }
+            );
+            assert_eq!(
+                logs.count("registering the keys of stores failed"),
+                1,
+                "{}",
+                logs.text()
+            );
+            if register == Behaviour::Hang {
+                assert_eq!(
+                    started.elapsed(),
+                    Duration::from_secs(20),
+                    "two calls to their deadline, then the pass's end"
+                );
+            }
+        }
+    }
+
+    /// A store registered by someone else (an API call) while this pass was
+    /// registering it keeps the first handle; this pass's is removed again.
+    #[tokio::test]
+    async fn a_registration_that_loses_the_race_is_removed() {
+        let mut custody = ScriptedCustody::new(Behaviour::Answer, Behaviour::Answer);
+        let (store, ids) = stores_with_keys(&custody, 1).await;
+        let handles = std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new()));
+        let sealed = store
+            .lock()
+            .get_tenant_by_id(&shared::ids::TenantId::new(ids[0].to_string()))
+            .unwrap()
+            .unwrap()
+            .sealed_key_material;
+        let earlier = custody.inner.unseal_and_register(&sealed).await.unwrap();
+        let racing = handles.clone();
+        custody.on_register = Box::new(move |id| {
+            racing
+                .write()
+                .insert(crate::store::TenantId::new(id), earlier);
+        });
+        let db = crate::store::Db::over_shared(store.clone());
+        let pass = register_missing_wallets_reporting(
+            &db,
+            &custody,
+            &handles,
+            None,
+            monero::Network::Mainnet,
+        )
+        .await;
+        assert_eq!(
+            pass,
+            Registration {
+                registered: 0,
+                failed: 0
+            }
+        );
+        assert_eq!(handles.read()[&ids[0]], earlier, "the first handle in wins");
+    }
+
+    /// A match against an index no order has is nothing to stage; a staging
+    /// write that fails is an error the caller's transaction rolls back.
+    #[tokio::test]
+    async fn staging_skips_unknown_indices_and_reports_write_failures() {
+        let (store, _custody, _handle, tenant_id, order_id) = setup().await;
+        let matched = |minor| ScanResult {
+            matches: vec![MatchedOutput {
+                output_index: 0,
+                subaddress_index: SubaddressIndex { major: 0, minor },
+                amount_piconero: Some(5),
+            }],
+            txid: "cd".repeat(32),
+            key_images_json: "[]".into(),
+        };
+        stage_block_match(
+            &store,
+            monero::Network::Mainnet,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &matched(99),
+            100,
+        )
+        .unwrap();
+        let checkpoint = crate::store::BlockCheckpoint {
+            height: 7,
+            hash: "h7".into(),
+            next_tx: 1,
+        };
+        store
+            .save_block_checkpoint(
+                monero::Network::Mainnet,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &checkpoint,
+            )
+            .unwrap();
+        assert!(
+            store
+                .take_staged_payments(
+                    monero::Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    "h7"
+                )
+                .unwrap()
+                .is_empty(),
+            "nothing staged for index 99"
+        );
+        let mut failed = 0;
+        for fault in 0.. {
+            store
+                .save_block_checkpoint(
+                    monero::Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &checkpoint,
+                )
+                .unwrap();
+            let seen = store.fail_nth_access(Some(fault));
+            let result = store.in_transaction(|s| {
+                stage_block_match(
+                    s,
+                    monero::Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &matched(1),
+                    100,
+                )
+            });
+            store.fail_nth_access(None);
+            if seen.load(Ordering::Relaxed) <= fault {
+                result.unwrap();
+                break;
+            }
+            assert!(result.is_err());
+            failed += 1;
+            assert!(
+                store
+                    .take_staged_payments(
+                        monero::Network::Mainnet,
+                        &shared::ids::TenantId::new(tenant_id.to_string()),
+                        "h7"
+                    )
+                    .unwrap()
+                    .is_empty(),
+                "fault {fault}: rolled back"
+            );
+        }
+        assert!(failed >= 2);
+        let staged = store
+            .take_staged_payments(
+                monero::Network::Mainnet,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "h7",
+            )
+            .unwrap();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].order_id, shared::ids::OrderId::new(order_id));
+    }
+
+    /// A node that answers for fewer key images than it was asked about has
+    /// said nothing conclusive: the void stays.
+    struct ShortAnswers(FakeDaemonClient);
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for ShortAnswers {
+        async fn get_height(&self) -> std::result::Result<u64, DaemonError> {
+            self.0.get_height().await
+        }
+        async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
+            self.0.get_block_hash(height).await
+        }
+        async fn get_block_transactions(
+            &self,
+            height: u64,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.0.get_block_transactions(height).await
+        }
+        async fn get_mempool_transactions(
+            &self,
+        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.0.get_mempool_transactions().await
+        }
+        async fn locate_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<TxLocation, DaemonError> {
+            self.0.locate_transaction(txid).await
+        }
+        async fn get_transaction(
+            &self,
+            txid: &str,
+        ) -> std::result::Result<Transaction, DaemonError> {
+            self.0.get_transaction(txid).await
+        }
+        async fn is_key_image_spent(
+            &self,
+            _: &[String],
+        ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+            Ok(Vec::new())
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.0.get_block_timestamp(height).await
+        }
+    }
+
+    #[tokio::test]
+    async fn short_key_image_answers_leave_a_void_alone() {
+        let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
+        let db = crate::store::Db::over_shared(store.clone());
+        let restored = recheck_voided_payment(
+            &db,
+            &ShortAnswers(chain_replica()),
+            monero::Network::Mainnet,
+            &payment,
+            10,
+            crate::now_unix(),
+        )
+        .await
+        .unwrap();
+        assert!(!restored);
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .voided_at
+            .is_some());
+    }
+
+    /// With several backends, one that lost its wallets costs only its own
+    /// stores their handles: the others keep theirs.
+    #[tokio::test]
+    async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
+        use crate::key_custody::CustodyRouter;
+        use std::sync::Arc;
+        let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let forgetful = Arc::new(ForgetfulKeyCustody::default());
+        let socket: Arc<dyn KeyCustody> = forgetful.clone();
+        let router = CustodyRouter::new(
+            HashMap::from([("plain".to_string(), plain), ("socket".to_string(), socket)]),
+            "plain",
+        );
+        let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
+        let store = Store::open_in_memory().unwrap();
+        let mut ids = HashMap::new();
+        for backend in ["plain", "socket"] {
+            let tenant = store
+                .create_tenant(
+                    NewTenant {
+                        key_custody_backend: backend.into(),
+                        sealed_key_material: router.seal_in(backend, &material).await.unwrap(),
+                        primary_address: "4x".into(),
+                        network: "mainnet".into(),
+                        confirmations_required: None,
+                        order_expiry_seconds: None,
+                    },
+                    1,
+                )
+                .unwrap()
+                .tenant;
+            ids.insert(backend, tenant.id);
+        }
+        let store = store.into_shared();
+        let handles = parking_lot::RwLock::new(HashMap::new());
+        let handled = AtomicU64::new(0);
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            2
+        );
+        let (plain_handle, socket_handle) = (
+            handles.read()[&ids["plain"]],
+            handles.read()[&ids["socket"]],
+        );
+
+        forgetful.epoch.store(1, Ordering::SeqCst);
+        assert_eq!(
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                Some(&handled),
+                monero::Network::Mainnet
+            )
+            .await,
+            1
+        );
+        assert_eq!(handles.read()[&ids["plain"]], plain_handle, "untouched");
+        assert_ne!(
+            handles.read()[&ids["socket"]],
+            socket_handle,
+            "registered again"
+        );
+        assert_eq!(handled.load(Ordering::SeqCst), 1);
+    }
+
+    /// The test and tool entry points refuse a network name they don't know.
+    #[tokio::test]
+    async fn the_entry_points_refuse_an_unknown_network() {
+        let store = Store::open_in_memory().unwrap().into_shared();
+        let daemon = FakeDaemonClient::new();
+        let custody = PlainKeyCustody::default();
+        assert!(matches!(
+            run_scan_tick(&store, &custody, &daemon, "moonnet", &[], 20, 0).await,
+            Err(ScannerError::Internal(_))
+        ));
+        assert!(matches!(
+            check_for_reorg_and_reconcile(&store, &daemon, "moonnet", 20, 0).await,
+            Err(ScannerError::Internal(_))
+        ));
     }
 }

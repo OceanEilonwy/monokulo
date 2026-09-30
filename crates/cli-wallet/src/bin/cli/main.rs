@@ -24,7 +24,10 @@ use std::sync::{Arc, Mutex};
 
 use clap::{CommandFactory, Parser, Subcommand};
 use cli_wallet::file::{migrate_legacy, WalletData, WalletFile};
-use cli_wallet::{credentials_from_seed, credentials_from_spend_key_hex, generate_credentials, WalletCtx, SEED_LANGUAGE_NAMES};
+use cli_wallet::{
+    credentials_from_seed, credentials_from_spend_key_hex, generate_credentials, WalletCtx,
+    SEED_LANGUAGE_NAMES,
+};
 
 use commands::{CliError, Command, Session};
 use reedline::Signal;
@@ -108,12 +111,20 @@ enum TopCommand {
     /// One-off: split the old shared e2e/stagenet-wallets.json +
     /// e2e/stagenet-known-outputs.json into one file per wallet.
     #[command(hide = true, name = "migrate_legacy")]
-    MigrateLegacy { wallets_json: PathBuf, known_outputs_json: PathBuf },
+    MigrateLegacy {
+        wallets_json: PathBuf,
+        known_outputs_json: PathBuf,
+    },
 }
 
 /// One line typed at the prompt.
 #[derive(Parser)]
-#[command(name = "", no_binary_name = true, disable_version_flag = true, help_template = "{subcommands}")]
+#[command(
+    name = "",
+    no_binary_name = true,
+    disable_version_flag = true,
+    help_template = "{subcommands}"
+)]
 struct PromptLine {
     #[command(subcommand)]
     command: Command,
@@ -123,7 +134,11 @@ impl Cli {
     fn ctx(&self) -> WalletCtx {
         let mut ctx = WalletCtx::default();
         if !self.daemon_address.is_empty() {
-            ctx.node_urls = self.daemon_address.iter().map(|address| with_scheme(address)).collect();
+            ctx.node_urls = self
+                .daemon_address
+                .iter()
+                .map(|address| with_scheme(address))
+                .collect();
         }
         if let Some(dir) = &self.wallet_dir {
             ctx.wallet_dir = dir.clone();
@@ -169,7 +184,10 @@ fn prompt(question: &str) -> Result<String, CliError> {
     print!("{question}");
     std::io::stdout().flush().ok();
     let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line).map_err(|e| format!("failed to read input: {e}"))?;
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|e| format!("failed to read input: {e}"))?;
     Ok(line.trim().to_string())
 }
 
@@ -188,7 +206,10 @@ fn create_wallet(cli: &Cli, ctx: &WalletCtx) -> Result<Option<PathBuf>, CliError
         };
         (name, credentials)
     } else if let Some(name) = &cli.generate_from_spend_key {
-        (name, credentials_from_spend_key_hex(&prompt("Secret spend key: ")?)?)
+        (
+            name,
+            credentials_from_spend_key_hex(&prompt("Secret spend key: ")?)?,
+        )
     } else {
         return Ok(None);
     };
@@ -214,13 +235,29 @@ async fn run(cli: Cli) -> Result<(), CliError> {
     let created = create_wallet(&cli, &ctx)?;
     let command = match cli.command {
         Some(TopCommand::Completions { shell }) => {
-            clap_complete::generate(shell, &mut Cli::command(), "stagenet-wallet-cli", &mut std::io::stdout());
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "stagenet-wallet-cli",
+                &mut std::io::stdout(),
+            );
             return Ok(());
         }
-        Some(TopCommand::MigrateLegacy { ref wallets_json, ref known_outputs_json }) => {
-            let report = migrate_legacy(wallets_json, known_outputs_json, &ctx.wallet_dir, DEFAULT_WALLET)?;
+        Some(TopCommand::MigrateLegacy {
+            ref wallets_json,
+            ref known_outputs_json,
+        }) => {
+            let report = migrate_legacy(
+                wallets_json,
+                known_outputs_json,
+                &ctx.wallet_dir,
+                DEFAULT_WALLET,
+            )?;
             for (name, path, outputs, pending) in &report.written {
-                println!("{name}: {} ({outputs} outputs, {pending} pending)", path.display());
+                println!(
+                    "{name}: {} ({outputs} outputs, {pending} pending)",
+                    path.display()
+                );
             }
             for output in &report.unowned_outputs {
                 println!("not owned by any wallet, dropped: {output}");
@@ -255,16 +292,23 @@ async fn repl(session: &mut Session) {
     if std::io::stdin().is_terminal() {
         println!("Type \"help\" for the list of commands, Tab to complete, \u{2191} for history, Ctrl+R to search it, \"exit\" to leave.");
         let data = Arc::new(Mutex::new(editor::CompletionData::default()));
-        data.lock().expect("completion data lock").refresh(&session.keys);
+        data.lock()
+            .expect("completion data lock")
+            .refresh(&session.keys);
         let mut line_editor = editor::line_editor(data.clone());
-        let prompt = editor::WalletPrompt { left: prompt_left, data: data.clone() };
+        let prompt = editor::WalletPrompt {
+            left: prompt_left,
+            data: data.clone(),
+        };
         loop {
             match line_editor.read_line(&prompt) {
                 Ok(Signal::Success(line)) => {
                     if run_line(session, &line).await.is_break() {
                         break;
                     }
-                    data.lock().expect("completion data lock").refresh(&session.keys);
+                    data.lock()
+                        .expect("completion data lock")
+                        .refresh(&session.keys);
                 }
                 // Ctrl+C clears the line, as in a shell; Ctrl+D leaves.
                 Ok(Signal::CtrlC) => continue,

@@ -3,10 +3,9 @@
 //! parsing, or deployment wiring yet (that's for a later WBS task); this is
 //! just enough to actually run the one endpoint that exists so far.
 
-use monokulo::db::Db;
+use monokulo::db::{Database, Db};
 use monokulo::engine_client::EngineClient;
-use monokulo::http::status_page::new_status_cache;
-use monokulo::http::{AppState, build_router};
+use monokulo::http::{build_router, AppState};
 use monokulo::settings;
 use std::sync::Arc;
 
@@ -20,7 +19,7 @@ use std::sync::Arc;
 /// moment this ever runs against a real database. A clear startup panic
 /// telling the operator exactly what to set is the right placeholder
 /// behavior instead.
-fn encryption_key_from_env() -> [u8; 32] {
+fn encryption_key_from_env() -> monokulo::crypto::AtRestKey {
     let hex_key = std::env::var("MONOKULO_ENCRYPTION_KEY").expect(
         "MONOKULO_ENCRYPTION_KEY must be set to 64 hex characters (32 bytes) - \
          e.g. generate one with `openssl rand -hex 32`",
@@ -28,8 +27,9 @@ fn encryption_key_from_env() -> [u8; 32] {
     let bytes = hex::decode(&hex_key).expect(
         "MONOKULO_ENCRYPTION_KEY must be valid hex (64 hex characters decoding to exactly 32 bytes)",
     );
-    <[u8; 32]>::try_from(bytes.as_slice())
-        .expect("MONOKULO_ENCRYPTION_KEY must decode to exactly 32 bytes (64 hex characters)")
+    let bytes = <[u8; 32]>::try_from(bytes.as_slice())
+        .expect("MONOKULO_ENCRYPTION_KEY must decode to exactly 32 bytes (64 hex characters)");
+    monokulo::crypto::AtRestKey::new(bytes)
 }
 
 #[tokio::main]
@@ -41,20 +41,34 @@ async fn main() {
     // to run a test instance on a temporary database and a free port).
     let db_path = std::env::var("MONOKULO_DB_PATH").unwrap_or_else(|_| "monokulo.db".to_string());
     let bind = std::env::var("MONOKULO_BIND").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
-    let db = Db::open_file(&db_path).expect("failed to open monokulo database");
+    // The settings store's own connection (it is synchronous); opening it
+    // also brings the schema up to date.
+    let settings_db = Db::open_file(&db_path)
+        .expect("failed to open monokulo database")
+        .into_shared();
+    let read_connections = live_settings::read_sync::<settings::DatabaseConfig>(
+        &settings::DbSettings(settings_db.clone()),
+    )
+    .read_connections;
+    // Everything else: read-only connections and one writer, each on its
+    // own thread (`db::Database`).
+    let db = Database::open(&db_path, read_connections).expect("failed to open monokulo database");
     // Beside the main database; lines logged since start-up go in too.
-    let log_store = telemetry::global().and_then(|t| t.open_store_beside(std::path::Path::new(&db_path)));
+    let log_store =
+        telemetry::global().and_then(|t| t.open_store_beside(std::path::Path::new(&db_path)));
     let encryption_key = encryption_key_from_env();
     // Verified embed domains: the machine's own resolver. If it can't be set
     // up, the dashboard still works and every check says why it failed.
-    let dns: Arc<dyn monokulo::embed_domains::TxtLookup> = match monokulo::embed_domains::SystemDns::new() {
-        Ok(dns) => Arc::new(dns),
-        Err(e) => {
-            tracing::error!(error = %e, "DNS resolver unavailable, domain verification will fail");
-            Arc::new(monokulo::embed_domains::UnavailableDns(format!("this server's DNS resolver is unavailable ({e})")))
-        }
-    };
-    let db = db.into_shared();
+    let dns: Arc<dyn monokulo::embed_domains::TxtLookup> =
+        match monokulo::embed_domains::SystemDns::new() {
+            Ok(dns) => Arc::new(dns),
+            Err(e) => {
+                tracing::error!(error = %e, "DNS resolver unavailable, domain verification will fail");
+                Arc::new(monokulo::embed_domains::UnavailableDns(format!(
+                    "this server's DNS resolver is unavailable ({e})"
+                )))
+            }
+        };
 
     // Every setting, live (admin_settings_v2.md parts 1 and 3): the engine
     // client, exchange-rate providers, abuse protection and onion listener
@@ -66,7 +80,7 @@ async fn main() {
     let abuse = Arc::new(monokulo::abuse::AbuseProtection::default());
     let onion = settings::OnionReloadable::default();
     let monokulo_settings = match settings::MonokuloSettings::load(
-        db.clone(),
+        settings_db,
         engine_client.clone(),
         exchange_rate.clone(),
         abuse.clone(),
@@ -83,17 +97,24 @@ async fn main() {
     };
 
     monokulo::embed_domains::spawn_rechecks(db.clone(), dns.clone());
-    monokulo::embed_domains::import_existing_domains(&db);
+    if let Err(e) = db
+        .write(|db| {
+            monokulo::embed_domains::import_existing_domains(db);
+            Ok::<_, monokulo::db::DbError>(())
+        })
+        .await
+    {
+        tracing::error!(error = %e, "could not import existing stores' domains");
+    }
     let app_state = AppState {
         db,
-        engine_client,
         encryption_key,
-        status_cache: new_status_cache(),
         exchange_rate,
         abuse,
         dns,
         settings: monokulo_settings,
         log_store,
+        engine: monokulo::http::Engine::new(engine_client),
     };
     let router = build_router(app_state);
     // The onion listener (`monokulo::abuse::proxy_protocol`): same router,
@@ -101,13 +122,18 @@ async fn main() {
     // the Tor circuit - each circuit is then its own client.
     onion.router_ready(router.clone());
 
-    let listener = tokio::net::TcpListener::bind(&bind).await.expect("failed to bind server address");
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .expect("failed to bind server address");
     tracing::info!(server.address = %bind, "monokulo listening");
     // `with_connect_info` - without this, `http::abuse`'s client lookup
     // would never see a real peer address in production, and would fail
     // open for every request (the "no signal at all" case that should only
     // ever happen in a test harness driven via `tower::ServiceExt::oneshot`).
-    axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .await
-        .expect("server error");
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }

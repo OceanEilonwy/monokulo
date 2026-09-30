@@ -84,11 +84,14 @@ CREATE INDEX IF NOT EXISTS spans_start ON spans (start_ts);
 "#;
 
 fn now_nanos() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
 }
 
 fn nanos(at: SystemTime) -> i64 {
-    at.duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+    at.duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
 }
 
 /// One stored line.
@@ -135,7 +138,11 @@ impl LogRow {
     }
 
     pub fn cursor(&self) -> Cursor {
-        Cursor { ts: self.ts, service: self.service.clone(), id: self.id }
+        Cursor {
+            ts: self.ts,
+            service: self.service.clone(),
+            id: self.id,
+        }
     }
 }
 
@@ -350,7 +357,8 @@ impl SpanProcessor for StoreSpans {
     fn on_start(&self, _span: &mut opentelemetry_sdk::trace::Span, _cx: &opentelemetry::Context) {}
 
     fn on_end(&self, span: SpanData) {
-        self.sink.send(Record::Span(SpanRow::from_span(self.service, &span)));
+        self.sink
+            .send(Record::Span(SpanRow::from_span(self.service, &span)));
     }
 
     fn force_flush(&self) -> opentelemetry_sdk::error::OTelSdkResult {
@@ -383,7 +391,9 @@ pub struct LogStore {
 
 impl std::fmt::Debug for LogStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LogStore").field("path", &self.inner.path).finish()
+        f.debug_struct("LogStore")
+            .field("path", &self.inner.path)
+            .finish()
     }
 }
 
@@ -391,7 +401,11 @@ impl std::fmt::Debug for LogStore {
 /// after it (`monokulo.db` gets `monokulo.logs.db`), so two processes
 /// sharing a directory don't share a store.
 pub fn path_beside(database: &Path) -> PathBuf {
-    let stem = database.file_stem().and_then(|s| s.to_str()).filter(|s| !s.is_empty()).unwrap_or("service");
+    let stem = database
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("service");
     database.with_file_name(format!("{stem}.logs.db"))
 }
 
@@ -411,7 +425,11 @@ fn open_writer(path: &Path) -> Result<Connection, StoreError> {
 /// part of [`SCHEMA`]. A virtual column costs nothing to add: no row is
 /// rewritten.
 fn add_session_column(conn: &Connection) -> Result<(), StoreError> {
-    let has: bool = conn.query_row("SELECT count(*) FROM pragma_table_xinfo('logs') WHERE name = 'session_id'", [], |r| r.get::<_, i64>(0))? > 0;
+    let has: bool = conn.query_row(
+        "SELECT count(*) FROM pragma_table_xinfo('logs') WHERE name = 'session_id'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
     if !has {
         conn.execute_batch(r#"ALTER TABLE logs ADD COLUMN session_id TEXT GENERATED ALWAYS AS (json_extract(attributes, '$."session.id"')) VIRTUAL;"#)?;
     }
@@ -424,8 +442,12 @@ impl LogStore {
     /// thread, fed by `sink`.
     pub(crate) fn open(path: &Path, sink: Arc<StoreSink>) -> Result<LogStore, StoreError> {
         let writer = open_writer(path)?;
-        let reader = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
-        let latest: i64 = writer.query_row("SELECT coalesce(max(id), 0) FROM logs", [], |r| r.get(0))?;
+        let reader = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let latest: i64 =
+            writer.query_row("SELECT coalesce(max(id), 0) FROM logs", [], |r| r.get(0))?;
         let store = LogStore {
             inner: Arc::new(Inner {
                 path: path.to_path_buf(),
@@ -455,8 +477,14 @@ impl LogStore {
     /// Sets the retention period and size limit (settings
     /// `logging.retention_days` and `logging.max_mb`).
     pub fn set_limits(&self, retention_days: u64, max_mb: u64) {
-        self.inner.limits.retention_days.store(retention_days.max(1), Ordering::Relaxed);
-        self.inner.limits.max_bytes.store(max_mb.max(1).saturating_mul(1024 * 1024), Ordering::Relaxed);
+        self.inner
+            .limits
+            .retention_days
+            .store(retention_days.max(1), Ordering::Relaxed);
+        self.inner
+            .limits
+            .max_bytes
+            .store(max_mb.max(1).saturating_mul(1024 * 1024), Ordering::Relaxed);
     }
 
     /// The id of the newest stored line, updated after every batch: wait on
@@ -499,7 +527,10 @@ impl LogStore {
                 }
                 let dropped = sink.dropped.swap(0, Ordering::Relaxed);
                 if dropped > 0 {
-                    tracing::warn!(dropped, "the log store fell behind; some lines were not stored");
+                    tracing::warn!(
+                        dropped,
+                        "the log store fell behind; some lines were not stored"
+                    );
                 }
             }
         }
@@ -509,7 +540,11 @@ impl LogStore {
     /// rows until the file is under its size limit.
     fn maintain(&self, conn: &Connection, now: i64) -> Result<(), StoreError> {
         let days = self.inner.limits.retention_days.load(Ordering::Relaxed);
-        let cutoff = now.saturating_sub(i64::try_from(days).unwrap_or(i64::MAX).saturating_mul(86_400_000_000_000));
+        let cutoff = now.saturating_sub(
+            i64::try_from(days)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(86_400_000_000_000),
+        );
         conn.execute("DELETE FROM logs WHERE ts < ?1", [cutoff])?;
         conn.execute("DELETE FROM spans WHERE start_ts < ?1", [cutoff])?;
         let max_bytes = self.inner.limits.max_bytes.load(Ordering::Relaxed);
@@ -524,8 +559,14 @@ impl LogStore {
             }
             // The oldest tenth of the lines, and the spans that started
             // before the oldest line left.
-            conn.execute("DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY ts LIMIT ?1)", [(count / 10).max(1)])?;
-            conn.execute("DELETE FROM spans WHERE start_ts < (SELECT coalesce(min(ts), 0) FROM logs)", [])?;
+            conn.execute(
+                "DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY ts LIMIT ?1)",
+                [(count / 10).max(1)],
+            )?;
+            conn.execute(
+                "DELETE FROM spans WHERE start_ts < (SELECT coalesce(min(ts), 0) FROM logs)",
+                [],
+            )?;
         }
         conn.execute_batch("PRAGMA incremental_vacuum;")?;
         Ok(())
@@ -548,22 +589,40 @@ impl LogStore {
         }
         if let Some(before) = &query.before {
             conditions.push("(ts, service, id) < (?, ?, ?)".into());
-            params.extend([SqlValue::Integer(before.ts), SqlValue::Text(before.service.clone()), SqlValue::Integer(before.id)]);
+            params.extend([
+                SqlValue::Integer(before.ts),
+                SqlValue::Text(before.service.clone()),
+                SqlValue::Integer(before.id),
+            ]);
         }
         if let Some(after) = &query.after {
             conditions.push("(ts, service, id) > (?, ?, ?)".into());
-            params.extend([SqlValue::Integer(after.ts), SqlValue::Text(after.service.clone()), SqlValue::Integer(after.id)]);
+            params.extend([
+                SqlValue::Integer(after.ts),
+                SqlValue::Text(after.service.clone()),
+                SqlValue::Integer(after.id),
+            ]);
         }
-        let condition = if conditions.is_empty() { "1".to_string() } else { conditions.join(" AND ") };
+        let condition = if conditions.is_empty() {
+            "1".to_string()
+        } else {
+            conditions.join(" AND ")
+        };
         // Newer pages are read oldest first from the cursor, then turned round.
-        let order = if query.after.is_some() && query.before.is_none() { "ASC" } else { "DESC" };
+        let order = if query.after.is_some() && query.before.is_none() {
+            "ASC"
+        } else {
+            "DESC"
+        };
         params.push(SqlValue::Integer(i64::from(query.limit.clamp(1, 1000))));
         let sql = format!(
             "SELECT {LOG_COLUMNS} FROM logs WHERE {condition} ORDER BY ts {order}, service {order}, id {order} LIMIT ?"
         );
         let conn = self.inner.reader.lock();
         let mut statement = conn.prepare_cached(&sql)?;
-        let mut rows: Vec<LogRow> = statement.query_map(params_from_iter(params), log_row)?.collect::<Result<_, _>>()?;
+        let mut rows: Vec<LogRow> = statement
+            .query_map(params_from_iter(params), log_row)?
+            .collect::<Result<_, _>>()?;
         if order == "ASC" {
             rows.reverse();
         }
@@ -574,7 +633,9 @@ impl LogStore {
     pub fn trace(&self, trace_id: &str) -> Result<Trace, StoreError> {
         let conn = self.inner.reader.lock();
         let logs = conn
-            .prepare_cached(&format!("SELECT {LOG_COLUMNS} FROM logs WHERE trace_id = ?1 ORDER BY ts, id LIMIT 5000"))?
+            .prepare_cached(&format!(
+                "SELECT {LOG_COLUMNS} FROM logs WHERE trace_id = ?1 ORDER BY ts, id LIMIT 5000"
+            ))?
             .query_map([trace_id], log_row)?
             .collect::<Result<_, _>>()?;
         let spans = conn
@@ -602,7 +663,13 @@ impl LogStore {
 
     /// How many lines matching `filter` fall in each of `buckets` equal
     /// slices of `[from, to)`.
-    pub fn histogram(&self, filter: Option<&Expr>, from: i64, to: i64, buckets: u32) -> Result<Vec<u64>, StoreError> {
+    pub fn histogram(
+        &self,
+        filter: Option<&Expr>,
+        from: i64,
+        to: i64,
+        buckets: u32,
+    ) -> Result<Vec<u64>, StoreError> {
         let buckets = buckets.clamp(1, 500);
         // Rounded up, so the last slice reaches `to`.
         let width = ((to - from + i64::from(buckets) - 1) / i64::from(buckets)).max(1);
@@ -614,7 +681,9 @@ impl LogStore {
         }
         condition.push_str("ts >= ? AND ts < ?");
         params.extend([SqlValue::Integer(from), SqlValue::Integer(to)]);
-        let sql = format!("SELECT (ts - ?) / ? AS bucket, count(*) FROM logs WHERE {condition} GROUP BY bucket");
+        let sql = format!(
+            "SELECT (ts - ?) / ? AS bucket, count(*) FROM logs WHERE {condition} GROUP BY bucket"
+        );
         let conn = self.inner.reader.lock();
         let mut counts = vec![0u64; buckets as usize];
         let mut statement = conn.prepare_cached(&sql)?;
@@ -644,7 +713,8 @@ impl LogStore {
     }
 }
 
-const LOG_COLUMNS: &str = "id, ts, level, service, target, message, trace_id, span_id, attributes, spans";
+const LOG_COLUMNS: &str =
+    "id, ts, level, service, target, message, trace_id, span_id, attributes, spans";
 
 fn json_map(text: &str) -> Map<String, Value> {
     serde_json::from_str(text).unwrap_or_default()

@@ -106,7 +106,11 @@ pub enum ExchangeRateError {
 /// integer-money principle. Rounded (never truncated) before casting, since
 /// a market price essentially never divides evenly into 1e12 piconero.
 /// `provider` only labels the warning logged when the price is refused.
-pub(crate) fn piconero_per_unit_from_price(provider: &str, currency_upper: &str, price: f64) -> Option<u64> {
+pub(crate) fn piconero_per_unit_from_price(
+    provider: &str,
+    currency_upper: &str,
+    price: f64,
+) -> Option<u64> {
     if !price.is_finite() || price <= 0.0 {
         tracing::warn!(
             provider,
@@ -118,7 +122,10 @@ pub(crate) fn piconero_per_unit_from_price(provider: &str, currency_upper: &str,
         return None;
     }
     let piconero_per_unit = (PICONERO_PER_XMR as f64 / price).round();
-    if !piconero_per_unit.is_finite() || piconero_per_unit > u64::MAX as f64 || piconero_per_unit < 1.0 {
+    if !piconero_per_unit.is_finite()
+        || piconero_per_unit > u64::MAX as f64
+        || piconero_per_unit < 1.0
+    {
         tracing::warn!(
             provider,
             currency = %currency_upper,
@@ -221,13 +228,20 @@ impl CoingeckoRateProvider {
     /// top-level `"monero"` object).
     async fn fetch_rate(&self, currency_upper: &str) -> Result<Option<u64>, ExchangeRateError> {
         let vs_currency = currency_upper.to_lowercase();
-        let url = format!("{}/api/v3/simple/price?ids=monero&vs_currencies={vs_currency}", self.base_url);
+        let url = format!(
+            "{}/api/v3/simple/price?ids=monero&vs_currencies={vs_currency}",
+            self.base_url
+        );
         let response = self.client.get(&url).send().await?.error_for_status()?;
         let body: serde_json::Value = response.json().await?;
         let monero = body
             .get("monero")
             .and_then(serde_json::Value::as_object)
-            .ok_or_else(|| ExchangeRateError::UnexpectedResponse(format!("no \"monero\" object in response body: {body}")))?;
+            .ok_or_else(|| {
+                ExchangeRateError::UnexpectedResponse(format!(
+                    "no \"monero\" object in response body: {body}"
+                ))
+            })?;
 
         let Some(price_value) = monero.get(&vs_currency) else {
             // Coingecko simply omits a currency it has no price for.
@@ -241,7 +255,11 @@ impl CoingeckoRateProvider {
             );
             return Ok(None);
         };
-        Ok(piconero_per_unit_from_price("coingecko", currency_upper, price))
+        Ok(piconero_per_unit_from_price(
+            "coingecko",
+            currency_upper,
+            price,
+        ))
     }
 
     /// The real, production entry point for a rate lookup: returns the
@@ -262,7 +280,11 @@ impl CoingeckoRateProvider {
     /// bad value in one response must not make an already-priced currency
     /// suddenly unpriced) - only a genuine new price ever overwrites the
     /// cache entry.
-    pub async fn piconero_per_unit_cached(&self, currency: &str, max_age: std::time::Duration) -> Result<Option<u64>, ExchangeRateError> {
+    pub async fn piconero_per_unit_cached(
+        &self,
+        currency: &str,
+        max_age: std::time::Duration,
+    ) -> Result<Option<u64>, ExchangeRateError> {
         let key = currency.to_uppercase();
         let mut cache = self.cache.lock().await;
         let stale = match cache.rates.get(&key) {
@@ -271,7 +293,9 @@ impl CoingeckoRateProvider {
         };
         if stale {
             if let Some(rate) = self.fetch_rate(&key).await? {
-                cache.rates.insert(key.clone(), (rate, std::time::Instant::now()));
+                cache
+                    .rates
+                    .insert(key.clone(), (rate, std::time::Instant::now()));
             }
         }
         Ok(cache.rates.get(&key).map(|(rate, _)| *rate))
@@ -283,7 +307,10 @@ impl CoingeckoRateProvider {
     /// without a startup whitelist - see the module doc comment. A failed
     /// fetch propagates as `Err`, leaving any previously cached list
     /// untouched, same resilience shape as `piconero_per_unit_cached`.
-    pub async fn supported_currencies_cached(&self, max_age: std::time::Duration) -> Result<Vec<String>, ExchangeRateError> {
+    pub async fn supported_currencies_cached(
+        &self,
+        max_age: std::time::Duration,
+    ) -> Result<Vec<String>, ExchangeRateError> {
         let mut cache = self.cache.lock().await;
         let stale = match &cache.supported_currencies {
             Some((_, fetched_at)) => fetched_at.elapsed() >= max_age,
@@ -296,10 +323,15 @@ impl CoingeckoRateProvider {
             let uppercased: Vec<String> = list.into_iter().map(|c| c.to_uppercase()).collect();
             cache.supported_currencies = Some((uppercased, std::time::Instant::now()));
         }
-        Ok(cache.supported_currencies.as_ref().map(|(list, _)| list.clone()).unwrap_or_default())
+        Ok(cache
+            .supported_currencies
+            .as_ref()
+            .map(|(list, _)| list.clone())
+            .unwrap_or_default())
     }
 }
 
+use crate::xmr_amount::split_decimal;
 /// `AmountError`, `parse_xmr_to_piconero`, and `format_piconero_as_xmr` are pure XMR
 /// decimal<->piconero conversions with no fiat concept - they live in
 /// `crate::xmr_amount` so the engine can depend on that module alone (e.g. for
@@ -307,7 +339,6 @@ impl CoingeckoRateProvider {
 /// here unchanged so every existing `exchange_rate::{AmountError, parse_xmr_to_piconero,
 /// format_piconero_as_xmr}` caller keeps compiling.
 pub use crate::xmr_amount::{format_piconero_as_xmr, parse_xmr_to_piconero, AmountError};
-use crate::xmr_amount::split_decimal;
 
 /// Converts a decimal fiat amount string (e.g. "24.99", "5", "5.5") into piconero,
 /// given a rate expressed as piconero-per-whole-unit. Fiat amounts are assumed to
@@ -329,9 +360,15 @@ pub fn compute_xmr_amount(fiat_amount: &str, piconero_per_unit: u64) -> Result<u
     if fraction.len() > 2 {
         return Err(AmountError::TooManyDecimalPlaces);
     }
-    let whole: u128 = if whole.is_empty() { 0 } else { whole.parse().map_err(|_| AmountError::TooLarge)? };
+    let whole: u128 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().map_err(|_| AmountError::TooLarge)?
+    };
     let fraction_padded = format!("{fraction:0<2}"); // "5" -> "50", "" -> "00"
-    let frac: u128 = fraction_padded.parse().map_err(|_| AmountError::InvalidDecimal)?;
+    let frac: u128 = fraction_padded
+        .parse()
+        .map_err(|_| AmountError::InvalidDecimal)?;
     let cents = whole
         .checked_mul(100)
         .and_then(|c| c.checked_add(frac))
@@ -339,7 +376,9 @@ pub fn compute_xmr_amount(fiat_amount: &str, piconero_per_unit: u64) -> Result<u
     if cents == 0 {
         return Err(AmountError::NotPositive);
     }
-    let scaled = cents.checked_mul(piconero_per_unit as u128).ok_or(AmountError::TooLarge)?;
+    let scaled = cents
+        .checked_mul(piconero_per_unit as u128)
+        .ok_or(AmountError::TooLarge)?;
     let piconero = scaled.div_ceil(100);
     // `as u64` here would wrap silently, turning a huge order into a trivially cheap
     // one - the exact shape of bug that costs a merchant real money without ever
@@ -368,7 +407,11 @@ pub fn compute_xmr_amount(fiat_amount: &str, piconero_per_unit: u64) -> Result<u
 /// XMR-denominated order to 0.01 XMR granularity (fiat's 2-decimal-place
 /// assumption), a real precision loss for what is, for an XMR order, not a
 /// fiat amount at all.
-pub fn compute_order_amount(currency: &str, amount: &str, piconero_per_unit: u64) -> Result<u64, AmountError> {
+pub fn compute_order_amount(
+    currency: &str,
+    amount: &str,
+    piconero_per_unit: u64,
+) -> Result<u64, AmountError> {
     if currency.eq_ignore_ascii_case("XMR") {
         parse_xmr_to_piconero(amount)
     } else {
@@ -381,23 +424,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compute_order_amount_uses_xmrs_own_12_decimal_precision_for_xmr_not_2_decimal_fiat_rounding() {
+    fn compute_order_amount_uses_xmrs_own_12_decimal_precision_for_xmr_not_2_decimal_fiat_rounding()
+    {
         // 0.000335 XMR - below the 0.01 granularity `compute_xmr_amount`
         // would have silently rounded this down to (in fact to 0, since it
         // rejects more than 2 decimal places outright).
-        assert_eq!(compute_order_amount("XMR", "0.000335", 1_000_000_000_000).unwrap(), 335_000_000);
+        assert_eq!(
+            compute_order_amount("XMR", "0.000335", 1_000_000_000_000).unwrap(),
+            335_000_000
+        );
         // Case-insensitive, same as every other currency check in this codebase.
-        assert_eq!(compute_order_amount("xmr", "1.5", 1_000_000_000_000).unwrap(), 1_500_000_000_000);
+        assert_eq!(
+            compute_order_amount("xmr", "1.5", 1_000_000_000_000).unwrap(),
+            1_500_000_000_000
+        );
         // `piconero_per_unit` is ignored entirely for XMR - a wildly wrong
         // value must not change the result.
-        assert_eq!(compute_order_amount("XMR", "1", 999).unwrap(), 1_000_000_000_000);
+        assert_eq!(
+            compute_order_amount("XMR", "1", 999).unwrap(),
+            1_000_000_000_000
+        );
     }
 
     #[test]
     fn compute_order_amount_uses_fiat_shaped_2_decimal_arithmetic_for_a_real_fiat_currency() {
-        assert_eq!(compute_order_amount("USD", "25.00", 6_700_000_000).unwrap(), 167_500_000_000);
+        assert_eq!(
+            compute_order_amount("USD", "25.00", 6_700_000_000).unwrap(),
+            167_500_000_000
+        );
         // More than 2 decimal places is rejected for a fiat currency, unlike XMR.
-        assert_eq!(compute_order_amount("USD", "25.001", 6_700_000_000), Err(AmountError::TooManyDecimalPlaces));
+        assert_eq!(
+            compute_order_amount("USD", "25.001", 6_700_000_000),
+            Err(AmountError::TooManyDecimalPlaces)
+        );
     }
 
     #[test]
@@ -420,18 +479,30 @@ mod tests {
 
     #[test]
     fn more_than_two_decimal_places_is_rejected_not_truncated() {
-        assert_eq!(compute_xmr_amount("5.123", 1_000_000), Err(AmountError::TooManyDecimalPlaces));
+        assert_eq!(
+            compute_xmr_amount("5.123", 1_000_000),
+            Err(AmountError::TooManyDecimalPlaces)
+        );
     }
 
     #[test]
     fn zero_or_empty_amount_is_rejected() {
-        assert_eq!(compute_xmr_amount("0.00", 1_000_000), Err(AmountError::NotPositive));
-        assert_eq!(compute_xmr_amount("", 1_000_000), Err(AmountError::InvalidDecimal));
+        assert_eq!(
+            compute_xmr_amount("0.00", 1_000_000),
+            Err(AmountError::NotPositive)
+        );
+        assert_eq!(
+            compute_xmr_amount("", 1_000_000),
+            Err(AmountError::InvalidDecimal)
+        );
     }
 
     #[test]
     fn non_numeric_amount_is_rejected() {
-        assert_eq!(compute_xmr_amount("abc", 1_000_000), Err(AmountError::InvalidDecimal));
+        assert_eq!(
+            compute_xmr_amount("abc", 1_000_000),
+            Err(AmountError::InvalidDecimal)
+        );
     }
 
     // Pure XMR decimal<->piconero parsing/formatting is tested in
@@ -443,15 +514,24 @@ mod tests {
         // Reachable through the order-pricing path: a large fiat amount at a
         // normal rate. `crate::xmr_amount`'s own tests cover the same overflow
         // guard for `parse_xmr_to_piconero` directly.
-        assert_eq!(compute_xmr_amount("99999999999", 6_700_000_000), Err(AmountError::TooLarge));
+        assert_eq!(
+            compute_xmr_amount("99999999999", 6_700_000_000),
+            Err(AmountError::TooLarge)
+        );
     }
 
     #[test]
     fn a_leading_plus_sign_is_rejected_rather_than_shifting_the_decimal_place() {
         // Rust's integer parser accepts `+`, and the `+` then consumed one of the
         // zero-padding slots: "1.+5" silently became 1.05 instead of being refused.
-        assert_eq!(compute_xmr_amount("1.+5", 1_000_000_000_000), Err(AmountError::InvalidDecimal));
-        assert_eq!(compute_xmr_amount("+25.00", 1_000_000), Err(AmountError::InvalidDecimal));
+        assert_eq!(
+            compute_xmr_amount("1.+5", 1_000_000_000_000),
+            Err(AmountError::InvalidDecimal)
+        );
+        assert_eq!(
+            compute_xmr_amount("+25.00", 1_000_000),
+            Err(AmountError::InvalidDecimal)
+        );
     }
 
     #[test]
@@ -465,7 +545,10 @@ mod tests {
         // 101 cents at 1 piconero/unit = 1.01 -> 2, never 1.
         assert_eq!(compute_xmr_amount("1.01", 1).unwrap(), 2);
         // Exact divisions must not be nudged upwards by the ceiling.
-        assert_eq!(compute_xmr_amount("25.00", 6_700_000_000).unwrap(), 167_500_000_000);
+        assert_eq!(
+            compute_xmr_amount("25.00", 6_700_000_000).unwrap(),
+            167_500_000_000
+        );
         assert_eq!(compute_xmr_amount("1.00", 100).unwrap(), 100);
     }
 
@@ -473,15 +556,24 @@ mod tests {
     fn an_order_can_never_be_priced_at_zero_piconero() {
         // A zero-priced order is satisfied by an empty payment set - `derive_status`
         // would report it `Paid` the moment it was created.
-        assert_eq!(compute_xmr_amount("25.00", 0), Err(AmountError::NotPositive));
-        assert_eq!(compute_xmr_amount("0.00", 6_700_000_000), Err(AmountError::NotPositive));
+        assert_eq!(
+            compute_xmr_amount("25.00", 0),
+            Err(AmountError::NotPositive)
+        );
+        assert_eq!(
+            compute_xmr_amount("0.00", 6_700_000_000),
+            Err(AmountError::NotPositive)
+        );
     }
 
     #[tokio::test]
     async fn xmr_identity_provider_always_returns_the_fixed_unit_conversion() {
         let provider = XmrIdentityProvider;
         assert_eq!(provider.piconero_per_unit(), 1_000_000_000_000);
-        assert_eq!(provider.supported_currencies().await, vec!["XMR".to_string()]);
+        assert_eq!(
+            provider.supported_currencies().await,
+            vec!["XMR".to_string()]
+        );
     }
 
     mod coingecko {
@@ -504,9 +596,12 @@ mod tests {
         where
             F: Fn(&str, usize) -> Response + Send + Sync + 'static,
         {
+            /// Answers a request, given its path or query and how many came before.
+            type Handler = Arc<dyn Fn(&str, usize) -> Response + Send + Sync>;
+
             #[derive(Clone)]
             struct Shared {
-                handler: Arc<dyn Fn(&str, usize) -> Response + Send + Sync>,
+                handler: Handler,
                 calls: Arc<AtomicUsize>,
             }
 
@@ -520,7 +615,10 @@ mod tests {
                 (shared.handler)("supported", call)
             }
 
-            let shared = Shared { handler: Arc::new(handler), calls: Arc::new(AtomicUsize::new(0)) };
+            let shared = Shared {
+                handler: Arc::new(handler),
+                calls: Arc::new(AtomicUsize::new(0)),
+            };
             let app = Router::new()
                 .route("/api/v3/simple/price", get(price))
                 .route("/api/v3/simple/supported_vs_currencies", get(supported))
@@ -543,7 +641,10 @@ mod tests {
             // independently of the implementation (Python: round(1e12/149.23)).
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"usd":149.23}}"#)).await;
             let provider = CoingeckoRateProvider::new(url);
-            let rate = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
+            let rate = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
             assert_eq!(rate, Some(6_701_065_469));
         }
 
@@ -551,7 +652,10 @@ mod tests {
         async fn a_currency_coingecko_has_no_price_for_is_simply_none_not_a_panic() {
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"usd":150.0}}"#)).await;
             let provider = CoingeckoRateProvider::new(url);
-            let rate = provider.piconero_per_unit_cached("EUR", std::time::Duration::from_secs(30)).await.unwrap();
+            let rate = provider
+                .piconero_per_unit_cached("EUR", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
             assert_eq!(rate, None);
         }
 
@@ -561,13 +665,22 @@ mod tests {
             // nothing to look up on it.
             let url = spawn_server(|_, _| json_body(r#"[1, 2, 3]"#)).await;
             let provider = CoingeckoRateProvider::new(url);
-            let err = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap_err();
-            assert!(matches!(err, ExchangeRateError::UnexpectedResponse(_)), "got {err:?}");
+            let err = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, ExchangeRateError::UnexpectedResponse(_)),
+                "got {err:?}"
+            );
 
             // Not even valid JSON - reqwest's own body decode fails.
             let url = spawn_server(|_, _| json_body("not json at all")).await;
             let provider = CoingeckoRateProvider::new(url);
-            let err = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap_err();
+            let err = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap_err();
             assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
         }
 
@@ -575,12 +688,18 @@ mod tests {
         async fn a_zero_or_negative_price_is_treated_as_unpriced_not_a_free_order() {
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"usd":0}}"#)).await;
             let provider = CoingeckoRateProvider::new(url);
-            let rate = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
+            let rate = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
             assert_eq!(rate, None, "a zero price must not become a free order");
 
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"eur":-5.0}}"#)).await;
             let provider = CoingeckoRateProvider::new(url);
-            let rate = provider.piconero_per_unit_cached("EUR", std::time::Duration::from_secs(30)).await.unwrap();
+            let rate = provider
+                .piconero_per_unit_cached("EUR", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
             assert_eq!(rate, None, "a negative price must not be accepted either");
         }
 
@@ -589,13 +708,19 @@ mod tests {
             // Port 0 is never a valid connection target - a deterministic
             // "nothing is listening" without racing a real bind/drop.
             let provider = CoingeckoRateProvider::new("http://127.0.0.1:0");
-            let err = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap_err();
+            let err = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap_err();
             // A genuine connection failure surfaces through the shared HTTP-
             // cache-aware transport's own middleware layer (`shared::http_cache`),
             // not directly as a bare `reqwest::Error` - see `ExchangeRateError::
             // Middleware`'s own doc comment for why these are still the same
             // failure in substance.
-            assert!(matches!(err, ExchangeRateError::Middleware(_)), "got {err:?}");
+            assert!(
+                matches!(err, ExchangeRateError::Middleware(_)),
+                "got {err:?}"
+            );
         }
 
         #[tokio::test]
@@ -615,16 +740,25 @@ mod tests {
             .await;
             let provider = CoingeckoRateProvider::new(url);
 
-            let rate = provider.piconero_per_unit_cached("USD", std::time::Duration::ZERO).await.unwrap();
+            let rate = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
+                .await
+                .unwrap();
             assert_eq!(rate, Some(6_666_666_667));
 
-            let err = provider.piconero_per_unit_cached("USD", std::time::Duration::ZERO).await.unwrap_err();
+            let err = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
+                .await
+                .unwrap_err();
             assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
             // Even though the second call errored (max_age of zero forced a
             // real re-fetch that then failed), a *third* call within a
             // generous max_age must still serve the last good value rather
             // than erroring again - the failed fetch must not have wiped it.
-            let rate = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
+            let rate = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
             assert_eq!(
                 rate,
                 Some(6_666_666_667),
@@ -636,8 +770,14 @@ mod tests {
         async fn currency_lookups_are_case_insensitive() {
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"usd":150.0}}"#)).await;
             let provider = CoingeckoRateProvider::new(url);
-            let upper = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
-            let lower = provider.piconero_per_unit_cached("usd", std::time::Duration::from_secs(30)).await.unwrap();
+            let upper = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
+            let lower = provider
+                .piconero_per_unit_cached("usd", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
             assert_eq!(upper, Some(6_666_666_667));
             assert_eq!(lower, upper, "casing must not matter for a rate lookup");
         }
@@ -653,9 +793,16 @@ mod tests {
             .await;
             let provider = CoingeckoRateProvider::new(url);
 
-            let rate = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
+            let rate = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
             assert_eq!(rate, Some(6_666_666_667));
-            assert_eq!(calls.load(Ordering::SeqCst), 1, "an empty cache must trigger exactly one real fetch");
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "an empty cache must trigger exactly one real fetch"
+            );
         }
 
         #[tokio::test]
@@ -671,10 +818,20 @@ mod tests {
 
             // A generous 30s max_age: the second call happens well within that
             // window, so it must be served entirely from cache.
-            provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
-            let rate = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
+            provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
+            let rate = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
             assert_eq!(rate, Some(6_666_666_667));
-            assert_eq!(calls.load(Ordering::SeqCst), 1, "a lookup within max_age must not trigger a second fetch");
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "a lookup within max_age must not trigger a second fetch"
+            );
         }
 
         #[tokio::test]
@@ -688,24 +845,42 @@ mod tests {
             .await;
             let provider = CoingeckoRateProvider::new(url);
 
-            provider.piconero_per_unit_cached("USD", std::time::Duration::ZERO).await.unwrap();
+            provider
+                .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
+                .await
+                .unwrap();
             // A zero max_age means "never fresh" - every call must re-fetch,
             // proving staleness genuinely drives a real second network call,
             // not just a timestamp update with no consequence.
-            provider.piconero_per_unit_cached("USD", std::time::Duration::ZERO).await.unwrap();
-            assert_eq!(calls.load(Ordering::SeqCst), 2, "a max_age of zero must force a fresh fetch every single call");
+            provider
+                .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
+                .await
+                .unwrap();
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                2,
+                "a max_age of zero must force a fresh fetch every single call"
+            );
         }
 
         #[tokio::test]
         async fn piconero_per_unit_cached_never_marks_a_failed_fetch_as_fresh() {
-            let url = spawn_server(|_, _| axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()).await;
+            let url =
+                spawn_server(|_, _| axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                    .await;
             let provider = CoingeckoRateProvider::new(url);
 
-            let err = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap_err();
+            let err = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap_err();
             assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
             // A second call, even with a generous max_age, must try again -
             // a failure must never be cached as if it were a real quote.
-            let err = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap_err();
+            let err = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap_err();
             assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
         }
 
@@ -713,9 +888,14 @@ mod tests {
         async fn supported_currencies_cached_fetches_and_uppercases() {
             let url = spawn_server(|_, _| json_body(r#"["usd","eur","gbp"]"#)).await;
             let provider = CoingeckoRateProvider::new(url);
-            let currencies =
-                provider.supported_currencies_cached(std::time::Duration::from_secs(30)).await.unwrap();
-            assert_eq!(currencies, vec!["USD".to_string(), "EUR".to_string(), "GBP".to_string()]);
+            let currencies = provider
+                .supported_currencies_cached(std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
+            assert_eq!(
+                currencies,
+                vec!["USD".to_string(), "EUR".to_string(), "GBP".to_string()]
+            );
         }
 
         #[tokio::test]
@@ -731,9 +911,19 @@ mod tests {
             .await;
             let provider = CoingeckoRateProvider::new(url);
 
-            provider.supported_currencies_cached(std::time::Duration::from_secs(30)).await.unwrap();
-            provider.supported_currencies_cached(std::time::Duration::from_secs(30)).await.unwrap();
-            assert_eq!(calls.load(Ordering::SeqCst), 1, "a lookup within max_age must not trigger a second fetch");
+            provider
+                .supported_currencies_cached(std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
+            provider
+                .supported_currencies_cached(std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "a lookup within max_age must not trigger a second fetch"
+            );
         }
 
         #[tokio::test]
@@ -753,10 +943,24 @@ mod tests {
             .await;
             let provider = CoingeckoRateProvider::new(url);
 
-            provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
-            assert_eq!(calls.load(Ordering::SeqCst), 1, "a rate lookup must not also fetch the supported-currency list");
-            provider.supported_currencies_cached(std::time::Duration::from_secs(30)).await.unwrap();
-            assert_eq!(calls.load(Ordering::SeqCst), 2, "the supported-currency list must still need its own fetch");
+            provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "a rate lookup must not also fetch the supported-currency list"
+            );
+            provider
+                .supported_currencies_cached(std::time::Duration::from_secs(30))
+                .await
+                .unwrap();
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                2,
+                "the supported-currency list must still need its own fetch"
+            );
         }
 
         #[tokio::test]

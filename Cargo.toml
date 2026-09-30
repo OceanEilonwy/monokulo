@@ -15,6 +15,16 @@ members = [
     "xtask",
 ]
 
+# Every crate takes these (`[lints] workspace = true`). Clippy's default lints
+# are errors, so `cargo clippy` fails locally exactly as it does in CI (which
+# also runs it with `-D warnings`, for the compiler's own warnings).
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+
+[workspace.lints.rust]
+# Set by `cargo +nightly llvm-cov`, which leaves test code out of reports.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+
 # Password hashing (Argon2id) is deliberately slow; unoptimised, as in debug
 # and test builds, one hash takes about a second, and most HTTP tests sign
 # users up and in. Optimising just these dependencies keeps our own code
@@ -22,4 +32,16 @@ members = [
 [profile.dev.package.argon2]
 opt-level = 3
 [profile.dev.package.blake2]
+opt-level = 3
+# The same for Monero output scanning (curve arithmetic and hashing): the
+# scanner's fault-sweep tests scan the same payment thousands of times.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.monero]
+opt-level = 3
+[profile.dev.package.keccak]
+opt-level = 3
+[profile.dev.package.tiny-keccak]
+opt-level = 3
+[profile.dev.package.sha3]
 opt-level = 3

@@ -18,7 +18,10 @@ use tokio::net::TcpStream;
 /// `429` with a challenge) and a much higher hard limit.
 fn state(soft_per_min: u32) -> AppState {
     AppState {
-        abuse: Arc::new(AbuseProtection::new(AbuseConfig { soft_per_min, ..Default::default() })),
+        abuse: Arc::new(AbuseProtection::new(AbuseConfig {
+            soft_per_min,
+            ..Default::default()
+        })),
         ..AppState::for_tests_with_db(Db::open_in_memory().unwrap().into_shared())
     }
 }
@@ -36,16 +39,27 @@ async fn request(addr: std::net::SocketAddr, prefix: &str) -> Option<u16> {
 }
 
 fn circuit(id: u32) -> String {
-    format!("PROXY TCP6 fc00:dead:beef:4dad::{:x}:{:x} ::1 65535 42\r\n", id >> 16, id & 0xffff)
+    format!(
+        "PROXY TCP6 fc00:dead:beef:4dad::{:x}:{:x} ::1 65535 42\r\n",
+        id >> 16,
+        id & 0xffff
+    )
 }
 
 #[tokio::test]
 async fn each_circuit_is_its_own_client_and_headerless_connections_are_dropped() {
     let router = build_router(state(2));
-    let listener = OnionListener::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let listener = OnionListener::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
     let addr = listener.bound_address();
     tokio::spawn(async move {
-        axum::serve(listener, router.into_make_service_with_connect_info::<OnionPeer>()).await.unwrap();
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<OnionPeer>(),
+        )
+        .await
+        .unwrap();
     });
 
     // Circuit 1 spends its budget of 2 (unknown store: 404), then gets 429...
@@ -66,7 +80,12 @@ async fn the_ordinary_listener_never_honours_a_proxy_header() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     // A client can't pick its own identity: the header is not HTTP, so the
@@ -85,24 +104,43 @@ async fn the_ordinary_listener_never_honours_a_proxy_header() {
 #[tokio::test]
 async fn junk_is_refused_and_a_stalled_connection_does_not_block_the_next_circuit() {
     let router = build_router(state(10));
-    let listener = OnionListener::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let listener = OnionListener::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
     let addr = listener.bound_address();
     tokio::spawn(async move {
-        axum::serve(listener, router.into_make_service_with_connect_info::<OnionPeer>()).await.unwrap();
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<OnionPeer>(),
+        )
+        .await
+        .unwrap();
     });
 
     // Opens, then says nothing.
     let _stalled = TcpStream::connect(addr).await.unwrap();
     let started = std::time::Instant::now();
     assert_eq!(request(addr, &circuit(7)).await, Some(404));
-    assert!(started.elapsed() < std::time::Duration::from_secs(2), "the stalled connection held up a real one");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "the stalled connection held up a real one"
+    );
 
     // A TLS ClientHello's first bytes: binary, no line ending.
     let mut junk = TcpStream::connect(addr).await.unwrap();
-    let mut hello = vec![0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc, 0x03, 0x03];
+    let mut hello = vec![
+        0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc, 0x03, 0x03,
+    ];
     hello.extend(std::iter::repeat_n(0x42u8, 200));
     junk.write_all(&hello).await.unwrap();
     let mut answer = Vec::new();
-    let read = tokio::time::timeout(std::time::Duration::from_secs(5), junk.read_to_end(&mut answer)).await;
-    assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "refused without an answer: {read:?} {answer:?}");
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        junk.read_to_end(&mut answer),
+    )
+    .await;
+    assert!(
+        matches!(read, Ok(Ok(0)) | Ok(Err(_))),
+        "refused without an answer: {read:?} {answer:?}"
+    );
 }

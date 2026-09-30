@@ -165,7 +165,13 @@ fn is_stale(now: i64, last_tick_finished_at: i64, poll_interval_secs: u64) -> bo
 pub async fn status_page(State(state): State<AppState>) -> Response {
     let now = crate::now_unix();
 
-    let mut networks: Vec<(Network, _)> = state.daemons.snapshot().iter().map(|(n, d)| (*n, d.clone())).collect();
+    let mut networks: Vec<(Network, _)> = state
+        .networks
+        .daemons
+        .snapshot()
+        .iter()
+        .map(|(n, d)| (*n, d.clone()))
+        .collect();
     let poll_interval_secs = state.settings.scan.load().poll_interval.as_secs();
     networks.sort_by_key(|(network, _)| network_str(*network));
 
@@ -183,10 +189,18 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
             let (height, error) = match height {
                 Ok(Ok(h)) => (Some(h), None),
                 Ok(Err(e)) => (None, Some(e.to_string())),
-                Err(_) => (None, Some(format!("timed out after {}s", NODE_HEIGHT_TIMEOUT.as_secs()))),
+                Err(_) => (
+                    None,
+                    Some(format!(
+                        "timed out after {}s",
+                        NODE_HEIGHT_TIMEOUT.as_secs()
+                    )),
+                ),
             };
             let network = match info {
-                Ok(Ok(info)) if info.nettype != crate::daemon::DaemonInfo::UNKNOWN => Some(info.nettype),
+                Ok(Ok(info)) if info.nettype != crate::daemon::DaemonInfo::UNKNOWN => {
+                    Some(info.nettype)
+                }
                 _ => None,
             };
             nodes.push(NodeStatus {
@@ -199,7 +213,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
             });
         }
 
-        let scan_status = state.scanner_status.read().get(&network).cloned();
+        let scan_status = state.networks.scanner_status.read().get(&network).cloned();
         let scanner = match scan_status {
             None => ScannerStatusView {
                 ever_ticked: false,
@@ -226,13 +240,20 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
             }
         };
 
-        let network_name = network_str(network).to_string();
-        let (lagging_tenants, max_blocks_behind) = state.read_store(move |store| {
-            let high_water = store.max_scanned_height(&network_name)?.unwrap_or(0);
-            let lagging = store.lagging_tenants(&network_name)?;
-            let behind = lagging.iter().map(|(_, cursor)| high_water.saturating_sub(*cursor)).max().unwrap_or(0);
-            Ok((lagging.len(), behind))
-        }).await.unwrap_or((0, 0));
+        let (lagging_tenants, max_blocks_behind) = state
+            .db
+            .read(move |store| {
+                let high_water = store.max_scanned_height(network)?.unwrap_or(0);
+                let lagging = store.lagging_tenants(network)?;
+                let behind = lagging
+                    .iter()
+                    .map(|(_, cursor)| high_water.saturating_sub(*cursor))
+                    .max()
+                    .unwrap_or(0);
+                Ok((lagging.len(), behind))
+            })
+            .await
+            .unwrap_or((0, 0));
         network_views.push(NetworkStatus {
             network: network_str(network).to_string(),
             nodes,
@@ -242,30 +263,49 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         });
     }
 
-    let loop_restarts =
-        shared::supervise::restart_counts().into_iter().map(|(name, restarts)| LoopRestarts { name, restarts }).collect();
-    let (due, oldest) = state.read_store(move |store| store.webhook_backlog(now)).await.unwrap_or((0, None));
+    let loop_restarts = shared::supervise::restart_counts()
+        .into_iter()
+        .map(|(name, restarts)| LoopRestarts { name, restarts })
+        .collect();
+    let (due, oldest) = state
+        .db
+        .read(move |store| store.webhook_backlog(now))
+        .await
+        .unwrap_or((0, None));
     let key_custody: Vec<CustodyBackendStatus> = state
-        .key_custody
+        .custody
+        .backends
         .backend_health()
         .await
         .into_iter()
         .map(|(backend, error)| CustodyBackendStatus { backend, error })
         .collect();
     let networks_for_read = network_views.clone();
-    let mut unserved_tenants = state.read_store(move |store| Ok(unserved_tenants(store, &networks_for_read)))
-        .await.unwrap_or_default();
+    let mut unserved_tenants = state
+        .db
+        .read(move |store| Ok(unserved_tenants(store, &networks_for_read)))
+        .await
+        .unwrap_or_default();
     let key_custody_for_read = key_custody.clone();
-    unserved_tenants.extend(state.read_store(move |store| Ok(custody_unserved_tenants(store, &key_custody_for_read)))
-        .await.unwrap_or_default());
+    unserved_tenants.extend(
+        state
+            .db
+            .read(move |store| Ok(custody_unserved_tenants(store, &key_custody_for_read)))
+            .await
+            .unwrap_or_default(),
+    );
     Json(EngineStatusResponse {
         networks: network_views,
         poll_interval_secs,
         generated_at: now,
         loop_restarts,
-        webhook_backlog: WebhookBacklog { due, oldest_waiting_secs: oldest.map(|at| now - at) },
+        webhook_backlog: WebhookBacklog {
+            due,
+            oldest_waiting_secs: oldest.map(|at| now - at),
+        },
         unserved_tenants,
-        key_custody_default: (!key_custody.is_empty()).then(|| state.settings.custody.load().default.as_str().to_string()),
+        key_custody_default: (!key_custody.is_empty())
+            .then(|| state.settings.custody.load().default.as_str().to_string()),
         key_custody,
     })
     .into_response()
@@ -273,7 +313,10 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
 
 /// Stores whose keys are in a backend that is turned off or not answering
 /// (task 5.5). Only with a router: a single backend has no per-store choice.
-fn custody_unserved_tenants(store: &crate::store::Store, health: &[CustodyBackendStatus]) -> Vec<UnservedTenant> {
+fn custody_unserved_tenants(
+    store: &crate::store::Store,
+    health: &[CustodyBackendStatus],
+) -> Vec<UnservedTenant> {
     if health.is_empty() {
         return Vec::new();
     }
@@ -286,7 +329,12 @@ fn custody_unserved_tenants(store: &crate::store::Store, health: &[CustodyBacken
                 Some(h) if h.error.is_some() => "custody_unavailable",
                 Some(_) => return None,
             };
-            Some(UnservedTenant { public_key, network, reason, blocks_behind: None })
+            Some(UnservedTenant {
+                public_key,
+                network,
+                reason,
+                blocks_behind: None,
+            })
         })
         .collect()
 }
@@ -302,28 +350,44 @@ pub const CATCHING_UP_REPORT_BLOCKS: u64 = 3;
 fn network_unreachable(status: Option<&NetworkStatus>) -> bool {
     let Some(status) = status else { return true };
     let probe_failed = !status.nodes.iter().any(|node| node.error.is_none());
-    let scanning_works = status.scanner.ever_ticked && status.scanner.last_tick_ok && !status.scanner.is_stale;
+    let scanning_works =
+        status.scanner.ever_ticked && status.scanner.last_tick_ok && !status.scanner.is_stale;
     probe_failed && !scanning_works
 }
 
 /// Stores that can't be scanned right now (task 3.7): those on a network
 /// with no node configured or none answering, and those still catching up
 /// after falling behind by more than a couple of blocks.
-fn unserved_tenants(store: &crate::store::Store, networks: &[NetworkStatus]) -> Vec<UnservedTenant> {
+fn unserved_tenants(
+    store: &crate::store::Store,
+    networks: &[NetworkStatus],
+) -> Vec<UnservedTenant> {
     let mut unserved = Vec::new();
     let with_tenants = store.count_tenants_by_network().unwrap_or_default();
     for (network, count) in with_tenants {
+        // A name no network has is a corrupted row: nothing to report on.
+        let Ok(parsed) = crate::network::parse_network(&network) else {
+            continue;
+        };
         if count == 0 {
             continue;
         }
         if network_unreachable(networks.iter().find(|n| n.network == network)) {
-            for public_key in store.tenant_public_keys_on_network(&network).unwrap_or_default() {
-                unserved.push(UnservedTenant { public_key, network: network.clone(), reason: "no_reachable_node", blocks_behind: None });
+            for public_key in store
+                .tenant_public_keys_on_network(parsed)
+                .unwrap_or_default()
+            {
+                unserved.push(UnservedTenant {
+                    public_key,
+                    network: network.clone(),
+                    reason: "no_reachable_node",
+                    blocks_behind: None,
+                });
             }
             continue;
         }
-        let high_water = store.max_scanned_height(&network).ok().flatten().unwrap_or(0);
-        for (public_key, cursor) in store.lagging_tenant_keys(&network).unwrap_or_default() {
+        let high_water = store.max_scanned_height(parsed).ok().flatten().unwrap_or(0);
+        for (public_key, cursor) in store.lagging_tenant_keys(parsed).unwrap_or_default() {
             if high_water.saturating_sub(cursor) < CATCHING_UP_REPORT_BLOCKS {
                 continue;
             }
@@ -339,6 +403,7 @@ fn unserved_tenants(store: &crate::store::Store, networks: &[NetworkStatus]) -> 
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -370,22 +435,49 @@ mod tests {
 
     #[test]
     fn one_failed_probe_while_scanning_works_is_not_reported_as_unreachable() {
-        assert!(!network_unreachable(Some(&network(false, true, false))), "a blip");
-        assert!(!network_unreachable(Some(&network(true, false, false))), "the probe answers");
-        assert!(network_unreachable(Some(&network(false, false, false))), "probe and scan both failing");
-        assert!(network_unreachable(Some(&network(false, true, true))), "the scan loop has stopped ticking");
+        assert!(
+            !network_unreachable(Some(&network(false, true, false))),
+            "a blip"
+        );
+        assert!(
+            !network_unreachable(Some(&network(true, false, false))),
+            "the probe answers"
+        );
+        assert!(
+            network_unreachable(Some(&network(false, false, false))),
+            "probe and scan both failing"
+        );
+        assert!(
+            network_unreachable(Some(&network(false, true, true))),
+            "the scan loop has stopped ticking"
+        );
         assert!(network_unreachable(None), "no node configured");
     }
 
     #[test]
     fn is_stale_uses_five_times_the_configured_poll_interval_with_a_15s_floor() {
         // 2s interval -> 5x = 10s, below the 15s floor, so the floor wins.
-        assert!(!is_stale(1000, 990, 2), "10s since the last tick, below the 15s floor - not stale yet");
-        assert!(is_stale(1000, 984, 2), "16s since the last tick, above the 15s floor - genuinely stale");
+        assert!(
+            !is_stale(1000, 990, 2),
+            "10s since the last tick, below the 15s floor - not stale yet"
+        );
+        assert!(
+            is_stale(1000, 984, 2),
+            "16s since the last tick, above the 15s floor - genuinely stale"
+        );
         // A large enough interval that 5x actually exceeds the floor.
-        assert!(!is_stale(1000, 970, 10), "30s since the last tick, 10s interval x5 = 50s threshold - not stale yet");
-        assert!(is_stale(1000, 940, 10), "60s since the last tick, 10s interval x5 = 50s threshold - genuinely stale");
-        assert!(!is_stale(1000, 1000, 0), "a poll_interval of 0 must still get the 15s floor, not read as instantly stale");
+        assert!(
+            !is_stale(1000, 970, 10),
+            "30s since the last tick, 10s interval x5 = 50s threshold - not stale yet"
+        );
+        assert!(
+            is_stale(1000, 940, 10),
+            "60s since the last tick, 10s interval x5 = 50s threshold - genuinely stale"
+        );
+        assert!(
+            !is_stale(1000, 1000, 0),
+            "a poll_interval of 0 must still get the 15s floor, not read as instantly stale"
+        );
     }
 
     /// The real bug this whole formula change fixes, reproduced directly:
@@ -395,6 +487,9 @@ mod tests {
     /// old 3x-with-no-floor one.
     #[test]
     fn a_real_observed_slow_tick_cadence_against_the_dev_config_no_longer_reads_as_stale() {
-        assert!(!is_stale(1008, 1000, 2), "8s since the last tick at a 2s configured interval must not be stale");
+        assert!(
+            !is_stale(1008, 1000, 2),
+            "8s since the last tick at a 2s configured interval must not be stale"
+        );
     }
 }

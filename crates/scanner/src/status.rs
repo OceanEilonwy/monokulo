@@ -8,44 +8,9 @@
 //! voided - see `double_spend_detected_at` in the schema, which is why that fact lives
 //! outside this function entirely.
 
-use std::fmt;
+/// Shared with monokulo, which reads it from the admin API.
+pub use shared::order_status::OrderStatus;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum OrderStatus {
-    Pending,
-    Unconfirmed,
-    Confirming,
-    Paid,
-    Partial,
-    Overpaid,
-    Expired,
-}
-
-impl OrderStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OrderStatus::Pending => "pending",
-            OrderStatus::Unconfirmed => "unconfirmed",
-            OrderStatus::Confirming => "confirming",
-            OrderStatus::Paid => "paid",
-            OrderStatus::Partial => "partial",
-            OrderStatus::Overpaid => "overpaid",
-            OrderStatus::Expired => "expired",
-        }
-    }
-}
-
-impl fmt::Display for OrderStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// One contributing payment, as seen by the status function - deliberately not the
-/// full `order_payments` row shape, just what the derivation needs. `confirmations`
-/// is 0 for anything still unconfirmed (mempool-only); the caller (the store layer)
-/// is responsible for turning `block_height` into a confirmation count against the
-/// current chain height before calling this.
 #[derive(Debug, Clone, Copy)]
 pub struct PaymentView {
     pub amount_piconero: u64,
@@ -110,19 +75,33 @@ pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderSta
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
     fn inputs(expected: u64, conf_required: u64, now: i64, expires_at: i64) -> StatusInputs {
-        StatusInputs { xmr_amount_piconero: expected, confirmations_required: conf_required, now, expires_at }
+        StatusInputs {
+            xmr_amount_piconero: expected,
+            confirmations_required: conf_required,
+            now,
+            expires_at,
+        }
     }
 
     fn confirmed(amount: u64, confirmations: u64) -> PaymentView {
-        PaymentView { amount_piconero: amount, confirmations, is_zero_conf: false }
+        PaymentView {
+            amount_piconero: amount,
+            confirmations,
+            is_zero_conf: false,
+        }
     }
 
     fn zero_conf(amount: u64) -> PaymentView {
-        PaymentView { amount_piconero: amount, confirmations: 0, is_zero_conf: true }
+        PaymentView {
+            amount_piconero: amount,
+            confirmations: 0,
+            is_zero_conf: true,
+        }
     }
 
     #[test]
@@ -184,7 +163,10 @@ mod tests {
     fn full_amount_mixed_zero_conf_and_onchain_with_confirmations_required_zero_is_paid() {
         // At threshold zero, `min_confirmations >= 0` is trivially true regardless of
         // which rows are mined vs. still in the mempool - the mix doesn't matter.
-        let status = derive_status(&[confirmed(60, 2), zero_conf(40)], inputs(100, 0, 500, 1000));
+        let status = derive_status(
+            &[confirmed(60, 2), zero_conf(40)],
+            inputs(100, 0, 500, 1000),
+        );
         assert_eq!(status, OrderStatus::Paid);
     }
 
@@ -254,7 +236,10 @@ mod tests {
         let inputs = |now| inputs(100, 0, now, 100_000);
 
         // Mempool sighting: trusted outright, threshold is zero.
-        assert_eq!(derive_status(&[zero_conf(100)], inputs(500)), OrderStatus::Paid);
+        assert_eq!(
+            derive_status(&[zero_conf(100)], inputs(500)),
+            OrderStatus::Paid
+        );
         // Mined, one confirmation - still trivially >= 0.
         assert_eq!(
             derive_status(&[confirmed(100, 1)], inputs(600)),
@@ -272,12 +257,27 @@ mod tests {
 
         // ...and a tier with a real (nonzero) threshold is untouched - the ladder
         // behaves exactly as it always did for every order not on the zero tier.
-        assert_eq!(derive_status(&[confirmed(100, 1)], super::tests::inputs(100, 10, 500, 100_000)), OrderStatus::Confirming);
-        assert_eq!(derive_status(&[zero_conf(100)], super::tests::inputs(100, 10, 500, 100_000)), OrderStatus::Unconfirmed);
+        assert_eq!(
+            derive_status(
+                &[confirmed(100, 1)],
+                super::tests::inputs(100, 10, 500, 100_000)
+            ),
+            OrderStatus::Confirming
+        );
+        assert_eq!(
+            derive_status(
+                &[zero_conf(100)],
+                super::tests::inputs(100, 10, 500, 100_000)
+            ),
+            OrderStatus::Unconfirmed
+        );
 
         // A mixed set - one payment mined, one still in the mempool - is likewise
         // paid outright at threshold zero, regardless of which rows have a height yet.
-        assert_eq!(derive_status(&[confirmed(60, 2), zero_conf(40)], inputs(800)), OrderStatus::Paid);
+        assert_eq!(
+            derive_status(&[confirmed(60, 2), zero_conf(40)], inputs(800)),
+            OrderStatus::Paid
+        );
     }
 
     #[test]
@@ -319,10 +319,20 @@ mod tests {
         // though it contributes nothing financially.
         let zeroed_but_present = [
             confirmed(100, 10),
-            PaymentView { amount_piconero: 0, confirmations: 0, is_zero_conf: true },
+            PaymentView {
+                amount_piconero: 0,
+                confirmations: 0,
+                is_zero_conf: true,
+            },
         ];
         let properly_excluded = [confirmed(100, 10)];
-        assert_eq!(derive_status(&properly_excluded, inputs(100, 10, 500, 1000)), OrderStatus::Paid);
-        assert_eq!(derive_status(&zeroed_but_present, inputs(100, 10, 500, 1000)), OrderStatus::Confirming);
+        assert_eq!(
+            derive_status(&properly_excluded, inputs(100, 10, 500, 1000)),
+            OrderStatus::Paid
+        );
+        assert_eq!(
+            derive_status(&zeroed_but_present, inputs(100, 10, 500, 1000)),
+            OrderStatus::Confirming
+        );
     }
 }

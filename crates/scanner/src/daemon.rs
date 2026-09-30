@@ -46,7 +46,9 @@ impl DaemonInfo {
     pub const UNKNOWN: &'static str = "unknown";
 
     pub fn unknown() -> Self {
-        DaemonInfo { nettype: Self::UNKNOWN.to_string() }
+        DaemonInfo {
+            nettype: Self::UNKNOWN.to_string(),
+        }
     }
 
     /// The network the node is on, when it's one the engine knows. A
@@ -60,6 +62,22 @@ impl DaemonInfo {
             _ => None,
         }
     }
+}
+
+/// One block as the node has it, contents and identity together
+/// ([`MoneroDaemonClient::get_chain_blocks`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChainBlock {
+    pub height: u64,
+    /// The block's id, as `get_block_hash` reports it (lowercase hex).
+    pub hash: String,
+    /// The parent block's id; empty for the genesis block.
+    pub prev_hash: String,
+    /// The miner's timestamp (unix seconds). Consensus lets it run up to two
+    /// hours ahead of real time.
+    pub timestamp: u64,
+    /// The block's transactions, without the coinbase.
+    pub txs: Vec<Transaction>,
 }
 
 #[async_trait::async_trait]
@@ -97,10 +115,63 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// of blocks a tick, where the fixed overhead of a second RPC call to
     /// resolve `get_block_hash` per height already dominates any batching
     /// win).
-    async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+    async fn get_blocks_range(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
         let mut out = Vec::new();
         for height in start_height..start_height.saturating_add(count) {
             out.push(self.get_block_transactions(height).await?);
+        }
+        Ok(out)
+    }
+
+    /// Up to `count` whole blocks from `start_height`, in height order: each
+    /// with its id, its parent's id, its timestamp and its transactions (the
+    /// coinbase excluded), all from the same block. May be shorter than
+    /// `count` (the node's tip, or its batch limit); empty only if nothing at
+    /// `start_height` is available.
+    ///
+    /// Pairing a block's contents with its own id is the point: a scanner that
+    /// reads a hash and the contents separately can record one block's
+    /// payments under another block's hash if the chain moves in between.
+    ///
+    /// The default composes per-height calls (for test doubles); it re-reads
+    /// each hash after reading the contents and refuses a block that changed
+    /// meanwhile. `RpcDaemonClient` decodes the headers `get_blocks.bin`
+    /// already returns with the transactions, in one round trip.
+    async fn get_chain_blocks(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainBlock>, DaemonError> {
+        let mut out: Vec<ChainBlock> = Vec::new();
+        let mut prev_hash = match start_height.checked_sub(1) {
+            Some(parent) => self.get_block_hash(parent).await?,
+            None => String::new(),
+        };
+        for height in start_height..start_height.saturating_add(count) {
+            let hash = match self.get_block_hash(height).await {
+                Ok(hash) => hash,
+                Err(error) if out.is_empty() => return Err(error),
+                Err(_) => break,
+            };
+            let timestamp = self.get_block_timestamp(height).await?;
+            let txs = self.get_block_transactions(height).await?;
+            if self.get_block_hash(height).await? != hash {
+                return Err(DaemonError::Request(format!(
+                    "block {height} changed while it was read"
+                )));
+            }
+            out.push(ChainBlock {
+                height,
+                hash: hash.clone(),
+                prev_hash,
+                timestamp,
+                txs,
+            });
+            prev_hash = hash;
         }
         Ok(out)
     }
@@ -113,7 +184,12 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// for hashes only.
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         use monero::cryptonote::hash::Hashable;
-        Ok(self.get_mempool_transactions().await?.iter().map(|tx| hex::encode(tx.hash().to_bytes())).collect())
+        Ok(self
+            .get_mempool_transactions()
+            .await?
+            .iter()
+            .map(|tx| hex::encode(tx.hash().to_bytes()))
+            .collect())
     }
 
     /// Several transactions by txid, in any order; ones the node doesn't
@@ -141,7 +217,10 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// already knows a txid and wants to scan it against a tenant's wallet
     /// needs the real `Transaction`, not just its location.
     async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError>;
-    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError>;
+    async fn is_key_image_spent(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError>;
 
     /// A block's own declared timestamp (unix seconds) - the one primitive
     /// `find_height_at_or_before` below needs and no other caller in this
@@ -183,7 +262,7 @@ pub trait MoneroDaemonClient: Send + Sync {
             // standard shape for that (lower-mid would loop forever
             // whenever `lo`/`hi` become adjacent and the predicate holds at
             // `hi`).
-            let mid = lo + (hi - lo + 1) / 2;
+            let mid = lo + (hi - lo).div_ceil(2);
             if self.get_block_timestamp(mid).await? <= target_timestamp {
                 lo = mid;
             } else {
@@ -215,10 +294,11 @@ pub trait MoneroDaemonClient: Send + Sync {
 /// rare in production, so bugs here are exactly the kind that go unnoticed for a
 /// long time otherwise).
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub mod fake {
     use super::*;
-    use std::collections::HashMap;
     use parking_lot::Mutex;
+    use std::collections::HashMap;
 
     #[derive(Clone)]
     struct FakeBlock {
@@ -286,7 +366,9 @@ pub mod fake {
     impl FakeDaemonClient {
         pub fn new() -> Self {
             let client = Self::default();
-            client.online.store(true, std::sync::atomic::Ordering::Relaxed);
+            client
+                .online
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             client
         }
 
@@ -296,7 +378,8 @@ pub mod fake {
         /// otherwise left completely untouched - flipping back online resumes
         /// exactly where the scripted chain was left, nothing lost or reset.
         pub fn set_online(&self, online: bool) {
-            self.online.store(online, std::sync::atomic::Ordering::Relaxed);
+            self.online
+                .store(online, std::sync::atomic::Ordering::Relaxed);
         }
 
         fn require_online(&self) -> Result<(), DaemonError> {
@@ -313,9 +396,18 @@ pub mod fake {
             let mut state = self.state.lock();
             let height = state.height + 1;
             for tx in &txs {
-                state.tx_locations.insert(txid_of(tx), TxLocation::InBlock(height));
+                state
+                    .tx_locations
+                    .insert(txid_of(tx), TxLocation::InBlock(height));
             }
-            state.blocks.insert(height, FakeBlock { hash: hash.to_string(), txs, timestamp: default_fake_timestamp(height) });
+            state.blocks.insert(
+                height,
+                FakeBlock {
+                    hash: hash.to_string(),
+                    txs,
+                    timestamp: default_fake_timestamp(height),
+                },
+            );
             state.height = height;
             state.height_override = None; // a real block now backs this height - any prior lag is resolved
             height
@@ -329,9 +421,18 @@ pub mod fake {
         pub fn seed_block_at(&self, height: u64, hash: &str, txs: Vec<Transaction>) {
             let mut state = self.state.lock();
             for tx in &txs {
-                state.tx_locations.insert(txid_of(tx), TxLocation::InBlock(height));
+                state
+                    .tx_locations
+                    .insert(txid_of(tx), TxLocation::InBlock(height));
             }
-            state.blocks.insert(height, FakeBlock { hash: hash.to_string(), txs, timestamp: default_fake_timestamp(height) });
+            state.blocks.insert(
+                height,
+                FakeBlock {
+                    hash: hash.to_string(),
+                    txs,
+                    timestamp: default_fake_timestamp(height),
+                },
+            );
             state.height = state.height.max(height);
         }
 
@@ -369,7 +470,10 @@ pub mod fake {
         pub fn set_mempool(&self, txs: Vec<Transaction>) {
             let mut state = self.state.lock();
             for tx in &txs {
-                state.tx_locations.entry(txid_of(tx)).or_insert(TxLocation::InPool);
+                state
+                    .tx_locations
+                    .entry(txid_of(tx))
+                    .or_insert(TxLocation::InPool);
             }
             state.mempool = txs;
         }
@@ -395,10 +499,19 @@ pub mod fake {
                 height += 1;
                 for tx in &txs {
                     let id = txid_of(tx);
-                    state.tx_locations.insert(id.clone(), TxLocation::InBlock(height));
+                    state
+                        .tx_locations
+                        .insert(id.clone(), TxLocation::InBlock(height));
                     new_txids.push(id);
                 }
-                state.blocks.insert(height, FakeBlock { hash: hash.to_string(), txs, timestamp: default_fake_timestamp(height) });
+                state.blocks.insert(
+                    height,
+                    FakeBlock {
+                        hash: hash.to_string(),
+                        txs,
+                        timestamp: default_fake_timestamp(height),
+                    },
+                );
             }
             state.height = height;
 
@@ -410,7 +523,10 @@ pub mod fake {
         }
 
         pub fn set_key_image_status(&self, key_image_hex: &str, status: KeyImageStatus) {
-            self.state.lock().key_image_status.insert(key_image_hex.to_string(), status);
+            self.state
+                .lock()
+                .key_image_status
+                .insert(key_image_hex.to_string(), status);
         }
 
         pub fn drop_from_mempool(&self, tx: &Transaction) {
@@ -438,7 +554,10 @@ pub mod fake {
                 .ok_or_else(|| DaemonError::Request(format!("no block at height {height}")))
         }
 
-        async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        async fn get_block_transactions(
+            &self,
+            height: u64,
+        ) -> Result<Vec<Transaction>, DaemonError> {
             self.require_online()?;
             Ok(self
                 .state
@@ -447,6 +566,41 @@ pub mod fake {
                 .get(&height)
                 .map(|b| b.txs.clone())
                 .unwrap_or_default())
+        }
+
+        /// A consistent snapshot: every block and its parent's id under one
+        /// lock, as a real node's single `get_blocks.bin` answer would be.
+        async fn get_chain_blocks(
+            &self,
+            start_height: u64,
+            count: u64,
+        ) -> Result<Vec<ChainBlock>, DaemonError> {
+            self.require_online()?;
+            let state = self.state.lock();
+            let mut out = Vec::new();
+            for height in start_height..start_height.saturating_add(count) {
+                let Some(block) = state.blocks.get(&height) else {
+                    break;
+                };
+                let prev_hash = height
+                    .checked_sub(1)
+                    .and_then(|p| state.blocks.get(&p))
+                    .map(|b| b.hash.clone())
+                    .unwrap_or_default();
+                out.push(ChainBlock {
+                    height,
+                    hash: block.hash.clone(),
+                    prev_hash,
+                    timestamp: block.timestamp,
+                    txs: block.txs.clone(),
+                });
+            }
+            if out.is_empty() {
+                return Err(DaemonError::Request(format!(
+                    "no block at height {start_height}"
+                )));
+            }
+            Ok(out)
         }
 
         async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
@@ -479,12 +633,21 @@ pub mod fake {
             Err(DaemonError::Request(format!("no such transaction: {txid}")))
         }
 
-        async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> Result<Vec<KeyImageStatus>, DaemonError> {
             self.require_online()?;
             let state = self.state.lock();
             Ok(key_images
                 .iter()
-                .map(|ki| state.key_image_status.get(ki).copied().unwrap_or(KeyImageStatus::Unspent))
+                .map(|ki| {
+                    state
+                        .key_image_status
+                        .get(ki)
+                        .copied()
+                        .unwrap_or(KeyImageStatus::Unspent)
+                })
                 .collect())
         }
 
@@ -513,6 +676,7 @@ pub mod fake {
 /// "does this actually work against real monerod" proof, not the main
 /// suite).
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::fake::FakeDaemonClient;
     use super::*;
@@ -551,7 +715,13 @@ mod tests {
         // ("the tip itself is already at or before the target") explicitly,
         // not just the coincidence of picking exactly the tip's own
         // timestamp.
-        assert_eq!(daemon.find_height_at_or_before(tip_ts + 1_000_000).await.unwrap(), 2);
+        assert_eq!(
+            daemon
+                .find_height_at_or_before(tip_ts + 1_000_000)
+                .await
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -564,7 +734,10 @@ mod tests {
         // counting at 1) - a target before every real block must still
         // resolve cleanly to height 0, not error just because nothing was
         // ever explicitly seeded there.
-        assert!(genesis_ts.is_err(), "sanity check: this test never seeded height 0 itself");
+        assert!(
+            genesis_ts.is_err(),
+            "sanity check: this test never seeded height 0 itself"
+        );
         assert_eq!(daemon.find_height_at_or_before(0).await.unwrap(), 0);
     }
 
@@ -600,8 +773,14 @@ mod tests {
         let h1_ts = daemon.get_block_timestamp(1).await.unwrap();
         daemon.set_block_timestamp(2, h1_ts - 10);
         let result = daemon.find_height_at_or_before(h1_ts).await;
-        assert!(result.is_ok(), "must degrade to a real answer, not error, on non-monotonic input: {result:?}");
+        assert!(
+            result.is_ok(),
+            "must degrade to a real answer, not error, on non-monotonic input: {result:?}"
+        );
         let height = result.unwrap();
-        assert!(height <= 3, "must still return a real height within the scripted chain, got {height}");
+        assert!(
+            height <= 3,
+            "must still return a real height within the scripted chain, got {height}"
+        );
     }
 }
