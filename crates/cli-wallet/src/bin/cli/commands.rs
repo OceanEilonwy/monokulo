@@ -4,10 +4,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Write};
+use std::sync::Arc;
 
 use clap::Subcommand;
 use cli_wallet::amount::{format_amount, parse_amount, Unit};
-use cli_wallet::file::WalletData;
+use cli_wallet::file::{default_busy_handler, BusyChoice, BusyHandler, LockHolder, WalletData};
 use cli_wallet::meta::AddressBookEntry;
 use cli_wallet::{
     legacy_seed_for, FeePriority, OwnedOutput, ResolvedWallet, SweepSelect, TransferKind, TransferRequest, Wallet, WalletCtx, WalletError, WalletKeys,
@@ -234,16 +235,48 @@ pub struct Session {
 impl Session {
     pub fn open(ctx: &WalletCtx, path: &std::path::Path, do_not_relay: bool) -> Result<Self, CliError> {
         let resolved = ResolvedWallet::open(ctx, path)?;
-        let keys = resolved.keys();
+        let mut keys = resolved.keys();
+        keys.set_busy_handler(busy_handler());
         Ok(Session { resolved, keys, wallet: None, do_not_relay })
     }
 
     async fn wallet(&mut self) -> Result<&Wallet, CliError> {
         if self.wallet.is_none() {
-            self.wallet = Some(self.resolved.connect().await?);
+            let mut wallet = self.resolved.connect().await?;
+            wallet.set_busy_handler(busy_handler());
+            self.wallet = Some(wallet);
         }
         Ok(self.wallet.as_ref().expect("just connected"))
     }
+}
+
+/// When another process has the wallet file locked: at a terminal, say who
+/// and ask whether to retry, wait or cancel; otherwise (a script), warn and
+/// wait, as the library does.
+fn busy_handler() -> BusyHandler {
+    if !std::io::stdin().is_terminal() {
+        return default_busy_handler();
+    }
+    Arc::new(|holder: &LockHolder| loop {
+        eprint!("{holder}.\n[R]etry, [w]ait for it, [c]ancel? ");
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        if std::io::stdin().lock().read_line(&mut answer).unwrap_or(0) == 0 {
+            return BusyChoice::Cancel;
+        }
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "" | "r" | "retry" => return BusyChoice::Retry,
+            "w" | "wait" => {
+                eprintln!("Waiting for it to finish (Ctrl-C to give up)...");
+                return BusyChoice::Wait;
+            }
+            "c" | "cancel" => return BusyChoice::Cancel,
+            _ => continue,
+        }
+    })
+}
+
+impl Session {
 
     fn data(&self) -> Result<WalletData, CliError> {
         Ok(self.keys.load()?.data)

@@ -186,20 +186,48 @@ impl WalletFile {
             .map_err(|e| WalletError::WalletFile(format!("failed to move {} into place over {}: {e}", tmp_path.display(), self.path.display())))
     }
 
-    /// Takes the exclusive lock on `path`'s sibling `<path>.lock`, waiting
-    /// for any other holder (another process, or another task in this one)
-    /// to finish. The wait happens off the async runtime's worker threads.
+    /// Takes the exclusive lock on `path`'s sibling `<path>.lock`, with
+    /// [`default_busy_handler`] deciding what happens if someone else holds
+    /// it.
     pub async fn lock(path: impl AsRef<Path>) -> Result<WalletFileLock, WalletError> {
+        Self::lock_with(path, &default_busy_handler()).await
+    }
+
+    /// Takes the exclusive lock on `path`'s sibling `<path>.lock`. If
+    /// another holder (another process, or another task in this one) has
+    /// it, `on_busy` is told who and chooses: try again, wait for it, or
+    /// give up with [`WalletError::Locked`]. Once taken, the lock file
+    /// records who holds it, for the next process's `on_busy`. Everything
+    /// runs off the async runtime's worker threads.
+    ///
+    /// An OS file lock is released when its process exits, however it
+    /// exits, so a lock is never left behind by a crash.
+    pub async fn lock_with(path: impl AsRef<Path>, on_busy: &BusyHandler) -> Result<WalletFileLock, WalletError> {
         let lock_path = lock_path(path.as_ref());
+        let on_busy = on_busy.clone();
         tokio::task::spawn_blocking(move || {
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&lock_path)
-                .map_err(|e| WalletError::WalletFile(format!("failed to open {}: {e}", lock_path.display())))?;
-            file.lock().map_err(|e| WalletError::WalletFile(format!("failed to lock {}: {e}", lock_path.display())))?;
-            Ok(WalletFileLock { _file: file })
+            let open_error = |e: std::io::Error| WalletError::WalletFile(format!("failed to open {}: {e}", lock_path.display()));
+            let lock_error = |e: std::io::Error| WalletError::WalletFile(format!("failed to lock {}: {e}", lock_path.display()));
+            loop {
+                let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&lock_path).map_err(open_error)?;
+                match file.try_lock() {
+                    Ok(()) => return Ok(WalletFileLock::recording_holder(file)),
+                    Err(std::fs::TryLockError::WouldBlock) => {}
+                    Err(std::fs::TryLockError::Error(e)) => return Err(lock_error(e)),
+                }
+                let holder = LockHolder {
+                    lock_path: lock_path.clone(),
+                    description: std::fs::read_to_string(&lock_path).ok().filter(|held_by| !held_by.trim().is_empty()).unwrap_or_else(|| "an unknown process".to_string()),
+                };
+                match on_busy(&holder) {
+                    BusyChoice::Retry => continue,
+                    BusyChoice::Wait => {
+                        file.lock().map_err(lock_error)?;
+                        return Ok(WalletFileLock::recording_holder(file));
+                    }
+                    BusyChoice::Cancel => return Err(WalletError::Locked(holder.to_string())),
+                }
+            }
         })
         .await
         .expect("the lock task never panics")
@@ -209,12 +237,76 @@ impl WalletFile {
     /// safe way to change a wallet file another process might be changing
     /// too. Nothing is saved if `change` fails.
     pub async fn update<T>(path: impl AsRef<Path>, change: impl FnOnce(&mut WalletData) -> Result<T, WalletError>) -> Result<T, WalletError> {
-        let _lock = Self::lock(path.as_ref()).await?;
+        Self::update_with(path, &default_busy_handler(), change).await
+    }
+
+    /// [`Self::update`], with `on_busy` handling a held lock (see
+    /// [`Self::lock_with`]).
+    pub async fn update_with<T>(
+        path: impl AsRef<Path>,
+        on_busy: &BusyHandler,
+        change: impl FnOnce(&mut WalletData) -> Result<T, WalletError>,
+    ) -> Result<T, WalletError> {
+        let _lock = Self::lock_with(path.as_ref(), on_busy).await?;
         let mut file = Self::load(path)?;
         let result = change(&mut file.data)?;
         file.save()?;
         Ok(result)
     }
+}
+
+impl WalletFileLock {
+    /// Writes who now holds the lock into the lock file, so a process that
+    /// finds it busy can say who's using the wallet.
+    fn recording_holder(mut file: std::fs::File) -> Self {
+        use std::io::Write;
+        let program = std::env::args().next().map(|path| Path::new(&path).file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_default();
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let mut holder = format!("pid {} ({program} {})", std::process::id(), args.join(" "));
+        holder.truncate(200);
+        // Best effort: the lock itself is what matters, not the note.
+        let _ = file.set_len(0).and_then(|()| file.write_all(holder.trim_end().as_bytes()));
+        WalletFileLock { _file: file }
+    }
+}
+
+/// Who holds a wallet file's lock, as the holder recorded it.
+#[derive(Debug, Clone)]
+pub struct LockHolder {
+    pub lock_path: PathBuf,
+    /// e.g. `pid 1234 (stagenet-wallet-cli transfer ...)`.
+    pub description: String,
+}
+
+impl std::fmt::Display for LockHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is locked by {}", self.lock_path.with_extension("").display(), self.description)
+    }
+}
+
+/// What to do about a wallet file someone else has locked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusyChoice {
+    /// Try to take it again straight away (and ask again if still busy).
+    Retry,
+    /// Block until the holder lets go.
+    Wait,
+    /// Give up: the operation fails with [`WalletError::Locked`].
+    Cancel,
+}
+
+/// Decides what to do when a wallet file's lock is held - see
+/// [`WalletFile::lock_with`]. Called on a blocking thread, so it may
+/// prompt the user.
+pub type BusyHandler = std::sync::Arc<dyn Fn(&LockHolder) -> BusyChoice + Send + Sync>;
+
+/// Says who holds the lock, on stderr, and waits for them - right for the
+/// e2e suites and scripts, where nobody's there to ask.
+pub fn default_busy_handler() -> BusyHandler {
+    std::sync::Arc::new(|holder: &LockHolder| {
+        eprintln!("cli-wallet: {holder}; waiting for it to finish");
+        BusyChoice::Wait
+    })
 }
 
 fn lock_path(path: &Path) -> PathBuf {

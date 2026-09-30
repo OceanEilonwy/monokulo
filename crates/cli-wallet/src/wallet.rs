@@ -20,7 +20,7 @@ use serde::Serialize;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
-use crate::file::{OutputRecord, SentDestination, SentRecord, WalletData, WalletFile, WalletFileLock};
+use crate::file::{default_busy_handler, BusyHandler, OutputRecord, SentDestination, SentRecord, WalletData, WalletFile, WalletFileLock};
 use crate::meta::WalletMeta;
 use crate::{decode_output, locate_height, scalar_from_hex, DecoyCache, ReqwestTransport, WalletError, RING_LEN, SPENDABLE_AGE};
 
@@ -38,6 +38,9 @@ pub struct WalletKeys {
     view_key: Zeroizing<Scalar>,
     address: MoneroAddress,
     path: PathBuf,
+    /// Decides what happens when another process holds the wallet file's
+    /// lock - see [`Self::set_busy_handler`].
+    busy_handler: BusyHandler,
 }
 
 /// One output this wallet received, as its wallet file records it.
@@ -105,7 +108,7 @@ impl WalletKeys {
             data.address,
             "derived address doesn't match the expected address - private_spend_key/private_view_key don't match that address"
         );
-        WalletKeys { view_pair, spend_key, view_key, address, path }
+        WalletKeys { view_pair, spend_key, view_key, address, path, busy_handler: default_busy_handler() }
     }
 
     pub fn address(&self) -> String {
@@ -180,9 +183,21 @@ impl WalletKeys {
             .collect()
     }
 
+    /// Sets what happens when another process holds this wallet file's
+    /// lock: by default a warning and a wait ([`default_busy_handler`]); an
+    /// interactive caller can ask the user instead.
+    pub fn set_busy_handler(&mut self, handler: BusyHandler) {
+        self.busy_handler = handler;
+    }
+
+    /// Takes this wallet file's lock (see [`WalletFile::lock_with`]).
+    pub async fn lock(&self) -> Result<WalletFileLock, WalletError> {
+        WalletFile::lock_with(&self.path, &self.busy_handler).await
+    }
+
     /// Changes the wallet file under its lock (see [`WalletFile::update`]).
     pub async fn update<T>(&self, change: impl FnOnce(&mut WalletData) -> Result<T, WalletError>) -> Result<T, WalletError> {
-        WalletFile::update(&self.path, change).await
+        WalletFile::update_with(&self.path, &self.busy_handler, change).await
     }
 
     /// Changes this wallet's [`WalletMeta`] under the file lock, returning
@@ -391,6 +406,11 @@ impl Wallet {
         &self.node_url
     }
 
+    /// See [`WalletKeys::set_busy_handler`].
+    pub fn set_busy_handler(&mut self, handler: BusyHandler) {
+        self.keys.set_busy_handler(handler);
+    }
+
     /// The chain height, as the output-age checks use it.
     pub async fn tip(&self) -> Result<u64, WalletError> {
         Ok(self.rpc.latest_block_number().await.map_err(|e| WalletError::Rpc(e.to_string()))? as u64)
@@ -441,7 +461,7 @@ impl Wallet {
     /// the start of every operation that needs the wallet's current
     /// outputs. Saves if anything resolved.
     async fn lock_and_resolve(&self) -> Result<(WalletFileLock, WalletFile, usize), WalletError> {
-        let lock = WalletFile::lock(&self.path).await?;
+        let lock = self.lock().await?;
         let mut file = self.load()?;
         let resolved = self.resolve_pending(&mut file.data).await?;
         if resolved > 0 {
@@ -717,7 +737,7 @@ impl Wallet {
     /// it's already confirmed. Adding one that's already recorded picks up
     /// any of its outputs the file is missing.
     pub async fn add_output(&self, txid: &str) -> Result<(), WalletError> {
-        let _lock = WalletFile::lock(&self.path).await?;
+        let _lock = self.lock().await?;
         let mut file = self.load()?;
         let known = file.data.outputs.iter().any(|record| record.txid == txid);
         if known {

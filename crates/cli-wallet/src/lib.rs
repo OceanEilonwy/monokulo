@@ -112,6 +112,10 @@ pub enum WalletError {
     Rpc(String),
     #[error("wallet file error: {0}")]
     WalletFile(String),
+    /// Someone else held the wallet file's lock and the caller chose not to
+    /// wait (see [`file::WalletFile::lock_with`]).
+    #[error("{0}; cancelled")]
+    Locked(String),
     #[error("decoy distribution error: {0}")]
     Decoys(String),
     /// A request that can't be carried out as asked (a bad address, an
@@ -822,6 +826,42 @@ mod tests {
             task.await.unwrap().unwrap();
         }
         assert_eq!(WalletFile::load(&path).unwrap().data.pending.len(), 16);
+    }
+
+    /// A held lock is reported with who holds it, and the busy handler's
+    /// choice is followed: retry asks again, cancel fails, wait blocks until
+    /// the holder lets go.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_held_lock_names_its_holder_and_lets_the_caller_choose() {
+        use crate::file::{BusyChoice, BusyHandler, LockHolder};
+        use std::sync::{Arc, Mutex};
+
+        let (path, _) = temp_wallet("busy", "spender");
+        let held = WalletFile::lock(&path).await.unwrap();
+
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let answers = Arc::new(Mutex::new(vec![BusyChoice::Cancel, BusyChoice::Retry]));
+        let handler: BusyHandler = {
+            let seen = seen.clone();
+            Arc::new(move |holder: &LockHolder| {
+                seen.lock().unwrap().push(holder.to_string());
+                answers.lock().unwrap().pop().unwrap()
+            })
+        };
+        let error = WalletFile::lock_with(&path, &handler).await.err().expect("cancelled");
+        assert!(matches!(error, WalletError::Locked(_)), "{error}");
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "retry asks again while it's still held");
+        assert!(seen[0].contains(&format!("pid {}", std::process::id())), "names the holder: {}", seen[0]);
+        assert!(seen[0].contains("spender.json is locked by"), "{}", seen[0]);
+
+        let wait: BusyHandler = Arc::new(|_: &LockHolder| BusyChoice::Wait);
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(held);
+        });
+        WalletFile::lock_with(&path, &wait).await.expect("waiting gets the lock once it's released");
+        release.await.unwrap();
     }
 
     /// The old shared layout splits into one file per wallet, each output
