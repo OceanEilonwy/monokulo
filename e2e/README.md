@@ -105,10 +105,9 @@ supported reference commands, and why the rest aren't, is in
 commands aren't in the reference wallet:
 
 ```sh
-# split the largest spendable output into 4 smaller, independently-aged
-# outputs - run this ahead of a test session (each piece still needs its own
-# 10 confirmations, ~20 minutes, before it matures), not inline in CI
-[wallet 5648a3]: split 4
+# split the largest spendable output into 16 equal outputs - see "Keeping
+# enough outputs" below
+[wallet 5648a3]: pocketchange
 
 # record a payment this wallet received but didn't send itself (e.g. a
 # fresh faucet payout); it resolves once it confirms
@@ -187,6 +186,32 @@ is old enough and unspent, a run succeeds without help. If every known
 output is either too young or already spent, the send fails fast with a clear
 `InsufficientFunds` error, rather than hanging or false-passing.
 
+### Keeping enough outputs: `pocketchange`
+
+Every test payment spends one output and leaves its change locked for the
+next 10 blocks, so the suites run fast only while the spender has plenty of
+separate mature outputs - one per payment a session makes, at least.
+`pocketchange` makes them: it splits the wallet's largest unlocked output
+into 16 equal outputs of its own, the most one transaction can hold (the
+change output is one of the 16):
+
+```sh
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- pocketchange
+# Splitting 0.006250000000 from 1 output(s) into 16 outputs of 0.000382893750 each ...
+```
+
+- `pocketchange 8` splits into fewer, bigger pieces (2 to 16).
+- `pocketchange inputs=3` merges the 3 largest outputs first, for bigger
+  pieces from smaller outputs.
+- Each piece has to cover one test payment plus its fee - about 0.00037 XMR
+  for `e2e_stagenet.rs`'s 0.000335 XMR order - or it can't pay a test on its
+  own. The confirmation line shows the piece size before anything is sent;
+  merge more inputs, or split into fewer pieces, if it's too small.
+- Run it ahead of a test session, not inline in CI: the new outputs need
+  their own 10 confirmations (~20 minutes) before they're spendable.
+- Check what's there with `unspent_outputs` (sizes and a height histogram)
+  or `balance detail` (how many outputs).
+
 ## Reproducing from scratch (new faucet funds)
 
 If `wallets/spender.json`'s outputs ever run dry (everything spent, and
@@ -198,6 +223,9 @@ change too small/young to help):
 2. Record the faucet's txid: `cargo run -p cli-wallet --bin
    stagenet-wallet-cli -- add_output <txid>`. It stays pending until it
    confirms, then resolves on the next `refresh` (or send).
+3. Once it's spendable (10 confirmations), turn the one big faucet output
+   into many test-sized ones: `pocketchange` (see above). Repeat on the
+   resulting outputs if one round isn't enough.
 
 
 # Real Tor end-to-end test

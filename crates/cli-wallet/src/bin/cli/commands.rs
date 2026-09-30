@@ -181,10 +181,15 @@ pub enum Command {
     Save,
     /// Show the version.
     Version,
-    /// Not in the reference wallet: split the largest spendable output into
-    /// `into` self-addressed outputs, so more of the balance is
-    /// independently spendable.
-    Split { into: usize },
+    /// Not in the reference wallet: split the largest unlocked output (or
+    /// the `inputs=<N>` largest, merged) into equal outputs of this
+    /// account's own - 16 by default, the most one transaction holds - so
+    /// the e2e suites have plenty of independently spendable outputs.
+    #[command(override_usage = "pocketchange [<pieces>] [inputs=<N>] [<priority>]", visible_alias = "split")]
+    Pocketchange {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Not in the reference wallet: record a transaction that pays this
     /// wallet (a faucet payout) and resolve it once it confirms.
     AddOutput { txid: String },
@@ -526,10 +531,28 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
             println!("stagenet-wallet-cli v{}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Command::Split { into } => {
-            let hash = session.wallet().await?.split(into).await?;
-            println!("Transaction successfully submitted, transaction <{}>", hex::encode(hash));
-            Ok(())
+        Command::Pocketchange { args } => {
+            let parsed = args::parse_pocketchange(&args)?;
+            let data = session.data()?;
+            let request = TransferRequest {
+                account: data.meta.current_account,
+                subaddress_indexes: None,
+                priority: fee_priority(parsed.priority.unwrap_or(data.meta.settings.priority)),
+                kind: TransferKind::Pocketchange { pieces: parsed.pieces, inputs: parsed.inputs },
+            };
+            send_prepared(session, request, |prepared, unit| {
+                let piece = prepared.destinations.first().map_or(0, |d| d.amount_piconero);
+                format!(
+                    "Splitting {} from {} output(s) into {} outputs of {} each (plus {} left over in the last).  The transaction fee is {}",
+                    money(prepared.inputs_total, unit),
+                    prepared.inputs,
+                    prepared.destinations.len() + 1,
+                    money(piece, unit),
+                    money(prepared.change.saturating_sub(piece), unit),
+                    money(prepared.fee, unit)
+                )
+            })
+            .await
         }
         Command::AddOutput { txid } => {
             session.wallet().await?.add_output(&txid).await?;

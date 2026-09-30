@@ -156,7 +156,13 @@ Stagenet only; ring size 16.
 | `--generate-from-view-key` | No | Every wallet here holds its spend key |
 | `--testnet`, mainnet, `--password*`, `--restore-height`, logging, `--generate-from-device` | No | |
 
-Not in the reference wallet: `split <n>` (turn the largest output into `n`
-self-addressed ones, so more of the balance is independently spendable),
-`add_output <txid>` (record a payment received, e.g. from the faucet), and
-`completions <shell>`.
+Not in the reference wallet:
+
+- `pocketchange [<pieces>] [inputs=<N>] [<priority>]` splits the largest
+  unlocked output (or the `N` largest, merged) into equal outputs of the
+  account's own - by default 16, the most one transaction can hold, with
+  the change output as one of them. It keeps the e2e suites supplied with
+  enough separate mature outputs to run fast; see `e2e/README.md`, "Keeping
+  enough outputs". (`split` still works as an alias.)
+- `add_output <txid>` records a payment received, e.g. from the faucet.
+- `completions <shell>` prints a shell completion script.

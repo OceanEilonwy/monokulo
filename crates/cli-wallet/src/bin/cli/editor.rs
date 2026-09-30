@@ -225,6 +225,11 @@ pub fn candidates(specs: &[CommandSpec], data: &CompletionData, previous: &[&str
             list
         }
         ("sweep_single", _) => data.addresses.clone(),
+        ("pocketchange" | "split", _) => {
+            let mut list = described(&[("16", "the most one transaction holds (default)"), ("8", "pieces"), ("4", "pieces"), ("inputs=", "merge the N largest outputs first")]);
+            list.extend(priorities());
+            list
+        }
         ("freeze" | "thaw" | "frozen", []) => data.key_images.clone(),
         ("show_transfer" | "get_tx_note" | "set_tx_note", []) => data.txids.clone(),
         ("mark_output_spent" | "mark_output_unspent" | "is_output_spent", []) => data.outputs.clone(),

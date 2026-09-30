@@ -131,9 +131,10 @@ cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender
 # ...or runs one command and exits
 cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender balance
 
-# Split the largest output into more (smaller) outputs, useful for tests that
-# need several independent spendable outputs
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- split 4
+# Split the largest output into 16 equal outputs (the most one transaction
+# holds), so the e2e tests have enough mature outputs to run fast - see
+# e2e/README.md "Keeping enough outputs"
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- pocketchange
 
 # Record a payment by hand (e.g. after a faucet payment)
 cargo run -p cli-wallet --bin stagenet-wallet-cli -- add_output <txid>

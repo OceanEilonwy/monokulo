@@ -245,6 +245,34 @@ pub fn parse_history(words: &[String]) -> Result<HistoryArgs, String> {
     Ok(HistoryArgs { incoming: has(&["in", "incoming"]), outgoing: has(&["out", "outgoing"]), pending: has(&["pending"]), pool: has(&["pool"]), indexes, min_height, max_height, output })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PocketchangeArgs {
+    pub pieces: usize,
+    pub inputs: usize,
+    pub priority: Option<u32>,
+}
+
+/// `pocketchange [<pieces>] [inputs=<N>] [<priority>]`, in any order.
+/// Defaults: the most pieces one transaction holds, from the single
+/// largest output.
+pub fn parse_pocketchange(words: &[String]) -> Result<PocketchangeArgs, String> {
+    let mut parsed = PocketchangeArgs { pieces: cli_wallet::MAX_OUTPUTS, inputs: 1, priority: None };
+    for word in words {
+        if let Some(n) = word.strip_prefix("inputs=") {
+            parsed.inputs = n.parse().ok().filter(|n| *n >= 1).ok_or_else(|| format!("inputs should be a number of outputs, at least 1: {n}"))?;
+        } else if let Some(priority) = PRIORITY_NAMES.iter().position(|name| name == word) {
+            parsed.priority = Some(priority as u32);
+        } else {
+            parsed.pieces = word
+                .parse()
+                .ok()
+                .filter(|n| (2..=cli_wallet::MAX_OUTPUTS).contains(n))
+                .ok_or_else(|| format!("pieces should be 2 to {}: {word}", cli_wallet::MAX_OUTPUTS))?;
+        }
+    }
+    Ok(parsed)
+}
+
 /// `<amount>/<offset>` for `mark_output_spent` and friends. RingCT
 /// outputs all have amount 0 there; the offset is the global index.
 pub fn parse_output_spec(word: &str) -> Result<u64, String> {
@@ -366,6 +394,15 @@ mod tests {
         assert!(some.incoming && some.pool && !some.outgoing && !some.pending);
         assert_eq!((some.min_height, some.max_height, some.output.as_deref()), (100, 200, Some("x.csv")));
         assert!(parse_history(&words("in 1 2 3")).is_err());
+    }
+
+    #[test]
+    fn pocketchange_defaults_to_the_biggest_split_of_the_biggest_output() {
+        assert_eq!(parse_pocketchange(&[]), Ok(PocketchangeArgs { pieces: 16, inputs: 1, priority: None }));
+        assert_eq!(parse_pocketchange(&words("inputs=3 8 normal")), Ok(PocketchangeArgs { pieces: 8, inputs: 3, priority: Some(2) }));
+        for bad in ["1", "17", "inputs=0", "lots"] {
+            assert!(parse_pocketchange(&words(bad)).is_err(), "{bad}");
+        }
     }
 
     #[test]

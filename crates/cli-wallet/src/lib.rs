@@ -78,6 +78,7 @@ pub use file::{WalletData, WalletFile};
 pub use monero_wallet::interface::FeePriority;
 pub use wallet::{
     CommittedTransfer, DaemonVersion, OwnedOutput, PreparedTransfer, SweepSelect, TransferKind, TransferRequest, Wallet, WalletBalance, WalletKeys,
+    MAX_OUTPUTS,
 };
 
 /// The ring size required for the `ClsagBulletproofPlus` RCT type this

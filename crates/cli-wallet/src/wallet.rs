@@ -347,7 +347,18 @@ pub enum TransferKind {
     /// Spend every selected output and send all of it, less the fee, to
     /// `address`, split over `outputs` outputs.
     Sweep { address: String, outputs: usize, select: SweepSelect },
+    /// `pocketchange`: spend the `inputs` largest spendable outputs and pay
+    /// all of it, less the fee, back to the account as `pieces` equal
+    /// outputs - more independently spendable outputs, so the e2e suites
+    /// never wait on one output's change to mature. The change output is
+    /// one of the pieces, so up to [`MAX_OUTPUTS`] pieces fit in one
+    /// transaction.
+    Pocketchange { pieces: usize, inputs: usize },
 }
+
+/// The most outputs one Monero transaction can have (change included) -
+/// Bulletproofs+ prove at most this many amounts at once.
+pub const MAX_OUTPUTS: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SweepSelect {
@@ -589,6 +600,34 @@ impl Wallet {
                     Some(build(&inputs, payments))
                 })?
             }
+            TransferKind::Pocketchange { pieces, inputs: input_count } => {
+                if !(2..=MAX_OUTPUTS).contains(pieces) {
+                    return Err(WalletError::Invalid(format!("pocketchange splits into 2 to {MAX_OUTPUTS} pieces, not {pieces}")));
+                }
+                if *input_count == 0 {
+                    return Err(WalletError::Invalid("pocketchange needs at least 1 input".to_string()));
+                }
+                if candidates.is_empty() {
+                    return Err(WalletError::Invalid("No unlocked outputs to split".to_string()));
+                }
+                for owned in candidates.into_iter().take(*input_count) {
+                    spent.push(owned.id());
+                    inputs.push(self.with_decoys(decoy_block_number, owned.output).await?);
+                }
+                let own_address = parse_address(&self.subaddress(request.account, 0))?;
+                let total_in: u64 = inputs.iter().map(|i| i.commitment().amount).sum();
+                let pieces = *pieces as u64;
+                // `pieces - 1` payments to the account's own address; the
+                // change output, also the account's, is the last piece (plus
+                // the division's remainder).
+                settle_fee(|fee| {
+                    let piece = total_in.checked_sub(fee)? / pieces;
+                    if piece == 0 {
+                        return None;
+                    }
+                    Some(build(&inputs, vec![(own_address, piece); pieces as usize - 1]))
+                })?
+            }
             TransferKind::Pay { destinations, subtract_fee_from, split_change_into } => {
                 let destinations: Vec<(MoneroAddress, u64)> =
                     destinations.iter().map(|(to, amount)| Ok((parse_address(to)?, *amount))).collect::<Result<_, WalletError>>()?;
@@ -720,16 +759,12 @@ impl Wallet {
         self.transfer(TransferRequest::pay(vec![(to.to_string(), amount)], Some(split_change_into))).await
     }
 
-    /// Splits this wallet's spendable balance into `into` roughly-equal
-    /// self-addressed outputs - in practice, its single largest spendable
-    /// output, via the same largest-first selection `send` uses. Each new
-    /// piece needs its own `SPENDABLE_AGE` confirmations before it's
+    /// Splits account 0's `inputs` largest spendable outputs into `pieces`
+    /// equal outputs of its own (see [`TransferKind::Pocketchange`]). Each
+    /// new piece needs its own `SPENDABLE_AGE` confirmations before it's
     /// usable, same as any other change output.
-    pub async fn split(&self, into: usize) -> Result<[u8; 32], WalletError> {
-        if into < 2 {
-            return Err(WalletError::Invalid(format!("split needs at least 2 pieces, got {into}")));
-        }
-        self.transfer(TransferRequest::pay(vec![], Some(into))).await
+    pub async fn pocketchange(&self, pieces: usize, inputs: usize) -> Result<[u8; 32], WalletError> {
+        self.transfer(TransferRequest { kind: TransferKind::Pocketchange { pieces, inputs }, ..TransferRequest::pay(vec![], None) }).await
     }
 
     /// Records a transaction this wallet didn't sign itself (a faucet
