@@ -68,7 +68,7 @@ pub(super) enum CreateAccountError {
 /// means. `invite_token` is only ever consulted when `is_admin` is `false`
 /// and this instance's `signup.mode` is `"invite_only"` - ignored
 /// (regardless of whether it's `Some` or `None`) in every other case.
-pub(super) fn create_account(
+pub(super) async fn create_account(
     state: &AppState,
     email: &str,
     password: &str,
@@ -83,36 +83,49 @@ pub(super) fn create_account(
     let id = Uuid::new_v4().to_string();
     let created_at = now_unix();
 
-    if !is_admin && crate::settings::signup_mode(&state.db.lock()) == SignupMode::InviteOnly {
-        let token = match invite_token.map(str::trim) {
-            Some(t) if !t.is_empty() => t,
-            _ => return Err(CreateAccountError::InviteRequired),
-        };
-        let token_hash = shared::auth::hash_secret_token(token);
-        return match state.db.lock().redeem_invite_and_create_user(
-            &token_hash,
-            &id,
-            email,
-            &password_hash,
-            created_at,
-        ) {
-            Ok(RedeemInviteResult::Created) => Ok(id),
-            Ok(RedeemInviteResult::DuplicateEmail) => Err(CreateAccountError::DuplicateEmail),
-            Ok(RedeemInviteResult::InvalidOrAlreadyUsed) => {
-                Err(CreateAccountError::InvalidOrUsedInvite)
-            }
-            Err(_) => Err(CreateAccountError::Internal),
-        };
-    }
-
-    let result = state
+    let token_hash = invite_token
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(shared::auth::hash_secret_token);
+    let email = email.to_string();
+    // One write job: the signup mode is read under the same writer as the
+    // account is created.
+    state
         .db
-        .lock()
-        .create_user(&id, email, &password_hash, is_admin, created_at);
-    match result {
-        Ok(()) => Ok(id),
-        Err(e) if e.is_unique_violation() => Err(CreateAccountError::DuplicateEmail),
-        Err(_) => Err(CreateAccountError::Internal),
+        .write(move |db| {
+            if !is_admin && crate::settings::signup_mode(db) == SignupMode::InviteOnly {
+                let Some(token_hash) = token_hash else {
+                    return Err(CreateAccountError::InviteRequired);
+                };
+                return match db.redeem_invite_and_create_user(
+                    &token_hash,
+                    &id,
+                    &email,
+                    &password_hash,
+                    created_at,
+                ) {
+                    Ok(RedeemInviteResult::Created) => Ok(id),
+                    Ok(RedeemInviteResult::DuplicateEmail) => {
+                        Err(CreateAccountError::DuplicateEmail)
+                    }
+                    Ok(RedeemInviteResult::InvalidOrAlreadyUsed) => {
+                        Err(CreateAccountError::InvalidOrUsedInvite)
+                    }
+                    Err(_) => Err(CreateAccountError::Internal),
+                };
+            }
+            match db.create_user(&id, &email, &password_hash, is_admin, created_at) {
+                Ok(()) => Ok(id),
+                Err(e) if e.is_unique_violation() => Err(CreateAccountError::DuplicateEmail),
+                Err(_) => Err(CreateAccountError::Internal),
+            }
+        })
+        .await
+}
+
+impl From<shared::sqlite::PoolError> for CreateAccountError {
+    fn from(_: shared::sqlite::PoolError) -> Self {
+        CreateAccountError::Internal
     }
 }
 
@@ -126,7 +139,9 @@ pub async fn signup(
         &req.password,
         false,
         req.invite_token.as_deref(),
-    ) {
+    )
+    .await
+    {
         Ok(id) => Ok((StatusCode::CREATED, Json(SignupResponse { user_id: id }))),
         Err(CreateAccountError::DuplicateEmail) => Err(ApiError::Conflict),
         Err(CreateAccountError::Internal) => Err(ApiError::Internal),

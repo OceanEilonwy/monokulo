@@ -103,40 +103,14 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (20, include_str!("../migrations/0020_scanner_indexes.sql")),
 ];
 
-/// Connection-level settings that are *not* persisted in the database file, so they
-/// have to be re-applied every single time a connection is opened - not just on the
-/// boot that happened to run the initial migration. `foreign_keys` in particular
-/// defaults to OFF in SQLite: setting it once inside `0001_init.sql` meant foreign
-/// key enforcement was silently inactive on every restart after the very first one.
-/// (`journal_mode = WAL` *is* persisted in the file, but is set here too so a fresh
-/// file gets it from the first connection onward rather than only mid-migration.)
-///
-/// WAL + NORMAL is the standard pairing for this workload: WAL lets the writer commit
-/// while read connections keep serving status polls, and NORMAL is durable against
-/// application/process crashes under WAL (only an OS crash or power loss can lose the
-/// last few commits). This isn't a ledger moving funds - it's a record of payments
-/// observed on-chain - so that tradeoff beats paying fsync-per-commit latency.
-///
-/// Must run before `apply_migrations`: `PRAGMA foreign_keys` is a no-op if issued
-/// inside a transaction, and each migration now runs inside one.
+/// The engine's writing connections (the shared store and the database
+/// worker) take `shared::sqlite`'s writer settings: WAL, `synchronous =
+/// NORMAL`, foreign keys, a busy timeout and a statement cache. This isn't a
+/// ledger moving funds, it's a record of payments observed on-chain, so
+/// NORMAL's tradeoff (only an OS crash or power loss can lose the last few
+/// commits) beats paying an fsync per commit.
 fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
-         PRAGMA foreign_keys = ON;
-         PRAGMA journal_size_limit = 67108864;",
-    )?;
-    tune_connection(conn)
-}
-
-/// Settings every connection gets, writers and readers alike: how long to
-/// wait for another connection's lock before reporting it busy (two
-/// connections write: the database worker and the API), and room to keep
-/// every hot statement prepared.
-fn tune_connection(conn: &Connection) -> rusqlite::Result<()> {
-    conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
-    Ok(())
+    shared::sqlite::configure_writer(conn)
 }
 
 /// A column value as plain text, for comparing database states in tests.
@@ -151,13 +125,6 @@ pub(crate) fn value_text(value: rusqlite::types::ValueRef<'_>) -> String {
         ValueRef::Blob(b) => hex::encode(b),
     }
 }
-
-/// How long a connection waits for another's lock. Scanner transactions are
-/// bounded pages, so this is only reached if something is badly wrong.
-const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-/// Prepared statements kept per connection (the default is 16, fewer than
-/// the scanner's hot queries).
-const STATEMENT_CACHE: usize = 128;
 
 /// Each migration's DDL and its `schema_migrations` bookkeeping row commit together
 /// or not at all. Without that, a crash in the window between the two re-runs the
@@ -177,60 +144,28 @@ fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
 
 pub type SharedStore = Arc<Mutex<Store>>;
 
-type ReadJob = Box<dyn FnOnce(&Store) + Send + 'static>;
-
-/// Independent read-only SQLite connections. WAL lets these readers run
-/// concurrently with the writer; each connection stays on its own thread so
-/// a disk stall never blocks a Tokio worker.
+/// Independent read-only SQLite connections (`shared::sqlite::Pool`). WAL
+/// lets these readers run concurrently with the writer; each connection
+/// stays on its own thread, so a disk stall never blocks a Tokio worker, and
+/// a read goes to whichever connection is free.
 #[derive(Clone)]
-pub struct ReadStorePool {
-    workers: Arc<Vec<tokio::sync::mpsc::Sender<ReadJob>>>,
-    next: Arc<std::sync::atomic::AtomicUsize>,
-}
+pub struct ReadStorePool(shared::sqlite::Pool<Store>);
 
 impl ReadStorePool {
     pub fn open(path: &str, count: usize) -> Result<Self> {
-        let mut workers = Vec::new();
-        for n in 0..count.max(1) {
-            let conn =
-                Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA query_only = ON;")?;
-            tune_connection(&conn)?;
-            let store = Store::from_connection(conn);
-            let (sender, mut receiver) = tokio::sync::mpsc::channel::<ReadJob>(64);
-            std::thread::Builder::new()
-                .name(format!("scanner-db-read-{n}"))
-                .spawn(move || {
-                    while let Some(job) = receiver.blocking_recv() {
-                        job(&store);
-                    }
-                })
-                .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
-            workers.push(sender);
-        }
-        Ok(Self {
-            workers: Arc::new(workers),
-            next: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        })
+        let stores = (0..count.max(1))
+            .map(|_| Ok(Store::from_connection(shared::sqlite::open_reader(path)?)))
+            .collect::<Result<Vec<_>>>()?;
+        shared::sqlite::Pool::start("scanner-db-read", stores)
+            .map(Self)
+            .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))
     }
 
     pub async fn query<T: Send + 'static>(
         &self,
         f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        let job: ReadJob = Box::new(move |store| {
-            let _ = reply.send(f(store));
-        });
-        let index =
-            self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.workers.len();
-        self.workers[index]
-            .send(job)
-            .await
-            .map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?;
-        answer
-            .await
-            .map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?
+        self.0.run(f).await
     }
 }
 
@@ -270,6 +205,12 @@ pub enum StoreError {
     NotFound,
     #[error("database worker unavailable: {0}")]
     WorkerUnavailable(String),
+}
+
+impl From<shared::sqlite::PoolError> for StoreError {
+    fn from(e: shared::sqlite::PoolError) -> Self {
+        StoreError::WorkerUnavailable(e.to_string())
+    }
 }
 
 type Result<T> = std::result::Result<T, StoreError>;
@@ -688,6 +629,12 @@ impl Store {
         Ok(())
     }
 
+    /// Runs `f` with this connection refusing writes, as a read pool's
+    /// connections do (`shared::sqlite::read_only`).
+    pub fn read_only<T>(&self, f: impl FnOnce() -> T) -> T {
+        shared::sqlite::read_only(&self.conn, f)
+    }
+
     pub fn into_shared(self) -> SharedStore {
         Arc::new(Mutex::new(self))
     }
@@ -820,7 +767,7 @@ impl Store {
                     )
                     .unwrap();
                 self.conn
-                    .set_prepared_statement_cache_capacity(STATEMENT_CACHE);
+                    .set_prepared_statement_cache_capacity(shared::sqlite::STATEMENT_CACHE);
             }
         }
         seen

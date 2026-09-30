@@ -10,7 +10,7 @@ use axum::{
 };
 use monokulo::{
     crypto,
-    db::{Db, SharedDb},
+    db::{Database, Db},
     embed_domains::UnavailableDns,
     engine_client::{CreateTenantRequest, EngineClient},
     exchange_rate_config::ExchangeRateProviders,
@@ -31,7 +31,7 @@ struct Controls {
     token: String,
     public_key: String,
     order_id: String,
-    db: SharedDb,
+    db: Database,
 }
 
 async fn ready() -> &'static str {

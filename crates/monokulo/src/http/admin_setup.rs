@@ -12,7 +12,7 @@
 //! wizard only ever concerns the one instance-wide admin account).
 //!
 //! A successful submission creates the one admin account
-//! (`signup::create_account(.., is_admin: true)`), marks setup complete, logs
+//! (`signup::create_account(.., is_admin: true).await`), marks setup complete, logs
 //! the new admin straight in (the same session-cookie mechanics
 //! `dashboard::login_submit` uses), and redirects to the admin settings page
 //! — so completing the wizard is the entire "first start" experience the
@@ -48,13 +48,23 @@ pub struct SetupForm {
     pub confirm_password: String,
 }
 
-fn render_setup_form(state: &AppState, error: Option<&str>, email: &str) -> Response {
-    let chrome = super::page_chrome(state, None, "/admin/setup");
+async fn render_setup_form(state: &AppState, error: Option<&str>, email: &str) -> Response {
+    let chrome = super::page_chrome(state, None, "/admin/setup").await;
     let data = SetupViewModel {
         error: error.map(str::to_string),
         email: email.to_string(),
     };
     views::admin::setup_page(&chrome, &data).into_response()
+}
+
+/// Whether first-run setup is done; a database error counts as done, so
+/// the wizard is never shown when it can't be sure.
+async fn setup_complete(state: &AppState) -> bool {
+    state
+        .db
+        .read(|db| db.is_setup_complete())
+        .await
+        .unwrap_or(true)
 }
 
 /// `GET /admin/setup`. Once setup is already complete this is no longer a
@@ -63,10 +73,10 @@ fn render_setup_form(state: &AppState, error: Option<&str>, email: &str) -> Resp
 /// same "just take me somewhere sensible" behavior a stale bookmark to this
 /// URL deserves.
 pub async fn setup_form(State(state): State<AppState>) -> Response {
-    if state.db.lock().is_setup_complete().unwrap_or(true) {
+    if setup_complete(&state).await {
         return redirect_302("/");
     }
-    render_setup_form(&state, None, "")
+    render_setup_form(&state, None, "").await
 }
 
 /// `POST /admin/setup`. Re-checks `is_setup_complete` again right before
@@ -75,12 +85,12 @@ pub async fn setup_form(State(state): State<AppState>) -> Response {
 /// already completed elsewhere) must never be able to create a second admin
 /// account.
 pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupForm>) -> Response {
-    if state.db.lock().is_setup_complete().unwrap_or(true) {
+    if setup_complete(&state).await {
         return redirect_302("/");
     }
 
     if form.password != form.confirm_password {
-        return render_setup_form(&state, Some("Passwords do not match."), &form.email);
+        return render_setup_form(&state, Some("Passwords do not match."), &form.email).await;
     }
     if form.password.len() < MIN_ADMIN_PASSWORD_LEN {
         return render_setup_form(
@@ -89,10 +99,11 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
                 "Password must be at least {MIN_ADMIN_PASSWORD_LEN} characters."
             )),
             &form.email,
-        );
+        )
+        .await;
     }
 
-    match signup::create_account(&state, &form.email, &form.password, true, None) {
+    match signup::create_account(&state, &form.email, &form.password, true, None).await {
         Ok(_user_id) => {
             // The account row and the `setup_complete` flag are two separate
             // writes (`Db` has no cross-statement transaction API today) -
@@ -103,9 +114,9 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
             // means the very next request just re-runs the (idempotent for
             // this purpose) `mark_setup_complete` if this instance ever hits
             // that path.
-            state.db.lock().mark_setup_complete().ok();
+            state.db.write(|db| db.mark_setup_complete()).await.ok();
 
-            match login::authenticate(&state, &form.email, &form.password) {
+            match login::authenticate(&state, &form.email, &form.password).await {
                 Ok((_user, raw_token)) => {
                     let cookie = Cookie::build((super::SESSION_COOKIE_NAME, raw_token))
                         .http_only(true)
@@ -122,11 +133,14 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
                 Err(_) => redirect_302("/dashboard/login"),
             }
         }
-        Err(CreateAccountError::DuplicateEmail) => render_setup_form(
-            &state,
-            Some("That email is already registered."),
-            &form.email,
-        ),
+        Err(CreateAccountError::DuplicateEmail) => {
+            render_setup_form(
+                &state,
+                Some("That email is already registered."),
+                &form.email,
+            )
+            .await
+        }
         // `is_admin: true` above skips the invite check outright
         // (`signup::create_account`'s own doc comment) - these two variants
         // are genuinely unreachable from this call site, kept as a plain
@@ -135,11 +149,14 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
         // somehow changed.
         Err(CreateAccountError::Internal)
         | Err(CreateAccountError::InviteRequired)
-        | Err(CreateAccountError::InvalidOrUsedInvite) => render_setup_form(
-            &state,
-            Some("Something went wrong. Please try again."),
-            &form.email,
-        ),
+        | Err(CreateAccountError::InvalidOrUsedInvite) => {
+            render_setup_form(
+                &state,
+                Some("Something went wrong. Please try again."),
+                &form.email,
+            )
+            .await
+        }
     }
 }
 

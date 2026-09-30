@@ -133,6 +133,15 @@ settings! {
         description: "Megabytes of memory for monokulo's cache of engine responses.",
         example: "16",
     },
+    DATABASE_READ_CONNECTIONS: usize {
+        key: "database.read_connections",
+        env: "MONOKULO_DATABASE_READ_CONNECTIONS",
+        default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
+        check: range(1, 64),
+        description: "Read-only connections monokulo opens to its database, each on its own thread. Reads run side by side, so more help up to the number of CPU cores; each keeps its own cache of about 2 MB. Takes effect after a restart.",
+        example: "4",
+        applies: Restart,
+    },
     RATE_LIMIT_PER_STORE_KEY_PER_MIN: u32 {
         key: "rate_limit.per_store_key_per_min",
         env: "MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN",
@@ -394,6 +403,25 @@ pub struct PerRequest {
     pub signup_mode: SignupMode,
     pub public_url: String,
     pub admin_token: Secret,
+}
+
+/// Read once at start: how many read connections the database opens
+/// (`db::Database`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatabaseConfig {
+    pub read_connections: usize,
+}
+
+impl Section for DatabaseConfig {
+    const NAME: &'static str = "database";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&DATABASE_READ_CONNECTIONS]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(DatabaseConfig {
+            read_connections: snapshot.get(&DATABASE_READ_CONNECTIONS),
+        })
+    }
 }
 
 impl Section for PerRequest {
@@ -796,6 +824,8 @@ impl MonokuloSettings {
         // Its settings are read per request with `get` (they have no
         // runtime state to rebuild); the section only groups them.
         builder.section::<PerRequest>();
+        // Read once at start, before the registry exists (`main.rs`).
+        builder.section::<DatabaseConfig>();
         builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
         let registry = builder.build().map_err(|e| e.to_string())?;
         let report = registry.boot().await.map_err(|e| e.to_string())?;
@@ -887,6 +917,7 @@ mod tests {
         assert!(AbuseConfig::from_snapshot(&snapshot).is_ok());
         assert!(OnionListenerConfig::from_snapshot(&snapshot).is_ok());
         assert!(LoggingConfig::from_snapshot(&snapshot).is_ok());
+        assert!(DatabaseConfig::from_snapshot(&snapshot).is_ok());
         let covered: usize = [
             EngineConnection::keys().len(),
             PerRequest::keys().len(),
@@ -894,6 +925,7 @@ mod tests {
             AbuseConfig::keys().len(),
             OnionListenerConfig::keys().len(),
             LoggingConfig::keys().len(),
+            DatabaseConfig::keys().len(),
         ]
         .iter()
         .sum();

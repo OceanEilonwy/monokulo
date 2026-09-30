@@ -228,7 +228,12 @@ No SQLite call runs on a Tokio worker thread in production:
   order-change notifications, so live updates see its commits.
 - **API requests** read through the read pool (`AppState::read_store`) and
   write on the worker's `Admin` class (`AppState::write_store`), so API and
-  scanner writes share one queue discipline.
+  scanner writes share one queue discipline. The read pool is
+  `shared::sqlite::Pool`: read-only connections (`database.read_connections`,
+  default 4, read at start), each on its own thread, all taking reads from
+  one queue, so a read waits only for a free connection, never behind a slow
+  read on a particular one. Monokulo reaches its own database the same way
+  (`db::Database`: `read` on its pool, `write` on one writing connection).
 - **Key registration** lists stores through the worker too; the loops no
   longer hold the shared store at all.
 - **Connections** are tuned once: a 5 s busy timeout, a 128-statement cache

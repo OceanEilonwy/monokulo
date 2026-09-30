@@ -850,7 +850,9 @@ live-scanning-only bookkeeping.
   sending results to the writer over a channel.
 - **Read pool**: separate pooled read-only connections (SQLite WAL mode) for
   `GET`/status-poll handlers, independent of the writer so a slow write never blocks a
-  status poll.
+  status poll. Sized by `database.read_connections` (default 4, applied at start);
+  every connection takes from one queue (`shared::sqlite::Pool`), so a read waits
+  only for a free connection. Monokulo's database has the same shape (`db::Database`).
 - **Webhook delivery worker**: separate async task(s) polling due `webhook_deliveries`
   rows and performing outbound HTTP — isolated so a slow or hostile merchant endpoint
   can never stall order-state commits.

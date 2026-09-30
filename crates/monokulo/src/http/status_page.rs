@@ -275,13 +275,13 @@ pub async fn status_page(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let authed = super::resolve_authed_user(&state, &headers);
+    let authed = super::resolve_authed_user(&state, &headers).await;
     let view_model = status_view(
         &state,
         authed.as_ref().is_some_and(|(user, _)| user.is_admin),
     )
     .await;
-    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/status");
+    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/status").await;
     views::status::page(&chrome, &view_model).into_response()
 }
 
@@ -307,7 +307,9 @@ pub async fn status_events(
         },
         None => None,
     };
-    let admin = super::resolve_authed_user(&state, &headers).is_some_and(|(user, _)| user.is_admin);
+    let admin = super::resolve_authed_user(&state, &headers)
+        .await
+        .is_some_and(|(user, _)| user.is_admin);
     let stream = futures_util::stream::unfold(
         (state, None::<String>, true),
         move |(state, last, first)| {

@@ -206,7 +206,12 @@ pub async fn resolve_for_order(
             );
         }
     };
-    let thresholds = state.db.lock().list_confirmation_thresholds(&row.id).map_err(|e| {
+    let id = row.id.clone();
+    let thresholds = state
+        .db
+        .read(move |db| db.list_confirmation_thresholds(&id))
+        .await
+        .map_err(|e| {
         tracing::error!(store.id = %row.id, error = %e, "could not load confirmation thresholds");
         "something went wrong resolving the confirmation threshold. Please try again.".to_string()
     })?;

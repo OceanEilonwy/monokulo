@@ -30,14 +30,10 @@
 //! effective, which is exactly the "use this to persist the environment
 //! variables currently configured" behavior asked for.
 //!
-//! **Locking discipline**: `state.db.lock()` returns a `MutexGuard`, which is
-//! deliberately not `Send` - every function below that does real `.await`
-//! work (fetching or forwarding to the scanner) takes plain, already-read
-//! owned values instead of a `&Db`/guard, and every lock is acquired,
-//! read, and dropped in its own small scope *before* any `await` - the same
-//! "never hold the lock across an await point" discipline every other
-//! handler in this crate already follows, just spelled out here since this
-//! module has more await points per handler than most.
+//! **Database access**: settings are read through `state.db.read` (and the
+//! settings registry), each a job on the database's own threads; the
+//! functions below that talk to the engine take plain, already-read owned
+//! values.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -46,7 +42,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::admin_nodes::{self, NodeForm};
-use crate::db::{Db, UserRow};
+use crate::db::UserRow;
 use crate::views;
 use crate::views::admin::{
     setting_placement, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel,
@@ -135,15 +131,22 @@ fn traced(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 /// This instance's engine connection, read synchronously with the lock
 /// held - the two owned `String`s are then free to travel across an
 /// `.await` on their own.
-fn engine_connection(db: &Db) -> (String, String) {
-    (
-        crate::settings::get(db, &crate::settings::ENGINE_URL)
-            .as_str()
-            .to_string(),
-        crate::settings::get(db, &crate::settings::SCANNER_ADMIN_TOKEN)
-            .expose()
-            .to_string(),
-    )
+/// The engine's URL and admin token, empty if they can't be read.
+async fn engine_connection(state: &AppState) -> (String, String) {
+    state
+        .db
+        .read(|db| {
+            Ok::<_, crate::db::DbError>((
+                crate::settings::get(db, &crate::settings::ENGINE_URL)
+                    .as_str()
+                    .to_string(),
+                crate::settings::get(db, &crate::settings::SCANNER_ADMIN_TOKEN)
+                    .expose()
+                    .to_string(),
+            ))
+        })
+        .await
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -307,7 +310,7 @@ async fn build_view_model(
     } = result;
     let mut monokulo_fields = monokulo_fields(state);
     with_time_limits(&mut monokulo_fields);
-    let (engine_url, admin_token) = engine_connection(&state.db.lock());
+    let (engine_url, admin_token) = engine_connection(state).await;
     let mut view = AdminSettingsViewModel {
         tab,
         error,
@@ -429,8 +432,8 @@ fn attach_node_status(
     }
 }
 
-fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewModel) -> Response {
-    let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/settings");
+async fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewModel) -> Response {
+    let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/settings").await;
     views::admin::admin_settings_page(&chrome, &view).into_response()
 }
 
@@ -469,7 +472,7 @@ pub async fn page(
         return axum::response::Html(views::admin::settings_fragment(&view, true).into_string())
             .into_response();
     }
-    render(&state, &admin_user, view)
+    render(&state, &admin_user, view).await
 }
 
 /// The submitted form by name. A list of choices sends each one ticked
@@ -789,7 +792,7 @@ async fn save_engine(
     mut req: RemoteUpdateRequest,
     clears: &[String],
 ) -> SaveOutcome {
-    let (engine_url, admin_token) = engine_connection(&state.db.lock());
+    let (engine_url, admin_token) = engine_connection(state).await;
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
         return SaveOutcome::refused("No engine connection is configured.".to_string());
     }
@@ -1006,7 +1009,7 @@ pub async fn save(
     let mut view = build_view_model(&state, tab, result).await;
     view.saved_tab = Some(tab);
     if !fx.0 {
-        return render(&state, &admin_user, view);
+        return render(&state, &admin_user, view).await;
     }
     let fragment = views::admin::settings_fragment(&view, false);
     if refused {
@@ -1362,6 +1365,7 @@ mod tests {
             ("exchange_rate.haveno_base_url", "http://127.0.0.1:9997"),
             ("exchange_rate.cache_seconds", "77"),
             ("http_cache.max_mb", "42"),
+            ("database.read_connections", "6"),
             ("abuse.soft_per_min", "33"),
             ("abuse.hard_per_min", "330"),
             ("abuse.signed_in_per_min", "700"),
@@ -1448,6 +1452,8 @@ mod tests {
             ("server.worker_threads", "4"),
             ("server.rate_limit_per_token_per_min", "200"),
             ("server.max_body_bytes", "16384"),
+            // The same key as monokulo's own, so sent as `engine:<key>`.
+            ("engine:database.read_connections", "6"),
             ("webhooks.allow_private_urls", "true"),
             ("webhooks.delivery_timeout_ms", "10000"),
             ("webhooks.max_attempts", "12"),
@@ -2150,7 +2156,7 @@ mod tests {
     }
 
     /// Every monokulo setting as stored, to see that a save left them alone.
-    fn monokulo_stored(db: &crate::db::SharedDb) -> Vec<(&'static str, Option<String>)> {
+    fn monokulo_stored(db: &crate::db::Database) -> Vec<(&'static str, Option<String>)> {
         crate::settings::ALL
             .iter()
             .map(|s| (s.key(), db.lock().get_setting(s.key()).unwrap()))

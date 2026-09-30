@@ -138,6 +138,15 @@ settings! {
         example: "2",
         applies: Restart,
     },
+    DATABASE_READ_CONNECTIONS: usize {
+        key: "database.read_connections",
+        env: "SCANNER_DATABASE_READ_CONNECTIONS",
+        default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
+        check: range(1, 64),
+        description: "Read-only connections the engine opens to its database, each on its own thread. Reads run side by side, so more help up to the number of CPU cores; each keeps its own cache of about 2 MB. Takes effect after a restart.",
+        example: "4",
+        applies: Restart,
+    },
     SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN: u32 {
         key: "server.rate_limit_per_token_per_min",
         env: "SCANNER_SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN",
@@ -395,23 +404,29 @@ impl Section for TenantDefaults {
     }
 }
 
-/// Read once at start: the listen address and the thread count (tasks 2.7,
-/// 2.8, decisions D1 and D8).
+/// Read once at start: the listen address, the thread count (tasks 2.7,
+/// 2.8, decisions D1 and D8) and the database's read connections.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeConfig {
     pub bind: std::net::SocketAddr,
     pub worker_threads: usize,
+    pub read_connections: usize,
 }
 
 impl Section for RuntimeConfig {
     const NAME: &'static str = "runtime";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&SERVER_BIND, &SERVER_WORKER_THREADS]
+        &[
+            &SERVER_BIND,
+            &SERVER_WORKER_THREADS,
+            &DATABASE_READ_CONNECTIONS,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(RuntimeConfig {
             bind: snapshot.get(&SERVER_BIND).0,
             worker_threads: snapshot.get(&SERVER_WORKER_THREADS),
+            read_connections: snapshot.get(&DATABASE_READ_CONNECTIONS),
         })
     }
 }

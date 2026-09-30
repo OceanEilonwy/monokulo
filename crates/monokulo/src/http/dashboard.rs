@@ -147,11 +147,14 @@ pub struct ConnectForm {
 /// session check - this page's whole purpose is establishing a *new*
 /// session, so showing the sign-up/log-in links regardless of any existing
 /// one is the reasonable default (see `views::auth`'s own doc comment).
-fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> Response {
-    let invite_required = crate::settings::signup_mode(&state.db.lock())
-        == crate::settings::SignupMode::InviteOnly
-        && invite_token.trim().is_empty();
-    let chrome = super::page_chrome(state, None, "");
+async fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> Response {
+    let invite_only = state
+        .db
+        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::signup_mode(db)))
+        .await
+        .is_ok_and(|mode| mode == crate::settings::SignupMode::InviteOnly);
+    let invite_required = invite_only && invite_token.trim().is_empty();
+    let chrome = super::page_chrome(state, None, "").await;
     let data = views::auth::SignupViewModel {
         error: error.map(str::to_string),
         invite_required,
@@ -161,8 +164,8 @@ fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> R
 }
 
 /// Same `chrome.logged_in == false` reasoning as `render_signup` above.
-fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Response {
-    let chrome = super::page_chrome(state, None, "");
+async fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Response {
+    let chrome = super::page_chrome(state, None, "").await;
     let data = views::auth::LoginViewModel {
         error: error.map(str::to_string),
         next: next.map(str::to_string),
@@ -177,7 +180,7 @@ fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Re
 /// `ConnectViewModel`'s own doc comment for why that's the right call here
 /// (these are plain-text inputs already, not password fields - echoing
 /// doesn't change what was ever visible on the merchant's own screen).
-fn render_connect_form(
+async fn render_connect_form(
     state: &AppState,
     error: Option<&str>,
     resubmit: Option<&ConnectForm>,
@@ -186,9 +189,13 @@ fn render_connect_form(
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
     let selected_currency = resubmit.map(|f| f.base_currency.as_str()).unwrap_or("XMR");
-    let currency_options = crate::currencies::currency_options(&state.db.lock(), selected_currency)
+    let selected = selected_currency.to_string();
+    let currency_options = state
+        .db
+        .read(move |db| crate::currencies::currency_options(db, &selected))
+        .await
         .unwrap_or_default();
-    let chrome = super::page_chrome(state, Some(user), "/dashboard/connect");
+    let chrome = super::page_chrome(state, Some(user), "/dashboard/connect").await;
     let data = views::connect::ConnectViewModel {
         error: error.map(str::to_string),
         public_key: None,
@@ -211,18 +218,24 @@ fn render_connect_form(
     views::connect::page(&chrome, &data).into_response()
 }
 
-fn render_connect_success(
+async fn render_connect_success(
     state: &AppState,
     connection_id: &str,
     public_key: &str,
     user: &UserRow,
 ) -> Response {
-    let chrome = super::page_chrome(state, Some(user), "/dashboard/connect");
+    let chrome = super::page_chrome(state, Some(user), "/dashboard/connect").await;
+    let public_url = state
+        .db
+        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::public_url(db)))
+        .await
+        .ok()
+        .flatten();
     let data = views::connect::ConnectViewModel {
         error: None,
         public_key: Some(public_key.to_string()),
         connection_id: Some(connection_id.to_string()),
-        public_url: crate::settings::public_url(&state.db.lock()),
+        public_url,
         site_url: String::new(),
         view_key_hex: String::new(),
         spend_pubkey_hex: String::new(),
@@ -254,7 +267,7 @@ pub async fn signup_form(
     State(state): State<AppState>,
     Query(query): Query<SignupQuery>,
 ) -> Response {
-    render_signup(&state, None, query.invite.as_deref().unwrap_or(""))
+    render_signup(&state, None, query.invite.as_deref().unwrap_or("")).await
 }
 
 pub async fn signup_submit(
@@ -267,28 +280,37 @@ pub async fn signup_submit(
         &form.password,
         false,
         Some(&form.invite),
-    ) {
+    )
+    .await
+    {
         // Simplest reasonable post-signup behavior: send the new user to the
         // login page rather than also logging them in here - it reuses
         // `login_submit`'s own cookie-setting path instead of duplicating it,
         // at the cost of one extra form submission for the user.
         Ok(_user_id) => redirect_302("/dashboard/login"),
-        Err(CreateAccountError::DuplicateEmail) => render_signup(
-            &state,
-            Some("That email is already registered. Try logging in instead."),
-            &form.invite,
-        ),
-        Err(CreateAccountError::Internal) => render_signup(
-            &state,
-            Some("Something went wrong. Please try again."),
-            &form.invite,
-        ),
-        Err(CreateAccountError::InviteRequired) => render_signup(&state, None, ""),
+        Err(CreateAccountError::DuplicateEmail) => {
+            render_signup(
+                &state,
+                Some("That email is already registered. Try logging in instead."),
+                &form.invite,
+            )
+            .await
+        }
+        Err(CreateAccountError::Internal) => {
+            render_signup(
+                &state,
+                Some("Something went wrong. Please try again."),
+                &form.invite,
+            )
+            .await
+        }
+        Err(CreateAccountError::InviteRequired) => render_signup(&state, None, "").await,
         Err(CreateAccountError::InvalidOrUsedInvite) => render_signup(
             &state,
             Some("That invite link is invalid or has already been used. Please request a new one."),
             "",
-        ),
+        )
+        .await,
     }
 }
 
@@ -296,7 +318,7 @@ pub async fn login_form(
     State(state): State<AppState>,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    render_login(&state, None, query.next.as_deref())
+    render_login(&state, None, query.next.as_deref()).await
 }
 
 /// `POST /dashboard/logout` - the browser-facing nav's "log out" link (a
@@ -315,7 +337,11 @@ pub async fn logout_submit(
     State(state): State<AppState>,
     AuthedUser(_user, token_hash): AuthedUser,
 ) -> Response {
-    state.db.lock().delete_session(&token_hash).ok();
+    state
+        .db
+        .write(move |db| db.delete_session(&token_hash))
+        .await
+        .ok();
     let cookie = Cookie::build((super::SESSION_COOKIE_NAME, ""))
         .http_only(true)
         .same_site(SameSite::Lax)
@@ -350,14 +376,19 @@ pub async fn timezone_submit(
     AuthedUser(user, _): AuthedUser,
     Form(form): Form<TimezoneForm>,
 ) -> Response {
-    let chosen = form.timezone.trim();
-    if chosen.is_empty() {
-        state.db.lock().update_user_timezone(&user.id, None).ok();
-    } else if jiff::tz::TimeZone::get(chosen).is_ok() {
+    let chosen = form.timezone.trim().to_string();
+    let zone = if chosen.is_empty() {
+        Some(None)
+    } else if jiff::tz::TimeZone::get(&chosen).is_ok() {
+        Some(Some(chosen))
+    } else {
+        None
+    };
+    if let Some(zone) = zone {
         state
             .db
-            .lock()
-            .update_user_timezone(&user.id, Some(chosen))
+            .write(move |db| db.update_user_timezone(&user.id, zone.as_deref()))
+            .await
             .ok();
     }
     redirect_302("/dashboard#timezone")
@@ -384,7 +415,12 @@ pub async fn theme_submit(
     Form(form): Form<ThemeForm>,
 ) -> Response {
     let next_theme = selected_theme(user.theme, form.theme.as_deref());
-    state.db.lock().update_user_theme(&user.id, next_theme).ok();
+    let user_id = user.id.clone();
+    state
+        .db
+        .write(move |db| db.update_user_theme(&user_id, next_theme))
+        .await
+        .ok();
     let target = form
         .next
         .as_deref()
@@ -419,7 +455,7 @@ mod theme_selector_tests {
 /// the connect flow) or fails validation, behavior is *exactly* what it was
 /// before this task: the same inline confirmation, unchanged.
 pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginForm>) -> Response {
-    match login::authenticate(&state, &form.email, &form.password) {
+    match login::authenticate(&state, &form.email, &form.password).await {
         Ok((_user, raw_token)) => {
             // `HttpOnly` - never readable from page JS, so an XSS can't
             // exfiltrate the session token. `SameSite=Lax` - sent on
@@ -454,16 +490,22 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
             // "you're logged in, here's your stuff" flow.
             (jar, redirect_302("/dashboard")).into_response()
         }
-        Err(LoginError::Unauthorized) => render_login(
-            &state,
-            Some("Invalid email or password."),
-            form.next.as_deref(),
-        ),
-        Err(LoginError::Internal) => render_login(
-            &state,
-            Some("Something went wrong. Please try again."),
-            form.next.as_deref(),
-        ),
+        Err(LoginError::Unauthorized) => {
+            render_login(
+                &state,
+                Some("Invalid email or password."),
+                form.next.as_deref(),
+            )
+            .await
+        }
+        Err(LoginError::Internal) => {
+            render_login(
+                &state,
+                Some("Something went wrong. Please try again."),
+                form.next.as_deref(),
+            )
+            .await
+        }
     }
 }
 
@@ -477,7 +519,7 @@ pub async fn connect_form(
     State(state): State<AppState>,
     AuthedUser(user, _token_hash): AuthedUser,
 ) -> Response {
-    render_connect_form(&state, None, None, &user)
+    render_connect_form(&state, None, None, &user).await
 }
 
 /// `POST /dashboard/connect` (WBS 1.3.2) - the form equivalent of
@@ -518,17 +560,20 @@ pub async fn connect_submit(
 
     match connections::create_connection_for_user(&state, &user, fields).await {
         Ok(outcome) => {
-            render_connect_success(&state, &outcome.connection_id, &outcome.public_key, &user)
+            render_connect_success(&state, &outcome.connection_id, &outcome.public_key, &user).await
         }
         Err(CreateConnectionError::BadRequest(message)) => {
-            render_connect_form(&state, Some(&message), Some(&form), &user)
+            render_connect_form(&state, Some(&message), Some(&form), &user).await
         }
-        Err(CreateConnectionError::Internal) => render_connect_form(
-            &state,
-            Some("Something went wrong. Please try again."),
-            Some(&form),
-            &user,
-        ),
+        Err(CreateConnectionError::Internal) => {
+            render_connect_form(
+                &state,
+                Some("Something went wrong. Please try again."),
+                Some(&form),
+                &user,
+            )
+            .await
+        }
     }
 }
 

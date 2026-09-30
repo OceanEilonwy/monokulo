@@ -95,7 +95,7 @@ impl ConnectQuery {
 /// "use an existing store" picker (`PlatformConnectViewModel::existing_stores`)
 /// is never stale - cheap, and consistent with `home::dashboard_home`
 /// already doing one query per connected store on every dashboard load.
-fn render_confirm_form(
+async fn render_confirm_form(
     state: &AppState,
     platform: &str,
     request: ConnectRequest<'_>,
@@ -117,13 +117,19 @@ fn render_confirm_form(
     let selected_currency = resubmit
         .and_then(|f| f.base_currency.as_deref())
         .unwrap_or("XMR");
-    let currency_options = crate::currencies::currency_options(&state.db.lock(), selected_currency)
-        .unwrap_or_default();
-    let existing_stores = state
+    let (selected, user_id) = (selected_currency.to_string(), user.id.clone());
+    let (currency_options, stores) = state
         .db
-        .lock()
-        .list_store_connections_for_user(&user.id)
-        .unwrap_or_default()
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                crate::currencies::currency_options(db, &selected).unwrap_or_default(),
+                db.list_store_connections_for_user(&user_id)
+                    .unwrap_or_default(),
+            ))
+        })
+        .await
+        .unwrap_or_default();
+    let existing_stores = stores
         .into_iter()
         .map(|row| ExistingStoreOption {
             connection_id: row.id,
@@ -131,8 +137,8 @@ fn render_confirm_form(
             platform: row.platform,
         })
         .collect();
-    let unavailable = public_url_for_plugins(state).err();
-    let chrome = super::page_chrome(state, Some(user), format!("/connect/{platform}"));
+    let unavailable = public_url_for_plugins(state).await.err();
+    let chrome = super::page_chrome(state, Some(user), format!("/connect/{platform}")).await;
     let data = PlatformConnectViewModel {
         platform: platform.to_string(),
         site_url: site_url.to_string(),
@@ -169,8 +175,14 @@ const NO_PUBLIC_URL: &str = "This Monokulo instance can't connect plugins yet: i
 /// connecting can't work yet. Checked on the confirm screen (so the merchant
 /// sees it before typing anything), again when it is submitted, and in
 /// `/finish`, so a plugin is never handed a wrong address.
-fn public_url_for_plugins(state: &AppState) -> Result<String, String> {
-    crate::settings::public_url(&state.db.lock()).ok_or_else(|| NO_PUBLIC_URL.to_string())
+async fn public_url_for_plugins(state: &AppState) -> Result<String, String> {
+    state
+        .db
+        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::public_url(db)))
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| NO_PUBLIC_URL.to_string())
 }
 
 /// Percent-encodes `s` for safe embedding as one query-string value - the
@@ -195,7 +207,7 @@ pub async fn start(
     Query(query): Query<ConnectQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let Some((user, _)) = super::resolve_authed_user(&state, &headers) else {
+    let Some((user, _)) = super::resolve_authed_user(&state, &headers).await else {
         let this_url = format!(
             "/connect/{}?site_url={}&return_url={}&nonce={}",
             platform,
@@ -209,7 +221,7 @@ pub async fn start(
         ));
     };
 
-    render_confirm_form(&state, &platform, query.request(), None, None, &user)
+    render_confirm_form(&state, &platform, query.request(), None, None, &user).await
 }
 
 /// `POST /connect/{platform}`'s form fields (WBS 1.4.1, step 4) - the same
@@ -297,9 +309,10 @@ pub async fn confirm_submit(
     Path(platform): Path<String>,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
-    if public_url_for_plugins(&state).is_err() {
+    if public_url_for_plugins(&state).await.is_err() {
         // `render_confirm_form` shows the reason instead of the form.
-        return render_confirm_form(&state, &platform, form.request(), None, Some(&form), &user);
+        return render_confirm_form(&state, &platform, form.request(), None, Some(&form), &user)
+            .await;
     }
     if form.mode == "existing" {
         confirm_existing_store(&state, &user, &platform, &form).await
@@ -342,7 +355,8 @@ async fn confirm_new_store(
                 Some(&message),
                 Some(form),
                 user,
-            );
+            )
+            .await;
         }
         Err(CreateConnectionError::Internal) => {
             return render_confirm_form(
@@ -352,11 +366,12 @@ async fn confirm_new_store(
                 Some("Something went wrong. Please try again."),
                 Some(form),
                 user,
-            );
+            )
+            .await;
         }
     };
 
-    mint_token_and_redirect(state, &outcome.connection_id, platform, form, user)
+    mint_token_and_redirect(state, &outcome.connection_id, platform, form, user).await
 }
 
 /// `mode == "existing"`: no new tenant is provisioned at all - the plugin is
@@ -385,36 +400,46 @@ async fn confirm_existing_store(
                 Some("Choose a store to connect."),
                 Some(form),
                 user,
-            );
+            )
+            .await;
         }
     };
 
-    let internal_error = || {
-        render_confirm_form(
-            state,
-            platform,
-            form.request(),
-            Some("Something went wrong. Please try again."),
-            Some(form),
-            user,
-        )
-    };
-
-    // Looked up in its own statement, not as a `match` scrutinee - a
-    // `MutexGuard` temporary produced inside a scrutinee lives for the
-    // *entire* match expression, including its arms, so a naive
-    // `match state.db.lock().get_store_connection_by_id(...)`
-    // here would still be holding this lock while an arm below calls
-    // `render_confirm_form`, which itself locks the same mutex - a real,
-    // confirmed self-deadlock (caught by a hung test before this was ever
-    // committed), not a hypothetical one.
-    let lookup = state.db.lock().get_store_connection_by_id(connection_id);
-    let row = match lookup {
-        Ok(Some(row)) if row.user_id == user.id => row,
-        Ok(_) => {
-            // Same enumeration-defense convention `orders.rs` documents for
-            // its own ownership check: a nonexistent id and someone else's
-            // id must be indistinguishable to the caller.
+    /// What attaching the site to an existing store found.
+    enum Attach {
+        Attached,
+        NotFound,
+    }
+    // Ownership check, domain suggestion and site URL update in one write
+    // job, so the store can't change hands in between.
+    let (id, user_id, site_url) = (
+        connection_id.to_string(),
+        user.id.clone(),
+        form.site_url.clone(),
+    );
+    let attached = state
+        .db
+        .write(move |db| {
+            match db.get_store_connection_by_id(&id)? {
+                Some(row) if row.user_id == user_id => {}
+                // Same enumeration-defense convention `orders.rs` documents
+                // for its own ownership check: a nonexistent id and someone
+                // else's id must be indistinguishable to the caller.
+                _ => return Ok(Attach::NotFound),
+            }
+            // Attaching this WordPress site to an already-existing store: its
+            // domain joins the store's domains, waiting for the merchant to
+            // verify it (`crate::embed_domains`), and the row's `site_url` is
+            // updated so the dashboard reflects the most recent site this
+            // store is actually serving.
+            crate::embed_domains::suggest_site_domain(db, &id, &site_url, now_unix());
+            db.update_store_connection_site_url(&id, &site_url)?;
+            Ok::<_, crate::db::DbError>(Attach::Attached)
+        })
+        .await;
+    match attached {
+        Ok(Attach::Attached) => {}
+        Ok(Attach::NotFound) => {
             return render_confirm_form(
                 state,
                 platform,
@@ -422,26 +447,23 @@ async fn confirm_existing_store(
                 Some("That store could not be found."),
                 Some(form),
                 user,
-            );
+            )
+            .await;
         }
-        Err(_) => return internal_error(),
-    };
-
-    // Attaching this WordPress site to an already-existing store: its domain
-    // joins the store's domains, waiting for the merchant to verify it
-    // (`crate::embed_domains`), and the row's `site_url` is updated so the
-    // dashboard reflects the most recent site this store is actually serving.
-    crate::embed_domains::suggest_site_domain(&state.db, &row.id, &form.site_url, now_unix());
-    if state
-        .db
-        .lock()
-        .update_store_connection_site_url(&row.id, &form.site_url)
-        .is_err()
-    {
-        return internal_error();
+        Err(_) => {
+            return render_confirm_form(
+                state,
+                platform,
+                form.request(),
+                Some("Something went wrong. Please try again."),
+                Some(form),
+                user,
+            )
+            .await;
+        }
     }
 
-    mint_token_and_redirect(state, connection_id, platform, form, user)
+    mint_token_and_redirect(state, connection_id, platform, form, user).await
 }
 
 /// The step common to both modes once a connection id is settled on
@@ -450,7 +472,7 @@ async fn confirm_existing_store(
 /// with `token`/`nonce` appended (parsed and re-serialized via the `url`
 /// crate, so a `return_url` that already carries its own query string is
 /// handled correctly - never a naive string-concatenated `?`).
-fn mint_token_and_redirect(
+async fn mint_token_and_redirect(
     state: &AppState,
     connection_id: &str,
     platform: &str,
@@ -459,11 +481,11 @@ fn mint_token_and_redirect(
 ) -> Response {
     let raw_token = shared::auth::generate_connect_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
-    let stored =
-        state
-            .db
-            .lock()
-            .create_connect_token(&token_hash, connection_id, &form.nonce, now_unix());
+    let (id, nonce) = (connection_id.to_string(), form.nonce.clone());
+    let stored = state
+        .db
+        .write(move |db| db.create_connect_token(&token_hash, &id, &nonce, now_unix()))
+        .await;
     if stored.is_err() {
         return render_confirm_form(
             state,
@@ -472,7 +494,8 @@ fn mint_token_and_redirect(
             Some("Something went wrong. Please try again."),
             Some(form),
             user,
-        );
+        )
+        .await;
     }
 
     let mut redirect_url = match Url::parse(&form.return_url) {
@@ -485,7 +508,8 @@ fn mint_token_and_redirect(
                 Some("Invalid return_url."),
                 Some(form),
                 user,
-            );
+            )
+            .await;
         }
     };
     // `query_pairs_mut` appends to whatever query string `return_url`
@@ -555,7 +579,7 @@ pub struct FinishResponse {
 /// a JSON `{"error": ...}` the plugin can show, *before* redeeming the
 /// token, so the same token still works once the operator sets it.
 pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest>) -> Response {
-    let endpoint = match public_url_for_plugins(&state) {
+    let endpoint = match public_url_for_plugins(&state).await {
         Ok(url) => url,
         Err(message) => {
             return (
@@ -567,26 +591,24 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
     };
     let token_hash = shared::auth::hash_secret_token(&req.token);
 
-    let connection_id = {
-        let db = state.db.lock();
-        match db.consume_connect_token(&token_hash, now_unix(), CONNECT_TOKEN_TTL_SECONDS) {
-            Ok(Some(id)) => id,
-            Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
-            Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-        }
-    };
-
-    let row = {
-        let db = state.db.lock();
-        match db.get_store_connection_by_id(&connection_id) {
-            Ok(Some(row)) => row,
-            // The token pointed at a connection that no longer exists -
-            // shouldn't happen (nothing deletes `store_connections` rows),
-            // but this is this service's own problem, not a credential the
-            // caller could have gotten right some other way.
-            Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
-            Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-        }
+    // The token is spent and its connection read in one write job.
+    let row = state
+        .db
+        .write(move |db| {
+            match db.consume_connect_token(&token_hash, now_unix(), CONNECT_TOKEN_TTL_SECONDS)? {
+                Some(id) => db.get_store_connection_by_id(&id),
+                None => Ok(None),
+            }
+        })
+        .await;
+    let row = match row {
+        Ok(Some(row)) => row,
+        // An unknown or expired token, or one pointing at a connection that
+        // no longer exists - shouldn't happen (nothing deletes
+        // `store_connections` rows), but this is this service's own
+        // problem, not a credential the caller could have gotten right some
+        // other way.
+        Ok(None) | Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
     let secret_token =

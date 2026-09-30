@@ -32,11 +32,18 @@ pub enum EngineSource {
 }
 
 impl Sources {
-    pub fn from_state(state: &crate::http::AppState) -> Sources {
-        let admin_token =
-            crate::settings::get(&state.db.lock(), &crate::settings::SCANNER_ADMIN_TOKEN)
-                .expose()
-                .to_string();
+    pub async fn from_state(state: &crate::http::AppState) -> Sources {
+        let admin_token = state
+            .db
+            .read(|db| {
+                Ok::<_, crate::db::DbError>(
+                    crate::settings::get(db, &crate::settings::SCANNER_ADMIN_TOKEN)
+                        .expose()
+                        .to_string(),
+                )
+            })
+            .await
+            .unwrap_or_default();
         let engine = if admin_token.trim().is_empty() {
             EngineSource::Unavailable(
                 "The engine's lines aren't shown: set the engine admin token in Settings.".into(),

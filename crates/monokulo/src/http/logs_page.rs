@@ -308,22 +308,57 @@ const WHO: [&str; 3] = ["session.id", "user.id", "store.id"];
 
 /// Names beside ids a person can't read: a user's email, a store's site
 /// (monokulo's own stores; the engine's ids are its own).
-fn add_notes(state: &AppState, row: &mut RowView) {
-    let db = state.db.lock();
-    for property in &mut row.properties {
-        property.note = match property.name.as_str() {
-            "user.id" => db
-                .get_user_by_id(&property.value)
-                .ok()
-                .flatten()
-                .map(|user| user.email),
-            "store.id" if row.service == "monokulo" => db
-                .get_store_connection_by_id(&property.value)
-                .ok()
-                .flatten()
-                .map(|store| super::orders::display_name_for(&store.site_url)),
-            _ => None,
-        };
+async fn add_notes(state: &AppState, rows: &mut [RowView]) {
+    use std::collections::HashMap;
+    // Every id on the page, looked up in one read.
+    let wanted: Vec<(bool, String)> = rows
+        .iter()
+        .flat_map(|row| {
+            row.properties
+                .iter()
+                .filter_map(|property| match property.name.as_str() {
+                    "user.id" => Some((true, property.value.clone())),
+                    "store.id" if row.service == "monokulo" => {
+                        Some((false, property.value.clone()))
+                    }
+                    _ => None,
+                })
+        })
+        .collect();
+    if wanted.is_empty() {
+        return;
+    }
+    let notes: HashMap<(bool, String), String> = state
+        .db
+        .read(move |db| {
+            let mut notes = HashMap::new();
+            for (is_user, id) in wanted {
+                let note = if is_user {
+                    db.get_user_by_id(&id).ok().flatten().map(|user| user.email)
+                } else {
+                    db.get_store_connection_by_id(&id)
+                        .ok()
+                        .flatten()
+                        .map(|store| super::orders::display_name_for(&store.site_url))
+                };
+                if let Some(note) = note {
+                    notes.insert((is_user, id), note);
+                }
+            }
+            Ok::<_, crate::db::DbError>(notes)
+        })
+        .await
+        .unwrap_or_default();
+    for row in rows {
+        let monokulo = row.service == "monokulo";
+        for property in &mut row.properties {
+            let key = match property.name.as_str() {
+                "user.id" => (true, property.value.clone()),
+                "store.id" if monokulo => (false, property.value.clone()),
+                _ => continue,
+            };
+            property.note = notes.get(&key).cloned();
+        }
     }
 }
 
@@ -492,11 +527,12 @@ async fn build(
     let now = now_nanos();
     let (from, to) = time_range(params, &zone, now);
     let search = params.search_only();
-    let sources = Sources::from_state(state);
+    let sources = Sources::from_state(state).await;
+    let admin_id = admin.id.clone();
     let saved = state
         .db
-        .lock()
-        .list_saved_log_searches(&admin.id)
+        .read(move |db| db.list_saved_log_searches(&admin_id))
+        .await
         .unwrap_or_default();
 
     let mut vm = LogsViewModel {
@@ -657,7 +693,7 @@ pub async fn page(
     if fx.0 {
         return Html(view::results(&vm).into_string()).into_response();
     }
-    let chrome = super::page_chrome(&state, Some(&admin), vm.refresh_url.clone());
+    let chrome = super::page_chrome(&state, Some(&admin), vm.refresh_url.clone()).await;
     Html(view::page(&chrome, &vm).into_string()).into_response()
 }
 
@@ -667,8 +703,8 @@ pub async fn syntax_page(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,
 ) -> Response {
-    let names = attribute_names(&Sources::from_state(&state)).await;
-    let chrome = super::page_chrome(&state, Some(&admin), view::SYNTAX_PAGE);
+    let names = attribute_names(&Sources::from_state(&state).await).await;
+    let chrome = super::page_chrome(&state, Some(&admin), view::SYNTAX_PAGE).await;
     Html(view::syntax_page(&chrome, &names).into_string()).into_response()
 }
 
@@ -698,7 +734,7 @@ pub async fn tail(
             service: String::new(),
             id: 0,
         });
-    let sources = Sources::from_state(&state);
+    let sources = Sources::from_state(&state).await;
     let changed = sources
         .local
         .as_ref()
@@ -782,7 +818,7 @@ pub async fn trace_page(
         return (StatusCode::NOT_FOUND, "No such trace.").into_response();
     }
     let (zone, _) = zone(&tz, &admin);
-    let sources = Sources::from_state(&state);
+    let sources = Sources::from_state(&state).await;
     let (trace, engine_problem) = crate::logs::trace(&sources, &trace_id).await;
     let search = LogsParams {
         q: format!("trace_id = '{trace_id}'"),
@@ -844,22 +880,20 @@ pub async fn trace_page(
                 .collect(),
         })
         .collect();
+    let mut rows: Vec<RowView> = trace
+        .logs
+        .iter()
+        .map(|row| row_view(row, &search, user.as_ref(), &zone, false))
+        .collect();
+    add_notes(&state, &mut rows).await;
     let vm = view::TraceViewModel {
         trace_id: trace_id.clone(),
         spans,
-        rows: trace
-            .logs
-            .iter()
-            .map(|row| {
-                let mut row = row_view(row, &search, user.as_ref(), &zone, false);
-                add_notes(&state, &mut row);
-                row
-            })
-            .collect(),
+        rows,
         problems: engine_problem.into_iter().collect(),
         logs_url: search.url(LOGS),
     };
-    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/trace/{trace_id}"));
+    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/trace/{trace_id}")).await;
     Html(view::trace_page(&chrome, &vm).into_string()).into_response()
 }
 
@@ -887,7 +921,7 @@ pub async fn row_page(
                 ..wanted.clone()
             };
             let page = crate::logs::read(
-                &Sources::from_state(&state),
+                &Sources::from_state(&state).await,
                 &request(None, None, None, &just_after.encode(), "", 1),
             )
             .await
@@ -898,14 +932,13 @@ pub async fn row_page(
         None => None,
     };
     let user = parse(&search.q).ok().flatten();
-    let row = found.map(|row| {
-        let mut row = RowView {
-            open: true,
-            ..row_view(&row, &search, user.as_ref(), &zone, false)
-        };
-        add_notes(&state, &mut row);
-        row
+    let mut row = found.map(|row| RowView {
+        open: true,
+        ..row_view(&row, &search, user.as_ref(), &zone, false)
     });
+    if let Some(row) = &mut row {
+        add_notes(&state, std::slice::from_mut(row)).await;
+    }
     if fx.0 {
         return match &row {
             Some(row) => Html(view::properties(row).into_string()).into_response(),
@@ -918,7 +951,7 @@ pub async fn row_page(
                 .into_response(),
         };
     }
-    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/row/{cursor}"));
+    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/row/{cursor}")).await;
     let status = if row.is_some() {
         StatusCode::OK
     } else {
@@ -1026,17 +1059,21 @@ pub async fn pos_timeline(
         .iter()
         .find_map(|row| attr_str(row, "store.id"))
         .map(str::to_string);
-    let store_link = store.as_ref().map(|id| {
-        let name = state
-            .db
-            .lock()
-            .get_store_connection_by_id(id)
-            .ok()
-            .flatten()
-            .map(|row| super::orders::display_name_for(&row.site_url))
-            .unwrap_or_else(|| id.clone());
-        (name, format!("/dashboard/stores/{id}"))
-    });
+    let store_link = match &store {
+        Some(id) => {
+            let lookup = id.clone();
+            let name = state
+                .db
+                .read(move |db| db.get_store_connection_by_id(&lookup))
+                .await
+                .ok()
+                .flatten()
+                .map(|row| super::orders::display_name_for(&row.site_url))
+                .unwrap_or_else(|| id.clone());
+            Some((name, format!("/dashboard/stores/{id}")))
+        }
+        None => None,
+    };
     let device = rows
         .iter()
         .find(|row| attr_str(row, "pos.kind") == Some("pos.opened"))
@@ -1153,7 +1190,7 @@ pub async fn pos_timeline(
         logs_url: search.url(LOGS),
         zone_label,
     };
-    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/pos/{session}"));
+    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/pos/{session}")).await;
     Html(view::pos_timeline_page(&chrome, &vm).into_string()).into_response()
 }
 
@@ -1190,7 +1227,7 @@ pub async fn pos_session_for_order(
             return axum::response::Redirect::to(&format!("{LOGS}/pos/{session}")).into_response();
         }
     }
-    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/pos"));
+    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/pos")).await;
     let body = maud::html! {
         div class="wrap" {
             nav class="context-nav" aria-label="Breadcrumb" {
@@ -1243,7 +1280,7 @@ pub async fn export(
         Ok(filters) => filters,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    let sources = Sources::from_state(&state);
+    let sources = Sources::from_state(&state).await;
     let mut rows: Vec<LogRow> = Vec::new();
     let mut before = String::new();
     while rows.len() < EXPORT_MAX {
@@ -1317,16 +1354,17 @@ pub struct SaveSearchForm {
     query_string: String,
 }
 
-fn saved_fragment(
+async fn saved_fragment(
     state: &AppState,
     admin: &crate::db::UserRow,
     query_string: &str,
     error: Option<&str>,
 ) -> maud::Markup {
+    let admin_id = admin.id.clone();
     let saved = state
         .db
-        .lock()
-        .list_saved_log_searches(&admin.id)
+        .read(move |db| db.list_saved_log_searches(&admin_id))
+        .await
         .unwrap_or_default();
     view::saved_searches(&saved, query_string, error)
 }
@@ -1350,19 +1388,25 @@ pub async fn save_search(
     if name.is_empty() || name.chars().count() > 80 {
         let error = "Give the search a name of up to 80 characters.";
         return if fx.0 {
-            super::fx::invalid(saved_fragment(&state, &admin, &query_string, Some(error)))
+            super::fx::invalid(saved_fragment(&state, &admin, &query_string, Some(error)).await)
         } else {
             super::dashboard::redirect_302(&back)
         };
     }
-    let created = state.db.lock().create_saved_log_search(
-        &uuid::Uuid::new_v4().to_string(),
-        &admin.id,
-        name,
-        &query_string,
-        crate::now_unix(),
-        MAX_SAVED,
-    );
+    let (admin_id, name, saved_query) = (admin.id.clone(), name.to_string(), query_string.clone());
+    let created = state
+        .db
+        .write(move |db| {
+            db.create_saved_log_search(
+                &uuid::Uuid::new_v4().to_string(),
+                &admin_id,
+                &name,
+                &saved_query,
+                crate::now_unix(),
+                MAX_SAVED,
+            )
+        })
+        .await;
     let error = match created {
         Ok(true) => None,
         Ok(false) => Some("You have 50 saved searches already; remove one first."),
@@ -1371,9 +1415,12 @@ pub async fn save_search(
             Some("The search couldn't be saved.")
         }
     };
-    super::fx::respond(fx, &back, || {
-        saved_fragment(&state, &admin, &query_string, error)
-    })
+    saved_response(
+        fx,
+        &back,
+        saved_fragment(&state, &admin, &query_string, error),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -1390,7 +1437,12 @@ pub async fn delete_search(
     Path(id): Path<String>,
     Form(form): Form<DeleteSearchForm>,
 ) -> Response {
-    if let Err(e) = state.db.lock().delete_saved_log_search(&admin.id, &id) {
+    let admin_id = admin.id.clone();
+    let deleted = state
+        .db
+        .write(move |db| db.delete_saved_log_search(&admin_id, &id))
+        .await;
+    if let Err(e) = deleted {
         tracing::error!(error = %e, "removing a saved log search failed");
     }
     let query_string = serde_urlencoded::from_str::<LogsParams>(&form.query_string)
@@ -1402,9 +1454,26 @@ pub async fn delete_search(
     } else {
         format!("{LOGS}?{query_string}")
     };
-    super::fx::respond(fx, &back, || {
-        saved_fragment(&state, &admin, &query_string, None)
-    })
+    saved_response(
+        fx,
+        &back,
+        saved_fragment(&state, &admin, &query_string, None),
+    )
+    .await
+}
+
+/// `fx::respond` for the saved-searches fragment, which is read from the
+/// database, so only rendered (awaited) when fixi asked for it.
+async fn saved_response(
+    fx: FxRequest,
+    back: &str,
+    fragment: impl std::future::Future<Output = maud::Markup>,
+) -> Response {
+    if fx.0 {
+        Html(fragment.await.into_string()).into_response()
+    } else {
+        super::dashboard::redirect_302(back)
+    }
 }
 
 #[cfg(test)]

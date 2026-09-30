@@ -30,13 +30,22 @@ use super::{resolve_authed_user, AppState, AuthedUser};
 /// pre-setup; only the very first thing a fresh install's operator sees when
 /// they actually load the site.
 pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if !state.db.lock().is_setup_complete().unwrap_or(true) {
+    let (setup_complete, signup_mode) = state
+        .db
+        .read(|db| {
+            Ok::<_, crate::db::DbError>((
+                db.is_setup_complete().unwrap_or(true),
+                crate::settings::signup_mode(db),
+            ))
+        })
+        .await
+        .unwrap_or((true, crate::settings::SignupMode::InviteOnly));
+    if !setup_complete {
         return redirect_302("/admin/setup");
     }
-    let authed = resolve_authed_user(&state, &headers);
-    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/");
-    let signup_public =
-        { crate::settings::signup_mode(&state.db.lock()) == crate::settings::SignupMode::Public };
+    let authed = resolve_authed_user(&state, &headers).await;
+    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/").await;
+    let signup_public = signup_mode == crate::settings::SignupMode::Public;
     views::landing::page(&chrome, signup_public).into_response()
 }
 
@@ -48,7 +57,7 @@ pub async fn new_store_picker(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
 ) -> Response {
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new");
+    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new").await;
     views::connect::new_store_picker_page(&chrome).into_response()
 }
 
@@ -63,7 +72,7 @@ pub async fn woocommerce_instructions(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
 ) -> Response {
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new/woocommerce");
+    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new/woocommerce").await;
     views::store_detail::woocommerce_instructions_page(&chrome).into_response()
 }
 
@@ -79,7 +88,12 @@ pub async fn dashboard_home(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
 ) -> Response {
-    let rows = match state.db.lock().list_store_connections_for_user(&user.id) {
+    let user_id = user.id.clone();
+    let rows = match state
+        .db
+        .read(move |db| db.list_store_connections_for_user(&user_id))
+        .await
+    {
         Ok(rows) => rows,
         Err(_) => return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -118,10 +132,11 @@ pub async fn dashboard_home(
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
             // Phase 3) - fiat display comes entirely from monokulo's own
             // local `order_currency_metadata`.
+            let id = row.id.clone();
             let fiat_metadata = state
                 .db
-                .lock()
-                .list_order_currency_metadata_for_connection(&row.id)
+                .read(move |db| db.list_order_currency_metadata_for_connection(&id))
+                .await
                 .unwrap_or_default();
             for o in orders {
                 total_received_piconero += o.amount_received_piconero as u128;
@@ -145,7 +160,7 @@ pub async fn dashboard_home(
     all_orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     all_orders.truncate(10);
 
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard");
+    let chrome = super::page_chrome(&state, Some(&user), "/dashboard").await;
     let view_model = DashboardViewModel {
         has_stores: !stores.is_empty(),
         stores,

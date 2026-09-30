@@ -3,7 +3,7 @@
 //! parsing, or deployment wiring yet (that's for a later WBS task); this is
 //! just enough to actually run the one endpoint that exists so far.
 
-use monokulo::db::Db;
+use monokulo::db::{Database, Db};
 use monokulo::engine_client::EngineClient;
 use monokulo::http::status_page::new_status_cache;
 use monokulo::http::{build_router, AppState};
@@ -41,7 +41,18 @@ async fn main() {
     // to run a test instance on a temporary database and a free port).
     let db_path = std::env::var("MONOKULO_DB_PATH").unwrap_or_else(|_| "monokulo.db".to_string());
     let bind = std::env::var("MONOKULO_BIND").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
-    let db = Db::open_file(&db_path).expect("failed to open monokulo database");
+    // The settings store's own connection (it is synchronous); opening it
+    // also brings the schema up to date.
+    let settings_db = Db::open_file(&db_path)
+        .expect("failed to open monokulo database")
+        .into_shared();
+    let read_connections = live_settings::read_sync::<settings::DatabaseConfig>(
+        &settings::DbSettings(settings_db.clone()),
+    )
+    .read_connections;
+    // Everything else: read-only connections and one writer, each on its
+    // own thread (`db::Database`).
+    let db = Database::open(&db_path, read_connections).expect("failed to open monokulo database");
     // Beside the main database; lines logged since start-up go in too.
     let log_store =
         telemetry::global().and_then(|t| t.open_store_beside(std::path::Path::new(&db_path)));
@@ -58,7 +69,6 @@ async fn main() {
                 )))
             }
         };
-    let db = db.into_shared();
 
     // Every setting, live (admin_settings_v2.md parts 1 and 3): the engine
     // client, exchange-rate providers, abuse protection and onion listener
@@ -70,7 +80,7 @@ async fn main() {
     let abuse = Arc::new(monokulo::abuse::AbuseProtection::default());
     let onion = settings::OnionReloadable::default();
     let monokulo_settings = match settings::MonokuloSettings::load(
-        db.clone(),
+        settings_db,
         engine_client.clone(),
         exchange_rate.clone(),
         abuse.clone(),
@@ -87,7 +97,15 @@ async fn main() {
     };
 
     monokulo::embed_domains::spawn_rechecks(db.clone(), dns.clone());
-    monokulo::embed_domains::import_existing_domains(&db);
+    if let Err(e) = db
+        .write(|db| {
+            monokulo::embed_domains::import_existing_domains(db);
+            Ok::<_, monokulo::db::DbError>(())
+        })
+        .await
+    {
+        tracing::error!(error = %e, "could not import existing stores' domains");
+    }
     let app_state = AppState {
         db,
         engine_client,

@@ -135,12 +135,18 @@ pub async fn receive(
     Path(id): Path<String>,
     body: Bytes,
 ) -> StatusCode {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR,
     };
-    if !state.db.lock().client_logging(&row.id).unwrap_or(false) {
+    let id = row.id.clone();
+    if !state
+        .db
+        .read(move |db| db.client_logging(&id))
+        .await
+        .unwrap_or(false)
+    {
         return StatusCode::FORBIDDEN;
     }
     // Parsed from the bytes: a beacon sent as the page hides may carry any

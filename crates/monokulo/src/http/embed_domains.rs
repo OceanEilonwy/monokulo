@@ -49,9 +49,11 @@ pub async fn embed_policy_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    let policy = public_key_of_pay_path(request.uri().path())
-        .and_then(|public_key| embed_domains::policy_for_public_key(&state.db, public_key))
-        .filter(|policy| policy.restricted);
+    let policy = match public_key_of_pay_path(request.uri().path()) {
+        Some(public_key) => embed_domains::policy_for_public_key(&state.db, public_key).await,
+        None => None,
+    }
+    .filter(|policy| policy.restricted);
     let Some(policy) = policy else {
         return next.run(request).await;
     };
@@ -152,19 +154,23 @@ pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<EmbedDoma
 }
 
 /// The store page's embed warnings.
-pub(super) fn store_page_warnings(
+pub(super) async fn store_page_warnings(
     state: &AppState,
     connection_id: &str,
     now: i64,
 ) -> EmbedWarnings {
-    let (dismissed, restricted, rows) = {
-        let db = state.db.lock();
-        (
-            db.embed_warning_dismissed(connection_id).unwrap_or(false),
-            db.embed_restricted(connection_id).unwrap_or(false),
-            db.list_store_domains(connection_id).unwrap_or_default(),
-        )
-    };
+    let id = connection_id.to_string();
+    let (dismissed, restricted, rows) = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.embed_warning_dismissed(&id).unwrap_or(false),
+                db.embed_restricted(&id).unwrap_or(false),
+                db.list_store_domains(&id).unwrap_or_default(),
+            ))
+        })
+        .await
+        .unwrap_or_default();
     let shown_nowhere = restricted && !rows.iter().any(|row| DomainState::of(row, now).counts());
     let failing = rows
         .into_iter()
@@ -209,23 +215,24 @@ pub async fn set_embed_restriction(
     Form(form): Form<EmbedRestrictionForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let restricted = form.restricted == "on";
     let now = crate::now_unix();
-    let result = {
-        let db = state.db.lock();
-        match db.list_store_domains(&row.id) {
+    let store_id = row.id.clone();
+    let result = state
+        .db
+        .write(move |db| match db.list_store_domains(&store_id) {
             Ok(domains) if restricted && !domains.iter().any(|domain| DomainState::of(domain, now).counts()) => {
                 Ok(Some("Verify at least one domain before turning this on - otherwise no website could show your checkout."))
             }
-            Ok(_) => db.set_embed_restricted(&row.id, restricted).map(|()| None),
+            Ok(_) => db.set_embed_restricted(&store_id, restricted).map(|()| None),
             Err(e) => Err(e),
-        }
-    };
+        })
+        .await;
     match result {
         Ok(None) => saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
         Ok(Some(error)) => {
@@ -268,7 +275,7 @@ pub async fn add_domain(
     Form(form): Form<AddDomainForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -288,14 +295,20 @@ pub async fn add_domain(
         }
     };
     let domain_id = uuid::Uuid::new_v4().to_string();
-    let created = state.db.lock().create_store_domain(
-        &domain_id,
-        &row.id,
-        &domain,
-        &embed_domains::new_token(),
-        crate::now_unix(),
-        embed_domains::MAX_DOMAINS_PER_STORE,
-    );
+    let (store_id, new_domain) = (row.id.clone(), domain.clone());
+    let created = state
+        .db
+        .write(move |db| {
+            db.create_store_domain(
+                &domain_id,
+                &store_id,
+                &new_domain,
+                &embed_domains::new_token(),
+                crate::now_unix(),
+                embed_domains::MAX_DOMAINS_PER_STORE,
+            )
+        })
+        .await;
     let error = match created {
         Ok(true) => return saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
         Ok(false) => format!(
@@ -317,12 +330,17 @@ pub async fn check_domain(
     Path((id, domain_id)): Path<(String, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let domain = match state.db.lock().get_store_domain(&row.id, &domain_id) {
+    let store_id = row.id.clone();
+    let domain = match state
+        .db
+        .read(move |db| db.get_store_domain(&store_id, &domain_id))
+        .await
+    {
         Ok(Some(domain)) => domain,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -370,26 +388,29 @@ pub async fn delete_domain(
     Path((id, domain_id)): Path<(String, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let now = crate::now_unix();
-    let deleted = {
-        let db = state.db.lock();
-        let restricted = db.embed_restricted(&row.id).unwrap_or(false);
-        let domains = db.list_store_domains(&row.id).unwrap_or_default();
-        let counting: Vec<&StoreDomainRow> = domains
-            .iter()
-            .filter(|domain| DomainState::of(domain, now).counts())
-            .collect();
-        if restricted && counting.len() == 1 && counting[0].id == domain_id {
-            Ok(None)
-        } else {
-            db.delete_store_domain(&row.id, &domain_id).map(Some)
-        }
-    };
+    let store_id = row.id.clone();
+    let deleted = state
+        .db
+        .write(move |db| {
+            let restricted = db.embed_restricted(&store_id).unwrap_or(false);
+            let domains = db.list_store_domains(&store_id).unwrap_or_default();
+            let counting: Vec<&StoreDomainRow> = domains
+                .iter()
+                .filter(|domain| DomainState::of(domain, now).counts())
+                .collect();
+            if restricted && counting.len() == 1 && counting[0].id == domain_id {
+                Ok(None)
+            } else {
+                db.delete_store_domain(&store_id, &domain_id).map(Some)
+            }
+        })
+        .await;
     match deleted {
         Ok(Some(true)) => saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
         Ok(Some(false)) => StatusCode::NOT_FOUND.into_response(),
@@ -427,12 +448,16 @@ pub async fn dismiss_embed_warning(
     fx: FxRequest,
     Path(id): Path<String>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let dismissed = state.db.lock().dismiss_embed_warning(&row.id);
+    let store_id = row.id.clone();
+    let dismissed = state
+        .db
+        .write(move |db| db.dismiss_embed_warning(&store_id))
+        .await;
     match dismissed {
         Ok(()) => super::fx::respond(fx, &format!("/dashboard/stores/{id}"), || {
             crate::views::store_detail::compact_embed_warning(&id)
@@ -673,7 +698,7 @@ mod tests {
                 .unwrap();
         }
         state.db.lock().reset_store_domains_imported_for_test(&id);
-        embed_domains::import_existing_domains(&state.db);
+        embed_domains::import_existing_domains(&state.db.lock());
         assert_eq!(domains(&state, &id), site_only);
 
         // Once only: a domain the merchant removes afterwards stays removed.
@@ -685,7 +710,7 @@ mod tests {
             .pop()
             .unwrap();
         state.db.lock().delete_store_domain(&id, &site.id).unwrap();
-        embed_domains::import_existing_domains(&state.db);
+        embed_domains::import_existing_domains(&state.db.lock());
         assert!(domains(&state, &id).is_empty());
     }
 
@@ -1334,7 +1359,7 @@ mod tests {
             !html.contains("Any website can show this store"),
             "got: {html}"
         );
-        let warnings = super::store_page_warnings(&state, &id, crate::now_unix());
+        let warnings = super::store_page_warnings(&state, &id, crate::now_unix()).await;
         assert!(!warnings.shown_nowhere);
         dns.remove("_monokulo.store-home.example");
         let later = crate::now_unix() + embed_domains::RECHECK_EVERY_SECS;
@@ -1342,7 +1367,11 @@ mod tests {
         let failing_since = state.db.lock().list_store_domains(&id).unwrap()[0]
             .failing_since
             .unwrap();
-        assert!(super::store_page_warnings(&state, &id, failing_since + GRACE_SECS).shown_nowhere);
+        assert!(
+            super::store_page_warnings(&state, &id, failing_since + GRACE_SECS)
+                .await
+                .shown_nowhere
+        );
 
         // Off again: any site.
         assert_eq!(
@@ -1487,7 +1516,7 @@ mod tests {
             "got: {html}"
         );
         let warnings =
-            super::store_page_warnings(&state, &id, row.failing_since.unwrap() + GRACE_SECS);
+            super::store_page_warnings(&state, &id, row.failing_since.unwrap() + GRACE_SECS).await;
         assert!(
             warnings.failing[0].lapsed,
             "past the grace period it no longer counts"
@@ -1632,7 +1661,8 @@ mod tests {
             html.contains("store-home.example failed its DNS check"),
             "got: {html}"
         );
-        let warnings = super::store_page_warnings(&state, &id, failing_since + GRACE_SECS - 60);
+        let warnings =
+            super::store_page_warnings(&state, &id, failing_since + GRACE_SECS - 60).await;
         assert!(
             !warnings.failing[0].lapsed,
             "within the grace period the domain still counts"

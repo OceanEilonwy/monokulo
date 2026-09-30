@@ -147,11 +147,13 @@ pub async fn pay_middleware(
     );
     let pk = public_key_of_pay_path(request.uri().path()).map(str::to_string);
     let key = match &pk {
-        Some(pk) => store_key::check(&state, pk, request.headers()),
+        Some(pk) => store_key::check(&state, pk, request.headers()).await,
         None => KeyCheck::Absent,
     };
     let client = match key {
-        KeyCheck::Absent => signed_in_identity(&state, request.headers()).or(anonymous),
+        KeyCheck::Absent => signed_in_identity(&state, request.headers())
+            .await
+            .or(anonymous),
         KeyCheck::Valid => {
             request.extensions_mut().insert(StoreKeyAuthenticated);
             pk.map(ClientIdentity::Store)
@@ -186,23 +188,26 @@ pub async fn site_middleware(
     if class == RouteClass::Exempt {
         return next.run(request).await;
     }
-    let client = signed_in_identity(&state, request.headers()).or_else(|| {
-        anonymous_identity(
+    let client = match signed_in_identity(&state, request.headers()).await {
+        Some(client) => Some(client),
+        None => anonymous_identity(
             request.extensions(),
             request.headers(),
             &state.abuse.config().trusted_proxies,
-        )
-    });
+        ),
+    };
     guard(&state, class, client, request, next).await
 }
 
 /// A signed-in merchant's identity, when the request carries a valid
 /// session (cookie or bearer token).
-fn signed_in_identity(state: &AppState, headers: &HeaderMap) -> Option<ClientIdentity> {
+async fn signed_in_identity(state: &AppState, headers: &HeaderMap) -> Option<ClientIdentity> {
     if headers.get(header::AUTHORIZATION).is_none() && headers.get(header::COOKIE).is_none() {
         return None;
     }
-    super::resolve_authed_user(state, headers).map(|(user, _)| ClientIdentity::User(user.id))
+    super::resolve_authed_user(state, headers)
+        .await
+        .map(|(user, _)| ClientIdentity::User(user.id))
 }
 
 async fn guard(

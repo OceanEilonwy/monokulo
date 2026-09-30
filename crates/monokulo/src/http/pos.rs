@@ -57,7 +57,7 @@ pub async fn pos_page(
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<String>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -75,7 +75,12 @@ pub async fn pos_page(
         2
     };
 
-    let client_logging = state.db.lock().client_logging(&row.id).unwrap_or(false);
+    let store_id = row.id.clone();
+    let client_logging = state
+        .db
+        .read(move |db| db.client_logging(&store_id))
+        .await
+        .unwrap_or(false);
     let view = PosViewModel {
         connection_id: id,
         public_key: row.tenant_public_key,
@@ -88,7 +93,8 @@ pub async fn pos_page(
         &state,
         Some(&user),
         format!("/dashboard/stores/{}/pos", view.connection_id),
-    );
+    )
+    .await;
     views::pos::page(&chrome, &view).into_response()
 }
 
@@ -140,7 +146,7 @@ pub async fn create_order(
     Path(id): Path<String>,
     Json(req): Json<PosCreateOrderRequest>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
@@ -154,14 +160,18 @@ pub async fn create_order(
 
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
     };
 
     if let Some(key) = req.request_key.as_deref() {
-        let existing = { state.db.lock().pos_order_by_request_key(&row.id, key) };
+        let (store_id, key) = (row.id.clone(), key.to_string());
+        let existing = state
+            .db
+            .read(move |db| db.pos_order_by_request_key(&store_id, &key))
+            .await;
         match existing {
             Ok(Some(existing)) => {
                 let sk = match decrypt_sk(&state, &row) {
@@ -172,12 +182,11 @@ pub async fn create_order(
                     Ok(detail) => detail,
                     Err(_) => return ApiError::Internal.into_response(),
                 };
-                let metadata_result = {
-                    state
-                        .db
-                        .lock()
-                        .get_order_currency_metadata(&row.id, &existing)
-                };
+                let (store_id, order_id) = (row.id.clone(), existing.clone());
+                let metadata_result = state
+                    .db
+                    .read(move |db| db.get_order_currency_metadata(&store_id, &order_id))
+                    .await;
                 let metadata = match metadata_result {
                     Ok(Some(metadata)) => metadata,
                     _ => return ApiError::Internal.into_response(),
@@ -283,30 +292,59 @@ pub async fn create_order(
         .await
     {
         Ok(order) => {
-            if let Err(e) = state.db.lock().insert_pos_order(
-                &row.id,
-                &order.order_id,
-                req.request_key.as_deref(),
-                merchant_order_id.as_deref(),
-                crate::now_unix(),
-            ) {
+            let (store_id, order_id) = (row.id.clone(), order.order_id.clone());
+            let (request_key, reference) = (req.request_key.clone(), merchant_order_id.clone());
+            let recorded = state
+                .db
+                .write(move |db| {
+                    db.insert_pos_order(
+                        &store_id,
+                        &order_id,
+                        request_key.as_deref(),
+                        reference.as_deref(),
+                        crate::now_unix(),
+                    )
+                })
+                .await;
+            if let Err(e) = recorded {
                 tracing::error!(order.id = %order.order_id, store.id = %row.id, error = %e, "failed to record a POS order");
                 return ApiError::Internal.into_response();
             }
-            if let Err(e) = state.db.lock().create_order_currency_metadata(
-                &row.id,
-                &order.order_id,
-                &currency,
-                amount,
-                piconero_per_unit,
-                provider,
-                crate::now_unix(),
-                &resolution.base_currency,
+            let (store_id, order_id, order_currency, order_amount, provider) = (
+                row.id.clone(),
+                order.order_id.clone(),
+                currency.clone(),
+                amount.to_string(),
+                provider.to_string(),
+            );
+            let base_currency = resolution.base_currency.clone();
+            let (base_rate, confirmations) = (
                 resolution.base_currency_piconero_per_unit,
                 resolution.confirmations_required,
-                // The merchant's own signed-in session: as trusted as the key.
-                true,
-            ) {
+            );
+            let recorded = state
+                .db
+                .write(move |db| {
+                    let recorded = db.create_order_currency_metadata(
+                        &store_id,
+                        &order_id,
+                        &order_currency,
+                        &order_amount,
+                        piconero_per_unit,
+                        &provider,
+                        crate::now_unix(),
+                        &base_currency,
+                        base_rate,
+                        confirmations,
+                        // The merchant's own signed-in session: as trusted as
+                        // the key.
+                        true,
+                    );
+                    let _ = db.set_order_source(&store_id, &order_id, "pos");
+                    recorded
+                })
+                .await;
+            if let Err(e) = recorded {
                 tracing::error!(
                     order.id = %order.order_id,
                     store.id = %row.id,
@@ -315,11 +353,6 @@ pub async fn create_order(
                      response is still correct, but its fiat display on monokulo's own pages will be missing"
                 );
             }
-            let _ = state
-                .db
-                .lock()
-                .set_order_source(&row.id, &order.order_id, "pos");
-
             let xmr_amount =
                 shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
 
@@ -408,25 +441,46 @@ async fn pos_order_data(
         .engine_client
         .get_order_detail(sk, &row.order_id)
         .await?;
-    let mut data = pos_order_view(state, connection_id, row, &detail.order);
+    let metadata = order_metadata(state, connection_id, vec![row.order_id.clone()])
+        .await
+        .remove(&row.order_id);
+    let mut data = pos_order_view(metadata, row, &detail.order);
     data.qr_svg = super::checkout::payment_qr_svg(&detail.order).ok();
     Ok(data)
+}
+
+/// The fiat metadata of these orders, in one read; an order without any is
+/// left out.
+async fn order_metadata(
+    state: &AppState,
+    connection_id: &str,
+    order_ids: Vec<String>,
+) -> HashMap<String, crate::db::OrderCurrencyMetadataRow> {
+    let store_id = connection_id.to_string();
+    state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>(
+                order_ids
+                    .into_iter()
+                    .filter_map(|id| {
+                        let metadata = db.get_order_currency_metadata(&store_id, &id).ok()??;
+                        Some((id, metadata))
+                    })
+                    .collect(),
+            )
+        })
+        .await
+        .unwrap_or_default()
 }
 
 /// One POS order as the terminal shows it, from its local row and the
 /// engine's view of it (read singly or in a batch).
 fn pos_order_view(
-    state: &AppState,
-    connection_id: &str,
+    metadata: Option<crate::db::OrderCurrencyMetadataRow>,
     row: crate::db::PosOrderRow,
     order: &OrderView,
 ) -> PosOrderData {
-    let metadata = state
-        .db
-        .lock()
-        .get_order_currency_metadata(connection_id, &row.order_id)
-        .ok()
-        .flatten();
     let confirmations_required = metadata
         .as_ref()
         .and_then(|m| m.confirmations_required_applied)
@@ -531,11 +585,18 @@ async fn active_pos_orders(
         }
     }
     let ids: Vec<String> = open.iter().map(|order| order.order_id.clone()).collect();
+    let store_id = connection_id.to_string();
     let rows = state
         .db
-        .lock()
-        .get_pos_orders(connection_id, &ids)
+        .read(move |db| db.get_pos_orders(&store_id, &ids))
+        .await
         .unwrap_or_default();
+    let mut metadata = order_metadata(
+        state,
+        connection_id,
+        rows.iter().map(|row| row.order_id.clone()).collect(),
+    )
+    .await;
     let mut rows: HashMap<String, crate::db::PosOrderRow> = rows
         .into_iter()
         .filter(|row| row.cancelled_at.is_none())
@@ -545,7 +606,7 @@ async fn active_pos_orders(
         .into_iter()
         .filter_map(|order| {
             rows.remove(&order.order_id)
-                .map(|row| pos_order_view(state, connection_id, row, &order))
+                .map(|row| pos_order_view(metadata.remove(&row.order_id), row, &order))
         })
         .collect())
 }
@@ -556,7 +617,7 @@ pub async fn list_orders(
     Path(id): Path<String>,
     Query(query): Query<PosListQuery>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
@@ -583,17 +644,22 @@ pub async fn list_orders(
     if search.is_some_and(|term| term.chars().count() > 120) {
         return ApiError::BadRequest("Search is too long.".to_string()).into_response();
     }
-    let (rows, total) = {
-        let db = state.db.lock();
-        match (
-            db.list_pos_orders(&id, limit, offset, search),
-            db.count_pos_orders(&id, search),
-        ) {
-            (Ok(rows), Ok(total)) => (rows, total),
-            _ => return ApiError::Internal.into_response(),
-        }
+    let (store_id, search) = (id.clone(), search.map(str::to_string));
+    let (rows, total) = match state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.list_pos_orders(&store_id, limit, offset, search.as_deref())?,
+                db.count_pos_orders(&store_id, search.as_deref())?,
+            ))
+        })
+        .await
+    {
+        Ok(found) => found,
+        Err(_) => return ApiError::Internal.into_response(),
     };
     let ids: Vec<String> = rows.iter().map(|row| row.order_id.clone()).collect();
+    let mut metadata = order_metadata(&state, &id, ids.clone()).await;
     let mut views = match engine_orders(&state, &sk, &ids).await {
         Ok(views) => views,
         Err(error) => return engine_failure(&error),
@@ -604,7 +670,7 @@ pub async fn list_orders(
         .filter_map(|row| {
             views
                 .remove(&row.order_id)
-                .map(|view| pos_order_view(&state, &id, row, &view))
+                .map(|view| pos_order_view(metadata.remove(&row.order_id), row, &view))
         })
         .collect();
     Json(serde_json::json!({"orders": orders, "total": total, "offset": offset, "limit": limit}))
@@ -616,12 +682,17 @@ pub async fn order_detail(
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(String, String)>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
     };
-    let pos_row = match state.db.lock().get_pos_order(&id, &order_id) {
+    let (store_id, order) = (id.clone(), order_id.clone());
+    let pos_row = match state
+        .db
+        .read(move |db| db.get_pos_order(&store_id, &order))
+        .await
+    {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(_) => return ApiError::Internal.into_response(),
@@ -641,10 +712,14 @@ pub async fn background_order(
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(String, String)>,
 ) -> Response {
-    if !matches!(load_owned_connection(&state, &user, &id), Ok(Some(_))) {
+    if !matches!(load_owned_connection(&state, &user, &id).await, Ok(Some(_))) {
         return ApiError::NotFound.into_response();
     }
-    match state.db.lock().background_pos_order(&id, &order_id) {
+    match state
+        .db
+        .write(move |db| db.background_pos_order(&id, &order_id))
+        .await
+    {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => ApiError::NotFound.into_response(),
         Err(_) => ApiError::Internal.into_response(),
@@ -656,12 +731,17 @@ pub async fn cancel_order(
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(String, String)>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
     };
-    let pos_row = match state.db.lock().get_pos_order(&id, &order_id) {
+    let (store_id, order) = (id.clone(), order_id.clone());
+    let pos_row = match state
+        .db
+        .read(move |db| db.get_pos_order(&store_id, &order))
+        .await
+    {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(_) => return ApiError::Internal.into_response(),
@@ -682,8 +762,8 @@ pub async fn cancel_order(
     }
     match state
         .db
-        .lock()
-        .cancel_pos_order(&id, &order_id, crate::now_unix())
+        .write(move |db| db.cancel_pos_order(&id, &order_id, crate::now_unix()))
+        .await
     {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => ApiError::NotFound.into_response(),
@@ -706,10 +786,11 @@ pub(super) async fn resolve_confirmations_required(
     sk: &str,
     order_id: &str,
 ) -> u64 {
+    let (store_id, order) = (connection_id.to_string(), order_id.to_string());
     let local = state
         .db
-        .lock()
-        .get_order_currency_metadata(connection_id, order_id)
+        .read(move |db| db.get_order_currency_metadata(&store_id, &order))
+        .await
         .unwrap_or_default();
     if let Some(applied) = local.and_then(|m| m.confirmations_required_applied) {
         return applied;
@@ -752,7 +833,7 @@ pub async fn order_status(
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(String, String)>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
@@ -826,7 +907,7 @@ pub async fn order_events(
     Path(id): Path<String>,
     Query(query): Query<PosEventsQuery>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),

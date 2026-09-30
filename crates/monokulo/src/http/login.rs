@@ -63,15 +63,16 @@ pub(super) enum LoginError {
 /// token, since the caller needs both: `POST /login`'s JSON body only ever
 /// contains the token, while `POST /dashboard/login` also wants the user for
 /// its own confirmation page.
-pub(super) fn authenticate(
+pub(super) async fn authenticate(
     state: &AppState,
     email: &str,
     password: &str,
 ) -> Result<(crate::db::UserRow, String), LoginError> {
+    let email = email.to_string();
     let user = state
         .db
-        .lock()
-        .get_user_by_email(email)
+        .read(move |db| db.get_user_by_email(&email))
+        .await
         .map_err(|_| LoginError::Internal)?;
 
     let password_hash = user
@@ -90,10 +91,11 @@ pub(super) fn authenticate(
 
     let raw_token = shared::auth::generate_session_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
+    let (hash, user_id) = (token_hash.clone(), user.id.clone());
     state
         .db
-        .lock()
-        .create_session(&token_hash, &user.id, now_unix())
+        .write(move |db| db.create_session(&hash, &user_id, now_unix()))
+        .await
         .map_err(|_| LoginError::Internal)?;
     // The sign-in's own lines start the session's.
     super::record_identity(&user.id, &token_hash);
@@ -105,7 +107,7 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<(StatusCode, Json<LoginResponse>), ApiError> {
-    match authenticate(&state, &req.email, &req.password) {
+    match authenticate(&state, &req.email, &req.password).await {
         Ok((_user, raw_token)) => Ok((
             StatusCode::OK,
             Json(LoginResponse {

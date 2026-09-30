@@ -46,15 +46,16 @@ use crate::views::store_settings::StoreSection;
 /// else" - callers must map that uniformly to `404` (see this module's own
 /// doc comment), never distinguishing the two. `Err(())` is a real database
 /// failure - the caller's problem, not the requester's.
-pub(super) fn load_owned_connection(
+pub(super) async fn load_owned_connection(
     state: &AppState,
     user: &UserRow,
     id: &str,
 ) -> Result<Option<StoreConnectionRow>, ()> {
+    let id = id.to_string();
     let row = state
         .db
-        .lock()
-        .get_store_connection_by_id(id)
+        .read(move |db| db.get_store_connection_by_id(&id))
+        .await
         .map_err(|_| ())?;
     Ok(row.filter(|row| row.user_id == user.id))
 }
@@ -90,7 +91,7 @@ async fn build_orders_view_model(
     Ok(OrdersViewModel {
         connection_id: row.id.clone(),
         display_name: display_name_for(&row.site_url),
-        orders: order_rows(state, row, orders),
+        orders: order_rows(state, row, orders).await,
         search: search.trim().to_string(),
         page,
         has_more,
@@ -100,20 +101,24 @@ async fn build_orders_view_model(
 /// The orders table's rows: the engine's view of each order, with what only
 /// monokulo knows - its fiat amount, where it came from, and whether the
 /// POS cancelled it.
-pub(super) fn order_rows(
+pub(super) async fn order_rows(
     state: &AppState,
     row: &StoreConnectionRow,
     orders: Vec<crate::engine_client::OrderView>,
 ) -> Vec<OrderRowViewModel> {
     let ids: Vec<String> = orders.iter().map(|o| o.order_id.clone()).collect();
-    let (fiat_metadata, details) = {
-        let db = state.db.lock();
-        (
-            db.list_order_currency_metadata_for_connection(&row.id)
-                .unwrap_or_default(),
-            db.order_listing_details(&row.id, &ids).unwrap_or_default(),
-        )
-    };
+    let id = row.id.clone();
+    let (fiat_metadata, details) = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.list_order_currency_metadata_for_connection(&id)
+                    .unwrap_or_default(),
+                db.order_listing_details(&id, &ids).unwrap_or_default(),
+            ))
+        })
+        .await
+        .unwrap_or_default();
     orders
         .into_iter()
         .map(|o| {
@@ -169,7 +174,7 @@ pub async fn orders_list(
     Path(id): Path<String>,
     Query(query): Query<OrdersListQuery>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -202,7 +207,8 @@ pub async fn orders_list(
         &state,
         Some(&user),
         format!("/dashboard/stores/{id}/orders"),
-    );
+    )
+    .await;
     views::orders::list_page(&chrome, &view_model).into_response()
 }
 
@@ -255,7 +261,7 @@ pub async fn lookup_payment(
     Path(id): Path<String>,
     Form(form): Form<LookupPaymentForm>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -299,7 +305,7 @@ pub async fn order_detail(
     Path((id, order_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -312,7 +318,8 @@ pub async fn order_detail(
         &state,
         Some(&user),
         format!("/dashboard/stores/{id}/orders/{order_id}"),
-    );
+    )
+    .await;
     let payment_link = payment_link_for(&headers, &row.tenant_public_key, &order_id);
 
     match order_detail_data(&state, &row, &sk, &order_id, payment_link).await {
@@ -355,12 +362,17 @@ async fn order_detail_data(
             // Phase 3) - fiat display comes entirely from monokulo's own
             // local `order_currency_metadata`, absent for any order that predates
             // this record (falls back to a dash rather than failing the page).
-            let metadata = state
+            let (id, order) = (row.id.clone(), order_id.to_string());
+            let (metadata, pos_order) = state
                 .db
-                .lock()
-                .get_order_currency_metadata(&row.id, order_id)
-                .ok()
-                .flatten();
+                .read(move |db| {
+                    Ok::<_, crate::db::DbError>((
+                        db.get_order_currency_metadata(&id, &order).ok().flatten(),
+                        db.get_pos_order(&id, &order),
+                    ))
+                })
+                .await
+                .map_err(|_| ())?;
             let (amount, currency) = match &metadata {
                 Some(m) => (m.amount.clone(), m.currency.clone()),
                 None => ("—".to_string(), "".to_string()),
@@ -411,10 +423,7 @@ async fn order_detail_data(
                 },
                 None => "—".to_string(),
             };
-            let from_pos = matches!(
-                state.db.lock().get_pos_order(&row.id, order_id),
-                Ok(Some(_))
-            );
+            let from_pos = matches!(pos_order, Ok(Some(_)));
             Ok(Some(OrderDetailData {
                 from_pos,
                 order_id: detail.order.order_id,
@@ -478,7 +487,7 @@ pub async fn order_detail_events(
     Path((id, order_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -608,7 +617,7 @@ pub async fn webhooks_create(
     Form(form): Form<CreateWebhookForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Webhooks;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -700,7 +709,7 @@ pub async fn webhooks_delete(
     Path((id, webhook_id)): Path<(String, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Webhooks;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -788,10 +797,11 @@ pub async fn store_detail(
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<String>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
-            let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{id}"));
+            let chrome =
+                super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{id}")).await;
             let data = views::store_detail::StoreDetailViewModel { store: None };
             return (
                 StatusCode::NOT_FOUND,
@@ -817,7 +827,8 @@ async fn render_store_detail_page(
     lookup_message: Option<String>,
     lookup_found_order_id: Option<String>,
 ) -> Response {
-    let chrome = super::page_chrome(state, Some(user), format!("/dashboard/stores/{}", row.id));
+    let chrome =
+        super::page_chrome(state, Some(user), format!("/dashboard/stores/{}", row.id)).await;
     let sk = match decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -825,6 +836,12 @@ async fn render_store_detail_page(
 
     let tenant_result = state.engine_client.get_tenant(&sk).await;
     let (health, health_label) = health_of_tenant_lookup(&tenant_result);
+    let public_url = state
+        .db
+        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::public_url(db)))
+        .await
+        .ok()
+        .flatten();
 
     // A store whose engine is currently unreachable still gets a real page -
     // just with no order data available, rather than a hard error. The
@@ -834,13 +851,13 @@ async fn render_store_detail_page(
         .list_orders_page(&sk, false, None, 10, 0)
         .await
     {
-        Ok(orders) => order_rows(state, &row, orders),
+        Ok(orders) => order_rows(state, &row, orders).await,
         Err(_) => Vec::new(),
     };
 
     let is_woocommerce = row.platform == "woocommerce";
     let embed_warnings =
-        super::embed_domains::store_page_warnings(state, &row.id, crate::now_unix());
+        super::embed_domains::store_page_warnings(state, &row.id, crate::now_unix()).await;
     let view_model = views::store_detail::StoreDetailViewModel {
         store: Some(views::store_detail::StoreDetailData {
             connection_id: row.id,
@@ -848,7 +865,7 @@ async fn render_store_detail_page(
             platform: row.platform,
             site_url: row.site_url,
             public_key: row.tenant_public_key,
-            public_url: crate::settings::public_url(&state.db.lock()),
+            public_url,
             base_currency: row.base_currency,
             health,
             health_label,
@@ -872,7 +889,7 @@ pub async fn store_settings(
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<String>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -902,7 +919,8 @@ pub(super) async fn render_store_settings_page(
         state,
         Some(user),
         format!("/dashboard/stores/{}/settings", row.id),
-    );
+    )
+    .await;
     let sk = match decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -963,31 +981,30 @@ pub(super) async fn render_store_settings_page(
         .exchange_rate
         .is_available(crate::exchange_rate_config::HAVENO)
         .then(|| views::store_settings::HavenoSettingsView::from(&row.fx_provider_settings.haveno));
-    let (base_currency_options, confirmation_thresholds) = {
-        let db = state.db.lock();
-        let options =
-            crate::currencies::currency_options(&db, &row.base_currency).unwrap_or_default();
-        let thresholds = db
-            .list_confirmation_thresholds(&row.id)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|t| views::store_settings::ConfirmationThresholdView {
-                id: t.id,
-                unit_amount: t.unit_amount,
-                confirmations_required: t.confirmations_required,
+    let (id, base_currency) = (row.id.clone(), row.base_currency.clone());
+    let (base_currency_options, thresholds, embed_restricted, embed_domain_rows, client_logging) =
+        state
+            .db
+            .read(move |db| {
+                Ok::<_, crate::db::DbError>((
+                    crate::currencies::currency_options(db, &base_currency).unwrap_or_default(),
+                    db.list_confirmation_thresholds(&id).unwrap_or_default(),
+                    db.embed_restricted(&id).unwrap_or(false),
+                    db.list_store_domains(&id).unwrap_or_default(),
+                    db.client_logging(&id).unwrap_or(false),
+                ))
             })
-            .collect::<Vec<_>>();
-        (options, thresholds)
-    };
+            .await
+            .unwrap_or_default();
+    let confirmation_thresholds = thresholds
+        .into_iter()
+        .map(|t| views::store_settings::ConfirmationThresholdView {
+            id: t.id,
+            unit_amount: t.unit_amount,
+            confirmations_required: t.confirmations_required,
+        })
+        .collect::<Vec<_>>();
     let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
-    let (embed_restricted, embed_domain_rows, client_logging) = {
-        let db = state.db.lock();
-        (
-            db.embed_restricted(&row.id).unwrap_or(false),
-            db.list_store_domains(&row.id).unwrap_or_default(),
-            db.client_logging(&row.id).unwrap_or(false),
-        )
-    };
     let now = crate::now_unix();
     let embed_can_restrict = embed_domain_rows
         .iter()
@@ -1058,7 +1075,7 @@ pub(super) async fn saved(
 ) -> Response {
     if fx.0 {
         // Read again: `row` is from before the save.
-        let row = match load_owned_connection(state, user, &row.id) {
+        let row = match load_owned_connection(state, user, &row.id).await {
             Ok(Some(fresh)) => fresh,
             _ => row,
         };
@@ -1081,8 +1098,8 @@ async fn order_currency_options_for(
     // already takes for its own engine-reachability failures.
     let known_currencies: Vec<String> = state
         .db
-        .lock()
-        .list_currencies()
+        .read(|db| db.list_currencies())
+        .await
         .map(|rows| rows.into_iter().map(|c| c.canonical_code).collect())
         .unwrap_or_default();
     let order_currency_options = state
@@ -1103,7 +1120,7 @@ pub async fn create_order_page(
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<String>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1123,7 +1140,8 @@ async fn render_create_order_page(
         state,
         Some(user),
         format!("/dashboard/stores/{}/orders/new", row.id),
-    );
+    )
+    .await;
     let (order_currency_options, order_currency_is_locked_to_xmr) =
         order_currency_options_for(state, &row).await;
     let data = views::create_order::CreateOrderData {
@@ -1162,7 +1180,7 @@ pub async fn create_order(
     Path(id): Path<String>,
     Form(form): Form<CreateOrderForm>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1170,7 +1188,7 @@ pub async fn create_order(
 
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1193,7 +1211,11 @@ pub async fn create_order(
     // comment and `http::pay::create_order`'s matching check for why
     // "unknown currency" and "unsupported currency" are kept as distinct
     // messages rather than collapsed into one.
-    let currency_known = crate::currencies::is_known_currency(&state.db.lock(), currency);
+    let wanted = currency.to_string();
+    let currency_known = state
+        .db
+        .read(move |db| crate::currencies::is_known_currency(db, &wanted))
+        .await;
     match currency_known {
         Ok(true) => {}
         Ok(false) => {
@@ -1299,20 +1321,41 @@ pub async fn create_order(
         .await
     {
         Ok(order) => {
-            if let Err(e) = state.db.lock().create_order_currency_metadata(
-                &row.id,
-                &order.order_id,
-                currency,
-                amount,
-                piconero_per_unit,
-                provider,
-                crate::now_unix(),
-                &resolution.base_currency,
+            let (store_id, order_id, currency, amount, provider) = (
+                row.id.clone(),
+                order.order_id.clone(),
+                currency.to_string(),
+                amount.to_string(),
+                provider.to_string(),
+            );
+            let base_currency = resolution.base_currency.clone();
+            let (base_rate, confirmations) = (
                 resolution.base_currency_piconero_per_unit,
                 resolution.confirmations_required,
-                // The merchant's own signed-in session: as trusted as the key.
-                true,
-            ) {
+            );
+            let recorded = state
+                .db
+                .write(move |db| {
+                    let recorded = db.create_order_currency_metadata(
+                        &store_id,
+                        &order_id,
+                        &currency,
+                        &amount,
+                        piconero_per_unit,
+                        &provider,
+                        crate::now_unix(),
+                        &base_currency,
+                        base_rate,
+                        confirmations,
+                        // The merchant's own signed-in session: as trusted as
+                        // the key.
+                        true,
+                    );
+                    let _ = db.set_order_source(&store_id, &order_id, "dashboard");
+                    recorded
+                })
+                .await;
+            if let Err(e) = recorded {
                 tracing::error!(
                     order.id = %order.order_id,
                     store.id = %row.id,
@@ -1321,10 +1364,6 @@ pub async fn create_order(
                      response is still correct, but its fiat display on monokulo's own pages will be missing"
                 );
             }
-            let _ = state
-                .db
-                .lock()
-                .set_order_source(&row.id, &order.order_id, "dashboard");
             redirect_302(&format!("/dashboard/stores/{id}/orders/{}", order.order_id))
         }
         Err(EngineClientError::EngineError { status, message })
@@ -1370,7 +1409,7 @@ pub async fn update_confirmations_required(
     Form(form): Form<UpdateConfirmationsForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1470,7 +1509,7 @@ pub async fn move_key_storage(
     Form(form): Form<MoveKeyStorageForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::KeyStorage;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1516,13 +1555,17 @@ pub async fn update_diagnostics(
     Form(form): Form<DiagnosticsForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Diagnostics;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let on = form.client_logging == "on";
-    let update_result = state.db.lock().set_client_logging(&row.id, on);
+    let store_id = row.id.clone();
+    let update_result = state
+        .db
+        .write(move |db| db.set_client_logging(&store_id, on))
+        .await;
     match update_result {
         Ok(()) => {
             tracing::info!(store.id = %row.id, client_logging = on, "store diagnostics changed");
@@ -1645,7 +1688,7 @@ pub async fn update_fx_providers(
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::FxProvider;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1669,19 +1712,23 @@ pub async fn update_fx_providers(
 
     // Haveno's per-store limits ride along in the same form, but only when
     // this instance offers Haveno (otherwise the page never rendered them).
-    // Parsed in a block of its own so the database lock is dropped before
-    // any `.await`.
     let mut settings = row.fx_provider_settings.clone();
     if state
         .exchange_rate
         .is_available(crate::exchange_rate_config::HAVENO)
     {
-        let parsed = {
-            let db = state.db.lock();
-            let resolve =
-                |input: &str| crate::currencies::resolve_currency(&db, input).map_err(|_| ());
-            crate::fx_provider_settings::parse_haveno_form(&form, &resolve)
-        };
+        let form = form.clone();
+        let parsed = state
+            .db
+            .read(move |db| {
+                let resolve =
+                    |input: &str| crate::currencies::resolve_currency(db, input).map_err(|_| ());
+                Ok::<_, crate::db::DbError>(crate::fx_provider_settings::parse_haveno_form(
+                    &form, &resolve,
+                ))
+            })
+            .await
+            .unwrap_or_else(|_| Err("Something went wrong. Please try again.".to_string()));
         match parsed {
             Ok(Some(haveno)) => settings.haveno = haveno,
             Ok(None) => {}
@@ -1699,15 +1746,11 @@ pub async fn update_fx_providers(
         }
     }
 
-    // Bound to a local first, not matched on directly: a `MutexGuard`
-    // temporary created in a `match` scrutinee is kept alive for every arm
-    // of that match (a real Rust footgun, not an oversight) - held across
-    // the `Err` arm's own `.await` below, it would make this handler's
-    // future `!Send` and fail to compile as an axum route at all.
+    let store_id = row.id.clone();
     let update_result = state
         .db
-        .lock()
-        .update_store_connection_fx(&row.id, &providers, &settings);
+        .write(move |db| db.update_store_connection_fx(&store_id, &providers, &settings))
+        .await;
     match update_result {
         Ok(()) => {
             saved(
@@ -1758,18 +1801,17 @@ pub async fn update_base_currency(
     Form(form): Form<UpdateBaseCurrencyForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::BaseCurrency;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    // Bound to a local first, not matched on directly - see
-    // `update_fx_providers`'s own doc comment on exactly this footgun
-    // (a `MutexGuard` temporary in a `match` scrutinee stays alive across
-    // every arm, including one that `.await`s, which would make this
-    // handler's future `!Send`).
-    let resolved = crate::currencies::resolve_currency(&state.db.lock(), &form.base_currency);
+    let requested = form.base_currency.clone();
+    let resolved = state
+        .db
+        .read(move |db| crate::currencies::resolve_currency(db, &requested))
+        .await;
     let base_currency = match resolved {
         Ok(Some(code)) => code,
         Ok(None) => {
@@ -1788,10 +1830,11 @@ pub async fn update_base_currency(
 
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
+    let store_id = row.id.clone();
     let update_result = state
         .db
-        .lock()
-        .update_store_connection_base_currency(&row.id, &base_currency);
+        .write(move |db| db.update_store_connection_base_currency(&store_id, &base_currency))
+        .await;
     match update_result {
         Ok(()) => {
             saved(
@@ -1841,7 +1884,7 @@ pub async fn create_confirmation_threshold(
     Form(form): Form<CreateConfirmationThresholdForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1892,7 +1935,12 @@ pub async fn create_confirmation_threshold(
 
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
-    let existing = match state.db.lock().list_confirmation_thresholds(&row.id) {
+    let store_id = row.id.clone();
+    let existing = match state
+        .db
+        .read(move |db| db.list_confirmation_thresholds(&store_id))
+        .await
+    {
         Ok(rows) => rows,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -1929,13 +1977,19 @@ pub async fn create_confirmation_threshold(
         .await;
     }
     let threshold_id = uuid::Uuid::new_v4().to_string();
-    let create_result = state.db.lock().create_confirmation_threshold_with_limit(
-        &threshold_id,
-        &row.id,
-        &canonical_amount,
-        confirmations_required,
-        crate::now_unix(),
-    );
+    let (store_id, amount) = (row.id.clone(), canonical_amount.clone());
+    let create_result = state
+        .db
+        .write(move |db| {
+            db.create_confirmation_threshold_with_limit(
+                &threshold_id,
+                &store_id,
+                &amount,
+                confirmations_required,
+                crate::now_unix(),
+            )
+        })
+        .await;
     match create_result {
         Ok(true) => {
             saved(
@@ -2001,17 +2055,18 @@ pub async fn delete_confirmation_threshold(
     Path((id, threshold_id)): Path<(String, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
+    let store_id = row.id.clone();
     if state
         .db
-        .lock()
-        .delete_confirmation_threshold(&row.id, &threshold_id)
+        .write(move |db| db.delete_confirmation_threshold(&store_id, &threshold_id))
+        .await
         .is_err()
     {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -2039,7 +2094,7 @@ pub async fn save_confirmation_thresholds(
     Form(raw): Form<HashMap<String, String>>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state, &user, &id) {
+    let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -2090,7 +2145,12 @@ pub async fn save_confirmation_thresholds(
     });
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
-    let existing = match state.db.lock().list_confirmation_thresholds(&row.id) {
+    let store_id = row.id.clone();
+    let existing = match state
+        .db
+        .read(move |db| db.list_confirmation_thresholds(&store_id))
+        .await
+    {
         Ok(rows) => rows,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -2150,19 +2210,21 @@ pub async fn save_confirmation_thresholds(
     }
 
     let threshold_id = uuid::Uuid::new_v4().to_string();
-    let new_threshold = new_confirmations.map(|n| {
-        (
-            threshold_id.as_str(),
-            canonical_new_amount.as_deref().unwrap(),
-            n,
-            crate::now_unix(),
-        )
-    });
-    let update_result =
-        state
-            .db
-            .lock()
-            .replace_confirmation_thresholds(&row.id, &deleted_ids, new_threshold);
+    let (store_id, new_amount) = (row.id.clone(), canonical_new_amount.clone());
+    let update_result = state
+        .db
+        .write(move |db| {
+            let new_threshold = new_confirmations.map(|n| {
+                (
+                    threshold_id.as_str(),
+                    new_amount.as_deref().unwrap(),
+                    n,
+                    crate::now_unix(),
+                )
+            });
+            db.replace_confirmation_thresholds(&store_id, &deleted_ids, new_threshold)
+        })
+        .await;
     if !matches!(update_result, Ok(true)) {
         let message = match update_result {
             Ok(false) => {

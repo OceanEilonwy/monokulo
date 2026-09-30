@@ -63,7 +63,13 @@ pub async fn client_report(State(state): State<AppState>, body: Bytes) -> Status
     let Ok(report) = serde_json::from_slice::<ClientReport>(&body) else {
         return StatusCode::BAD_REQUEST;
     };
-    if !page_may_report(&state.db.lock(), report.page.as_deref().unwrap_or("")) {
+    let page = report.page.clone().unwrap_or_default();
+    let may_report = state
+        .db
+        .read(move |db| Ok::<_, crate::db::DbError>(page_may_report(db, &page)))
+        .await
+        .unwrap_or(false);
+    if !may_report {
         // Accepted and dropped, as a store that opted out would expect.
         return StatusCode::NO_CONTENT;
     }
@@ -179,10 +185,15 @@ pub mod plugin {
         headers: HeaderMap,
         Json(logs): Json<PluginLogs>,
     ) -> StatusCode {
-        if store_key::check(&state, &pk, &headers) != KeyCheck::Valid {
+        if store_key::check(&state, &pk, &headers).await != KeyCheck::Valid {
             return StatusCode::UNAUTHORIZED;
         }
-        let Ok(Some(store)) = state.db.lock().get_store_connection_by_public_key(&pk) else {
+        let key = pk.clone();
+        let Ok(Some(store)) = state
+            .db
+            .read(move |db| db.get_store_connection_by_public_key(&key))
+            .await
+        else {
             return StatusCode::UNAUTHORIZED;
         };
         if logs.entries.len() > MAX_ENTRIES {
@@ -191,7 +202,13 @@ pub mod plugin {
         // The store's own setting wins over the plugin's option: refused
         // unless the store opted in to client logs. (403, not a silent 204:
         // the shop's server is authenticated, so it can be told why.)
-        if !state.db.lock().client_logging(&store.id).unwrap_or(false) {
+        let id = store.id.clone();
+        if !state
+            .db
+            .read(move |db| db.client_logging(&id))
+            .await
+            .unwrap_or(false)
+        {
             return StatusCode::FORBIDDEN;
         }
         for entry in logs.entries {

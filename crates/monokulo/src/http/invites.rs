@@ -38,8 +38,8 @@ pub struct RequestInviteForm {
     pub message: String,
 }
 
-fn render_request_invite(state: &AppState, error: Option<&str>, submitted: bool) -> Response {
-    let chrome = super::page_chrome(state, None, "/request-invite");
+async fn render_request_invite(state: &AppState, error: Option<&str>, submitted: bool) -> Response {
+    let chrome = super::page_chrome(state, None, "/request-invite").await;
     let data = RequestInviteViewModel {
         error: error.map(str::to_string),
         submitted,
@@ -49,7 +49,7 @@ fn render_request_invite(state: &AppState, error: Option<&str>, submitted: bool)
 
 /// `GET /request-invite`.
 pub async fn request_invite_form(State(state): State<AppState>) -> Response {
-    render_request_invite(&state, None, false)
+    render_request_invite(&state, None, false).await
 }
 
 /// `POST /request-invite` - records the request and, in the same call,
@@ -72,42 +72,48 @@ pub async fn request_invite_submit(
             &state,
             Some("Please fill in both your email and a short message."),
             false,
-        );
+        )
+        .await;
     }
 
     let request_id = uuid::Uuid::new_v4().to_string();
     let now = now_unix();
-    let db = state.db.lock();
-    if db
-        .create_invite_request(&request_id, email, message, now)
-        .is_err()
-    {
-        return render_request_invite(
-            &state,
-            Some("Something went wrong. Please try again."),
-            false,
-        );
-    }
-
     let raw_token = shared::auth::generate_invite_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
     let token_encrypted = crate::crypto::encrypt(&state.encryption_key, &raw_token);
     let link_id = uuid::Uuid::new_v4().to_string();
-    // A failure here leaves a request with no linked invite - not ideal,
-    // but the admin invites page tolerates it gracefully (no `mailto:`
-    // link shown for that row - `InviteRequestRow::invite_token_encrypted`'s
-    // own doc comment) rather than losing the request itself, which is the
-    // one thing this handler must not silently drop.
-    db.create_invite_link(
-        &link_id,
-        &token_hash,
-        Some(&token_encrypted),
-        Some(&request_id),
-        now,
-    )
-    .ok();
+    let (email, message) = (email.to_string(), message.to_string());
+    let created = state
+        .db
+        .write(move |db| {
+            db.create_invite_request(&request_id, &email, &message, now)?;
+            // A failure here leaves a request with no linked invite - not
+            // ideal, but the admin invites page tolerates it gracefully (no
+            // `mailto:` link shown for that row -
+            // `InviteRequestRow::invite_token_encrypted`'s own doc comment)
+            // rather than losing the request itself, which is the one thing
+            // this handler must not silently drop.
+            db.create_invite_link(
+                &link_id,
+                &token_hash,
+                Some(&token_encrypted),
+                Some(&request_id),
+                now,
+            )
+            .ok();
+            Ok::<_, crate::db::DbError>(())
+        })
+        .await;
+    if created.is_err() {
+        return render_request_invite(
+            &state,
+            Some("Something went wrong. Please try again."),
+            false,
+        )
+        .await;
+    }
 
-    render_request_invite(&state, None, true)
+    render_request_invite(&state, None, true).await
 }
 
 /// Minimal, correct percent-encoding for a `mailto:` URI's `subject`/`body`
@@ -214,7 +220,7 @@ pub struct InvitesPageQuery {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_invites_page(
+async fn render_invites_page(
     state: &AppState,
     admin_user: &UserRow,
     headers: &HeaderMap,
@@ -227,22 +233,29 @@ fn render_invites_page(
 ) -> Response {
     let base = base_url(headers);
     let clock = crate::views::time::Clock::for_user(admin_user);
-    let db = state.db.lock();
-    let total = db.count_unactioned_invite_requests().unwrap_or(0).max(0) as u32;
-    let total_pages = total.div_ceil(PAGE_SIZE as u32).max(1);
-    let page = clamp_page(total_pages, requested_page);
-    let offset = (page as i64 - 1) * PAGE_SIZE;
-    let rows = db
-        .list_unactioned_invite_requests(PAGE_SIZE, offset)
-        .unwrap_or_default();
+    let deleted_id = deleted_id.map(str::to_string);
+    let (total_pages, page, rows, just_deleted) = state
+        .db
+        .read(move |db| {
+            let total = db.count_unactioned_invite_requests().unwrap_or(0).max(0) as u32;
+            let total_pages = total.div_ceil(PAGE_SIZE as u32).max(1);
+            let page = clamp_page(total_pages, requested_page);
+            let offset = (page as i64 - 1) * PAGE_SIZE;
+            let rows = db
+                .list_unactioned_invite_requests(PAGE_SIZE, offset)
+                .unwrap_or_default();
+            let just_deleted = deleted_id.and_then(|id| db.get_invite_request(&id).ok().flatten());
+            Ok::<_, crate::db::DbError>((total_pages, page, rows, just_deleted))
+        })
+        .await
+        .unwrap_or((1, 1, Vec::new(), None));
     let row_views = rows
         .into_iter()
         .map(|r| to_row_view(&state.encryption_key, &base, &clock, r, false))
         .collect();
 
-    let just_deleted_row = deleted_id
-        .and_then(|id| db.get_invite_request(id).ok().flatten())
-        .map(|r| to_row_view(&state.encryption_key, &base, &clock, r, true));
+    let just_deleted_row =
+        just_deleted.map(|r| to_row_view(&state.encryption_key, &base, &clock, r, true));
 
     let view = AdminInvitesViewModel {
         error,
@@ -257,12 +270,11 @@ fn render_invites_page(
         next_page: (page + 1).min(total_pages),
         created_link,
     };
-    drop(db);
     if fx.0 {
         return axum::response::Html(views::admin::invites_section(&view).into_string())
             .into_response();
     }
-    let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/invites");
+    let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/invites").await;
     views::admin::admin_invites_page(&chrome, &view).into_response()
 }
 
@@ -287,6 +299,7 @@ pub async fn invites_page(
         success,
         fx,
     )
+    .await
 }
 
 /// `POST /dashboard/admin/invites/create-link` - the standalone-link
@@ -302,12 +315,11 @@ pub async fn create_invite_link(
     let raw_token = shared::auth::generate_invite_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
     let link_id = uuid::Uuid::new_v4().to_string();
-    let db = state.db.lock();
-    if db
-        .create_invite_link(&link_id, &token_hash, None, None, now_unix())
-        .is_err()
-    {
-        drop(db);
+    let created = state
+        .db
+        .write(move |db| db.create_invite_link(&link_id, &token_hash, None, None, now_unix()))
+        .await;
+    if created.is_err() {
         return render_invites_page(
             &state,
             &admin_user,
@@ -318,9 +330,9 @@ pub async fn create_invite_link(
             Some("Something went wrong creating the link. Please try again.".to_string()),
             None,
             fx,
-        );
+        )
+        .await;
     }
-    drop(db);
     render_invites_page(
         &state,
         &admin_user,
@@ -332,6 +344,7 @@ pub async fn create_invite_link(
         None,
         fx,
     )
+    .await
 }
 
 /// `POST /dashboard/admin/invites/{id}/delete?page=N` - see this module's
@@ -348,7 +361,12 @@ pub async fn delete_invite_request(
     Path(id): Path<String>,
     Query(query): Query<InvitesPageQuery>,
 ) -> Response {
-    state.db.lock().delete_invite_request(&id, now_unix()).ok();
+    let deleted = id.clone();
+    state
+        .db
+        .write(move |db| db.delete_invite_request(&deleted, now_unix()))
+        .await
+        .ok();
     let page = query.page.unwrap_or(1);
     if fx.0 {
         return render_invites_page(
@@ -361,7 +379,8 @@ pub async fn delete_invite_request(
             None,
             None,
             fx,
-        );
+        )
+        .await;
     }
     redirect_302(&format!(
         "/dashboard/admin/invites?page={page}&deleted={id}"
@@ -383,8 +402,8 @@ pub async fn delete_all_invite_requests(
 ) -> Response {
     let cleared = state
         .db
-        .lock()
-        .delete_all_unactioned_invite_requests(now_unix())
+        .write(|db| db.delete_all_unactioned_invite_requests(now_unix()))
+        .await
         .unwrap_or(0);
     if fx.0 {
         return render_invites_page(
@@ -397,7 +416,8 @@ pub async fn delete_all_invite_requests(
             None,
             Some(cleared_message(cleared)),
             fx,
-        );
+        )
+        .await;
     }
     redirect_302(&format!("/dashboard/admin/invites?cleared={cleared}"))
 }

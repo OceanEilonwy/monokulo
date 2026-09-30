@@ -27,7 +27,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::db::{SharedDb, StoreDomainRow};
+use crate::db::{Database, Db, StoreDomainRow};
 
 /// The label the TXT record lives under: `_monokulo.shop.example`. Its own
 /// name, so it doesn't crowd the domain's main TXT records.
@@ -208,8 +208,12 @@ impl EmbedPolicy {
 /// The policy of the store with this public key, or `None` for an unknown
 /// key. A database error reads as unrestricted, so a fault never takes every
 /// store's checkout offline.
-pub fn policy_for_public_key(db: &SharedDb, public_key: &str) -> Option<EmbedPolicy> {
-    match db.lock().embed_policy_for_public_key(public_key) {
+pub async fn policy_for_public_key(db: &Database, public_key: &str) -> Option<EmbedPolicy> {
+    let key = public_key.to_string();
+    match db
+        .read(move |db| db.embed_policy_for_public_key(&key))
+        .await
+    {
         Ok(policy) => policy.map(|(restricted, domains)| EmbedPolicy {
             restricted,
             domains,
@@ -230,7 +234,7 @@ pub fn domain_of_site(site_url: &str) -> Option<String> {
 /// Adds the site's domain to a store as a domain waiting for DNS, so the
 /// merchant only has to publish the record. Skipped quietly when the site
 /// has no verifiable domain, or the store already has it or is full.
-pub fn suggest_site_domain(db: &SharedDb, connection_id: &str, site_url: &str, now: i64) {
+pub fn suggest_site_domain(db: &Db, connection_id: &str, site_url: &str, now: i64) {
     if let Some(domain) = domain_of_site(site_url) {
         suggest(db, connection_id, &domain, now);
     }
@@ -241,17 +245,14 @@ pub fn suggest_site_domain(db: &SharedDb, connection_id: &str, site_url: &str, n
 /// origin/URL (`https://shop.example`), since the field used to hold
 /// origins. Skipped quietly, like [`suggest_site_domain`], when it isn't a
 /// verifiable domain (an onion address, an IP) or the store is full.
-pub fn suggest_domain(db: &SharedDb, connection_id: &str, input: &str, now: i64) {
+pub fn suggest_domain(db: &Db, connection_id: &str, input: &str, now: i64) {
     if let Some(domain) = domain_of_site(input).or_else(|| normalize_domain(input).ok()) {
         suggest(db, connection_id, &domain, now);
     }
 }
 
-fn suggest(db: &SharedDb, connection_id: &str, domain: &str, now: i64) {
-    if let Err(e) =
-        db.lock()
-            .suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE)
-    {
+fn suggest(db: &Db, connection_id: &str, domain: &str, now: i64) {
+    if let Err(e) = db.suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE) {
         tracing::warn!(store.id = %connection_id, domain = %domain, error = %e, "could not add a domain to a store");
     }
 }
@@ -260,8 +261,8 @@ fn suggest(db: &SharedDb, connection_id: &str, domain: &str, now: i64) {
 /// for DNS - once per store (`store_connections.domains_imported`), so a
 /// domain the merchant removes afterwards stays removed. Local to monokulo:
 /// the engine holds no embedding policy, so nothing is read from it.
-pub fn import_existing_domains(db: &SharedDb) {
-    let stores = match db.lock().list_store_connections_awaiting_domain_import() {
+pub fn import_existing_domains(db: &Db) {
+    let stores = match db.list_store_connections_awaiting_domain_import() {
         Ok(stores) => stores,
         Err(e) => {
             tracing::error!(error = %e, "could not list stores to import domains for");
@@ -270,7 +271,7 @@ pub fn import_existing_domains(db: &SharedDb) {
     };
     for store in stores {
         suggest_site_domain(db, &store.id, &store.site_url, crate::now_unix());
-        if let Err(e) = db.lock().mark_store_domains_imported(&store.id) {
+        if let Err(e) = db.mark_store_domains_imported(&store.id) {
             tracing::warn!(store.id = %store.id, error = %e, "could not mark the store's domains imported");
         }
     }
@@ -392,25 +393,31 @@ pub async fn check(dns: &dyn TxtLookup, domain: &str, token: &str) -> CheckOutco
 
 /// Checks one domain and records the result on its row.
 pub async fn check_and_record(
-    db: &SharedDb,
+    db: &Database,
     dns: &dyn TxtLookup,
     row: &StoreDomainRow,
     now: i64,
 ) -> Result<CheckOutcome, crate::db::DbError> {
     let outcome = check(dns, &row.domain, &row.token).await;
     let error = outcome.error_message(&row.domain, &row.token);
-    db.lock()
-        .record_store_domain_check(&row.id, now, error.as_deref())?;
+    let id = row.id.clone();
+    db.write(move |db| db.record_store_domain_check(&id, now, error.as_deref()))
+        .await?;
     Ok(outcome)
 }
 
 /// Re-checks every verified domain that is due, one at a time.
-pub async fn recheck_due(db: &SharedDb, dns: &dyn TxtLookup, now: i64) {
-    let due = match db.lock().list_store_domains_due_for_recheck(
-        now,
-        RECHECK_EVERY_SECS,
-        FAILING_RECHECK_EVERY_SECS,
-    ) {
+pub async fn recheck_due(db: &Database, dns: &dyn TxtLookup, now: i64) {
+    let due = match db
+        .read(move |db| {
+            db.list_store_domains_due_for_recheck(
+                now,
+                RECHECK_EVERY_SECS,
+                FAILING_RECHECK_EVERY_SECS,
+            )
+        })
+        .await
+    {
         Ok(due) => due,
         Err(e) => {
             tracing::error!(error = %e, "could not list domains to re-check");
@@ -425,7 +432,7 @@ pub async fn recheck_due(db: &SharedDb, dns: &dyn TxtLookup, now: i64) {
 }
 
 /// Runs [`recheck_due`] every few minutes for the life of the process.
-pub fn spawn_rechecks(db: SharedDb, dns: Arc<dyn TxtLookup>) -> tokio::task::JoinHandle<()> {
+pub fn spawn_rechecks(db: Database, dns: Arc<dyn TxtLookup>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(5 * 60));
         loop {

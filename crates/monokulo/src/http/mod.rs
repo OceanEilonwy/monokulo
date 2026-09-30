@@ -81,7 +81,7 @@ use axum::Router;
 use axum_extra::extract::CookieJar;
 use serde_json::json;
 
-use crate::db::{SharedDb, UserRow};
+use crate::db::{Database, UserRow};
 use crate::engine_client::EngineClient;
 
 /// Name of the cookie the browser-facing login flow (`dashboard::login_submit`)
@@ -91,7 +91,8 @@ pub(crate) const SESSION_COOKIE_NAME: &str = "session";
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: SharedDb,
+    /// The database (`db::Database`): `read` and `write` jobs.
+    pub db: Database,
     pub engine_client: EngineClient,
     /// AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's `sk_...`
     /// secret token before it's stored in `store_connections` — see
@@ -150,9 +151,9 @@ impl AppState {
     /// [`AppState::for_tests`] around a db the test prepared itself, so a
     /// test that needs its own db doesn't also open and seed one it throws
     /// away.
-    pub fn for_tests_with_db(db: SharedDb) -> Self {
+    pub fn for_tests_with_db(db: crate::db::SharedDb) -> Self {
         AppState {
-            db,
+            db: Database::inline(db),
             engine_client: EngineClient::new("http://127.0.0.1:1"),
             encryption_key: TEST_ENCRYPTION_KEY,
             status_cache: status_page::new_status_cache(),
@@ -563,6 +564,7 @@ impl FromRequestParts<AppState> for AuthedUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         resolve_authed_user(state, &parts.headers)
+            .await
             .map(|(user, hash)| AuthedUser(user, hash))
             .ok_or(ApiError::Unauthorized)
     }
@@ -607,16 +609,20 @@ impl FromRequestParts<AppState> for AuthedAdmin {
 fn embed_cors_layer(state: &AppState) -> tower_http::cors::CorsLayer {
     use tower_http::cors::AllowOrigin;
     let db = state.db.clone();
-    cors_layer_base().allow_origin(AllowOrigin::predicate(move |origin, parts| {
-        let Some(public_key) = embed_domains::public_key_of_pay_path(parts.uri.path()) else {
-            return true;
-        };
-        let Ok(origin) = origin.to_str() else {
-            return false;
-        };
-        match crate::embed_domains::policy_for_public_key(&db, public_key) {
-            Some(policy) => policy.allows_origin(origin, crate::now_unix()),
-            None => true,
+    cors_layer_base().allow_origin(AllowOrigin::async_predicate(move |origin, parts| {
+        let public_key =
+            embed_domains::public_key_of_pay_path(parts.uri.path()).map(str::to_string);
+        async move {
+            let Some(public_key) = public_key else {
+                return true;
+            };
+            let Ok(origin) = origin.to_str() else {
+                return false;
+            };
+            match crate::embed_domains::policy_for_public_key(&db, &public_key).await {
+                Some(policy) => policy.allows_origin(origin, crate::now_unix()),
+                None => true,
+            }
         }
     }))
 }
@@ -650,20 +656,40 @@ fn cors_layer_base() -> tower_http::cors::CorsLayer {
 /// Page chrome for a page with the site nav (or another status
 /// indicator): `views::PageChrome::from_user` plus the engine's last known
 /// health (`status_page::known_health`).
-pub(crate) fn page_chrome(
+pub(crate) async fn page_chrome(
     state: &AppState,
     user: Option<&crate::db::UserRow>,
     current_path: impl Into<String>,
 ) -> crate::views::PageChrome {
-    let health = status_page::known_health(state);
-    let alerts = user
-        .map(|user| store_alerts(state, user))
+    let current_path = current_path.into();
+    let unserved = status_page::known_unserved(state);
+    // One read for both: the user's stores (only when some store can't be
+    // scanned) and whether this page's store reports browser logs.
+    let user_id = user
+        .filter(|_| !unserved.is_empty())
+        .map(|user| user.id.clone());
+    let store = store_of_path(&current_path).map(str::to_string);
+    let (stores, browser_reports) = state
+        .db
+        .read(move |db| {
+            let stores = match user_id {
+                Some(user_id) => db
+                    .list_store_connections_for_user(&user_id)
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            let reports = store.map(|store| db.client_logging(&store).unwrap_or(false));
+            Ok::<_, crate::db::DbError>((stores, reports))
+        })
+        .await
         .unwrap_or_default();
     let mut chrome = crate::views::PageChrome::from_user(user, current_path)
-        .with_health(health)
-        .with_alerts(alerts);
-    if let Some(store) = store_of_path(&chrome.current_path) {
-        chrome.browser_reports = state.db.lock().client_logging(store).unwrap_or(false);
+        .with_health(status_page::known_health(state))
+        .with_alerts(store_alerts(&unserved, &stores));
+    // Only a store's own pages depend on its opt-in; every other page keeps
+    // `from_user`'s choice.
+    if let Some(reports) = browser_reports {
+        chrome.browser_reports = reports;
     }
     chrome
 }
@@ -680,14 +706,10 @@ pub(crate) fn store_of_path(path: &str) -> Option<&str> {
 
 /// One alert per store of `user` that the engine can't scan right now
 /// (task 3.7, decision D2). Only ever the signed-in owner's own stores.
-fn store_alerts(state: &AppState, user: &crate::db::UserRow) -> Vec<String> {
-    let unserved = status_page::known_unserved(state);
-    if unserved.is_empty() {
-        return Vec::new();
-    }
-    let Ok(stores) = state.db.lock().list_store_connections_for_user(&user.id) else {
-        return Vec::new();
-    };
+fn store_alerts(
+    unserved: &[crate::engine_client::UnservedTenant],
+    stores: &[crate::db::StoreConnectionRow],
+) -> Vec<String> {
     let mut alerts = Vec::new();
     for store in stores {
         let name = store
@@ -735,7 +757,7 @@ fn store_alerts(state: &AppState, user: &crate::db::UserRow) -> Vec<String> {
 /// `None` covers every reason a session doesn't resolve (missing/malformed
 /// header, missing cookie, unknown/invalid token, a database error looking
 /// either up) - never distinguished further, same as [`AuthedUser`] itself.
-pub(crate) fn resolve_authed_user(
+pub(crate) async fn resolve_authed_user(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Option<(UserRow, String)> {
@@ -750,9 +772,18 @@ pub(crate) fn resolve_authed_user(
     };
     let token_hash = shared::auth::hash_secret_token(&token);
 
-    let db = state.db.lock();
-    let session = db.find_session(&token_hash).ok().flatten()?;
-    let mut user = db.get_user_by_id(&session.user_id).ok().flatten()?;
+    let hash = token_hash.clone();
+    let mut user = state
+        .db
+        .read(move |db| {
+            let Some(session) = db.find_session(&hash)? else {
+                return Ok(None);
+            };
+            db.get_user_by_id(&session.user_id)
+        })
+        .await
+        .ok()
+        .flatten()?;
     user.browser_timezone = fx::browser_zone(headers);
     record_identity(&user.id, &token_hash);
     Some((user, token_hash))
@@ -790,16 +821,16 @@ async fn record_store(
         .filter(|id| !id.is_empty())
     {
         Some(id) => Some(id.to_string()),
-        None => embed_domains::public_key_of_pay_path(path)
-            .and_then(|pk| {
-                state
-                    .db
-                    .lock()
-                    .get_store_connection_by_public_key(pk)
-                    .ok()
-                    .flatten()
-            })
-            .map(|row| row.id),
+        None => match embed_domains::public_key_of_pay_path(path).map(str::to_string) {
+            Some(pk) => state
+                .db
+                .read(move |db| db.get_store_connection_by_public_key(&pk))
+                .await
+                .ok()
+                .flatten()
+                .map(|row| row.id),
+            None => None,
+        },
     };
     if let Some(store) = store {
         tracing::Span::current().record("store.id", store);

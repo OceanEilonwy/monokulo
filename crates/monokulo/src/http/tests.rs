@@ -1565,7 +1565,7 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
         }]),
     );
 
-    let chrome = super::page_chrome(&state, Some(&owner), "/dashboard");
+    let chrome = super::page_chrome(&state, Some(&owner), "/dashboard").await;
     assert_eq!(chrome.alerts.len(), 1);
     assert!(
         chrome.alerts[0].contains("shop.example.com") && chrome.alerts[0].contains("stagenet"),
@@ -1575,12 +1575,16 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
 
     assert!(
         super::page_chrome(&state, Some(&other), "/dashboard")
+            .await
             .alerts
             .is_empty(),
         "not someone else's store"
     );
     assert!(
-        super::page_chrome(&state, None, "/").alerts.is_empty(),
+        super::page_chrome(&state, None, "/")
+            .await
+            .alerts
+            .is_empty(),
         "never for a visitor"
     );
 
@@ -1616,11 +1620,14 @@ async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has()
             blocks_behind: Some(12),
         }]),
     );
-    let alerts = super::page_chrome(&state, Some(&owner), "/dashboard").alerts;
+    let alerts = super::page_chrome(&state, Some(&owner), "/dashboard")
+        .await
+        .alerts;
     assert!(alerts[0].contains("catching up 12 block"), "{alerts:?}");
 
     crate::http::status_page::seed_status_for_tests(&state, status_with(vec![]));
     assert!(super::page_chrome(&state, Some(&owner), "/dashboard")
+        .await
         .alerts
         .is_empty());
 }
@@ -1641,7 +1648,9 @@ async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
                 blocks_behind: None,
             }]),
         );
-        let alerts = super::page_chrome(&state, Some(&owner), "/dashboard").alerts;
+        let alerts = super::page_chrome(&state, Some(&owner), "/dashboard")
+            .await
+            .alerts;
         assert_eq!(alerts.len(), 1);
         assert!(
             alerts[0].contains("shop.example.com") && alerts[0].contains(expected),
@@ -1664,6 +1673,7 @@ async fn a_status_cached_from_the_old_engine_is_not_shown_after_the_engine_url_c
     );
     assert_eq!(
         super::page_chrome(&state, Some(&owner), "/dashboard")
+            .await
             .alerts
             .len(),
         1
@@ -1727,20 +1737,20 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
 #[tokio::test]
 async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin_pages_always_do() {
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
-    let with_script = |path: &str| {
-        let chrome = super::page_chrome(&state, Some(&owner), path);
+    let with_script = async |path: &str| {
+        let chrome = super::page_chrome(&state, Some(&owner), path).await;
         crate::views::layout(&chrome, "t", maud::html! {})
             .into_string()
             .contains("/static/telemetry.js")
     };
-    assert!(with_script("/dashboard/admin/logs"));
-    assert!(with_script("/dashboard"));
-    assert!(with_script("/dashboard/stores/new"));
-    assert!(!with_script("/dashboard/stores/c1"));
-    assert!(!with_script("/dashboard/stores/c1/settings"));
+    assert!(with_script("/dashboard/admin/logs").await);
+    assert!(with_script("/dashboard").await);
+    assert!(with_script("/dashboard/stores/new").await);
+    assert!(!with_script("/dashboard/stores/c1").await);
+    assert!(!with_script("/dashboard/stores/c1/settings").await);
     state.db.lock().set_client_logging("c1", true).unwrap();
-    assert!(with_script("/dashboard/stores/c1"));
-    assert!(with_script("/dashboard/stores/c1/orders?page=2"));
+    assert!(with_script("/dashboard/stores/c1").await);
+    assert!(with_script("/dashboard/stores/c1/orders?page=2").await);
 }
 
 #[tokio::test]

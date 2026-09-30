@@ -138,7 +138,12 @@ async fn load_order(
     pk: &str,
     order_id: &str,
 ) -> Result<(StoreConnectionRow, String, OrderDetailResponse), LoadError> {
-    let row = match state.db.lock().get_store_connection_by_public_key(pk) {
+    let key = pk.to_string();
+    let row = match state
+        .db
+        .read(move |db| db.get_store_connection_by_public_key(&key))
+        .await
+    {
         Ok(Some(row)) => row,
         Ok(None) => return Err(LoadError::NotFound),
         Err(_) => return Err(LoadError::Internal),
@@ -264,7 +269,7 @@ pub async fn checkout_page(
         Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    if must_open_from_shop(&state, &row, &order_id, &headers) {
+    if must_open_from_shop(&state, &row, &order_id, &headers).await {
         return open_from_shop_response(&pk, &order_id);
     }
     with_vary_on_fetch_dest(render_checkout_page(&state, pk, row, sk, detail, None, &options).await)
@@ -288,7 +293,7 @@ pub async fn checkout_page(
 /// orders created with the key (WooCommerce, the dashboard, the POS and
 /// payment links shared from it), orders monokulo has no record of, and
 /// every order of an unrestricted store.
-fn must_open_from_shop(
+async fn must_open_from_shop(
     state: &AppState,
     row: &StoreConnectionRow,
     order_id: &str,
@@ -303,11 +308,20 @@ fn must_open_from_shop(
     if dest.eq_ignore_ascii_case("iframe") || dest.eq_ignore_ascii_case("frame") {
         return false;
     }
-    let db = state.db.lock();
-    if !db.embed_restricted(&row.id).unwrap_or(false) {
-        return false;
-    }
-    matches!(db.get_order_currency_metadata(&row.id, order_id), Ok(Some(metadata)) if !metadata.created_with_key)
+    let (id, order_id) = (row.id.clone(), order_id.to_string());
+    state
+        .db
+        .read(move |db| {
+            if !db.embed_restricted(&id).unwrap_or(false) {
+                return Ok(false);
+            }
+            Ok::<_, crate::db::DbError>(matches!(
+                db.get_order_currency_metadata(&id, &order_id),
+                Ok(Some(metadata)) if !metadata.created_with_key
+            ))
+        })
+        .await
+        .unwrap_or(false)
 }
 
 fn open_from_shop_response(pk: &str, order_id: &str) -> Response {
@@ -363,7 +377,12 @@ async fn render_checkout_page(
     let mut chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
     chrome.theme = options.theme();
     // Browser problem reports only from a store that opted in (D8).
-    chrome.browser_reports = state.db.lock().client_logging(&row.id).unwrap_or(false);
+    let id = row.id.clone();
+    chrome.browser_reports = state
+        .db
+        .read(move |db| db.client_logging(&id))
+        .await
+        .unwrap_or(false);
     views::checkout::checkout_page(&chrome, &view).into_response()
 }
 
@@ -389,10 +408,11 @@ async fn build_checkout_view(
         super::pos::resolve_confirmations_required(state, &row.id, sk, &detail.order.order_id)
             .await;
 
+    let (id, order_id) = (row.id.clone(), detail.order.order_id.clone());
     let (amount, currency) = match state
         .db
-        .lock()
-        .get_order_currency_metadata(&row.id, &detail.order.order_id)
+        .read(move |db| db.get_order_currency_metadata(&id, &order_id))
+        .await
     {
         Ok(Some(metadata)) => (metadata.amount, metadata.currency),
         _ => ("—".to_string(), "".to_string()),
@@ -773,7 +793,7 @@ pub async fn checkout_share_page(
             // The share page frames the checkout from monokulo itself, so it
             // would otherwise show a browser-created order of a restricted
             // store as a full page - the same rule applies to it.
-            if must_open_from_shop(&state, &row, &order_id, &headers) {
+            if must_open_from_shop(&state, &row, &order_id, &headers).await {
                 return open_from_shop_response(&pk, &order_id);
             }
             true
@@ -786,9 +806,10 @@ pub async fn checkout_share_page(
     } else {
         StatusCode::NOT_FOUND
     };
-    let authed = super::resolve_authed_user(&state, &headers);
+    let authed = super::resolve_authed_user(&state, &headers).await;
     let current_path = format!("/pay/{pk}/orders/{order_id}/share");
-    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), current_path);
+    let chrome =
+        super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), current_path).await;
     let view = CheckoutShareViewModel {
         pk,
         order_id,

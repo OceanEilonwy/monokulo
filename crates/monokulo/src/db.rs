@@ -2,17 +2,13 @@
 //! engine's (`scanner::store::Store`); the two services never share a
 //! database file or a connection.
 //!
-//! Deliberately mirrors the engine's `Store` (see `src/store.rs`) rather than
-//! inventing a new shape: one struct wrapping a single `rusqlite::Connection`,
-//! migrated on open via `shared::migrations::apply` (the same runner
-//! `scanner::store` uses — see WBS 0.5), with `open_in_memory`/
-//! `open_file` constructors and an `into_shared` helper producing
-//! `Arc<Mutex<Db>>` for handlers to share. SQLite allows exactly one writer
-//! regardless of how many handles exist, so a mutex-guarded single connection
-//! is a correct — if simple — realization of "single writer", same reasoning
-//! as `Store`'s own doc comment.
+//! [`Db`] wraps one `rusqlite::Connection` and holds every query, migrated
+//! on open via `shared::migrations::apply` (the same runner `scanner::store`
+//! uses). Handlers reach it through [`Database`]: read-only connections for
+//! reads, one writing connection for writes, each on its own thread.
 
 use parking_lot::Mutex;
+use shared::sqlite::{Pool, PoolError};
 use std::sync::Arc;
 
 use crate::fx_provider_settings::FxProviderSettings;
@@ -307,7 +303,85 @@ impl Db {
     }
 }
 
+/// One connection behind a lock: the settings store's own connection, and
+/// the one in-memory connection a test's [`Database`] runs on.
 pub type SharedDb = Arc<Mutex<Db>>;
+
+/// How monokulo reaches its database: a pool of read-only connections and
+/// one writing connection, each on its own thread (`shared::sqlite::Pool`).
+/// Reads run side by side (WAL) and never wait behind a write; writes run
+/// one at a time, in order. Nothing runs on a Tokio worker thread.
+///
+/// A job that writes, or that reads and then writes on what it read, goes
+/// to [`Database::write`] whole, so no other write lands in between.
+#[derive(Clone)]
+pub struct Database {
+    reads: Pool<Db>,
+    writes: Pool<Db>,
+}
+
+impl Database {
+    /// The database file at `path`, migrated, with `read_connections`
+    /// readers (at least one).
+    pub fn open(path: &str, read_connections: usize) -> Result<Self> {
+        let writer = Db::open_file(path)?;
+        let readers = (0..read_connections.max(1))
+            .map(|_| Db::open_reader(path))
+            .collect::<Result<Vec<_>>>()?;
+        let unavailable = |e: std::io::Error| DbError::Pool(PoolError::Unavailable(e.to_string()));
+        Ok(Database {
+            reads: Pool::start("monokulo-db-read", readers).map_err(unavailable)?,
+            writes: Pool::start("monokulo-db-write", vec![writer]).map_err(unavailable)?,
+        })
+    }
+
+    /// Every job on the caller, on `db`, locked for the job: for in-memory
+    /// databases (which can't be opened twice) and tests. Reads still can't
+    /// write (`Db::read_only`), so a read that writes fails its tests.
+    pub fn inline(db: SharedDb) -> Self {
+        Database {
+            reads: Pool::Inline(db.clone()),
+            writes: Pool::Inline(db),
+        }
+    }
+
+    /// Runs `f` on a read-only connection.
+    pub async fn read<T, E>(
+        &self,
+        f: impl FnOnce(&Db) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<PoolError> + Send + 'static,
+    {
+        match &self.reads {
+            Pool::Inline(_) => self.reads.run(move |db| db.read_only(|| f(db))).await,
+            Pool::Threads { .. } => self.reads.run(f).await,
+        }
+    }
+
+    /// Runs `f` on the writing connection.
+    pub async fn write<T, E>(
+        &self,
+        f: impl FnOnce(&Db) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<PoolError> + Send + 'static,
+    {
+        self.writes.run(f).await
+    }
+
+    /// The test's connection, for setting up and checking state directly.
+    /// Only for an inline database; production code can't call it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn lock(&self) -> parking_lot::MutexGuard<'_, Db> {
+        match &self.writes {
+            Pool::Inline(db) => db.lock(),
+            Pool::Threads { .. } => panic!("Database::lock is only for an inline test database"),
+        }
+    }
+}
 
 /// A search saved on the Logs page.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,6 +396,8 @@ pub struct SavedLogSearch {
 pub enum DbError {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Pool(#[from] PoolError),
 }
 
 impl DbError {
@@ -591,14 +667,33 @@ pub enum RedeemInviteResult {
 impl Db {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        shared::sqlite::configure_writer(&conn)?;
         apply_migrations(&conn)?;
         Ok(Db { conn })
     }
 
+    /// The writing connection to the database file at `path`: WAL, foreign
+    /// keys and the rest of `shared::sqlite::configure_writer`, then any
+    /// pending migrations.
     pub fn open_file(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
+        shared::sqlite::configure_writer(&conn)?;
         apply_migrations(&conn)?;
         Ok(Db { conn })
+    }
+
+    /// A read-only connection to the database file at `path`, for the read
+    /// pool.
+    pub fn open_reader(path: &str) -> Result<Self> {
+        Ok(Db {
+            conn: shared::sqlite::open_reader(path)?,
+        })
+    }
+
+    /// Runs `f` with this connection refusing writes, as the read pool's
+    /// connections do (`shared::sqlite::read_only`).
+    pub fn read_only<T>(&self, f: impl FnOnce() -> T) -> T {
+        shared::sqlite::read_only(&self.conn, f)
     }
 
     pub fn into_shared(self) -> SharedDb {
@@ -1946,6 +2041,49 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_path() -> String {
+        std::env::temp_dir()
+            .join(format!("monokulo_db_{}.db", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// The file-backed database: a write is visible to the next read, a
+    /// read can't write, and foreign keys are enforced.
+    #[tokio::test]
+    async fn readers_see_the_writers_commits_and_cannot_write() {
+        let db = Database::open(&temp_path(), 2).unwrap();
+        db.write(|db| db.set_setting("signup.mode", "public"))
+            .await
+            .unwrap();
+        let read = db.read(|db| db.get_setting("signup.mode")).await.unwrap();
+        assert_eq!(read.as_deref(), Some("public"));
+
+        let refused = db.read(|db| db.set_setting("signup.mode", "x")).await;
+        assert!(matches!(refused, Err(DbError::Sqlite(_))), "{refused:?}");
+
+        let orphan = db
+            .write(|db| db.insert_pos_order("no-such-store", "o1", None, None, 1))
+            .await;
+        assert!(matches!(orphan, Err(DbError::Sqlite(_))), "{orphan:?}");
+    }
+
+    /// A test's inline database refuses a write inside a read, as the read
+    /// pool would, and is writable again afterwards.
+    #[tokio::test]
+    async fn an_inline_read_cannot_write_either() {
+        let db = Database::inline(Db::open_in_memory().unwrap().into_shared());
+        let refused = db.read(|db| db.set_setting("signup.mode", "x")).await;
+        assert!(refused.is_err());
+        db.write(|db| db.set_setting("signup.mode", "public"))
+            .await
+            .unwrap();
+        assert_eq!(
+            db.lock().get_setting("signup.mode").unwrap().as_deref(),
+            Some("public")
+        );
+    }
 
     #[test]
     fn pos_orders_are_store_scoped_persist_background_and_cancel_state() {

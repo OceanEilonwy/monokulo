@@ -123,7 +123,11 @@ pub(super) async fn create_connection_for_user(
     // Validated *before* ever provisioning a real engine tenant - a bad
     // base currency should never leave an orphaned tenant behind that this
     // connection attempt then fails to record locally.
-    let base_currency = crate::currencies::resolve_currency(&state.db.lock(), &req.base_currency)
+    let requested = req.base_currency.clone();
+    let base_currency = state
+        .db
+        .read(move |db| crate::currencies::resolve_currency(db, &requested))
+        .await
         .map_err(|_| CreateConnectionError::Internal)?
         .ok_or_else(|| {
             CreateConnectionError::BadRequest(format!(
@@ -160,29 +164,40 @@ pub(super) async fn create_connection_for_user(
 
     let id = Uuid::new_v4().to_string();
     let encrypted_secret_token = crypto::encrypt(&state.encryption_key, &created.secret_token);
+    let (connection_id, user_id, public_key) =
+        (id.clone(), user.id.clone(), created.public_key.clone());
+    let engine_url = state.engine_client.base_url();
     state
         .db
-        .lock()
-        .create_store_connection(
-            &id,
-            &user.id,
-            &req.platform,
-            &req.site_url,
-            &created.public_key,
-            &encrypted_secret_token,
-            &state.engine_client.base_url(),
-            now_unix(),
-            &base_currency,
-        )
+        .write(move |db| {
+            db.create_store_connection(
+                &connection_id,
+                &user_id,
+                &req.platform,
+                &req.site_url,
+                &public_key,
+                &encrypted_secret_token,
+                &engine_url,
+                now_unix(),
+                &base_currency,
+            )?;
+            // The site's domain, and any extra domains an API caller passed,
+            // join the store's domains waiting for DNS
+            // (`crate::embed_domains`).
+            crate::embed_domains::suggest_site_domain(
+                db,
+                &connection_id,
+                &req.site_url,
+                now_unix(),
+            );
+            for domain in &req.domains {
+                crate::embed_domains::suggest_domain(db, &connection_id, domain, now_unix());
+            }
+            let _ = db.mark_store_domains_imported(&connection_id);
+            Ok::<_, crate::db::DbError>(())
+        })
+        .await
         .map_err(|_| CreateConnectionError::Internal)?;
-
-    // The site's domain, and any extra domains an API caller passed, join
-    // the store's domains waiting for DNS (`crate::embed_domains`).
-    crate::embed_domains::suggest_site_domain(&state.db, &id, &req.site_url, now_unix());
-    for domain in &req.domains {
-        crate::embed_domains::suggest_domain(&state.db, &id, domain, now_unix());
-    }
-    let _ = state.db.lock().mark_store_domains_imported(&id);
 
     Ok(CreateConnectionOutcome {
         connection_id: id,

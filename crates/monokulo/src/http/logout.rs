@@ -29,8 +29,8 @@ pub async fn logout(
 ) -> Result<StatusCode, ApiError> {
     state
         .db
-        .lock()
-        .delete_session(&token_hash)
+        .write(move |db| db.delete_session(&token_hash))
+        .await
         .map_err(|_| ApiError::Internal)?;
     Ok(StatusCode::NO_CONTENT)
 }

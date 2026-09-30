@@ -261,11 +261,15 @@ async fn run(action: Action) {
         db: db.clone(),
         store: store.clone(),
         read_pool: Some(
-            scanner::store::ReadStorePool::open(&cli::database_path().to_string_lossy(), 2)
-                .unwrap_or_else(|e| {
-                    eprintln!("failed to open database read pool: {e}");
-                    std::process::exit(1)
-                }),
+            scanner::store::ReadStorePool::open(
+                &cli::database_path().to_string_lossy(),
+                live_settings::read_sync::<RuntimeConfig>(&StoreSettings(store.clone()))
+                    .read_connections,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("failed to open database read pool: {e}");
+                std::process::exit(1)
+            }),
         ),
         key_custody: key_custody.clone(),
         key_custody_backend,

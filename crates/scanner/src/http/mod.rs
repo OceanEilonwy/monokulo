@@ -166,9 +166,14 @@ impl AppState {
             pool.query(f).await
         } else {
             let store = self.store.clone();
-            tokio::task::spawn_blocking(move || f(&store.lock()))
-                .await
-                .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?
+            // Refusing writes, as the pool's connections do, so a read that
+            // writes fails in tests too.
+            tokio::task::spawn_blocking(move || {
+                let store = store.lock();
+                store.read_only(|| f(&store))
+            })
+            .await
+            .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?
         }
     }
 }

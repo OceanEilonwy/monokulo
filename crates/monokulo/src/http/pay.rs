@@ -75,9 +75,19 @@ pub async fn create_order(
     let created_with_key = key.is_some();
     let policy_lock = crate::confirmation_thresholds::policy_lock(&pk);
     let _policy_guard = policy_lock.lock().await;
-    let row = match state.db.lock().get_store_connection_by_public_key(&pk) {
-        Ok(Some(row)) => row,
-        Ok(None) => return ApiError::NotFound.into_response(),
+    let (key, currency) = (pk.clone(), req.currency.clone());
+    let found = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.get_store_connection_by_public_key(&key)?,
+                crate::currencies::is_known_currency(db, &currency),
+            ))
+        })
+        .await;
+    let (row, currency_known) = match found {
+        Ok((Some(row), known)) => (row, known),
+        Ok((None, _)) => return ApiError::NotFound.into_response(),
         Err(_) => return ApiError::Internal.into_response(),
     };
 
@@ -87,7 +97,6 @@ pub async fn create_order(
     // different, clearer error than "unsupported currency" (a real currency
     // this instance just can't get a live rate for right now), so the two
     // get distinct messages rather than being collapsed into one.
-    let currency_known = crate::currencies::is_known_currency(&state.db.lock(), &req.currency);
     match currency_known {
         Ok(true) => {}
         Ok(false) => {
@@ -173,19 +182,40 @@ pub async fn create_order(
             // payment address. Losing this one local record is a strictly
             // smaller problem than telling a customer their real order
             // failed when it didn't.
-            if let Err(e) = state.db.lock().create_order_currency_metadata(
-                &row.id,
-                &order.order_id,
-                &req.currency,
-                &req.amount,
-                piconero_per_unit,
-                provider,
-                now_unix(),
-                &resolution.base_currency,
+            let source = if created_with_key { "api" } else { "website" };
+            let (id, order_id, currency, amount, provider) = (
+                row.id.clone(),
+                order.order_id.clone(),
+                req.currency.clone(),
+                req.amount.clone(),
+                provider.to_string(),
+            );
+            let base_currency = resolution.base_currency.clone();
+            let (base_rate, confirmations) = (
                 resolution.base_currency_piconero_per_unit,
                 resolution.confirmations_required,
-                created_with_key,
-            ) {
+            );
+            let recorded = state
+                .db
+                .write(move |db| {
+                    let recorded = db.create_order_currency_metadata(
+                        &id,
+                        &order_id,
+                        &currency,
+                        &amount,
+                        piconero_per_unit,
+                        &provider,
+                        now_unix(),
+                        &base_currency,
+                        base_rate,
+                        confirmations,
+                        created_with_key,
+                    );
+                    let _ = db.set_order_source(&id, &order_id, source);
+                    recorded
+                })
+                .await;
+            if let Err(e) = recorded {
                 tracing::error!(
                     order.id = %order.order_id,
                     store.id = %row.id,
@@ -194,12 +224,6 @@ pub async fn create_order(
                      response is still correct, but its fiat display on monokulo's own pages will be missing"
                 );
             }
-            let source = if created_with_key { "api" } else { "website" };
-            let _ = state
-                .db
-                .lock()
-                .set_order_source(&row.id, &order.order_id, source);
-
             Json(CreateOrderResponse {
                 order_id: order.order_id,
                 address: order.address,
