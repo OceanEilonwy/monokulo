@@ -67,8 +67,8 @@ pub struct PageChrome {
     /// The current request's own path (+ query string, where relevant) -
     /// carried as the theme-toggle form's hidden `next` field so toggling
     /// theme redirects back to the page it was toggled from, not a fixed
-    /// default. Validated with [`crate::http::dashboard::is_safe_redirect_path`]
-    /// before ever being used as a redirect target, same as the login
+    /// default. Checked into a `SafePath` (`crate::http::dashboard`) before
+    /// ever being used as a redirect target, same as the login
     /// flow's own `next` - never trusted at face value just because it
     /// came from this struct.
     pub current_path: String,

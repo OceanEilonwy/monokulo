@@ -112,6 +112,27 @@ fn is_safe_redirect_path(next: &str) -> bool {
     !path_part.contains(':')
 }
 
+/// A path on this site, safe to send a browser to: made only by
+/// [`SafePath::parse`], so a `next` value a request carried can't reach
+/// [`redirect_to`] unchecked (an open redirect).
+pub(crate) struct SafePath(String);
+
+impl SafePath {
+    /// `next`, if [`is_safe_redirect_path`] accepts it.
+    pub(crate) fn parse(next: &str) -> Option<Self> {
+        is_safe_redirect_path(next).then(|| SafePath(next.to_string()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A `302` to a checked path that came from a request.
+pub(crate) fn redirect_to(path: &SafePath) -> Response {
+    redirect_302(path.as_str())
+}
+
 /// `POST /dashboard/connect`'s form fields (WBS 1.3.2) - the browser
 /// equivalent of `POST /connections`'s JSON body, minus `platform` (hardcoded
 /// to `"woocommerce"` below - a real "choose a platform" UI is a later, fuller
@@ -421,12 +442,10 @@ pub async fn theme_submit(
         .write(move |db| db.update_user_theme(&user_id, next_theme))
         .await
         .ok();
-    let target = form
-        .next
-        .as_deref()
-        .filter(|next| is_safe_redirect_path(next))
-        .unwrap_or("/dashboard");
-    redirect_302(target)
+    match form.next.as_deref().and_then(SafePath::parse) {
+        Some(next) => redirect_to(&next),
+        None => redirect_302("/dashboard"),
+    }
 }
 
 #[cfg(test)]
@@ -478,12 +497,8 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
 
             // A validated `next` wins over the default confirmation - see
             // this function's own doc comment and [`is_safe_redirect_path`].
-            if let Some(next) = form
-                .next
-                .as_deref()
-                .filter(|next| is_safe_redirect_path(next))
-            {
-                return (jar, redirect_302(next)).into_response();
+            if let Some(next) = form.next.as_deref().and_then(SafePath::parse) {
+                return (jar, redirect_to(&next)).into_response();
             }
 
             // A real dashboard home page exists now (`http/home.rs`) - a
@@ -586,7 +601,18 @@ pub async fn connect_submit(
 
 #[cfg(test)]
 mod tests {
-    use super::is_safe_redirect_path;
+    use super::{is_safe_redirect_path, SafePath};
+
+    /// A redirect target from a request exists only once checked.
+    #[test]
+    fn a_safe_path_is_made_only_from_a_path_on_this_site() {
+        assert_eq!(
+            SafePath::parse("/dashboard/connect").map(|p| p.as_str().to_string()),
+            Some("/dashboard/connect".to_string())
+        );
+        assert!(SafePath::parse("//evil.example.com").is_none());
+        assert!(SafePath::parse("https://evil.example.com").is_none());
+    }
 
     // The load-bearing open-redirect proof (WBS 1.4.1): every one of these
     // must be *rejected* - if any were accepted, `login_submit` would follow
