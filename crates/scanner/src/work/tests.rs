@@ -128,7 +128,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
         let before = cursor_of(&store, &tenant).unwrap();
         let report = run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), Duration::ZERO).await;
         for tier in Tier::ALL {
-            assert!(report.steps[tier.index()] >= 1, "{} got no unit", tier.name());
+            assert!(report.steps[tier] >= 1, "{} got no unit", tier.name());
         }
         blocks_moved += cursor_of(&store, &tenant).unwrap() - before;
     }
@@ -427,7 +427,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
 
     let report = run_round(&ScanState::default(), &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await;
     assert!(store.lock().reorg_job("mainnet").unwrap().is_some(), "the job is still open");
-    assert_eq!(report.outcome(Tier::Blocks), TierOutcome::Blocked("a reorganisation is being reconciled"));
+    assert_eq!(report.outcome(Tier::Blocks), TierOutcome::Blocked(Wait::ReorgBeingReconciled));
     assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(10), "no block scanned on a chain being reconciled");
     assert_eq!(store.lock().get_all_payments(&open_order).unwrap().len(), 1, "the mempool was still scanned");
     assert_eq!(order_status(&store, &open_order), OrderStatus::Unconfirmed);
@@ -738,7 +738,7 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
     let state = ScanState::default();
     let report = run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &[]), ROUND_BUDGET).await;
     assert_eq!(daemon.locate_calls.load(Ordering::Relaxed), 1);
-    assert_eq!(report.outcome(Tier::Chain), TierOutcome::Blocked("the node failed"));
+    assert_eq!(report.outcome(Tier::Chain), TierOutcome::Blocked(Wait::NodeFailed));
     assert!(report.error.is_none(), "a node failure is retried, not a failed round");
 }
 

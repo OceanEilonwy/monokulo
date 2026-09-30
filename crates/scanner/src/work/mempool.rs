@@ -31,7 +31,7 @@ use crate::key_custody::{ScanIndices, WalletHandle};
 use crate::scanner::{record_scan_match, scan_for_tenants, tx_id_hex, ScannerError};
 use crate::store::db::Class;
 
-use super::{bounded, Progress, Round, RoundInputs, ScanState};
+use super::{bounded, Progress, Round, RoundInputs, ScanState, Wait};
 
 /// Most mempool transaction bodies remembered; beyond this (a spam wave)
 /// new ones are scanned but not kept.
@@ -117,7 +117,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     let network = round.network();
     let state = &round.state.mempool;
     let Some(pool_txids) = poll(round.inputs).await else {
-        return Progress::Blocked("the mempool couldn't be read");
+        return Progress::Blocked(Wait::MempoolUnreadable);
     };
     let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
     state.retain_pool(&in_pool);

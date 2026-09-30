@@ -23,9 +23,10 @@ use tokio::time::Instant;
 use crate::daemon::ChainBlock;
 use crate::key_custody::{ScanIndices, WalletHandle};
 use crate::scanner::{record_scan_match, scan_for_tenants, stage_block_match, ScanResult, ScannerError, SCAN_CONCURRENCY};
-use crate::store::{BlockCheckpoint, Position, Store};
+use crate::store::position::CatchUpGroup;
+use crate::store::{BlockCheckpoint, Store};
 
-use super::{bounded, Progress, Round};
+use super::{bounded, Progress, Round, Wait};
 
 /// Most tenants of one group scanned by one unit. The rest of the group
 /// stays at its cursor and becomes its own catch-up group.
@@ -93,7 +94,7 @@ impl Rotation {
             .db(move |s, network| {
                 let after = match last {
                     Some(last) => Some(last),
-                    None => s.scheduler_position(network, Position::CatchUpGroup)?.and_then(|v| v.parse().ok()),
+                    None => s.scheduler_position::<CatchUpGroup>(network)?,
                 };
                 let mut next = s.scan_group_cursors(network, high_water, after, 1)?;
                 if next.is_empty() && after.is_some() {
@@ -112,7 +113,7 @@ impl Rotation {
     async fn served(&mut self, round: &Round<'_>, group: u64, reached: u64) -> Result<(), ScannerError> {
         let position = reached.max(group);
         self.last = Some(position);
-        round.db(move |s, network| Ok(s.set_scheduler_position(network, Position::CatchUpGroup, &position.to_string())?)).await
+        round.on_store(move |s, network| s.set_scheduler_position::<CatchUpGroup>(network, &position)).await
     }
 }
 
@@ -187,16 +188,16 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
                 error = %error,
                 "block scanning stopped: the node failed. If this repeats, no payment on this network is being detected"
             );
-            Progress::Blocked("the node failed")
+            Progress::Blocked(Wait::NodeFailed)
         }
         Err(error) => Progress::Failed(error),
     }
 }
 
 async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerError> {
-    let Some(tip) = round.tip else { return Ok(Progress::Blocked("chain height unknown")) };
+    let Some(tip) = round.tip else { return Ok(Progress::Blocked(Wait::ChainHeightUnknown)) };
     if round.chain.rewound {
-        return Ok(Progress::Blocked("rewound this round; replacement blocks are scanned from the next"));
+        return Ok(Progress::Blocked(Wait::RewoundThisRound));
     }
     let repair = !round.blocks.repaired;
     let (reorg_open, high_water) = round
@@ -215,7 +216,7 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
         })
         .await?;
     if reorg_open {
-        return Ok(Progress::Blocked("a reorganisation is being reconciled"));
+        return Ok(Progress::Blocked(Wait::ReorgBeingReconciled));
     }
     let Some(high_water) = high_water else {
         return seed(round, tip).await;
@@ -255,7 +256,7 @@ async fn serve_catch_up(
     let Some(group) = rotation.next(round, high_water).await? else { return Ok(false) };
     // Tenants with nothing that could ever have been paid need no block read
     // to decide: straight to the high-water mark.
-    round.db(move |s, network| Ok(s.advance_idle_cursors(network, group, high_water, i64::MIN / 2, 0)?)).await?;
+    round.on_store(move |s, network| s.advance_idle_cursors(network, group, high_water, i64::MIN / 2, 0)).await?;
     let reached = advance_group(round, Group::CatchUp, group, tip, until).await?;
     rotation.served(round, group, reached).await?;
     Ok(true)
@@ -280,7 +281,7 @@ async fn seed(round: &mut Round<'_>, tip: u64) -> Result<Progress, ScannerError>
             tracing::info!(network = %round.network(), height = seed, "started scanning this network");
             Ok(Progress::Advanced)
         }
-        Err(_) => Ok(Progress::Blocked("the node can't serve its own tip yet")),
+        Err(_) => Ok(Progress::Blocked(Wait::NodeCannotServeTip)),
     }
 }
 
@@ -291,7 +292,7 @@ async fn seed(round: &mut Round<'_>, tip: u64) -> Result<Progress, ScannerError>
 /// cursor the group reached.
 async fn advance_group(round: &mut Round<'_>, group: Group, cursor: u64, tip: u64, until: Instant) -> Result<u64, ScannerError> {
     let mut cursor = cursor;
-    let mut high_water = round.db(|s, network| Ok(s.max_scanned_height(network)?)).await?.unwrap_or(cursor);
+    let mut high_water = round.on_store(|s, network| s.max_scanned_height(network)).await?.unwrap_or(cursor);
     for scanned in 0..BLOCKS_PER_UNIT {
         let end = match group {
             Group::Frontier => tip,
@@ -311,7 +312,8 @@ async fn advance_group(round: &mut Round<'_>, group: Group, cursor: u64, tip: u6
         }
         let prefetch = prefetch_range(round, cursor + 2, end);
         let daemon = round.inputs.daemon;
-        let (outcome, prefetched) = tokio::join!(scan_block(round, group, cursor, high_water, end, until, scanned == 0), async {
+        let task = BlockTask { group, parent: cursor, high_water, end, until, must_progress: scanned == 0 };
+        let (outcome, prefetched) = tokio::join!(scan_block(round, task), async {
             match prefetch {
                 Some((from, count)) => bounded(daemon.get_chain_blocks(from, count)).await.ok(),
                 None => None,
@@ -350,17 +352,23 @@ struct Plan {
     checkpoints: HashMap<String, BlockCheckpoint>,
 }
 
-/// Scans block `parent + 1` for the tenants at cursor `parent`.
-#[allow(clippy::too_many_arguments)] // one block's independent facts; see `Plan`
-async fn scan_block(
-    round: &mut Round<'_>,
+/// One block to scan for one group.
+#[derive(Clone, Copy)]
+struct BlockTask {
     group: Group,
+    /// The group's cursor; the block is `parent + 1`.
     parent: u64,
     high_water: u64,
+    /// Where the group's run ends (the tip, or the high-water mark).
     end: u64,
     until: Instant,
+    /// This is the unit's first block: it makes progress even past `until`.
     must_progress: bool,
-) -> Result<BlockOutcome, ScannerError> {
+}
+
+/// Scans block `task.parent + 1` for the tenants at cursor `task.parent`.
+async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutcome, ScannerError> {
+    let BlockTask { group, parent, high_water, end, until, must_progress } = task;
     let height = parent + 1;
     let grace = round.inputs.grace_period_seconds;
     let frontier = height > high_water;
@@ -370,7 +378,7 @@ async fn scan_block(
     // fetched. The frontier still records the block for the network.
     if group == Group::CatchUp {
         let excluded = waiting.clone();
-        let ids = round.db(move |s, network| Ok(s.tenants_at_cursor(network, parent, &excluded, GROUP_PAGE)?)).await?;
+        let ids = round.on_store(move |s, network| s.tenants_at_cursor(network, parent, &excluded, GROUP_PAGE)).await?;
         if !ids.iter().any(|id| round.handles.contains_key(id.as_str())) {
             return Ok(BlockOutcome::NobodyToScan);
         }

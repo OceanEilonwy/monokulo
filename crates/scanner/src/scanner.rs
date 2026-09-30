@@ -287,10 +287,10 @@ pub async fn check_for_reorg_and_reconcile(
     loop {
         match chain.advance_job(tip, &mut attempted, tokio::time::Instant::now() + crate::work::ROUND_BUDGET).await {
             Ok(Some(JobStep::Collected)) => {}
-            Ok(Some(JobStep::Processed(reconciled))) => {
+            Ok(Some(JobStep::Processed { reconciled, failure: page_failure })) => {
                 dirty_orders.extend(reconciled.dirty_orders);
                 double_spent_orders.extend(reconciled.double_spent_orders);
-                if let Some(error) = reconciled.failure {
+                if let Some(error) = page_failure {
                     failure.get_or_insert(error);
                 }
             }

@@ -26,7 +26,7 @@ use crate::status::{OrderStatus, PaymentView, StatusInputs, derive_status};
 pub mod db;
 mod work;
 pub use db::{Db, DbMetrics};
-pub use work::{BlockCheckpoint, OpenedReorg, Position, ReorgCandidate, ReorgJob, ReorgPhase, StagedPayment};
+pub use work::{position, BlockCheckpoint, OpenedReorg, Position, ReorgCandidate, ReorgJob, ReorgPhase, StagedPayment};
 
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.

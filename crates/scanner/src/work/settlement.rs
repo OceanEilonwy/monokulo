@@ -14,9 +14,9 @@ use std::collections::HashSet;
 use tokio::time::Instant;
 
 use crate::scanner::{check_vanished_candidates, recompute_and_notify, ScannerError};
-use crate::store::Position;
+use crate::store::position::VanishedPayments;
 
-use super::{Progress, Round};
+use super::{Progress, Round, Wait};
 
 const VANISHED_PAGE: usize = 64;
 const RECOMPUTE_PAGE: usize = 64;
@@ -39,7 +39,7 @@ pub(crate) struct SettlementRound {
 /// page of recomputes. Both in one unit, so even a round with no time to
 /// spare recomputes something.
 pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
-    let Some(tip) = round.tip else { return Progress::Blocked("chain height unknown") };
+    let Some(tip) = round.tip else { return Progress::Blocked(Wait::ChainHeightUnknown) };
     let mut failure = None;
     if !round.settlement.vanished_done {
         round.settlement.vanished_done = true;
@@ -70,13 +70,13 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
     let db = round.inputs.db;
     let page = round
         .db(|s, network| {
-            let after: i64 = s.scheduler_position(network, Position::VanishedPayments)?.and_then(|v| v.parse().ok()).unwrap_or(0);
+            let after: i64 = s.scheduler_position::<VanishedPayments>(network)?.unwrap_or(0);
             let mut page = s.unconfirmed_payments_page(network, after, VANISHED_PAGE)?;
             if page.is_empty() && after != 0 {
                 page = s.unconfirmed_payments_page(network, 0, VANISHED_PAGE)?;
             }
             if page.is_empty() {
-                s.set_scheduler_position(network, Position::VanishedPayments, "0")?;
+                s.set_scheduler_position::<VanishedPayments>(network, &0)?;
             }
             Ok(page)
         })
@@ -116,7 +116,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
     }
     // The position moves past what was checked, once per page.
     if let Some(last) = last {
-        round.db(move |s, network| Ok(s.set_scheduler_position(network, Position::VanishedPayments, &last.to_string())?)).await?;
+        round.on_store(move |s, network| s.set_scheduler_position::<VanishedPayments>(network, &last)).await?;
     }
     match failure {
         Some(error) => Err(error),

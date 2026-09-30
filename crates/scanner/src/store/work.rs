@@ -46,31 +46,53 @@ pub struct ReorgCandidate {
     pub attempts: u32,
 }
 
-/// Rotation positions the scheduler keeps across restarts. A closed set,
-/// so the table stays one row per network per variant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Position {
-    /// The next catch-up group to serve (a tenant cursor height).
-    CatchUpGroup,
-    /// The last unconfirmed payment checked for having left the pool.
-    VanishedPayments,
-    /// The last voided payment rechecked for a false double-spend.
-    VoidRecheck,
-    /// When the last full void recheck pass began (unix time).
-    VoidRecheckPassStarted,
-    /// The last tenant whose orders' scanned range was brought up to date.
-    ScanRange,
+/// A rotation position the scheduler keeps across restarts, one row per
+/// network per position. Each is a type with its own value type, so a
+/// position can't be read as something it isn't. The set is closed: one
+/// type per rotation, never one per tenant.
+pub trait Position {
+    const KEY: &'static str;
+    type Value: std::str::FromStr + ToString;
 }
 
-impl Position {
-    fn key(self) -> &'static str {
-        match self {
-            Self::CatchUpGroup => "catch_up_group",
-            Self::VanishedPayments => "vanished_payments",
-            Self::VoidRecheck => "void_recheck",
-            Self::VoidRecheckPassStarted => "void_recheck_pass_started",
-            Self::ScanRange => "scan_range",
-        }
+/// Positions by name.
+pub mod position {
+    use super::Position;
+
+    /// The last catch-up group served (a tenant cursor height).
+    pub struct CatchUpGroup;
+    impl Position for CatchUpGroup {
+        const KEY: &'static str = "catch_up_group";
+        type Value = u64;
+    }
+
+    /// The last unconfirmed payment checked for having left the pool.
+    pub struct VanishedPayments;
+    impl Position for VanishedPayments {
+        const KEY: &'static str = "vanished_payments";
+        type Value = i64;
+    }
+
+    /// The last voided payment rechecked for a false double-spend (0: no
+    /// pass in progress).
+    pub struct VoidRecheck;
+    impl Position for VoidRecheck {
+        const KEY: &'static str = "void_recheck";
+        type Value = i64;
+    }
+
+    /// When the last full void recheck pass began (unix time).
+    pub struct VoidRecheckPassStarted;
+    impl Position for VoidRecheckPassStarted {
+        const KEY: &'static str = "void_recheck_pass_started";
+        type Value = i64;
+    }
+
+    /// The last tenant whose orders' scanned range was brought up to date.
+    pub struct ScanRange;
+    impl Position for ScanRange {
+        const KEY: &'static str = "scan_range";
+        type Value = String;
     }
 }
 
@@ -372,22 +394,32 @@ impl Store {
         Ok(ids)
     }
 
-    pub fn scheduler_position(&self, network: &str, position: Position) -> Result<Option<String>> {
-        self.conn
+    /// A rotation position, if one was recorded. A value that doesn't parse
+    /// (a hand-edited row) is logged and treated as absent: the rotation
+    /// starts over, which costs repeated work, never skipped work.
+    pub fn scheduler_position<P: Position>(&self, network: &str) -> Result<Option<P::Value>> {
+        let raw: Option<String> = self
+            .conn
             .query_row(
                 "SELECT value FROM scheduler_positions WHERE network = ?1 AND position = ?2",
-                params![network, position.key()],
+                params![network, P::KEY],
                 |row| row.get(0),
             )
-            .optional()
-            .map_err(Into::into)
+            .optional()?;
+        Ok(raw.and_then(|raw| match raw.parse() {
+            Ok(value) => Some(value),
+            Err(_) => {
+                tracing::warn!(network, position = P::KEY, value = %raw, "an unreadable scheduler position; starting that rotation over");
+                None
+            }
+        }))
     }
 
-    pub fn set_scheduler_position(&self, network: &str, position: Position, value: &str) -> Result<()> {
+    pub fn set_scheduler_position<P: Position>(&self, network: &str, value: &P::Value) -> Result<()> {
         self.conn.execute(
             "INSERT INTO scheduler_positions (network, position, value) VALUES (?1, ?2, ?3)
              ON CONFLICT (network, position) DO UPDATE SET value = excluded.value",
-            params![network, position.key(), value],
+            params![network, P::KEY, value.to_string()],
         )?;
         Ok(())
     }
@@ -922,14 +954,20 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_positions_are_per_network_and_survive_a_restart() {
+    fn scheduler_positions_are_per_network_typed_and_survive_a_restart() {
+        use position::{CatchUpGroup, ScanRange, VoidRecheck};
         let (store, path) = fixture();
-        store.0.set_scheduler_position("mainnet", Position::CatchUpGroup, "42").unwrap();
-        store.0.set_scheduler_position("mainnet", Position::CatchUpGroup, "43").unwrap();
+        store.0.set_scheduler_position::<CatchUpGroup>("mainnet", &42).unwrap();
+        store.0.set_scheduler_position::<CatchUpGroup>("mainnet", &43).unwrap();
+        store.0.set_scheduler_position::<ScanRange>("mainnet", &"tn_x".to_string()).unwrap();
         let s = reopen(store, &path);
-        assert_eq!(s.scheduler_position("mainnet", Position::CatchUpGroup).unwrap().as_deref(), Some("43"));
-        assert_eq!(s.scheduler_position("stagenet", Position::CatchUpGroup).unwrap(), None);
-        assert_eq!(s.scheduler_position("mainnet", Position::VoidRecheck).unwrap(), None);
+        assert_eq!(s.scheduler_position::<CatchUpGroup>("mainnet").unwrap(), Some(43));
+        assert_eq!(s.scheduler_position::<ScanRange>("mainnet").unwrap().as_deref(), Some("tn_x"));
+        assert_eq!(s.scheduler_position::<CatchUpGroup>("stagenet").unwrap(), None);
+        assert_eq!(s.scheduler_position::<VoidRecheck>("mainnet").unwrap(), None);
+        // A hand-edited, unreadable value starts that rotation over.
+        s.execute_raw_for_test("UPDATE scheduler_positions SET value = 'x' WHERE position = 'catch_up_group'").unwrap();
+        assert_eq!(s.scheduler_position::<CatchUpGroup>("mainnet").unwrap(), None);
         drop(s);
         cleanup(&path);
     }

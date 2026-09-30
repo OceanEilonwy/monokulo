@@ -56,7 +56,7 @@ impl Tier {
         }
     }
 
-    fn index(self) -> usize {
+    const fn index(self) -> usize {
         self as usize
     }
 
@@ -81,6 +81,67 @@ const _: () = {
     assert!(total == 100, "tier shares must cover the whole round");
 };
 
+/// One value per tier, indexed by [`Tier`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PerTier<T>([T; 5]);
+
+impl<T: Copy> PerTier<T> {
+    fn filled(value: T) -> Self {
+        Self([value; 5])
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (Tier, T)> + '_ {
+        Tier::ALL.into_iter().map(|tier| (tier, self.0[tier.index()]))
+    }
+}
+
+impl<T> std::ops::Index<Tier> for PerTier<T> {
+    type Output = T;
+    fn index(&self, tier: Tier) -> &T {
+        &self.0[tier.index()]
+    }
+}
+
+impl<T> std::ops::IndexMut<Tier> for PerTier<T> {
+    fn index_mut(&mut self, tier: Tier) -> &mut T {
+        &mut self.0[tier.index()]
+    }
+}
+
+/// What a tier is waiting for when it has work it can't do yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// The node's chain height couldn't be read this round.
+    ChainHeightUnknown,
+    /// A reorg is being reconciled: blocks wait for the rewind.
+    ReorgBeingReconciled,
+    /// A rewind happened this round: replacement blocks are scanned from
+    /// the next, against a freshly read chain.
+    RewoundThisRound,
+    /// The node failed or didn't answer; retried next round.
+    NodeFailed,
+    /// The node reports a tip it can't serve yet (first run).
+    NodeCannotServeTip,
+    /// The mempool couldn't be read.
+    MempoolUnreadable,
+    /// Every remaining reorg candidate is waiting out a retry delay.
+    ReorgCandidatesRetrying,
+}
+
+impl std::fmt::Display for Wait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Wait::ChainHeightUnknown => "the chain height is unknown",
+            Wait::ReorgBeingReconciled => "a reorganisation is being reconciled",
+            Wait::RewoundThisRound => "rewound this round; replacement blocks are scanned from the next",
+            Wait::NodeFailed => "the node failed",
+            Wait::NodeCannotServeTip => "the node can't serve its own tip yet",
+            Wait::MempoolUnreadable => "the mempool couldn't be read",
+            Wait::ReorgCandidatesRetrying => "reorg candidates are waiting to be retried",
+        })
+    }
+}
+
 /// What one unit of work did. The executor can't mistake "nothing to do"
 /// for "failed".
 #[derive(Debug)]
@@ -89,9 +150,8 @@ pub(crate) enum Progress {
     Advanced,
     /// Nothing is due for this tier this round.
     Idle,
-    /// Work exists but must wait for something else (a reorg rewind, a
-    /// retry delay, the chain height).
-    Blocked(&'static str),
+    /// Work exists but must wait.
+    Blocked(Wait),
     /// A unit failed; the tier stops for this round and the error is
     /// reported. Its durable state is unchanged, so the next round retries.
     Failed(ScannerError),
@@ -104,15 +164,16 @@ pub enum TierOutcome {
     Idle,
     /// Ran out of time with work left.
     Backlogged,
-    Blocked(&'static str),
+    Blocked(Wait),
     Failed,
 }
 
 /// What a round did, for the loop and for status reporting.
 #[derive(Debug)]
 pub struct RoundReport {
-    pub steps: [u32; 5],
-    pub outcomes: [TierOutcome; 5],
+    /// Units each tier ran.
+    pub steps: PerTier<u32>,
+    pub outcomes: PerTier<TierOutcome>,
     /// The first unit failure, if any. Other tiers still ran.
     pub error: Option<ScannerError>,
 }
@@ -121,11 +182,11 @@ impl RoundReport {
     /// Whether any tier stopped with work left: the loop starts the next
     /// round at once instead of waiting for the poll interval.
     pub fn backlogged(&self) -> bool {
-        self.outcomes.contains(&TierOutcome::Backlogged)
+        self.outcomes.iter().any(|(_, outcome)| outcome == TierOutcome::Backlogged)
     }
 
     pub fn outcome(&self, tier: Tier) -> TierOutcome {
-        self.outcomes[tier.index()]
+        self.outcomes[tier]
     }
 
     pub fn into_result(self) -> Result<(), ScannerError> {
@@ -278,6 +339,15 @@ impl<'a> Round<'a> {
         self.inputs.network
     }
 
+    /// One store call on the database worker, with this round's network
+    /// name: `round.on_store(|s, network| s.reorg_job(network))`.
+    pub(crate) async fn on_store<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Store, &str) -> Result<T, crate::store::StoreError> + Send + 'static,
+    ) -> Result<T, ScannerError> {
+        self.db(move |s, network| f(s, network).map_err(ScannerError::from)).await
+    }
+
     /// Runs `f` on the database worker, with this round's network name.
     pub(crate) async fn db<T: Send + 'static>(
         &self,
@@ -338,35 +408,34 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
         settlement: Default::default(),
         upkeep: Default::default(),
     };
-    let mut report = RoundReport { steps: [0; 5], outcomes: [TierOutcome::Backlogged; 5], error: tip_error };
-    let mut open = [true; 5];
+    let mut report = RoundReport { steps: PerTier::filled(0), outcomes: PerTier::filled(TierOutcome::Backlogged), error: tip_error };
+    let mut open = PerTier::filled(true);
 
     for pass_end in [None, Some(round_end)] {
         for tier in Tier::ALL {
             let until = pass_end.unwrap_or_else(|| {
                 (Instant::now() + budget * tier.reserved_percent() / 100).min(round_end)
             });
-            let i = tier.index();
-            while open[i] {
-                if report.steps[i] > 0 && Instant::now() >= until {
+                        while open[tier] {
+                if report.steps[tier] > 0 && Instant::now() >= until {
                     break;
                 }
                 let progress = step(tier, &mut round, until).await;
-                report.steps[i] += 1;
+                report.steps[tier] += 1;
                 match progress {
                     Progress::Advanced => {}
                     Progress::Idle => {
-                        open[i] = false;
-                        report.outcomes[i] = TierOutcome::Idle;
+                        open[tier] = false;
+                        report.outcomes[tier] = TierOutcome::Idle;
                     }
                     Progress::Blocked(reason) => {
-                        open[i] = false;
-                        report.outcomes[i] = TierOutcome::Blocked(reason);
-                        tracing::debug!(network = %inputs.network, tier = tier.name(), reason, "tier waiting");
+                        open[tier] = false;
+                        report.outcomes[tier] = TierOutcome::Blocked(reason);
+                        tracing::debug!(network = %inputs.network, tier = tier.name(), %reason, "tier waiting");
                     }
                     Progress::Failed(error) => {
-                        open[i] = false;
-                        report.outcomes[i] = TierOutcome::Failed;
+                        open[tier] = false;
+                        report.outcomes[tier] = TierOutcome::Failed;
                         tracing::warn!(network = %inputs.network, tier = tier.name(), error = %error, "work unit failed (retried next round)");
                         report.error.get_or_insert(error);
                     }
