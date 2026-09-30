@@ -2122,10 +2122,13 @@ pub async fn save_confirmation_thresholds(
         .get("new_confirmations_required")
         .map(|s| s.trim())
         .unwrap_or("");
-    let new_confirmations = if new_unit_amount.is_empty() && new_confirmations_text.is_empty() {
-        None
-    } else {
-        let confirmations: u64 = match new_confirmations_text.parse() {
+    // The new threshold, if one was entered: its confirmations and the
+    // canonical spelling of its amount, parsed once here.
+    let new_threshold: Option<(u64, String)> =
+        if new_unit_amount.is_empty() && new_confirmations_text.is_empty() {
+            None
+        } else {
+            let confirmations: u64 = match new_confirmations_text.parse() {
             Ok(n) if n <= 720 => n,
             _ => return render_store_settings_page(
                 &state,
@@ -2140,26 +2143,22 @@ pub async fn save_confirmation_thresholds(
             )
             .await,
         };
-        match crate::confirmation_thresholds::ThresholdAmount::parse(new_unit_amount) {
-            Ok(_) => Some(confirmations),
-            Err(_) => {
-                return render_store_settings_page(
-                    &state,
-                    row,
-                    &user,
-                    Some("Enter a non-negative amount for the new threshold.".to_string()),
-                    None,
-                    Some((SECTION, fx)),
-                )
-                .await
+            match crate::confirmation_thresholds::ThresholdAmount::parse(new_unit_amount) {
+                Ok(amount) => Some((confirmations, amount.canonical())),
+                Err(_) => {
+                    return render_store_settings_page(
+                        &state,
+                        row,
+                        &user,
+                        Some("Enter a non-negative amount for the new threshold.".to_string()),
+                        None,
+                        Some((SECTION, fx)),
+                    )
+                    .await
+                }
             }
-        }
-    };
-    let canonical_new_amount = new_confirmations.map(|_| {
-        crate::confirmation_thresholds::ThresholdAmount::parse(new_unit_amount)
-            .unwrap()
-            .canonical()
-    });
+        };
+    let canonical_new_amount = new_threshold.as_ref().map(|(_, amount)| amount.clone());
     let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
     let store_id = row.id.clone();
     let existing = match state
@@ -2190,7 +2189,7 @@ pub async fn save_confirmation_thresholds(
         )
         .await;
     }
-    if new_confirmations.is_some() {
+    if let Some((_, new_amount)) = &new_threshold {
         if existing.len() - deleted_ids.len() >= 5 {
             return render_store_settings_page(
                 &state,
@@ -2208,16 +2207,13 @@ pub async fn save_confirmation_thresholds(
         if existing.iter().any(|threshold| {
             !deleted_ids.contains(&threshold.id)
                 && crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount)
-                    .is_ok_and(|amount| Some(amount.canonical()) == canonical_new_amount)
+                    .is_ok_and(|amount| amount.canonical() == *new_amount)
         }) {
             return render_store_settings_page(
                 &state,
                 row,
                 &user,
-                Some(format!(
-                    "A threshold for {} already exists.",
-                    canonical_new_amount.as_deref().unwrap()
-                )),
+                Some(format!("A threshold for {new_amount} already exists.")),
                 None,
                 Some((SECTION, fx)),
             )
@@ -2226,16 +2222,15 @@ pub async fn save_confirmation_thresholds(
     }
 
     let threshold_id = uuid::Uuid::new_v4().to_string();
-    let (store_id, new_amount, proof) =
-        (row.id.clone(), canonical_new_amount.clone(), policy.proof());
+    let (store_id, proof) = (row.id.clone(), policy.proof());
     let update_result = state
         .db
         .write(move |db| {
-            let new_threshold = new_confirmations.map(|n| {
+            let new_threshold = new_threshold.as_ref().map(|(n, amount)| {
                 (
                     threshold_id.as_str(),
-                    new_amount.as_deref().unwrap(),
-                    n,
+                    amount.as_str(),
+                    *n,
                     crate::now_unix(),
                 )
             });
