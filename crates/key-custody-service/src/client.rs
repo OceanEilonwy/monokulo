@@ -14,29 +14,16 @@
 //! a config flag as of WBS 2.1.3 - see `src/config.rs`'s `KeyCustodyConfig` and
 //! `main.rs`'s `build_key_custody`.
 //!
-//! **Connection lifetime and concurrency.** `SocketKeyCustody` opens one
-//! persistent connection at `connect` time and reuses it for every call,
-//! rather than dialing a fresh connection per request - a real deployment's
-//! engine process will make many `KeyCustody` calls per second (one per
-//! scanned mempool transaction, at minimum), and paying a fresh `connect(2)`
-//! plus the OS's per-connection bookkeeping for each one would be pure
-//! overhead for a socket that's going to stay up for the life of the process
-//! anyway. That one connection is protected by a `tokio::sync::Mutex`, so
-//! concurrent callers serialize onto it one call at a time rather than a
-//! request-ID/correlation scheme letting several calls be in flight over the
-//! wire simultaneously. Deliberately the simpler of the two options the WBS
-//! calls out: a length-prefixed request/response pair has no way to tell two
-//! *interleaved* responses apart without adding a correlation id to every DTO
-//! in `lib.rs`, which would be real, permanent wire-format complexity to buy
-//! back concurrency this workload doesn't obviously need yet - every
-//! `KeyCustody` call is already bounded by the scalar-multiplication costs
-//! `src/key_custody/plain.rs` documents, and a future TEE-backed backend is
-//! unlikely to parallelize arbitrarily within one enclave either. If this
-//! socket becomes a real per-call latency bottleneck once wired into the
-//! engine (2.1.3), the fix is either a small connection pool (several
-//! `SocketKeyCustody`-shaped connections, each still mutex-serialized) or a
-//! real correlation-id scheme - not a change to this decision made lightly
-//! now.
+//! **Connection lifetime and concurrency.** `SocketKeyCustody` keeps its
+//! connections open and reuses them, rather than dialing a fresh one per
+//! request: the engine makes many `KeyCustody` calls a second. A connection
+//! carries one call at a time: a length-prefixed request/response pair has
+//! no way to tell two *interleaved* responses apart without a correlation id
+//! on every DTO in `lib.rs`. So how many calls run at once is how many
+//! connections the client may keep (`set_connections`; one per CPU core
+//! unless told otherwise). One is opened at connect time and more only when
+//! calls overlap, so a caller that makes one call at a time uses one
+//! connection.
 //!
 //! **What "clean error" means here.** Every failure mode this module can hit -
 //! the socket doesn't exist yet, the server process crashed or was never
@@ -53,6 +40,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use monero::Address;
@@ -73,10 +61,20 @@ use crate::{
 
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Connections kept to the server at most (task 7.5). One is opened at
-/// connect time; more only when calls overlap, so a single-threaded caller
-/// uses one connection, as before.
-pub const DEFAULT_POOL_SIZE: usize = 4;
+/// Connections a client keeps to the server at most unless told otherwise:
+/// one per CPU core, as many scans as a server on this machine runs at once.
+pub fn connections_per_core() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+}
+
+/// One connection, used by one call at a time; `None` until (re)opened.
+type Slot = Arc<Mutex<Option<UnixStream>>>;
+
+fn closed_slots(count: usize) -> impl Iterator<Item = Slot> {
+    std::iter::repeat_with(|| Arc::new(Mutex::new(None))).take(count)
+}
 
 /// The canary's key material (task 5.8): a fixed, worthless wallet the
 /// client registers so it can later ask whether the server still has it. If
@@ -88,11 +86,12 @@ const CANARY_VIEW_KEY: [u8; 32] = [
 
 pub struct SocketKeyCustody {
     socket_path: PathBuf,
-    /// Each slot is one connection, used by one call at a time; `None` until
-    /// (re)opened. A connection that fails is dropped and reopened by the next
-    /// call that needs it, so one bad connection never stops the others and a
-    /// restarted server is reached again without a new client.
-    slots: Vec<Mutex<Option<UnixStream>>>,
+    /// A connection that fails is dropped and reopened by the next call that
+    /// needs it, so one bad connection never stops the others and a
+    /// restarted server is reached again without a new client. The list is
+    /// replaced, not edited, when the number of connections changes: a call
+    /// under way keeps the slot it took.
+    slots: parking_lot::RwLock<Arc<[Slot]>>,
     call_timeout: Duration,
     canary: parking_lot::Mutex<Option<WalletHandle>>,
     epoch: AtomicU64,
@@ -108,29 +107,24 @@ impl SocketKeyCustody {
         socket_path: impl AsRef<Path>,
         call_timeout: Duration,
     ) -> Result<Self, KeyCustodyError> {
-        Self::connect_with_pool(socket_path, call_timeout, DEFAULT_POOL_SIZE).await
+        Self::connect_with_pool(socket_path, call_timeout, connections_per_core()).await
     }
 
+    /// Connects, keeping at most `connections` connections (at least one).
     pub async fn connect_with_pool(
         socket_path: impl AsRef<Path>,
         call_timeout: Duration,
-        pool_size: usize,
+        connections: usize,
     ) -> Result<Self, KeyCustodyError> {
-        let socket_path = socket_path.as_ref().to_path_buf();
-        let first = tokio::time::timeout(call_timeout, open(&socket_path))
+        let first = tokio::time::timeout(call_timeout, open(socket_path.as_ref()))
             .await
             .map_err(|_| call_timed_out(call_timeout))??;
-        let mut slots: Vec<Mutex<Option<UnixStream>>> =
-            (0..pool_size.max(1)).map(|_| Mutex::new(None)).collect();
-        slots[0] = Mutex::new(Some(first));
-        Ok(SocketKeyCustody {
-            socket_path,
-            slots,
-            call_timeout,
-            canary: parking_lot::Mutex::new(None),
-            epoch: AtomicU64::new(0),
-            state_check: Mutex::new(()),
-        })
+        let client = Self::not_connected_yet(socket_path, call_timeout);
+        let connections = connections.max(1);
+        *client.slots.write() = std::iter::once(Arc::new(Mutex::new(Some(first))))
+            .chain(closed_slots(connections - 1))
+            .collect();
+        Ok(client)
     }
 
     /// A client that hasn't connected yet: every call tries to connect, and
@@ -140,7 +134,7 @@ impl SocketKeyCustody {
     pub fn not_connected_yet(socket_path: impl AsRef<Path>, call_timeout: Duration) -> Self {
         SocketKeyCustody {
             socket_path: socket_path.as_ref().to_path_buf(),
-            slots: (0..DEFAULT_POOL_SIZE).map(|_| Mutex::new(None)).collect(),
+            slots: parking_lot::RwLock::new(closed_slots(connections_per_core()).collect()),
             call_timeout,
             canary: parking_lot::Mutex::new(None),
             epoch: AtomicU64::new(0),
@@ -204,10 +198,30 @@ impl SocketKeyCustody {
         }
     }
 
-    async fn acquire(&self) -> tokio::sync::MutexGuard<'_, Option<UnixStream>> {
+    /// Sets how many connections this client keeps at most (at least one),
+    /// and so how many calls it has under way at once. Connections already
+    /// open are kept up to that number; one over it closes now if idle, or
+    /// when the call using it ends.
+    pub fn set_connections(&self, connections: usize) {
+        let connections = connections.max(1);
+        let mut slots = self.slots.write();
+        let kept = slots.iter().take(connections).cloned();
+        *slots = kept
+            .chain(closed_slots(connections))
+            .take(connections)
+            .collect();
+    }
+
+    /// How many connections this client keeps at most.
+    pub fn connections(&self) -> usize {
+        self.slots.read().len()
+    }
+
+    async fn acquire(&self) -> tokio::sync::OwnedMutexGuard<Option<UnixStream>> {
+        let slots = self.slots.read().clone();
         let mut closed = None;
-        for slot in &self.slots {
-            if let Ok(guard) = slot.try_lock() {
+        for slot in slots.iter() {
+            if let Ok(guard) = slot.clone().try_lock_owned() {
                 if guard.is_some() {
                     return guard;
                 }
@@ -221,8 +235,8 @@ impl SocketKeyCustody {
         }
         // Every connection is busy: wait for one, spreading waiters out.
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let pick = (NEXT.fetch_add(1, Ordering::Relaxed) as usize) % self.slots.len();
-        self.slots[pick].lock().await
+        let pick = (NEXT.fetch_add(1, Ordering::Relaxed) as usize) % slots.len();
+        slots[pick].clone().lock_owned().await
     }
 
     /// How many times this client has found the server to have lost its
@@ -477,7 +491,7 @@ mod cancellation_tests {
     async fn cancelling_a_request_discards_its_connection_before_reuse() {
         let (stream, mut server) = UnixStream::pair().unwrap();
         let mut client = SocketKeyCustody::not_connected_yet("unused", Duration::from_secs(60));
-        client.slots = vec![Mutex::new(Some(stream))];
+        client.slots = parking_lot::RwLock::new(Arc::new([Arc::new(Mutex::new(Some(stream)))]));
         let request = KeyCustodyRequest::RemoveWallet(RemoveWalletRequest {
             handle: WalletHandleWire::from(WalletHandle::generate()),
         });
@@ -492,7 +506,7 @@ mod cancellation_tests {
         }
         drop(call);
         assert!(
-            client.slots[0].lock().await.is_none(),
+            client.slots.read()[0].try_lock().unwrap().is_none(),
             "an unread reply must never reach the next caller"
         );
     }
