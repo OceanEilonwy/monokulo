@@ -210,7 +210,7 @@ impl KeyCustody for PlainKeyCustody {
         material: WalletMaterial,
     ) -> Result<WalletHandle, KeyCustodyError> {
         let view_pair = material.to_view_pair()?;
-        let handle = WalletHandle::new();
+        let handle = WalletHandle::generate();
         self.wallets
             .write()
             .insert(handle, std::sync::Arc::new(WalletEntry::new(view_pair)));
@@ -275,7 +275,7 @@ impl KeyCustody for PlainKeyCustody {
             }
             registrations.remove(registration_id);
         }
-        let handle = WalletHandle::new();
+        let handle = WalletHandle::generate();
         wallets.insert(handle, std::sync::Arc::new(WalletEntry::new(view_pair)));
         registrations.insert(registration_id.to_string(), handle);
         Ok(handle)

@@ -583,14 +583,15 @@ pub async fn list_orders(
     if search.is_some_and(|term| term.chars().count() > 120) {
         return ApiError::BadRequest("Search is too long.".to_string()).into_response();
     }
-    let (rows, total) = match state.db.lock() {
-        db => match (
+    let (rows, total) = {
+        let db = state.db.lock();
+        match (
             db.list_pos_orders(&id, limit, offset, search),
             db.count_pos_orders(&id, search),
         ) {
             (Ok(rows), Ok(total)) => (rows, total),
             _ => return ApiError::Internal.into_response(),
-        },
+        }
     };
     let ids: Vec<String> = rows.iter().map(|row| row.order_id.clone()).collect();
     let mut views = match engine_orders(&state, &sk, &ids).await {

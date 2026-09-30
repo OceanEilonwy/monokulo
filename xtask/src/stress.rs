@@ -562,7 +562,9 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
     // Fault points: a short scheduled fault, then a drain in which every
     // tenant must recover.
     let fault_tenants = scenario["fault_tenants"].as_u64().unwrap_or(16);
-    let fault_points: [(&str, &str, Vec<(&str, String)>); 3] = [
+    // (output file, title, extra fixture flags)
+    type Flags = Vec<(&'static str, String)>;
+    let fault_points: [(&str, &str, Flags); 3] = [
         (
             "fault-rpc",
             "transient daemon RPC failures under SQLite contention",
@@ -621,7 +623,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             ("--drain", scenario["fault_drain_ticks"].to_string()),
         ]
         .into_iter()
-        .chain(extra.into_iter().map(|(f, v)| (f, v)))
+        .chain(extra.into_iter())
         {
             args.push(flag.into());
             args.push(value);

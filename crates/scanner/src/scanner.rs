@@ -7850,7 +7850,6 @@ pub(crate) mod tests {
         // A second tenant, expired the same way, whose backend is down while
         // the block with its payment goes by.
         let (c, c_handle, c_order) = {
-            let s = store.lock();
             let handle = custody
                 .register_wallet(WalletMaterial::new(
                     fixture_view_key(),
@@ -7858,6 +7857,7 @@ pub(crate) mod tests {
                 ))
                 .await
                 .unwrap();
+            let s = store.lock();
             let tenant = s
                 .create_tenant(
                     NewTenant {
@@ -8348,7 +8348,7 @@ pub(crate) mod tests {
                     }
                 }
                 match next(6) {
-                    0 | 1 | 2 => {
+                    0..=2 => {
                         let pay = payment_height.is_none() && next(3) == 0;
                         tip = daemon.push_block(
                             &format!("f{fork}_b{}", tip + 1),

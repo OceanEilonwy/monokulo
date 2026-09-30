@@ -25,11 +25,3 @@ pub mod settings;
 pub mod supervise;
 pub mod webhook_sign;
 pub mod xmr_amount;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn compiles() {
-        assert!(true);
-    }
-}

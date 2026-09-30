@@ -147,10 +147,8 @@ async fn run(action: Action) {
                 std::process::exit(1);
             }
             let key_custody: Arc<dyn KeyCustody> = router;
-            let bootstrapped = {
-                let store = store.lock();
-                local_admin::bootstrap_wallet(&store, &key_custody, &backend, args).await
-            };
+            let bootstrapped =
+                local_admin::bootstrap_wallet(&store, &key_custody, &backend, args).await;
             match bootstrapped {
                 Ok(created) => {
                     println!(

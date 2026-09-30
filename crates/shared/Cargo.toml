@@ -62,3 +62,6 @@ tokio = { version = "1.53.1", features = ["full", "test-util"] }
 # router, test-only (the runtime itself is now a real dependency above).
 # Defaults less `tower-log` (see crates/scanner/Cargo.toml).
 axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing"] }
+
+[lints]
+workspace = true

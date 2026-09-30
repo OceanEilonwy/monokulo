@@ -977,22 +977,18 @@ mod tests {
     /// actually arrived, without pulling in anything from `mock-woocommerce` (this
     /// crate sits *below* it in the dependency graph, and `with_background_loops`
     /// needs to be provably useful entirely on its own).
-    async fn spawn_recording_receiver() -> (
-        SocketAddr,
-        Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value)>>>,
-        tokio::task::JoinHandle<()>,
-    ) {
+    /// Each webhook the receiver got: its signature header and JSON body.
+    type Received = Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value)>>>;
+
+    async fn spawn_recording_receiver() -> (SocketAddr, Received, tokio::task::JoinHandle<()>) {
         use axum::extract::State as AxumState;
         use axum::http::HeaderMap;
 
-        let received: Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value)>>> =
-            Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let received: Received = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let received_for_state = received.clone();
 
         async fn hook(
-            AxumState(received): AxumState<
-                Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value)>>>,
-            >,
+            AxumState(received): AxumState<Received>,
             headers: HeaderMap,
             body: axum::body::Bytes,
         ) -> axum::http::StatusCode {

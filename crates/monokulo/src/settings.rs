@@ -36,7 +36,7 @@ choice_value! {
     pub enum SignupMode { Public = "public", InviteOnly = "invite_only" }
 }
 
-fn check_public_url(value: &String) -> Result<(), String> {
+fn check_public_url(value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         Ok(())
     } else {
@@ -44,13 +44,13 @@ fn check_public_url(value: &String) -> Result<(), String> {
     }
 }
 
-fn check_trusted_proxies(value: &String) -> Result<(), String> {
+fn check_trusted_proxies(value: &str) -> Result<(), String> {
     TrustedProxies::parse(value)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
-fn check_onion_listener(value: &String) -> Result<(), String> {
+fn check_onion_listener(value: &str) -> Result<(), String> {
     crate::abuse::proxy_protocol::validate_onion_listener(value).map(|_| ())
 }
 
@@ -145,7 +145,7 @@ settings! {
         key: "public_url",
         env: "MONOKULO_PUBLIC_URL",
         default: String::new(),
-        check: check_public_url,
+        check: |v: &String| check_public_url(v),
         description: "This instance's public address, e.g. https://pay.example.com or an http://....onion address. Plugins such as WooCommerce are given it when they connect, and send customers to its checkout. Plugins can't connect until it is set.",
         example: "https://pay.example.com",
     },
@@ -153,7 +153,7 @@ settings! {
         key: "abuse.trusted_proxies",
         env: "MONOKULO_ABUSE_TRUSTED_PROXIES",
         default: String::new(),
-        check: check_trusted_proxies,
+        check: |v: &String| check_trusted_proxies(v),
         description: "Addresses and CIDR ranges of reverse proxies in front of this instance, comma-separated. A request from one of these is identified by the last address in its X-Forwarded-For header that isn't a trusted proxy. Leave empty if clients connect directly.",
         example: "127.0.0.1, 10.0.0.0/8",
     },
@@ -161,7 +161,7 @@ settings! {
         key: "abuse.onion_listener",
         env: "MONOKULO_ABUSE_ONION_LISTENER",
         default: String::new(),
-        check: check_onion_listener,
+        check: |v: &String| check_onion_listener(v),
         description: "A loopback address:port for tor's onion service to connect to, with HiddenServiceExportCircuitID haproxy set in torrc, so each Tor circuit is its own client. Empty turns it off. Only loopback is accepted.",
         example: "127.0.0.1:8082",
     },

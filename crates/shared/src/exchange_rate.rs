@@ -596,9 +596,12 @@ mod tests {
         where
             F: Fn(&str, usize) -> Response + Send + Sync + 'static,
         {
+            /// Answers a request, given its path or query and how many came before.
+            type Handler = Arc<dyn Fn(&str, usize) -> Response + Send + Sync>;
+
             #[derive(Clone)]
             struct Shared {
-                handler: Arc<dyn Fn(&str, usize) -> Response + Send + Sync>,
+                handler: Handler,
                 calls: Arc<AtomicUsize>,
             }
 

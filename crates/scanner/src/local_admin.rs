@@ -11,7 +11,7 @@
 
 use crate::key_custody::{KeyCustody, WalletMaterial};
 use crate::store::Tenant;
-use crate::store::{CreatedTenant, NewTenant, Store};
+use crate::store::{CreatedTenant, NewTenant, SharedStore, Store};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LocalAdminError {
@@ -59,12 +59,12 @@ pub struct BootstrapWalletArgs {
 /// (`crate::settings`), not a value baked into this command - a bootstrap tenant
 /// should start out consistent with the instance it's being created on.
 pub async fn bootstrap_wallet(
-    store: &Store,
+    store: &SharedStore,
     key_custody: &std::sync::Arc<dyn KeyCustody>,
     key_custody_backend: &str,
     args: BootstrapWalletArgs,
 ) -> Result<CreatedTenant, LocalAdminError> {
-    if store.count_tenants()? > 0 {
+    if store.lock().count_tenants()? > 0 {
         return Err(LocalAdminError::AlreadyBootstrapped);
     }
     let material = WalletMaterial::from_hex(&args.view_key_hex, &args.spend_pubkey_hex)?;
@@ -96,8 +96,14 @@ pub async fn bootstrap_wallet(
         .await
         .map_err(LocalAdminError::KeyMaterial)?;
 
+    // The store is locked only now, after sealing, and not across it: the
+    // tenant count is checked again under the same lock as the insert.
+    let store = store.lock();
+    if store.count_tenants()? > 0 {
+        return Err(LocalAdminError::AlreadyBootstrapped);
+    }
     let defaults: crate::engine_settings::TenantDefaults =
-        crate::engine_settings::read_section(store);
+        crate::engine_settings::read_section(&store);
 
     let created = store.create_tenant(
         NewTenant {
@@ -360,7 +366,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_wallet_refuses_an_address_that_is_not_the_wallet_of_the_keys() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().unwrap().into_shared();
         let key_custody: std::sync::Arc<dyn KeyCustody> =
             std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
         let mut args = bootstrap_args();
@@ -378,12 +384,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not a Monero address"), "{err}");
-        assert_eq!(store.count_tenants().unwrap(), 0);
+        assert_eq!(store.lock().count_tenants().unwrap(), 0);
     }
 
     #[tokio::test]
     async fn bootstrap_wallet_keeps_the_keys_in_the_backend_asked_for_if_it_is_enabled() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().unwrap().into_shared();
         let backends: std::collections::HashMap<String, std::sync::Arc<dyn KeyCustody>> =
             std::collections::HashMap::from([
                 (
@@ -419,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_wallet_creates_the_one_tenant_a_self_hosted_deployment_needs() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().unwrap().into_shared();
         let key_custody: std::sync::Arc<dyn KeyCustody> =
             std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
         let created = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args())
@@ -432,6 +438,7 @@ mod tests {
             "should reflect this instance's real current settings, not a hardcoded value"
         );
         assert!(store
+            .lock()
             .find_tenant_by_secret_token(&created.secret_token)
             .unwrap()
             .is_some());
@@ -439,8 +446,9 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_wallet_picks_up_a_saved_setting_rather_than_the_hardcoded_fallback() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().unwrap().into_shared();
         store
+            .lock()
             .set_setting("payment.confirmations_required", "3")
             .unwrap();
         let key_custody: std::sync::Arc<dyn KeyCustody> =
@@ -453,7 +461,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_wallet_refuses_a_second_time_once_any_tenant_already_exists() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().unwrap().into_shared();
         let key_custody: std::sync::Arc<dyn KeyCustody> =
             std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
         bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args())
@@ -470,7 +478,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_wallet_rejects_malformed_key_material_with_a_clear_error_not_a_panic() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().unwrap().into_shared();
         let key_custody: std::sync::Arc<dyn KeyCustody> =
             std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
         let mut args = bootstrap_args();

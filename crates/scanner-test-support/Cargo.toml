@@ -34,3 +34,6 @@ key-custody-server = { path = "../key-custody-server" }
 # shared with `src/key_custody/plain.rs`'s, `src/scanner.rs`'s, and
 # `key-custody-service`'s own test suites - not a fresh fixture invented here).
 hex = "0.4.3"
+
+[lints]
+workspace = true

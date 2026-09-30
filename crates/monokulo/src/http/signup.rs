@@ -2,7 +2,7 @@
 //! hashed password. Unauthenticated by necessity — nobody has an account yet.
 //!
 //! Gated on this instance's `signup.mode` setting (`crate::settings::SIGNUP_MODE`)
-//! - `"public"` (any visitor may sign up, the original behavior) or
+//! — `"public"` (any visitor may sign up, the original behavior) or
 //! `"invite_only"` (the default: a valid, unused invite token is required -
 //! see `Db::redeem_invite_and_create_user`'s own doc comment for the
 //! single-use guarantee). The first-run admin setup wizard
@@ -61,7 +61,7 @@ pub(super) enum CreateAccountError {
 
 /// The actual account-creation logic - `Db::create_user`/
 /// `Db::redeem_invite_and_create_user` plus `shared::password::hash_password`
-/// - shared by `POST /signup` (below), `POST /dashboard/signup`
+/// — shared by `POST /signup` (below), `POST /dashboard/signup`
 /// (`http/dashboard.rs`), and the first-run admin setup wizard
 /// (`http/admin_setup.rs`, the one caller that ever passes `is_admin: true`),
 /// so all three surfaces can never drift apart on what "creating an account"

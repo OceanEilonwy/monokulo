@@ -705,6 +705,9 @@ struct CallbackQuery {
     nonce: String,
 }
 
+/// Where the callback reports how the connect flow ended.
+type ResultSender = oneshot::Sender<Result<FinishedCredentials, ConnectFlowError>>;
+
 /// Shared state the callback route's handler needs: the nonce this driver
 /// generated for this flow (to check the incoming one against), where to
 /// reach the control plane for the server-to-server `/finish` call, which
@@ -723,7 +726,7 @@ struct CallbackState {
     platform: Arc<str>,
     webhook_url: Arc<str>,
     webhook_state: Arc<StdMutex<ReceiverState>>,
-    result_tx: Arc<Mutex<Option<oneshot::Sender<Result<FinishedCredentials, ConnectFlowError>>>>>,
+    result_tx: Arc<Mutex<Option<ResultSender>>>,
 }
 
 /// `GET /moneropay/callback` - the callback route standing in for the real

@@ -12,7 +12,7 @@
 //! **Envelope**: [`KeyCustodyRequest`]/[`KeyCustodyResponse`] are plain enums,
 //! one variant per trait method, each wrapping that method's existing
 //! `{Name}Request` struct or `{Name}Response` type alias from `lib.rs` verbatim
-//! - no new per-method wire shape is invented here, only a tag saying which one
+//! — no new per-method wire shape is invented here, only a tag saying which one
 //! applies. `serde`'s default (externally-tagged) enum representation gives each
 //! encoded message a `{"RegisterWallet": {...}}`-shaped outer key, which is
 //! exactly the dispatch tag [`crate::server::dispatch`] and

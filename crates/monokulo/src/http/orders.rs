@@ -358,7 +358,7 @@ async fn order_detail_data(
             let metadata = state
                 .db
                 .lock()
-                .get_order_currency_metadata(&row.id, &order_id)
+                .get_order_currency_metadata(&row.id, order_id)
                 .ok()
                 .flatten();
             let (amount, currency) = match &metadata {
@@ -834,7 +834,7 @@ async fn render_store_detail_page(
         .list_orders_page(&sk, false, None, 10, 0)
         .await
     {
-        Ok(orders) => order_rows(&state, &row, orders),
+        Ok(orders) => order_rows(state, &row, orders),
         Err(_) => Vec::new(),
     };
 
@@ -5509,19 +5509,20 @@ mod tests {
             .to_string();
         let order_id = location.rsplit('/').next().unwrap().to_string();
 
-        let store = engine.store().lock();
-        let tenant_id = store
-            .find_tenant_by_public_key(&public_key)
-            .unwrap()
-            .unwrap()
-            .id;
-        let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
-        assert_eq!(
-            stored.confirmations_required_override,
-            Some(20),
-            "a 10.00 XMR order against a 5.00-and-up threshold of 20 confirmations must use that threshold, not the default"
-        );
-        drop(store);
+        {
+            let store = engine.store().lock();
+            let tenant_id = store
+                .find_tenant_by_public_key(&public_key)
+                .unwrap()
+                .unwrap()
+                .id;
+            let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            assert_eq!(
+                stored.confirmations_required_override,
+                Some(20),
+                "a 10.00 XMR order against a 5.00-and-up threshold of 20 confirmations must use that threshold, not the default"
+            );
+        }
 
         let metadata = state
             .db

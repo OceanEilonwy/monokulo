@@ -158,7 +158,7 @@ impl SocketKeyCustody {
     /// and harmless).
     async fn answers_a_known_request(&self) -> bool {
         let request = KeyCustodyRequest::RemoveWallet(RemoveWalletRequest {
-            handle: WalletHandleWire::from(WalletHandle::new()),
+            handle: WalletHandleWire::from(WalletHandle::generate()),
         });
         matches!(
             self.call_fresh(request).await,
@@ -582,7 +582,7 @@ mod cancellation_tests {
         let mut client = SocketKeyCustody::not_connected_yet("unused", Duration::from_secs(60));
         client.slots = vec![Mutex::new(Some(stream))];
         let request = KeyCustodyRequest::RemoveWallet(RemoveWalletRequest {
-            handle: WalletHandleWire::from(WalletHandle::new()),
+            handle: WalletHandleWire::from(WalletHandle::generate()),
         });
         let mut call = Box::pin(client.call(request));
         // The peer received the request, but has not sent its reply. Dropping

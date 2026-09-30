@@ -66,6 +66,25 @@ pub struct ConnectQuery {
     pub nonce: String,
 }
 
+/// The plugin's connect request, carried through every render of the confirm
+/// form, whether it came from the first `GET` or a resubmitted `POST`.
+#[derive(Clone, Copy)]
+struct ConnectRequest<'a> {
+    site_url: &'a str,
+    return_url: &'a str,
+    nonce: &'a str,
+}
+
+impl ConnectQuery {
+    fn request(&self) -> ConnectRequest<'_> {
+        ConnectRequest {
+            site_url: &self.site_url,
+            return_url: &self.return_url,
+            nonce: &self.nonce,
+        }
+    }
+}
+
 /// `resubmit` is `None` on a plain `GET` (empty key/origin fields, mainnet
 /// selected) or `Some(&form)` re-rendering after a rejected `POST` - see
 /// `ConnectViewModel`'s doc comment (`templates.rs`) for why every submitted
@@ -79,13 +98,16 @@ pub struct ConnectQuery {
 fn render_confirm_form(
     state: &AppState,
     platform: &str,
-    site_url: &str,
-    return_url: &str,
-    nonce: &str,
+    request: ConnectRequest<'_>,
     error: Option<&str>,
     resubmit: Option<&ConfirmForm>,
     user: &UserRow,
 ) -> Response {
+    let ConnectRequest {
+        site_url,
+        return_url,
+        nonce,
+    } = request;
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(
             resubmit
@@ -187,16 +209,7 @@ pub async fn start(
         ));
     };
 
-    render_confirm_form(
-        &state,
-        &platform,
-        &query.site_url,
-        &query.return_url,
-        &query.nonce,
-        None,
-        None,
-        &user,
-    )
+    render_confirm_form(&state, &platform, query.request(), None, None, &user)
 }
 
 /// `POST /connect/{platform}`'s form fields (WBS 1.4.1, step 4) - the same
@@ -264,6 +277,16 @@ pub struct ConfirmForm {
     pub key_custody_backend: Option<String>,
 }
 
+impl ConfirmForm {
+    fn request(&self) -> ConnectRequest<'_> {
+        ConnectRequest {
+            site_url: &self.site_url,
+            return_url: &self.return_url,
+            nonce: &self.nonce,
+        }
+    }
+}
+
 /// `POST /connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4): the
 /// confirm-form submission - either mode (see [`ConfirmForm::mode`]) ends the
 /// same way, minting a single-use connect token and redirecting to
@@ -276,16 +299,7 @@ pub async fn confirm_submit(
 ) -> Response {
     if public_url_for_plugins(&state).is_err() {
         // `render_confirm_form` shows the reason instead of the form.
-        return render_confirm_form(
-            &state,
-            &platform,
-            &form.site_url,
-            &form.return_url,
-            &form.nonce,
-            None,
-            Some(&form),
-            &user,
-        );
+        return render_confirm_form(&state, &platform, form.request(), None, Some(&form), &user);
     }
     if form.mode == "existing" {
         confirm_existing_store(&state, &user, &platform, &form).await
@@ -324,9 +338,7 @@ async fn confirm_new_store(
             return render_confirm_form(
                 state,
                 platform,
-                &form.site_url,
-                &form.return_url,
-                &form.nonce,
+                form.request(),
                 Some(&message),
                 Some(form),
                 user,
@@ -336,9 +348,7 @@ async fn confirm_new_store(
             return render_confirm_form(
                 state,
                 platform,
-                &form.site_url,
-                &form.return_url,
-                &form.nonce,
+                form.request(),
                 Some("Something went wrong. Please try again."),
                 Some(form),
                 user,
@@ -371,9 +381,7 @@ async fn confirm_existing_store(
             return render_confirm_form(
                 state,
                 platform,
-                &form.site_url,
-                &form.return_url,
-                &form.nonce,
+                form.request(),
                 Some("Choose a store to connect."),
                 Some(form),
                 user,
@@ -385,9 +393,7 @@ async fn confirm_existing_store(
         render_confirm_form(
             state,
             platform,
-            &form.site_url,
-            &form.return_url,
-            &form.nonce,
+            form.request(),
             Some("Something went wrong. Please try again."),
             Some(form),
             user,
@@ -412,9 +418,7 @@ async fn confirm_existing_store(
             return render_confirm_form(
                 state,
                 platform,
-                &form.site_url,
-                &form.return_url,
-                &form.nonce,
+                form.request(),
                 Some("That store could not be found."),
                 Some(form),
                 user,
@@ -464,9 +468,7 @@ fn mint_token_and_redirect(
         return render_confirm_form(
             state,
             platform,
-            &form.site_url,
-            &form.return_url,
-            &form.nonce,
+            form.request(),
             Some("Something went wrong. Please try again."),
             Some(form),
             user,
@@ -479,9 +481,7 @@ fn mint_token_and_redirect(
             return render_confirm_form(
                 state,
                 platform,
-                &form.site_url,
-                &form.return_url,
-                &form.nonce,
+                form.request(),
                 Some("Invalid return_url."),
                 Some(form),
                 user,

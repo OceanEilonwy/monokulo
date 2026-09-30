@@ -378,7 +378,7 @@ fn write_rust_crates(output: &Path, files: &[Value], workspace: &Value) -> io::R
             if !path.starts_with(&src) {
                 continue;
             }
-            if !path.extension().is_some_and(|e| e == "rs") {
+            if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
             mapped += 1;
@@ -418,7 +418,7 @@ fn write_rust_crates(output: &Path, files: &[Value], workspace: &Value) -> io::R
             "branches":{"covered":branches.0,"total":branches.1},
             "report":format!("rust/crates/{name}.html"),
             "measured_files":measured.len(),
-            "unavailable_files":all_source.difference(&measured).map(|p| p.strip_prefix(&root()).unwrap().display().to_string()).collect::<Vec<_>>() }));
+            "unavailable_files":all_source.difference(&measured).map(|p| p.strip_prefix(root()).unwrap().display().to_string()).collect::<Vec<_>>() }));
     }
     if mapped != files.len() {
         return Err(io::Error::other(format!(

@@ -36,3 +36,6 @@ x509-parser = { version = "0.18.1", features = ["verify"] }
 [dev-dependencies]
 hex = "0.4.3"
 rand = "0.10.2"
+
+[lints]
+workspace = true

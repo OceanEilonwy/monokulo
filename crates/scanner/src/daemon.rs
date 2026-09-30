@@ -262,7 +262,7 @@ pub trait MoneroDaemonClient: Send + Sync {
             // standard shape for that (lower-mid would loop forever
             // whenever `lo`/`hi` become adjacent and the predicate holds at
             // `hi`).
-            let mid = lo + (hi - lo + 1) / 2;
+            let mid = lo + (hi - lo).div_ceil(2);
             if self.get_block_timestamp(mid).await? <= target_timestamp {
                 lo = mid;
             } else {

@@ -37,3 +37,6 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 axum = { version = "0.8.9", default-features = false, features = ["matched-path", "tokio", "http1"] }
 tower = { version = "0.5.3", features = ["util"] }
 tokio = { version = "1.53.1", features = ["time", "rt", "macros", "test-util", "net"] }
+
+[lints]
+workspace = true

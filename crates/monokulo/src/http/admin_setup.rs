@@ -15,7 +15,7 @@
 //! (`signup::create_account(.., is_admin: true)`), marks setup complete, logs
 //! the new admin straight in (the same session-cookie mechanics
 //! `dashboard::login_submit` uses), and redirects to the admin settings page
-//! - so completing the wizard is the entire "first start" experience the
+//! — so completing the wizard is the entire "first start" experience the
 //! product spec calls for, not a dead end that then demands a second manual
 //! login.
 

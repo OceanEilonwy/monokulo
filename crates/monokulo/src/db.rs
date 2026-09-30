@@ -776,7 +776,7 @@ impl Db {
     /// shipped. Dedicated invite-flow tests (`http::signup`/
     /// `http::dashboard`/`http::invites`) explicitly set `signup.mode` back
     /// to `"invite_only"` themselves when that's what they mean to exercise
-    /// - this is a permissive *default*, not something every test is stuck
+    /// — this is a permissive *default*, not something every test is stuck
     /// with. Applied as a single shared helper every test fixture calls
     /// rather than each reimplementing the same writes. Panics on a
     /// database error - every caller is a test fixture already `.unwrap()`-
@@ -1722,7 +1722,7 @@ impl Db {
 
     /// Deletes one custom threshold, scoped to `connection_id` so one
     /// store's owner can never delete another store's threshold by id alone
-    /// - the same ownership-scoping convention `delete_webhook` already
+    /// — the same ownership-scoping convention `delete_webhook` already
     /// uses. Returns whether a row was actually deleted (`false` for an
     /// unknown id, or one belonging to a different connection - the caller
     /// treats both identically, same enumeration-defense convention this

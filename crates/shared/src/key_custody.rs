@@ -87,6 +87,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub struct WalletHandle(Uuid);
 
 impl WalletHandle {
+    /// Mints a new, random handle (so deliberately no `Default`).
+    ///
     /// Not `pub(crate)`: real `KeyCustody` implementations live in their own crates
     /// now (`scanner`'s `PlainKeyCustody`, `key-custody-service`'s
     /// `SocketKeyCustody`), exactly the situation this type's own doc comment above
@@ -94,7 +96,7 @@ impl WalletHandle {
     /// below - `pub(crate)` would only have granted access within whichever crate
     /// this module happens to live in, not to every crate that needs to mint a
     /// handle.
-    pub fn new() -> Self {
+    pub fn generate() -> Self {
         WalletHandle(Uuid::new_v4())
     }
 
@@ -506,8 +508,8 @@ mod tests {
         // Pins the accessor pair added for WBS 2.1.1's wire DTOs
         // (`key-custody-service`): a real `WalletHandle` survives a bytes-out,
         // bytes-in round trip exactly, and two distinct handles don't collide.
-        let a = WalletHandle::new();
-        let b = WalletHandle::new();
+        let a = WalletHandle::generate();
+        let b = WalletHandle::generate();
         assert_ne!(a, b);
 
         let restored_a = WalletHandle::from_bytes(a.as_bytes());

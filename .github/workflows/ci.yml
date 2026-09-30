@@ -1,14 +1,15 @@
 name: CI
 
 # Stages, each a set of jobs that run side by side:
+#   lint      rustfmt (the defaults) and clippy, every warning an error
 #   tests     the workspace's Rust tests on every platform we build for
 #   coverage  each coverage collector in a job of its own (Linux only), then
 #             one report job that joins their outputs into the artifact
 #   publish   release binaries and the Docker image (main and version tags),
-#             once tests and coverage passed; a version tag also makes a
+#             once lint, tests and coverage passed; a version tag also makes a
 #             GitHub release and pushes the image to ghcr.io
-# tests and coverage start together: neither needs the other's build.
-# Every job writes a summary table and lists its failures.
+# lint, tests and coverage start together: none needs another's build.
+# Every test and coverage job writes a summary table and lists its failures.
 
 on:
   push:
@@ -22,6 +23,7 @@ on:
       - 'xtask/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rustfmt.toml'
       - '.config/**'
       - 'Dockerfile'
       - '.dockerignore'
@@ -35,6 +37,7 @@ on:
       - 'xtask/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rustfmt.toml'
       - '.config/**'
       - 'Dockerfile'
       - '.dockerignore'
@@ -54,6 +57,30 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: crates/monokulo/pos-ui/package-lock.json
+      - name: Install POS app dependencies
+        # monokulo's build script builds the POS app from them.
+        run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        # Clippy's lints are denied in Cargo.toml; -D warnings adds the
+        # compiler's own.
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   tests:
     name: tests (${{ matrix.os }})
     strategy:
@@ -315,7 +342,7 @@ jobs:
 
   publish:
     name: publish (${{ matrix.target }})
-    needs: [tests, coverage]
+    needs: [lint, tests, coverage]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     strategy:
       fail-fast: false
@@ -376,7 +403,7 @@ jobs:
   docker:
     # The production image (Dockerfile): built on main, and on a version tag
     # also pushed to ghcr.io/<owner>/monokulo as that version and latest.
-    needs: [tests, coverage]
+    needs: [lint, tests, coverage]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     timeout-minutes: 45

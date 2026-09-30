@@ -700,21 +700,22 @@ impl EngineSettings {
     }
 }
 
+/// A daemon client per configured network.
+pub type DaemonMap = HashMap<monero::Network, Arc<FallbackDaemonClient>>;
+
 /// The daemon client for each configured network, swapped whole when node
 /// settings are saved (task 2.1). Readers take a snapshot per request or per
 /// tick; nobody holds the lock across an `.await`.
 #[derive(Clone, Default)]
-pub struct Daemons(
-    Arc<parking_lot::RwLock<Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>>>>,
-);
+pub struct Daemons(Arc<parking_lot::RwLock<Arc<DaemonMap>>>);
 
 impl Daemons {
     /// A fixed set, for tests and tools that don't change nodes.
-    pub fn fixed(map: HashMap<monero::Network, Arc<FallbackDaemonClient>>) -> Self {
+    pub fn fixed(map: DaemonMap) -> Self {
         Daemons(Arc::new(parking_lot::RwLock::new(Arc::new(map))))
     }
 
-    pub fn snapshot(&self) -> Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>> {
+    pub fn snapshot(&self) -> Arc<DaemonMap> {
         self.0.read().clone()
     }
 
@@ -730,7 +731,7 @@ impl Daemons {
         self.0.read().keys().copied().collect()
     }
 
-    fn replace(&self, map: HashMap<monero::Network, Arc<FallbackDaemonClient>>) {
+    fn replace(&self, map: DaemonMap) {
         *self.0.write() = Arc::new(map);
     }
 }
@@ -768,7 +769,7 @@ pub struct NodesReloadable {
 #[live_settings::async_trait]
 impl live_settings::Reloadable for NodesReloadable {
     type Config = NodeConfig;
-    type Prepared = HashMap<monero::Network, Arc<FallbackDaemonClient>>;
+    type Prepared = DaemonMap;
 
     async fn prepare(
         &self,

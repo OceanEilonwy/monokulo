@@ -326,10 +326,13 @@ mod tests {
         T: Fn(usize) -> Response + Send + Sync + 'static,
         D: Fn(&str, usize) -> Response + Send + Sync + 'static,
     {
+        /// Answers a request, given its path or query and how many came before.
+        type Handler = Arc<dyn Fn(&str, usize) -> Response + Send + Sync>;
+
         #[derive(Clone)]
         struct Shared {
             tickers: Arc<dyn Fn(usize) -> Response + Send + Sync>,
-            depth: Arc<dyn Fn(&str, usize) -> Response + Send + Sync>,
+            depth: Handler,
             tickers_calls: Arc<AtomicUsize>,
             depth_calls: Arc<AtomicUsize>,
         }
