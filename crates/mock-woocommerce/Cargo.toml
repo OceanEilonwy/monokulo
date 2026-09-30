@@ -43,7 +43,7 @@ monokulo = { path = "../monokulo", features = ["test-support"] }
 scanner-test-support = { path = "../scanner-test-support" }
 monero = "0.22.0"
 # WBS 1.4.5's real stagenet connect-flow test only (hex-encodes the sent
-# transaction's hash for logging/persisting to e2e/stagenet-wallets.json) -
+# transaction's hash for logging/persisting to its wallet file) -
 # same version scanner itself already pins.
 hex = "0.4.3"
 

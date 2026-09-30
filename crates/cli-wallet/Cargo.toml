@@ -41,7 +41,7 @@ zeroize = { version = "1.9.0", features = ["derive"] }
 # the same reason crates/scanner/Cargo.toml has its own comment on this) and,
 # with the "time" feature, by `send_payment`'s own built-in retry backoff.
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
-# Real seed-phrase support for `wallet add --seed`: both crates are, as of
+# Real seed-phrase support for `--restore-deterministic-wallet`: both crates are, as of
 # this writing, empty placeholder stubs on crates.io (0.0.1, their own
 # README says "pending publication until monero-wallet is published" - true
 # now, but not yet acted on) - the actual, working implementation only
@@ -56,10 +56,15 @@ polyseed = { git = "https://github.com/kayabaNerve/monero-wallet-util", branch =
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 
+# The CLI restores the default SIGPIPE action, so `stagenet-wallet-cli
+# show_transfers | head` exits quietly instead of panicking.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [[bin]]
 name = "refresh-decoy-pool"
 path = "src/bin/refresh_decoy_pool.rs"
 
 [[bin]]
 name = "stagenet-wallet-cli"
-path = "src/bin/cli.rs"
+path = "src/bin/cli/main.rs"

@@ -120,26 +120,27 @@ real dev/test orders without a full wallet-rpc process. It ships two `[[bin]]`
 targets under the `cli-wallet` package:
 
 ```sh
-# General wallet CLI - inspect/manage wallets, check balance, send payments
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --help
+# monero-wallet-cli's commands over one JSON file per wallet (e2e/wallets/).
+# With no command it opens the wallet and prompts, like the reference wallet:
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender
+#   [wallet 5648a3]: balance
+#   [wallet 5648a3]: transfer <address> 0.001      (amounts in XMR)
+#   [wallet 5648a3]: show_transfers
+#   [wallet 5648a3]: help
 
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- address
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- balance
+# ...or runs one command and exits
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender balance
 
-# Send a stagenet test payment (piconero, i.e. 1 XMR = 1e12 piconero)
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- send <address> <piconero>
-
-# Split existing outputs into more (smaller) outputs, useful for tests that
+# Split the largest output into more (smaller) outputs, useful for tests that
 # need several independent spendable outputs
 cargo run -p cli-wallet --bin stagenet-wallet-cli -- split 4
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- send <address> <piconero> --split 3
 
-# Record a new output by hand (e.g. after a faucet payment) instead of
-# waiting for it to be discovered
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- output add <txid>
+# Record a payment by hand (e.g. after a faucet payment)
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- add_output <txid>
 
-# Add another named wallet from an existing seed phrase
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- wallet add <name> --seed "<phrase>"
+# New wallet file: fresh keys, or restored from a seed phrase
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- --generate-new-wallet <name>
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- --generate-new-wallet <name> --restore-deterministic-wallet --electrum-seed "<phrase>"
 
 # Shell completions
 cargo run -p cli-wallet --bin stagenet-wallet-cli -- completions <bash|zsh|fish|...>

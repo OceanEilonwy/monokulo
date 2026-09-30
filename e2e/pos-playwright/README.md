@@ -102,10 +102,9 @@ screenshots on failure).
   node at once.
 - Uses `crates/cli-wallet` to sign and broadcast - a fast, narrow,
   stagenet-only wallet with no chain scanning (informed of its own outputs directly,
-  via the committed `e2e/stagenet-known-outputs.json` ledger) and decoy selection
+  via the committed `e2e/wallets/spender.json` wallet file) and decoy selection
   served from the committed `e2e/stagenet-decoy-distribution.json` snapshot rather than
-  a live fetch. Still reads the shared `e2e/stagenet-wallets.json` customer wallet's own
-  keys/address, the same fixture `../tests/e2e_stagenet.rs` uses.
+  a live fetch. The same spender wallet `../tests/e2e_stagenet.rs` uses.
 
 ## If it fails
 

@@ -420,7 +420,7 @@ pub async fn run_connect_flow_with_order_expiry_seconds(
 
 /// Same as [`run_connect_flow`], but provisions the tenant with `wallet` (real view
 /// key/spend pubkey/network, e.g. a real stagenet merchant wallet from
-/// `e2e/stagenet-wallets.json`) instead of this driver's fixed mainnet test scalars.
+/// `e2e/wallets/merchant.json`) instead of this driver's fixed mainnet test scalars.
 /// Exists for WBS 1.4.5's real stagenet connect-flow test, which must provision the
 /// tenant with genuine wallet material a real scanner can actually detect a real
 /// payment against - the fixed test constants this driver otherwise submits have no

@@ -501,6 +501,7 @@ dependencies = [
  "clap_complete",
  "curve25519-dalek",
  "hex",
+ "libc",
  "monero-daemon-rpc",
  "monero-seed",
  "monero-wallet",
