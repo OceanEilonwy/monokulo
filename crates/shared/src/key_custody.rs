@@ -249,8 +249,10 @@ pub struct MatchedOutput {
     pub output_index: usize,
     /// Which subaddress (account/index pair) the output was paid to.
     pub subaddress_index: SubaddressIndex,
-    /// Amount in piconero. `None` only if the output's amount couldn't be decrypted,
-    /// which should not happen for an output this wallet actually owns.
+    /// Amount in piconero. `None` if the output's amount couldn't be decrypted:
+    /// the sender encrypted something other than the amount the output
+    /// commits to. Such an output is reported, not an error, so a scan can't
+    /// be made to fail by sending a wallet one.
     pub amount_piconero: Option<u64>,
 }
 
