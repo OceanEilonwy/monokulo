@@ -69,7 +69,7 @@ pub struct PlatformConnectViewModel {
 
 /// One entry in the "use an existing store" picker.
 pub struct ExistingStoreOption {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub platform: String,
 }

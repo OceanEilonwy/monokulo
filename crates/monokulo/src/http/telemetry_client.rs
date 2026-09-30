@@ -49,7 +49,9 @@ fn clip(text: &str) -> String {
 /// store that hasn't opted in to client logs.
 pub fn page_may_report(db: &Db, page: &str) -> bool {
     if let Some(store) = super::store_of_path(page) {
-        return db.client_logging(store).unwrap_or(false);
+        return db
+            .client_logging(&crate::db::ConnectionId::new(store))
+            .unwrap_or(false);
     }
     if let Some(pk) = super::embed_domains::public_key_of_pay_path(page) {
         return db.client_logging_by_public_key(pk).unwrap_or(false);
@@ -99,11 +101,17 @@ mod tests {
 
     fn db_with_store() -> Db {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("u1", "a@example.com", "hash", false, 0)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("u1"),
+            "a@example.com",
+            "hash",
+            false,
+            0,
+        )
+        .unwrap();
         db.create_store_connection(
-            "c1",
-            "u1",
+            &shared::ids::ConnectionId::new("c1"),
+            &shared::ids::UserId::new("u1"),
             "woocommerce",
             "https://shop.example.com",
             "pk_1",
@@ -132,7 +140,8 @@ mod tests {
             !page_may_report(&db, "/dashboard/stores/unknown/orders"),
             "no store, no reports"
         );
-        db.set_client_logging("c1", true).unwrap();
+        db.set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+            .unwrap();
         assert!(page_may_report(&db, "/dashboard/stores/c1/settings"));
         assert!(page_may_report(&db, "/pay/pk_1/orders/o1"));
     }

@@ -323,7 +323,7 @@ mod tests {
     fn threshold(unit_amount: &str, confirmations_required: u64) -> ConfirmationThresholdRow {
         ConfirmationThresholdRow {
             id: "thresh".to_string(),
-            connection_id: "conn".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn".to_string()),
             unit_amount: unit_amount.to_string(),
             confirmations_required,
             created_at: 0,

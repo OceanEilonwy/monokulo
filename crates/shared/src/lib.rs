@@ -15,6 +15,7 @@ pub mod coinmarketcap;
 pub mod exchange_rate;
 pub mod haveno;
 pub mod http_cache;
+pub mod ids;
 pub mod key_custody;
 pub mod log;
 pub mod migrations;

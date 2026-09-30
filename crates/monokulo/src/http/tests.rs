@@ -1501,13 +1501,25 @@ fn state_with_owner_and_store(
     let state = AppState::for_tests();
     {
         let db = state.db.lock();
-        db.create_user("u_owner", "owner@example.com", "x", false, 1)
-            .unwrap();
-        db.create_user("u_other", "other@example.com", "x", false, 1)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("u_owner"),
+            "owner@example.com",
+            "x",
+            false,
+            1,
+        )
+        .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("u_other"),
+            "other@example.com",
+            "x",
+            false,
+            1,
+        )
+        .unwrap();
         db.create_store_connection(
-            "c1",
-            "u_owner",
+            &shared::ids::ConnectionId::new("c1"),
+            &shared::ids::UserId::new("u_owner"),
             "woocommerce",
             "https://shop.example.com",
             tenant_public_key,
@@ -1743,7 +1755,11 @@ async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin
     assert!(with_script("/dashboard/stores/new").await);
     assert!(!with_script("/dashboard/stores/c1").await);
     assert!(!with_script("/dashboard/stores/c1/settings").await);
-    state.db.lock().set_client_logging("c1", true).unwrap();
+    state
+        .db
+        .lock()
+        .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        .unwrap();
     assert!(with_script("/dashboard/stores/c1").await);
     assert!(with_script("/dashboard/stores/c1/orders?page=2").await);
 }
@@ -1753,12 +1769,18 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
     let state = AppState::for_tests();
     {
         let db = state.db.lock();
-        db.create_user("u_owner", "owner@example.com", "x", false, 1)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("u_owner"),
+            "owner@example.com",
+            "x",
+            false,
+            1,
+        )
+        .unwrap();
         let encrypted = crate::crypto::encrypt(&state.encryption_key, "sk_shop");
         db.create_store_connection(
-            "c1",
-            "u_owner",
+            &shared::ids::ConnectionId::new("c1"),
+            &shared::ids::UserId::new("u_owner"),
             "woocommerce",
             "https://shop.example.com",
             "pk_shop",
@@ -1786,7 +1808,11 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
         StatusCode::FORBIDDEN,
         "off by default, whatever the plugin says"
     );
-    state.db.lock().set_client_logging("c1", true).unwrap();
+    state
+        .db
+        .lock()
+        .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        .unwrap();
     assert_eq!(
         router.clone().oneshot(forward()).await.unwrap().status(),
         StatusCode::NO_CONTENT
@@ -1800,13 +1826,13 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
         let db = state.db.lock();
         db.create_session(
             &shared::auth::RawToken::presented("owner-token").hash(),
-            "u_owner",
+            &shared::ids::UserId::new("u_owner"),
             crate::now_unix(),
         )
         .unwrap();
         db.create_session(
             &shared::auth::RawToken::presented("other-token").hash(),
-            "u_other",
+            &shared::ids::UserId::new("u_other"),
             crate::now_unix(),
         )
         .unwrap();
@@ -1837,7 +1863,11 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
         StatusCode::FORBIDDEN,
         "Diagnostics is off"
     );
-    state.db.lock().set_client_logging("c1", true).unwrap();
+    state
+        .db
+        .lock()
+        .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        .unwrap();
     assert_eq!(
         status(send("owner-token", batch(2))).await,
         StatusCode::NO_CONTENT

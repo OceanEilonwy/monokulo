@@ -561,7 +561,13 @@ pub async fn connect_submit(
 
     match connections::create_connection_for_user(&state, &user, fields).await {
         Ok(outcome) => {
-            render_connect_success(&state, &outcome.connection_id, &outcome.public_key, &user).await
+            render_connect_success(
+                &state,
+                outcome.connection_id.as_str(),
+                &outcome.public_key,
+                &user,
+            )
+            .await
         }
         Err(CreateConnectionError::BadRequest(message)) => {
             render_connect_form(&state, Some(&message), Some(&form), &user).await

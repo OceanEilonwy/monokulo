@@ -7,7 +7,7 @@ use super::orders::{lookup_payment_card, orders_table, OrderRowViewModel};
 use super::{layout, PageChrome};
 
 pub struct StoreDetailData {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub platform: String,
     pub site_url: String,
@@ -162,7 +162,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     }
                 }
 
-                (embed_warnings(&store.connection_id, &store.embed_warnings))
+                (embed_warnings(store.connection_id.as_str(), &store.embed_warnings))
 
                 table class="kv-table" {
                     tr { th { "Base currency" } td { (store.base_currency) } }
@@ -170,7 +170,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     tr { th { "Connected" } td { (chrome.clock.time(store.created_at)) } }
                 }
                 @if chrome.is_admin {
-                    p { (super::logs_link(chrome, "store.id", &store.connection_id, "This store's logs")) }
+                    p { (super::logs_link(chrome, "store.id", store.connection_id.as_str(), "This store's logs")) }
                 }
 
                 div class="widget-links" {
@@ -218,7 +218,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 @if store.recent_orders.is_empty() {
                     p class="muted" { "No orders yet." }
                 } @else {
-                    (orders_table(&store.connection_id, &store.recent_orders, &chrome.clock))
+                    (orders_table(store.connection_id.as_str(), &store.recent_orders, &chrome.clock))
                 }
                 p {
                     a href=(format!("/dashboard/stores/{}/orders", store.connection_id)) { "all orders →" }
@@ -288,7 +288,7 @@ mod tests {
 
     fn base_store(is_woocommerce: bool) -> StoreDetailData {
         StoreDetailData {
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             platform: if is_woocommerce {
                 "woocommerce".to_string()

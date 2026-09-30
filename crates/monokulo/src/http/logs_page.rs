@@ -334,9 +334,12 @@ async fn add_notes(state: &AppState, rows: &mut [RowView]) {
             let mut notes = HashMap::new();
             for (is_user, id) in wanted {
                 let note = if is_user {
-                    db.get_user_by_id(&id).ok().flatten().map(|user| user.email)
+                    db.get_user_by_id(&crate::db::UserId::new(id.clone()))
+                        .ok()
+                        .flatten()
+                        .map(|user| user.email)
                 } else {
-                    db.get_store_connection_by_id(&id)
+                    db.get_store_connection_by_id(&crate::db::ConnectionId::new(id.clone()))
                         .ok()
                         .flatten()
                         .map(|store| super::orders::display_name_for(&store.site_url))
@@ -1061,7 +1064,7 @@ pub async fn pos_timeline(
         .map(str::to_string);
     let store_link = match &store {
         Some(id) => {
-            let lookup = id.clone();
+            let lookup = crate::db::ConnectionId::new(id.clone());
             let name = state
                 .db
                 .read(move |db| db.get_store_connection_by_id(&lookup))

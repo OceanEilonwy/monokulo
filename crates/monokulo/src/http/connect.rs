@@ -460,7 +460,7 @@ async fn confirm_existing_store(
     target: &ConnectTarget,
 ) -> Response {
     let connection_id = match form.connection_id.as_deref().filter(|id| !id.is_empty()) {
-        Some(id) => id,
+        Some(id) => &crate::db::ConnectionId::new(id),
         None => {
             return render_confirm_form(
                 state,
@@ -482,7 +482,7 @@ async fn confirm_existing_store(
     // Ownership check, domain suggestion and site URL update in one write
     // job, so the store can't change hands in between.
     let (id, user_id, site_url) = (
-        connection_id.to_string(),
+        connection_id.clone(),
         user.id.clone(),
         form.site_url.clone(),
     );
@@ -543,7 +543,7 @@ async fn confirm_existing_store(
 /// handled correctly - never a naive string-concatenated `?`).
 async fn mint_token_and_redirect(
     state: &AppState,
-    connection_id: &str,
+    connection_id: &crate::db::ConnectionId,
     platform: &str,
     form: &ConfirmForm,
     user: &UserRow,
@@ -551,7 +551,7 @@ async fn mint_token_and_redirect(
 ) -> Response {
     let raw_token = shared::auth::generate_connect_token();
     let token_hash = raw_token.hash();
-    let (id, nonce) = (connection_id.to_string(), form.nonce.clone());
+    let (id, nonce) = (connection_id.clone(), form.nonce.clone());
     let stored = state
         .db
         .write(move |db| db.create_connect_token(&token_hash, &id, &nonce, now_unix()))
@@ -1670,7 +1670,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1680,7 +1680,11 @@ mod tests {
 
         // ...and the new site's domain joins the store's domains, waiting
         // for the merchant to verify it.
-        let domains = state.db.lock().list_store_domains(&connection_id).unwrap();
+        let domains = state
+            .db
+            .lock()
+            .list_store_domains(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .unwrap();
         assert!(
             domains
                 .iter()
@@ -1754,7 +1758,7 @@ mod tests {
         let domains: Vec<String> = state
             .db
             .lock()
-            .list_store_domains(&connection_id)
+            .list_store_domains(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .into_iter()
             .map(|d| d.domain)
@@ -1919,7 +1923,7 @@ mod tests {
         assert!(state
             .db
             .lock()
-            .list_store_connections_for_user(&user_id)
+            .list_store_connections_for_user(&shared::ids::UserId::new(user_id.to_string()))
             .unwrap()
             .is_empty());
 
@@ -1990,6 +1994,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .id
+            .into_string()
     }
 
     #[test]

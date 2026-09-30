@@ -49,9 +49,9 @@ use crate::views::store_settings::StoreSection;
 pub(super) async fn load_owned_connection(
     state: &AppState,
     user: &UserRow,
-    id: &str,
+    id: &crate::db::ConnectionId,
 ) -> Result<Option<StoreConnectionRow>, ()> {
-    let id = id.to_string();
+    let id = id.clone();
     let row = state
         .db
         .read(move |db| db.get_store_connection_by_id(&id))
@@ -111,7 +111,7 @@ pub(super) async fn order_rows(
     row: &StoreConnectionRow,
     orders: Vec<crate::engine_client::OrderView>,
 ) -> Vec<OrderRowViewModel> {
-    let ids: Vec<String> = orders.iter().map(|o| o.order_id.clone()).collect();
+    let ids: Vec<crate::db::OrderId> = orders.iter().map(|o| o.order_id.clone()).collect();
     let id = row.id.clone();
     let (fiat_metadata, details) = state
         .db
@@ -179,7 +179,7 @@ pub async fn orders_list(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Query(query): Query<OrdersListQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -266,7 +266,7 @@ pub async fn lookup_payment(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<LookupPaymentForm>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -310,7 +310,7 @@ pub async fn lookup_payment(
 pub async fn order_detail(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path((id, order_id)): Path<(String, String)>,
+    Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
     headers: HeaderMap,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -333,7 +333,7 @@ pub async fn order_detail(
     match order_detail_data(&state, &row, &sk, &order_id, payment_link).await {
         Ok(Some(order)) => {
             let view_model = OrderDetailViewModel {
-                connection_id: id.to_string(),
+                connection_id: id.clone(),
                 display_name: display_name_for(&row.site_url),
                 order: Some(order),
             };
@@ -341,7 +341,7 @@ pub async fn order_detail(
         }
         Ok(None) => {
             let view_model = OrderDetailViewModel {
-                connection_id: id.to_string(),
+                connection_id: id.clone(),
                 display_name: display_name_for(&row.site_url),
                 order: None,
             };
@@ -361,7 +361,7 @@ async fn order_detail_data(
     state: &AppState,
     row: &StoreConnectionRow,
     sk: &shared::auth::RawToken,
-    order_id: &str,
+    order_id: &crate::db::OrderId,
     payment_link: String,
 ) -> Result<Option<OrderDetailData>, ()> {
     match state.engine_client.get_order_detail(sk, order_id).await {
@@ -370,7 +370,7 @@ async fn order_detail_data(
             // Phase 3) - fiat display comes entirely from monokulo's own
             // local `order_currency_metadata`, absent for any order that predates
             // this record (falls back to a dash rather than failing the page).
-            let (id, order) = (row.id.clone(), order_id.to_string());
+            let (id, order) = (row.id.clone(), order_id.clone());
             let (metadata, pos_order) = state
                 .db
                 .read(move |db| {
@@ -492,7 +492,7 @@ async fn order_detail_data(
 pub async fn order_detail_events(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path((id, order_id)): Path<(String, String)>,
+    Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
     headers: HeaderMap,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -555,7 +555,11 @@ pub async fn order_detail_events(
 /// merchant's browser just used to reach this page) plus
 /// `X-Forwarded-Proto` if a reverse proxy set it, falling back to plain
 /// `http` for local/dev use.
-fn payment_link_for(headers: &HeaderMap, public_key: &str, order_id: &str) -> String {
+fn payment_link_for(
+    headers: &HeaderMap,
+    public_key: &str,
+    order_id: &crate::db::OrderId,
+) -> String {
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
@@ -621,7 +625,7 @@ pub async fn webhooks_create(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<CreateWebhookForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Webhooks;
@@ -714,7 +718,7 @@ pub async fn webhooks_delete(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path((id, webhook_id)): Path<(String, String)>,
+    Path((id, webhook_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Webhooks;
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -803,7 +807,7 @@ pub(super) fn health_of_tenant_lookup<T>(
 pub async fn store_detail(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
@@ -895,7 +899,7 @@ async fn render_store_detail_page(
 pub async fn store_settings(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
@@ -1126,7 +1130,7 @@ async fn order_currency_options_for(
 pub async fn create_order_page(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
@@ -1185,7 +1189,7 @@ pub struct CreateOrderForm {
 pub async fn create_order(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<CreateOrderForm>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -1413,7 +1417,7 @@ pub async fn update_confirmations_required(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<UpdateConfirmationsForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
@@ -1514,7 +1518,7 @@ pub async fn move_key_storage(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<MoveKeyStorageForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::KeyStorage;
@@ -1560,7 +1564,7 @@ pub async fn update_diagnostics(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<DiagnosticsForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Diagnostics;
@@ -1693,7 +1697,7 @@ pub async fn update_fx_providers(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::FxProvider;
@@ -1810,7 +1814,7 @@ pub async fn update_base_currency(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<UpdateBaseCurrencyForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::BaseCurrency;
@@ -1892,7 +1896,7 @@ pub async fn create_confirmation_threshold(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<CreateConfirmationThresholdForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
@@ -2064,7 +2068,7 @@ pub async fn delete_confirmation_threshold(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path((id, threshold_id)): Path<(String, String)>,
+    Path((id, threshold_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -2101,7 +2105,7 @@ pub async fn save_confirmation_thresholds(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(raw): Form<HashMap<String, String>>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
@@ -3092,7 +3096,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
         assert_eq!(row.fx_providers, vec!["haveno"]);
@@ -3137,7 +3141,7 @@ mod tests {
         let before = state
             .db
             .lock()
-            .get_store_connection_by_id(&connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
 
@@ -3172,7 +3176,9 @@ mod tests {
             let after = state
                 .db
                 .lock()
-                .get_store_connection_by_id(&connection_id)
+                .get_store_connection_by_id(&shared::ids::ConnectionId::new(
+                    connection_id.to_string(),
+                ))
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -3222,7 +3228,7 @@ mod tests {
         let haveno = state
             .db
             .lock()
-            .get_store_connection_by_id(&connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap()
             .fx_provider_settings
@@ -3277,7 +3283,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -4853,7 +4859,13 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold("old", &connection_id, "50", 20, crate::now_unix())
+            .create_confirmation_threshold(
+                "old",
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                "50",
+                20,
+                crate::now_unix(),
+            )
             .unwrap();
         // A custom-tier save must not depend on engine availability.
         state.engine_client = EngineClient::new("http://127.0.0.1:0");
@@ -4873,7 +4885,9 @@ mod tests {
         let thresholds = state
             .db
             .lock()
-            .list_confirmation_thresholds(&connection_id)
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap();
         assert_eq!(thresholds.len(), 1);
         assert_eq!(thresholds[0].unit_amount, "100");
@@ -4894,7 +4908,13 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold("keep", &connection_id, "50", 20, crate::now_unix())
+            .create_confirmation_threshold(
+                "keep",
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                "50",
+                20,
+                crate::now_unix(),
+            )
             .unwrap();
         let response = router
             .oneshot(form_post_request(
@@ -4912,7 +4932,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
@@ -4929,7 +4949,9 @@ mod tests {
         let thresholds = state
             .db
             .lock()
-            .list_confirmation_thresholds(&connection_id)
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap();
         assert_eq!(thresholds.len(), 1);
         assert_eq!(thresholds[0].id, "keep");
@@ -4960,7 +4982,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
@@ -4991,7 +5013,13 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold(existing_id, &connection_id, "50", 20, crate::now_unix())
+            .create_confirmation_threshold(
+                existing_id,
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                "50",
+                20,
+                crate::now_unix(),
+            )
             .unwrap();
         let delete_field = format!("delete_{existing_id}");
         let response = router
@@ -5012,7 +5040,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
@@ -5029,7 +5057,9 @@ mod tests {
         let thresholds = state
             .db
             .lock()
-            .list_confirmation_thresholds(&connection_id)
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap();
         assert_eq!(thresholds.len(), 1);
         assert_eq!(thresholds[0].id, existing_id);
@@ -5131,7 +5161,9 @@ mod tests {
             state
                 .db
                 .lock()
-                .count_confirmation_thresholds(&connection_id)
+                .count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                    connection_id.to_string()
+                ))
                 .unwrap(),
             1
         );
@@ -5148,7 +5180,9 @@ mod tests {
             state
                 .db
                 .lock()
-                .count_confirmation_thresholds(&connection_id)
+                .count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                    connection_id.to_string()
+                ))
                 .unwrap(),
             0,
             "every custom threshold must be gone after a base currency change"
@@ -5183,7 +5217,9 @@ mod tests {
         let threshold_id = state
             .db
             .lock()
-            .list_confirmation_thresholds(&connection_id)
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()[0]
             .id
             .clone();
@@ -5232,7 +5268,9 @@ mod tests {
             state
                 .db
                 .lock()
-                .count_confirmation_thresholds(&connection_id)
+                .count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                    connection_id.to_string()
+                ))
                 .unwrap(),
             0,
             "expected the threshold to be gone"
@@ -5316,7 +5354,9 @@ mod tests {
         let rows = state
             .db
             .lock()
-            .list_confirmation_thresholds(&connection_id)
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].unit_amount, "50");
@@ -5431,7 +5471,9 @@ mod tests {
         let doomed = state
             .db
             .lock()
-            .list_confirmation_thresholds(&connection_id)
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()[0]
             .clone();
         let response = router
@@ -5450,7 +5492,9 @@ mod tests {
         let amounts: Vec<String> = state
             .db
             .lock()
-            .list_confirmation_thresholds(&connection_id)
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .into_iter()
             .map(|t| t.unit_amount)
@@ -5551,7 +5595,9 @@ mod tests {
             state
                 .db
                 .lock()
-                .count_confirmation_thresholds(&connection_id)
+                .count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                    connection_id.to_string()
+                ))
                 .unwrap(),
             0
         );
@@ -5627,7 +5673,10 @@ mod tests {
         let metadata = state
             .db
             .lock()
-            .get_order_currency_metadata(&connection_id, &order_id)
+            .get_order_currency_metadata(
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(metadata.store_base_currency, Some("XMR".to_string()));
@@ -5741,7 +5790,10 @@ mod tests {
         let metadata = state
             .db
             .lock()
-            .get_order_currency_metadata(&connection_id, &order_id)
+            .get_order_currency_metadata(
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(metadata.confirmations_required_applied, Some(10));
@@ -5987,7 +6039,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .unwrap();
         let secret =
@@ -6425,7 +6477,7 @@ mod tests {
     fn scan_range_row_shows_a_closed_range_once_no_longer_being_watched() {
         let order = OrderDetailData {
             from_pos: false,
-            order_id: "pay_abc123".to_string(),
+            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             merchant_order_id: None,
             address: "addr".to_string(),
             currency: "XMR".to_string(),
@@ -6449,7 +6501,7 @@ mod tests {
             scan_range_display: crate::templates::display_scan_range(Some(100), Some(250), false),
         };
         let data = OrderDetailViewModel {
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             order: Some(order),
         };

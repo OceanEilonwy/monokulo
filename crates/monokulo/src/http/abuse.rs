@@ -207,7 +207,7 @@ async fn signed_in_identity(state: &AppState, headers: &HeaderMap) -> Option<Cli
     }
     super::resolve_authed_user(state, headers)
         .await
-        .map(|(user, _)| ClientIdentity::User(user.id))
+        .map(|(user, _)| ClientIdentity::User(user.id.into_string()))
 }
 
 async fn guard(
@@ -724,11 +724,17 @@ mod tests {
         let state = state(low_limits());
         {
             let db = state.db.lock();
-            db.create_user("u1", "merchant@example.com", "x", false, 0)
-                .unwrap();
+            db.create_user(
+                &shared::ids::UserId::new("u1"),
+                "merchant@example.com",
+                "x",
+                false,
+                0,
+            )
+            .unwrap();
             db.create_session(
                 &shared::auth::RawToken::presented("session-token").hash(),
-                "u1",
+                &shared::ids::UserId::new("u1"),
                 crate::now_unix(),
             )
             .unwrap();
@@ -936,19 +942,31 @@ mod tests {
         let state = state(low_limits());
         {
             let db = state.db.lock();
-            db.create_user("admin", "admin@example.com", "x", true, 0)
-                .unwrap();
-            db.create_user("merchant", "m@example.com", "x", false, 0)
-                .unwrap();
+            db.create_user(
+                &shared::ids::UserId::new("admin"),
+                "admin@example.com",
+                "x",
+                true,
+                0,
+            )
+            .unwrap();
+            db.create_user(
+                &shared::ids::UserId::new("merchant"),
+                "m@example.com",
+                "x",
+                false,
+                0,
+            )
+            .unwrap();
             db.create_session(
                 &shared::auth::RawToken::presented("admin-token").hash(),
-                "admin",
+                &shared::ids::UserId::new("admin"),
                 crate::now_unix(),
             )
             .unwrap();
             db.create_session(
                 &shared::auth::RawToken::presented("merchant-token").hash(),
-                "merchant",
+                &shared::ids::UserId::new("merchant"),
                 crate::now_unix(),
             )
             .unwrap();

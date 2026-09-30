@@ -156,10 +156,10 @@ pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<EmbedDoma
 /// The store page's embed warnings.
 pub(super) async fn store_page_warnings(
     state: &AppState,
-    connection_id: &str,
+    connection_id: &crate::db::ConnectionId,
     now: i64,
 ) -> EmbedWarnings {
-    let id = connection_id.to_string();
+    let id = connection_id.clone();
     let (dismissed, restricted, rows) = state
         .db
         .read(move |db| {
@@ -211,7 +211,7 @@ pub async fn set_embed_restriction(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<EmbedRestrictionForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
@@ -234,7 +234,7 @@ pub async fn set_embed_restriction(
         })
         .await;
     match result {
-        Ok(None) => saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
+        Ok(None) => saved(&state, row, &user, SECTION, fx, &settings_url(id.as_str())).await,
         Ok(Some(error)) => {
             render_store_settings_page(
                 &state,
@@ -271,7 +271,7 @@ pub async fn add_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<AddDomainForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
@@ -310,7 +310,9 @@ pub async fn add_domain(
         })
         .await;
     let error = match created {
-        Ok(true) => return saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
+        Ok(true) => {
+            return saved(&state, row, &user, SECTION, fx, &settings_url(id.as_str())).await
+        }
         Ok(false) => format!(
             "A store can have at most {} domains. Remove one to add another.",
             embed_domains::MAX_DOMAINS_PER_STORE
@@ -327,7 +329,7 @@ pub async fn check_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path((id, domain_id)): Path<(String, String)>,
+    Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -365,7 +367,7 @@ pub async fn check_domain(
         }
     }
     match embed_domains::check_and_record(&state.db, state.dns.as_ref(), &domain, now).await {
-        Ok(_) => saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
+        Ok(_) => saved(&state, row, &user, SECTION, fx, &settings_url(id.as_str())).await,
         Err(_) => {
             render_store_settings_page(
                 &state,
@@ -385,7 +387,7 @@ pub async fn delete_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path((id, domain_id)): Path<(String, String)>,
+    Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -412,7 +414,7 @@ pub async fn delete_domain(
         })
         .await;
     match deleted {
-        Ok(Some(true)) => saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
+        Ok(Some(true)) => saved(&state, row, &user, SECTION, fx, &settings_url(id.as_str())).await,
         Ok(Some(false)) => StatusCode::NOT_FOUND.into_response(),
         Ok(None) => {
             let error = "This is your last verified domain. Turn off \"Only my verified domains can show this checkout\" first - otherwise no website could show your checkout.";
@@ -446,7 +448,7 @@ pub async fn dismiss_embed_warning(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
@@ -460,7 +462,7 @@ pub async fn dismiss_embed_warning(
         .await;
     match dismissed {
         Ok(()) => super::fx::respond(fx, &format!("/dashboard/stores/{id}"), || {
-            crate::views::store_detail::compact_embed_warning(&id)
+            crate::views::store_detail::compact_embed_warning(id.as_str())
         }),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -674,7 +676,7 @@ mod tests {
             state
                 .db
                 .lock()
-                .list_store_domains(id)
+                .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
                 .unwrap()
                 .into_iter()
                 .map(|d| d.domain)
@@ -689,15 +691,22 @@ mod tests {
         // A store from before this existed: only its own site is imported,
         // from monokulo's own records (nothing is read from the engine).
         let site_only = vec!["store-home.example".to_string()];
-        let existing = state.db.lock().list_store_domains(&id).unwrap();
+        let existing = state
+            .db
+            .lock()
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .unwrap();
         for domain in existing {
             state
                 .db
                 .lock()
-                .delete_store_domain(&id, &domain.id)
+                .delete_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &domain.id)
                 .unwrap();
         }
-        state.db.lock().reset_store_domains_imported_for_test(&id);
+        state
+            .db
+            .lock()
+            .reset_store_domains_imported_for_test(&shared::ids::ConnectionId::new(id.to_string()));
         embed_domains::import_existing_domains(&state.db.lock());
         assert_eq!(domains(&state, &id), site_only);
 
@@ -705,11 +714,15 @@ mod tests {
         let site = state
             .db
             .lock()
-            .list_store_domains(&id)
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
-        state.db.lock().delete_store_domain(&id, &site.id).unwrap();
+        state
+            .db
+            .lock()
+            .delete_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &site.id)
+            .unwrap();
         embed_domains::import_existing_domains(&state.db.lock());
         assert!(domains(&state, &id).is_empty());
     }
@@ -732,7 +745,7 @@ mod tests {
         let domains: Vec<String> = state
             .db
             .lock()
-            .list_store_domains(&id)
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .into_iter()
             .map(|d| d.domain)
@@ -805,7 +818,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .unwrap();
         crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap()
@@ -816,7 +829,10 @@ mod tests {
         state
             .db
             .lock()
-            .get_order_currency_metadata(id, order_id)
+            .get_order_currency_metadata(
+                &shared::ids::ConnectionId::new(id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap()
             .created_with_key
@@ -876,7 +892,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .list_store_domains(&id)
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
@@ -887,7 +903,11 @@ mod tests {
         embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix())
             .await
             .unwrap();
-        state.db.lock().set_embed_restricted(&id, true).unwrap();
+        state
+            .db
+            .lock()
+            .set_embed_restricted(&shared::ids::ConnectionId::new(id.to_string()), true)
+            .unwrap();
 
         // From a fresh address (the first one is out of per-IP budget):
         // neither a key nor an Origin is refused with a clear message.
@@ -992,7 +1012,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .list_store_domains(&id)
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
@@ -1003,7 +1023,11 @@ mod tests {
         embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix())
             .await
             .unwrap();
-        state.db.lock().set_embed_restricted(&id, true).unwrap();
+        state
+            .db
+            .lock()
+            .set_embed_restricted(&shared::ids::ConnectionId::new(id.to_string()), true)
+            .unwrap();
 
         // Restricted, browser-created: a full page gets the plain "open it from the shop" page.
         let (status, html, vary) =
@@ -1135,7 +1159,11 @@ mod tests {
                 .0,
             StatusCode::FOUND
         );
-        assert!(state.db.lock().client_logging(&id).unwrap());
+        assert!(state
+            .db
+            .lock()
+            .client_logging(&shared::ids::ConnectionId::new(id.to_string()))
+            .unwrap());
         assert!(checkout_html().await.contains("/static/telemetry.js"));
         let (_, settings) = send(
             &router,
@@ -1173,7 +1201,11 @@ mod tests {
             "{fragment}"
         );
         assert!(fragment.contains("This store sends no diagnostic logs."));
-        assert!(!state.db.lock().client_logging(&id).unwrap());
+        assert!(!state
+            .db
+            .lock()
+            .client_logging(&shared::ids::ConnectionId::new(id.to_string()))
+            .unwrap());
 
         // Someone else's store: not found.
         let stranger = session_for(&router, "stranger@example.com").await;
@@ -1229,13 +1261,17 @@ mod tests {
             html.contains("Verify at least one domain before turning this on"),
             "got: {html}"
         );
-        assert!(!state.db.lock().embed_restricted(&id).unwrap());
+        assert!(!state
+            .db
+            .lock()
+            .embed_restricted(&shared::ids::ConnectionId::new(id.to_string()))
+            .unwrap());
 
         // Verify the store's own domain, then turn it on.
         let row = state
             .db
             .lock()
-            .list_store_domains(&id)
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
@@ -1359,18 +1395,31 @@ mod tests {
             !html.contains("Any website can show this store"),
             "got: {html}"
         );
-        let warnings = super::store_page_warnings(&state, &id, crate::now_unix()).await;
+        let warnings = super::store_page_warnings(
+            &state,
+            &shared::ids::ConnectionId::new(id.to_string()),
+            crate::now_unix(),
+        )
+        .await;
         assert!(!warnings.shown_nowhere);
         dns.remove("_monokulo.store-home.example");
         let later = crate::now_unix() + embed_domains::RECHECK_EVERY_SECS;
         embed_domains::recheck_due(&state.db, dns.as_ref(), later).await;
-        let failing_since = state.db.lock().list_store_domains(&id).unwrap()[0]
+        let failing_since = state
+            .db
+            .lock()
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .unwrap()[0]
             .failing_since
             .unwrap();
         assert!(
-            super::store_page_warnings(&state, &id, failing_since + GRACE_SECS)
-                .await
-                .shown_nowhere
+            super::store_page_warnings(
+                &state,
+                &shared::ids::ConnectionId::new(id.to_string()),
+                failing_since + GRACE_SECS
+            )
+            .await
+            .shown_nowhere
         );
 
         // Off again: any site.
@@ -1405,7 +1454,11 @@ mod tests {
         let store_page = format!("/dashboard/stores/{id}");
 
         // The store's own site is already on its list, waiting for DNS.
-        let suggested = state.db.lock().list_store_domains(&id).unwrap();
+        let suggested = state
+            .db
+            .lock()
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .unwrap();
         assert_eq!(
             suggested
                 .iter()
@@ -1435,7 +1488,7 @@ mod tests {
             state
                 .db
                 .lock()
-                .list_store_domains(&id)
+                .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
                 .unwrap()
                 .into_iter()
                 .find(|d| d.domain == "shop.example")
@@ -1515,8 +1568,12 @@ mod tests {
             html.contains("shop.example failed its DNS check"),
             "got: {html}"
         );
-        let warnings =
-            super::store_page_warnings(&state, &id, row.failing_since.unwrap() + GRACE_SECS).await;
+        let warnings = super::store_page_warnings(
+            &state,
+            &shared::ids::ConnectionId::new(id.to_string()),
+            row.failing_since.unwrap() + GRACE_SECS,
+        )
+        .await;
         assert!(
             warnings.failing[0].lapsed,
             "past the grace period it no longer counts"
@@ -1590,7 +1647,15 @@ mod tests {
             .0,
             StatusCode::FOUND
         );
-        assert_eq!(state.db.lock().list_store_domains(&id).unwrap().len(), 1);
+        assert_eq!(
+            state
+                .db
+                .lock()
+                .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// The merchant's DNS provider is having an outage: Verify says the
@@ -1610,7 +1675,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .list_store_domains(&id)
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
@@ -1643,7 +1708,11 @@ mod tests {
         embed_domains::check_and_record(&state.db, dns.as_ref(), &row, now)
             .await
             .unwrap();
-        state.db.lock().set_embed_restricted(&id, true).unwrap();
+        state
+            .db
+            .lock()
+            .set_embed_restricted(&shared::ids::ConnectionId::new(id.to_string()), true)
+            .unwrap();
 
         // A day later the re-check lands in an outage.
         dns.fail(name, "SERVFAIL");
@@ -1651,7 +1720,7 @@ mod tests {
         let failing_since = state
             .db
             .lock()
-            .get_store_domain(&id, &row.id)
+            .get_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &row.id)
             .unwrap()
             .unwrap()
             .failing_since
@@ -1661,8 +1730,12 @@ mod tests {
             html.contains("store-home.example failed its DNS check"),
             "got: {html}"
         );
-        let warnings =
-            super::store_page_warnings(&state, &id, failing_since + GRACE_SECS - 60).await;
+        let warnings = super::store_page_warnings(
+            &state,
+            &shared::ids::ConnectionId::new(id.to_string()),
+            failing_since + GRACE_SECS - 60,
+        )
+        .await;
         assert!(
             !warnings.failing[0].lapsed,
             "within the grace period the domain still counts"
@@ -1684,7 +1757,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_domain(&id, &row.id)
+            .get_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &row.id)
             .unwrap()
             .unwrap();
         assert!(row.failing_since.is_none());

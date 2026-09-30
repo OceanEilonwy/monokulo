@@ -328,11 +328,17 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
         .await
         .expect("creating the test order");
     let db = Db::open_in_memory().unwrap();
-    db.create_user("u1", "tor@example.com", "x", false, 0)
-        .unwrap();
+    db.create_user(
+        &shared::ids::UserId::new("u1"),
+        "tor@example.com",
+        "x",
+        false,
+        0,
+    )
+    .unwrap();
     db.create_store_connection(
-        "store-1",
-        "u1",
+        &shared::ids::ConnectionId::new("store-1"),
+        &shared::ids::UserId::new("u1"),
         "custom",
         "https://shop.example",
         &tenant.public_key,
@@ -373,7 +379,7 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
         addr,
         Store {
             pk: tenant.public_key,
-            order_id: order.order_id,
+            order_id: order.order_id.into_string(),
         },
     )
 }

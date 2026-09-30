@@ -8,6 +8,7 @@
 //! reads, one writing connection for writes, each on its own thread.
 
 use parking_lot::Mutex;
+pub use shared::ids::{ConnectionId, OrderId, UserId};
 use shared::sqlite::{Pool, PoolError};
 use std::sync::Arc;
 
@@ -129,7 +130,7 @@ pub struct Db {
 
 #[derive(Debug, Clone)]
 pub struct PosOrderRow {
-    pub order_id: String,
+    pub order_id: OrderId,
     pub backgrounded: bool,
     pub cancelled_at: Option<i64>,
     pub created_at: i64,
@@ -148,8 +149,8 @@ pub struct OrderListingDetail {
 impl Db {
     pub fn insert_pos_order(
         &self,
-        connection_id: &str,
-        order_id: &str,
+        connection_id: &ConnectionId,
+        order_id: &OrderId,
         request_key: Option<&str>,
         reference: Option<&str>,
         created_at: i64,
@@ -163,9 +164,9 @@ impl Db {
 
     pub fn pos_order_by_request_key(
         &self,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         request_key: &str,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<OrderId>> {
         self.conn
             .query_row(
                 "SELECT order_id FROM pos_orders WHERE connection_id = ?1 AND request_key = ?2",
@@ -178,8 +179,8 @@ impl Db {
 
     pub fn get_pos_order(
         &self,
-        connection_id: &str,
-        order_id: &str,
+        connection_id: &ConnectionId,
+        order_id: &OrderId,
     ) -> Result<Option<PosOrderRow>> {
         self.conn.query_row(
             "SELECT order_id, backgrounded, cancelled_at_utc, created_at_utc FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2",
@@ -191,7 +192,7 @@ impl Db {
 
     pub fn list_pos_orders(
         &self,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         limit: i64,
         offset: i64,
         search: Option<&str>,
@@ -213,15 +214,19 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    pub fn count_pos_orders(&self, connection_id: &str, search: Option<&str>) -> Result<i64> {
+    pub fn count_pos_orders(
+        &self,
+        connection_id: &ConnectionId,
+        search: Option<&str>,
+    ) -> Result<i64> {
         self.conn.query_row("SELECT count(*) FROM pos_orders WHERE connection_id = ?1 AND (?2 IS NULL OR instr(lower(order_id), lower(?2)) > 0 OR instr(lower(coalesce(reference, '')), lower(?2)) > 0)", params![connection_id, search], |row| row.get(0)).map_err(DbError::from)
     }
 
     /// The POS rows among `order_ids`, in no particular order.
     pub fn get_pos_orders(
         &self,
-        connection_id: &str,
-        order_ids: &[String],
+        connection_id: &ConnectionId,
+        order_ids: &[OrderId],
     ) -> Result<Vec<PosOrderRow>> {
         let mut rows = Vec::with_capacity(order_ids.len());
         let mut stmt = self.conn.prepare(
@@ -248,8 +253,8 @@ impl Db {
     /// Records where an order was created (see migration 0023).
     pub fn set_order_source(
         &self,
-        connection_id: &str,
-        order_id: &str,
+        connection_id: &ConnectionId,
+        order_id: &OrderId,
         source: &str,
     ) -> Result<()> {
         self.conn.execute(
@@ -263,9 +268,9 @@ impl Db {
     /// anything about; orders it knows nothing about are left out.
     pub fn order_listing_details(
         &self,
-        connection_id: &str,
-        order_ids: &[String],
-    ) -> Result<std::collections::HashMap<String, OrderListingDetail>> {
+        connection_id: &ConnectionId,
+        order_ids: &[OrderId],
+    ) -> Result<std::collections::HashMap<OrderId, OrderListingDetail>> {
         let mut details = std::collections::HashMap::new();
         let mut source = self.conn.prepare(
             "SELECT source FROM order_currency_metadata WHERE connection_id = ?1 AND order_id = ?2",
@@ -296,14 +301,18 @@ impl Db {
         Ok(details)
     }
 
-    pub fn background_pos_order(&self, connection_id: &str, order_id: &str) -> Result<bool> {
+    pub fn background_pos_order(
+        &self,
+        connection_id: &ConnectionId,
+        order_id: &OrderId,
+    ) -> Result<bool> {
         Ok(self.conn.execute("UPDATE pos_orders SET backgrounded = 1 WHERE connection_id = ?1 AND order_id = ?2 AND cancelled_at_utc IS NULL", params![connection_id, order_id])? > 0)
     }
 
     pub fn cancel_pos_order(
         &self,
-        connection_id: &str,
-        order_id: &str,
+        connection_id: &ConnectionId,
+        order_id: &OrderId,
         cancelled_at: i64,
     ) -> Result<bool> {
         Ok(self.conn.execute("UPDATE pos_orders SET cancelled_at_utc = ?3, backgrounded = 1 WHERE connection_id = ?1 AND order_id = ?2 AND cancelled_at_utc IS NULL", params![connection_id, order_id, cancelled_at])? > 0)
@@ -430,7 +439,7 @@ impl DbError {
 type Result<T> = std::result::Result<T, DbError>;
 
 pub struct UserRow {
-    pub id: String,
+    pub id: UserId,
     pub email: String,
     pub password_hash: String,
     pub created_at: i64,
@@ -502,7 +511,7 @@ impl Theme {
 /// is never the raw token a client actually presents.
 pub struct SessionRow {
     pub token_hash: shared::auth::TokenHash,
-    pub user_id: String,
+    pub user_id: UserId,
     pub created_at: i64,
 }
 
@@ -516,7 +525,7 @@ pub struct SessionRow {
 #[derive(Debug, Clone)]
 pub struct StoreDomainRow {
     pub id: String,
-    pub connection_id: String,
+    pub connection_id: ConnectionId,
     pub domain: String,
     pub token: String,
     pub created_at: i64,
@@ -544,8 +553,8 @@ fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomai
 }
 
 pub struct StoreConnectionRow {
-    pub id: String,
-    pub user_id: String,
+    pub id: ConnectionId,
+    pub user_id: UserId,
     pub platform: String,
     pub site_url: String,
     pub tenant_public_key: String,
@@ -582,8 +591,8 @@ pub struct StoreConnectionRow {
 /// comment on why (and the accepted durability trade-off that implies,
 /// `docs/fx_refactor.md` decision 4).
 pub struct OrderCurrencyMetadataRow {
-    pub connection_id: String,
-    pub order_id: String,
+    pub connection_id: ConnectionId,
+    pub order_id: OrderId,
     pub currency: String,
     pub amount: String,
     pub piconero_per_unit: u64,
@@ -629,7 +638,7 @@ pub struct CurrencyRow {
 #[derive(Debug, Clone)]
 pub struct ConfirmationThresholdRow {
     pub id: String,
-    pub connection_id: String,
+    pub connection_id: ConnectionId,
     pub unit_amount: String,
     pub confirmations_required: u64,
     pub created_at: i64,
@@ -713,7 +722,7 @@ impl Db {
     /// call site (`http::setup`) - every ordinary signup passes `false`.
     pub fn create_user(
         &self,
-        id: &str,
+        id: &UserId,
         email: &str,
         password_hash: &str,
         is_admin: bool,
@@ -727,7 +736,7 @@ impl Db {
     }
 
     /// `POST /dashboard/timezone`: a zone name, or `None` for automatic.
-    pub fn update_user_timezone(&self, id: &str, timezone: Option<&str>) -> Result<()> {
+    pub fn update_user_timezone(&self, id: &UserId, timezone: Option<&str>) -> Result<()> {
         self.conn.execute(
             "UPDATE users SET timezone = ?2 WHERE id = ?1",
             params![id, timezone],
@@ -738,7 +747,7 @@ impl Db {
     /// `POST /dashboard/theme` - the nav's own no-JS toggle form. Same
     /// "update a single column, keyed by id" shape as
     /// `update_store_connection_fx_providers`.
-    pub fn update_user_theme(&self, id: &str, theme: Theme) -> Result<()> {
+    pub fn update_user_theme(&self, id: &UserId, theme: Theme) -> Result<()> {
         self.conn.execute(
             "UPDATE users SET theme = ?2 WHERE id = ?1",
             params![id, theme.as_str()],
@@ -773,7 +782,7 @@ impl Db {
 
     /// Direct row lookup by id - used to resolve a session's `user_id` back
     /// to a full user row (see `AuthedUser`'s extractor in `http/mod.rs`).
-    pub fn get_user_by_id(&self, id: &str) -> Result<Option<UserRow>> {
+    pub fn get_user_by_id(&self, id: &UserId) -> Result<Option<UserRow>> {
         self.conn
             .query_row(
                 "SELECT id, email, password_hash, created_at_utc, is_admin, theme, timezone FROM users WHERE id = ?1",
@@ -887,7 +896,7 @@ impl Db {
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_test_admin(&self) {
         self.create_user(
-            "test-admin",
+            &UserId::new("test-admin"),
             TEST_ADMIN_EMAIL,
             TEST_ADMIN_PASSWORD_HASH,
             true,
@@ -906,7 +915,7 @@ impl Db {
     pub fn create_session(
         &self,
         token_hash: &shared::auth::TokenHash,
-        user_id: &str,
+        user_id: &UserId,
         created_at: i64,
     ) -> Result<()> {
         self.conn.execute(
@@ -960,8 +969,8 @@ impl Db {
     #[allow(clippy::too_many_arguments)]
     pub fn create_store_connection(
         &self,
-        id: &str,
-        user_id: &str,
+        id: &ConnectionId,
+        user_id: &UserId,
         platform: &str,
         site_url: &str,
         tenant_public_key: &str,
@@ -1006,7 +1015,10 @@ impl Db {
     /// Direct row lookup by id - used by tests to confirm what actually
     /// landed in `store_connections` after `POST /connections` (e.g. that
     /// `tenant_secret_token_encrypted` really holds a real `sk_...` value).
-    pub fn get_store_connection_by_id(&self, id: &str) -> Result<Option<StoreConnectionRow>> {
+    pub fn get_store_connection_by_id(
+        &self,
+        id: &ConnectionId,
+    ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
                 "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
@@ -1044,7 +1056,7 @@ impl Db {
     pub fn update_store_connection_fx(
         &self,
         _proof: crate::confirmation_thresholds::PolicyProof,
-        id: &str,
+        id: &ConnectionId,
         fx_providers: &[String],
         settings: &FxProviderSettings,
     ) -> Result<()> {
@@ -1064,7 +1076,7 @@ impl Db {
     /// growing a field nothing else needs; see `http/home.rs::display_name`.
     pub fn list_store_connections_for_user(
         &self,
-        user_id: &str,
+        user_id: &UserId,
     ) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
@@ -1110,8 +1122,8 @@ impl Db {
     #[allow(clippy::too_many_arguments)]
     pub fn create_order_currency_metadata(
         &self,
-        connection_id: &str,
-        order_id: &str,
+        connection_id: &ConnectionId,
+        order_id: &OrderId,
         currency: &str,
         amount: &str,
         piconero_per_unit: u64,
@@ -1152,8 +1164,8 @@ impl Db {
     /// against the engine's own API rather than through monokulo).
     pub fn get_order_currency_metadata(
         &self,
-        connection_id: &str,
-        order_id: &str,
+        connection_id: &ConnectionId,
+        order_id: &OrderId,
     ) -> Result<Option<OrderCurrencyMetadataRow>> {
         self.conn
             .query_row(
@@ -1192,8 +1204,8 @@ impl Db {
     /// `Vec` they'd have to re-index themselves.
     pub fn list_order_currency_metadata_for_connection(
         &self,
-        connection_id: &str,
-    ) -> Result<std::collections::HashMap<String, OrderCurrencyMetadataRow>> {
+        connection_id: &ConnectionId,
+    ) -> Result<std::collections::HashMap<OrderId, OrderCurrencyMetadataRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
                     store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key
@@ -1233,7 +1245,7 @@ impl Db {
     pub fn create_connect_token(
         &self,
         token_hash: &shared::auth::TokenHash,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         nonce: &str,
         created_at: i64,
     ) -> Result<()> {
@@ -1266,7 +1278,7 @@ impl Db {
         token_hash: &shared::auth::TokenHash,
         now: i64,
         ttl_seconds: i64,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<ConnectionId>> {
         let cutoff = now - ttl_seconds;
         let affected = self.conn.execute(
             "UPDATE connect_tokens SET consumed_at_utc = ?1 WHERE token_hash = ?2 AND consumed_at_utc IS NULL AND created_at_utc >= ?3",
@@ -1330,7 +1342,11 @@ impl Db {
     /// connected from rather than only ever showing wherever it was first
     /// created. Does not touch `platform` - a store's platform still names
     /// how it was first connected, not necessarily its most recent one.
-    pub fn update_store_connection_site_url(&self, id: &str, site_url: &str) -> Result<()> {
+    pub fn update_store_connection_site_url(
+        &self,
+        id: &ConnectionId,
+        site_url: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE store_connections SET site_url = ?2 WHERE id = ?1",
             params![id, site_url],
@@ -1367,7 +1383,7 @@ impl Db {
     pub fn update_store_connection_base_currency(
         &self,
         _proof: crate::confirmation_thresholds::PolicyProof,
-        id: &str,
+        id: &ConnectionId,
         base_currency: &str,
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
@@ -1384,7 +1400,7 @@ impl Db {
     }
 
     /// Every verified-embed domain of `connection_id`, alphabetically.
-    pub fn list_store_domains(&self, connection_id: &str) -> Result<Vec<StoreDomainRow>> {
+    pub fn list_store_domains(&self, connection_id: &ConnectionId) -> Result<Vec<StoreDomainRow>> {
         let mut stmt = self
             .conn
             .prepare(&format!("SELECT {STORE_DOMAIN_COLUMNS} FROM store_domains WHERE connection_id = ?1 ORDER BY domain"))?;
@@ -1396,7 +1412,7 @@ impl Db {
     /// One domain, only if it belongs to `connection_id`.
     pub fn get_store_domain(
         &self,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         id: &str,
     ) -> Result<Option<StoreDomainRow>> {
         self.conn
@@ -1416,7 +1432,7 @@ impl Db {
     pub fn create_store_domain(
         &self,
         id: &str,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         domain: &str,
         token: &str,
         created_at: i64,
@@ -1432,7 +1448,7 @@ impl Db {
     }
 
     /// The Logs page searches `user_id` saved, by name.
-    pub fn list_saved_log_searches(&self, user_id: &str) -> Result<Vec<SavedLogSearch>> {
+    pub fn list_saved_log_searches(&self, user_id: &UserId) -> Result<Vec<SavedLogSearch>> {
         let mut statement = self
             .conn
             .prepare("SELECT id, name, query_string FROM saved_log_searches WHERE user_id = ?1 ORDER BY name, created_at_utc")?;
@@ -1453,7 +1469,7 @@ impl Db {
     pub fn create_saved_log_search(
         &self,
         id: &str,
-        user_id: &str,
+        user_id: &UserId,
         name: &str,
         query_string: &str,
         now: i64,
@@ -1470,7 +1486,7 @@ impl Db {
 
     /// Removes one of `user_id`'s saved searches; `false` when there's no
     /// such search of theirs.
-    pub fn delete_saved_log_search(&self, user_id: &str, id: &str) -> Result<bool> {
+    pub fn delete_saved_log_search(&self, user_id: &UserId, id: &str) -> Result<bool> {
         let changed = self.conn.execute(
             "DELETE FROM saved_log_searches WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
@@ -1479,7 +1495,7 @@ impl Db {
     }
 
     /// Removes a domain; `false` when `connection_id` has no such domain.
-    pub fn delete_store_domain(&self, connection_id: &str, id: &str) -> Result<bool> {
+    pub fn delete_store_domain(&self, connection_id: &ConnectionId, id: &str) -> Result<bool> {
         let changed = self.conn.execute(
             "DELETE FROM store_domains WHERE id = ?1 AND connection_id = ?2",
             params![id, connection_id],
@@ -1543,7 +1559,7 @@ impl Db {
     /// behalf (their site's own domain), where either is fine to skip.
     pub fn suggest_store_domain(
         &self,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         domain: &str,
         created_at: i64,
         max: usize,
@@ -1571,7 +1587,7 @@ impl Db {
         &self,
         public_key: &str,
     ) -> Result<Option<(bool, Vec<StoreDomainRow>)>> {
-        let store: Option<(String, i64)> = self
+        let store: Option<(ConnectionId, i64)> = self
             .conn
             .query_row(
                 "SELECT id, embed_restricted FROM store_connections WHERE tenant_public_key = ?1",
@@ -1588,7 +1604,7 @@ impl Db {
         )))
     }
 
-    pub fn embed_restricted(&self, connection_id: &str) -> Result<bool> {
+    pub fn embed_restricted(&self, connection_id: &ConnectionId) -> Result<bool> {
         self.conn
             .query_row(
                 "SELECT embed_restricted FROM store_connections WHERE id = ?1",
@@ -1599,7 +1615,11 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    pub fn set_embed_restricted(&self, connection_id: &str, restricted: bool) -> Result<()> {
+    pub fn set_embed_restricted(
+        &self,
+        connection_id: &ConnectionId,
+        restricted: bool,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE store_connections SET embed_restricted = ?2 WHERE id = ?1",
             params![connection_id, restricted as i64],
@@ -1610,7 +1630,7 @@ impl Db {
     /// Whether the store has opted in to client logs (migration
     /// `0025_store_client_logging.sql`). `false` for a store that doesn't
     /// exist.
-    pub fn client_logging(&self, connection_id: &str) -> Result<bool> {
+    pub fn client_logging(&self, connection_id: &ConnectionId) -> Result<bool> {
         self.conn
             .query_row(
                 "SELECT client_logging FROM store_connections WHERE id = ?1",
@@ -1635,7 +1655,7 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    pub fn set_client_logging(&self, connection_id: &str, on: bool) -> Result<()> {
+    pub fn set_client_logging(&self, connection_id: &ConnectionId, on: bool) -> Result<()> {
         self.conn.execute(
             "UPDATE store_connections SET client_logging = ?2 WHERE id = ?1",
             params![connection_id, on as i64],
@@ -1670,7 +1690,7 @@ impl Db {
     }
 
     #[cfg(test)]
-    pub fn reset_store_domains_imported_for_test(&self, connection_id: &str) {
+    pub fn reset_store_domains_imported_for_test(&self, connection_id: &ConnectionId) {
         self.conn
             .execute(
                 "UPDATE store_connections SET domains_imported = 0 WHERE id = ?1",
@@ -1685,7 +1705,7 @@ impl Db {
             .unwrap();
     }
 
-    pub fn mark_store_domains_imported(&self, connection_id: &str) -> Result<()> {
+    pub fn mark_store_domains_imported(&self, connection_id: &ConnectionId) -> Result<()> {
         self.conn.execute(
             "UPDATE store_connections SET domains_imported = 1 WHERE id = ?1",
             params![connection_id],
@@ -1695,7 +1715,7 @@ impl Db {
 
     /// Whether the merchant has shrunk the store page's "any website can
     /// show this checkout" warning to one line.
-    pub fn embed_warning_dismissed(&self, connection_id: &str) -> Result<bool> {
+    pub fn embed_warning_dismissed(&self, connection_id: &ConnectionId) -> Result<bool> {
         self.conn
             .query_row(
                 "SELECT embed_warning_dismissed FROM store_connections WHERE id = ?1",
@@ -1706,7 +1726,7 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    pub fn dismiss_embed_warning(&self, connection_id: &str) -> Result<()> {
+    pub fn dismiss_embed_warning(&self, connection_id: &ConnectionId) -> Result<()> {
         self.conn.execute(
             "UPDATE store_connections SET embed_warning_dismissed = 1 WHERE id = ?1",
             params![connection_id],
@@ -1715,7 +1735,7 @@ impl Db {
     }
 
     /// How many custom thresholds `connection_id` already has.
-    pub fn count_confirmation_thresholds(&self, connection_id: &str) -> Result<i64> {
+    pub fn count_confirmation_thresholds(&self, connection_id: &ConnectionId) -> Result<i64> {
         self.conn
             .query_row(
                 "SELECT COUNT(*) FROM confirmation_thresholds WHERE connection_id = ?1",
@@ -1732,7 +1752,7 @@ impl Db {
     /// sorting avoids float ties at neighboring piconero-sized boundaries.
     pub fn list_confirmation_thresholds(
         &self,
-        connection_id: &str,
+        connection_id: &ConnectionId,
     ) -> Result<Vec<ConfirmationThresholdRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, connection_id, unit_amount, confirmations_required, created_at_utc
@@ -1771,7 +1791,7 @@ impl Db {
     pub fn create_confirmation_threshold(
         &self,
         id: &str,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         unit_amount: &str,
         confirmations_required: u64,
         created_at: i64,
@@ -1790,7 +1810,7 @@ impl Db {
         &self,
         _proof: crate::confirmation_thresholds::PolicyProof,
         id: &str,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         unit_amount: &str,
         confirmations_required: u64,
         created_at: i64,
@@ -1809,7 +1829,7 @@ impl Db {
     pub fn replace_confirmation_thresholds(
         &self,
         _proof: crate::confirmation_thresholds::PolicyProof,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         deleted_ids: &[String],
         new: Option<(&str, &str, u64, i64)>,
     ) -> Result<bool> {
@@ -1845,7 +1865,7 @@ impl Db {
     pub fn delete_confirmation_threshold(
         &self,
         _proof: crate::confirmation_thresholds::PolicyProof,
-        connection_id: &str,
+        connection_id: &ConnectionId,
         id: &str,
     ) -> Result<bool> {
         let changed = self.conn.execute(
@@ -2024,7 +2044,7 @@ impl Db {
     pub fn redeem_invite_and_create_user(
         &self,
         token_hash: &shared::auth::TokenHash,
-        user_id: &str,
+        user_id: &UserId,
         email: &str,
         password_hash: &str,
         now: i64,
@@ -2094,7 +2114,15 @@ mod tests {
         assert!(matches!(refused, Err(DbError::Sqlite(_))), "{refused:?}");
 
         let orphan = db
-            .write(|db| db.insert_pos_order("no-such-store", "o1", None, None, 1))
+            .write(|db| {
+                db.insert_pos_order(
+                    &shared::ids::ConnectionId::new("no-such-store"),
+                    &shared::ids::OrderId::new("o1"),
+                    None,
+                    None,
+                    1,
+                )
+            })
             .await;
         assert!(matches!(orphan, Err(DbError::Sqlite(_))), "{orphan:?}");
     }
@@ -2127,12 +2155,18 @@ mod tests {
     #[test]
     fn pos_orders_are_store_scoped_persist_background_and_cancel_state() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("merchant", "merchant@example.com", "hash", false, 1)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("merchant"),
+            "merchant@example.com",
+            "hash",
+            false,
+            1,
+        )
+        .unwrap();
         for (id, pk) in [("store-a", "pk_a"), ("store-b", "pk_b")] {
             db.create_store_connection(
-                id,
-                "merchant",
+                &shared::ids::ConnectionId::new(id.to_string()),
+                &shared::ids::UserId::new("merchant"),
                 "custom",
                 "https://example.com",
                 pk,
@@ -2143,73 +2177,160 @@ mod tests {
             )
             .unwrap();
         }
-        db.insert_pos_order("store-a", "order-1", Some("key-1"), Some("Mia coffee"), 10)
-            .unwrap();
-        assert!(db.get_pos_order("store-b", "order-1").unwrap().is_none());
+        db.insert_pos_order(
+            &shared::ids::ConnectionId::new("store-a"),
+            &shared::ids::OrderId::new("order-1"),
+            Some("key-1"),
+            Some("Mia coffee"),
+            10,
+        )
+        .unwrap();
+        assert!(db
+            .get_pos_order(
+                &shared::ids::ConnectionId::new("store-b"),
+                &shared::ids::OrderId::new("order-1")
+            )
+            .unwrap()
+            .is_none());
         assert_eq!(
-            db.pos_order_by_request_key("store-a", "key-1")
-                .unwrap()
-                .as_deref(),
-            Some("order-1")
+            db.pos_order_by_request_key(&shared::ids::ConnectionId::new("store-a"), "key-1")
+                .unwrap(),
+            Some(shared::ids::OrderId::new("order-1"))
         );
         assert!(db
-            .pos_order_by_request_key("store-b", "key-1")
+            .pos_order_by_request_key(&shared::ids::ConnectionId::new("store-b"), "key-1")
             .unwrap()
             .is_none());
         assert!(db
-            .insert_pos_order("store-a", "order-2", Some("key-1"), None, 11)
+            .insert_pos_order(
+                &shared::ids::ConnectionId::new("store-a"),
+                &shared::ids::OrderId::new("order-2"),
+                Some("key-1"),
+                None,
+                11
+            )
             .is_err());
-        assert!(!db.background_pos_order("store-b", "order-1").unwrap());
-        assert!(db.background_pos_order("store-a", "order-1").unwrap());
+        assert!(!db
+            .background_pos_order(
+                &shared::ids::ConnectionId::new("store-b"),
+                &shared::ids::OrderId::new("order-1")
+            )
+            .unwrap());
+        assert!(db
+            .background_pos_order(
+                &shared::ids::ConnectionId::new("store-a"),
+                &shared::ids::OrderId::new("order-1")
+            )
+            .unwrap());
         assert!(
-            db.get_pos_order("store-a", "order-1")
-                .unwrap()
-                .unwrap()
-                .backgrounded
+            db.get_pos_order(
+                &shared::ids::ConnectionId::new("store-a"),
+                &shared::ids::OrderId::new("order-1")
+            )
+            .unwrap()
+            .unwrap()
+            .backgrounded
         );
-        assert!(db.cancel_pos_order("store-a", "order-1", 20).unwrap());
+        assert!(db
+            .cancel_pos_order(
+                &shared::ids::ConnectionId::new("store-a"),
+                &shared::ids::OrderId::new("order-1"),
+                20
+            )
+            .unwrap());
         assert_eq!(
-            db.get_pos_order("store-a", "order-1")
-                .unwrap()
-                .unwrap()
-                .cancelled_at,
+            db.get_pos_order(
+                &shared::ids::ConnectionId::new("store-a"),
+                &shared::ids::OrderId::new("order-1")
+            )
+            .unwrap()
+            .unwrap()
+            .cancelled_at,
             Some(20)
         );
-        assert!(!db.cancel_pos_order("store-a", "order-1", 21).unwrap());
-        assert_eq!(db.list_pos_orders("store-a", 1, 0, None).unwrap().len(), 1);
-        assert_eq!(db.count_pos_orders("store-b", None).unwrap(), 0);
-        for i in 0..45 {
-            db.insert_pos_order("store-a", &format!("order-{i:02}"), None, None, 100 + i)
-                .unwrap();
-        }
-        assert_eq!(db.count_pos_orders("store-a", None).unwrap(), 46);
+        assert!(!db
+            .cancel_pos_order(
+                &shared::ids::ConnectionId::new("store-a"),
+                &shared::ids::OrderId::new("order-1"),
+                21
+            )
+            .unwrap());
         assert_eq!(
-            db.list_pos_orders("store-a", 40, 0, None).unwrap().len(),
+            db.list_pos_orders(&shared::ids::ConnectionId::new("store-a"), 1, 0, None)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            db.count_pos_orders(&shared::ids::ConnectionId::new("store-b"), None)
+                .unwrap(),
+            0
+        );
+        for i in 0..45 {
+            db.insert_pos_order(
+                &shared::ids::ConnectionId::new("store-a"),
+                &shared::ids::OrderId::new(format!("order-{i:02}")),
+                None,
+                None,
+                100 + i,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            db.count_pos_orders(&shared::ids::ConnectionId::new("store-a"), None)
+                .unwrap(),
+            46
+        );
+        assert_eq!(
+            db.list_pos_orders(&shared::ids::ConnectionId::new("store-a"), 40, 0, None)
+                .unwrap()
+                .len(),
             40
         );
         assert_eq!(
-            db.list_pos_orders("store-a", 40, 40, None).unwrap().len(),
+            db.list_pos_orders(&shared::ids::ConnectionId::new("store-a"), 40, 40, None)
+                .unwrap()
+                .len(),
             6
         );
         assert_eq!(
-            db.list_pos_orders("store-a", 40, 0, None).unwrap()[0].order_id,
-            "order-44"
+            db.list_pos_orders(&shared::ids::ConnectionId::new("store-a"), 40, 0, None)
+                .unwrap()[0]
+                .order_id,
+            shared::ids::OrderId::new("order-44")
         );
-        assert_eq!(db.count_pos_orders("store-a", Some("mia")).unwrap(), 1);
         assert_eq!(
-            db.list_pos_orders("store-a", 40, 0, Some("MIA")).unwrap()[0].order_id,
-            "order-1"
+            db.count_pos_orders(&shared::ids::ConnectionId::new("store-a"), Some("mia"))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.list_pos_orders(
+                &shared::ids::ConnectionId::new("store-a"),
+                40,
+                0,
+                Some("MIA")
+            )
+            .unwrap()[0]
+                .order_id,
+            shared::ids::OrderId::new("order-1")
         );
     }
 
     #[test]
     fn creating_a_user_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("id-1", "a@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("id-1"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
 
         let row = db.get_user_by_email("a@example.com").unwrap().unwrap();
-        assert_eq!(row.id, "id-1");
+        assert_eq!(row.id, shared::ids::UserId::new("id-1"));
         assert_eq!(row.email, "a@example.com");
         assert_eq!(row.password_hash, "hash");
         assert_eq!(row.created_at, 1000);
@@ -2222,12 +2343,21 @@ mod tests {
     #[test]
     fn creating_a_user_with_is_admin_true_persists_and_round_trips_the_flag() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("admin-1", "admin@example.com", "hash", true, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("admin-1"),
+            "admin@example.com",
+            "hash",
+            true,
+            1000,
+        )
+        .unwrap();
 
         let by_email = db.get_user_by_email("admin@example.com").unwrap().unwrap();
         assert!(by_email.is_admin);
-        let by_id = db.get_user_by_id("admin-1").unwrap().unwrap();
+        let by_id = db
+            .get_user_by_id(&shared::ids::UserId::new("admin-1"))
+            .unwrap()
+            .unwrap();
         assert!(by_id.is_admin);
     }
 
@@ -2287,11 +2417,23 @@ mod tests {
     #[test]
     fn a_duplicate_email_is_rejected_as_a_unique_violation() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("id-1", "a@example.com", "hash1", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("id-1"),
+            "a@example.com",
+            "hash1",
+            false,
+            1000,
+        )
+        .unwrap();
 
         let err = db
-            .create_user("id-2", "a@example.com", "hash2", false, 2000)
+            .create_user(
+                &shared::ids::UserId::new("id-2"),
+                "a@example.com",
+                "hash2",
+                false,
+                2000,
+            )
             .unwrap_err();
         assert!(
             err.is_unique_violation(),
@@ -2311,14 +2453,24 @@ mod tests {
     #[test]
     fn a_created_session_can_be_found_by_its_token_hash_and_resolves_to_its_user() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", false, 1000)
-            .unwrap();
-        db.create_session(&th("hashed-token"), "user-1", 2000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-1"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
+        db.create_session(
+            &th("hashed-token"),
+            &shared::ids::UserId::new("user-1"),
+            2000,
+        )
+        .unwrap();
 
         let session = db.find_session(&th("hashed-token")).unwrap().unwrap();
         assert_eq!(session.token_hash, th("hashed-token"));
-        assert_eq!(session.user_id, "user-1");
+        assert_eq!(session.user_id, shared::ids::UserId::new("user-1"));
         assert_eq!(session.created_at, 2000);
 
         let user = db.get_user_by_id(&session.user_id).unwrap().unwrap();
@@ -2334,10 +2486,20 @@ mod tests {
     #[test]
     fn deleting_a_session_removes_it_and_reports_whether_a_row_was_actually_deleted() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", false, 1000)
-            .unwrap();
-        db.create_session(&th("hashed-token"), "user-1", 2000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-1"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
+        db.create_session(
+            &th("hashed-token"),
+            &shared::ids::UserId::new("user-1"),
+            2000,
+        )
+        .unwrap();
 
         assert!(db.delete_session(&th("hashed-token")).unwrap());
         assert!(db.find_session(&th("hashed-token")).unwrap().is_none());
@@ -2347,11 +2509,17 @@ mod tests {
     #[test]
     fn creating_a_store_connection_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-1"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-1",
-            "user-1",
+            &shared::ids::ConnectionId::new("conn-1"),
+            &shared::ids::UserId::new("user-1"),
             "woocommerce",
             "https://shop.example.com",
             "pk_abc",
@@ -2362,8 +2530,11 @@ mod tests {
         )
         .unwrap();
 
-        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
-        assert_eq!(row.user_id, "user-1");
+        let row = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.user_id, shared::ids::UserId::new("user-1"));
         assert_eq!(row.platform, "woocommerce");
         assert_eq!(row.site_url, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, "pk_abc");
@@ -2380,11 +2551,17 @@ mod tests {
     #[test]
     fn updating_a_store_connections_fx_providers_only_touches_that_field() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-1"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-1",
-            "user-1",
+            &shared::ids::ConnectionId::new("conn-1"),
+            &shared::ids::UserId::new("user-1"),
             "woocommerce",
             "https://shop.example.com",
             "pk_abc",
@@ -2398,13 +2575,16 @@ mod tests {
         let order = vec!["coinmarketcap".to_string(), "coingecko".to_string()];
         db.update_store_connection_fx(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            "conn-1",
+            &shared::ids::ConnectionId::new("conn-1"),
             &order,
             &FxProviderSettings::default(),
         )
         .unwrap();
 
-        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        let row = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             row.fx_providers, order,
             "the saved order is the order read back"
@@ -2416,11 +2596,17 @@ mod tests {
 
     fn db_with_store() -> Db {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-1"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-1",
-            "user-1",
+            &shared::ids::ConnectionId::new("conn-1"),
+            &shared::ids::UserId::new("user-1"),
             "woocommerce",
             "https://shop.example.com",
             "pk_abc",
@@ -2436,7 +2622,7 @@ mod tests {
     #[test]
     fn a_new_store_has_default_provider_settings() {
         let row = db_with_store()
-            .get_store_connection_by_id("conn-1")
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
             .unwrap()
             .unwrap();
         assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
@@ -2452,13 +2638,16 @@ mod tests {
         settings.haveno.min_depth_xmr_per_side = 1.5;
         db.update_store_connection_fx(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            "conn-1",
+            &shared::ids::ConnectionId::new("conn-1"),
             &["haveno".to_string()],
             &settings,
         )
         .unwrap();
 
-        let by_id = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        let by_id = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .unwrap()
+            .unwrap();
         assert_eq!(by_id.fx_provider_settings, settings);
         assert_eq!(by_id.fx_providers, vec!["haveno"]);
         // The other lookups read the same column.
@@ -2470,7 +2659,9 @@ mod tests {
             settings
         );
         assert_eq!(
-            db.list_store_connections_for_user("user-1").unwrap()[0].fx_provider_settings,
+            db.list_store_connections_for_user(&shared::ids::UserId::new("user-1"))
+                .unwrap()[0]
+                .fx_provider_settings,
             settings
         );
     }
@@ -2478,18 +2669,30 @@ mod tests {
     #[test]
     fn saving_one_stores_settings_leaves_every_other_store_untouched() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-a", "a@example.com", "hash", false, 1000)
-            .unwrap();
-        db.create_user("user-b", "b@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-a"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-b"),
+            "b@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         for (id, user, pk) in [
             ("conn-a", "user-a", "pk_a"),
             ("conn-b", "user-b", "pk_b"),
             ("conn-a2", "user-a", "pk_a2"),
         ] {
             db.create_store_connection(
-                id,
-                user,
+                &shared::ids::ConnectionId::new(id.to_string()),
+                &shared::ids::UserId::new(user.to_string()),
                 "woocommerce",
                 &format!("https://{id}.example.com"),
                 pk,
@@ -2500,21 +2703,30 @@ mod tests {
             )
             .unwrap();
         }
-        let before_b = db.get_store_connection_by_id("conn-b").unwrap().unwrap();
-        let before_a2 = db.get_store_connection_by_id("conn-a2").unwrap().unwrap();
+        let before_b = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-b"))
+            .unwrap()
+            .unwrap();
+        let before_a2 = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-a2"))
+            .unwrap()
+            .unwrap();
 
         let mut settings = FxProviderSettings::default();
         settings.haveno.max_spread_pct = 0.5;
         settings.haveno.currencies = vec!["USD".to_string()];
         db.update_store_connection_fx(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            "conn-a",
+            &shared::ids::ConnectionId::new("conn-a"),
             &["haveno".to_string(), "coingecko".to_string()],
             &settings,
         )
         .unwrap();
 
-        let a = db.get_store_connection_by_id("conn-a").unwrap().unwrap();
+        let a = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-a"))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             (a.fx_providers, a.fx_provider_settings),
             (
@@ -2523,7 +2735,10 @@ mod tests {
             )
         );
         for (id, before) in [("conn-b", before_b), ("conn-a2", before_a2)] {
-            let after = db.get_store_connection_by_id(id).unwrap().unwrap();
+            let after = db
+                .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 after.fx_providers, before.fx_providers,
                 "{id}: providers unchanged"
@@ -2549,7 +2764,10 @@ mod tests {
                 [],
             )
             .unwrap();
-        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        let row = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .unwrap()
+            .unwrap();
         assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
     }
 
@@ -2569,7 +2787,10 @@ mod tests {
         shared::migrations::apply(&conn, MIGRATIONS).unwrap();
 
         let db = Db { conn };
-        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        let row = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .unwrap()
+            .unwrap();
         assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
         assert_eq!(row.fx_providers, vec!["coingecko"]);
     }
@@ -2600,7 +2821,10 @@ mod tests {
         shared::migrations::apply(&conn, MIGRATIONS).unwrap();
 
         let db = Db { conn };
-        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        let row = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .unwrap()
+            .unwrap();
         assert_eq!(row.fx_providers, vec!["coingecko"]);
     }
 
@@ -2625,7 +2849,7 @@ mod tests {
 
         let db = Db { conn };
         assert_eq!(
-            db.get_store_connection_by_id("conn-1")
+            db.get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
                 .unwrap()
                 .unwrap()
                 .fx_providers,
@@ -2645,7 +2869,7 @@ mod tests {
     fn looking_up_an_unknown_store_connection_id_returns_none_rather_than_an_error() {
         let db = Db::open_in_memory().unwrap();
         assert!(db
-            .get_store_connection_by_id("nonexistent")
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("nonexistent"))
             .unwrap()
             .is_none());
     }
@@ -2653,11 +2877,17 @@ mod tests {
     #[test]
     fn updating_a_store_connections_site_url_only_touches_that_field() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-1"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-1",
-            "user-1",
+            &shared::ids::ConnectionId::new("conn-1"),
+            &shared::ids::UserId::new("user-1"),
             "woocommerce",
             "https://old-site.example.com",
             "pk_abc",
@@ -2668,10 +2898,16 @@ mod tests {
         )
         .unwrap();
 
-        db.update_store_connection_site_url("conn-1", "https://new-site.example.com")
-            .unwrap();
+        db.update_store_connection_site_url(
+            &shared::ids::ConnectionId::new("conn-1"),
+            "https://new-site.example.com",
+        )
+        .unwrap();
 
-        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        let row = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .unwrap()
+            .unwrap();
         assert_eq!(row.site_url, "https://new-site.example.com");
         // Nothing else changed.
         assert_eq!(row.platform, "woocommerce");
@@ -2682,11 +2918,17 @@ mod tests {
     #[test]
     fn client_logging_is_off_until_the_store_opts_in() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-cl", "cl@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-cl"),
+            "cl@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-cl",
-            "user-cl",
+            &shared::ids::ConnectionId::new("conn-cl"),
+            &shared::ids::UserId::new("user-cl"),
             "woocommerce",
             "https://shop.example.com",
             "pk_cl",
@@ -2696,13 +2938,19 @@ mod tests {
             "XMR",
         )
         .unwrap();
-        assert!(!db.client_logging("conn-cl").unwrap());
+        assert!(!db
+            .client_logging(&shared::ids::ConnectionId::new("conn-cl"))
+            .unwrap());
         assert!(!db.client_logging_by_public_key("pk_cl").unwrap());
-        db.set_client_logging("conn-cl", true).unwrap();
-        assert!(db.client_logging("conn-cl").unwrap());
+        db.set_client_logging(&shared::ids::ConnectionId::new("conn-cl"), true)
+            .unwrap();
+        assert!(db
+            .client_logging(&shared::ids::ConnectionId::new("conn-cl"))
+            .unwrap());
         assert!(db.client_logging_by_public_key("pk_cl").unwrap());
         assert!(
-            !db.client_logging("conn-missing").unwrap(),
+            !db.client_logging(&shared::ids::ConnectionId::new("conn-missing"))
+                .unwrap(),
             "no store, no logs"
         );
         assert!(!db.client_logging_by_public_key("pk_missing").unwrap());
@@ -2711,11 +2959,17 @@ mod tests {
     #[test]
     fn creating_a_store_connection_then_reading_it_back_by_public_key_round_trips() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-2", "b@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-2"),
+            "b@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-2",
-            "user-2",
+            &shared::ids::ConnectionId::new("conn-2"),
+            &shared::ids::UserId::new("user-2"),
             "woocommerce",
             "https://shop.example.com",
             "pk_xyz",
@@ -2730,8 +2984,8 @@ mod tests {
             .get_store_connection_by_public_key("pk_xyz")
             .unwrap()
             .unwrap();
-        assert_eq!(row.id, "conn-2");
-        assert_eq!(row.user_id, "user-2");
+        assert_eq!(row.id, shared::ids::ConnectionId::new("conn-2"));
+        assert_eq!(row.user_id, shared::ids::UserId::new("user-2"));
     }
 
     #[test]
@@ -2744,11 +2998,17 @@ mod tests {
     }
 
     fn seed_connection_for_connect_token_tests(db: &Db) -> String {
-        db.create_user("user-ct", "connect-tokens@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-ct"),
+            "connect-tokens@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-ct",
-            "user-ct",
+            &shared::ids::ConnectionId::new("conn-ct"),
+            &shared::ids::UserId::new("user-ct"),
             "woocommerce",
             "https://shop.example.com",
             "pk_ct",
@@ -2765,13 +3025,21 @@ mod tests {
     fn creating_a_connect_token_then_consuming_it_returns_its_connection_id() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_connect_token(&th("hashed-connect-token"), &connection_id, "nonce-1", 2000)
-            .unwrap();
+        db.create_connect_token(
+            &th("hashed-connect-token"),
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "nonce-1",
+            2000,
+        )
+        .unwrap();
 
         let resolved = db
             .consume_connect_token(&th("hashed-connect-token"), 2001, 600)
             .unwrap();
-        assert_eq!(resolved, Some(connection_id));
+        assert_eq!(
+            resolved,
+            Some(shared::ids::ConnectionId::new(connection_id))
+        );
     }
 
     #[test]
@@ -2782,15 +3050,20 @@ mod tests {
         // concurrency, not just under this single-threaded test.
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_connect_token(&th("hashed-connect-token"), &connection_id, "nonce-1", 2000)
-            .unwrap();
+        db.create_connect_token(
+            &th("hashed-connect-token"),
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "nonce-1",
+            2000,
+        )
+        .unwrap();
 
         let first = db
             .consume_connect_token(&th("hashed-connect-token"), 2001, 600)
             .unwrap();
         assert_eq!(
             first,
-            Some(connection_id),
+            Some(shared::ids::ConnectionId::new(connection_id.clone())),
             "the first consume must actually succeed"
         );
 
@@ -2804,8 +3077,13 @@ mod tests {
     fn consuming_an_expired_connect_token_fails_as_if_it_never_existed() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_connect_token(&th("hashed-connect-token"), &connection_id, "nonce-1", 1000)
-            .unwrap();
+        db.create_connect_token(
+            &th("hashed-connect-token"),
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "nonce-1",
+            1000,
+        )
+        .unwrap();
 
         // created_at = 1000, ttl = 600 seconds - "now" = 1601 is one second
         // past the token's expiry window.
@@ -2834,8 +3112,14 @@ mod tests {
         let path_str = path.to_str().unwrap();
 
         let db = Db::open_file(path_str).unwrap();
-        db.create_user("id-1", "a@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("id-1"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         drop(db);
 
         let reopened = Db::open_file(path_str).unwrap();
@@ -2843,7 +3127,7 @@ mod tests {
             .get_user_by_email("a@example.com")
             .unwrap()
             .unwrap();
-        assert_eq!(row.id, "id-1");
+        assert_eq!(row.id, shared::ids::UserId::new("id-1"));
 
         drop(reopened);
         let _ = std::fs::remove_file(&path);
@@ -2856,8 +3140,8 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.create_order_currency_metadata(
-            &connection_id,
-            "pay_1",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &shared::ids::OrderId::new("pay_1"),
             "USD",
             "25.00",
             6_700_000_000,
@@ -2871,11 +3155,17 @@ mod tests {
         .unwrap();
 
         let row = db
-            .get_order_currency_metadata(&connection_id, "pay_1")
+            .get_order_currency_metadata(
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &shared::ids::OrderId::new("pay_1"),
+            )
             .unwrap()
             .unwrap();
-        assert_eq!(row.connection_id, connection_id);
-        assert_eq!(row.order_id, "pay_1");
+        assert_eq!(
+            row.connection_id,
+            shared::ids::ConnectionId::new(connection_id)
+        );
+        assert_eq!(row.order_id, shared::ids::OrderId::new("pay_1"));
         assert_eq!(row.currency, "USD");
         assert_eq!(row.amount, "25.00");
         assert_eq!(row.piconero_per_unit, 6_700_000_000);
@@ -2891,7 +3181,10 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         assert!(db
-            .get_order_currency_metadata(&connection_id, "nonexistent")
+            .get_order_currency_metadata(
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &shared::ids::OrderId::new("nonexistent")
+            )
             .unwrap()
             .is_none());
     }
@@ -2903,11 +3196,17 @@ mod tests {
         // tenant) - the composite primary key must keep them apart.
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_user("user-2", "other@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-2"),
+            "other@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-2",
-            "user-2",
+            &shared::ids::ConnectionId::new("conn-2"),
+            &shared::ids::UserId::new("user-2"),
             "custom",
             "https://other.example.com",
             "pk_other",
@@ -2919,8 +3218,8 @@ mod tests {
         .unwrap();
 
         db.create_order_currency_metadata(
-            &connection_id,
-            "pay_shared",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &shared::ids::OrderId::new("pay_shared"),
             "USD",
             "10.00",
             1_000_000,
@@ -2933,8 +3232,8 @@ mod tests {
         )
         .unwrap();
         db.create_order_currency_metadata(
-            "conn-2",
-            "pay_shared",
+            &shared::ids::ConnectionId::new("conn-2"),
+            &shared::ids::OrderId::new("pay_shared"),
             "EUR",
             "20.00",
             2_000_000,
@@ -2948,11 +3247,17 @@ mod tests {
         .unwrap();
 
         let first = db
-            .get_order_currency_metadata(&connection_id, "pay_shared")
+            .get_order_currency_metadata(
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &shared::ids::OrderId::new("pay_shared"),
+            )
             .unwrap()
             .unwrap();
         let second = db
-            .get_order_currency_metadata("conn-2", "pay_shared")
+            .get_order_currency_metadata(
+                &shared::ids::ConnectionId::new("conn-2"),
+                &shared::ids::OrderId::new("pay_shared"),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(first.currency, "USD");
@@ -2966,8 +3271,8 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.create_order_currency_metadata(
-            &connection_id,
-            "pay_a",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &shared::ids::OrderId::new("pay_a"),
             "USD",
             "10.00",
             1_000_000,
@@ -2980,8 +3285,8 @@ mod tests {
         )
         .unwrap();
         db.create_order_currency_metadata(
-            &connection_id,
-            "pay_b",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &shared::ids::OrderId::new("pay_b"),
             "EUR",
             "20.00",
             2_000_000,
@@ -2995,11 +3300,23 @@ mod tests {
         .unwrap();
 
         let map = db
-            .list_order_currency_metadata_for_connection(&connection_id)
+            .list_order_currency_metadata_for_connection(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap();
         assert_eq!(map.len(), 2);
-        assert_eq!(map.get("pay_a").unwrap().currency, "USD");
-        assert_eq!(map.get("pay_b").unwrap().currency, "EUR");
+        assert_eq!(
+            map.get(&shared::ids::OrderId::new("pay_a"))
+                .unwrap()
+                .currency,
+            "USD"
+        );
+        assert_eq!(
+            map.get(&shared::ids::OrderId::new("pay_b"))
+                .unwrap()
+                .currency,
+            "EUR"
+        );
     }
 
     #[test]
@@ -3007,7 +3324,9 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         assert!(db
-            .list_order_currency_metadata_for_connection(&connection_id)
+            .list_order_currency_metadata_for_connection(&shared::ids::ConnectionId::new(
+                connection_id.to_string()
+            ))
             .unwrap()
             .is_empty());
     }
@@ -3035,10 +3354,20 @@ mod tests {
     fn a_created_confirmation_threshold_round_trips() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold("thresh-1", &connection_id, "50.00", 20, 1000)
-            .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-1",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "50.00",
+            20,
+            1000,
+        )
+        .unwrap();
 
-        let rows = db.list_confirmation_thresholds(&connection_id).unwrap();
+        let rows = db
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].unit_amount, "50.00");
         assert_eq!(rows[0].confirmations_required, 20);
@@ -3057,7 +3386,7 @@ mod tests {
                         .create_confirmation_threshold_with_limit(
                             crate::confirmation_thresholds::PolicyProof::for_test(),
                             &format!("id-{i}"),
-                            &connection_id,
+                            &shared::ids::ConnectionId::new(connection_id.to_string()),
                             &i.to_string(),
                             10,
                             1000,
@@ -3076,7 +3405,9 @@ mod tests {
         );
         assert_eq!(
             db.lock()
-                .count_confirmation_thresholds(&connection_id)
+                .count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                    connection_id.to_string()
+                ))
                 .unwrap(),
             5
         );
@@ -3086,19 +3417,33 @@ mod tests {
     fn a_failed_threshold_replacement_rolls_back_deletions() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold("original", &connection_id, "50", 20, 1000)
-            .unwrap();
-        db.create_confirmation_threshold("taken", &connection_id, "100", 20, 1000)
-            .unwrap();
+        db.create_confirmation_threshold(
+            "original",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "50",
+            20,
+            1000,
+        )
+        .unwrap();
+        db.create_confirmation_threshold(
+            "taken",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "100",
+            20,
+            1000,
+        )
+        .unwrap();
         let result = db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &connection_id,
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
             &["original".to_string()],
             Some(("taken", "200", 10, 1000)),
         );
         assert!(result.is_err());
         assert!(db
-            .list_confirmation_thresholds(&connection_id)
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string()
+            ))
             .unwrap()
             .iter()
             .any(|row| row.id == "original"));
@@ -3111,7 +3456,7 @@ mod tests {
         for i in 0..5 {
             db.create_confirmation_threshold(
                 &format!("id-{i}"),
-                &connection_id,
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
                 &i.to_string(),
                 10,
                 1000,
@@ -3121,21 +3466,31 @@ mod tests {
         assert!(!db
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &connection_id,
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
                 Some(("sixth", "50", 20, 1000))
             )
             .unwrap());
-        assert_eq!(db.count_confirmation_thresholds(&connection_id).unwrap(), 5);
+        assert_eq!(
+            db.count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string()
+            ))
+            .unwrap(),
+            5
+        );
         assert!(db
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &connection_id,
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
                 &["id-0".to_string()],
                 Some(("replacement", "50", 20, 1000))
             )
             .unwrap());
-        let rows = db.list_confirmation_thresholds(&connection_id).unwrap();
+        let rows = db
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
+            .unwrap();
         assert_eq!(rows.len(), 5);
         assert!(!rows.iter().any(|row| row.id == "id-0"));
         assert!(rows.iter().any(|row| row.id == "replacement"));
@@ -3146,14 +3501,36 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         // Lexicographically "10" < "9" - this must not happen here.
-        db.create_confirmation_threshold("thresh-a", &connection_id, "9", 15, 1000)
-            .unwrap();
-        db.create_confirmation_threshold("thresh-b", &connection_id, "10", 20, 1000)
-            .unwrap();
-        db.create_confirmation_threshold("thresh-c", &connection_id, "2.5", 12, 1000)
-            .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-a",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "9",
+            15,
+            1000,
+        )
+        .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-b",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "10",
+            20,
+            1000,
+        )
+        .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-c",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "2.5",
+            12,
+            1000,
+        )
+        .unwrap();
 
-        let rows = db.list_confirmation_thresholds(&connection_id).unwrap();
+        let rows = db
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
+            .unwrap();
         let amounts: Vec<&str> = rows.iter().map(|r| r.unit_amount.as_str()).collect();
         assert_eq!(amounts, vec!["2.5", "9", "10"]);
     }
@@ -3162,11 +3539,27 @@ mod tests {
     fn confirmation_thresholds_preserve_adjacent_twelve_decimal_order() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold("upper", &connection_id, "9007.199254740981", 20, 1000)
+        db.create_confirmation_threshold(
+            "upper",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "9007.199254740981",
+            20,
+            1000,
+        )
+        .unwrap();
+        db.create_confirmation_threshold(
+            "lower",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "9007.199254740980",
+            10,
+            1000,
+        )
+        .unwrap();
+        let rows = db
+            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap();
-        db.create_confirmation_threshold("lower", &connection_id, "9007.199254740980", 10, 1000)
-            .unwrap();
-        let rows = db.list_confirmation_thresholds(&connection_id).unwrap();
         assert_eq!(
             rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
             vec!["lower", "upper"]
@@ -3177,11 +3570,23 @@ mod tests {
     fn creating_a_second_threshold_at_the_same_amount_is_a_unique_violation() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold("thresh-1", &connection_id, "50.00", 20, 1000)
-            .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-1",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "50.00",
+            20,
+            1000,
+        )
+        .unwrap();
 
         let err = db
-            .create_confirmation_threshold("thresh-2", &connection_id, "50.00", 5, 1000)
+            .create_confirmation_threshold(
+                "thresh-2",
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                "50.00",
+                5,
+                1000,
+            )
             .unwrap_err();
         assert!(
             err.is_unique_violation(),
@@ -3189,7 +3594,11 @@ mod tests {
         );
         // Nothing about the original row changed.
         assert_eq!(
-            db.list_confirmation_thresholds(&connection_id).unwrap()[0].confirmations_required,
+            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string()
+            ))
+            .unwrap()[0]
+                .confirmations_required,
             20
         );
     }
@@ -3198,11 +3607,17 @@ mod tests {
     fn the_same_amount_is_allowed_again_on_a_different_connection() {
         let db = Db::open_in_memory().unwrap();
         let connection_id_a = seed_connection_for_connect_token_tests(&db);
-        db.create_user("user-b", "b@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-b"),
+            "b@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-b",
-            "user-b",
+            &shared::ids::ConnectionId::new("conn-b"),
+            &shared::ids::UserId::new("user-b"),
             "custom",
             "https://b.example.com",
             "pk_b",
@@ -3213,41 +3628,90 @@ mod tests {
         )
         .unwrap();
 
-        db.create_confirmation_threshold("thresh-1", &connection_id_a, "50.00", 20, 1000)
-            .unwrap();
-        db.create_confirmation_threshold("thresh-2", "conn-b", "50.00", 5, 1000)
-            .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-1",
+            &shared::ids::ConnectionId::new(connection_id_a.to_string()),
+            "50.00",
+            20,
+            1000,
+        )
+        .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-2",
+            &shared::ids::ConnectionId::new("conn-b"),
+            "50.00",
+            5,
+            1000,
+        )
+        .unwrap();
 
         assert_eq!(
-            db.list_confirmation_thresholds(&connection_id_a)
+            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id_a.to_string()
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new("conn-b"))
                 .unwrap()
                 .len(),
             1
         );
-        assert_eq!(db.list_confirmation_thresholds("conn-b").unwrap().len(), 1);
     }
 
     #[test]
     fn count_confirmation_thresholds_reflects_the_real_count() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        assert_eq!(db.count_confirmation_thresholds(&connection_id).unwrap(), 0);
-        db.create_confirmation_threshold("thresh-1", &connection_id, "50.00", 20, 1000)
-            .unwrap();
-        db.create_confirmation_threshold("thresh-2", &connection_id, "100.00", 30, 1000)
-            .unwrap();
-        assert_eq!(db.count_confirmation_thresholds(&connection_id).unwrap(), 2);
+        assert_eq!(
+            db.count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string()
+            ))
+            .unwrap(),
+            0
+        );
+        db.create_confirmation_threshold(
+            "thresh-1",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "50.00",
+            20,
+            1000,
+        )
+        .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-2",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "100.00",
+            30,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(
+            db.count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string()
+            ))
+            .unwrap(),
+            2
+        );
     }
 
     #[test]
     fn deleting_a_confirmation_threshold_is_scoped_to_the_owning_connection() {
         let db = Db::open_in_memory().unwrap();
         let connection_id_a = seed_connection_for_connect_token_tests(&db);
-        db.create_user("user-b", "b@example.com", "hash", false, 1000)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-b"),
+            "b@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
         db.create_store_connection(
-            "conn-b",
-            "user-b",
+            &shared::ids::ConnectionId::new("conn-b"),
+            &shared::ids::UserId::new("user-b"),
             "custom",
             "https://b.example.com",
             "pk_b",
@@ -3257,35 +3721,45 @@ mod tests {
             "XMR",
         )
         .unwrap();
-        db.create_confirmation_threshold("thresh-1", &connection_id_a, "50.00", 20, 1000)
-            .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-1",
+            &shared::ids::ConnectionId::new(connection_id_a.to_string()),
+            "50.00",
+            20,
+            1000,
+        )
+        .unwrap();
 
         // conn-b cannot delete connection_id_a's own threshold.
         assert!(!db
             .delete_confirmation_threshold(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                "conn-b",
+                &shared::ids::ConnectionId::new("conn-b"),
                 "thresh-1"
             )
             .unwrap());
         assert_eq!(
-            db.list_confirmation_thresholds(&connection_id_a)
-                .unwrap()
-                .len(),
+            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id_a.to_string()
+            ))
+            .unwrap()
+            .len(),
             1
         );
 
         assert!(db
             .delete_confirmation_threshold(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &connection_id_a,
+                &shared::ids::ConnectionId::new(connection_id_a.to_string()),
                 "thresh-1"
             )
             .unwrap());
         assert_eq!(
-            db.list_confirmation_thresholds(&connection_id_a)
-                .unwrap()
-                .len(),
+            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id_a.to_string()
+            ))
+            .unwrap()
+            .len(),
             0
         );
 
@@ -3293,7 +3767,7 @@ mod tests {
         assert!(!db
             .delete_confirmation_threshold(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &connection_id_a,
+                &shared::ids::ConnectionId::new(connection_id_a.to_string()),
                 "thresh-1"
             )
             .unwrap());
@@ -3303,29 +3777,45 @@ mod tests {
     fn changing_a_stores_base_currency_deletes_every_one_of_its_custom_thresholds() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold("thresh-1", &connection_id, "50.00", 20, 1000)
-            .unwrap();
-        db.create_confirmation_threshold("thresh-2", &connection_id, "100.00", 30, 1000)
-            .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-1",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "50.00",
+            20,
+            1000,
+        )
+        .unwrap();
+        db.create_confirmation_threshold(
+            "thresh-2",
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            "100.00",
+            30,
+            1000,
+        )
+        .unwrap();
 
         db.update_store_connection_base_currency(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &connection_id,
+            &shared::ids::ConnectionId::new(connection_id.to_string()),
             "EUR",
         )
         .unwrap();
 
         assert_eq!(
-            db.get_store_connection_by_id(&connection_id)
-                .unwrap()
-                .unwrap()
-                .base_currency,
+            db.get_store_connection_by_id(&shared::ids::ConnectionId::new(
+                connection_id.to_string()
+            ))
+            .unwrap()
+            .unwrap()
+            .base_currency,
             "EUR"
         );
         assert_eq!(
-            db.list_confirmation_thresholds(&connection_id)
-                .unwrap()
-                .len(),
+            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                connection_id.to_string()
+            ))
+            .unwrap()
+            .len(),
             0,
             "every custom threshold must be gone"
         );
@@ -3385,8 +3875,14 @@ mod tests {
             "a deleted request must not still be listed as pending"
         );
         assert_eq!(
-            db.redeem_invite_and_create_user(&th("hash-1"), "u1", "a@example.com", "hash", 3000)
-                .unwrap(),
+            db.redeem_invite_and_create_user(
+                &th("hash-1"),
+                &shared::ids::UserId::new("u1"),
+                "a@example.com",
+                "hash",
+                3000
+            )
+            .unwrap(),
             RedeemInviteResult::InvalidOrAlreadyUsed,
             "its own never-used link must have been revoked, not left silently valid"
         );
@@ -3402,8 +3898,14 @@ mod tests {
         // Someone already redeemed it before the admin got around to
         // deleting the (by then auto-actioned) request - a no-op path this
         // handler should still tolerate cleanly.
-        db.redeem_invite_and_create_user(&th("hash-1"), "u1", "a@example.com", "hash", 1500)
-            .unwrap();
+        db.redeem_invite_and_create_user(
+            &th("hash-1"),
+            &shared::ids::UserId::new("u1"),
+            "a@example.com",
+            "hash",
+            1500,
+        )
+        .unwrap();
 
         db.delete_invite_request("req-1", 2000).unwrap();
         // The already-created account's own session/lookup path is
@@ -3434,13 +3936,25 @@ mod tests {
         );
         assert_eq!(db.count_unactioned_invite_requests().unwrap(), 0);
         assert_eq!(
-            db.redeem_invite_and_create_user(&th("hash-1"), "u1", "a@example.com", "h", 3000)
-                .unwrap(),
+            db.redeem_invite_and_create_user(
+                &th("hash-1"),
+                &shared::ids::UserId::new("u1"),
+                "a@example.com",
+                "h",
+                3000
+            )
+            .unwrap(),
             RedeemInviteResult::InvalidOrAlreadyUsed
         );
         assert_eq!(
-            db.redeem_invite_and_create_user(&th("hash-2"), "u2", "b@example.com", "h", 3000)
-                .unwrap(),
+            db.redeem_invite_and_create_user(
+                &th("hash-2"),
+                &shared::ids::UserId::new("u2"),
+                "b@example.com",
+                "h",
+                3000
+            )
+            .unwrap(),
             RedeemInviteResult::InvalidOrAlreadyUsed
         );
     }
@@ -3454,7 +3968,7 @@ mod tests {
         let first = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                "user-1",
+                &shared::ids::UserId::new("user-1"),
                 "first@example.com",
                 "hashed-pw",
                 2000,
@@ -3469,7 +3983,7 @@ mod tests {
         let second = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                "user-2",
+                &shared::ids::UserId::new("user-2"),
                 "second@example.com",
                 "hashed-pw",
                 3000,
@@ -3490,7 +4004,7 @@ mod tests {
         let result = db
             .redeem_invite_and_create_user(
                 &th("no-such-hash"),
-                "user-1",
+                &shared::ids::UserId::new("user-1"),
                 "a@example.com",
                 "hashed-pw",
                 1000,
@@ -3503,15 +4017,21 @@ mod tests {
     #[test]
     fn a_duplicate_email_still_burns_the_token_a_documented_accepted_trade_off() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("existing", "taken@example.com", "hash", false, 500)
-            .unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("existing"),
+            "taken@example.com",
+            "hash",
+            false,
+            500,
+        )
+        .unwrap();
         db.create_invite_link("link-1", &th("hash-1"), None, None, 1000)
             .unwrap();
 
         let result = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                "user-2",
+                &shared::ids::UserId::new("user-2"),
                 "taken@example.com",
                 "hashed-pw",
                 2000,
@@ -3525,7 +4045,7 @@ mod tests {
         let retry = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                "user-3",
+                &shared::ids::UserId::new("user-3"),
                 "retry@example.com",
                 "hashed-pw",
                 3000,
@@ -3545,7 +4065,7 @@ mod tests {
 
         db.redeem_invite_and_create_user(
             &th("hash-1"),
-            "user-1",
+            &shared::ids::UserId::new("user-1"),
             "a@example.com",
             "hashed-pw",
             2000,

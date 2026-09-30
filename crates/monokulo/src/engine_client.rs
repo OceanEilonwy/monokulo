@@ -129,9 +129,9 @@ impl EngineClient {
     /// connection's own secret.
     pub fn subscribe_order(
         &self,
-        connection_id: &str,
+        connection_id: &crate::db::ConnectionId,
         sk: &RawToken,
-        order_id: &str,
+        order_id: &shared::ids::OrderId,
     ) -> crate::live::OrderSubscription {
         self.target()
             .live
@@ -296,7 +296,7 @@ impl EngineClient {
     pub async fn list_orders_by_ids(
         &self,
         sk: &RawToken,
-        order_ids: &[String],
+        order_ids: &[crate::db::OrderId],
     ) -> Result<Vec<OrderView>, EngineClientError> {
         let target = self.target();
         if order_ids.is_empty() {
@@ -304,7 +304,14 @@ impl EngineClient {
         }
         let url = reqwest::Url::parse_with_params(
             &format!("{}/api/v1/admin/tenant/orders", target.base_url),
-            [("ids", order_ids.join(","))],
+            [(
+                "ids",
+                order_ids
+                    .iter()
+                    .map(|id| id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )],
         )
         .map_err(|e| EngineClientError::EngineError {
             status: reqwest::StatusCode::BAD_REQUEST,
@@ -324,7 +331,7 @@ impl EngineClient {
     pub async fn get_order_detail(
         &self,
         sk: &RawToken,
-        order_id: &str,
+        order_id: &shared::ids::OrderId,
     ) -> Result<OrderDetailResponse, EngineClientError> {
         let target = self.target();
         let response = target
@@ -525,7 +532,7 @@ impl EngineClient {
     pub async fn set_refund_address(
         &self,
         sk: &RawToken,
-        order_id: &str,
+        order_id: &shared::ids::OrderId,
         refund_address: &str,
     ) -> Result<(), EngineClientError> {
         let target = self.target();
@@ -729,7 +736,7 @@ pub struct TenantView {
 /// `order_fiat_metadata` table (`db::Db::get_order_fiat_metadata`) instead.
 #[derive(Debug, Deserialize)]
 pub struct OrderView {
-    pub order_id: String,
+    pub order_id: shared::ids::OrderId,
     pub merchant_order_id: Option<String>,
     pub address: String,
     pub xmr_amount_piconero: u64,
@@ -825,7 +832,7 @@ struct CreateOrderRequest {
 /// Mirrors the engine's own `public::CreateOrderResponse`.
 #[derive(Debug, Deserialize)]
 pub struct CreateOrderResponse {
-    pub order_id: String,
+    pub order_id: shared::ids::OrderId,
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub expires_at: i64,
@@ -1142,7 +1149,7 @@ mod tests {
             .unwrap()
             .id;
         let stored = store
-            .get_order(&tenant_id, &order.order_id)
+            .get_order(&tenant_id, order.order_id.as_str())
             .unwrap()
             .unwrap();
         assert_eq!(stored.confirmations_required_override, Some(3));
@@ -1172,7 +1179,7 @@ mod tests {
             .unwrap()
             .id;
         let stored = store
-            .get_order(&tenant_id, &order.order_id)
+            .get_order(&tenant_id, order.order_id.as_str())
             .unwrap()
             .unwrap();
         assert_eq!(stored.confirmations_required_override, None);
@@ -1283,11 +1290,17 @@ mod tests {
         let client = EngineClient::new(base_url);
 
         client
-            .get_order_detail(&shared::auth::RawToken::presented("sk_whatever"), "pay_1")
+            .get_order_detail(
+                &shared::auth::RawToken::presented("sk_whatever"),
+                &shared::ids::OrderId::new("pay_1"),
+            )
             .await
             .unwrap();
         client
-            .get_order_detail(&shared::auth::RawToken::presented("sk_whatever"), "pay_1")
+            .get_order_detail(
+                &shared::auth::RawToken::presented("sk_whatever"),
+                &shared::ids::OrderId::new("pay_1"),
+            )
             .await
             .unwrap();
 
@@ -1319,11 +1332,17 @@ mod tests {
         let client = EngineClient::new(base_url);
 
         client
-            .get_order_detail(&shared::auth::RawToken::presented("sk_whatever"), "pay_1")
+            .get_order_detail(
+                &shared::auth::RawToken::presented("sk_whatever"),
+                &shared::ids::OrderId::new("pay_1"),
+            )
             .await
             .unwrap();
         client
-            .get_order_detail(&shared::auth::RawToken::presented("sk_whatever"), "pay_1")
+            .get_order_detail(
+                &shared::auth::RawToken::presented("sk_whatever"),
+                &shared::ids::OrderId::new("pay_1"),
+            )
             .await
             .unwrap();
 

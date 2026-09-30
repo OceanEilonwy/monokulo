@@ -118,7 +118,7 @@ enum LoadError {
 async fn load_order(
     state: &AppState,
     pk: &str,
-    order_id: &str,
+    order_id: &crate::db::OrderId,
 ) -> Result<
     (
         StoreConnectionRow,
@@ -248,7 +248,7 @@ impl CheckoutOptions {
 
 pub async fn checkout_page(
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
     Query(options): Query<CheckoutOptions>,
     headers: HeaderMap,
 ) -> Response {
@@ -284,7 +284,7 @@ pub async fn checkout_page(
 async fn must_open_from_shop(
     state: &AppState,
     row: &StoreConnectionRow,
-    order_id: &str,
+    order_id: &crate::db::OrderId,
     headers: &HeaderMap,
 ) -> bool {
     let Some(dest) = headers
@@ -296,7 +296,7 @@ async fn must_open_from_shop(
     if dest.eq_ignore_ascii_case("iframe") || dest.eq_ignore_ascii_case("frame") {
         return false;
     }
-    let (id, order_id) = (row.id.clone(), order_id.to_string());
+    let (id, order_id) = (row.id.clone(), order_id.clone());
     state
         .db
         .read(move |db| {
@@ -312,7 +312,7 @@ async fn must_open_from_shop(
         .unwrap_or(false)
 }
 
-fn open_from_shop_response(pk: &str, order_id: &str) -> Response {
+fn open_from_shop_response(pk: &str, order_id: &crate::db::OrderId) -> Response {
     let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
     with_vary_on_fetch_dest(
         (
@@ -514,7 +514,7 @@ pub struct SetRefundAddressForm {
 /// without JavaScript: it redirects on success and re-renders inline errors.
 pub async fn set_refund_address(
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
     Query(options): Query<CheckoutOptions>,
     headers: HeaderMap,
     Form(form): Form<SetRefundAddressForm>,
@@ -610,7 +610,7 @@ pub struct CheckoutStatusResponse {
 /// equivalent response).
 pub async fn checkout_status(
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
 ) -> Response {
     match load_order(&state, &pk, &order_id).await {
         Ok((row, sk, detail)) => {
@@ -652,7 +652,7 @@ pub async fn checkout_status(
 /// (`crate::abuse::streams`); past that the request gets `429`.
 pub async fn checkout_events(
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
     Query(options): Query<CheckoutOptions>,
     extensions: axum::http::Extensions,
 ) -> Response {
@@ -776,7 +776,7 @@ pub async fn checkout_events(
 /// content is a broken iframe.
 pub async fn checkout_share_page(
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
     headers: HeaderMap,
 ) -> Response {
     let found = match load_order(&state, &pk, &order_id).await {
@@ -893,7 +893,7 @@ mod tests {
     #[test]
     fn checkout_amount_messages_use_exact_received_remaining_and_extra_xmr() {
         let mut order = crate::engine_client::OrderView {
-            order_id: "pay_test".to_string(),
+            order_id: shared::ids::OrderId::new("pay_test".to_string()),
             merchant_order_id: None,
             address: "address".to_string(),
             xmr_amount_piconero: 500_000_000_000,

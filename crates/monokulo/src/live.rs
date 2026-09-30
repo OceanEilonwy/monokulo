@@ -40,11 +40,11 @@ const DOWNSTREAM_KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 #[derive(Default)]
 pub struct LiveHub {
-    stores: Mutex<HashMap<String, StoreWatch>>,
+    stores: Mutex<HashMap<crate::db::ConnectionId, StoreWatch>>,
 }
 
 struct StoreWatch {
-    orders: HashMap<String, OrderWatch>,
+    orders: HashMap<crate::db::OrderId, OrderWatch>,
     upstream: tokio::task::JoinHandle<()>,
 }
 
@@ -58,8 +58,8 @@ struct OrderWatch {
 /// store's upstream connection with the last one.
 pub struct OrderSubscription {
     hub: Arc<LiveHub>,
-    connection_id: String,
-    order_id: String,
+    connection_id: crate::db::ConnectionId,
+    order_id: crate::db::OrderId,
     changed: watch::Receiver<u64>,
 }
 
@@ -69,25 +69,25 @@ impl LiveHub {
     pub fn subscribe(
         self: &Arc<Self>,
         engine: &EngineClient,
-        connection_id: &str,
+        connection_id: &crate::db::ConnectionId,
         sk: &shared::auth::RawToken,
-        order_id: &str,
+        order_id: &crate::db::OrderId,
     ) -> OrderSubscription {
         let mut stores = self.stores.lock();
         let store = stores
-            .entry(connection_id.to_string())
+            .entry(connection_id.clone())
             .or_insert_with(|| StoreWatch {
                 orders: HashMap::new(),
                 upstream: tokio::spawn(run_upstream(
                     Arc::downgrade(self),
                     engine.clone(),
-                    connection_id.to_string(),
+                    connection_id.clone(),
                     sk.clone(),
                 )),
             });
         let order = store
             .orders
-            .entry(order_id.to_string())
+            .entry(order_id.clone())
             .or_insert_with(|| OrderWatch {
                 changed: watch::channel(0).0,
                 watchers: 0,
@@ -95,13 +95,13 @@ impl LiveHub {
         order.watchers += 1;
         OrderSubscription {
             hub: self.clone(),
-            connection_id: connection_id.to_string(),
-            order_id: order_id.to_string(),
+            connection_id: connection_id.clone(),
+            order_id: order_id.clone(),
             changed: order.changed.subscribe(),
         }
     }
 
-    fn release(&self, connection_id: &str, order_id: &str) {
+    fn release(&self, connection_id: &crate::db::ConnectionId, order_id: &crate::db::OrderId) {
         let mut stores = self.stores.lock();
         let Some(store) = stores.get_mut(connection_id) else {
             return;
@@ -119,7 +119,7 @@ impl LiveHub {
         }
     }
 
-    fn wake(&self, connection_id: &str, order_id: Option<&str>) {
+    fn wake(&self, connection_id: &crate::db::ConnectionId, order_id: Option<&crate::db::OrderId>) {
         let stores = self.stores.lock();
         let Some(store) = stores.get(connection_id) else {
             return;
@@ -159,7 +159,7 @@ impl Drop for OrderSubscription {
 async fn run_upstream(
     hub: std::sync::Weak<LiveHub>,
     engine: EngineClient,
-    connection_id: String,
+    connection_id: crate::db::ConnectionId,
     sk: shared::auth::RawToken,
 ) {
     let mut delay = Duration::from_secs(1);
@@ -188,7 +188,7 @@ async fn run_upstream(
                                 .and_then(|v| {
                                     v.get("order_id")
                                         .and_then(|id| id.as_str())
-                                        .map(str::to_string)
+                                        .map(crate::db::OrderId::new)
                                 });
                             if let Some(order_id) = order_id {
                                 hub.wake(&connection_id, Some(&order_id));
@@ -341,7 +341,7 @@ where
 }
 
 /// One snapshot per order for [`batch_snapshot_stream`], keyed by order id.
-pub type BatchSnapshot = Vec<(String, LiveSnapshot)>;
+pub type BatchSnapshot = Vec<(crate::db::OrderId, LiveSnapshot)>;
 
 /// [`snapshot_stream`] for many orders of one store at once: whenever any
 /// of them changes (or `refresh_every` passes) it takes one snapshot of all
@@ -357,13 +357,13 @@ pub fn batch_snapshot_stream<F, Fut>(
     snapshot: F,
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send
 where
-    F: FnMut(Vec<String>) -> Fut + Send + 'static,
+    F: FnMut(Vec<crate::db::OrderId>) -> Fut + Send + 'static,
     Fut: Future<Output = Option<BatchSnapshot>> + Send + 'static,
 {
     struct State<F> {
         subscriptions: Vec<OrderSubscription>,
         snapshot: F,
-        last: HashMap<String, String>,
+        last: HashMap<crate::db::OrderId, String>,
         first: bool,
     }
     let state = State {
@@ -478,15 +478,15 @@ mod tests {
         let engine = EngineClient::new("http://127.0.0.1:9");
         let a = hub.subscribe(
             &engine,
-            "conn",
+            &shared::ids::ConnectionId::new("conn"),
             &shared::auth::RawToken::presented("sk_x"),
-            "o1",
+            &shared::ids::OrderId::new("o1"),
         );
         let b = hub.subscribe(
             &engine,
-            "conn",
+            &shared::ids::ConnectionId::new("conn"),
             &shared::auth::RawToken::presented("sk_x"),
-            "o2",
+            &shared::ids::OrderId::new("o2"),
         );
         assert_eq!(hub.upstream_count(), 1);
         drop(a);
@@ -501,19 +501,22 @@ mod tests {
         let engine = EngineClient::new("http://127.0.0.1:9");
         let mut a = hub.subscribe(
             &engine,
-            "conn",
+            &shared::ids::ConnectionId::new("conn"),
             &shared::auth::RawToken::presented("sk_x"),
-            "o1",
+            &shared::ids::OrderId::new("o1"),
         );
         let mut b = hub.subscribe(
             &engine,
-            "conn",
+            &shared::ids::ConnectionId::new("conn"),
             &shared::auth::RawToken::presented("sk_x"),
-            "o2",
+            &shared::ids::OrderId::new("o2"),
         );
         a.changed.mark_unchanged();
         b.changed.mark_unchanged();
-        hub.wake("conn", Some("o1"));
+        hub.wake(
+            &shared::ids::ConnectionId::new("conn"),
+            Some(&shared::ids::OrderId::new("o1")),
+        );
         assert!(a.changed.has_changed().unwrap());
         assert!(!b.changed.has_changed().unwrap());
     }
@@ -522,9 +525,9 @@ mod tests {
         let engine =
             crate::engine_client::EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
         let mut subscription = engine.subscribe_order(
-            "conn",
+            &shared::ids::ConnectionId::new("conn"),
             &shared::auth::RawToken::presented("sk_test"),
-            "order",
+            &shared::ids::OrderId::new("order"),
         );
         assert_eq!(engine.live_upstream_count(), 1);
         engine.retarget("http://127.0.0.1:2", 1024 * 1024);

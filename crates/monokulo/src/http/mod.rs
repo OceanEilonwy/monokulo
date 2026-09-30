@@ -679,7 +679,10 @@ pub(crate) async fn page_chrome(
                     .unwrap_or_default(),
                 None => Vec::new(),
             };
-            let reports = store.map(|store| db.client_logging(&store).unwrap_or(false));
+            let reports = store.map(|store| {
+                db.client_logging(&crate::db::ConnectionId::new(store))
+                    .unwrap_or(false)
+            });
             Ok::<_, crate::db::DbError>((stores, reports))
         })
         .await
@@ -786,7 +789,7 @@ pub(crate) async fn resolve_authed_user(
         .ok()
         .flatten()?;
     user.browser_timezone = fx::browser_zone(headers);
-    record_identity(&user.id, &token_hash);
+    record_identity(user.id.as_str(), &token_hash);
     Some((user, token_hash))
 }
 
@@ -830,7 +833,7 @@ async fn record_store(
                 .await
                 .ok()
                 .flatten()
-                .map(|row| row.id),
+                .map(|row| row.id.into_string()),
             None => None,
         },
     };

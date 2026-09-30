@@ -569,8 +569,8 @@ mod tests {
 
     fn test_store(fx_providers: &[&str]) -> StoreConnectionRow {
         StoreConnectionRow {
-            id: "conn-1".to_string(),
-            user_id: "user-1".to_string(),
+            id: shared::ids::ConnectionId::new("conn-1".to_string()),
+            user_id: shared::ids::UserId::new("user-1".to_string()),
             platform: "custom".to_string(),
             site_url: "https://shop.example.com".to_string(),
             tenant_public_key: "pk_test".to_string(),

@@ -85,7 +85,7 @@ pub(super) async fn create_account(
         .await
         .and_then(Result::ok)
         .ok_or(CreateAccountError::Internal)?;
-    let id = Uuid::new_v4().to_string();
+    let id = crate::db::UserId::new(Uuid::new_v4().to_string());
     let created_at = now_unix();
 
     let token_hash = invite_token
@@ -109,7 +109,7 @@ pub(super) async fn create_account(
                     &password_hash,
                     created_at,
                 ) {
-                    Ok(RedeemInviteResult::Created) => Ok(id),
+                    Ok(RedeemInviteResult::Created) => Ok(id.into_string()),
                     Ok(RedeemInviteResult::DuplicateEmail) => {
                         Err(CreateAccountError::DuplicateEmail)
                     }
@@ -120,7 +120,7 @@ pub(super) async fn create_account(
                 };
             }
             match db.create_user(&id, &email, &password_hash, is_admin, created_at) {
-                Ok(()) => Ok(id),
+                Ok(()) => Ok(id.into_string()),
                 Err(e) if e.is_unique_violation() => Err(CreateAccountError::DuplicateEmail),
                 Err(_) => Err(CreateAccountError::Internal),
             }

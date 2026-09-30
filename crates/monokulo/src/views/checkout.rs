@@ -33,7 +33,7 @@ pub struct CheckoutPaymentViewModel {
 
 /// The view model [`checkout_page`] takes.
 pub struct CheckoutViewModel {
-    pub order_id: String,
+    pub order_id: crate::db::OrderId,
     pub status_label: String,
     pub status: super::DisplayStatus,
     pub status_class: String,
@@ -732,7 +732,7 @@ fn share_frame_src(chrome: &PageChrome, data: &CheckoutShareViewModel) -> String
 
 pub struct CheckoutShareViewModel {
     pub pk: String,
-    pub order_id: String,
+    pub order_id: crate::db::OrderId,
     /// Whether the order actually exists - `false` renders a real
     /// not-found state (still with the site's own nav around it, unlike
     /// [`not_found_page`]'s bare equivalent), rather than a page whose only
@@ -816,7 +816,7 @@ mod tests {
 
     fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
         CheckoutViewModel {
-            order_id: "pay_abc123".to_string(),
+            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
             status: if is_terminal { shared::order_status::OrderStatus::Paid.into() } else { shared::order_status::OrderStatus::Pending.into() },
             status_class: if is_terminal { "state-paid".to_string() } else { "state-pending".to_string() },
@@ -1227,7 +1227,7 @@ mod tests {
     fn share_page_wraps_the_iframe_with_the_site_nav_when_found() {
         let data = CheckoutShareViewModel {
             pk: "pk_abc123".to_string(),
-            order_id: "pay_abc123".to_string(),
+            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             found: true,
         };
         let html = share_page(&chrome(), &data).into_string();
@@ -1241,7 +1241,7 @@ mod tests {
     fn share_page_shows_a_not_found_state_with_the_site_nav_when_not_found() {
         let data = CheckoutShareViewModel {
             pk: "pk_abc123".to_string(),
-            order_id: "pay_abc123".to_string(),
+            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             found: false,
         };
         let html = share_page(&chrome(), &data).into_string();

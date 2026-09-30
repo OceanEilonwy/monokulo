@@ -132,7 +132,7 @@ pub fn detail_text(detail: &Map<String, Value>) -> String {
 pub async fn receive(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     body: Bytes,
 ) -> StatusCode {
     let row = match load_owned_connection(&state, &user, &id).await {

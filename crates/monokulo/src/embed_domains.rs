@@ -234,7 +234,12 @@ pub fn domain_of_site(site_url: &str) -> Option<String> {
 /// Adds the site's domain to a store as a domain waiting for DNS, so the
 /// merchant only has to publish the record. Skipped quietly when the site
 /// has no verifiable domain, or the store already has it or is full.
-pub fn suggest_site_domain(db: &Db, connection_id: &str, site_url: &str, now: i64) {
+pub fn suggest_site_domain(
+    db: &Db,
+    connection_id: &crate::db::ConnectionId,
+    site_url: &str,
+    now: i64,
+) {
     if let Some(domain) = domain_of_site(site_url) {
         suggest(db, connection_id, &domain, now);
     }
@@ -245,13 +250,13 @@ pub fn suggest_site_domain(db: &Db, connection_id: &str, site_url: &str, now: i6
 /// origin/URL (`https://shop.example`), since the field used to hold
 /// origins. Skipped quietly, like [`suggest_site_domain`], when it isn't a
 /// verifiable domain (an onion address, an IP) or the store is full.
-pub fn suggest_domain(db: &Db, connection_id: &str, input: &str, now: i64) {
+pub fn suggest_domain(db: &Db, connection_id: &crate::db::ConnectionId, input: &str, now: i64) {
     if let Some(domain) = domain_of_site(input).or_else(|| normalize_domain(input).ok()) {
         suggest(db, connection_id, &domain, now);
     }
 }
 
-fn suggest(db: &Db, connection_id: &str, domain: &str, now: i64) {
+fn suggest(db: &Db, connection_id: &crate::db::ConnectionId, domain: &str, now: i64) {
     if let Err(e) = db.suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE) {
         tracing::warn!(store.id = %connection_id, domain = %domain, error = %e, "could not add a domain to a store");
     }
@@ -624,7 +629,7 @@ mod tests {
     fn row(verified_at: Option<i64>, failing_since: Option<i64>) -> StoreDomainRow {
         StoreDomainRow {
             id: "d1".to_string(),
-            connection_id: "c1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("c1".to_string()),
             domain: "shop.example".to_string(),
             token: "abc".to_string(),
             created_at: 0,

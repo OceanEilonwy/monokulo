@@ -52,7 +52,7 @@ pub struct CreateOrderRequest {
 /// returned - the engine has no concept of fiat at all any more.
 #[derive(Debug, Serialize)]
 pub struct CreateOrderResponse {
-    pub order_id: String,
+    pub order_id: crate::db::OrderId,
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub amount: String,
@@ -1186,7 +1186,10 @@ mod tests {
         let metadata = state
             .db
             .lock()
-            .get_order_currency_metadata(&connection_id, &order_id)
+            .get_order_currency_metadata(
+                &connection_id,
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap();
         let metadata =
             metadata.expect("expected a real local fiat-metadata row for the order just created");
@@ -1315,7 +1318,10 @@ mod tests {
         let metadata = state
             .db
             .lock()
-            .get_order_currency_metadata(&connection_id, &order_id)
+            .get_order_currency_metadata(
+                &connection_id,
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap();
         (metadata.provider, metadata.piconero_per_unit)
@@ -1361,7 +1367,7 @@ mod tests {
         save_provider_settings(
             &router,
             &session_token,
-            &connection_id,
+            connection_id.as_str(),
             &[
                 ("use_coingecko", "on"),
                 ("position_coingecko", "2"),
@@ -1379,7 +1385,7 @@ mod tests {
         save_provider_settings(
             &router,
             &session_token,
-            &connection_id,
+            connection_id.as_str(),
             &[
                 ("use_coingecko", "on"),
                 ("position_coingecko", "1"),
@@ -1397,7 +1403,7 @@ mod tests {
         save_provider_settings(
             &router,
             &session_token,
-            &connection_id,
+            connection_id.as_str(),
             &[("use_coinmarketcap", "on"), ("position_coinmarketcap", "1")],
         )
         .await;
@@ -1453,7 +1459,7 @@ mod tests {
         save_provider_settings(
             &router,
             &session_token,
-            &connection_id,
+            connection_id.as_str(),
             &[
                 ("use_coingecko", "on"),
                 ("position_coingecko", "1"),
@@ -1545,7 +1551,7 @@ mod tests {
         save_provider_settings(
             &router,
             &session_token,
-            &connection_id,
+            connection_id.as_str(),
             &[
                 ("use_haveno", "on"),
                 ("position_haveno", "1"),
@@ -1612,7 +1618,7 @@ mod tests {
                 save_provider_settings(
                     &router,
                     &session_token,
-                    &connection_id,
+                    connection_id.as_str(),
                     &[
                         ("use_haveno", "on"),
                         ("position_haveno", "1"),
@@ -1747,8 +1753,8 @@ mod tests {
                 ("haveno_min_depth_xmr_per_side", "0"),
             ]
         };
-        save_provider_settings(&router, &token_a, &id_a, &haveno_first("5")).await; // accepts 2.5%
-        save_provider_settings(&router, &token_b, &id_b, &haveno_first("1")).await; // does not
+        save_provider_settings(&router, &token_a, id_a.as_str(), &haveno_first("5")).await; // accepts 2.5%
+        save_provider_settings(&router, &token_b, id_b.as_str(), &haveno_first("1")).await; // does not
 
         let haveno_price = ("haveno".to_string(), 250_000_000_000);
         let coingecko_price = ("coingecko".to_string(), 1_000_000_000_000);
@@ -1781,7 +1787,7 @@ mod tests {
         );
 
         // B loosening its own limit changes B's next order and nothing of A's.
-        save_provider_settings(&router, &token_b, &id_b, &haveno_first("3")).await;
+        save_provider_settings(&router, &token_b, id_b.as_str(), &haveno_first("3")).await;
         assert_eq!(order_pricing(&state, &router, &pk_b).await, haveno_price);
         assert_eq!(order_pricing(&state, &router, &pk_a).await, haveno_price);
         assert_eq!(

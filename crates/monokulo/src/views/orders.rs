@@ -9,7 +9,7 @@ use super::{layout, layout_with_head, PageChrome};
 /// One row of the orders list page - just the fields the table shows, not
 /// the full engine `OrderView`.
 pub struct OrderRowViewModel {
-    pub order_id: String,
+    pub order_id: crate::db::OrderId,
     /// The shop's own reference (a POS note, a WooCommerce order number) -
     /// caller-supplied text, always escaped.
     pub reference: Option<String>,
@@ -24,7 +24,7 @@ pub struct OrderRowViewModel {
 }
 
 pub struct OrdersViewModel {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub orders: Vec<OrderRowViewModel>,
     /// The search as typed (empty for none).
@@ -51,7 +51,7 @@ pub fn orders_table(
             tbody {
                 @for order in orders {
                     tr {
-                        td class="card-title" { a class="order-id" href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::order_id_short(&order.order_id)) } }
+                        td class="card-title" { a class="order-id" href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::order_id_short(order.order_id.as_str())) } }
                         td class="card-meta" { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } }
                         td class="card-meta" { (order.source) }
                         td class="card-status" { (super::state_badge(order.status)) }
@@ -138,7 +138,7 @@ pub fn list_results(data: &OrdersViewModel, clock: &super::time::Clock) -> Marku
                     @if data.search.is_empty() { "No orders yet." } @else { "No orders match “" (data.search) "”." }
                 }
             } @else {
-                (orders_table(&data.connection_id, &data.orders, clock))
+                (orders_table(data.connection_id.as_str(), &data.orders, clock))
             }
             @if data.page > 0 || data.has_more {
                 p class="orders-pages" {
@@ -159,7 +159,7 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
     let base = orders_base(data);
     let body = html! {
         div class="wrap" {
-            (super::store_breadcrumb(&data.connection_id, &data.display_name, false))
+            (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, false))
             h1 { "Orders" }
             form method="get" action=(base) class="orders-search" role="search"
                 fx-action=(base) fx-target="#orders-results" fx-push-url fx-replace {
@@ -209,7 +209,7 @@ pub struct PaymentRowViewModel {
 pub struct OrderDetailData {
     /// Taken on the POS: admins get a link to its session's timeline.
     pub from_pos: bool,
-    pub order_id: String,
+    pub order_id: crate::db::OrderId,
     /// Raw, *not* pre-rendered to a trusted-HTML display string like the
     /// timestamp fields below - a merchant order id is caller-supplied free
     /// text, so it must stay ordinary escaped output, never `PreEscaped`.
@@ -238,7 +238,7 @@ pub struct OrderDetailData {
 }
 
 pub struct OrderDetailViewModel {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub order: Option<OrderDetailData>,
 }
@@ -358,10 +358,10 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
 
     let body = html! {
         div class="wrap" {
-            (super::store_breadcrumb(&data.connection_id, &data.display_name, true))
+            (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, true))
             @if let Some(order) = &data.order {
                 h1 class="order-title" {
-                    span { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::order_id_short(&order.order_id)) } }
+                    span { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::order_id_short(order.order_id.as_str())) } }
                     a class="share-btn" id="share-payment-link" href=(order.payment_link) target="_blank" rel="noopener"
                        aria-label="Share payment link" title="Share payment link" {
                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -378,10 +378,10 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                     "Share the payment link (icon above) with whoever needs to pay this order. "
                     (super::reload_button(&chrome.current_path))
                     " "
-                    (super::logs_link(chrome, "order.id", &order.order_id, "Logs for this order"))
+                    (super::logs_link(chrome, "order.id", order.order_id.as_str(), "Logs for this order"))
                     @if order.from_pos && chrome.is_admin {
                         " "
-                        a class="logs-link" href=(format!("/dashboard/admin/logs/pos?order={}", url::form_urlencoded::byte_serialize(order.order_id.as_bytes()).collect::<String>())) {
+                        a class="logs-link" href=(format!("/dashboard/admin/logs/pos?order={}", url::form_urlencoded::byte_serialize(order.order_id.as_str().as_bytes()).collect::<String>())) {
                             "POS session"
                         }
                     }
@@ -423,10 +423,10 @@ mod tests {
     #[test]
     fn list_page_links_to_each_order_detail_page() {
         let data = OrdersViewModel {
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             orders: vec![OrderRowViewModel {
-                order_id: "pay_xyz".to_string(),
+                order_id: shared::ids::OrderId::new("pay_xyz".to_string()),
                 reference: Some("wc-1042".to_string()),
                 source: "WooCommerce".to_string(),
                 status: shared::order_status::OrderStatus::Paid.into(),
@@ -450,7 +450,7 @@ mod tests {
     fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
         OrderDetailData {
             from_pos: false,
-            order_id: "pay_abc123".to_string(),
+            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             merchant_order_id: None,
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             currency: "XMR".to_string(),
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn detail_page_hides_the_double_spend_row_entirely_when_none_was_detected() {
         let data = OrderDetailViewModel {
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             order: Some(test_order_detail_data(None)),
         };
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn detail_page_uses_order_breadcrumb() {
         let data = OrderDetailViewModel {
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             order: Some(test_order_detail_data(None)),
         };
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn detail_page_shows_the_double_spend_row_when_one_was_detected() {
         let data = OrderDetailViewModel {
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             order: Some(test_order_detail_data(Some(1_700_000_000))),
         };
@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn detail_page_shows_a_not_found_state_when_order_is_none() {
         let data = OrderDetailViewModel {
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             order: None,
         };

@@ -137,7 +137,7 @@ async fn restrict_embed(State(control): State<Controls>) -> StatusCode {
     match control
         .db
         .lock()
-        .set_embed_restricted("coverage-store", true)
+        .set_embed_restricted(&shared::ids::ConnectionId::new("coverage-store"), true)
     {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -148,7 +148,7 @@ async fn unrestrict_embed(State(control): State<Controls>) -> StatusCode {
     match control
         .db
         .lock()
-        .set_embed_restricted("coverage-store", false)
+        .set_embed_restricted(&shared::ids::ConnectionId::new("coverage-store"), false)
     {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -160,8 +160,8 @@ async fn mark_browser_created(
     Path(id): Path<String>,
 ) -> StatusCode {
     match control.db.lock().create_order_currency_metadata(
-        "coverage-store",
-        &id,
+        &shared::ids::ConnectionId::new("coverage-store"),
+        &shared::ids::OrderId::new(id.to_string()),
         "XMR",
         "0.001",
         1_000_000_000_000,
@@ -208,7 +208,7 @@ async fn main() {
         .expect("create fixture order");
     let db = Db::open_in_memory().expect("open fixture database");
     db.create_user(
-        "coverage-merchant",
+        &shared::ids::UserId::new("coverage-merchant"),
         "coverage@example.test",
         "unused",
         false,
@@ -217,13 +217,13 @@ async fn main() {
     .expect("create fixture user");
     db.create_session(
         &shared::auth::RawToken::presented(SESSION).hash(),
-        "coverage-merchant",
+        &shared::ids::UserId::new("coverage-merchant"),
         0,
     )
     .expect("create fixture session");
     db.create_store_connection(
-        "coverage-store",
-        "coverage-merchant",
+        &shared::ids::ConnectionId::new("coverage-store"),
+        &shared::ids::UserId::new("coverage-merchant"),
         "custom",
         "http://shop.localhost",
         &tenant.public_key,
@@ -234,7 +234,7 @@ async fn main() {
     )
     .expect("create fixture store");
     db.insert_pos_order(
-        "coverage-store",
+        &shared::ids::ConnectionId::new("coverage-store"),
         &order.order_id,
         None,
         Some("Fixture order"),
@@ -288,7 +288,7 @@ async fn main() {
             client: state.engine_client.clone(),
             token: tenant.secret_token.expose().to_string(),
             public_key: tenant.public_key.clone(),
-            order_id: order.order_id.clone(),
+            order_id: order.order_id.clone().into_string(),
             db: state.db.clone(),
         });
     // Coingecko's two endpoints, answering 1 XMR = 400 AUD (or USD).

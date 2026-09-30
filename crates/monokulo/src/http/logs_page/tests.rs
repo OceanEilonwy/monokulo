@@ -784,7 +784,7 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
     {
         let db = s.state.db.lock();
         db.create_store_connection(
-            "c_pos",
+            &shared::ids::ConnectionId::new("c_pos"),
             &admin.id,
             "woocommerce",
             "https://pos-shop.example.com",
@@ -795,7 +795,8 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
             "XMR",
         )
         .unwrap();
-        db.set_client_logging("c_pos", true).unwrap();
+        db.set_client_logging(&shared::ids::ConnectionId::new("c_pos"), true)
+            .unwrap();
     }
     let session = "5b0c7f0e-2a8d-4c61-9e3b-1f2d3c4b5a69";
     let t0: i64 = 1_790_000_000_000;
@@ -953,7 +954,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         .db
         .lock()
         .create_store_connection(
-            "c_who",
+            &shared::ids::ConnectionId::new("c_who"),
             &admin.id,
             "woocommerce",
             "https://who-shop.example.com",

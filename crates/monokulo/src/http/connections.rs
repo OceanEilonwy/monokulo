@@ -63,7 +63,7 @@ pub struct CreateConnectionRequest {
 
 #[derive(Serialize)]
 pub struct CreateConnectionResponse {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub public_key: String,
 }
 
@@ -91,7 +91,7 @@ pub(super) struct CreateConnectionFields {
 /// same two values [`CreateConnectionResponse`] carries, just not tied to
 /// `axum::Json` yet.
 pub(super) struct CreateConnectionOutcome {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub public_key: String,
 }
 
@@ -162,7 +162,7 @@ pub(super) async fn create_connection_for_user(
             _ => CreateConnectionError::Internal,
         })?;
 
-    let id = Uuid::new_v4().to_string();
+    let id = crate::db::ConnectionId::new(Uuid::new_v4().to_string());
     let encrypted_secret_token =
         crypto::encrypt(&state.encryption_key, created.secret_token.expose());
     let (connection_id, user_id, public_key) =
@@ -397,7 +397,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
         assert_eq!(row.platform, "woocommerce");
@@ -569,7 +569,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&connection_id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
         assert_eq!(row.base_currency, "EUR");

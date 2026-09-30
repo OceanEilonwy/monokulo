@@ -56,7 +56,7 @@ use super::{ApiError, AppState, AuthedUser};
 pub async fn pos_page(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
@@ -125,7 +125,7 @@ pub struct PosCreateOrderRequest {
 
 #[derive(Debug, Serialize)]
 pub struct PosCreateOrderResponse {
-    pub order_id: String,
+    pub order_id: crate::db::OrderId,
     pub address: String,
     pub xmr_amount: String,
     pub amount: String,
@@ -144,7 +144,7 @@ pub struct PosCreateOrderResponse {
 pub async fn create_order(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Json(req): Json<PosCreateOrderRequest>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -404,7 +404,7 @@ pub struct PosStatusResponse {
 
 #[derive(Serialize)]
 pub struct PosOrderData {
-    order_id: String,
+    order_id: crate::db::OrderId,
     merchant_order_id: Option<String>,
     address: String,
     xmr_amount: String,
@@ -434,7 +434,7 @@ pub struct PosOrderData {
 
 async fn pos_order_data(
     state: &AppState,
-    connection_id: &str,
+    connection_id: &crate::db::ConnectionId,
     sk: &shared::auth::RawToken,
     row: crate::db::PosOrderRow,
 ) -> Result<PosOrderData, EngineClientError> {
@@ -454,10 +454,10 @@ async fn pos_order_data(
 /// left out.
 async fn order_metadata(
     state: &AppState,
-    connection_id: &str,
-    order_ids: Vec<String>,
-) -> HashMap<String, crate::db::OrderCurrencyMetadataRow> {
-    let store_id = connection_id.to_string();
+    connection_id: &crate::db::ConnectionId,
+    order_ids: Vec<crate::db::OrderId>,
+) -> HashMap<crate::db::OrderId, crate::db::OrderCurrencyMetadataRow> {
+    let store_id = connection_id.clone();
     state
         .db
         .read(move |db| {
@@ -527,8 +527,8 @@ fn pos_order_view(
 async fn engine_orders(
     state: &AppState,
     sk: &shared::auth::RawToken,
-    order_ids: &[String],
-) -> Result<HashMap<String, OrderView>, EngineClientError> {
+    order_ids: &[crate::db::OrderId],
+) -> Result<HashMap<crate::db::OrderId, OrderView>, EngineClientError> {
     let mut orders = HashMap::with_capacity(order_ids.len());
     for chunk in order_ids.chunks(crate::engine_client::MAX_ORDER_IDS_PER_REQUEST) {
         for order in state.engine_client.list_orders_by_ids(sk, chunk).await? {
@@ -570,7 +570,7 @@ const OPEN_ORDERS_PAGE: u32 = 200;
 /// orders (web orders included) narrowed to the POS's own, not cancelled.
 async fn active_pos_orders(
     state: &AppState,
-    connection_id: &str,
+    connection_id: &crate::db::ConnectionId,
     sk: &shared::auth::RawToken,
 ) -> Result<Vec<PosOrderData>, EngineClientError> {
     let mut open = Vec::new();
@@ -585,8 +585,8 @@ async fn active_pos_orders(
             break;
         }
     }
-    let ids: Vec<String> = open.iter().map(|order| order.order_id.clone()).collect();
-    let store_id = connection_id.to_string();
+    let ids: Vec<crate::db::OrderId> = open.iter().map(|order| order.order_id.clone()).collect();
+    let store_id = connection_id.clone();
     let rows = state
         .db
         .read(move |db| db.get_pos_orders(&store_id, &ids))
@@ -598,7 +598,7 @@ async fn active_pos_orders(
         rows.iter().map(|row| row.order_id.clone()).collect(),
     )
     .await;
-    let mut rows: HashMap<String, crate::db::PosOrderRow> = rows
+    let mut rows: HashMap<crate::db::OrderId, crate::db::PosOrderRow> = rows
         .into_iter()
         .filter(|row| row.cancelled_at.is_none())
         .map(|row| (row.order_id.clone(), row))
@@ -615,7 +615,7 @@ async fn active_pos_orders(
 pub async fn list_orders(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Query(query): Query<PosListQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -659,7 +659,7 @@ pub async fn list_orders(
         Ok(found) => found,
         Err(_) => return ApiError::Internal.into_response(),
     };
-    let ids: Vec<String> = rows.iter().map(|row| row.order_id.clone()).collect();
+    let ids: Vec<crate::db::OrderId> = rows.iter().map(|row| row.order_id.clone()).collect();
     let mut metadata = order_metadata(&state, &id, ids.clone()).await;
     let mut views = match engine_orders(&state, &sk, &ids).await {
         Ok(views) => views,
@@ -681,7 +681,7 @@ pub async fn list_orders(
 pub async fn order_detail(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path((id, order_id)): Path<(String, String)>,
+    Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
@@ -711,7 +711,7 @@ pub async fn order_detail(
 pub async fn background_order(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path((id, order_id)): Path<(String, String)>,
+    Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
     if !matches!(load_owned_connection(&state, &user, &id).await, Ok(Some(_))) {
         return ApiError::NotFound.into_response();
@@ -730,7 +730,7 @@ pub async fn background_order(
 pub async fn cancel_order(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path((id, order_id)): Path<(String, String)>,
+    Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
@@ -783,11 +783,11 @@ pub async fn cancel_order(
 /// already applies to this exact fallback.
 pub(super) async fn resolve_confirmations_required(
     state: &AppState,
-    connection_id: &str,
+    connection_id: &crate::db::ConnectionId,
     sk: &shared::auth::RawToken,
-    order_id: &str,
+    order_id: &crate::db::OrderId,
 ) -> u64 {
-    let (store_id, order) = (connection_id.to_string(), order_id.to_string());
+    let (store_id, order) = (connection_id.clone(), order_id.clone());
     let local = state
         .db
         .read(move |db| db.get_order_currency_metadata(&store_id, &order))
@@ -835,7 +835,7 @@ pub(super) fn derive_payment_error(order: &OrderView) -> Option<String> {
 pub async fn order_status(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path((id, order_id)): Path<(String, String)>,
+    Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
@@ -855,7 +855,7 @@ pub async fn order_status(
 
 async fn pos_status(
     state: &AppState,
-    connection_id: &str,
+    connection_id: &crate::db::ConnectionId,
     sk: &shared::auth::RawToken,
     order: &OrderView,
 ) -> PosStatusResponse {
@@ -908,7 +908,7 @@ pub struct PosEventsQuery {
 pub async fn order_events(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
+    Path(id): Path<crate::db::ConnectionId>,
     Query(query): Query<PosEventsQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id).await {
@@ -920,15 +920,15 @@ pub async fn order_events(
         Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };
-    let mut order_ids: Vec<String> = Vec::new();
+    let mut order_ids: Vec<crate::db::OrderId> = Vec::new();
     for order_id in query
         .orders
         .split(',')
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        if !order_ids.iter().any(|seen| seen == order_id) {
-            order_ids.push(order_id.to_string());
+        if !order_ids.iter().any(|seen| seen.as_str() == order_id) {
+            order_ids.push(crate::db::OrderId::new(order_id));
         }
     }
     if order_ids.is_empty() || order_ids.len() > MAX_WATCHED_ORDERS {
@@ -968,7 +968,7 @@ pub async fn order_events(
                     };
                     let status = pos_status(&state, &connection_id, &sk, &order).await;
                     let mut json = serde_json::to_value(&status).ok()?;
-                    json["order_id"] = serde_json::Value::String(order_id.clone());
+                    json["order_id"] = serde_json::Value::String(order_id.to_string());
                     let data = json.to_string();
                     snapshots.push((
                         order_id,
@@ -1485,7 +1485,10 @@ mod tests {
         let metadata = state
             .db
             .lock()
-            .get_order_currency_metadata(&id, &order_id)
+            .get_order_currency_metadata(
+                &shared::ids::ConnectionId::new(id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap();
         assert!(metadata.created_with_key);
@@ -1999,7 +2002,7 @@ mod tests {
         let pk = state
             .db
             .lock()
-            .get_store_connection_by_id(&id)
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .unwrap()
             .tenant_public_key;
@@ -2219,7 +2222,7 @@ mod pure_logic_tests {
 
     fn order_with_status(status: &str) -> OrderView {
         OrderView {
-            order_id: "pay_test".to_string(),
+            order_id: shared::ids::OrderId::new("pay_test".to_string()),
             merchant_order_id: None,
             address: "addr".to_string(),
             xmr_amount_piconero: 1_000_000_000_000,

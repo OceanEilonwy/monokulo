@@ -112,7 +112,7 @@ pub(super) async fn authenticate(
         .await
         .map_err(|_| LoginError::Internal)?;
     // The sign-in's own lines start the session's.
-    super::record_identity(&user.id, &token_hash);
+    super::record_identity(user.id.as_str(), &token_hash);
 
     Ok((user, raw_token))
 }

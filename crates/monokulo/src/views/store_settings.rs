@@ -78,7 +78,7 @@ pub struct EmbedDomainView {
 pub struct StoreSettingsData {
     /// The zone the page shows times in (the signed-in user's).
     pub clock: super::time::Clock,
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     /// The tenant's current confirmation threshold - `10` when the engine is
     /// currently unreachable.
@@ -558,7 +558,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             @if let Some(store) = &data.store {
-                (super::store_breadcrumb(&store.connection_id, &store.display_name, false))
+                (super::store_breadcrumb(store.connection_id.as_str(), &store.display_name, false))
                 h1 { "Settings" }
 
                 @if let Some(error) = &store.settings_error {
@@ -688,7 +688,7 @@ mod tests {
     fn base_store() -> StoreSettingsData {
         StoreSettingsData {
             clock: crate::views::time::Clock::utc(0),
-            connection_id: "conn_1".to_string(),
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             confirmations_required: 10,
             fx_provider_options: vec![FxProviderOption {

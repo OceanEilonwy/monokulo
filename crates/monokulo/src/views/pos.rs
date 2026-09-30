@@ -7,7 +7,7 @@ use maud::{html, Markup};
 use super::{layout_bare_with_head, logo_mark, status_indicator, theme_toggle, PageChrome};
 
 pub struct PosViewModel {
-    pub connection_id: String,
+    pub connection_id: crate::db::ConnectionId,
     pub public_key: String,
     pub display_name: String,
     pub base_currency: String,
@@ -61,7 +61,7 @@ mod tests {
     fn renders_solid_mount_with_store_config_and_no_site_nav() {
         let chrome = PageChrome::from_user(None, "/dashboard/stores/conn-1/pos");
         let data = PosViewModel {
-            connection_id: "conn-1".into(),
+            connection_id: shared::ids::ConnectionId::new("conn-1"),
             public_key: "pk_test".into(),
             display_name: "example.com".into(),
             base_currency: "XMR".into(),
