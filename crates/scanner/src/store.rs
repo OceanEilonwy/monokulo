@@ -55,6 +55,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (17, include_str!("../migrations/0017_pending_payment_recomputes.sql")),
     (18, include_str!("../migrations/0018_partial_block_scans.sql")),
     (19, include_str!("../migrations/0019_scanner_work.sql")),
+    (20, include_str!("../migrations/0020_scanner_indexes.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -77,9 +78,28 @@ fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
-         PRAGMA foreign_keys = ON;",
-    )
+         PRAGMA foreign_keys = ON;
+         PRAGMA journal_size_limit = 67108864;",
+    )?;
+    tune_connection(conn)
 }
+
+/// Settings every connection gets, writers and readers alike: how long to
+/// wait for another connection's lock before reporting it busy (two
+/// connections write: the database worker and the API), and room to keep
+/// every hot statement prepared.
+fn tune_connection(conn: &Connection) -> rusqlite::Result<()> {
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
+    Ok(())
+}
+
+/// How long a connection waits for another's lock. Scanner transactions are
+/// bounded pages, so this is only reached if something is badly wrong.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Prepared statements kept per connection (the default is 16, fewer than
+/// the scanner's hot queries).
+const STATEMENT_CACHE: usize = 128;
 
 /// Each migration's DDL and its `schema_migrations` bookkeeping row commit together
 /// or not at all. Without that, a crash in the window between the two re-runs the
@@ -116,6 +136,7 @@ impl ReadStorePool {
         for n in 0..count.max(1) {
             let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA query_only = ON;")?;
+            tune_connection(&conn)?;
             let store = Store::from_connection(conn);
             let (sender, mut receiver) = tokio::sync::mpsc::channel::<ReadJob>(64);
             std::thread::Builder::new().name(format!("scanner-db-read-{n}"))
@@ -324,11 +345,121 @@ fn is_settlement(s: OrderStatus) -> bool {
     matches!(s, OrderStatus::Paid | OrderStatus::Overpaid)
 }
 
+/// Everything a status recompute decides from.
+struct StatusFacts<'a> {
+    order: &'a Order,
+    /// The order's valid payments as of `current_height`.
+    views: &'a [PaymentView],
+    confirmations_required: u64,
+    /// The tenant is behind the network: blocks not yet scanned for it
+    /// could hold a payment.
+    tenant_lagging: bool,
+    /// A reorg is being reconciled on the order's network.
+    settlement_frozen: bool,
+    current_height: u64,
+    now: i64,
+}
+
+/// What a status recompute writes.
+#[derive(Debug, PartialEq, Eq)]
+struct StatusPlan {
+    status: OrderStatus,
+    confirmations: u64,
+    amount_received: u64,
+    next_due_at: Option<i64>,
+    next_due_height: Option<i64>,
+    /// A settlement had to wait: the recompute obligation stays.
+    keep_obligation: bool,
+}
+
+/// The status rules, with no I/O: the derived status, the two holds on it,
+/// and when the order can next change without a payment changing.
+fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
+    let order = facts.order;
+    let amount_received: u64 = facts.views.iter().map(|v| v.amount_piconero).sum();
+    let confirmations = facts.views.iter().map(|v| v.confirmations).min().unwrap_or(0);
+    let derived = derive_status(
+        facts.views,
+        StatusInputs {
+            xmr_amount_piconero: order.xmr_amount_piconero,
+            confirmations_required: facts.confirmations_required,
+            now: facts.now,
+            expires_at: order.expires_at,
+        },
+    );
+    // While the tenant is behind the network, an order mustn't become
+    // expired: its payment may be in a block not yet scanned for it, and an
+    // `order.expired` webhook can make a shop cancel an order that turns out
+    // to be paid. It expires once the tenant has caught up.
+    let expiry_held = derived == OrderStatus::Expired && order.status != OrderStatus::Expired && facts.tenant_lagging;
+    // While a reorg on this network is being reconciled, confirmations may be
+    // counted on the losing chain: an order can't newly settle until the
+    // rewind. Everything else (expiry, confirmation counts, walking a
+    // settlement back) still happens, and it shows where the payment stands.
+    let settlement_deferred = is_settlement(derived) && !is_settlement(order.status) && facts.settlement_frozen;
+    let status = if expiry_held {
+        order.status
+    } else if settlement_deferred {
+        if facts.views.iter().all(|v| v.is_zero_conf) { OrderStatus::Unconfirmed } else { OrderStatus::Confirming }
+    } else {
+        derived
+    };
+    // When the status can next move without a payment changing (a payment
+    // change leaves a `pending_payment_recomputes` row instead):
+    // - its deadline, while it is still short of the amount;
+    // - the next block, while a mined payment is short of the confirmations
+    //   required (the count customers see moves every block);
+    // - again next round, when a transition was held back (rescheduled at
+    //   `now`, so it queues behind anything due earlier);
+    // - never, once terminal.
+    let (next_due_at, next_due_height) = if settlement_deferred || expiry_held {
+        (Some(facts.now), None)
+    } else if is_terminal(status) {
+        (None, None)
+    } else {
+        let short_of_amount = amount_received < order.xmr_amount_piconero;
+        let confirming = facts.views.iter().any(|v| !v.is_zero_conf && v.confirmations < facts.confirmations_required);
+        (
+            short_of_amount.then_some(order.expires_at.saturating_add(1).max(facts.now)),
+            confirming.then_some(facts.current_height.saturating_add(1) as i64),
+        )
+    };
+    StatusPlan { status, confirmations, amount_received, next_due_at, next_due_height, keep_obligation: settlement_deferred }
+}
+
 /// The scan window (task 7.3, decision D10) as an SQL condition on an
 /// `orders` row aliased `o`: open (not terminal), or closed no earlier than
 /// `?since` minus the grace period. Parameters: `:since_minus_grace`.
+///
+/// For one order (by primary key) only. Across a tenant's orders the OR
+/// defeats every index, so those queries use its two halves instead, each
+/// with its own index: [`OPEN_ORDERS`] and [`recently_closed_orders`].
 const IN_SCAN_WINDOW: &str = "(o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')
      OR (o.closed_at_utc IS NOT NULL AND o.closed_at_utc >= :since_minus_grace))";
+
+/// The open half of the scan window, for orders aliased `o` of one tenant
+/// (`orders_tenant_status_idx`).
+const OPEN_ORDERS: &str = "o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')";
+
+/// Whether the tenant whose id is the SQL expression `tenant` has an order
+/// in its scan window: two `EXISTS`, each answered from an index.
+/// Parameters: `:since_minus_grace`.
+fn tenant_in_scope(tenant: &str) -> String {
+    format!(
+        "(EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = {tenant} AND {OPEN_ORDERS})
+          OR EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = {tenant} AND o.closed_at_utc >= :since_minus_grace))"
+    )
+}
+
+/// The ids of the scan window's orders for tenants matching the SQL
+/// condition `tenants` on `o.tenant_id`, as a `UNION` of its two indexed
+/// halves. Parameters: `:since_minus_grace`.
+fn scan_window_orders(tenants: &str) -> String {
+    format!(
+        "SELECT o.id FROM orders o WHERE {tenants} AND {OPEN_ORDERS}
+         UNION SELECT o.id FROM orders o WHERE {tenants} AND o.closed_at_utc >= :since_minus_grace"
+    )
+}
 
 /// An unknown value can only come from a hand-edited or corrupted row (the
 /// schema's CHECK constraint rejects it otherwise). It is reported as a row
@@ -543,14 +674,14 @@ impl Store {
     /// Public keys of the enabled tenants on `network`, for `/status`'s list
     /// of stores that can't be scanned (task 3.7).
     pub fn tenant_public_keys_on_network(&self, network: &str) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY public_key")?;
+        let mut stmt = self.conn.prepare_cached("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY public_key")?;
         let rows = stmt.query_map(params![network], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// Every active tenant's (public key, network, key custody backend).
     pub fn tenant_custody_backends(&self) -> Result<Vec<(String, String, String)>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT public_key, network, key_custody_backend FROM tenants WHERE disabled_at_utc IS NULL ORDER BY public_key",
         )?;
         let rows = stmt
@@ -561,7 +692,7 @@ impl Store {
 
     /// `lagging_tenants`, by public key: (public key, cursor).
     pub fn lagging_tenant_keys(&self, network: &str) -> Result<Vec<(String, u64)>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT public_key, scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL
                AND scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = ?1)
@@ -596,7 +727,7 @@ impl Store {
     /// How many enabled tenants each network has, for the admin page (tasks
     /// 2.2 and 4.4).
     pub fn count_tenants_by_network(&self) -> Result<std::collections::HashMap<String, u64>> {
-        let mut stmt = self.conn.prepare("SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL GROUP BY network")?;
+        let mut stmt = self.conn.prepare_cached("SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL GROUP BY network")?;
         let rows = stmt
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
             .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
@@ -608,7 +739,7 @@ impl Store {
     /// in the HTTP layer (`http::resolve_wallet_handle`) is a fallback, not the
     /// only path.
     pub fn list_active_tenants(&self) -> Result<Vec<Tenant>> {
-        let mut stmt = self.conn.prepare("SELECT * FROM tenants WHERE disabled_at_utc IS NULL")?;
+        let mut stmt = self.conn.prepare_cached("SELECT * FROM tenants WHERE disabled_at_utc IS NULL")?;
         let rows = stmt.query_map([], Self::row_to_tenant)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -698,7 +829,7 @@ impl Store {
         cursor: Option<i64>,
     ) -> Result<Vec<Order>> {
         let status_str = status_filter.map(status_to_str);
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM orders
              WHERE tenant_id = ?1
                AND (?2 IS NULL OR status = ?2)
@@ -724,7 +855,7 @@ impl Store {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Order>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM orders
              WHERE tenant_id = ?1
                AND (?2 = 0 OR status IN (?3, ?4, ?5, ?6))
@@ -786,10 +917,9 @@ impl Store {
     /// the manual rescan (`scanner::rescan_order`) which exists for after
     /// this window has already elapsed.
     pub fn active_tenant_ids(&self, network: &str, now: i64, grace_period_seconds: i64) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT DISTINCT o.tenant_id FROM orders o
-             JOIN tenants t ON t.id = o.tenant_id
-             WHERE {IN_SCAN_WINDOW} AND t.network = :network AND t.disabled_at_utc IS NULL"
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT t.id FROM tenants t WHERE t.network = :network AND t.disabled_at_utc IS NULL AND {}",
+            tenant_in_scope("t.id")
         ))?;
         let rows = stmt
             .query_map(
@@ -806,8 +936,9 @@ impl Store {
     /// passes the time of the tenant's cursor block, so orders that closed
     /// during its gap are still looked for.
     pub fn scan_window(&self, tenant_id: &str, since: i64, grace_period_seconds: i64) -> Result<Vec<u32>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT o.minor_index FROM orders o WHERE o.tenant_id = :tenant AND {IN_SCAN_WINDOW} ORDER BY o.minor_index"
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT minor_index FROM orders WHERE id IN ({}) ORDER BY minor_index",
+            scan_window_orders("o.tenant_id = :tenant")
         ))?;
         let rows = stmt
             .query_map(
@@ -835,7 +966,7 @@ impl Store {
     /// `now`/`grace_period_seconds` - see `active_tenant_ids`'s own doc
     /// comment (the same widening, one level down).
     pub fn non_terminal_order_ids(&self, network: &str, now: i64, grace_period_seconds: i64) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT o.id FROM orders o
              JOIN tenants t ON t.id = o.tenant_id
              WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at_utc >= ?6)) AND t.network = ?7",
@@ -860,7 +991,7 @@ impl Store {
     /// Payment changes whose status/webhook transaction has not committed yet.
     /// Unlike the live scan window this includes old, closed orders.
     pub fn pending_payment_recomputes(&self, network: &str) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT p.order_id FROM pending_payment_recomputes p
              JOIN orders o ON o.id = p.order_id
              JOIN tenants t ON t.id = o.tenant_id WHERE t.network = ?1",
@@ -872,7 +1003,7 @@ impl Store {
     /// A bounded, stable page for background status work. Keyset pagination
     /// avoids an OFFSET walk over a large backlog on every tick.
     pub fn pending_payment_recomputes_page(&self, network: &str, after: &str, limit: usize) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT p.order_id FROM pending_payment_recomputes p
              JOIN orders o ON o.id = p.order_id JOIN tenants t ON t.id = o.tenant_id
              WHERE t.network = ?1 AND p.order_id > ?2 ORDER BY p.order_id LIMIT ?3",
@@ -1201,7 +1332,7 @@ impl Store {
     }
 
     pub fn get_valid_payments(&self, order_id: &str) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM order_payments WHERE order_id = ?1 AND voided_at_utc IS NULL",
         )?;
         let rows = stmt
@@ -1256,7 +1387,7 @@ impl Store {
     /// any block height, so re-examining them is also just the correct reading of
     /// the question this query asks.
     pub fn find_payments_at_or_after_height(&self, network: &str, min_height: u64) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1285,7 +1416,7 @@ impl Store {
         network: &str,
         min_height: u64,
     ) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1308,7 +1439,7 @@ impl Store {
     /// that function's own doc comment for why an old void is not worth rechecking
     /// forever. Scoped by network for the same reason every sibling query here is.
     pub fn find_payments_voided_since(&self, network: &str, cutoff: i64) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1335,7 +1466,7 @@ impl Store {
     /// Scoped by network for the same reason its height-based counterparts are: one
     /// network's daemon must never be asked about another chain's transactions.
     pub fn find_unconfirmed_payments(&self, network: &str) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1353,7 +1484,7 @@ impl Store {
     /// stable keyset cursor for the life of a payment row; callers wrap to zero
     /// at the end so transactions still absent from the pool are revisited.
     pub fn unconfirmed_payments_page(&self, network: &str, after_rowid: i64, limit: usize) -> Result<Vec<(i64, OrderPaymentRow)>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.rowid, op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
@@ -1404,110 +1535,85 @@ impl Store {
         now: i64,
     ) -> Result<(OrderStatus, OrderStatus)> {
         let order = self.get_order_by_id(order_id)?.ok_or(StoreError::NotFound)?;
-        let tenant = self.get_tenant_by_id(&order.tenant_id)?.ok_or(StoreError::NotFound)?;
-        let valid = self.get_valid_payments(order_id)?;
-
-        let views: Vec<PaymentView> = valid
+        let (confirmations_required, network, lagging) = self.recompute_facts(&order.tenant_id)?;
+        let views: Vec<PaymentView> = self
+            .get_valid_payments(order_id)?
             .iter()
-            .map(|p| {
-                let confirmations = match p.block_height {
+            .map(|p| PaymentView {
+                amount_piconero: p.amount_piconero,
+                confirmations: match p.block_height {
                     Some(h) if current_height >= h as u64 => current_height - h as u64 + 1,
                     _ => 0,
-                };
-                PaymentView {
-                    amount_piconero: p.amount_piconero,
-                    confirmations,
-                    is_zero_conf: p.block_height.is_none(),
-                }
+                },
+                is_zero_conf: p.block_height.is_none(),
             })
             .collect();
-
-        let total: u64 = views.iter().map(|v| v.amount_piconero).sum();
-        let min_confirmations = views.iter().map(|v| v.confirmations).min().unwrap_or(0);
-
-        let confirmations_required = order.confirmations_required_override.unwrap_or(tenant.confirmations_required);
-        let derived = derive_status(
-            &views,
-            StatusInputs { xmr_amount_piconero: order.xmr_amount_piconero, confirmations_required, now, expires_at: order.expires_at },
-        );
-        let mut new_status = derived;
-        // While the tenant is behind the network, an order mustn't become
-        // expired: its payment may be in a block not yet scanned for it, and an
-        // `order.expired` webhook can make a shop cancel an order that turns
-        // out to be paid. It expires once the tenant has caught up.
-        let expiry_held =
-            new_status == OrderStatus::Expired && order.status != OrderStatus::Expired && self.is_tenant_lagging(&tenant)?;
-        if expiry_held {
-            new_status = order.status;
-        }
-        // While a reorg on this network is being reconciled, confirmations may
-        // be counted on the losing chain: an order can't newly settle until the
-        // rewind. Everything else (expiry, confirmation counts, walking a
-        // settlement back) still happens. The obligation stays, so it settles
-        // on the first recompute after the rewind.
-        let settlement_deferred = is_settlement(new_status)
-            && !is_settlement(order.status)
-            && self.settlement_frozen(&tenant.network)?;
-        if settlement_deferred {
-            // Where the payment actually stands, short of settled.
-            new_status = if views.iter().all(|v| v.is_zero_conf) { OrderStatus::Unconfirmed } else { OrderStatus::Confirming };
-        }
-
-        // When this order's status can next move without a payment changing
-        // (a payment change leaves a `pending_payment_recomputes` row instead):
-        // - its deadline, while it is still short of the amount;
-        // - the next block, while a mined payment is short of the confirmations
-        //   required (the count customers see moves every block);
-        // - again next round, when a transition was held back above (it is
-        //   rescheduled at `now`, so it queues behind anything due earlier);
-        // - never, once terminal.
-        let (next_due_at, next_due_height) = if settlement_deferred || expiry_held {
-            (Some(now), None)
-        } else if is_terminal(new_status) {
-            (None, None)
-        } else {
-            let short_of_amount = total < order.xmr_amount_piconero;
-            let confirming = views.iter().any(|v| !v.is_zero_conf && v.confirmations < confirmations_required);
-            (
-                short_of_amount.then_some(order.expires_at.saturating_add(1).max(now)),
-                confirming.then_some(current_height.saturating_add(1) as i64),
-            )
-        };
+        let plan = plan_status(&StatusFacts {
+            order: &order,
+            views: &views,
+            confirmations_required: order.confirmations_required_override.unwrap_or(confirmations_required),
+            tenant_lagging: lagging,
+            settlement_frozen: self.settlement_frozen(&network)?,
+            current_height,
+            now,
+        });
 
         // `closed_at_utc` (migration 0016): set the first time the order is
         // terminal, kept while it stays terminal, cleared if it reopens. An
         // expired order closed at its deadline, however late expiry was
-        // noticed (its store may have been catching up).
-        let closed_at = if new_status == OrderStatus::Expired { order.expires_at.min(now) } else { now };
+        // noticed (its store may have been catching up). Written only if
+        // something changed: most recomputes change nothing, and a write that
+        // changes nothing still costs a page write on slow storage.
+        let closed_at = if plan.status == OrderStatus::Expired { order.expires_at.min(now) } else { now };
         self.conn.execute(
             "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5,
                 closed_at_utc = CASE WHEN ?6 THEN COALESCE(closed_at_utc, ?7) ELSE NULL END,
                 next_due_at_utc = ?8, next_due_height = ?9
-             WHERE id = ?1",
+             WHERE id = ?1
+               AND (status IS NOT ?2 OR confirmations IS NOT ?3 OR amount_received_piconero IS NOT ?4
+                    OR closed_at_utc IS NOT (CASE WHEN ?6 THEN COALESCE(closed_at_utc, ?7) ELSE NULL END)
+                    OR next_due_at_utc IS NOT ?8 OR next_due_height IS NOT ?9)",
             params![
                 order_id,
-                status_to_str(new_status),
-                min_confirmations as i64,
-                total as i64,
+                status_to_str(plan.status),
+                plan.confirmations as i64,
+                plan.amount_received as i64,
                 now,
-                is_terminal(new_status),
+                is_terminal(plan.status),
                 closed_at,
-                next_due_at,
-                next_due_height,
+                plan.next_due_at,
+                plan.next_due_height,
             ],
         )?;
         // The payment-change obligation is met by this recompute, unless the
         // settlement it implies had to wait.
-        if settlement_deferred {
+        if plan.keep_obligation {
             self.conn.execute("INSERT OR IGNORE INTO pending_payment_recomputes (order_id) VALUES (?1)", [order_id])?;
         } else {
             self.clear_pending_payment_recompute(order_id)?;
         }
-        if order.status != new_status || order.confirmations != min_confirmations || order.amount_received_piconero != total {
+        if order.status != plan.status || order.confirmations != plan.confirmations || order.amount_received_piconero != plan.amount_received {
             self.publish_order_change(&order.tenant_id, order_id);
         }
+        Ok((order.status, plan.status))
+    }
 
-        Ok((order.status, new_status))
+    /// What a status recompute needs to know about an order's tenant: its
+    /// confirmations requirement, its network, and whether it is behind the
+    /// network (a disabled tenant never is). One small row, not the tenant
+    /// with its key material.
+    fn recompute_facts(&self, tenant_id: &str) -> Result<(u64, String, bool)> {
+        self.conn
+            .query_row(
+                "SELECT t.confirmations_required, t.network,
+                        t.disabled_at_utc IS NULL AND t.scanned_through_height IS NOT NULL
+                        AND t.scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = t.network)
+                 FROM tenants t WHERE t.id = ?1",
+                [tenant_id],
+                |row| Ok((row.get::<_, i64>(0)?.max(0) as u64, row.get(1)?, row.get::<_, Option<bool>>(2)?.unwrap_or(false))),
+            )
+            .optional()?
+            .ok_or(StoreError::NotFound)
     }
 
     /// Sticky, first-occurrence-only - see schema comment on `double_spend_detected_at`.
@@ -1628,6 +1734,17 @@ impl Store {
         Ok(())
     }
 
+    /// Copies what it can of the write-ahead log back into the database
+    /// without waiting for anyone (`PASSIVE`). Returns whether the whole log
+    /// was copied. With two writers and long-lived readers the log can grow
+    /// between SQLite's own automatic checkpoints; once a checkpoint lets it
+    /// reset, `journal_size_limit` trims the file.
+    pub fn checkpoint_wal(&self) -> Result<bool> {
+        let (busy, log, checkpointed): (i64, i64, i64) =
+            self.conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        Ok(busy == 0 && log == checkpointed)
+    }
+
     pub fn prune_scanned_blocks_below(&self, network: &str, min_height: u64) -> Result<()> {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height < ?2",
@@ -1672,7 +1789,7 @@ impl Store {
     /// Tenants on `network` whose cursor is below the network's high-water
     /// mark, with their cursors, lowest first.
     pub fn lagging_tenants(&self, network: &str) -> Result<Vec<(String, u64)>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id, scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL
                AND scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = ?1)
@@ -1705,17 +1822,6 @@ impl Store {
         Ok(())
     }
 
-    /// Whether `tenant` hasn't been scanned up to its network's high-water
-    /// mark. While it is, its orders mustn't expire: a payment may be sitting
-    /// in a block it hasn't been checked against yet.
-    fn is_tenant_lagging(&self, tenant: &Tenant) -> Result<bool> {
-        if tenant.disabled_at.is_some() {
-            return Ok(false);
-        }
-        let Some(cursor) = tenant.scanned_through_height else { return Ok(false) };
-        Ok(self.max_scanned_height(&tenant.network)?.is_some_and(|high_water| cursor < high_water))
-    }
-
     // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) -------
 
     /// Bumps every one of `tenant_id`'s currently-in-scope orders (the exact same
@@ -1734,11 +1840,15 @@ impl Store {
         now: i64,
         grace_period_seconds: i64,
     ) -> Result<()> {
+        // Only rows it changes: most rounds nothing has moved, and a write
+        // that changes nothing still costs a page write on slow storage.
         self.conn.execute(
             &format!(
-                "UPDATE orders AS o
+                "UPDATE orders
                  SET last_scanned_height = :height, first_scanned_height = COALESCE(first_scanned_height, :height)
-                 WHERE o.tenant_id = :tenant AND {IN_SCAN_WINDOW}"
+                 WHERE id IN ({})
+                   AND (last_scanned_height IS NOT :height OR first_scanned_height IS NULL)",
+                scan_window_orders("o.tenant_id = :tenant")
             ),
             rusqlite::named_params! {
                 ":tenant": tenant_id,
@@ -1786,7 +1896,7 @@ impl Store {
     /// call per known key, then resolves each known setting's effective value/source
     /// against this map plus the environment.
     pub fn list_settings(&self) -> Result<std::collections::HashMap<String, String>> {
-        let mut stmt = self.conn.prepare("SELECT key, value FROM settings")?;
+        let mut stmt = self.conn.prepare_cached("SELECT key, value FROM settings")?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
         rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>().map_err(Into::into)
     }
@@ -1833,7 +1943,7 @@ impl Store {
     }
 
     pub fn list_webhooks(&self, tenant_id: &str) -> Result<Vec<Webhook>> {
-        let mut stmt = self.conn.prepare("SELECT * FROM webhooks WHERE tenant_id = ?1")?;
+        let mut stmt = self.conn.prepare_cached("SELECT * FROM webhooks WHERE tenant_id = ?1")?;
         let rows = stmt
             .query_map(params![tenant_id], |row| {
                 Ok(Webhook {
@@ -1887,7 +1997,7 @@ impl Store {
     /// - at most `per_tenant` per store, so one store with a big backlog (or a
     ///   slow endpoint) can't fill the batch and hold up every other store.
     pub fn due_webhook_deliveries_fair(&self, now: i64, per_tenant: u32, limit: u32) -> Result<Vec<DueDelivery>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id, webhook_id, order_id, event_type, payload_json, attempt_count, url, extra_headers, signing_secret
              FROM (
                 SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
@@ -1934,7 +2044,7 @@ impl Store {
     }
 
     pub fn due_webhook_deliveries(&self, now: i64, limit: u32) -> Result<Vec<DueDelivery>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
                     w.url, w.extra_headers, w.signing_secret
              FROM webhook_deliveries d
@@ -2008,6 +2118,114 @@ pub struct DueDelivery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn order(status: OrderStatus, expires_at: i64) -> Order {
+        Order {
+            id: "o".into(),
+            tenant_id: "t".into(),
+            merchant_order_id: None,
+            minor_index: 1,
+            address: "a".into(),
+            xmr_amount_piconero: 100,
+            amount_received_piconero: 0,
+            status,
+            confirmations: 0,
+            double_spend_detected_at: None,
+            refund_address: None,
+            description: None,
+            created_at: 0,
+            expires_at,
+            updated_at: 0,
+            first_scanned_height: None,
+            last_scanned_height: None,
+            confirmations_required_override: None,
+        }
+    }
+
+    fn mined(amount: u64, confirmations: u64) -> PaymentView {
+        PaymentView { amount_piconero: amount, confirmations, is_zero_conf: false }
+    }
+
+    fn pooled(amount: u64) -> PaymentView {
+        PaymentView { amount_piconero: amount, confirmations: 0, is_zero_conf: true }
+    }
+
+    /// The status rules as a table: derived status, the expiry hold, the
+    /// settlement freeze, and the next points an order is due.
+    #[test]
+    fn plan_status_covers_every_rule() {
+        use OrderStatus::*;
+        struct Case {
+            what: &'static str,
+            was: OrderStatus,
+            views: Vec<PaymentView>,
+            lagging: bool,
+            frozen: bool,
+            now: i64,
+            required: u64,
+            expect: (OrderStatus, Option<i64>, Option<i64>, bool),
+        }
+        // Ten confirmations required, deadline 1000, tip 50.
+        let cases = [
+            Case { what: "unpaid, before its deadline", was: Pending, views: vec![], lagging: false, frozen: false, now: 500, required: 10,
+                expect: (Pending, Some(1001), None, false) },
+            Case { what: "unpaid, after its deadline", was: Pending, views: vec![], lagging: false, frozen: false, now: 2000, required: 10,
+                expect: (Expired, None, None, false) },
+            Case { what: "expiry held while the tenant is behind", was: Pending, views: vec![], lagging: true, frozen: false, now: 2000, required: 10,
+                expect: (Pending, Some(2000), None, false) },
+            Case { what: "already expired: a hold doesn't reopen it", was: Expired, views: vec![], lagging: true, frozen: false, now: 2000, required: 10,
+                expect: (Expired, None, None, false) },
+            Case { what: "part paid, confirming", was: Pending, views: vec![mined(40, 3)], lagging: false, frozen: false, now: 500, required: 10,
+                expect: (Partial, Some(1001), Some(51), false) },
+            Case { what: "paid in the pool", was: Pending, views: vec![pooled(100)], lagging: false, frozen: false, now: 500, required: 10,
+                expect: (Unconfirmed, None, None, false) },
+            Case { what: "paid, confirming", was: Unconfirmed, views: vec![mined(100, 3)], lagging: false, frozen: false, now: 500, required: 10,
+                expect: (Confirming, None, Some(51), false) },
+            Case { what: "paid and confirmed", was: Confirming, views: vec![mined(100, 10)], lagging: false, frozen: false, now: 500, required: 10,
+                expect: (Paid, None, None, false) },
+            Case { what: "overpaid and confirmed", was: Confirming, views: vec![mined(150, 10)], lagging: false, frozen: false, now: 500, required: 10,
+                expect: (Overpaid, None, None, false) },
+            Case { what: "settlement waits for a reorg", was: Confirming, views: vec![mined(100, 10)], lagging: false, frozen: true, now: 500, required: 10,
+                expect: (Confirming, Some(500), None, true) },
+            Case { what: "a zero-conf settlement waits too", was: Pending, views: vec![pooled(100)], lagging: false, frozen: true, now: 500, required: 0,
+                expect: (Unconfirmed, Some(500), None, true) },
+            Case { what: "zero-conf accepted: paid from the pool", was: Pending, views: vec![pooled(100)], lagging: false, frozen: false, now: 500, required: 0,
+                expect: (Paid, None, None, false) },
+            Case { what: "already paid: the freeze doesn't hold it", was: Paid, views: vec![mined(100, 12)], lagging: false, frozen: true, now: 500, required: 10,
+                expect: (Paid, None, None, false) },
+        ];
+        for case in cases {
+            let order = order(case.was, 1000);
+            let plan = plan_status(&StatusFacts {
+                order: &order,
+                views: &case.views,
+                confirmations_required: case.required,
+                tenant_lagging: case.lagging,
+                settlement_frozen: case.frozen,
+                current_height: 50,
+                now: case.now,
+            });
+            assert_eq!(
+                (plan.status, plan.next_due_at, plan.next_due_height, plan.keep_obligation),
+                case.expect,
+                "{}",
+                case.what
+            );
+        }
+    }
+
+    /// A recompute that changes nothing writes nothing (`updated_at` stays).
+    #[test]
+    fn a_recompute_that_changes_nothing_writes_nothing() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+        store.recompute_order_status(&order.id, 10, 1_000).unwrap();
+        let before = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap().updated_at;
+        store.recompute_order_status(&order.id, 11, 1_500).unwrap();
+        let after = store.get_order(&tenant.tenant.id, &order.id).unwrap().unwrap().updated_at;
+        assert_eq!(before, after);
+    }
 
     #[tokio::test]
     async fn read_pool_uses_independent_connections_without_blocking_the_runtime() {
@@ -3434,6 +3652,7 @@ mod tests {
                 "order_payments_confirmed_height_idx".to_string(),
                 "order_payments_order_idx".to_string(),
                 "order_payments_unconfirmed_idx".to_string(),
+                "order_payments_voided_idx".to_string(),
             ],
             "every explicitly-declared index that existed on order_payments before the rebuild must exist after it"
         );

@@ -228,6 +228,7 @@ pub struct ScanState {
     mempool: mempool::MempoolState,
     blocks: blocks::BlockState,
     settlement: settlement::SettlementState,
+    upkeep: upkeep::UpkeepState,
     /// Tenants whose scans keep failing.
     backoff: Backoff,
     /// Orders whose status recompute keeps failing.

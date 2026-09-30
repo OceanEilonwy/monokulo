@@ -22,6 +22,28 @@ const VOID_PAGE: usize = 16;
 /// How often a full pass over recent voids starts.
 const VOID_RECHECK_INTERVAL_SECS: i64 = 5 * 60;
 
+/// How often the write-ahead log is checkpointed.
+const CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Kept across rounds: when the log was last checkpointed.
+#[derive(Default)]
+pub(crate) struct UpkeepState {
+    last_checkpoint: parking_lot::Mutex<Option<tokio::time::Instant>>,
+}
+
+impl UpkeepState {
+    /// Whether a checkpoint is due (and, if so, marks it done now).
+    fn checkpoint_due(&self) -> bool {
+        let mut last = self.last_checkpoint.lock();
+        let now = tokio::time::Instant::now();
+        let due = last.is_none_or(|at| now.saturating_duration_since(at) >= CHECKPOINT_INTERVAL);
+        if due {
+            *last = Some(now);
+        }
+        due
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct UpkeepRound {
     first_done: bool,
@@ -40,6 +62,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: tokio::time::Instant) -> 
     let mut result = Ok(());
     if first {
         result = prune(round).await.and(result);
+        result = checkpoint(round).await.and(result);
         result = recheck_voids(round, until).await.and(result);
     }
     if !round.upkeep.ranges_done {
@@ -61,6 +84,17 @@ async fn prune(round: &Round<'_>) -> Result<(), ScannerError> {
             Ok(())
         })
         .await
+}
+
+/// A passive WAL checkpoint every `CHECKPOINT_INTERVAL` (see
+/// `Store::checkpoint_wal`).
+async fn checkpoint(round: &Round<'_>) -> Result<(), ScannerError> {
+    if !round.state.upkeep.checkpoint_due() {
+        return Ok(());
+    }
+    let complete = round.db(|s, _| Ok(s.checkpoint_wal()?)).await?;
+    tracing::debug!(complete, "checkpointed the write-ahead log");
+    Ok(())
 }
 
 /// One page of stores' scanned-range bookkeeping. Each store's orders show

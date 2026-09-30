@@ -225,7 +225,7 @@ impl Store {
 
     /// Up to `limit` candidates whose retry time has come, oldest retry first.
     pub fn due_reorg_candidates(&self, network: &str, now: i64, limit: usize) -> Result<Vec<ReorgCandidate>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.*, w.attempts AS reorg_attempts FROM reorg_work w
              JOIN order_payments op ON op.id = w.payment_id
              WHERE w.network = ?1 AND w.next_attempt_at_utc <= ?2
@@ -328,7 +328,7 @@ impl Store {
     /// Stored block hashes on `network` from `from` to `to` inclusive,
     /// lowest first. Bounded by the retained window.
     pub fn scanned_blocks_between(&self, network: &str, from: u64, to: u64) -> Result<Vec<(u64, String)>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT height, block_hash FROM scanned_blocks WHERE network = ?1 AND height BETWEEN ?2 AND ?3 ORDER BY height",
         )?;
         let rows = stmt
@@ -359,7 +359,7 @@ impl Store {
                 tip,
             ),
         ] {
-            let mut stmt = self.conn.prepare(sql)?;
+            let mut stmt = self.conn.prepare_cached(sql)?;
             let rows = stmt
                 .query_map(params![network, due, limit as i64], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -404,7 +404,7 @@ impl Store {
     /// after payment id `after`, in id order: one page of the slow recheck
     /// for false double-spend accusations.
     pub fn voided_payments_page(&self, network: &str, cutoff: i64, after: i64, limit: usize) -> Result<Vec<OrderPaymentRow>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
              WHERE op.voided_at_utc IS NOT NULL AND op.voided_at_utc >= ?2 AND op.id > ?3 AND t.network = ?1
@@ -479,7 +479,7 @@ impl Store {
     pub fn take_staged_payments(&self, network: &str, tenant_id: &str, height: u64, hash: &str) -> Result<Vec<StagedPayment>> {
         let current = self.block_checkpoint(network, tenant_id)?.is_some_and(|c| c.height == height && c.hash == hash);
         let staged = if current {
-            let mut stmt = self.conn.prepare(
+            let mut stmt = self.conn.prepare_cached(
                 "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc
                  FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
             )?;
@@ -507,7 +507,7 @@ impl Store {
     /// tenants on `network`, after `after` (all, from the lowest, for
     /// `None`): the catch-up groups, in rotation order.
     pub fn scan_group_cursors(&self, network: &str, below: u64, after: Option<u64>, limit: usize) -> Result<Vec<u64>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT DISTINCT scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height IS NOT NULL
                AND scanned_through_height < ?2 AND scanned_through_height > ?3
@@ -527,7 +527,7 @@ impl Store {
     pub fn tenants_at_cursor(&self, network: &str, cursor: u64, excluding: &[String], limit: usize) -> Result<Vec<String>> {
         let excluding = serde_json::to_string(excluding)
             .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height = ?2
                AND id NOT IN (SELECT value FROM json_each(?3))
@@ -548,10 +548,8 @@ impl Store {
         let ids = serde_json::to_string(tenant_ids)
             .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
         let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT o.tenant_id, o.minor_index FROM orders o
-             WHERE o.tenant_id IN (SELECT value FROM json_each(:ids)) AND {}
-             ORDER BY o.tenant_id, o.minor_index",
-            super::IN_SCAN_WINDOW
+            "SELECT tenant_id, minor_index FROM orders WHERE id IN ({}) ORDER BY tenant_id, minor_index",
+            super::scan_window_orders("o.tenant_id IN (SELECT value FROM json_each(:ids))")
         ))?;
         let mut windows: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
         let rows = stmt.query_map(
@@ -576,8 +574,8 @@ impl Store {
             &format!(
                 "UPDATE tenants SET scanned_through_height = :to
                  WHERE network = :network AND disabled_at_utc IS NULL AND scanned_through_height = :from
-                   AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = tenants.id AND {})",
-                super::IN_SCAN_WINDOW
+                   AND NOT {}",
+                super::tenant_in_scope("tenants.id")
             ),
             rusqlite::named_params! {
                 ":network": network,
@@ -609,12 +607,11 @@ impl Store {
     pub fn active_tenants_page(
         &self, network: &str, now: i64, grace_period_seconds: i64, after: &str, limit: usize,
     ) -> Result<Vec<(String, Option<u64>)>> {
-        let mut stmt = self.conn.prepare(&format!(
+        let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT t.id, t.scanned_through_height FROM tenants t
-             WHERE t.network = :network AND t.disabled_at_utc IS NULL AND t.id > :after
-               AND EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = t.id AND {})
+             WHERE t.network = :network AND t.disabled_at_utc IS NULL AND t.id > :after AND {}
              ORDER BY t.id LIMIT :limit",
-            super::IN_SCAN_WINDOW
+            super::tenant_in_scope("t.id")
         ))?;
         let rows = stmt
             .query_map(
@@ -853,6 +850,64 @@ mod tests {
         assert!(s.pending_payment_recomputes("mainnet").unwrap().is_empty());
         drop(store);
         cleanup(&path);
+    }
+
+    /// The scanner's hot queries are answered from indexes, never by
+    /// scanning a whole table: the plans are checked here so an edit can't
+    /// silently turn one back into a full scan.
+    #[test]
+    fn the_scanners_hot_queries_use_their_indexes() {
+        let store = Store::open_in_memory().unwrap();
+        let plan = |sql: &str| -> String {
+            let mut stmt = store.conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let rows = stmt.query_map([], |row| row.get::<_, String>(3)).unwrap();
+            rows.map(|row| row.unwrap()).collect::<Vec<_>>().join(" | ")
+        };
+        let window = format!(
+            "SELECT minor_index FROM orders WHERE id IN ({}) ORDER BY minor_index",
+            crate::store::scan_window_orders("o.tenant_id = 'x'")
+        )
+        .replace(":since_minus_grace", "0");
+        let in_scope = format!(
+            "SELECT t.id, t.scanned_through_height FROM tenants t
+             WHERE t.network = 'mainnet' AND t.disabled_at_utc IS NULL AND t.id > '' AND {} ORDER BY t.id LIMIT 32",
+            crate::store::tenant_in_scope("t.id")
+        )
+        .replace(":since_minus_grace", "0");
+        for (what, sql, index) in [
+            ("scan window, open half", window.as_str(), "_status_"),
+            ("scan window, closed half", window.as_str(), "orders_tenant_closed_idx"),
+            ("tenant in scope, open half", in_scope.as_str(), "_status_"),
+            ("tenant in scope, closed half", in_scope.as_str(), "orders_tenant_closed_idx"),
+            (
+                "catch-up groups",
+                "SELECT DISTINCT scanned_through_height FROM tenants WHERE network = 'mainnet' AND disabled_at_utc IS NULL \
+                 AND scanned_through_height IS NOT NULL AND scanned_through_height < 10 AND scanned_through_height > 1 \
+                 ORDER BY scanned_through_height LIMIT 1",
+                "tenants_network_cursor_idx",
+            ),
+            (
+                "group members",
+                "SELECT id FROM tenants WHERE network = 'mainnet' AND disabled_at_utc IS NULL AND scanned_through_height = 5 ORDER BY id",
+                "tenants_network_cursor_idx",
+            ),
+            (
+                "void recheck page",
+                "SELECT op.* FROM order_payments op WHERE op.voided_at_utc IS NOT NULL AND op.voided_at_utc >= 0 AND op.id > 0 \
+                 ORDER BY op.id LIMIT 16",
+                "order_payments_voided_idx",
+            ),
+            (
+                "due by time",
+                "SELECT o.id FROM orders o WHERE o.next_due_at_utc IS NOT NULL AND o.next_due_at_utc <= 5 ORDER BY o.next_due_at_utc, o.id LIMIT 64",
+                "orders_due_at_idx",
+            ),
+        ] {
+            let plan = plan(sql);
+            assert!(plan.contains(index), "{what}: expected {index} in the plan, got {plan}");
+            let full_scan = plan.split(" | ").any(|step| step.starts_with("SCAN ") && !step.contains("json_each"));
+            assert!(!full_scan, "{what}: a full scan in {plan}");
+        }
     }
 
     #[test]
