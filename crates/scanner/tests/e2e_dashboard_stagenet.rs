@@ -142,7 +142,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
 
     let ctx = cli_wallet::WalletCtx::default();
     let spender = cli_wallet::WalletStore::load(&ctx)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallet_dir.display()))
         .wallet("spender")
         .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
@@ -164,6 +164,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
+        read_pool: None,
         store: store.clone(),
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),

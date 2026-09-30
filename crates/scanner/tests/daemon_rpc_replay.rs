@@ -29,7 +29,7 @@ const NODE: &str = "http://node2.monerodevs.org:38089";
 /// Four consecutive stagenet blocks; the first transaction below is in the second.
 const START: u64 = 2_210_330;
 const COUNT: u64 = 4;
-/// A stagenet transaction from the e2e wallets (`e2e/stagenet-known-outputs.json`).
+/// A stagenet transaction from the e2e wallets (`e2e/wallets/spender.json`).
 const KNOWN_TX: &str = "098e6e358b7d66a9e85a211d6917d1b8d720e74c6ae267d4d9b10ed422819bb2";
 const KNOWN_TX_HEIGHT: u64 = 2_210_331;
 /// Well-formed but never spent.
