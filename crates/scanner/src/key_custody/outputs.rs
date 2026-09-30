@@ -13,17 +13,18 @@
 //!   255 outputs in 256, so here it goes first.
 //!
 //! `pays` only answers yes or no. A transaction that does pay the wallet is
-//! rare, and is handed to monero-rs as before ([`owned_outputs`]), so which
-//! outputs match and what amounts they carry is still decided by the same
-//! code. The tests below check that the two never disagree.
+//! rare, and [`owned_outputs`] has monero-rs say which of its outputs match,
+//! as before, and open each one's amount. The tests below check that `pays`
+//! and monero-rs never disagree.
 
 use std::collections::HashMap;
 
-use monero::blockdata::transaction::TxOut;
+use monero::blockdata::transaction::{OwnedTxOut, TxOut};
 use monero::cryptonote::onetime_key::{KeyGenerator, SubKeyChecker};
+use monero::util::ringct::RctType;
 use monero::{PublicKey, ViewPair};
 
-use super::{KeyCustodyError, MatchedOutput, ScanInput, SubaddressIndex};
+use super::{MatchedOutput, ScanInput, SubaddressIndex};
 
 /// Whether any output of `tx` pays one of the subaddresses in `table`: true
 /// exactly when [`owned_outputs`] would find something.
@@ -50,23 +51,46 @@ pub(super) fn pays(
 
 /// The outputs of `tx` that pay one of the subaddresses in `checker`, with
 /// their amounts.
-pub(super) fn owned_outputs(
-    checker: &SubKeyChecker,
-    tx: &ScanInput,
-) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-    match tx.prefix().check_outputs_with(checker, tx.rct()) {
-        Ok(owned) => Ok(owned
-            .into_iter()
-            .map(|o| MatchedOutput {
-                output_index: o.index(),
-                subaddress_index: o.sub_index(),
-                amount_piconero: o.amount().map(|a| a.as_pico()),
-            })
-            .collect()),
-        Err(monero::blockdata::transaction::Error::NoTxPublicKey)
-        | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
-        Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
-    }
+///
+/// An output whose amount can't be read is still reported, without one, and
+/// costs the transaction's other outputs nothing. Nothing on the chain checks
+/// that an output's encrypted amount is the one its commitment hides, so
+/// anyone who knows one of a store's addresses can send it such an output. A
+/// scan that failed on it would fail again on every retry, and the store
+/// would never get past that block.
+pub(super) fn owned_outputs(checker: &SubKeyChecker, tx: &ScanInput) -> Vec<MatchedOutput> {
+    // Without the RingCT data monero-rs only matches outputs. Given it, it
+    // also opens their amounts, and fails the whole transaction on the first
+    // one that doesn't open.
+    let Ok(owned) = tx.prefix().check_outputs_with(checker, None) else {
+        return Vec::new();
+    };
+    owned
+        .iter()
+        .map(|out| MatchedOutput {
+            output_index: out.index(),
+            subaddress_index: out.sub_index(),
+            amount_piconero: amount(checker.keys, tx, out),
+        })
+        .collect()
+}
+
+/// The amount of an output that belongs to the wallet, or `None` if it can't
+/// be read.
+fn amount(view_pair: &ViewPair, tx: &ScanInput, out: &OwnedTxOut) -> Option<u64> {
+    let rct = match tx.rct() {
+        Some(rct) if rct.rct_type != RctType::Null => rct,
+        // No RingCT: the amount is in the clear.
+        _ => return out.amount().map(|amount| amount.as_pico()),
+    };
+    let encrypted = rct.ecdh_info.get(out.index())?;
+    let commitment = PublicKey::from_slice(&rct.out_pk.get(out.index())?.mask.key)
+        .ok()?
+        .point
+        .decompress()?;
+    let opening =
+        encrypted.open_commitment(view_pair, &out.tx_pubkey(), out.index(), &commitment)?;
+    Some(opening.amount.as_pico())
 }
 
 /// Whether output `index` was sent to a subaddress in `table`, given the
@@ -160,32 +184,42 @@ mod tests {
         tx
     }
 
-    /// What monero-rs finds in `tx` for `wallet`'s first four subaddresses,
-    /// after checking that `pays` says the same about whether there is
-    /// anything to find.
+    /// What a scan finds in `tx` for `wallet`'s first four subaddresses,
+    /// after checking it against monero-rs: `pays` says the same about
+    /// whether there is anything to find, and `owned_outputs` finds the same
+    /// outputs with the same amounts.
     fn scan(wallet: &ViewPair, tx: &Transaction) -> Vec<MatchedOutput> {
         let checker = SubKeyChecker::new(wallet, 0..1, 0..4);
-        let reference = tx
+        let reference: Vec<MatchedOutput> = tx
             .check_outputs_with(&checker)
-            .map_or(0, |owned| owned.len());
+            .unwrap_or_default()
+            .iter()
+            .map(|out| MatchedOutput {
+                output_index: out.index(),
+                subaddress_index: out.sub_index(),
+                amount_piconero: out.amount().map(|amount| amount.as_pico()),
+            })
+            .collect();
         let input = ScanInput::of(tx);
         assert_eq!(
             pays(wallet, &checker.table, &input),
-            reference > 0,
-            "the fast check disagrees with monero-rs, which found {reference} outputs"
+            !reference.is_empty(),
+            "the fast check disagrees with monero-rs, which found {reference:?}"
         );
-        let found = owned_outputs(&checker, &input).unwrap();
-        assert_eq!(found.len(), reference);
+        let found = owned_outputs(&checker, &input);
+        assert_eq!(found, reference);
         found
     }
 
-    #[test]
-    fn a_real_payment_is_found_by_its_wallet_and_by_no_other() {
-        let tx: Transaction = deserialize(
-            &hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap(),
-        )
-        .unwrap();
-        let owner = ViewPair {
+    fn fixture_tx() -> Transaction {
+        deserialize(&hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap())
+            .unwrap()
+    }
+
+    /// The wallet the fixture transaction pays: its second output, to
+    /// subaddress 0/1.
+    fn fixture_wallet() -> ViewPair {
+        ViewPair {
             view: PrivateKey::from_slice(
                 &hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")
                     .unwrap(),
@@ -200,7 +234,105 @@ mod tests {
                 )
                 .unwrap(),
             ),
-        };
+        }
+    }
+
+    /// What a scan finds in `tx` for the fixture wallet, where monero-rs
+    /// can't be asked: it fails a whole transaction over one amount.
+    fn scan_fixture(tx: &Transaction) -> Vec<MatchedOutput> {
+        let wallet = fixture_wallet();
+        let checker = SubKeyChecker::new(&wallet, 0..1, 0..4);
+        let input = ScanInput::of(tx);
+        assert!(pays(&wallet, &checker.table, &input));
+        assert_eq!(
+            tx.check_outputs_with(&checker).map(|owned| owned.len()),
+            Err(monero::blockdata::transaction::Error::InvalidCommitment),
+            "monero-rs refuses the whole transaction"
+        );
+        owned_outputs(&checker, &input)
+    }
+
+    #[test]
+    fn an_output_whose_amount_does_not_open_is_found_without_an_amount() {
+        // The commitment of the wallet's output, swapped for another.
+        let mut wrong_commitment = fixture_tx();
+        let rct = wrong_commitment.rct_signatures.sig.as_mut().unwrap();
+        rct.out_pk[1] = rct.out_pk[0];
+        // Its encrypted amount, swapped for another.
+        let mut wrong_amount = fixture_tx();
+        let rct = wrong_amount.rct_signatures.sig.as_mut().unwrap();
+        rct.ecdh_info[1] = rct.ecdh_info[0].clone();
+        // A commitment that isn't a curve point at all.
+        let mut no_commitment = fixture_tx();
+        let rct = no_commitment.rct_signatures.sig.as_mut().unwrap();
+        rct.out_pk[1].mask.key = (0..=u8::MAX)
+            .map(|byte| [byte; 32])
+            .find(|key| PublicKey::from_slice(key).is_err())
+            .unwrap();
+
+        for tx in [wrong_commitment, wrong_amount, no_commitment] {
+            assert_eq!(
+                scan_fixture(&tx),
+                [MatchedOutput {
+                    output_index: 1,
+                    subaddress_index: minor(1),
+                    amount_piconero: None,
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn an_amount_that_does_not_open_costs_the_other_outputs_nothing() {
+        // The fixture's first output, which is someone else's, re-addressed
+        // to the wallet's subaddress 0/2. Its amount and commitment are still
+        // the ones made for that someone else, so they don't open.
+        let wallet = fixture_wallet();
+        let mut tx = fixture_tx();
+        let tx_key = tx.prefix.extra.try_parse().tx_pubkey().unwrap();
+        let (_, spend) = subaddress::get_public_keys(&wallet, minor(2));
+        let key = KeyGenerator {
+            spend,
+            rv: KeyGenerator::from_key(&wallet, tx_key).rv,
+        }
+        .one_time_key(0)
+        .to_bytes();
+        tx.prefix.outputs[0].target = TxOutTarget::ToKey { key };
+
+        let found = scan_fixture(&tx);
+
+        assert_eq!(found.len(), 2);
+        assert_eq!(
+            found[0],
+            MatchedOutput {
+                output_index: 0,
+                subaddress_index: minor(2),
+                amount_piconero: None,
+            }
+        );
+        assert_eq!(scan(&wallet, &fixture_tx()), [found[1]]);
+        assert!(found[1].amount_piconero.unwrap() > 0);
+    }
+
+    #[test]
+    fn an_output_with_no_ringct_data_of_its_own_is_found_without_an_amount() {
+        let mut tx = fixture_tx();
+        let rct = tx.rct_signatures.sig.as_mut().unwrap();
+        rct.ecdh_info.truncate(1);
+        rct.out_pk.truncate(1);
+        let wallet = fixture_wallet();
+        let checker = SubKeyChecker::new(&wallet, 0..1, 0..4);
+
+        let found = owned_outputs(&checker, &ScanInput::of(&tx));
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].output_index, 1);
+        assert_eq!(found[0].amount_piconero, None);
+    }
+
+    #[test]
+    fn a_real_payment_is_found_by_its_wallet_and_by_no_other() {
+        let (tx, owner) = (fixture_tx(), fixture_wallet());
 
         let found = scan(&owner, &tx);
         assert_eq!(found.len(), 1);

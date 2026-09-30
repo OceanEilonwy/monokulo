@@ -386,11 +386,11 @@ impl KeyCustody for PlainKeyCustody {
                 table: keys,
                 keys: &view_pair,
             };
-            let result = owned_outputs(&checker, &tx);
+            let found = owned_outputs(&checker, &tx);
             lookup.table = checker.table;
             lookup.range = cached_range;
             lookup.complete = true;
-            result
+            Ok(found)
         })
         .await
         .map_err(|e| KeyCustodyError::ScanFailed(format!("scan task failed: {e}")))?
@@ -460,11 +460,10 @@ impl KeyCustody for PlainKeyCustody {
                     table: keys,
                     keys: &view_pair,
                 };
-                let result = owned_outputs(&checker, input);
+                let outputs = owned_outputs(&checker, input);
                 live.table = checker.table;
                 live.indices = cached_indices;
                 live.generation = Some(generation);
-                let outputs = result?;
                 if !outputs.is_empty() {
                     found.push(TxMatches { tx, outputs });
                 }
