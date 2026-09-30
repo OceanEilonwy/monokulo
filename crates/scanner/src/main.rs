@@ -230,7 +230,13 @@ async fn run(action: Action) {
     let scanner_status = scanner_status::new_scanner_status_map();
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
 
+    // The database worker: its own connection, on its own thread, for the
+    // scanner, webhook delivery and API writes (docs/scanner_microtasks.md).
+    let db = scanner::store::Db::open(&cli::database_path().to_string_lossy(), &store.lock())
+        .unwrap_or_else(|e| { eprintln!("failed to start the database worker: {e}"); std::process::exit(1) });
+
     let app_state = AppState {
+        db: db.clone(),
         store: store.clone(),
         read_pool: Some(scanner::store::ReadStorePool::open(&cli::database_path().to_string_lossy(), 2)
             .unwrap_or_else(|e| { eprintln!("failed to open database read pool: {e}"); std::process::exit(1) })),
@@ -243,11 +249,6 @@ async fn run(action: Action) {
         log_store: log_store.clone(),
         settings: engine_settings.clone(),
     };
-
-    // The database worker: its own connection, on its own thread, for the
-    // scanner and webhook delivery (docs/scanner_microtasks.md).
-    let db = scanner::store::Db::open(&cli::database_path().to_string_lossy(), &store.lock())
-        .unwrap_or_else(|e| { eprintln!("failed to start the database worker: {e}"); std::process::exit(1) });
 
     let delivery_db = db.clone();
     let delivery_settings = engine_settings.clone();

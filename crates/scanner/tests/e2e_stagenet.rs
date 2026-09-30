@@ -126,6 +126,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     let wallet_handles = Arc::new(RwLock::new(HashMap::from([(created.tenant.id.clone(), handle)])));
 
     let app_state = AppState {
+        db: scanner::store::Db::over_shared(store.clone().clone()),
         store: store.clone(),
         read_pool: None,
         key_custody: key_custody.clone(),

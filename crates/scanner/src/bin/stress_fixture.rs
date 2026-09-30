@@ -427,18 +427,18 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             }
         }));
     }
-    // Admin setting writes take the same path a settings save does today.
+    // Admin setting writes take the same path an API write does: the
+    // database worker's admin queue.
     for worker in 0..background_writers {
-        let (store, stop, completed, maximum) =
-            (store.clone(), background_stop.clone(), writes_done.clone(), write_max_us.clone());
+        let (db, stop, completed, maximum) = (db.clone(), background_stop.clone(), writes_done.clone(), write_max_us.clone());
         background_tasks.push(tokio::spawn(async move {
             let mut sequence = 0u64;
             while !stop.load(Ordering::Relaxed) {
                 sequence += 1;
                 let started = Instant::now();
-                let (store, key, value) = (store.clone(), format!("stress.admin.{worker}"), sequence.to_string());
-                let written = tokio::task::spawn_blocking(move || store.lock().set_setting(&key, &value)).await;
-                if matches!(written, Ok(Ok(()))) {
+                let (key, value) = (format!("stress.admin.{worker}"), sequence.to_string());
+                let written = db.run(scanner::store::db::Class::Admin, move |s| s.set_setting(&key, &value)).await;
+                if written.is_ok() {
                     completed.fetch_add(1, Ordering::Relaxed);
                 }
                 maximum.fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -448,6 +448,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     }
     let handles = Arc::new(RwLock::new(handles));
     let app_state = AppState {
+        db: db.clone(),
         store: store.clone(),
         read_pool: Some(reader_pool.clone()),
         key_custody: custody.clone(),

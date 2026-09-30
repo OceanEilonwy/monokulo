@@ -50,7 +50,8 @@ ALTER TABLE orders ADD COLUMN next_due_height INTEGER;
 CREATE INDEX orders_due_at_idx ON orders (next_due_at_utc, id) WHERE next_due_at_utc IS NOT NULL;
 CREATE INDEX orders_due_height_idx ON orders (next_due_height, id) WHERE next_due_height IS NOT NULL;
 
--- A new order is next due at its deadline; every way of creating one gets it.
+-- A new order is next due at its deadline. The insert sets it; this is
+-- the safety net for any other way an order row appears.
 CREATE TRIGGER order_insert_schedules_expiry AFTER INSERT ON orders
 WHEN NEW.next_due_at_utc IS NULL AND NEW.status IN ('pending', 'unconfirmed', 'confirming', 'partial')
 BEGIN

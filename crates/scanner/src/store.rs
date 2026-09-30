@@ -1110,8 +1110,8 @@ impl Store {
         conn.execute(
             "INSERT INTO orders (id, tenant_id, merchant_order_id, minor_index, address,
                 xmr_amount_piconero, description, created_at_utc, expires_at_utc, updated_at_utc,
-                confirmations_required_override)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10)",
+                confirmations_required_override, next_due_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10, ?9)",
             params![
                 id,
                 new.tenant_id,
@@ -1236,9 +1236,12 @@ impl Store {
     ) -> Result<bool> {
         // Whether this is a genuinely new row has to be established before the
         // upsert: with `DO UPDATE`, `execute`'s changed-row count is 1 for both
-        // paths and can't distinguish them. A separate read is safe here because
-        // every write to this database is already serialized through one writer
-        // (see this module's header comment).
+        // paths and can't distinguish them. Two connections write (the database
+        // worker and, for tests and tools, the shared store), so a concurrent
+        // insert of the same row between this read and the upsert is possible;
+        // the upsert stays correct either way (the unique key makes it one row),
+        // and only the "is this new" answer, which decides a change
+        // notification, could be off.
         let existing_height: Option<Option<i64>> = self
             .conn
             .query_row(

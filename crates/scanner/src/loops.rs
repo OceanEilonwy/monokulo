@@ -309,6 +309,7 @@ mod tests {
         let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::default();
         let status = scanner_status::new_scanner_status_map();
         let state = crate::http::AppState {
+            db: crate::store::Db::over_shared(store.clone()),
             store: store.clone(),
             read_pool: None,
             key_custody: key_custody.clone(),

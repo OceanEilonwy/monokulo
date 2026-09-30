@@ -55,6 +55,9 @@ use rate_limit::{admin_rate_limit_middleware, RateLimiter};
 
 #[derive(Clone)]
 pub struct AppState {
+    /// The database worker: API writes run there (the `Admin` class), off
+    /// the async runtime and in turn with the scanner's and webhooks' work.
+    pub db: crate::store::Db,
     pub store: SharedStore,
     pub read_pool: Option<ReadStorePool>,
     pub key_custody: Arc<dyn KeyCustody>,
@@ -120,6 +123,7 @@ impl AppState {
             },
         ]));
         AppState {
+            db: crate::store::Db::over_shared(store.clone()),
             store,
             read_pool: None,
             key_custody: Arc::new(crate::key_custody::PlainKeyCustody::default()),
@@ -144,10 +148,7 @@ impl AppState {
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
     {
-        let store = self.store.clone();
-        tokio::task::spawn_blocking(move || f(&store.lock()))
-            .await
-            .map_err(|e| E::from(StoreError::WorkerUnavailable(e.to_string())))?
+        self.db.run(crate::store::db::Class::Admin, f).await
     }
 
     pub async fn read_store<T: Send + 'static>(

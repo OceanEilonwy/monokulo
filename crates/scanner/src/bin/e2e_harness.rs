@@ -209,6 +209,7 @@ async fn main() {
     let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
+        db: scanner::store::Db::over_shared(store.clone().clone()),
         store: store.clone(),
         read_pool: None,
         key_custody: key_custody.clone(),
