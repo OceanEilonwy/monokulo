@@ -1324,6 +1324,7 @@ mod tests {
             ("key_custody.enabled_backends", E, Custody, None),
             ("key_custody.default_backend", E, Custody, None),
             ("key_custody.socket_path", E, Custody, None),
+            ("key_custody.socket_connections", E, Custody, None),
             ("payment.confirmations_required", E, Payments, None),
             ("payment.order_expiry_minutes", E, Payments, None),
             (
@@ -2116,6 +2117,14 @@ mod tests {
                         "/run/kc.sock",
                         SettingKindView::Path,
                     ),
+                    field(
+                        "key_custody.socket_connections",
+                        "",
+                        SettingKindView::Integer {
+                            min: Some(1),
+                            max: Some(1024),
+                        },
+                    ),
                 ],
                 ..Default::default()
             };
@@ -2140,13 +2149,19 @@ mod tests {
             html.find(r#"name="key_custody.enabled_backends""#).unwrap()
                 < html.find(r#"name="key_custody.default_backend""#).unwrap()
         );
-        // The socket's path sits in the socket's own section, hidden while
-        // socket is off; plain has nothing to set.
+        // The socket's path and its number of connections sit in the
+        // socket's own section, hidden while socket is off; plain has
+        // nothing to set.
         let socket = html
             .find(r#"<section class="custody-backend" data-custody-backend="socket" hidden>"#)
             .expect(&html);
         assert!(
             html.find(r#"name="key_custody.socket_path""#).unwrap() > socket,
+            "{html}"
+        );
+        // Left empty (one per CPU core), the number is an empty box.
+        assert!(
+            html.find(r#"<input type="number" name="key_custody.socket_connections" value="" min="1" max="1024""#).unwrap() > socket,
             "{html}"
         );
         assert!(

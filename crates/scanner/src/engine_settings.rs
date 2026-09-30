@@ -18,6 +18,8 @@ use live_settings::{
     Section, Snapshot,
 };
 
+use key_custody_service::client::SocketKeyCustody;
+
 use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::daemon_rpc::RpcDaemonClient;
 use crate::settings::MoneroNodeSetting;
@@ -72,6 +74,14 @@ settings! {
         default: None,
         description: "The Unix socket a running key-custody-server listens on. Required when socket is enabled.",
         example: "/run/key-custody/sock",
+    },
+    KEY_CUSTODY_SOCKET_CONNECTIONS: Option<usize> {
+        key: "key_custody.socket_connections",
+        env: "SCANNER_KEY_CUSTODY_SOCKET_CONNECTIONS",
+        default: None,
+        check: range(1, 1024),
+        description: "The most connections the engine keeps to the key-custody-server. A connection carries one scan at a time, so no more stores than this are scanned on the socket backend at once. Leave empty for one per CPU core. Connections are opened only as scans overlap.",
+        example: "8",
     },
     PAYMENT_CONFIRMATIONS_REQUIRED: u64 {
         key: "payment.confirmations_required",
@@ -439,6 +449,16 @@ pub struct CustodyConfig {
     pub enabled: Vec<CustodyBackend>,
     pub default: CustodyBackend,
     pub socket_path: Option<PathBuf>,
+    /// `None` is one per CPU core.
+    pub socket_connections: Option<usize>,
+}
+
+impl CustodyConfig {
+    /// The connections the socket backend's client may keep.
+    fn socket_connections(&self) -> usize {
+        self.socket_connections
+            .unwrap_or_else(key_custody_service::client::connections_per_core)
+    }
 }
 
 impl Section for CustodyConfig {
@@ -448,6 +468,7 @@ impl Section for CustodyConfig {
             &KEY_CUSTODY_ENABLED_BACKENDS,
             &KEY_CUSTODY_DEFAULT_BACKEND,
             &KEY_CUSTODY_SOCKET_PATH,
+            &KEY_CUSTODY_SOCKET_CONNECTIONS,
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
@@ -481,6 +502,7 @@ impl Section for CustodyConfig {
                 enabled,
                 default,
                 socket_path,
+                socket_connections: snapshot.get(&KEY_CUSTODY_SOCKET_CONNECTIONS),
             })
         } else {
             Err(errors)
@@ -493,18 +515,38 @@ impl Section for CustodyConfig {
 /// newly enabled socket backend connects now, and if nothing answers yet it
 /// is enabled anyway with a warning, and connects when the server appears.
 /// A disabled backend's stores stop being scanned; their sealed keys stay in
-/// the database, so enabling it again brings them back.
+/// the database, so enabling it again brings them back. A socket backend
+/// that stays at its path keeps its instance whatever else changes: a new
+/// number of connections is set on the client in use.
 pub struct CustodyReloadable {
-    pub router: Arc<crate::key_custody::CustodyRouter>,
+    router: Arc<crate::key_custody::CustodyRouter>,
+    /// The router's socket backend, as the client it is: the router only
+    /// knows it as a `KeyCustody`, which has no connections to set.
+    socket: parking_lot::Mutex<Option<Arc<SocketKeyCustody>>>,
+}
+
+impl CustodyReloadable {
+    pub fn new(router: Arc<crate::key_custody::CustodyRouter>) -> Self {
+        Self {
+            router,
+            socket: parking_lot::Mutex::new(None),
+        }
+    }
+}
+
+/// What `CustodyReloadable::prepare` built: the router's next backends and
+/// default, and the socket backend among them with the connections it may
+/// keep.
+pub struct PreparedCustody {
+    backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>>,
+    default: String,
+    socket: Option<(Arc<SocketKeyCustody>, usize)>,
 }
 
 #[live_settings::async_trait]
 impl live_settings::Reloadable for CustodyReloadable {
     type Config = CustodyConfig;
-    type Prepared = (
-        HashMap<String, Arc<dyn crate::key_custody::KeyCustody>>,
-        String,
-    );
+    type Prepared = PreparedCustody;
 
     async fn prepare(
         &self,
@@ -513,50 +555,64 @@ impl live_settings::Reloadable for CustodyReloadable {
     ) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
         let current = self.router.backends();
         let mut backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>> = HashMap::new();
+        let mut socket = None;
         let mut warnings = Vec::new();
         for backend in &new.enabled {
             let name = backend.as_str().to_string();
-            let reuse = current.get(&name).filter(|_| {
-                *backend != CustodyBackend::Socket || new.socket_path == old.socket_path
-            });
-            let custody: Arc<dyn crate::key_custody::KeyCustody> = match (reuse, backend) {
-                (Some(existing), _) => existing.clone(),
-                (None, CustodyBackend::Plain) => {
-                    Arc::new(crate::key_custody::PlainKeyCustody::default())
-                }
-                (None, CustodyBackend::Socket) => {
-                    // `CustodyConfig` guarantees the path when socket is on.
-                    let path = new.socket_path.clone().unwrap_or_default();
-                    let timeout = key_custody_service::client::DEFAULT_CALL_TIMEOUT;
-                    match key_custody_service::client::SocketKeyCustody::connect_with_timeout(
-                        &path, timeout,
-                    )
-                    .await
-                    {
-                        Ok(client) => Arc::new(client),
-                        Err(e) => {
-                            warnings.push(live_settings::Warning::for_key(
-                                KEY_CUSTODY_SOCKET_PATH.key,
-                                format!(
-                                    "Saved, but no key-custody-server answers at {} yet ({e}). Stores on the socket backend aren't scanned until it does; it's picked up by itself.",
-                                    path.display()
-                                ),
-                            ));
-                            Arc::new(
-                                key_custody_service::client::SocketKeyCustody::not_connected_yet(
-                                    &path, timeout,
-                                ),
-                            )
+            let custody: Arc<dyn crate::key_custody::KeyCustody> = match backend {
+                CustodyBackend::Plain => match current.get(&name) {
+                    Some(existing) => existing.clone(),
+                    None => Arc::new(crate::key_custody::PlainKeyCustody::default()),
+                },
+                CustodyBackend::Socket => {
+                    let in_use = self.socket.lock().clone().filter(|_| {
+                        current.contains_key(&name) && new.socket_path == old.socket_path
+                    });
+                    let client = match in_use {
+                        Some(client) => client,
+                        None => {
+                            // `CustodyConfig` guarantees the path when socket is on.
+                            let path = new.socket_path.clone().unwrap_or_default();
+                            let timeout = key_custody_service::client::DEFAULT_CALL_TIMEOUT;
+                            match SocketKeyCustody::connect_with_timeout(&path, timeout).await {
+                                Ok(client) => Arc::new(client),
+                                Err(e) => {
+                                    warnings.push(live_settings::Warning::for_key(
+                                        KEY_CUSTODY_SOCKET_PATH.key,
+                                        format!(
+                                            "Saved, but no key-custody-server answers at {} yet ({e}). Stores on the socket backend aren't scanned until it does; it's picked up by itself.",
+                                            path.display()
+                                        ),
+                                    ));
+                                    Arc::new(SocketKeyCustody::not_connected_yet(&path, timeout))
+                                }
+                            }
                         }
-                    }
+                    };
+                    socket = Some((client.clone(), new.socket_connections()));
+                    client
                 }
             };
             backends.insert(name, custody);
         }
-        Ok(((backends, new.default.as_str().to_string()), warnings))
+        let prepared = PreparedCustody {
+            backends,
+            default: new.default.as_str().to_string(),
+            socket,
+        };
+        Ok((prepared, warnings))
     }
 
-    async fn install(&self, (backends, default): Self::Prepared) {
+    async fn install(&self, prepared: Self::Prepared) {
+        let PreparedCustody {
+            backends,
+            default,
+            socket,
+        } = prepared;
+        if let Some((client, connections)) = &socket {
+            client.set_connections(*connections);
+        }
+        *self.socket.lock() = socket.map(|(client, _)| client);
         let dropped = self.router.replace(backends, &default);
         crate::key_custody::router::free_handles(dropped);
     }
@@ -870,7 +926,7 @@ impl EngineSettings {
                 daemons,
                 strict_tls,
             }),
-            Some(CustodyReloadable { router }),
+            Some(CustodyReloadable::new(router)),
             rate_limiter,
             live_settings::Env::process(),
         )
@@ -1048,5 +1104,131 @@ mod tests {
                 .as_deref(),
             Some("plain")
         );
+    }
+
+    #[test]
+    fn socket_connections_may_be_left_empty_or_set_from_1_to_1024() {
+        assert_eq!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("").unwrap(), None);
+        assert_eq!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("8").unwrap(), Some(8));
+        assert!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("1024").is_ok());
+        assert!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("0").is_err());
+        assert!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("1025").is_err());
+        assert_eq!(defaults_of::<CustodyConfig>().socket_connections, None);
+    }
+
+    /// A stand-in key-custody-server on a socket of its own: it answers
+    /// every request with a newly registered wallet.
+    fn spawn_registering_server(tag: &str) -> PathBuf {
+        use key_custody_service::protocol::{
+            read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse,
+        };
+        let path =
+            std::env::temp_dir().join(format!("engine-settings-{tag}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _addr)) = listener.accept().await {
+                tokio::spawn(async move {
+                    while let Ok(Some(_)) = read_frame::<_, KeyCustodyRequest>(&mut stream).await {
+                        let handle = crate::key_custody::WalletHandle::generate();
+                        let answer = KeyCustodyResponse::RegisterWallet(Ok(handle.into()));
+                        if write_frame(&mut stream, &answer).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        path
+    }
+
+    async fn save(reloadable: &CustodyReloadable, new: &CustodyConfig, old: &CustodyConfig) {
+        use live_settings::Reloadable;
+        let (prepared, warnings) = reloadable.prepare(new, old).await.unwrap();
+        assert!(warnings.is_empty(), "the server is there");
+        reloadable.install(prepared).await;
+    }
+
+    /// Saving a new number of connections for the socket backend sets it on
+    /// the client in use: the stores registered there stay registered. Only
+    /// a new socket path makes a new client, which then has the number too.
+    #[tokio::test]
+    async fn a_new_number_of_socket_connections_is_set_on_the_client_in_use() {
+        use crate::key_custody::{CustodyRouter, KeyCustody, WalletMaterial};
+        let custody = |path: &PathBuf, connections| CustodyConfig {
+            enabled: vec![CustodyBackend::Plain, CustodyBackend::Socket],
+            default: CustodyBackend::Plain,
+            socket_path: Some(path.clone()),
+            socket_connections: connections,
+        };
+        let path = spawn_registering_server("connections");
+        let router = Arc::new(CustodyRouter::plain());
+        let reloadable = CustodyReloadable::new(router.clone());
+        let client = || reloadable.socket.lock().clone().unwrap();
+        let cores = key_custody_service::client::connections_per_core();
+
+        // Nothing set: one connection per core.
+        let unset = custody(&path, None);
+        save(&reloadable, &unset, &defaults_of::<CustodyConfig>()).await;
+        let first = client();
+        assert_eq!(first.connections(), cores);
+        let store = router
+            .register_wallet_in("socket", WalletMaterial::new([1; 32], [2; 32]))
+            .await
+            .unwrap();
+
+        let three = custody(&path, Some(3));
+        save(&reloadable, &three, &unset).await;
+        assert!(Arc::ptr_eq(&first, &client()), "the same client");
+        assert_eq!(first.connections(), 3);
+        assert_eq!(router.backend_of(store).as_deref(), Some("socket"));
+
+        // Emptied again: back to one per core, still the same client.
+        save(&reloadable, &unset, &three).await;
+        assert!(Arc::ptr_eq(&first, &client()));
+        assert_eq!(first.connections(), cores);
+        assert_eq!(router.backend_of(store).as_deref(), Some("socket"));
+
+        // Another server is another client: its stores are registered
+        // again there, and it keeps the number of connections saved.
+        let elsewhere = spawn_registering_server("connections-elsewhere");
+        let moved = custody(&elsewhere, Some(2));
+        save(&reloadable, &moved, &unset).await;
+        assert!(!Arc::ptr_eq(&first, &client()));
+        assert_eq!(client().connections(), 2);
+        assert_eq!(router.backend_of(store), None);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(elsewhere);
+    }
+
+    /// A socket backend turned on while its server is away gets the number
+    /// of connections saved as well, for when the server appears.
+    #[tokio::test]
+    async fn a_socket_backend_whose_server_is_away_still_gets_its_connections() {
+        use live_settings::Reloadable;
+        let router = Arc::new(crate::key_custody::CustodyRouter::plain());
+        let reloadable = CustodyReloadable::new(router);
+        let new = CustodyConfig {
+            enabled: vec![CustodyBackend::Plain, CustodyBackend::Socket],
+            default: CustodyBackend::Plain,
+            socket_path: Some(std::env::temp_dir().join("engine-settings-nobody-listens.sock")),
+            socket_connections: Some(5),
+        };
+        let (prepared, warnings) = reloadable
+            .prepare(&new, &defaults_of::<CustodyConfig>())
+            .await
+            .unwrap();
+        assert_eq!(warnings.len(), 1, "saved, with a word that nothing answers");
+        reloadable.install(prepared).await;
+        assert_eq!(reloadable.socket.lock().clone().unwrap().connections(), 5);
+
+        // Turned off again, the client is let go.
+        let (prepared, _) = reloadable
+            .prepare(&defaults_of::<CustodyConfig>(), &new)
+            .await
+            .unwrap();
+        reloadable.install(prepared).await;
+        assert!(reloadable.socket.lock().is_none());
     }
 }

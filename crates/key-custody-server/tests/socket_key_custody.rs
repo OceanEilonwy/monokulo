@@ -41,7 +41,7 @@
 //! thing calling it.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1323,4 +1323,180 @@ async fn concurrent_calls_use_several_connections_and_all_succeed() {
     for call in calls {
         assert_eq!(call.await.unwrap().unwrap().len(), 1);
     }
+}
+
+/// A stand-in server that answers every request with "wallet removed", and
+/// counts the connections made to it and the ones since closed.
+struct CountingServer {
+    path: PathBuf,
+    opened: Arc<AtomicUsize>,
+    closed: tokio::sync::mpsc::UnboundedReceiver<()>,
+    _cleanup: CleanupSocket,
+}
+
+fn spawn_counting_server(tag: &str) -> CountingServer {
+    let path = temp_socket_path(tag);
+    let listener = UnixListener::bind(&path).unwrap();
+    let opened = Arc::new(AtomicUsize::new(0));
+    let (closing, closed) = tokio::sync::mpsc::unbounded_channel();
+    let count = opened.clone();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _addr)) = listener.accept().await {
+            count.fetch_add(1, Ordering::Relaxed);
+            let closing = closing.clone();
+            tokio::spawn(async move {
+                while let Ok(Some(_)) = read_frame::<_, KeyCustodyRequest>(&mut stream).await {
+                    let answer = KeyCustodyResponse::RemoveWallet(Ok(()));
+                    if write_frame(&mut stream, &answer).await.is_err() {
+                        break;
+                    }
+                }
+                let _ = closing.send(());
+            });
+        }
+    });
+    CountingServer {
+        _cleanup: CleanupSocket(path.clone()),
+        path,
+        opened,
+        closed,
+    }
+}
+
+/// Makes `count` calls at once and waits for them all. Every call is begun
+/// before any is answered (the server shares this test's one thread and
+/// can't run until this waits), so each takes a connection of its own if the
+/// client has one to give, and queues for one if not.
+async fn overlapping_calls(client: &SocketKeyCustody, count: usize) {
+    use std::future::Future;
+    let mut calls: Vec<_> = (0..count)
+        .map(|_| Box::pin(client.remove_wallet(WalletHandle::generate())))
+        .collect();
+    std::future::poll_fn(|cx| {
+        for call in &mut calls {
+            assert!(
+                call.as_mut().poll(cx).is_pending(),
+                "nothing has answered yet"
+            );
+        }
+        std::task::Poll::Ready(())
+    })
+    .await;
+    for call in calls {
+        call.await.unwrap();
+    }
+}
+
+/// A client told nothing keeps a connection per CPU core: as many calls at
+/// once as the server has cores to run them on.
+#[tokio::test]
+async fn a_client_keeps_a_connection_per_core_unless_told_otherwise() {
+    let server = spawn_counting_server("per-core");
+    let cores = std::thread::available_parallelism().unwrap().get();
+
+    let client = SocketKeyCustody::connect(&server.path).await.unwrap();
+    assert_eq!(client.connections(), cores);
+    let not_yet = SocketKeyCustody::not_connected_yet(&server.path, Duration::from_secs(5));
+    assert_eq!(not_yet.connections(), cores);
+
+    overlapping_calls(&client, cores + 3).await;
+    assert_eq!(server.opened.load(Ordering::Relaxed), cores);
+}
+
+/// However many calls overlap, the client never has more connections than
+/// it was told to keep: the rest of the calls wait their turn.
+#[tokio::test]
+async fn overlapping_calls_open_no_more_connections_than_the_client_may_keep() {
+    let server = spawn_counting_server("limit");
+    let client = SocketKeyCustody::connect_with_pool(&server.path, Duration::from_secs(5), 2)
+        .await
+        .unwrap();
+    assert_eq!(client.connections(), 2);
+
+    overlapping_calls(&client, 6).await;
+    assert_eq!(server.opened.load(Ordering::Relaxed), 2);
+
+    // Calls one after another share one connection: no more are opened.
+    for _ in 0..3 {
+        client
+            .remove_wallet(WalletHandle::generate())
+            .await
+            .unwrap();
+    }
+    assert_eq!(server.opened.load(Ordering::Relaxed), 2);
+}
+
+/// The number of connections can be changed on a client in use. Raising it
+/// keeps the connections already open and adds to them as calls overlap;
+/// lowering it closes the ones over the new number.
+#[tokio::test]
+async fn the_number_of_connections_can_be_changed_on_a_client_in_use() {
+    let mut server = spawn_counting_server("resize");
+    let client = SocketKeyCustody::connect_with_pool(&server.path, Duration::from_secs(5), 1)
+        .await
+        .unwrap();
+    overlapping_calls(&client, 5).await;
+    assert_eq!(server.opened.load(Ordering::Relaxed), 1);
+
+    client.set_connections(3);
+    assert_eq!(client.connections(), 3);
+    overlapping_calls(&client, 5).await;
+    assert_eq!(
+        server.opened.load(Ordering::Relaxed),
+        3,
+        "the first connection is kept, and two are added"
+    );
+
+    client.set_connections(1);
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(5), server.closed.recv())
+            .await
+            .expect("the two connections over the new number are closed")
+            .unwrap();
+    }
+    overlapping_calls(&client, 5).await;
+    assert_eq!(
+        server.opened.load(Ordering::Relaxed),
+        3,
+        "the connection kept serves every call"
+    );
+
+    // Nothing less than one connection: the client must still work.
+    client.set_connections(0);
+    assert_eq!(client.connections(), 1);
+    client
+        .remove_wallet(WalletHandle::generate())
+        .await
+        .unwrap();
+}
+
+/// A call under way when the number of connections is lowered finishes on
+/// the connection it has, which closes after it.
+#[tokio::test]
+async fn a_call_under_way_when_connections_are_taken_away_still_finishes() {
+    let mut server = spawn_counting_server("shrink-busy");
+    let client = SocketKeyCustody::connect_with_pool(&server.path, Duration::from_secs(5), 2)
+        .await
+        .unwrap();
+    use std::future::Future;
+    let mut calls: Vec<_> = (0..2)
+        .map(|_| Box::pin(client.remove_wallet(WalletHandle::generate())))
+        .collect();
+    std::future::poll_fn(|cx| {
+        for call in &mut calls {
+            assert!(call.as_mut().poll(cx).is_pending());
+        }
+        std::task::Poll::Ready(())
+    })
+    .await;
+
+    client.set_connections(1);
+    for call in calls {
+        call.await.unwrap();
+    }
+    assert_eq!(server.opened.load(Ordering::Relaxed), 2);
+    tokio::time::timeout(Duration::from_secs(5), server.closed.recv())
+        .await
+        .expect("the connection over the new number closes once its call ends")
+        .unwrap();
 }
