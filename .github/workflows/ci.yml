@@ -247,10 +247,38 @@ jobs:
         if: always()
         run: test '${{ steps.collect.outcome }}' = success
 
+  coverage-stress:
+    # The engine's one-CPU scanner capacity sweep and fault recovery
+    # (docs/engine_stress.md). Its report joins the coverage artifact.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Measure engine scanner progress on one CPU
+        id: stress
+        continue-on-error: true
+        run: cargo xtask stress ci
+      - name: Upload stress report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-stress-${{ github.sha }}
+          # From target/coverage/, so the files keep their stress/ folder
+          # when the coverage job merges the artifacts.
+          path: |
+            target/coverage/
+            !target/coverage/stress/*.db*
+          if-no-files-found: warn
+      - name: Fail on a failed point or fault
+        if: always()
+        run: test '${{ steps.stress.outcome }}' = success
+
   coverage:
-    # One artifact and index from the three collectors, validated as
+    # One artifact and index from the collectors, validated as
     # `cargo xtask coverage all` validates a local run.
-    needs: [coverage-rust, coverage-browser, coverage-woocommerce]
+    needs: [coverage-rust, coverage-browser, coverage-woocommerce, coverage-stress]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -1,3 +1,5 @@
+mod stress;
+
 use serde_json::{json, Value};
 use std::{collections::{BTreeMap, BTreeSet}, env, fs, io, path::{Path, PathBuf}, process::{Command, ExitCode, Stdio}, sync::mpsc, thread};
 
@@ -6,7 +8,7 @@ fn root() -> PathBuf {
 }
 
 fn help() {
-    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n\n\
+    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|open> [driver]\n\n\
         rust          Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
         browser       Run deterministic Playwright tests and collect authored browser source coverage\n\
         woocommerce   Run default PHPUnit tests in wp-env and collect plugin coverage\n\
@@ -15,6 +17,10 @@ fn help() {
         report        Combine rust, browser and woocommerce outputs already in target/coverage (as CI's\n\
                       separate jobs leave them) into one index; validate it once all three passed\n\
         open          Open target/coverage/index.html in the default browser\n\
+        stress ci     One-CPU scanner capacity sweep and fault recovery (docs/engine_stress.md)\n\
+        stress full   The same with larger tenant counts\n\
+        stress open   Open target/coverage/stress/index.html\n\
+        [driver]      The scanner entry point to measure (default: the production one)\n\
         --help        Show this help");
 }
 
@@ -297,6 +303,9 @@ fn render_index(output: &Path, results: &[Value]) -> io::Result<()> {
             escape_html(name), count("lines"), count("branches"), link));
     }
     page.push_str("</tbody></table>");
+    if output.join("stress/index.html").is_file() {
+        page.push_str("<p><a href=\"stress/index.html\">Engine stress report</a></p>");
+    }
     if output.join("rust/crates/index.html").is_file() {
         page.push_str("<p><a href=\"rust/crates/index.html\">Rust coverage by crate and source file</a></p>");
     }
@@ -444,14 +453,17 @@ fn validate() -> io::Result<bool> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.len() != 2 || args.iter().any(|a| a == "--help" || a == "-h") {
-        help();
-        return if args.iter().any(|a| a == "--help" || a == "-h") { ExitCode::SUCCESS } else { ExitCode::FAILURE };
-    }
-    if args[0] != "coverage" { help(); return ExitCode::FAILURE; }
-    match coverage(&args[1]) {
+    let wants_help = args.iter().any(|a| a == "--help" || a == "-h");
+    let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        _ if wants_help => { help(); return ExitCode::SUCCESS; }
+        ["coverage", command] => coverage(command),
+        ["stress", profile] => stress::run(profile, None),
+        ["stress", profile, driver] => stress::run(profile, Some(driver)),
+        _ => { help(); return ExitCode::FAILURE; }
+    };
+    match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
-        Err(e) => { eprintln!("coverage: {e}"); ExitCode::FAILURE }
+        Err(e) => { eprintln!("xtask: {e}"); ExitCode::FAILURE }
     }
 }
