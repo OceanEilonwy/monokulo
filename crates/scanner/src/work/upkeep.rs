@@ -31,7 +31,7 @@ pub(crate) struct UpkeepRound {
 /// The first unit of a round prunes, rechecks a page of voids and brings a
 /// page of scanned ranges up to date; later units only continue the ranges.
 /// So every kind of upkeep advances every round, however little time is left.
-pub(super) async fn step(round: &mut Round<'_>) -> Progress {
+pub(super) async fn step(round: &mut Round<'_>, until: tokio::time::Instant) -> Progress {
     if round.upkeep.first_done && round.upkeep.ranges_done {
         return Progress::Idle;
     }
@@ -40,7 +40,7 @@ pub(super) async fn step(round: &mut Round<'_>) -> Progress {
     let mut result = Ok(());
     if first {
         result = prune(round).await.and(result);
-        result = recheck_voids(round).await.and(result);
+        result = recheck_voids(round, until).await.and(result);
     }
     if !round.upkeep.ranges_done {
         result = scanned_ranges(round).await.and(result);
@@ -95,7 +95,7 @@ async fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
 /// `VOID_RECHECK_INTERVAL_SECS` and walks voided payments in id order; a
 /// failed or inconclusive recheck leaves the payment voided for the next
 /// pass.
-async fn recheck_voids(round: &mut Round<'_>) -> Result<(), ScannerError> {
+async fn recheck_voids(round: &mut Round<'_>, until: tokio::time::Instant) -> Result<(), ScannerError> {
     let Some(tip) = round.tip else { return Ok(()) };
     let now = round.now;
     let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
@@ -113,15 +113,35 @@ async fn recheck_voids(round: &mut Round<'_>) -> Result<(), ScannerError> {
             Ok(s.voided_payments_page(network, cutoff, after, VOID_PAGE)?)
         })
         .await?;
-    let Some(last) = page.last().map(|p| p.id) else { return Ok(()) };
+    // Until the time runs out (at least one) or the node fails: a node that
+    // fails for one payment would for the next, so stop asking it.
+    let mut last = None;
+    let mut failure = None;
     for payment in &page {
-        recheck_voided_payment(round.inputs.db, round.inputs.daemon, round.network(), payment, tip, now).await;
+        if last.is_some() && tokio::time::Instant::now() >= until {
+            break;
+        }
+        match recheck_voided_payment(round.inputs.db, round.inputs.daemon, round.network(), payment, tip, now).await {
+            Ok(_) => last = Some(payment.id),
+            Err(error) => {
+                tracing::warn!(network = %round.network(), order.id = %payment.order_id, error = %error,
+                    "double-spend revalidation: rechecking a voided payment failed - leaving it voided, retried next pass");
+                failure = Some(error);
+                break;
+            }
+        }
     }
-    // Back to 0 (the pass is over) once nothing follows this page.
-    round
-        .db(move |s, network| {
-            let next = if s.voided_payments_page(network, cutoff, last, 1)?.is_empty() { 0 } else { last };
-            Ok(s.set_scheduler_position(network, Position::VoidRecheck, &next.to_string())?)
-        })
-        .await
+    // Back to 0 (the pass is over) once nothing follows what was checked.
+    if let Some(last) = last {
+        round
+            .db(move |s, network| {
+                let next = if s.voided_payments_page(network, cutoff, last, 1)?.is_empty() { 0 } else { last };
+                Ok(s.set_scheduler_position(network, Position::VoidRecheck, &next.to_string())?)
+            })
+            .await?;
+    }
+    match failure {
+        Some(ScannerError::Daemon(_)) | None => Ok(()),
+        Some(error) => Err(error),
+    }
 }

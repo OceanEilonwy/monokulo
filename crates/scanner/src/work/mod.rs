@@ -178,22 +178,27 @@ where
 /// backend costs one attempt a minute instead of a deadline every round.
 #[derive(Default)]
 pub(crate) struct Backoff {
-    failures: parking_lot::Mutex<HashMap<String, (u32, Instant)>>,
+    /// By key: consecutive failures, retry-not-before, last failure.
+    failures: parking_lot::Mutex<HashMap<String, (u32, Instant, Instant)>>,
 }
 
 impl Backoff {
     const FREE_RETRIES: u32 = 2;
     const MAX_DELAY: Duration = Duration::from_secs(60);
+    /// A key that hasn't failed for this long is forgotten: it is no longer
+    /// being tried (a store with nothing in scope, an order that settled).
+    const FORGET_AFTER: Duration = Duration::from_secs(60 * 60);
 
     pub(crate) fn failed(&self, key: &str) {
         let mut failures = self.failures.lock();
-        let count = failures.get(key).map_or(0, |(n, _)| *n) + 1;
+        let count = failures.get(key).map_or(0, |(n, _, _)| *n) + 1;
         let delay = if count <= Self::FREE_RETRIES {
             Duration::ZERO
         } else {
             Duration::from_secs(1u64 << (count - Self::FREE_RETRIES).min(6)).min(Self::MAX_DELAY)
         };
-        failures.insert(key.to_string(), (count, Instant::now() + delay));
+        let now = Instant::now();
+        failures.insert(key.to_string(), (count, now + delay, now));
     }
 
     pub(crate) fn succeeded(&self, key: &str) {
@@ -201,14 +206,17 @@ impl Backoff {
     }
 
     /// Keys still waiting out their delay. A key stays counted until it
-    /// succeeds, so repeated failures keep lengthening its delay.
+    /// succeeds (or stops failing for `FORGET_AFTER`), so repeated failures
+    /// keep lengthening its delay.
     pub(crate) fn waiting(&self) -> Vec<String> {
         let now = Instant::now();
-        self.failures.lock().iter().filter(|(_, (_, until))| *until > now).map(|(key, _)| key.clone()).collect()
+        let mut failures = self.failures.lock();
+        failures.retain(|_, (_, _, last)| now.saturating_duration_since(*last) < Self::FORGET_AFTER);
+        failures.iter().filter(|(_, (_, until, _))| *until > now).map(|(key, _)| key.clone()).collect()
     }
 
     pub(crate) fn is_waiting(&self, key: &str) -> bool {
-        self.failures.lock().get(key).is_some_and(|(_, until)| *until > Instant::now())
+        self.failures.lock().get(key).is_some_and(|(_, until, _)| *until > Instant::now())
     }
 }
 
@@ -220,7 +228,10 @@ pub struct ScanState {
     mempool: mempool::MempoolState,
     blocks: blocks::BlockState,
     settlement: settlement::SettlementState,
+    /// Tenants whose scans keep failing.
     backoff: Backoff,
+    /// Orders whose status recompute keeps failing.
+    order_backoff: Backoff,
 }
 
 /// One round in progress: the inputs, the facts read at its start, and what
@@ -261,11 +272,11 @@ impl<'a> Round<'a> {
 
 async fn step(tier: Tier, round: &mut Round<'_>, until: Instant) -> Progress {
     match tier {
-        Tier::Chain => chain::step(round).await,
+        Tier::Chain => chain::step(round, until).await,
         Tier::Blocks => blocks::step(round, until).await,
         Tier::Mempool => mempool::step(round, until).await,
         Tier::Settlement => settlement::step(round, until).await,
-        Tier::Upkeep => upkeep::step(round).await,
+        Tier::Upkeep => upkeep::step(round, until).await,
     }
 }
 

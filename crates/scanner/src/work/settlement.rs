@@ -116,26 +116,47 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
 /// Recomputes up to a page of orders not yet recomputed this round:
 /// obligations first, then due orders. Returns how many.
 async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, ScannerError> {
-    let (after, recomputed, now) =
-        (round.state.settlement.obligations_after.lock().clone(), round.settlement.recomputed.clone(), round.now);
-    let (ids, next_after) = round.db(move |s, network| pick(s, network, &after, &recomputed, now, tip)).await?;
+    let now = round.now;
+    let after = round.state.settlement.obligations_after.lock().clone();
+    // Skipped: orders recomputed this round, and orders waiting to retry.
+    let mut skip = round.settlement.recomputed.clone();
+    skip.extend(round.state.order_backoff.waiting());
+    let (ids, next_after) = round.db(move |s, network| pick(s, network, &after, &skip, now, tip)).await?;
     *round.state.settlement.obligations_after.lock() = next_after;
     round.settlement.recomputed.extend(ids.iter().cloned());
     let count = ids.len();
-    // Each recompute is its own transaction; a few per database job, so a
-    // page never holds the worker long enough to delay other work.
+    // Each recompute is its own transaction, a few per database job so a page
+    // never holds the worker long, and each order's failure is its own: it
+    // waits to be retried, and the others carry on.
+    let mut succeeded = 0;
+    let mut first_failure = None;
     for chunk in ids.chunks(RECOMPUTES_PER_JOB) {
         let chunk = chunk.to_vec();
-        round
-            .db(move |s, _| {
-                for id in &chunk {
-                    recompute_and_notify(s, id, tip, now)?;
-                }
-                Ok(())
-            })
+        let outcomes = round
+            .db(move |s, _| Ok(chunk.into_iter().map(|id| {
+                let outcome = recompute_and_notify(s, &id, tip, now);
+                (id, outcome)
+            }).collect::<Vec<_>>()))
             .await?;
+        for (id, outcome) in outcomes {
+            match outcome {
+                Ok(()) => {
+                    succeeded += 1;
+                    round.state.order_backoff.succeeded(&id);
+                }
+                Err(error) => {
+                    tracing::warn!(network = %round.network(), order.id = %id, error = %error, "recomputing an order's status failed (retried later)");
+                    round.state.order_backoff.failed(&id);
+                    first_failure.get_or_insert(error);
+                }
+            }
+        }
     }
-    Ok(count)
+    match first_failure {
+        // Only when nothing in the page went through does the tier stop.
+        Some(error) if succeeded == 0 => Err(error),
+        _ => Ok(count),
+    }
 }
 
 /// The next page to recompute, and where the obligation rotation goes on

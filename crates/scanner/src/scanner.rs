@@ -283,7 +283,7 @@ pub async fn check_for_reorg_and_reconcile(
     let mut attempted = HashSet::new();
     let mut failure = None;
     loop {
-        match chain.advance_job(tip, &mut attempted).await {
+        match chain.advance_job(tip, &mut attempted, tokio::time::Instant::now() + crate::work::ROUND_BUDGET).await {
             Ok(Some(JobStep::Collected)) => {}
             Ok(Some(JobStep::Processed(reconciled))) => {
                 dirty_orders.extend(reconciled.dirty_orders);
@@ -649,8 +649,12 @@ pub async fn revalidate_recent_double_spend_voids(
         let Some(last) = page.last().map(|p| p.id) else { break };
         after = last;
         for payment in page {
-            if recheck_voided_payment(&db, daemon, network, &payment, current_height, now).await {
-                recovered_orders.push(payment.order_id.clone());
+            match recheck_voided_payment(&db, daemon, network, &payment, current_height, now).await {
+                Ok(true) => recovered_orders.push(payment.order_id.clone()),
+                Ok(false) => {}
+                // Left voided; the next sweep retries it.
+                Err(error) => tracing::warn!(order.id = %payment.order_id, network = %network, error = %error,
+                    "double-spend revalidation: rechecking a voided payment failed - leaving it voided, will retry next sweep"),
             }
         }
     }
@@ -659,8 +663,9 @@ pub async fn revalidate_recent_double_spend_voids(
 
 /// Rechecks one voided payment and restores it if fresh, corroborated
 /// evidence no longer supports the double-spend accusation. Returns whether
-/// it was restored. A failed or inconclusive recheck is logged and leaves
-/// the payment voided, for a later pass to retry.
+/// it was restored. Invalid evidence or an inconclusive answer leaves the
+/// payment voided (`Ok(false)`); a node or storage failure is an error, so a
+/// caller can stop asking a node that isn't answering.
 pub(crate) async fn recheck_voided_payment(
     db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
@@ -668,46 +673,27 @@ pub(crate) async fn recheck_voided_payment(
     payment: &crate::store::OrderPaymentRow,
     current_height: u64,
     now: i64,
-) -> bool {
+) -> Result<bool> {
     let key_images = match parse_payment_key_images(&payment.key_images_json) {
         Ok(images) => images,
         Err(e) => {
             tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: leaving the order voided because its stored evidence is invalid");
-            return false;
+            return Ok(false);
         }
     };
-    let statuses = match crate::work::bounded(daemon.is_key_image_spent_corroborated(&key_images)).await {
-        Ok(statuses) => statuses,
-        Err(e) => {
-            tracing::warn!(
-                order.id = %payment.order_id,
-                network = %network,
-                error = %e,
-                "double-spend revalidation: rechecking a voided payment failed - leaving it voided, will retry next sweep"
-            );
-            return false;
-        }
-    };
+    let statuses = crate::work::bounded(daemon.is_key_image_spent_corroborated(&key_images)).await?;
     if statuses.len() != key_images.len() || !statuses.iter().all(|status| *status == KeyImageStatus::Unspent) {
         tracing::info!(order.id = %payment.order_id, "double-spend revalidation: inconclusive key-image statuses; leaving the order voided");
-        return false;
+        return Ok(false);
     }
     let (order_id, txid, output) = (payment.order_id.clone(), payment.txid.clone(), payment.output_index);
     let restored = db
         .run(crate::store::db::Class::Scanner, move |s| unvoid_as_false_positive(s, &order_id, &txid, output, current_height, now))
-        .await;
-    match restored {
-        Ok(restored) => {
-            if restored {
-                tracing::info!(order.id = %payment.order_id, network = %network, "double-spend revalidation reversed a void");
-            }
-            restored
-        }
-        Err(e) => {
-            tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: restoring a payment failed (retried next sweep)");
-            false
-        }
+        .await?;
+    if restored {
+        tracing::info!(order.id = %payment.order_id, network = %network, "double-spend revalidation reversed a void");
     }
+    Ok(restored)
 }
 
 /// Never request fewer than this many blocks in one `get_blocks_range` call,

@@ -83,6 +83,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         selected.iter().filter(|txid| !remembered.bodies.contains_key(*txid)).cloned().collect()
     };
     let mut fetched: HashMap<String, Arc<Transaction>> = HashMap::new();
+    let mut fetch_failed = false;
     if !missing.is_empty() {
         match bounded(round.inputs.daemon.get_transactions(&missing)).await {
             Ok(txs) => {
@@ -96,8 +97,11 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
                     fetched.insert(txid, tx);
                 }
             }
-            Err(error) => tracing::warn!(network = %network, transactions = missing.len(), error = %error,
-                "fetching new mempool transactions failed (retried next round)"),
+            Err(error) => {
+                fetch_failed = true;
+                tracing::warn!(network = %network, transactions = missing.len(), error = %error,
+                    "fetching new mempool transactions failed (retried next round)");
+            }
         }
     }
     let pool: Vec<Arc<Transaction>> = {
@@ -163,7 +167,13 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     }
     // Advance by the work actually attempted, so a slow first transaction
     // isn't revisited forever when the time allowance stops the slice early.
-    state.next_tx_offset.fetch_add(if attempted == 0 { selected.len() } else { attempted }, Ordering::Relaxed);
+    // A slice whose bodies couldn't be fetched is tried again next round.
+    let advance = match (attempted, fetch_failed) {
+        (0, true) => 0,
+        (0, false) => selected.len(),
+        (attempted, _) => attempted,
+    };
+    state.next_tx_offset.fetch_add(advance, Ordering::Relaxed);
     Progress::Advanced
 }
 

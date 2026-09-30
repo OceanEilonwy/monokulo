@@ -656,3 +656,164 @@ async fn run_round_on(store: &SharedStore, custody: &dyn KeyCustody, daemon: &dy
         .into_result()
         .unwrap();
 }
+
+/// A node that fails every transaction lookup (and counts them), or every
+/// body fetch until told otherwise (recording what was asked).
+struct Lookups<'a> {
+    inner: &'a FakeDaemonClient,
+    locate_calls: AtomicU64,
+    fail_bodies: std::sync::atomic::AtomicBool,
+    body_requests: parking_lot::Mutex<Vec<Vec<String>>>,
+}
+
+impl<'a> Lookups<'a> {
+    fn new(inner: &'a FakeDaemonClient) -> Self {
+        Self { inner, locate_calls: AtomicU64::new(0), fail_bodies: false.into(), body_requests: Default::default() }
+    }
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for Lookups<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.inner.get_height().await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        self.inner.get_block_hash(height).await
+    }
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_block_transactions(height).await
+    }
+    async fn get_chain_blocks(&self, start: u64, count: u64) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        self.inner.get_chain_blocks(start, count).await
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_mempool_transactions().await
+    }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.inner.get_mempool_txids().await
+    }
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        let mut asked = txids.to_vec();
+        asked.sort();
+        self.body_requests.lock().push(asked);
+        if self.fail_bodies.load(Ordering::Relaxed) {
+            return Err(DaemonError::Request("bodies unavailable".into()));
+        }
+        self.inner.get_transactions(txids).await
+    }
+    async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
+        self.locate_calls.fetch_add(1, Ordering::Relaxed);
+        Err(DaemonError::Request("this node can't look transactions up right now".into()))
+    }
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        self.inner.get_transaction(txid).await
+    }
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.inner.is_key_image_spent(key_images).await
+    }
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        self.inner.get_block_timestamp(height).await
+    }
+}
+
+/// A node that fails reorg lookups is asked once a round, not once per
+/// candidate: waiting on it payment after payment (each up to the call
+/// deadline) would stall the whole round.
+#[tokio::test]
+async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let fake = FakeDaemonClient::new();
+    for h in 1..=10 {
+        let height = fake.push_block(&format!("a{h}"), vec![]);
+        store.set_scanned_block("mainnet", height, &format!("a{h}")).unwrap();
+    }
+    for i in 0..20u8 {
+        let order = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await.2;
+        store.record_payment_match(&order, &format!("{i:064x}"), 0, 1, "[]", 1000, Some(9)).unwrap();
+    }
+    store.open_reorg_job("mainnet", 9, crate::now_unix()).unwrap();
+    let store = store.into_shared();
+    let daemon = Lookups::new(&fake);
+    let state = ScanState::default();
+    let report = run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &[]), ROUND_BUDGET).await;
+    assert_eq!(daemon.locate_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(report.outcome(Tier::Chain), TierOutcome::Blocked("the node failed"));
+    assert!(report.error.is_none(), "a node failure is retried, not a failed round");
+}
+
+/// One order whose recompute keeps failing waits to be retried; the others
+/// are still recomputed and the round doesn't fail for it.
+#[tokio::test]
+async fn one_failing_recompute_does_not_hold_up_the_others() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let now = crate::now_unix();
+    let (_, _, poisoned) = fixture_tenant(&store, &custody, now - 10).await;
+    let (_, _, healthy) = fixture_tenant(&store, &custody, now - 10).await;
+    let fake = FakeDaemonClient::new();
+    for h in 1..=3 {
+        let height = fake.push_block(&format!("a{h}"), vec![]);
+        store.set_scanned_block("mainnet", height, &format!("a{h}")).unwrap();
+    }
+    store.execute_raw_for_test("UPDATE tenants SET scanned_through_height = 3").unwrap();
+    store
+        .execute_raw_for_test(&format!(
+            "CREATE TRIGGER poisoned_order BEFORE UPDATE OF status ON orders WHEN NEW.id = '{poisoned}'
+             BEGIN SELECT RAISE(ABORT, 'simulated persistent failure'); END;"
+        ))
+        .unwrap();
+    let store = store.into_shared();
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    let round = || async { run_round(&state, &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await };
+    let first = round().await;
+    assert!(first.error.is_none(), "the other order went through: {:?}", first.error);
+    assert_eq!(order_status(&store, &healthy), OrderStatus::Expired);
+    // Alone in its page it is reported (a real storage failure), until its
+    // free retries are spent; then it waits, and the round is clean.
+    round().await;
+    round().await;
+    assert!(state.order_backoff.is_waiting(&poisoned));
+    let later = round().await;
+    assert!(later.error.is_none(), "{:?}", later.error);
+    assert_eq!(order_status(&store, &poisoned), OrderStatus::Pending);
+}
+
+/// Backoff entries for keys that stopped failing (and stopped being tried)
+/// are forgotten after an hour, so the map can't grow without bound.
+#[tokio::test(start_paused = true)]
+async fn backoff_forgets_keys_that_stopped_failing() {
+    let backoff = Backoff::default();
+    for _ in 0..4 {
+        backoff.failed("gone");
+    }
+    assert_eq!(backoff.waiting(), vec!["gone".to_string()]);
+    tokio::time::advance(Duration::from_secs(61 * 60)).await;
+    assert!(backoff.waiting().is_empty());
+    assert!(backoff.failures.lock().is_empty(), "forgotten, not just no longer waiting");
+}
+
+/// Mempool bodies that couldn't be fetched are asked for again next round,
+/// not skipped until the rotation comes round again.
+#[tokio::test]
+async fn a_failed_mempool_body_fetch_is_retried_next_round() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.push_block("a1", vec![]);
+    fake.push_block("a2", vec![]);
+    fake.set_mempool((0..100u8).map(|i| unrelated_tx(i)).collect());
+    let daemon = Lookups::new(&fake);
+    daemon.fail_bodies.store(true, Ordering::Relaxed);
+    let tenants = [(tenant, handle)];
+    let state = ScanState::default();
+    run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await;
+    daemon.fail_bodies.store(false, Ordering::Relaxed);
+    run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await;
+    let requests = daemon.body_requests.lock();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1], "the same slice again");
+}

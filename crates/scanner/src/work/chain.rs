@@ -4,6 +4,8 @@
 
 use std::collections::HashSet;
 
+use tokio::time::Instant;
+
 use crate::daemon::{KeyImageStatus, MoneroDaemonClient, TxLocation};
 use crate::scanner::{void_and_notify_in_tx, ScannerError};
 use crate::store::db::Class;
@@ -139,15 +141,21 @@ impl Chain<'_> {
         Ok(())
     }
 
-    /// Re-examines up to `PROCESS_PAGE` due candidates not in `skip`.
-    /// Each outcome and the removal of its candidate commit together.
-    pub async fn process_page(&self, tip: u64, skip: &mut HashSet<i64>) -> Result<(usize, Reconciled), ScannerError> {
+    /// Re-examines up to `PROCESS_PAGE` due candidates not in `skip`, until
+    /// `until` (at least one). Each outcome and the removal of its candidate
+    /// commit together. Stops at the first node failure: a node that fails
+    /// (or hangs until the call deadline) for one payment would for the next,
+    /// and waiting on it payment after payment would stall the round.
+    pub async fn process_page(&self, tip: u64, skip: &mut HashSet<i64>, until: Instant) -> Result<(usize, Reconciled), ScannerError> {
         let (now, limit) = (self.now, PROCESS_PAGE + skip.len());
         let due = self.db(move |s, network| Ok(s.due_reorg_candidates(network, now, limit)?)).await?;
         let mut done = Reconciled::default();
         let mut processed = 0;
         let page: Vec<_> = due.into_iter().filter(|c| !skip.contains(&c.payment.id)).take(PROCESS_PAGE).collect();
         for candidate in page {
+            if processed > 0 && Instant::now() >= until {
+                break;
+            }
             skip.insert(candidate.payment.id);
             processed += 1;
             match self.reexamine(&candidate.payment, tip, &mut done).await {
@@ -165,7 +173,11 @@ impl Chain<'_> {
                     tracing::warn!(network = %self.network, payment.id = candidate.payment.id, error = %error, "reorg: re-examining a payment failed (retried)");
                     let (id, now) = (candidate.payment.id, self.now);
                     self.db(move |s, network| Ok(s.defer_reorg_candidate(network, id, now)?)).await?;
+                    let node_failed = matches!(error, ScannerError::Daemon(_));
                     done.failure.get_or_insert(error);
+                    if node_failed {
+                        break;
+                    }
                 }
             }
         }
@@ -266,7 +278,7 @@ impl Chain<'_> {
 
     /// One unit of the open job, if any: collect a page, re-examine a page,
     /// or rewind. `Ok(None)` when there is no job.
-    pub async fn advance_job(&self, tip: u64, skip: &mut HashSet<i64>) -> Result<Option<JobStep>, ScannerError> {
+    pub async fn advance_job(&self, tip: u64, skip: &mut HashSet<i64>, until: Instant) -> Result<Option<JobStep>, ScannerError> {
         let Some(job) = self.db(|s, network| Ok(s.reorg_job(network)?)).await? else { return Ok(None) };
         match job.phase {
             ReorgPhase::CollectConfirmed { .. } | ReorgPhase::CollectUnconfirmed { .. } => {
@@ -275,7 +287,7 @@ impl Chain<'_> {
                 Ok(Some(JobStep::Collected))
             }
             ReorgPhase::Process => {
-                let (processed, reconciled) = self.process_page(tip, skip).await?;
+                let (processed, reconciled) = self.process_page(tip, skip, until).await?;
                 if processed > 0 {
                     return Ok(Some(JobStep::Processed(reconciled)));
                 }
@@ -333,8 +345,8 @@ pub(crate) enum JobStep {
     Rewound,
 }
 
-pub(super) async fn step(round: &mut Round<'_>) -> Progress {
-    match run(round).await {
+pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
+    match run(round, until).await {
         // A node that fails partway leaves the job (and the losing chain's
         // hashes) exactly where they were; the next round carries on.
         Progress::Failed(ScannerError::Daemon(error)) => {
@@ -351,7 +363,7 @@ pub(super) async fn step(round: &mut Round<'_>) -> Progress {
     }
 }
 
-async fn run(round: &mut Round<'_>) -> Progress {
+async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
     let Some(tip) = round.tip else { return Progress::Blocked("chain height unknown") };
     let chain = Chain {
         db: round.inputs.db,
@@ -374,7 +386,7 @@ async fn run(round: &mut Round<'_>) -> Progress {
             Err(error) => return Progress::Failed(error),
         }
     }
-    match chain.advance_job(tip, &mut round.chain.attempted).await {
+    match chain.advance_job(tip, &mut round.chain.attempted, until).await {
         Ok(None) => Progress::Idle,
         Ok(Some(JobStep::Processed(Reconciled { failure: Some(error), .. }))) => Progress::Failed(error),
         Ok(Some(JobStep::Waiting)) => Progress::Blocked("reorg candidates are waiting to be retried"),
