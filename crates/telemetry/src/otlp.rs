@@ -64,15 +64,21 @@ impl OtlpConfig {
     }
 }
 
-/// The `check` for `logging.otlp_headers`.
-#[allow(
-    clippy::ptr_arg,
-    reason = "a setting's `check` takes `&T`, and this setting is a `String`"
-)]
-pub fn check_headers(headers: &String) -> Result<(), String> {
-    for pair in headers.split(',').filter(|p| !p.trim().is_empty()) {
+/// The `check` for `logging.otlp_headers`: `name=value` pairs separated by
+/// commas, or nothing. A pair [`OtlpConfig::from_settings`] couldn't read
+/// would be left out of every request without a word, and the collector
+/// would turn the requests away.
+///
+/// The setting is a secret (it holds an API key), so what is wrong is said
+/// by the pair's position, never by showing back what was typed.
+pub fn check_headers(headers: &live_settings::Secret) -> Result<(), String> {
+    const FORM: &str =
+        "Enter name=value pairs separated by commas, such as authorization=Bearer abc,x-team=ops.";
+    let pairs = headers.expose().split(',').enumerate();
+    for (index, pair) in pairs.filter(|(_, pair)| !pair.trim().is_empty()) {
+        let position = index + 1;
         let Some((name, _)) = pair.split_once('=') else {
-            return Err(format!("\"{}\" isn't name=value. Separate pairs with commas: authorization=Bearer abc,x-team=ops", pair.trim()));
+            return Err(format!("Pair {position} isn't name=value. {FORM}"));
         };
         let name = name.trim();
         if name.is_empty()
@@ -80,7 +86,9 @@ pub fn check_headers(headers: &String) -> Result<(), String> {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         {
-            return Err(format!("\"{name}\" isn't a header name."));
+            return Err(format!(
+                "Pair {position}'s name isn't a header name (letters, digits, - and _). {FORM}"
+            ));
         }
     }
     Ok(())

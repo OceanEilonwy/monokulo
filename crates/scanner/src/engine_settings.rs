@@ -229,6 +229,7 @@ settings! {
         key: "logging.otlp_headers",
         env: "SCANNER_LOGGING_OTLP_HEADERS",
         default: live_settings::Secret::default(),
+        check: telemetry::otlp::check_headers,
         description: "Headers the collector needs, such as an API key, as name=value pairs separated by commas.",
     },
 }
