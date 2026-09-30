@@ -73,7 +73,7 @@ const BACKGROUND_LOOP_INTERVAL: Duration = Duration::from_millis(150);
 /// advancing, never disagreeing with itself between calls - so `run_scan_tick`'s
 /// reorg-reconciliation logic never has anything to react to. Every block/mempool
 /// query returns empty. None of this matters for `run_scan_tick`'s expiry sweep
-/// (`non_terminal_order_ids`/`recompute_and_notify`), which is driven by wall-clock
+/// (`due_order_ids`/`recompute_and_notify`), which is driven by wall-clock
 /// time and the store alone, not by anything this daemon reports - see
 /// `TestEngineConfig::with_background_loops`'s own doc comment for the full
 /// reasoning on why an inert daemon is sufficient here.

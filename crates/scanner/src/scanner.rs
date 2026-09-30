@@ -2898,7 +2898,7 @@ pub(crate) mod tests {
     ) {
         // Defense-in-depth for the multi-network design (§DESIGN.md §7): a
         // mainnet-network tick must not touch a pending stagenet tenant's data at
-        // all, even though `active_tenant_ids` already scopes by network - this
+        // all, even though `active_tenants_page` already scopes by network - this
         // proves the *second*, independent filter (`t.network == network` in
         // `run_scan_tick` itself) actually engages, guarding against a caller (e.g.
         // a future refactor of `main.rs`'s scanner loop) accidentally passing an
@@ -3732,7 +3732,7 @@ pub(crate) mod tests {
         // Voiding is a conclusion drawn from a chain state that can itself change:
         // the replacement transaction that proved the double-spend can be reorged
         // out in turn, putting the original back on the canonical chain. Because
-        // `find_payments_at_or_after_height` filters voided rows out, a voided
+        // reconciliation once collected only payments that weren't voided, a voided
         // payment was invisible to every future reconciliation pass and the
         // merchant's genuinely-paid order stayed permanently short.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
@@ -10469,16 +10469,14 @@ pub(crate) mod tests {
                 .len(),
             1
         );
+        let a = shared::ids::TenantId::new(a.to_string());
         assert_eq!(
             store
                 .lock()
-                .scan_window(
-                    &shared::ids::TenantId::new(a.to_string()),
-                    crate::now_unix(),
-                    0
-                )
-                .unwrap(),
-            vec![1],
+                .scan_windows(std::slice::from_ref(&a), crate::now_unix(), 0)
+                .unwrap()
+                .get(&a),
+            Some(&vec![1]),
             "the window is the open orders"
         );
     }

@@ -666,10 +666,10 @@ recovery.
 
 **Two layers of defense, not one:**
 
-1. **A default grace period** — `active_tenant_ids`/`non_terminal_order_ids`
-   (`store.rs`) both widen their in-scope predicate with `OR (status = 'expired' AND
-   expires_at >= now - expired_order_grace_period_minutes)`. Automatic, no merchant
-   action, default 6h — catches the common case (paid moments late) for free. No other
+1. **A default grace period** — the scan window (`store.rs`'s `tenant_in_scope` and
+   `scan_window_orders`, read through `active_tenants_page` and `scan_windows`) holds
+   an order that closed no earlier than `now - expired_order_grace_period_minutes` as
+   well as every open one. Automatic, no merchant action, default 6h — catches the common case (paid moments late) for free. No other
    scanner-core change was needed to make a late match against an already-`expired`
    order settle correctly: `record_scan_match`'s `touched` set already gets unioned
    into every tick's recompute sweep regardless of status.
