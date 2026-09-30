@@ -16,12 +16,12 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use monero::{Address, Transaction};
+use monero::Address;
 use parking_lot::RwLock;
 
 use super::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex,
-    WalletHandle, WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,
+    TxMatches, WalletHandle, WalletMaterial,
 };
 
 #[derive(Default)]
@@ -213,7 +213,7 @@ impl KeyCustody for CustodyRouter {
     async fn scan_tx_outputs(
         &self,
         handle: WalletHandle,
-        tx: &Transaction,
+        tx: &ScanInput,
         major_range: Range<u32>,
         minor_range: Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
@@ -224,15 +224,15 @@ impl KeyCustody for CustodyRouter {
         self.forget_if_unknown(handle, result)
     }
 
-    async fn scan_tx_outputs_for_indices(
+    async fn scan_txs_for_indices(
         &self,
         handle: WalletHandle,
-        tx: &Transaction,
+        txs: &[ScanInput],
         indices: &ScanIndices,
-    ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+    ) -> Result<Vec<TxMatches>, KeyCustodyError> {
         let result = self
             .for_handle(handle)?
-            .scan_tx_outputs_for_indices(handle, tx, indices)
+            .scan_txs_for_indices(handle, txs, indices)
             .await;
         self.forget_if_unknown(handle, result)
     }
@@ -558,7 +558,7 @@ mod tests {
         async fn scan_tx_outputs(
             &self,
             handle: WalletHandle,
-            tx: &Transaction,
+            tx: &ScanInput,
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
@@ -653,7 +653,7 @@ mod tests {
         async fn scan_tx_outputs(
             &self,
             handle: WalletHandle,
-            tx: &Transaction,
+            tx: &ScanInput,
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {

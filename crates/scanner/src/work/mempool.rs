@@ -358,10 +358,10 @@ async fn scan_and_record(
             .get(tenant_id.as_str())
             .copied()
             .unwrap_or_default();
-        if scan.matches.is_empty() {
+        let Some(scan) = scan else {
             state.mempool.mark_scanned(txid, &tenant_id, generation);
             continue;
-        }
+        };
         let (id, now) = (tenant_id.clone(), crate::now_unix());
         let recorded = inputs
             .db

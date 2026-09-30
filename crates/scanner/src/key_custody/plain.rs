@@ -4,12 +4,13 @@ use std::ops::Range;
 use std::sync::atomic::{compiler_fence, Ordering};
 
 use monero::cryptonote::onetime_key::SubKeyChecker;
-use monero::{Address, PrivateKey, PublicKey, Transaction, ViewPair};
+use monero::{Address, PrivateKey, PublicKey, ViewPair};
 use zeroize::Zeroize;
 
+use super::outputs::{owned_outputs, pays};
 use super::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex,
-    WalletHandle, WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,
+    TxMatches, WalletHandle, WalletMaterial,
 };
 
 /// Ceiling on `major_range.len() * minor_range.len()` for one scan. Table
@@ -319,7 +320,7 @@ impl KeyCustody for PlainKeyCustody {
     async fn scan_tx_outputs(
         &self,
         handle: WalletHandle,
-        tx: &Transaction,
+        tx: &ScanInput,
         major_range: Range<u32>,
         minor_range: Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
@@ -375,6 +376,9 @@ impl KeyCustody for PlainKeyCustody {
         let permit = SCAN_SLOTS.clone().acquire_owned().await;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            if !pays(&view_pair, &lookup.table, &tx) {
+                return Ok(Vec::new());
+            }
             let keys = std::mem::take(&mut lookup.table);
             let cached_range = lookup.range.take();
             lookup.complete = false;
@@ -382,34 +386,22 @@ impl KeyCustody for PlainKeyCustody {
                 table: keys,
                 keys: &view_pair,
             };
-            let result = match tx.check_outputs_with(&checker) {
-                Ok(owned) => Ok(owned
-                    .into_iter()
-                    .map(|o| MatchedOutput {
-                        output_index: o.index(),
-                        subaddress_index: o.sub_index(),
-                        amount_piconero: o.amount().map(|a| a.as_pico()),
-                    })
-                    .collect()),
-                Err(monero::blockdata::transaction::Error::NoTxPublicKey)
-                | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
-                Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
-            };
+            let found = owned_outputs(&checker, &tx);
             lookup.table = checker.table;
             lookup.range = cached_range;
             lookup.complete = true;
-            result
+            Ok(found)
         })
         .await
         .map_err(|e| KeyCustodyError::ScanFailed(format!("scan task failed: {e}")))?
     }
 
-    async fn scan_tx_outputs_for_indices(
+    async fn scan_txs_for_indices(
         &self,
         handle: WalletHandle,
-        tx: &Transaction,
+        txs: &[ScanInput],
         indices: &ScanIndices,
-    ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+    ) -> Result<Vec<TxMatches>, KeyCustodyError> {
         if indices.len() as u64 > MAX_SCAN_TABLE_ENTRIES {
             return Err(KeyCustodyError::ScanFailed(format!(
                 "{} indices exceed the {MAX_SCAN_TABLE_ENTRIES}-entry scan limit",
@@ -446,38 +438,37 @@ impl KeyCustody for PlainKeyCustody {
                 tokio::task::yield_now().await;
             }
         }
-        let tx = tx.clone();
+        let txs = txs.to_vec();
         let view_pair = entry.view_pair;
         let generation = indices.generation();
         let permit = SCAN_SLOTS.clone().acquire_owned().await;
+        // The whole batch in one blocking task: the hop to the blocking pool
+        // and back costs more than finding that a transaction pays nothing.
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            // If `check_outputs_with` panics, the next call must rebuild, not
-            // treat an emptied table as a completed generation.
-            let keys = std::mem::take(&mut live.table);
-            let cached_indices = std::mem::take(&mut live.indices);
-            live.generation = None;
-            let checker = SubKeyChecker {
-                table: keys,
-                keys: &view_pair,
-            };
-            let result = match tx.check_outputs_with(&checker) {
-                Ok(owned) => Ok(owned
-                    .into_iter()
-                    .map(|o| MatchedOutput {
-                        output_index: o.index(),
-                        subaddress_index: o.sub_index(),
-                        amount_piconero: o.amount().map(|a| a.as_pico()),
-                    })
-                    .collect()),
-                Err(monero::blockdata::transaction::Error::NoTxPublicKey)
-                | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
-                Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
-            };
-            live.table = checker.table;
-            live.indices = cached_indices;
-            live.generation = Some(generation);
-            result
+            let mut found = Vec::new();
+            for (tx, input) in txs.iter().enumerate() {
+                if !pays(&view_pair, &live.table, input) {
+                    continue;
+                }
+                // If `owned_outputs` panics, the next call must rebuild, not
+                // treat an emptied table as a completed generation.
+                let keys = std::mem::take(&mut live.table);
+                let cached_indices = std::mem::take(&mut live.indices);
+                live.generation = None;
+                let checker = SubKeyChecker {
+                    table: keys,
+                    keys: &view_pair,
+                };
+                let outputs = owned_outputs(&checker, input);
+                live.table = checker.table;
+                live.indices = cached_indices;
+                live.generation = Some(generation);
+                if !outputs.is_empty() {
+                    found.push(TxMatches { tx, outputs });
+                }
+            }
+            Ok(found)
         })
         .await
         .map_err(|e| KeyCustodyError::ScanFailed(format!("scan task failed: {e}")))?
@@ -506,7 +497,7 @@ mod tests {
     use super::*;
     use crate::key_custody::WalletMaterial;
     use monero::consensus::encode::deserialize;
-    use monero::{Network, PrivateKey};
+    use monero::{Network, PrivateKey, Transaction};
     use std::sync::atomic::Ordering;
 
     fn random_scalar_bytes(seed: u8) -> [u8; 32] {
@@ -588,7 +579,7 @@ mod tests {
             .unwrap();
 
         let matches = custody
-            .scan_tx_outputs(handle, &tx, 0..2, 0..3)
+            .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..2, 0..3)
             .await
             .unwrap();
 
@@ -599,6 +590,83 @@ mod tests {
             SubaddressIndex { major: 0, minor: 1 }
         );
         assert!(matches[0].amount_piconero.unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn a_batch_scan_says_which_of_its_transactions_pay_the_wallet() {
+        let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
+        let tx: Transaction = deserialize(&raw_tx).unwrap();
+        // The same outputs in the other order: each key was made for the
+        // other position, so neither belongs to the wallet.
+        let mut unrelated = tx.clone();
+        unrelated.prefix.outputs.reverse();
+        let view_key = PrivateKey::from_slice(
+            &hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")
+                .unwrap(),
+        )
+        .unwrap();
+        let secret_spend = PrivateKey::from_slice(
+            &hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907")
+                .unwrap(),
+        )
+        .unwrap();
+        let custody = PlainKeyCustody::default();
+        let handle = custody
+            .register_wallet(WalletMaterial::new(
+                view_key.to_bytes(),
+                PublicKey::from_private_key(&secret_spend).to_bytes(),
+            ))
+            .await
+            .unwrap();
+        let window = ScanIndices::new([1, 5]);
+        let batch = [
+            ScanInput::of(&unrelated),
+            ScanInput::of(&tx),
+            ScanInput::of(&Transaction::default()),
+            ScanInput::of(&unrelated),
+            ScanInput::of(&tx),
+        ];
+
+        let found = custody
+            .scan_txs_for_indices(handle, &batch, &window)
+            .await
+            .unwrap();
+
+        assert_eq!(found.iter().map(|m| m.tx).collect::<Vec<_>>(), [1, 4]);
+        assert_eq!(
+            derivations(&custody, handle),
+            2,
+            "one table for the batch, not one per transaction"
+        );
+        for matches in &found {
+            let alone = custody
+                .scan_tx_outputs(handle, &batch[matches.tx], 0..1, 0..6)
+                .await
+                .unwrap();
+            assert_eq!(matches.outputs, alone, "as when scanned on its own");
+            assert_eq!(matches.outputs.len(), 1);
+            assert_eq!(matches.outputs[0].output_index, 1);
+            assert!(matches.outputs[0].amount_piconero.unwrap() > 0);
+        }
+
+        // A window the payment isn't in, and an empty batch: nothing.
+        let elsewhere = ScanIndices::new([5]);
+        assert!(custody
+            .scan_txs_for_indices(handle, &batch, &elsewhere)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(custody
+            .scan_txs_for_indices(handle, &[], &window)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            custody
+                .scan_txs_for_indices(WalletHandle::generate(), &batch, &window)
+                .await,
+            Err(KeyCustodyError::UnknownWallet)
+        ));
     }
 
     #[tokio::test]
@@ -631,7 +699,7 @@ mod tests {
         let window = ScanIndices::new([1, 5, 9]);
         for _ in 0..3 {
             let matches = custody
-                .scan_tx_outputs_for_indices(handle, &tx, &window)
+                .scan_txs_for_indices(handle, &[ScanInput::of(&tx)], &window)
                 .await
                 .unwrap();
             assert_eq!(matches.len(), 1);
@@ -641,7 +709,7 @@ mod tests {
         // One order opens and one closes: one new derivation, not a rebuild.
         let window = ScanIndices::new([1, 9, 12]);
         custody
-            .scan_tx_outputs_for_indices(handle, &tx, &window)
+            .scan_txs_for_indices(handle, &[ScanInput::of(&tx)], &window)
             .await
             .unwrap();
         assert_eq!(derivations(&custody, handle), 4);
@@ -649,7 +717,7 @@ mod tests {
         // An index no longer in the window no longer matches.
         let without = ScanIndices::new([9, 12]);
         assert!(custody
-            .scan_tx_outputs_for_indices(handle, &tx, &without)
+            .scan_txs_for_indices(handle, &[ScanInput::of(&tx)], &without)
             .await
             .unwrap()
             .is_empty());
@@ -659,7 +727,7 @@ mod tests {
         let before = derivations(&custody, handle);
         assert_eq!(
             custody
-                .scan_tx_outputs(handle, &tx, 0..1, 0..3)
+                .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..1, 0..3)
                 .await
                 .unwrap()
                 .len(),
@@ -668,7 +736,7 @@ mod tests {
         let after_lookup = derivations(&custody, handle);
         assert_eq!(after_lookup - before, 3, "the lookup's own table");
         custody
-            .scan_tx_outputs_for_indices(handle, &tx, &without)
+            .scan_txs_for_indices(handle, &[ScanInput::of(&tx)], &without)
             .await
             .unwrap();
         assert_eq!(
@@ -734,7 +802,7 @@ mod tests {
             let window = ScanIndices::new([1]);
             assert_eq!(
                 custody
-                    .scan_tx_outputs_for_indices(handle, &tx, &window)
+                    .scan_txs_for_indices(handle, &[ScanInput::of(&tx)], &window)
                     .await
                     .unwrap()
                     .len(),
@@ -751,7 +819,8 @@ mod tests {
                     let _ = wait.recv();
                 });
                 ready.await.unwrap();
-                let mut scan = custody.scan_tx_outputs_for_indices(handle, &tx, &window);
+                let txs = [ScanInput::of(&tx)];
+                let mut scan = custody.scan_txs_for_indices(handle, &txs, &window);
                 std::future::poll_fn(|cx| {
                     assert!(scan.as_mut().poll(cx).is_pending());
                     std::task::Poll::Ready(())
@@ -762,7 +831,7 @@ mod tests {
                 blocker.await.unwrap();
                 assert_eq!(
                     custody
-                        .scan_tx_outputs_for_indices(handle, &tx, &window)
+                        .scan_txs_for_indices(handle, &[ScanInput::of(&tx)], &window)
                         .await
                         .unwrap()
                         .len(),
@@ -800,7 +869,11 @@ mod tests {
             let tx = tx.clone();
             let window = window.clone();
             let h = *h;
-            async move { custody.scan_tx_outputs_for_indices(h, &tx, &window).await }
+            async move {
+                custody
+                    .scan_txs_for_indices(h, &[ScanInput::of(&tx)], &window)
+                    .await
+            }
         });
         for result in futures_util::future::join_all(scans).await {
             assert!(
@@ -975,14 +1048,14 @@ mod tests {
             .unwrap();
 
         let err = custody
-            .scan_tx_outputs(handle, &tx, 0..1, 0..u32::MAX)
+            .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..1, 0..u32::MAX)
             .await
             .unwrap_err();
         assert!(matches!(err, KeyCustodyError::ScanFailed(_)), "got {err:?}");
 
         // A realistic range is of course still accepted.
         custody
-            .scan_tx_outputs(handle, &tx, 0..1, 0..64)
+            .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..1, 0..64)
             .await
             .unwrap();
     }
@@ -1016,7 +1089,7 @@ mod tests {
         let tx: Transaction = deserialize(&raw_tx).unwrap();
         assert!(matches!(
             custody
-                .scan_tx_outputs(handle, &tx, 0..1, 0..2)
+                .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..1, 0..2)
                 .await
                 .unwrap_err(),
             KeyCustodyError::UnknownWallet

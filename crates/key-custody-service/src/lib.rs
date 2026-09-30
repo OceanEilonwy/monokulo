@@ -45,9 +45,9 @@
 //!   `Deserialize` behind that crate's own `serde` feature - a feature this
 //!   workspace doesn't enable (see `SubaddressIndexWire`'s doc comment for why
 //!   turning it on wasn't the chosen fix).
-//! - `Address`, `Transaction`, and `Network` are all `monero`-rs types this
-//!   crate reuses that crate's *own* existing encodings for wherever one exists
-//!   (base58 address text, consensus/wire byte encoding, and this codebase's own
+//! - `Address`, transaction data (`ScanInput`), and `Network` reuse the
+//!   encodings that already exist for them (base58 address text, Monero's
+//!   consensus/wire byte encoding, and this codebase's own
 //!   `network::network_str`/`parse_network` helpers respectively) rather than
 //!   inventing a second one that could silently drift from the first.
 //!
@@ -72,11 +72,11 @@ pub mod protocol;
 
 use std::ops::Range;
 
-use monero::consensus::encode::serialize;
-use monero::{Address, Transaction};
+use monero::Address;
 use serde::{Deserialize, Serialize};
 use shared::key_custody::{
-    KeyCustodyError, MatchedOutput, Network, SubaddressIndex, WalletHandle, WalletMaterial,
+    KeyCustodyError, MatchedOutput, Network, ScanInput, SubaddressIndex, TxMatches, WalletHandle,
+    WalletMaterial,
 };
 use shared::network::{network_str, parse_network};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -481,42 +481,80 @@ impl TryFrom<&AddressWire> for Address {
 }
 
 // ---------------------------------------------------------------------------
-// Transaction
+// ScanInput
 // ---------------------------------------------------------------------------
 
-/// Wire form of `monero::Transaction` - its own consensus/wire encoding
-/// (`monero::consensus::encode::serialize`/`deserialize`, the same functions
-/// `src/scanner.rs`'s and `src/key_custody/plain.rs`'s own tests already use to
-/// load fixture transactions), hex-encoded. Reused deliberately rather than
-/// adding a fresh `serde` derive: a transaction is public blockchain data that
-/// already has exactly one correct byte encoding (the one every Monero node and
-/// wallet agrees on), so inventing a second, `serde`-specific one would be pure
-/// risk - a subtle field-ordering or varint-width mismatch between the two would
-/// be the kind of bug that only shows up against a real transaction, not a
-/// hand-built test fixture.
+/// Wire form of a `ScanInput` - the parts of a transaction a scan reads - as
+/// its own bytes (`ScanInput::to_bytes`), hex-encoded. Those bytes are
+/// Monero's consensus encoding of each part, reused deliberately rather than
+/// adding a fresh `serde` derive: transaction data already has exactly one
+/// correct byte encoding (the one every Monero node and wallet agrees on), so
+/// inventing a second, `serde`-specific one would be pure risk - a subtle
+/// field-ordering or varint-width mismatch between the two would be the kind
+/// of bug that only shows up against a real transaction, not a hand-built
+/// test fixture.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransactionWire {
+pub struct ScanInputWire {
     pub bytes_hex: String,
 }
 
-impl From<&Transaction> for TransactionWire {
-    fn from(tx: &Transaction) -> Self {
-        TransactionWire {
-            bytes_hex: hex::encode(serialize(tx)),
+impl From<&ScanInput> for ScanInputWire {
+    fn from(tx: &ScanInput) -> Self {
+        ScanInputWire {
+            bytes_hex: hex::encode(tx.to_bytes()),
         }
     }
 }
 
-impl TryFrom<&TransactionWire> for Transaction {
+impl TryFrom<&ScanInputWire> for ScanInput {
     type Error = WireConversionError;
 
-    fn try_from(wire: &TransactionWire) -> Result<Self, Self::Error> {
+    fn try_from(wire: &ScanInputWire) -> Result<Self, Self::Error> {
         let bytes = hex::decode(&wire.bytes_hex)
             .map_err(|e| WireConversionError::InvalidHex(e.to_string()))?;
-        // Whole or pruned: the engine sends transactions as its node gave
-        // them, and a scan reads nothing a pruned one lacks.
-        shared::monero_tx::decode_any(&bytes)
-            .map_err(|e| WireConversionError::InvalidTransaction(e.to_string()))
+        ScanInput::from_bytes(&bytes).map_err(WireConversionError::InvalidTransaction)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TxMatches
+// ---------------------------------------------------------------------------
+
+/// Wire form of `TxMatches`. `tx` crosses as `u64` for the reason
+/// `MatchedOutputWire::output_index` does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TxMatchesWire {
+    pub tx: u64,
+    pub outputs: Vec<MatchedOutputWire>,
+}
+
+impl From<TxMatches> for TxMatchesWire {
+    fn from(m: TxMatches) -> Self {
+        TxMatchesWire {
+            tx: m.tx as u64,
+            outputs: m.outputs.into_iter().map(MatchedOutputWire::from).collect(),
+        }
+    }
+}
+
+impl TryFrom<TxMatchesWire> for TxMatches {
+    type Error = WireConversionError;
+
+    fn try_from(wire: TxMatchesWire) -> Result<Self, Self::Error> {
+        let tx = usize::try_from(wire.tx).map_err(|_| {
+            WireConversionError::OutOfRange(format!(
+                "tx {} doesn't fit this platform's usize",
+                wire.tx
+            ))
+        })?;
+        Ok(TxMatches {
+            tx,
+            outputs: wire
+                .outputs
+                .into_iter()
+                .map(MatchedOutput::try_from)
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 
@@ -573,7 +611,7 @@ pub struct DeriveSubaddressRequest {
 }
 pub type DeriveSubaddressResponse = Result<AddressWire, KeyCustodyErrorWire>;
 
-/// `KeyCustody::scan_tx_outputs(handle: WalletHandle, tx: &Transaction, major_range: Range<u32>, minor_range: Range<u32>) -> Result<Vec<MatchedOutput>, KeyCustodyError>`
+/// `KeyCustody::scan_tx_outputs(handle: WalletHandle, tx: &ScanInput, major_range: Range<u32>, minor_range: Range<u32>) -> Result<Vec<MatchedOutput>, KeyCustodyError>`
 ///
 /// Note there is no `network` parameter here - only `derive_subaddress` takes
 /// one. This crate's DTOs were built against the real signatures in
@@ -588,29 +626,28 @@ pub type DeriveSubaddressResponse = Result<AddressWire, KeyCustodyErrorWire>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanTxOutputsRequest {
     pub handle: WalletHandleWire,
-    pub tx: TransactionWire,
+    pub tx: ScanInputWire,
     pub major_range: RangeWire,
     pub minor_range: RangeWire,
 }
 pub type ScanTxOutputsResponse = Result<Vec<MatchedOutputWire>, KeyCustodyErrorWire>;
 
-/// `KeyCustody::scan_tx_outputs_for_indices` (admin_settings_v2.md task
-/// 7.3): a set of minor indices (account 0) and the set's generation, so the
-/// server can keep and incrementally update one table per wallet. Added
-/// after the first protocol version; a server that predates it closes the
-/// connection on it, and the client then falls back to `ScanTxOutputs`.
+/// `KeyCustody::scan_txs_for_indices` (admin_settings_v2.md task 7.3): a
+/// batch of transactions and a set of minor indices (account 0). The server
+/// keeps one table per wallet and updates it when the set changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanTxOutputsForIndicesRequest {
+pub struct ScanTxsForIndicesRequest {
     pub handle: WalletHandleWire,
-    pub tx: TransactionWire,
+    pub txs: Vec<ScanInputWire>,
     pub minors: Vec<u32>,
 }
-pub type ScanTxOutputsForIndicesResponse = Result<Vec<MatchedOutputWire>, KeyCustodyErrorWire>;
+pub type ScanTxsForIndicesResponse = Result<Vec<TxMatchesWire>, KeyCustodyErrorWire>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use monero::consensus::encode::deserialize;
+    use monero::Transaction;
 
     /// Same real fixture transaction used by `src/scanner.rs`'s and
     /// `src/key_custody/plain.rs`'s own tests - a genuine RingCT transaction with
@@ -878,40 +915,25 @@ mod tests {
         ));
     }
 
-    // -- Transaction: a real, non-trivial fixture --
+    // -- ScanInput: a real, non-trivial fixture --
 
     #[test]
-    fn a_real_fixture_transaction_round_trips_through_its_consensus_encoding() {
-        let original = fixture_tx();
-        let wire = TransactionWire::from(&original);
+    fn a_real_fixture_transactions_scan_input_round_trips_through_its_encoding() {
+        let original = ScanInput::of(&fixture_tx());
+        let wire = ScanInputWire::from(&original);
         let json = serde_json::to_string(&wire).unwrap();
-        let decoded: TransactionWire = serde_json::from_str(&json).unwrap();
-        let restored = Transaction::try_from(&decoded).unwrap();
+        let decoded: ScanInputWire = serde_json::from_str(&json).unwrap();
+        let restored = ScanInput::try_from(&decoded).unwrap();
         assert_eq!(original, restored);
     }
 
-    /// The engine sends transactions pruned, as its node gave them: the
-    /// prefix and RingCT base a scan reads, without the signatures.
     #[test]
-    fn a_pruned_transaction_round_trips_as_a_pruned_one() {
-        let whole = fixture_tx();
-        let mut blob = serialize(&whole.prefix);
-        blob.extend(serialize(whole.rct_signatures.sig.as_ref().unwrap()));
-        let pruned = shared::monero_tx::decode_pruned(&blob).unwrap();
-        let wire = TransactionWire::from(&pruned);
-        assert_eq!(wire.bytes_hex, hex::encode(&blob));
-        let restored = Transaction::try_from(&wire).unwrap();
-        assert_eq!(restored, pruned);
-        assert_eq!(restored.prefix, whole.prefix);
-    }
-
-    #[test]
-    fn transaction_wire_rejects_truncated_bytes_rather_than_panicking() {
-        let wire = TransactionWire {
+    fn scan_input_wire_rejects_truncated_bytes_rather_than_panicking() {
+        let wire = ScanInputWire {
             bytes_hex: hex::encode([1u8, 2, 3]),
         };
         assert!(matches!(
-            Transaction::try_from(&wire),
+            ScanInput::try_from(&wire),
             Err(WireConversionError::InvalidTransaction(_))
         ));
     }
@@ -1037,17 +1059,17 @@ mod tests {
     #[test]
     fn scan_tx_outputs_request_and_response_round_trip() {
         let handle = WalletHandle::from_bytes([4u8; 16]);
-        let tx = fixture_tx();
+        let tx = ScanInput::of(&fixture_tx());
         let request = ScanTxOutputsRequest {
             handle: WalletHandleWire::from(handle),
-            tx: TransactionWire::from(&tx),
+            tx: ScanInputWire::from(&tx),
             major_range: RangeWire::from(0u32..2u32),
             minor_range: RangeWire::from(0u32..3u32),
         };
         let json = serde_json::to_string(&request).unwrap();
         let decoded: ScanTxOutputsRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(WalletHandle::try_from(&decoded.handle).unwrap(), handle);
-        assert_eq!(Transaction::try_from(&decoded.tx).unwrap(), tx);
+        assert_eq!(ScanInput::try_from(&decoded.tx).unwrap(), tx);
         assert_eq!(Range::<u32>::from(decoded.major_range), 0u32..2u32);
         assert_eq!(Range::<u32>::from(decoded.minor_range), 0u32..3u32);
 

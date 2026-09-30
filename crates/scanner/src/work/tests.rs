@@ -479,9 +479,10 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     .unwrap();
     let before = cursor_of(&store, tenant.as_str()).unwrap();
 
-    // The payment first, then plenty of unrelated transactions.
+    // The payment first, then unrelated transactions: several units' worth,
+    // so a restart lands in the middle.
     let mut txs = vec![fixture_tx()];
-    txs.extend((0..24u8).map(|i| unrelated_tx(100 + i)));
+    txs.extend((0..4 * blocks::TXS_PER_SCAN as u8).map(|i| unrelated_tx(100 + i)));
     let height = daemon.push_block("big", txs);
     let mut store = store;
     let mut rounds = 0;
@@ -2524,6 +2525,86 @@ async fn seeded_network(
     (store, custody, fake, handles, orders)
 }
 
+/// A payment further into a block than one key-custody call covers is found
+/// and recorded once, whether the block is scanned in one go or a unit at a
+/// time.
+#[tokio::test]
+async fn a_payment_deep_in_a_big_block_is_found_in_one_go_and_a_unit_at_a_time() {
+    for budget in [ROUND_BUDGET, Duration::ZERO] {
+        let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+        let mut txs: Vec<Transaction> = (0..blocks::TXS_PER_SCAN as u8 + 3)
+            .map(|i| unrelated_tx(100 + i))
+            .collect();
+        txs.push(fixture_tx());
+        txs.push(unrelated_tx(99));
+        fake.push_block("big", txs);
+        let state = ScanState::default();
+        let db = Db::over_shared(store.clone());
+        let mut rounds = 0;
+        while cursor_of(&store, tenants[0].0.as_str()) != Some(21) {
+            rounds += 1;
+            assert!(rounds < 10, "never finished the block");
+            run_round(&state, &inputs(&db, &custody, &fake, &tenants), budget)
+                .await
+                .into_result()
+                .unwrap();
+        }
+        if budget == Duration::ZERO {
+            assert!(rounds > 1, "the block really was split across rounds");
+        }
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap();
+        assert_eq!(payments.len(), 1);
+        assert_eq!(
+            payments[0].txid,
+            crate::daemon::fake::tx_id_hex(&fixture_tx())
+        );
+        assert_eq!(payments[0].block_height, Some(21));
+    }
+}
+
+/// Anyone who knows one of a store's addresses can send it an output whose
+/// amount can't be read. That output is not a payment, and the store's scan
+/// carries on past its block: a real payment mined later is still found.
+#[tokio::test(start_paused = true)]
+async fn a_payment_whose_amount_cannot_be_read_does_not_stop_the_store_at_its_block() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    // The fixture payment with its output's commitment swapped for another.
+    let mut unreadable = fixture_tx();
+    let rct = unreadable.rct_signatures.sig.as_mut().unwrap();
+    rct.out_pk[1] = rct.out_pk[0];
+    fake.push_block("unreadable", vec![unrelated_tx(1), unreadable]);
+    fake.push_block("paid", vec![fixture_tx()]);
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+
+    for _ in 0..3 {
+        run_round(
+            &state,
+            &inputs(&db, &custody, &fake, &tenants),
+            ROUND_BUDGET,
+        )
+        .await
+        .into_result()
+        .unwrap();
+        tokio::time::advance(Duration::from_secs(120)).await;
+    }
+
+    assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(22));
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .unwrap();
+    assert_eq!(payments.len(), 1, "only the payment that can be read");
+    assert_eq!(
+        payments[0].txid,
+        crate::daemon::fake::tx_id_hex(&fixture_tx())
+    );
+    assert_eq!(payments[0].block_height, Some(22));
+}
+
 /// A checkpoint for a block the node has since replaced is stale: the
 /// replacement is scanned from its start, the stale block's staged matches
 /// are dropped, and the payment is recorded once, from the block that is
@@ -2533,7 +2614,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
     let tenant = tenants[0].0.clone();
     let mut txs = vec![fixture_tx()];
-    txs.extend((0..24u8).map(|i| unrelated_tx(100 + i)));
+    txs.extend((0..blocks::TXS_PER_SCAN as u8 + 8).map(|i| unrelated_tx(100 + i)));
     fake.push_block("big", txs);
     let state = ScanState::default();
     let db = Db::over_shared(store.clone());
@@ -3575,8 +3656,9 @@ async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
     let mut faults = 0;
     for fault in 0.. {
         let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+        // One transaction more than a unit scans before it looks at the clock.
         let mut txs = vec![fixture_tx()];
-        txs.extend((0..6u8).map(|i| unrelated_tx(100 + i)));
+        txs.extend((0..blocks::TXS_PER_SCAN as u8).map(|i| unrelated_tx(100 + i)));
         fake.push_block("big", txs);
         let db = Db::over_shared(store.clone());
         let state = ScanState::default();

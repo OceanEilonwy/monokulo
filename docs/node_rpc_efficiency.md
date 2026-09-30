@@ -54,9 +54,10 @@ node named. A mismatch fails the call. Only where nothing can be computed (a
 version 1 transaction, or a body that arrived with the pool's changes, which
 carry no such hash) is the id taken as given.
 
-The key custody service receives transactions as the engine got them, so it
-decodes whole or pruned (`shared::monero_tx::decode_any`). An engine with
-this change needs a key custody server with it too.
+Key custody is given a scan input made from each transaction
+(`ScanInput::of`: the prefix and the RingCT base), which a pruned
+transaction has in full. A payment is recorded under the id its
+transaction came with.
 
 **A block's identity from the block.** `get_blocks.bin` returns each block's
 blob with its transactions. The blob's hash is the block's id, its header

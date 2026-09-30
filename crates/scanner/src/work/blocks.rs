@@ -27,9 +27,9 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use crate::daemon::{ChainBlock, ChainHeader};
-use crate::key_custody::{ScanIndices, WalletHandle};
+use crate::key_custody::{ScanIndices, ScanInput, WalletHandle};
 use crate::scanner::{
-    record_scan_match, scan_for_tenants, stage_block_match, ScanResult, ScannerError,
+    record_scan_match, scan_txs_for_tenants, stage_block_match, ScanResult, ScannerError,
     SCAN_CONCURRENCY,
 };
 use crate::store::position::CatchUpGroup;
@@ -44,6 +44,12 @@ const GROUP_PAGE: usize = 256;
 const BLOCKS_PER_UNIT: usize = 8;
 /// Most headers fetched at once for blocks recorded without being scanned.
 const HEADERS_PER_FETCH: u64 = 256;
+/// Transactions of a block scanned for a tenant in one key-custody call. A
+/// call costs a hop to a worker thread or a round trip to another process,
+/// which a run of transactions shares. It is also how far a unit gets
+/// between looks at the clock, and how much of a block a tenant whose call
+/// fails has to be scanned for again.
+pub(super) const TXS_PER_SCAN: usize = 32;
 /// How far ahead of real time consensus lets a block's timestamp run.
 /// Catch-up windows start this much before a block's own timestamp, so a
 /// forward-dated block can't hide an order that was open when it was mined.
@@ -599,12 +605,19 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     }
 
     let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &block);
+    let inputs: Vec<ScanInput> = block.txs.iter().map(ScanInput::of).collect();
     let mut progressed = !must_progress;
-    for (index, tx) in block.txs.iter().enumerate() {
-        let txid = block.txids.get(index).cloned().ok_or_else(|| {
-            ScannerError::Internal(format!("block {height} has no id for transaction {index}"))
-        })?;
-        for batch in scan.due(&scannable, index).chunks(SCAN_CONCURRENCY) {
+    // Each transaction is recorded under the id it came with.
+    if block.txids.len() != block.txs.len() {
+        return Err(ScannerError::Internal(format!(
+            "block {height} has {} transactions and {} ids",
+            block.txs.len(),
+            block.txids.len()
+        )));
+    }
+    for start in (0..block.txs.len()).step_by(TXS_PER_SCAN) {
+        let end = (start + TXS_PER_SCAN).min(block.txs.len());
+        for batch in scan.due(&scannable, start, end).chunks(SCAN_CONCURRENCY) {
             if progressed && Instant::now() >= until {
                 let (progress, hash, now) = (scan.into_checkpoint(), block.hash.clone(), round.now);
                 round
@@ -612,11 +625,17 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
                     .await?;
                 return Ok(BlockOutcome::Interrupted);
             }
-            for (tenant_id, result) in
-                scan_for_tenants(round.inputs.custody, &txid, tx, batch).await
-            {
+            let results = scan_txs_for_tenants(
+                round.inputs.custody,
+                &block.txids[start..end],
+                &block.txs[start..end],
+                &inputs[start..end],
+                batch,
+            )
+            .await;
+            for (tenant_id, result) in results {
                 match result {
-                    Ok(found) => scan.scanned(tenant_id, index, found),
+                    Ok(found) => scan.scanned(tenant_id, end, found),
                     Err(error) => {
                         shared::throttled!(format!("block-scan:{tenant_id}"), warn, store.id = %tenant_id, network = crate::network::network_str(round.network()),
                             height, error = %error, "scanning a block failed for this store; it is caught up later");
@@ -694,25 +713,36 @@ impl BlockScan {
         }
     }
 
-    /// The tenants still to be scanned for transaction `index`.
+    /// The tenants still to be scanned for some of the transactions
+    /// `start..end`, each with how many of those it is already past.
     fn due<'a>(
         &self,
         scannable: &'a [(crate::store::TenantId, WalletHandle, ScanIndices)],
-        index: usize,
-    ) -> Vec<&'a (crate::store::TenantId, WalletHandle, ScanIndices)> {
+        start: usize,
+        end: usize,
+    ) -> Vec<(
+        &'a (crate::store::TenantId, WalletHandle, ScanIndices),
+        usize,
+    )> {
         scannable
             .iter()
-            .filter(|(id, _, _)| {
-                !self.failed.contains(id) && self.next_tx.get(id).is_some_and(|next| *next <= index)
+            .filter(|(id, _, _)| !self.failed.contains(id))
+            .filter_map(|tenant| {
+                let next = *self.next_tx.get(&tenant.0)?;
+                (next < end).then(|| (tenant, next.saturating_sub(start)))
             })
             .collect()
     }
 
-    fn scanned(&mut self, tenant_id: TenantId, index: usize, found: ScanResult) {
-        if !found.matches.is_empty() {
-            self.found.entry(tenant_id.clone()).or_default().push(found);
+    /// `tenant_id` has now been scanned for every transaction before `next`.
+    fn scanned(&mut self, tenant_id: TenantId, next: usize, found: Vec<ScanResult>) {
+        if !found.is_empty() {
+            self.found
+                .entry(tenant_id.clone())
+                .or_default()
+                .extend(found);
         }
-        self.next_tx.insert(tenant_id, index + 1);
+        self.next_tx.insert(tenant_id, next);
     }
 
     fn failed(&mut self, tenant_id: TenantId) {

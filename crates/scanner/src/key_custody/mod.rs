@@ -34,6 +34,7 @@
 //! exactly what its published side-channel attacks target) and why VM-based
 //! isolation is preferred.
 
+mod outputs;
 mod plain;
 pub mod router;
 pub use router::CustodyRouter;
@@ -59,6 +60,6 @@ pub fn wallet_matches_address(
 pub use plain::PlainKeyCustody;
 
 pub use shared::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex,
-    WalletHandle, WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,
+    TxMatches, WalletHandle, WalletMaterial,
 };

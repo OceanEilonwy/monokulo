@@ -71,7 +71,10 @@
 
 use std::ops::Range;
 
+use monero::blockdata::transaction::TransactionPrefix;
+use monero::consensus::encode::{serialize, Decodable};
 pub use monero::cryptonote::subaddress::Index as SubaddressIndex;
+use monero::util::ringct::RctSigBase;
 pub use monero::Network;
 use monero::{Address, PrivateKey, PublicKey, Transaction, ViewPair};
 use uuid::Uuid;
@@ -246,9 +249,112 @@ pub struct MatchedOutput {
     pub output_index: usize,
     /// Which subaddress (account/index pair) the output was paid to.
     pub subaddress_index: SubaddressIndex,
-    /// Amount in piconero. `None` only if the output's amount couldn't be decrypted,
-    /// which should not happen for an output this wallet actually owns.
+    /// Amount in piconero. `None` if the output's amount couldn't be decrypted:
+    /// the sender encrypted something other than the amount the output
+    /// commits to. Such an output is reported, not an error, so a scan can't
+    /// be made to fail by sending a wallet one.
     pub amount_piconero: Option<u64>,
+}
+
+/// The outputs of one transaction in a scanned batch that belong to a wallet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxMatches {
+    /// Position of the transaction in the batch.
+    pub tx: usize,
+    /// Its outputs that belong to the wallet; never empty.
+    pub outputs: Vec<MatchedOutput>,
+}
+
+/// What a scan reads of a transaction: its keys, its outputs and its
+/// encrypted amounts. The inputs, ring signatures and range proofs are most
+/// of a transaction's bytes and a scan never looks at them, so they are left
+/// out of what is handed to a worker thread or sent to a key-custody process.
+///
+/// Made once per transaction and cheap to clone, however many wallets the
+/// transaction is scanned for. Like the transaction it comes from, it is
+/// public chain data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanInput(std::sync::Arc<ScanParts>);
+
+#[derive(Debug, PartialEq, Eq)]
+struct ScanParts {
+    prefix: TransactionPrefix,
+    rct: Option<RctSigBase>,
+}
+
+impl ScanInput {
+    pub fn of(tx: &Transaction) -> Self {
+        ScanInput(std::sync::Arc::new(ScanParts {
+            prefix: TransactionPrefix {
+                version: tx.prefix.version.clone(),
+                unlock_time: tx.prefix.unlock_time.clone(),
+                inputs: Vec::new(),
+                outputs: tx.prefix.outputs.clone(),
+                extra: tx.prefix.extra.clone(),
+            },
+            rct: tx.rct_signatures.sig.as_ref().map(|rct| RctSigBase {
+                rct_type: rct.rct_type,
+                txn_fee: rct.txn_fee,
+                // One per input, and the inputs are left out.
+                pseudo_outs: Vec::new(),
+                ecdh_info: rct.ecdh_info.clone(),
+                out_pk: rct.out_pk.clone(),
+            }),
+        }))
+    }
+
+    /// The transaction's prefix, without its inputs: the transaction keys
+    /// (in `extra`) and the outputs.
+    pub fn prefix(&self) -> &TransactionPrefix {
+        &self.0.prefix
+    }
+
+    /// The encrypted amounts and commitments of the outputs, if the
+    /// transaction has them.
+    pub fn rct(&self) -> Option<&RctSigBase> {
+        self.0.rct.as_ref()
+    }
+
+    /// The bytes that [`Self::from_bytes`] reads back: the prefix in
+    /// Monero's own encoding, then one byte saying whether the RingCT part
+    /// follows, then that part in Monero's own encoding.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = serialize(&self.0.prefix);
+        match &self.0.rct {
+            None => bytes.push(0),
+            Some(rct) => {
+                bytes.push(1);
+                bytes.extend(serialize(rct));
+            }
+        }
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let mut reader = std::io::Cursor::new(bytes);
+        let prefix = TransactionPrefix::consensus_decode(&mut reader)
+            .map_err(|e| format!("invalid transaction prefix: {e}"))?;
+        if !prefix.inputs.is_empty() {
+            return Err("a scan input carries no transaction inputs".to_string());
+        }
+        let rct = match bytes.get(reader.position() as usize) {
+            Some(0) => {
+                reader.set_position(reader.position() + 1);
+                None
+            }
+            Some(1) => {
+                reader.set_position(reader.position() + 1);
+                RctSigBase::consensus_decode(&mut reader, 0, prefix.outputs.len())
+                    .map_err(|e| format!("invalid RingCT data: {e}"))?
+            }
+            Some(other) => return Err(format!("invalid RingCT marker {other}")),
+            None => return Err("missing RingCT marker".to_string()),
+        };
+        if reader.position() as usize != bytes.len() {
+            return Err("trailing bytes after the scan input".to_string());
+        }
+        Ok(ScanInput(std::sync::Arc::new(ScanParts { prefix, rct })))
+    }
 }
 
 /// The boundary between "the rest of the payment service" and "wherever tenant view
@@ -334,33 +440,48 @@ pub trait KeyCustody: Send + Sync {
     async fn scan_tx_outputs(
         &self,
         handle: WalletHandle,
-        tx: &Transaction,
+        tx: &ScanInput,
         major_range: Range<u32>,
         minor_range: Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError>;
 
-    /// Check every output of `tx` against a set of minor indices (account 0),
-    /// not necessarily contiguous: the indices of one store's orders that are
-    /// open or recently closed (admin_settings_v2.md task 7.3). The set's
-    /// `generation` changes whenever its contents do, so an implementation can
-    /// keep a table per wallet and update it only when the set changes.
+    /// Check every output of every transaction in `txs` against a set of
+    /// minor indices (account 0), not necessarily contiguous: the indices of
+    /// one store's orders that are open or recently closed
+    /// (admin_settings_v2.md task 7.3). Returns the transactions that pay
+    /// the wallet, in order, each with its position in `txs`.
     ///
-    /// The default covers the set with one contiguous range (`min..=max`),
-    /// which is correct but builds a bigger table than needed; backends that
-    /// can do better override it.
-    async fn scan_tx_outputs_for_indices(
+    /// A whole batch in one call, because a call has a cost of its own (a
+    /// hop to a worker thread, or a round trip to another process) that is
+    /// not worth paying per transaction: nearly every transaction pays the
+    /// wallet nothing. The call fails or succeeds as a whole.
+    ///
+    /// The set's `generation` changes whenever its contents do, so an
+    /// implementation can keep a table per wallet and update it only when
+    /// the set changes.
+    ///
+    /// The default scans the transactions one by one, covering the set with
+    /// one contiguous range (`min..=max`), which is correct but builds a
+    /// bigger table than needed; backends that can do better override it.
+    async fn scan_txs_for_indices(
         &self,
         handle: WalletHandle,
-        tx: &Transaction,
+        txs: &[ScanInput],
         indices: &ScanIndices,
-    ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-        match indices.bounds() {
-            None => Ok(Vec::new()),
-            Some((low, high)) => {
-                self.scan_tx_outputs(handle, tx, 0..1, low..high.saturating_add(1))
-                    .await
+    ) -> Result<Vec<TxMatches>, KeyCustodyError> {
+        let Some((low, high)) = indices.bounds() else {
+            return Ok(Vec::new());
+        };
+        let mut found = Vec::new();
+        for (tx, input) in txs.iter().enumerate() {
+            let outputs = self
+                .scan_tx_outputs(handle, input, 0..1, low..high.saturating_add(1))
+                .await?;
+            if !outputs.is_empty() {
+                found.push(TxMatches { tx, outputs });
             }
         }
+        Ok(found)
     }
     /// Checks whether the backend still holds the wallets registered with it
     /// and returns its "state epoch", which goes up each time the backend is
@@ -502,6 +623,90 @@ impl ScanIndices {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use monero::util::ringct::{EcdhInfo, Key, RctType};
+
+    fn fixture_tx() -> Transaction {
+        let raw = hex::decode(include_str!(
+            "../../scanner/tests/fixtures/subaddress_tx.hex"
+        ))
+        .unwrap();
+        monero::consensus::encode::deserialize(&raw).unwrap()
+    }
+
+    /// The fixture as an early RingCT transaction: the type that carries one
+    /// pseudo-output per input in the part a scan input keeps.
+    fn simple_ringct_tx() -> Transaction {
+        let mut tx = fixture_tx();
+        let outputs = tx.prefix.outputs.len();
+        let rct = tx.rct_signatures.sig.as_mut().unwrap();
+        rct.rct_type = RctType::Simple;
+        rct.pseudo_outs = vec![Key { key: [1; 32] }; tx.prefix.inputs.len()];
+        rct.ecdh_info = vec![
+            EcdhInfo::Standard {
+                mask: Key { key: [2; 32] },
+                amount: Key { key: [3; 32] },
+            };
+            outputs
+        ];
+        tx
+    }
+
+    #[test]
+    fn a_scan_input_keeps_what_a_scan_reads_and_leaves_out_the_rest() {
+        let tx = fixture_tx();
+        let input = ScanInput::of(&tx);
+
+        assert!(input.prefix().inputs.is_empty());
+        assert_eq!(input.prefix().outputs, tx.prefix.outputs);
+        assert_eq!(input.prefix().extra, tx.prefix.extra);
+        let rct = tx.rct_signatures.sig.as_ref().unwrap();
+        let kept = input.rct().unwrap();
+        assert_eq!(kept.rct_type, rct.rct_type);
+        assert_eq!(kept.ecdh_info, rct.ecdh_info);
+        assert_eq!(kept.out_pk, rct.out_pk);
+        assert!(
+            input.to_bytes().len() * 4 < serialize(&tx).len(),
+            "{} bytes of a {}-byte transaction",
+            input.to_bytes().len(),
+            serialize(&tx).len()
+        );
+    }
+
+    #[test]
+    fn a_scan_input_survives_its_own_encoding() {
+        let mut no_ringct = fixture_tx();
+        no_ringct.rct_signatures.sig = None;
+        for tx in [
+            fixture_tx(),
+            simple_ringct_tx(),
+            no_ringct,
+            Transaction::default(),
+        ] {
+            let input = ScanInput::of(&tx);
+            assert_eq!(ScanInput::from_bytes(&input.to_bytes()), Ok(input));
+        }
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_scan_input_are_refused() {
+        let tx = fixture_tx();
+        let bytes = ScanInput::of(&tx).to_bytes();
+        for cut in 0..bytes.len() {
+            assert!(
+                ScanInput::from_bytes(&bytes[..cut]).is_err(),
+                "cut short at {cut} of {}",
+                bytes.len()
+            );
+        }
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(ScanInput::from_bytes(&longer).is_err());
+
+        // A whole prefix, inputs and all, is not what a scan input carries.
+        let mut with_inputs = serialize(&tx.prefix);
+        with_inputs.push(0);
+        assert!(ScanInput::from_bytes(&with_inputs).is_err());
+    }
 
     #[test]
     fn wallet_handle_as_bytes_and_from_bytes_round_trip_and_stay_distinguishable() {
