@@ -368,7 +368,9 @@ mod tests {
             .lock()
             .set_setting(
                 "instance_admin_token_hash",
-                &shared::auth::hash_secret_token("reader_admin"),
+                shared::auth::RawToken::presented("reader_admin")
+                    .hash()
+                    .as_str(),
             )
             .unwrap();
         let sources = Sources {

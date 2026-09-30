@@ -79,8 +79,8 @@ pub async fn request_invite_submit(
     let request_id = uuid::Uuid::new_v4().to_string();
     let now = now_unix();
     let raw_token = shared::auth::generate_invite_token();
-    let token_hash = shared::auth::hash_secret_token(&raw_token);
-    let token_encrypted = crate::crypto::encrypt(&state.encryption_key, &raw_token);
+    let token_hash = raw_token.hash();
+    let token_encrypted = crate::crypto::encrypt(&state.encryption_key, raw_token.expose());
     let link_id = uuid::Uuid::new_v4().to_string();
     let (email, message) = (email.to_string(), message.to_string());
     let created = state
@@ -313,7 +313,7 @@ pub async fn create_invite_link(
     headers: HeaderMap,
 ) -> Response {
     let raw_token = shared::auth::generate_invite_token();
-    let token_hash = shared::auth::hash_secret_token(&raw_token);
+    let token_hash = raw_token.hash();
     let link_id = uuid::Uuid::new_v4().to_string();
     let created = state
         .db
@@ -339,7 +339,7 @@ pub async fn create_invite_link(
         &headers,
         1,
         None,
-        Some(invite_signup_url(&base_url(&headers), &raw_token)),
+        Some(invite_signup_url(&base_url(&headers), raw_token.expose())),
         None,
         None,
         fx,

@@ -119,7 +119,14 @@ async fn load_order(
     state: &AppState,
     pk: &str,
     order_id: &str,
-) -> Result<(StoreConnectionRow, String, OrderDetailResponse), LoadError> {
+) -> Result<
+    (
+        StoreConnectionRow,
+        shared::auth::RawToken,
+        OrderDetailResponse,
+    ),
+    LoadError,
+> {
     let key = pk.to_string();
     let row = match state
         .db
@@ -130,8 +137,7 @@ async fn load_order(
         Ok(None) => return Err(LoadError::NotFound),
         Err(_) => return Err(LoadError::Internal),
     };
-    let sk = match crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
-    {
+    let sk = match super::orders::decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(_) => return Err(LoadError::Internal),
     };
@@ -345,7 +351,7 @@ async fn render_checkout_page(
     state: &AppState,
     pk: String,
     row: StoreConnectionRow,
-    sk: String,
+    sk: shared::auth::RawToken,
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
     options: &CheckoutOptions,
@@ -376,7 +382,7 @@ async fn build_checkout_view(
     state: &AppState,
     pk: &str,
     row: &StoreConnectionRow,
-    sk: &str,
+    sk: &shared::auth::RawToken,
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
     options: &CheckoutOptions,

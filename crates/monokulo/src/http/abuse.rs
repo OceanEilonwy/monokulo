@@ -727,7 +727,7 @@ mod tests {
             db.create_user("u1", "merchant@example.com", "x", false, 0)
                 .unwrap();
             db.create_session(
-                &shared::auth::hash_secret_token("session-token"),
+                &shared::auth::RawToken::presented("session-token").hash(),
                 "u1",
                 crate::now_unix(),
             )
@@ -941,13 +941,13 @@ mod tests {
             db.create_user("merchant", "m@example.com", "x", false, 0)
                 .unwrap();
             db.create_session(
-                &shared::auth::hash_secret_token("admin-token"),
+                &shared::auth::RawToken::presented("admin-token").hash(),
                 "admin",
                 crate::now_unix(),
             )
             .unwrap();
             db.create_session(
-                &shared::auth::hash_secret_token("merchant-token"),
+                &shared::auth::RawToken::presented("merchant-token").hash(),
                 "merchant",
                 crate::now_unix(),
             )

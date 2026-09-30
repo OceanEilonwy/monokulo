@@ -40,7 +40,6 @@ pub enum LocalAdminError {
 /// rest of the file-based config model). One-time provisioning for a self-hosted,
 /// single-tenant deployment; a hosted instance creates tenants at
 /// runtime via the admin HTTP API instead and never calls this at all.
-#[derive(Debug)]
 pub struct BootstrapWalletArgs {
     pub primary_address: String,
     pub view_key_hex: String,
@@ -48,6 +47,19 @@ pub struct BootstrapWalletArgs {
     pub network: String,
     /// Where the keys are kept; the instance's default when `None`.
     pub key_custody_backend: Option<String>,
+}
+
+/// The private view key never shows in `Debug` output.
+impl std::fmt::Debug for BootstrapWalletArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapWalletArgs")
+            .field("primary_address", &self.primary_address)
+            .field("view_key_hex", &"<redacted>")
+            .field("spend_pubkey_hex", &self.spend_pubkey_hex)
+            .field("network", &self.network)
+            .field("key_custody_backend", &self.key_custody_backend)
+            .finish()
+    }
 }
 
 /// Creates the one tenant a self-hosted deployment needs - but only if none
@@ -146,7 +158,7 @@ fn resolve_tenant(store: &Store, pk: Option<&str>) -> Result<Tenant, LocalAdminE
 pub fn rotate_secret(store: &Store, pk: Option<&str>) -> Result<(String, String), LocalAdminError> {
     let tenant = resolve_tenant(store, pk)?;
     let new_secret = store.rotate_tenant_secret(&tenant.id)?;
-    Ok((tenant.public_key, new_secret))
+    Ok((tenant.public_key, new_secret.expose().to_string()))
 }
 
 /// A snapshot of a tenant's non-secret settings, for `--show-tenant`. Everything
@@ -300,7 +312,7 @@ mod tests {
 
         let (pk, new_secret) = rotate_secret(&store, None).unwrap();
         assert_eq!(pk, created.tenant.public_key);
-        assert_ne!(new_secret, created.secret_token);
+        assert_ne!(new_secret, created.secret_token.expose());
         assert!(
             store
                 .find_tenant_by_secret_token(&created.secret_token)
@@ -310,7 +322,7 @@ mod tests {
         );
         assert!(
             store
-                .find_tenant_by_secret_token(&new_secret)
+                .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&new_secret))
                 .unwrap()
                 .is_some(),
             "new secret must work"

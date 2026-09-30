@@ -20,7 +20,7 @@ use std::sync::Arc;
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-use crate::auth::{generate_public_key, generate_secret_token, hash_secret_token};
+use crate::auth::{generate_public_key, generate_secret_token, RawToken};
 use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
 
 pub mod db;
@@ -344,7 +344,7 @@ pub struct CreatedTenant {
     pub tenant: Tenant,
     /// Shown here exactly once - callers must hand this to the operator and never
     /// persist it themselves; only `secret_token_hash` is stored.
-    pub secret_token: String,
+    pub secret_token: RawToken,
 }
 
 #[derive(Debug, Clone)]
@@ -423,7 +423,8 @@ pub struct Webhook {
     pub tenant_id: String,
     pub url: String,
     pub extra_headers: String,
-    pub signing_secret: String,
+    /// Hidden in `Debug`; `expose` it only to sign a delivery.
+    pub signing_secret: live_settings::Secret,
     pub enabled: bool,
     pub created_at: i64,
 }
@@ -900,7 +901,7 @@ impl Store {
         let id = new_id("tn");
         let public_key = generate_public_key();
         let secret_token = generate_secret_token();
-        let secret_hash = hash_secret_token(&secret_token);
+        let secret_hash = secret_token.hash();
 
         self.conn.execute(
             "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
@@ -1079,8 +1080,8 @@ impl Store {
     /// The *only* sanctioned way to resolve a tenant for an admin request: entirely
     /// from the presented secret token, never from any path parameter. See
     /// `docs/DESIGN.md` §10.1 for why this is structural, not a per-handler check.
-    pub fn find_tenant_by_secret_token(&self, raw_token: &str) -> Result<Option<Tenant>> {
-        let hash = hash_secret_token(raw_token);
+    pub fn find_tenant_by_secret_token(&self, raw_token: &RawToken) -> Result<Option<Tenant>> {
+        let hash = raw_token.hash();
         self.conn
             .query_row(
                 "SELECT * FROM tenants WHERE secret_token_hash = ?1 AND disabled_at_utc IS NULL",
@@ -1091,9 +1092,9 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub fn rotate_tenant_secret(&self, tenant_id: &str) -> Result<String> {
+    pub fn rotate_tenant_secret(&self, tenant_id: &str) -> Result<RawToken> {
         let new_token = generate_secret_token();
-        let new_hash = hash_secret_token(&new_token);
+        let new_hash = new_token.hash();
         let changed = self.conn.execute(
             "UPDATE tenants SET secret_token_hash = ?2 WHERE id = ?1",
             params![tenant_id, new_hash],
@@ -2374,7 +2375,7 @@ impl Store {
             tenant_id: tenant_id.to_string(),
             url: url.to_string(),
             extra_headers: extra_headers_json.to_string(),
-            signing_secret: signing_secret.to_string(),
+            signing_secret: live_settings::Secret::new(signing_secret),
             enabled: true,
             created_at: now,
         })
@@ -2391,7 +2392,9 @@ impl Store {
                     tenant_id: row.get("tenant_id")?,
                     url: row.get("url")?,
                     extra_headers: row.get("extra_headers")?,
-                    signing_secret: row.get("signing_secret")?,
+                    signing_secret: live_settings::Secret::new(
+                        row.get::<_, String>("signing_secret")?,
+                    ),
                     enabled: row.get::<_, i64>("enabled")? != 0,
                     created_at: row.get("created_at_utc")?,
                 })
@@ -2468,7 +2471,7 @@ impl Store {
                     attempt_count: row.get::<_, i64>(5)? as u32,
                     url: row.get(6)?,
                     extra_headers_json: row.get(7)?,
-                    signing_secret: row.get(8)?,
+                    signing_secret: live_settings::Secret::new(row.get::<_, String>(8)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2509,7 +2512,7 @@ impl Store {
                     attempt_count: row.get::<_, i64>(5)? as u32,
                     url: row.get(6)?,
                     extra_headers_json: row.get(7)?,
-                    signing_secret: row.get(8)?,
+                    signing_secret: live_settings::Secret::new(row.get::<_, String>(8)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2568,7 +2571,8 @@ pub struct DueDelivery {
     pub attempt_count: u32,
     pub url: String,
     pub extra_headers_json: String,
-    pub signing_secret: String,
+    /// Hidden in `Debug`; `expose` it only to sign a delivery.
+    pub signing_secret: live_settings::Secret,
 }
 
 #[cfg(test)]
@@ -3224,7 +3228,7 @@ mod tests {
         assert_eq!(by_secret.unwrap().id, created.tenant.id);
 
         assert!(store
-            .find_tenant_by_secret_token("sk_wrong")
+            .find_tenant_by_secret_token(&RawToken::presented("sk_wrong"))
             .unwrap()
             .is_none());
     }
@@ -3941,7 +3945,7 @@ mod tests {
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].delivery_id, id);
         assert_eq!(due[0].url, "https://merchant.example/hook");
-        assert_eq!(due[0].signing_secret, "whsec_x");
+        assert_eq!(due[0].signing_secret.expose(), "whsec_x");
         assert_eq!(due[0].attempt_count, 0);
 
         // A failed attempt reschedules and increments attempt_count; it stays due

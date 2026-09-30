@@ -435,7 +435,7 @@ pub struct PosOrderData {
 async fn pos_order_data(
     state: &AppState,
     connection_id: &str,
-    sk: &str,
+    sk: &shared::auth::RawToken,
     row: crate::db::PosOrderRow,
 ) -> Result<PosOrderData, EngineClientError> {
     let detail = state
@@ -526,7 +526,7 @@ fn pos_order_view(
 /// watching many orders must not spend one request per order.
 async fn engine_orders(
     state: &AppState,
-    sk: &str,
+    sk: &shared::auth::RawToken,
     order_ids: &[String],
 ) -> Result<HashMap<String, OrderView>, EngineClientError> {
     let mut orders = HashMap::with_capacity(order_ids.len());
@@ -571,7 +571,7 @@ const OPEN_ORDERS_PAGE: u32 = 200;
 async fn active_pos_orders(
     state: &AppState,
     connection_id: &str,
-    sk: &str,
+    sk: &shared::auth::RawToken,
 ) -> Result<Vec<PosOrderData>, EngineClientError> {
     let mut open = Vec::new();
     loop {
@@ -784,7 +784,7 @@ pub async fn cancel_order(
 pub(super) async fn resolve_confirmations_required(
     state: &AppState,
     connection_id: &str,
-    sk: &str,
+    sk: &shared::auth::RawToken,
     order_id: &str,
 ) -> u64 {
     let (store_id, order) = (connection_id.to_string(), order_id.to_string());
@@ -856,7 +856,7 @@ pub async fn order_status(
 async fn pos_status(
     state: &AppState,
     connection_id: &str,
-    sk: &str,
+    sk: &shared::auth::RawToken,
     order: &OrderView,
 ) -> PosStatusResponse {
     let confirmations_required =

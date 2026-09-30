@@ -65,8 +65,13 @@ pub(super) async fn load_owned_connection(
 /// encrypted can't be decrypted with its own key - shouldn't happen, but
 /// handled as a plain internal error rather than unwrapped/panicked on (see
 /// the task's own note on this).
-pub(super) fn decrypt_sk(state: &AppState, row: &StoreConnectionRow) -> Result<String, ()> {
-    crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).map_err(|_| ())
+pub(super) fn decrypt_sk(
+    state: &AppState,
+    row: &StoreConnectionRow,
+) -> Result<shared::auth::RawToken, ()> {
+    crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
+        .map(|sk| shared::auth::RawToken::presented(&sk))
+        .map_err(|_| ())
 }
 
 /// Shared by `orders_list` - the "real orders, real fiat metadata" view
@@ -74,7 +79,7 @@ pub(super) fn decrypt_sk(state: &AppState, row: &StoreConnectionRow) -> Result<S
 async fn build_orders_view_model(
     state: &AppState,
     row: &StoreConnectionRow,
-    sk: &str,
+    sk: &shared::auth::RawToken,
     search: &str,
     page: u32,
 ) -> Result<OrdersViewModel, ()> {
@@ -226,7 +231,7 @@ pub struct LookupPaymentForm {
 /// human-readable result message plus the matched order's id, if any.
 async fn perform_payment_lookup(
     state: &AppState,
-    sk: &str,
+    sk: &shared::auth::RawToken,
     txid: &str,
 ) -> Result<(String, Option<String>), ()> {
     match state.engine_client.lookup_payment(sk, txid).await {
@@ -355,7 +360,7 @@ pub async fn order_detail(
 async fn order_detail_data(
     state: &AppState,
     row: &StoreConnectionRow,
-    sk: &str,
+    sk: &shared::auth::RawToken,
     order_id: &str,
     payment_link: String,
 ) -> Result<Option<OrderDetailData>, ()> {
@@ -4146,7 +4151,7 @@ mod tests {
             .unwrap();
         state
             .engine_client
-            .get_tenant(&sk)
+            .get_tenant(&shared::auth::RawToken::presented(&sk))
             .await
             .unwrap()
             .key_custody_backend
@@ -4915,7 +4920,7 @@ mod tests {
         assert_eq!(
             state
                 .engine_client
-                .get_tenant(&sk)
+                .get_tenant(&shared::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
                 .confirmations_required,
@@ -4963,7 +4968,7 @@ mod tests {
         assert_eq!(
             state
                 .engine_client
-                .get_tenant(&sk)
+                .get_tenant(&shared::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
                 .confirmations_required,
@@ -5015,7 +5020,7 @@ mod tests {
         assert_eq!(
             state
                 .engine_client
-                .get_tenant(&sk)
+                .get_tenant(&shared::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
                 .confirmations_required,

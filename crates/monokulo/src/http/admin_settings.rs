@@ -1051,7 +1051,9 @@ mod tests {
             .lock()
             .set_setting(
                 "instance_admin_token_hash",
-                &shared::auth::hash_secret_token(SCANNER_ADMIN_TOKEN),
+                shared::auth::RawToken::presented(SCANNER_ADMIN_TOKEN)
+                    .hash()
+                    .as_str(),
             )
             .unwrap();
         engine
@@ -2136,7 +2138,9 @@ mod tests {
             .lock()
             .set_setting(
                 "instance_admin_token_hash",
-                &shared::auth::hash_secret_token(SCANNER_ADMIN_TOKEN),
+                shared::auth::RawToken::presented(SCANNER_ADMIN_TOKEN)
+                    .hash()
+                    .as_str(),
             )
             .unwrap();
         engine

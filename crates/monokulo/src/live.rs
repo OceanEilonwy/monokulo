@@ -70,7 +70,7 @@ impl LiveHub {
         self: &Arc<Self>,
         engine: &EngineClient,
         connection_id: &str,
-        sk: &str,
+        sk: &shared::auth::RawToken,
         order_id: &str,
     ) -> OrderSubscription {
         let mut stores = self.stores.lock();
@@ -82,7 +82,7 @@ impl LiveHub {
                     Arc::downgrade(self),
                     engine.clone(),
                     connection_id.to_string(),
-                    sk.to_string(),
+                    sk.clone(),
                 )),
             });
         let order = store
@@ -160,7 +160,7 @@ async fn run_upstream(
     hub: std::sync::Weak<LiveHub>,
     engine: EngineClient,
     connection_id: String,
-    sk: String,
+    sk: shared::auth::RawToken,
 ) {
     let mut delay = Duration::from_secs(1);
     loop {
@@ -476,8 +476,18 @@ mod tests {
         let hub = Arc::new(LiveHub::default());
         // Nothing listens here; the upstream task just keeps retrying.
         let engine = EngineClient::new("http://127.0.0.1:9");
-        let a = hub.subscribe(&engine, "conn", "sk_x", "o1");
-        let b = hub.subscribe(&engine, "conn", "sk_x", "o2");
+        let a = hub.subscribe(
+            &engine,
+            "conn",
+            &shared::auth::RawToken::presented("sk_x"),
+            "o1",
+        );
+        let b = hub.subscribe(
+            &engine,
+            "conn",
+            &shared::auth::RawToken::presented("sk_x"),
+            "o2",
+        );
         assert_eq!(hub.upstream_count(), 1);
         drop(a);
         assert_eq!(hub.upstream_count(), 1);
@@ -489,8 +499,18 @@ mod tests {
     async fn wake_reaches_only_the_named_order() {
         let hub = Arc::new(LiveHub::default());
         let engine = EngineClient::new("http://127.0.0.1:9");
-        let mut a = hub.subscribe(&engine, "conn", "sk_x", "o1");
-        let mut b = hub.subscribe(&engine, "conn", "sk_x", "o2");
+        let mut a = hub.subscribe(
+            &engine,
+            "conn",
+            &shared::auth::RawToken::presented("sk_x"),
+            "o1",
+        );
+        let mut b = hub.subscribe(
+            &engine,
+            "conn",
+            &shared::auth::RawToken::presented("sk_x"),
+            "o2",
+        );
         a.changed.mark_unchanged();
         b.changed.mark_unchanged();
         hub.wake("conn", Some("o1"));
@@ -501,7 +521,11 @@ mod tests {
     async fn changing_the_engine_url_ends_live_streams_to_the_old_engine() {
         let engine =
             crate::engine_client::EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
-        let mut subscription = engine.subscribe_order("conn", "sk_test", "order");
+        let mut subscription = engine.subscribe_order(
+            "conn",
+            &shared::auth::RawToken::presented("sk_test"),
+            "order",
+        );
         assert_eq!(engine.live_upstream_count(), 1);
         engine.retarget("http://127.0.0.1:2", 1024 * 1024);
         assert_eq!(

@@ -204,7 +204,10 @@ async fn attempt_delivery_inner(
         None => client,
     };
 
-    let signature = sign_payload(&delivery.signing_secret, delivery.payload_json.as_bytes());
+    let signature = sign_payload(
+        delivery.signing_secret.expose(),
+        delivery.payload_json.as_bytes(),
+    );
     let extra_headers: Value =
         serde_json::from_str(&delivery.extra_headers_json).unwrap_or(Value::Null);
 
@@ -464,7 +467,7 @@ mod tests {
             attempt_count: 0,
             url: url.to_string(),
             extra_headers_json: "{}".into(),
-            signing_secret: signing_secret.to_string(),
+            signing_secret: live_settings::Secret::new(signing_secret),
         }
     }
 

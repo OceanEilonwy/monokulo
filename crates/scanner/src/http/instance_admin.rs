@@ -44,7 +44,12 @@ const ADMIN_TOKEN_ENV_VAR: &str = "SCANNER_ADMIN_TOKEN";
 fn effective_admin_token_hash(store: &Store) -> Result<Option<String>, StatusCode> {
     if let Ok(raw) = std::env::var(ADMIN_TOKEN_ENV_VAR) {
         if !raw.trim().is_empty() {
-            return Ok(Some(shared::auth::hash_secret_token(&raw)));
+            return Ok(Some(
+                shared::auth::RawToken::presented(&raw)
+                    .hash()
+                    .as_str()
+                    .to_string(),
+            ));
         }
     }
     store
@@ -65,7 +70,7 @@ fn effective_admin_token_hash(store: &Store) -> Result<Option<String>, StatusCod
     clippy::expect_used,
     reason = "boot-time only: without a stored token the admin API is unusable, so failing loudly is right"
 )]
-pub fn ensure_admin_token_seeded(store: &Store) -> Option<String> {
+pub fn ensure_admin_token_seeded(store: &Store) -> Option<shared::auth::RawToken> {
     if std::env::var(ADMIN_TOKEN_ENV_VAR).is_ok_and(|v| !v.trim().is_empty()) {
         return None;
     }
@@ -78,9 +83,8 @@ pub fn ensure_admin_token_seeded(store: &Store) -> Option<String> {
         return None;
     }
     let token = shared::auth::generate_admin_token();
-    let hash = shared::auth::hash_secret_token(&token);
     store
-        .set_setting(ADMIN_TOKEN_HASH_KEY, &hash)
+        .set_setting(ADMIN_TOKEN_HASH_KEY, token.hash().as_str())
         .expect("failed to persist a freshly generated instance admin token");
     Some(token)
 }
@@ -94,7 +98,7 @@ pub fn seed_admin_token_for_tests(store: &Store, raw_token: &str) {
     store
         .set_setting(
             ADMIN_TOKEN_HASH_KEY,
-            &shared::auth::hash_secret_token(raw_token),
+            shared::auth::RawToken::presented(raw_token).hash().as_str(),
         )
         .unwrap();
 }
@@ -121,13 +125,13 @@ impl FromRequestParts<AppState> for AuthedInstanceAdmin {
         let token = header_value
             .strip_prefix("Bearer ")
             .ok_or(ApiError::Unauthorized)?;
-        let presented_hash = shared::auth::hash_secret_token(token);
+        let presented_hash = shared::auth::RawToken::presented(token).hash();
         let effective_hash = state
             .read_store(|store| Ok(effective_admin_token_hash(store)))
             .await?
             .map_err(|_| ApiError::Internal("settings lookup failed".into()))?;
         match effective_hash {
-            Some(hash) if hash == presented_hash => Ok(AuthedInstanceAdmin),
+            Some(hash) if hash == presented_hash.as_str() => Ok(AuthedInstanceAdmin),
             _ => Err(ApiError::Unauthorized),
         }
     }

@@ -468,11 +468,12 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
             // (see `main.rs`'s own placeholder-config notes) - marking it
             // `Secure` now would silently break the cookie over plain HTTP
             // before real deployment wiring exists.
-            let cookie = Cookie::build((super::SESSION_COOKIE_NAME, raw_token))
-                .http_only(true)
-                .same_site(SameSite::Lax)
-                .path("/")
-                .build();
+            let cookie =
+                Cookie::build((super::SESSION_COOKIE_NAME, raw_token.expose().to_string()))
+                    .http_only(true)
+                    .same_site(SameSite::Lax)
+                    .path("/")
+                    .build();
             let jar = CookieJar::new().add(cookie);
 
             // A validated `next` wins over the default confirmation - see

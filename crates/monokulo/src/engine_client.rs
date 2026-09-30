@@ -26,6 +26,7 @@
 //! `AuthedTenant` (`src/http/mod.rs` at the repo root) parses.
 
 use serde::{Deserialize, Serialize};
+use shared::auth::RawToken;
 
 /// A client for one engine instance's admin API, reached at `base_url`
 /// (e.g. `http://127.0.0.1:PORT` in tests, a real domain in production).
@@ -129,7 +130,7 @@ impl EngineClient {
     pub fn subscribe_order(
         &self,
         connection_id: &str,
-        sk: &str,
+        sk: &RawToken,
         order_id: &str,
     ) -> crate::live::OrderSubscription {
         self.target()
@@ -148,13 +149,13 @@ impl EngineClient {
     /// never-ending SSE stream itself; the caller reads it chunk by chunk.
     pub async fn open_order_events(
         &self,
-        sk: &str,
+        sk: &RawToken,
     ) -> Result<reqwest::Response, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .get(format!("{}/api/v1/admin/tenant/events", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .send()
             .await?;
@@ -202,7 +203,7 @@ impl EngineClient {
     /// wallet's; the engine checks.
     pub async fn switch_key_custody(
         &self,
-        sk: &str,
+        sk: &RawToken,
         backend: &str,
         view_key_hex: &str,
         spend_pubkey_hex: &str,
@@ -214,7 +215,7 @@ impl EngineClient {
                 "{}/api/v1/admin/tenant/key-custody",
                 target.base_url
             ))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .json(&SwitchKeyCustodyRequest {
                 backend,
                 view_key_hex,
@@ -227,12 +228,12 @@ impl EngineClient {
 
     /// `GET {base_url}/api/v1/admin/tenant` — fetches the tenant that owns
     /// `sk`, authenticated as that tenant via `Authorization: Bearer sk_...`.
-    pub async fn get_tenant(&self, sk: &str) -> Result<TenantView, EngineClientError> {
+    pub async fn get_tenant(&self, sk: &RawToken) -> Result<TenantView, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .get(format!("{}/api/v1/admin/tenant", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         parse_response(response).await
@@ -243,12 +244,12 @@ impl EngineClient {
     /// filtering yet — this task's scope is a plain list; see
     /// `src/http/admin.rs::ListOrdersQuery` at the repo root for what a
     /// later enhancement could add).
-    pub async fn list_orders(&self, sk: &str) -> Result<Vec<OrderView>, EngineClientError> {
+    pub async fn list_orders(&self, sk: &RawToken) -> Result<Vec<OrderView>, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .get(format!("{}/api/v1/admin/tenant/orders", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         parse_response(response).await
@@ -260,7 +261,7 @@ impl EngineClient {
     /// `search`. At most 200 per page.
     pub async fn list_orders_page(
         &self,
-        sk: &str,
+        sk: &RawToken,
         open: bool,
         search: Option<&str>,
         limit: u32,
@@ -282,7 +283,7 @@ impl EngineClient {
             status: reqwest::StatusCode::BAD_REQUEST,
             message: e.to_string(),
         })?;
-        let response = target.http.get(url).bearer_auth(sk).send().await?;
+        let response = target.http.get(url).bearer_auth(sk.expose()).send().await?;
         parse_response(response).await
     }
 
@@ -294,7 +295,7 @@ impl EngineClient {
     /// order.
     pub async fn list_orders_by_ids(
         &self,
-        sk: &str,
+        sk: &RawToken,
         order_ids: &[String],
     ) -> Result<Vec<OrderView>, EngineClientError> {
         let target = self.target();
@@ -309,7 +310,7 @@ impl EngineClient {
             status: reqwest::StatusCode::BAD_REQUEST,
             message: e.to_string(),
         })?;
-        let response = target.http.get(url).bearer_auth(sk).send().await?;
+        let response = target.http.get(url).bearer_auth(sk.expose()).send().await?;
         parse_response(response).await
     }
 
@@ -322,7 +323,7 @@ impl EngineClient {
     /// distinguishes the engine's `400` from everything else.
     pub async fn get_order_detail(
         &self,
-        sk: &str,
+        sk: &RawToken,
         order_id: &str,
     ) -> Result<OrderDetailResponse, EngineClientError> {
         let target = self.target();
@@ -332,7 +333,7 @@ impl EngineClient {
                 "{}/api/v1/admin/tenant/orders/{order_id}",
                 target.base_url
             ))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         parse_response(response).await
@@ -347,7 +348,7 @@ impl EngineClient {
     /// engine's is the one source of truth for what a valid txid looks like.
     pub async fn lookup_payment(
         &self,
-        sk: &str,
+        sk: &RawToken,
         txid: &str,
     ) -> Result<PaymentLookupView, EngineClientError> {
         let target = self.target();
@@ -357,7 +358,7 @@ impl EngineClient {
                 "{}/api/v1/admin/tenant/payments/lookup",
                 target.base_url
             ))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .json(&LookupPaymentRequest {
                 txid: txid.to_string(),
             })
@@ -369,12 +370,15 @@ impl EngineClient {
     /// `GET {base_url}/api/v1/admin/tenant/webhooks` — lists `sk`'s tenant's
     /// registered webhooks (WBS 1.3.3). Read-only: this task builds no
     /// create/delete client methods, per its own scope.
-    pub async fn list_webhooks(&self, sk: &str) -> Result<Vec<WebhookView>, EngineClientError> {
+    pub async fn list_webhooks(
+        &self,
+        sk: &RawToken,
+    ) -> Result<Vec<WebhookView>, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .get(format!("{}/api/v1/admin/tenant/webhooks", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         parse_response(response).await
@@ -394,7 +398,7 @@ impl EngineClient {
     /// already be a plain string, never nested JSON.
     pub async fn create_webhook(
         &self,
-        sk: &str,
+        sk: &RawToken,
         url: &str,
         extra_headers: &std::collections::BTreeMap<String, String>,
     ) -> Result<(String, String), EngineClientError> {
@@ -410,7 +414,7 @@ impl EngineClient {
         let response = target
             .http
             .post(format!("{}/api/v1/admin/tenant/webhooks", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .json(&CreateWebhookRequest {
                 url: url.to_string(),
                 extra_headers,
@@ -429,7 +433,7 @@ impl EngineClient {
     /// JSON body to deserialize, which a `204` never has.
     pub async fn delete_webhook(
         &self,
-        sk: &str,
+        sk: &RawToken,
         webhook_id: &str,
     ) -> Result<(), EngineClientError> {
         let target = self.target();
@@ -439,7 +443,7 @@ impl EngineClient {
                 "{}/api/v1/admin/tenant/webhooks/{webhook_id}",
                 target.base_url
             ))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .send()
             .await?;
         if response.status().is_success() {
@@ -467,14 +471,14 @@ impl EngineClient {
     /// other caller-facing engine validation error in this client.
     pub async fn set_confirmations_required(
         &self,
-        sk: &str,
+        sk: &RawToken,
         confirmations_required: u64,
     ) -> Result<TenantView, EngineClientError> {
         let target = self.target();
         let response = target
             .http
             .patch(format!("{}/api/v1/admin/tenant", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .json(&PatchTenantRequest {
                 confirmations_required: Some(confirmations_required),
             })
@@ -492,7 +496,7 @@ impl EngineClient {
     /// this is the only rate computation left in the whole system.
     pub async fn create_order(
         &self,
-        sk: &str,
+        sk: &RawToken,
         xmr_amount_piconero: u64,
         merchant_order_id: Option<String>,
         confirmations_required: Option<u64>,
@@ -501,7 +505,7 @@ impl EngineClient {
         let response = target
             .http
             .post(format!("{}/api/v1/admin/tenant/orders", target.base_url))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .json(&CreateOrderRequest {
                 xmr_amount_piconero,
                 merchant_order_id,
@@ -520,7 +524,7 @@ impl EngineClient {
     /// human reviews it before ever sending anything back to it.
     pub async fn set_refund_address(
         &self,
-        sk: &str,
+        sk: &RawToken,
         order_id: &str,
         refund_address: &str,
     ) -> Result<(), EngineClientError> {
@@ -531,7 +535,7 @@ impl EngineClient {
                 "{}/api/v1/admin/tenant/orders/{order_id}/refund-address",
                 target.base_url
             ))
-            .bearer_auth(sk)
+            .bearer_auth(sk.expose())
             .json(&SetRefundAddressRequest {
                 refund_address: refund_address.to_string(),
             })
@@ -701,7 +705,7 @@ struct SwitchKeyCustodyRequest<'a> {
 pub struct CreateTenantResponse {
     pub tenant_id: String,
     pub public_key: String,
-    pub secret_token: String,
+    pub secret_token: RawToken,
 }
 
 /// Mirrors the engine's own `TenantView`.
@@ -1004,7 +1008,7 @@ mod tests {
 
         assert!(!created.tenant_id.is_empty());
         assert!(created.public_key.starts_with("pk_"));
-        assert!(created.secret_token.starts_with("sk_"));
+        assert!(created.secret_token.expose().starts_with("sk_"));
 
         let fetched = client
             .get_tenant(&created.secret_token)
@@ -1279,11 +1283,11 @@ mod tests {
         let client = EngineClient::new(base_url);
 
         client
-            .get_order_detail("sk_whatever", "pay_1")
+            .get_order_detail(&shared::auth::RawToken::presented("sk_whatever"), "pay_1")
             .await
             .unwrap();
         client
-            .get_order_detail("sk_whatever", "pay_1")
+            .get_order_detail(&shared::auth::RawToken::presented("sk_whatever"), "pay_1")
             .await
             .unwrap();
 
@@ -1315,11 +1319,11 @@ mod tests {
         let client = EngineClient::new(base_url);
 
         client
-            .get_order_detail("sk_whatever", "pay_1")
+            .get_order_detail(&shared::auth::RawToken::presented("sk_whatever"), "pay_1")
             .await
             .unwrap();
         client
-            .get_order_detail("sk_whatever", "pay_1")
+            .get_order_detail(&shared::auth::RawToken::presented("sk_whatever"), "pay_1")
             .await
             .unwrap();
 

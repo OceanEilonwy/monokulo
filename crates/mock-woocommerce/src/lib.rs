@@ -968,7 +968,7 @@ mod tests {
         let engine_client =
             monokulo::engine_client::EngineClient::new(format!("http://{}", engine.addr));
         let tenant_view = engine_client
-            .get_tenant(&credentials.secret_token)
+            .get_tenant(&shared::auth::RawToken::presented(&credentials.secret_token))
             .await
             .expect(
             "the returned secret_token should be the tenant's genuine, functioning sk_ credential",
@@ -980,7 +980,9 @@ mod tests {
         // response.
         assert!(!credentials.webhook_signing_secret.is_empty());
         let webhooks = engine_client
-            .list_webhooks(&credentials.secret_token)
+            .list_webhooks(&shared::auth::RawToken::presented(
+                &credentials.secret_token,
+            ))
             .await
             .expect("list_webhooks against the real engine should succeed");
         assert_eq!(webhooks.len(), 1);

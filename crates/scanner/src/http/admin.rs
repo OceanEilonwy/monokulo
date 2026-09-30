@@ -155,7 +155,7 @@ pub async fn create_tenant(
     Ok(Json(CreateTenantResponse {
         tenant_id: created.tenant.id,
         public_key: created.tenant.public_key,
-        secret_token: created.secret_token,
+        secret_token: created.secret_token.expose().to_string(),
     }))
 }
 
@@ -421,7 +421,7 @@ pub async fn rotate_secret(
         .write_store(move |s| s.rotate_tenant_secret(&id))
         .await?;
     Ok(Json(RotateSecretResponse {
-        secret_token: new_secret,
+        secret_token: new_secret.expose().to_string(),
     }))
 }
 

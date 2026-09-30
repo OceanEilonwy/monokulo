@@ -373,13 +373,24 @@ impl Ledger {
 /// written back to) the committed `stagenet-wallets.json` fixture by name.
 /// Serde field names match that file's own (`private_spend_key`, not
 /// `_hex`) so this reads it as-is.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WalletCredentials {
     pub address: String,
     #[serde(rename = "private_spend_key")]
     pub private_spend_key_hex: String,
     #[serde(rename = "private_view_key")]
     pub private_view_key_hex: String,
+}
+
+/// The private keys never show in `Debug` output.
+impl std::fmt::Debug for WalletCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletCredentials")
+            .field("address", &self.address)
+            .field("private_spend_key_hex", &"<redacted>")
+            .field("private_view_key_hex", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Every path/network setting a real caller needs to talk to the e2e
@@ -465,7 +476,7 @@ impl Default for WalletCtx {
 /// A named wallet's key material plus enough of its [`WalletStore`]'s own
 /// [`WalletCtx`] to connect to it directly - what [`WalletStore::wallet`]
 /// actually returns, and everything [`Self::connect`]/[`send_payment`] need.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedWallet {
     pub address: String,
     pub private_spend_key_hex: String,
@@ -475,6 +486,21 @@ pub struct ResolvedWallet {
     pub accept_invalid_certs: bool,
     pub decoy_distribution_path: String,
     pub ledger_path: String,
+}
+
+/// The private keys never show in `Debug` output.
+impl std::fmt::Debug for ResolvedWallet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedWallet")
+            .field("address", &self.address)
+            .field("private_spend_key_hex", &"<redacted>")
+            .field("private_view_key_hex", &"<redacted>")
+            .field("node_urls", &self.node_urls)
+            .field("accept_invalid_certs", &self.accept_invalid_certs)
+            .field("decoy_distribution_path", &self.decoy_distribution_path)
+            .field("ledger_path", &self.ledger_path)
+            .finish()
+    }
 }
 
 impl ResolvedWallet {

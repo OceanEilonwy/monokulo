@@ -91,7 +91,7 @@ pub(super) async fn create_account(
     let token_hash = invite_token
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .map(shared::auth::hash_secret_token);
+        .map(|token| shared::auth::RawToken::presented(token).hash());
     let email = email.to_string();
     // One write job: the signup mode is read under the same writer as the
     // account is created.

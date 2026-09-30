@@ -67,7 +67,7 @@ pub(super) async fn authenticate(
     state: &AppState,
     email: &str,
     password: &str,
-) -> Result<(crate::db::UserRow, String), LoginError> {
+) -> Result<(crate::db::UserRow, shared::auth::RawToken), LoginError> {
     let email = email.to_string();
     let user = state
         .db
@@ -104,7 +104,7 @@ pub(super) async fn authenticate(
     };
 
     let raw_token = shared::auth::generate_session_token();
-    let token_hash = shared::auth::hash_secret_token(&raw_token);
+    let token_hash = raw_token.hash();
     let (hash, user_id) = (token_hash.clone(), user.id.clone());
     state
         .db
@@ -125,7 +125,7 @@ pub async fn login(
         Ok((_user, raw_token)) => Ok((
             StatusCode::OK,
             Json(LoginResponse {
-                session_token: raw_token,
+                session_token: raw_token.expose().to_string(),
             }),
         )),
         Err(LoginError::Unauthorized) => Err(ApiError::Unauthorized),

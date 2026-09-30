@@ -501,7 +501,7 @@ impl Theme {
 /// bearer token (see the `sessions` migration's own comment on why) - it
 /// is never the raw token a client actually presents.
 pub struct SessionRow {
-    pub token_hash: String,
+    pub token_hash: shared::auth::TokenHash,
     pub user_id: String,
     pub created_at: i64,
 }
@@ -903,7 +903,12 @@ impl Db {
     /// Stores a new session. `token_hash` must already be hashed (see
     /// [`SessionRow`]'s doc comment) - `Db` never sees, and never needs to
     /// see, a raw session token.
-    pub fn create_session(&self, token_hash: &str, user_id: &str, created_at: i64) -> Result<()> {
+    pub fn create_session(
+        &self,
+        token_hash: &shared::auth::TokenHash,
+        user_id: &str,
+        created_at: i64,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sessions (token, user_id, created_at_utc) VALUES (?1, ?2, ?3)",
             params![token_hash, user_id, created_at],
@@ -915,7 +920,7 @@ impl Db {
     /// already-deleted session - callers (the `AuthedUser` extractor) map
     /// that to 401, same as an unknown tenant secret in the engine's own
     /// `AuthedTenant`.
-    pub fn find_session(&self, token_hash: &str) -> Result<Option<SessionRow>> {
+    pub fn find_session(&self, token_hash: &shared::auth::TokenHash) -> Result<Option<SessionRow>> {
         self.conn
             .query_row(
                 "SELECT token, user_id, created_at_utc FROM sessions WHERE token = ?1",
@@ -936,7 +941,7 @@ impl Db {
     /// actually deleted (`false` if it was already gone), so a future
     /// logout handler (WBS 1.1.3 - not implemented here) can tell "revoked"
     /// from "already revoked" if it ever needs to. Nothing calls this yet.
-    pub fn delete_session(&self, token_hash: &str) -> Result<bool> {
+    pub fn delete_session(&self, token_hash: &shared::auth::TokenHash) -> Result<bool> {
         let affected = self
             .conn
             .execute("DELETE FROM sessions WHERE token = ?1", params![token_hash])?;
@@ -1227,7 +1232,7 @@ impl Db {
     /// never the raw token; see `http/connect.rs::confirm_submit`.
     pub fn create_connect_token(
         &self,
-        token_hash: &str,
+        token_hash: &shared::auth::TokenHash,
         connection_id: &str,
         nonce: &str,
         created_at: i64,
@@ -1258,7 +1263,7 @@ impl Db {
     /// everywhere else in this crate.
     pub fn consume_connect_token(
         &self,
-        token_hash: &str,
+        token_hash: &shared::auth::TokenHash,
         now: i64,
         ttl_seconds: i64,
     ) -> Result<Option<String>> {
@@ -1987,7 +1992,7 @@ impl Db {
     pub fn create_invite_link(
         &self,
         id: &str,
-        token_hash: &str,
+        token_hash: &shared::auth::TokenHash,
         token_encrypted: Option<&str>,
         request_id: Option<&str>,
         created_at: i64,
@@ -2018,7 +2023,7 @@ impl Db {
     /// for that exact scenario.
     pub fn redeem_invite_and_create_user(
         &self,
-        token_hash: &str,
+        token_hash: &shared::auth::TokenHash,
         user_id: &str,
         email: &str,
         password_hash: &str,
@@ -2061,6 +2066,11 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A token's hash, for tests that store and look up tokens directly.
+    fn th(token: &str) -> shared::auth::TokenHash {
+        shared::auth::RawToken::presented(token).hash()
+    }
 
     fn temp_path() -> String {
         std::env::temp_dir()
@@ -2303,10 +2313,11 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.create_user("user-1", "a@example.com", "hash", false, 1000)
             .unwrap();
-        db.create_session("hashed-token", "user-1", 2000).unwrap();
+        db.create_session(&th("hashed-token"), "user-1", 2000)
+            .unwrap();
 
-        let session = db.find_session("hashed-token").unwrap().unwrap();
-        assert_eq!(session.token_hash, "hashed-token");
+        let session = db.find_session(&th("hashed-token")).unwrap().unwrap();
+        assert_eq!(session.token_hash, th("hashed-token"));
         assert_eq!(session.user_id, "user-1");
         assert_eq!(session.created_at, 2000);
 
@@ -2317,7 +2328,7 @@ mod tests {
     #[test]
     fn looking_up_an_unknown_session_token_returns_none_rather_than_an_error() {
         let db = Db::open_in_memory().unwrap();
-        assert!(db.find_session("nonexistent").unwrap().is_none());
+        assert!(db.find_session(&th("nonexistent")).unwrap().is_none());
     }
 
     #[test]
@@ -2325,11 +2336,12 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.create_user("user-1", "a@example.com", "hash", false, 1000)
             .unwrap();
-        db.create_session("hashed-token", "user-1", 2000).unwrap();
+        db.create_session(&th("hashed-token"), "user-1", 2000)
+            .unwrap();
 
-        assert!(db.delete_session("hashed-token").unwrap());
-        assert!(db.find_session("hashed-token").unwrap().is_none());
-        assert!(!db.delete_session("hashed-token").unwrap());
+        assert!(db.delete_session(&th("hashed-token")).unwrap());
+        assert!(db.find_session(&th("hashed-token")).unwrap().is_none());
+        assert!(!db.delete_session(&th("hashed-token")).unwrap());
     }
 
     #[test]
@@ -2753,11 +2765,11 @@ mod tests {
     fn creating_a_connect_token_then_consuming_it_returns_its_connection_id() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_connect_token("hashed-connect-token", &connection_id, "nonce-1", 2000)
+        db.create_connect_token(&th("hashed-connect-token"), &connection_id, "nonce-1", 2000)
             .unwrap();
 
         let resolved = db
-            .consume_connect_token("hashed-connect-token", 2001, 600)
+            .consume_connect_token(&th("hashed-connect-token"), 2001, 600)
             .unwrap();
         assert_eq!(resolved, Some(connection_id));
     }
@@ -2770,11 +2782,11 @@ mod tests {
         // concurrency, not just under this single-threaded test.
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_connect_token("hashed-connect-token", &connection_id, "nonce-1", 2000)
+        db.create_connect_token(&th("hashed-connect-token"), &connection_id, "nonce-1", 2000)
             .unwrap();
 
         let first = db
-            .consume_connect_token("hashed-connect-token", 2001, 600)
+            .consume_connect_token(&th("hashed-connect-token"), 2001, 600)
             .unwrap();
         assert_eq!(
             first,
@@ -2783,7 +2795,7 @@ mod tests {
         );
 
         let second = db
-            .consume_connect_token("hashed-connect-token", 2002, 600)
+            .consume_connect_token(&th("hashed-connect-token"), 2002, 600)
             .unwrap();
         assert_eq!(second, None, "a second consume of the same token must fail");
     }
@@ -2792,13 +2804,13 @@ mod tests {
     fn consuming_an_expired_connect_token_fails_as_if_it_never_existed() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_connect_token("hashed-connect-token", &connection_id, "nonce-1", 1000)
+        db.create_connect_token(&th("hashed-connect-token"), &connection_id, "nonce-1", 1000)
             .unwrap();
 
         // created_at = 1000, ttl = 600 seconds - "now" = 1601 is one second
         // past the token's expiry window.
         let resolved = db
-            .consume_connect_token("hashed-connect-token", 1601, 600)
+            .consume_connect_token(&th("hashed-connect-token"), 1601, 600)
             .unwrap();
         assert_eq!(resolved, None, "expired token must not be consumable");
     }
@@ -2807,7 +2819,7 @@ mod tests {
     fn consuming_an_unknown_connect_token_returns_none() {
         let db = Db::open_in_memory().unwrap();
         assert_eq!(
-            db.consume_connect_token("nonexistent-connect-token", 2000, 600)
+            db.consume_connect_token(&th("nonexistent-connect-token"), 2000, 600)
                 .unwrap(),
             None
         );
@@ -3343,7 +3355,7 @@ mod tests {
             .unwrap();
         db.create_invite_link(
             "link-1",
-            "hash-of-token",
+            &th("hash-of-token"),
             Some("encrypted-blob"),
             Some("req-1"),
             1000,
@@ -3362,7 +3374,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.create_invite_request("req-1", "a@example.com", "m", 1000)
             .unwrap();
-        db.create_invite_link("link-1", "hash-1", Some("enc-1"), Some("req-1"), 1000)
+        db.create_invite_link("link-1", &th("hash-1"), Some("enc-1"), Some("req-1"), 1000)
             .unwrap();
 
         db.delete_invite_request("req-1", 2000).unwrap();
@@ -3373,7 +3385,7 @@ mod tests {
             "a deleted request must not still be listed as pending"
         );
         assert_eq!(
-            db.redeem_invite_and_create_user("hash-1", "u1", "a@example.com", "hash", 3000)
+            db.redeem_invite_and_create_user(&th("hash-1"), "u1", "a@example.com", "hash", 3000)
                 .unwrap(),
             RedeemInviteResult::InvalidOrAlreadyUsed,
             "its own never-used link must have been revoked, not left silently valid"
@@ -3385,12 +3397,12 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.create_invite_request("req-1", "a@example.com", "m", 1000)
             .unwrap();
-        db.create_invite_link("link-1", "hash-1", Some("enc-1"), Some("req-1"), 1000)
+        db.create_invite_link("link-1", &th("hash-1"), Some("enc-1"), Some("req-1"), 1000)
             .unwrap();
         // Someone already redeemed it before the admin got around to
         // deleting the (by then auto-actioned) request - a no-op path this
         // handler should still tolerate cleanly.
-        db.redeem_invite_and_create_user("hash-1", "u1", "a@example.com", "hash", 1500)
+        db.redeem_invite_and_create_user(&th("hash-1"), "u1", "a@example.com", "hash", 1500)
             .unwrap();
 
         db.delete_invite_request("req-1", 2000).unwrap();
@@ -3405,11 +3417,11 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.create_invite_request("req-1", "a@example.com", "m", 1000)
             .unwrap();
-        db.create_invite_link("link-1", "hash-1", Some("enc-1"), Some("req-1"), 1000)
+        db.create_invite_link("link-1", &th("hash-1"), Some("enc-1"), Some("req-1"), 1000)
             .unwrap();
         db.create_invite_request("req-2", "b@example.com", "m", 1000)
             .unwrap();
-        db.create_invite_link("link-2", "hash-2", Some("enc-2"), Some("req-2"), 1000)
+        db.create_invite_link("link-2", &th("hash-2"), Some("enc-2"), Some("req-2"), 1000)
             .unwrap();
         db.create_invite_request("req-3", "c@example.com", "m", 1000)
             .unwrap();
@@ -3422,12 +3434,12 @@ mod tests {
         );
         assert_eq!(db.count_unactioned_invite_requests().unwrap(), 0);
         assert_eq!(
-            db.redeem_invite_and_create_user("hash-1", "u1", "a@example.com", "h", 3000)
+            db.redeem_invite_and_create_user(&th("hash-1"), "u1", "a@example.com", "h", 3000)
                 .unwrap(),
             RedeemInviteResult::InvalidOrAlreadyUsed
         );
         assert_eq!(
-            db.redeem_invite_and_create_user("hash-2", "u2", "b@example.com", "h", 3000)
+            db.redeem_invite_and_create_user(&th("hash-2"), "u2", "b@example.com", "h", 3000)
                 .unwrap(),
             RedeemInviteResult::InvalidOrAlreadyUsed
         );
@@ -3436,12 +3448,12 @@ mod tests {
     #[test]
     fn a_valid_invite_token_redeems_exactly_once() {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_link("link-1", "hash-1", None, None, 1000)
+        db.create_invite_link("link-1", &th("hash-1"), None, None, 1000)
             .unwrap();
 
         let first = db
             .redeem_invite_and_create_user(
-                "hash-1",
+                &th("hash-1"),
                 "user-1",
                 "first@example.com",
                 "hashed-pw",
@@ -3456,7 +3468,7 @@ mod tests {
         // "more than one account cannot be registered using the same link".
         let second = db
             .redeem_invite_and_create_user(
-                "hash-1",
+                &th("hash-1"),
                 "user-2",
                 "second@example.com",
                 "hashed-pw",
@@ -3477,7 +3489,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let result = db
             .redeem_invite_and_create_user(
-                "no-such-hash",
+                &th("no-such-hash"),
                 "user-1",
                 "a@example.com",
                 "hashed-pw",
@@ -3493,12 +3505,12 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.create_user("existing", "taken@example.com", "hash", false, 500)
             .unwrap();
-        db.create_invite_link("link-1", "hash-1", None, None, 1000)
+        db.create_invite_link("link-1", &th("hash-1"), None, None, 1000)
             .unwrap();
 
         let result = db
             .redeem_invite_and_create_user(
-                "hash-1",
+                &th("hash-1"),
                 "user-2",
                 "taken@example.com",
                 "hashed-pw",
@@ -3512,7 +3524,7 @@ mod tests {
         // comment, not a bug: a second attempt must still be rejected.
         let retry = db
             .redeem_invite_and_create_user(
-                "hash-1",
+                &th("hash-1"),
                 "user-3",
                 "retry@example.com",
                 "hashed-pw",
@@ -3527,12 +3539,18 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.create_invite_request("req-1", "a@example.com", "let me in", 1000)
             .unwrap();
-        db.create_invite_link("link-1", "hash-1", Some("enc-1"), Some("req-1"), 1000)
+        db.create_invite_link("link-1", &th("hash-1"), Some("enc-1"), Some("req-1"), 1000)
             .unwrap();
         assert_eq!(db.count_unactioned_invite_requests().unwrap(), 1);
 
-        db.redeem_invite_and_create_user("hash-1", "user-1", "a@example.com", "hashed-pw", 2000)
-            .unwrap();
+        db.redeem_invite_and_create_user(
+            &th("hash-1"),
+            "user-1",
+            "a@example.com",
+            "hashed-pw",
+            2000,
+        )
+        .unwrap();
 
         assert_eq!(
             db.count_unactioned_invite_requests().unwrap(),

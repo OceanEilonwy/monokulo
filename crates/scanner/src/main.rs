@@ -155,7 +155,7 @@ async fn run(action: Action) {
                         "bootstrapped self-hosted tenant: public_key={} (save this - it goes in your site's JS)",
                         created.tenant.public_key
                     );
-                    println!("bootstrap admin secret: {} (shown once - store it now, e.g. in a password manager)", created.secret_token);
+                    println!("bootstrap admin secret: {} (shown once - store it now, e.g. in a password manager)", created.secret_token.expose());
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -173,9 +173,10 @@ async fn run(action: Action) {
 
     if let Some(token) = ensure_admin_token_seeded(&store.lock()) {
         println!(
-            "==> generated a new instance admin token (shown once - it is stored only as a hash from here on):\n    {token}\n\
+            "==> generated a new instance admin token (shown once - it is stored only as a hash from here on):\n    {}\n\
              Set the SCANNER_ADMIN_TOKEN environment variable to this value on future boots if you'd rather manage it \
-             that way than let it live in the database."
+             that way than let it live in the database.",
+            token.expose()
         );
     }
 

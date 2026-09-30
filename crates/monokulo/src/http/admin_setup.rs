@@ -118,11 +118,12 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
 
             match login::authenticate(&state, &form.email, &form.password).await {
                 Ok((_user, raw_token)) => {
-                    let cookie = Cookie::build((super::SESSION_COOKIE_NAME, raw_token))
-                        .http_only(true)
-                        .same_site(SameSite::Lax)
-                        .path("/")
-                        .build();
+                    let cookie =
+                        Cookie::build((super::SESSION_COOKIE_NAME, raw_token.expose().to_string()))
+                            .http_only(true)
+                            .same_site(SameSite::Lax)
+                            .path("/")
+                            .build();
                     let jar = CookieJar::new().add(cookie);
                     (jar, redirect_302("/dashboard/admin/settings")).into_response()
                 }

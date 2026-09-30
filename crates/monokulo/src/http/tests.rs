@@ -1374,13 +1374,7 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
     db.lock().set_setting("signup.mode", "invite_only").unwrap();
     let raw_token = shared::auth::generate_invite_token();
     db.lock()
-        .create_invite_link(
-            "link-1",
-            &shared::auth::hash_secret_token(&raw_token),
-            None,
-            None,
-            crate::now_unix(),
-        )
+        .create_invite_link("link-1", &raw_token.hash(), None, None, crate::now_unix())
         .unwrap();
 
     let first = router
@@ -1388,7 +1382,7 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
         .oneshot(invite_token_signup_request(
             "first@example.com",
             "correct horse battery staple",
-            Some(&raw_token),
+            Some(raw_token.expose()),
         ))
         .await
         .unwrap();
@@ -1400,7 +1394,7 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
         .oneshot(invite_token_signup_request(
             "second@example.com",
             "correct horse battery staple",
-            Some(&raw_token),
+            Some(raw_token.expose()),
         ))
         .await
         .unwrap();
@@ -1805,13 +1799,13 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
     {
         let db = state.db.lock();
         db.create_session(
-            &shared::auth::hash_secret_token("owner-token"),
+            &shared::auth::RawToken::presented("owner-token").hash(),
             "u_owner",
             crate::now_unix(),
         )
         .unwrap();
         db.create_session(
-            &shared::auth::hash_secret_token("other-token"),
+            &shared::auth::RawToken::presented("other-token").hash(),
             "u_other",
             crate::now_unix(),
         )

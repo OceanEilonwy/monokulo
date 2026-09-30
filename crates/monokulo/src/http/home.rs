@@ -103,16 +103,14 @@ pub async fn dashboard_home(
     let mut total_received_piconero: u128 = 0;
 
     for row in rows {
-        let sk =
-            match crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
-            {
-                Ok(sk) => sk,
-                // A row this service itself encrypted failing to decrypt with
-                // its own key is an internal-consistency problem, not this
-                // store's fault - skip it from the listing rather than failing
-                // the whole dashboard for every other store the user has.
-                Err(_) => continue,
-            };
+        let sk = match crate::http::orders::decrypt_sk(&state, &row) {
+            Ok(sk) => sk,
+            // A row this service itself encrypted failing to decrypt with
+            // its own key is an internal-consistency problem, not this
+            // store's fault - skip it from the listing rather than failing
+            // the whole dashboard for every other store the user has.
+            Err(_) => continue,
+        };
 
         let tenant_result = state.engine_client.get_tenant(&sk).await;
         let (health, health_label) = health_of_tenant_lookup(&tenant_result);
@@ -350,12 +348,10 @@ mod tests {
                 .get_store_connection_by_public_key(public_key)
                 .unwrap()
                 .expect("connection exists");
-            let sk =
-                crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
-                    .unwrap();
+            let sk = crate::http::orders::decrypt_sk(state, &row).unwrap();
             let response = reqwest::Client::new()
                 .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
-                .bearer_auth(sk)
+                .bearer_auth(sk.expose())
                 .json(
                     &serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }),
                 )

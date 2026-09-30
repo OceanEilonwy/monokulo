@@ -7,8 +7,76 @@
 //! path parameter - see `Store::find_tenant_by_secret_token` in `store.rs`, which is
 //! the only lookup admin auth is allowed to use.
 
+use std::fmt;
+
 use rand::Rng;
 use sha2::{Digest, Sha256};
+
+/// A bearer token as issued (shown once) or as a client presents it. Never
+/// stored or logged: its `Debug` is redacted, [`RawToken::expose`] is the
+/// one way to read it (to hand it to its owner), and [`RawToken::hash`] the
+/// one way to what is stored and looked up.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RawToken(String);
+
+impl RawToken {
+    /// A token from outside this process: one a request carried, one a
+    /// peer's response returned, or one decrypted from storage.
+    pub fn presented(value: &str) -> Self {
+        RawToken(value.to_string())
+    }
+
+    /// The token itself, to give to its owner.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// SHA-256 of the token: what is stored at rest (for example
+    /// `tenants.secret_token_hash`, monokulo's `sessions.token`). Not
+    /// Argon2 on purpose - see the module docs: a high-entropy, machine-made
+    /// token gains nothing from a slow hash.
+    pub fn hash(&self) -> TokenHash {
+        TokenHash(hex::encode(Sha256::digest(self.0.as_bytes())))
+    }
+}
+
+/// A token in a peer's JSON response (the engine returns a new tenant's
+/// `sk_` once).
+impl<'de> serde::Deserialize<'de> for RawToken {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(RawToken)
+    }
+}
+
+impl fmt::Debug for RawToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RawToken(<redacted>)")
+    }
+}
+
+/// A token's hash ([`RawToken::hash`]): what the database stores and looks
+/// up. Only ever made from a raw token or read back from the database, so a
+/// raw token can't be looked up (or stored) where its hash belongs.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TokenHash(String);
+
+impl TokenHash {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl rusqlite::ToSql for TokenHash {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        self.0.to_sql()
+    }
+}
+
+impl rusqlite::types::FromSql for TokenHash {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        String::column_result(value).map(TokenHash)
+    }
+}
 
 fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
@@ -20,8 +88,8 @@ pub fn generate_public_key() -> String {
     format!("pk_{}", random_hex(24))
 }
 
-pub fn generate_secret_token() -> String {
-    format!("sk_{}", random_hex(32))
+pub fn generate_secret_token() -> RawToken {
+    RawToken(format!("sk_{}", random_hex(32)))
 }
 
 /// A monokulo session's bearer token (WBS 1.1.2), shown once at login.
@@ -32,8 +100,8 @@ pub fn generate_secret_token() -> String {
 /// happen to share the same "random bearer token" shape, and giving them
 /// different prefixes keeps that visible rather than reusing `sk_` for
 /// something that isn't a tenant secret.
-pub fn generate_session_token() -> String {
-    format!("sess_{}", random_hex(32))
+pub fn generate_session_token() -> RawToken {
+    RawToken(format!("sess_{}", random_hex(32)))
 }
 
 /// A single-use connect-flow token (WBS 1.4.1,
@@ -45,8 +113,8 @@ pub fn generate_session_token() -> String {
 /// hex string - with its own `conn_` prefix: a distinct credential type
 /// (short-lived, single-use, never itself an admin credential) from either
 /// of those.
-pub fn generate_connect_token() -> String {
-    format!("conn_{}", random_hex(32))
+pub fn generate_connect_token() -> RawToken {
+    RawToken(format!("conn_{}", random_hex(32)))
 }
 
 /// An instance-wide scanner admin token - authenticates the settings
@@ -56,16 +124,16 @@ pub fn generate_connect_token() -> String {
 /// primitive as every other credential here, with its own `admin_` prefix so
 /// the two credential types stay visibly distinct rather than sharing `sk_`
 /// for something that isn't a tenant secret.
-pub fn generate_admin_token() -> String {
-    format!("admin_{}", random_hex(32))
+pub fn generate_admin_token() -> RawToken {
+    RawToken(format!("admin_{}", random_hex(32)))
 }
 
 /// A single-use account-signup invite token (monokulo's `signup.mode ==
 /// "invite_only"`, `http::invites`) - redeemable exactly once
 /// (`Db::redeem_invite_and_create_user`). Same generation primitive as
 /// every other credential here, with its own `invite_` prefix.
-pub fn generate_invite_token() -> String {
-    format!("invite_{}", random_hex(32))
+pub fn generate_invite_token() -> RawToken {
+    RawToken(format!("invite_{}", random_hex(32)))
 }
 
 /// A webhook's HMAC signing secret. Unlike `sk_`, this is stored reversibly (see
@@ -74,17 +142,6 @@ pub fn generate_invite_token() -> String {
 /// hashing guarantee.
 pub fn generate_webhook_secret() -> String {
     format!("whsec_{}", random_hex(32))
-}
-
-/// SHA-256 hex digest of a raw bearer token, for storage at rest (e.g.
-/// `tenants.secret_token_hash`, or the control plane's `sessions.token` -
-/// see WBS 1.1.2). Not Argon2/bcrypt/scrypt on purpose - see module docs.
-/// The name predates the control plane's session tokens, but the hashing
-/// logic itself is generic: it doesn't care what kind of high-entropy,
-/// machine-generated token it's given, so a second near-identical function
-/// for session tokens would be pure duplication.
-pub fn hash_secret_token(raw_token: &str) -> String {
-    hex::encode(Sha256::digest(raw_token.as_bytes()))
 }
 
 #[cfg(test)]
@@ -98,7 +155,7 @@ mod tests {
         let sk1 = generate_secret_token();
         let sk2 = generate_secret_token();
         assert!(pk1.starts_with("pk_"));
-        assert!(sk1.starts_with("sk_"));
+        assert!(sk1.expose().starts_with("sk_"));
         assert_ne!(pk1, pk2);
         assert_ne!(sk1, sk2);
     }
@@ -107,7 +164,7 @@ mod tests {
     fn generated_session_tokens_have_the_expected_prefix_and_are_unique() {
         let t1 = generate_session_token();
         let t2 = generate_session_token();
-        assert!(t1.starts_with("sess_"));
+        assert!(t1.expose().starts_with("sess_"));
         assert_ne!(t1, t2);
     }
 
@@ -115,7 +172,7 @@ mod tests {
     fn generated_admin_tokens_have_the_expected_prefix_and_are_unique() {
         let t1 = generate_admin_token();
         let t2 = generate_admin_token();
-        assert!(t1.starts_with("admin_"));
+        assert!(t1.expose().starts_with("admin_"));
         assert_ne!(t1, t2);
     }
 
@@ -123,7 +180,7 @@ mod tests {
     fn generated_connect_tokens_have_the_expected_prefix_and_are_unique() {
         let t1 = generate_connect_token();
         let t2 = generate_connect_token();
-        assert!(t1.starts_with("conn_"));
+        assert!(t1.expose().starts_with("conn_"));
         assert_ne!(t1, t2);
     }
 
@@ -131,22 +188,28 @@ mod tests {
     fn generated_invite_tokens_have_the_expected_prefix_and_are_unique() {
         let t1 = generate_invite_token();
         let t2 = generate_invite_token();
-        assert!(t1.starts_with("invite_"));
+        assert!(t1.expose().starts_with("invite_"));
         assert_ne!(t1, t2);
     }
 
     #[test]
     fn hash_is_deterministic_and_sensitive_to_every_bit() {
         let token = generate_secret_token();
-        assert_eq!(hash_secret_token(&token), hash_secret_token(&token));
+        assert_eq!(token.hash(), token.hash());
 
         // Flip the last character - a valid token with one bit different must hash
         // to something else entirely, and must never be treated as a prefix/partial
         // match by whatever compares against the stored hash.
-        let mut flipped = token.clone();
+        let mut flipped = token.expose().to_string();
         let last = flipped.pop().unwrap();
         let replacement = if last == 'a' { 'b' } else { 'a' };
         flipped.push(replacement);
-        assert_ne!(hash_secret_token(&token), hash_secret_token(&flipped));
+        assert_ne!(token.hash(), RawToken::presented(&flipped).hash());
+    }
+
+    #[test]
+    fn a_raw_token_never_shows_in_debug_output() {
+        let token = generate_session_token();
+        assert!(!format!("{token:?}").contains(token.expose()));
     }
 }

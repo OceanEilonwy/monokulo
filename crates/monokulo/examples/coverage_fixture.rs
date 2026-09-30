@@ -102,7 +102,12 @@ async fn create_order(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let order = control
         .client
-        .create_order(&control.token, 1_000_000_000, None, None)
+        .create_order(
+            &shared::auth::RawToken::presented(&control.token),
+            1_000_000_000,
+            None,
+            None,
+        )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
     Ok(Json(serde_json::json!({"order_id": order.order_id})))
@@ -211,7 +216,7 @@ async fn main() {
     )
     .expect("create fixture user");
     db.create_session(
-        &shared::auth::hash_secret_token(SESSION),
+        &shared::auth::RawToken::presented(SESSION).hash(),
         "coverage-merchant",
         0,
     )
@@ -222,7 +227,7 @@ async fn main() {
         "custom",
         "http://shop.localhost",
         &tenant.public_key,
-        &crypto::encrypt(&ENCRYPTION_KEY, &tenant.secret_token),
+        &crypto::encrypt(&ENCRYPTION_KEY, tenant.secret_token.expose()),
         &format!("http://{}", engine.addr),
         0,
         "XMR",
@@ -281,7 +286,7 @@ async fn main() {
         .with_state(Controls {
             engine,
             client: state.engine_client.clone(),
-            token: tenant.secret_token.clone(),
+            token: tenant.secret_token.expose().to_string(),
             public_key: tenant.public_key.clone(),
             order_id: order.order_id.clone(),
             db: state.db.clone(),

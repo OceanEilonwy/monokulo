@@ -1019,10 +1019,14 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         }
     };
     let token = s.cookie.split_once('=').unwrap().1;
-    let session = crate::http::session_log_id(&shared::auth::hash_secret_token(token));
+    let session = crate::http::session_log_id(&shared::auth::RawToken::presented(token).hash());
     assert_eq!(session.len(), 16);
     assert!(
-        !session.contains(token) && !shared::auth::hash_secret_token(token).contains(&session),
+        !session.contains(token)
+            && !shared::auth::RawToken::presented(token)
+                .hash()
+                .as_str()
+                .contains(&session),
         "nothing that finds the session"
     );
 

@@ -39,7 +39,6 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::crypto;
 use crate::db::UserRow;
 use crate::now_unix;
 use crate::templates::network_selected_flags;
@@ -551,7 +550,7 @@ async fn mint_token_and_redirect(
     target: &ConnectTarget,
 ) -> Response {
     let raw_token = shared::auth::generate_connect_token();
-    let token_hash = shared::auth::hash_secret_token(&raw_token);
+    let token_hash = raw_token.hash();
     let (id, nonce) = (connection_id.to_string(), form.nonce.clone());
     let stored = state
         .db
@@ -577,7 +576,7 @@ async fn mint_token_and_redirect(
     // query parameters.
     redirect_url
         .query_pairs_mut()
-        .append_pair("token", &raw_token)
+        .append_pair("token", raw_token.expose())
         .append_pair("nonce", &form.nonce);
 
     redirect_302(redirect_url.as_str())
@@ -647,7 +646,7 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
                 .into_response()
         }
     };
-    let token_hash = shared::auth::hash_secret_token(&req.token);
+    let token_hash = shared::auth::RawToken::presented(&req.token).hash();
 
     // The token is spent and its connection read in one write job.
     let row = state
@@ -669,11 +668,10 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
         Ok(None) | Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let secret_token =
-        match crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted) {
-            Ok(v) => v,
-            Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-        };
+    let secret_token = match super::orders::decrypt_sk(&state, &row) {
+        Ok(v) => v,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
 
     // Webhook registration (WBS 1.4.4): only attempted when the caller supplied a
     // `webhook_url`. On failure this collapses the *entire* `/finish` call to `401`,
@@ -707,7 +705,7 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
 
     Json(FinishResponse {
         public_key: row.tenant_public_key,
-        secret_token,
+        secret_token: secret_token.expose().to_string(),
         endpoint,
         webhook_signing_secret,
     })
@@ -985,7 +983,7 @@ mod tests {
         // credential, not just a string that happens to start with `sk_` -
         // same pattern 1.2.3/1.3.2 already established.
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let tenant_view = engine_client.get_tenant(secret_token).await.expect(
+        let tenant_view = engine_client.get_tenant(&shared::auth::RawToken::presented(secret_token)).await.expect(
             "the returned secret_token should be the tenant's genuine, functioning sk_ credential",
         );
         assert_eq!(tenant_view.public_key, public_key);
@@ -1165,14 +1163,14 @@ mod tests {
         // engine too.
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let webhooks = engine_client
-            .list_webhooks(&secret_token)
+            .list_webhooks(&shared::auth::RawToken::presented(&secret_token))
             .await
             .expect("list_webhooks against the real engine should succeed");
         assert_eq!(webhooks.len(), 1);
         assert_eq!(webhooks[0].url, "https://merchant.example/hook");
 
         let tenant_view = engine_client
-            .get_tenant(&secret_token)
+            .get_tenant(&shared::auth::RawToken::presented(&secret_token))
             .await
             .expect("get_tenant against the real engine should succeed");
         assert_eq!(

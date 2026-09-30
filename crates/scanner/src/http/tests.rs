@@ -361,7 +361,7 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
 
     let s = store.lock();
     let tenant_row = s
-        .find_tenant_by_secret_token(&tenant.secret_token)
+        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -1935,7 +1935,7 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
 
     let router = build_router(state, 1_000_000);
     let response = router
-        .oneshot(settings_request("GET", Some(&generated), None))
+        .oneshot(settings_request("GET", Some(generated.expose()), None))
         .await
         .unwrap();
     assert_eq!(

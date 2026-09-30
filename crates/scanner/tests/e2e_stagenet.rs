@@ -187,7 +187,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     // why this is a few hundred thousand piconero, not a realistic amount) --
     let (status, order) = oneshot_json(
         &router,
-        &sk,
+        sk.expose(),
         "POST",
         "/api/v1/admin/tenant/orders".to_string(),
         Some(json!({
@@ -232,7 +232,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
 
         let (status, order_status) = oneshot_json(
             &router,
-            &sk,
+            sk.expose(),
             "GET",
             format!("/api/v1/admin/tenant/orders/{order_id}"),
             None,

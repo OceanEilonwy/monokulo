@@ -83,6 +83,7 @@ use serde_json::json;
 
 use crate::db::{Database, UserRow};
 use crate::engine_client::EngineClient;
+use shared::auth::{RawToken, TokenHash};
 
 /// Name of the cookie the browser-facing login flow (`dashboard::login_submit`)
 /// sets and [`AuthedUser`] reads back — a plain constant so the two sides
@@ -554,7 +555,7 @@ pub fn build_router(state: AppState) -> Router {
 /// user - `/logout` (WBS 1.1.3) needs to know exactly which session row to
 /// delete, and re-deriving it would mean re-parsing the credential a second
 /// time outside this extractor.
-pub struct AuthedUser(pub UserRow, pub String);
+pub struct AuthedUser(pub UserRow, pub TokenHash);
 
 impl FromRequestParts<AppState> for AuthedUser {
     type Rejection = ApiError;
@@ -578,7 +579,7 @@ impl FromRequestParts<AppState> for AuthedUser {
 /// with the same `401` `AuthedUser` would; a *valid* session that just isn't
 /// the admin account gets `403`, not `401` - see [`ApiError::Forbidden`]'s
 /// own doc comment for why those are kept distinct.
-pub struct AuthedAdmin(pub UserRow, pub String);
+pub struct AuthedAdmin(pub UserRow, pub TokenHash);
 
 impl FromRequestParts<AppState> for AuthedAdmin {
     type Rejection = ApiError;
@@ -760,17 +761,17 @@ fn store_alerts(
 pub(crate) async fn resolve_authed_user(
     state: &AppState,
     headers: &HeaderMap,
-) -> Option<(UserRow, String)> {
+) -> Option<(UserRow, TokenHash)> {
     let token = if let Some(header_value) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
     {
-        header_value.strip_prefix("Bearer ")?.to_string()
+        RawToken::presented(header_value.strip_prefix("Bearer ")?)
     } else {
         let jar = CookieJar::from_headers(headers);
-        jar.get(SESSION_COOKIE_NAME)?.value().to_string()
+        RawToken::presented(jar.get(SESSION_COOKIE_NAME)?.value())
     };
-    let token_hash = shared::auth::hash_secret_token(&token);
+    let token_hash = token.hash();
 
     let hash = token_hash.clone();
     let mut user = state
@@ -792,7 +793,7 @@ pub(crate) async fn resolve_authed_user(
 /// Puts who's signed in on the request's lines (`user.id`, `session.id`;
 /// `telemetry::http::server`), so the Logs page can show every line of one
 /// session. Visitors who aren't signed in have neither.
-pub(crate) fn record_identity(user_id: &str, token_hash: &str) {
+pub(crate) fn record_identity(user_id: &str, token_hash: &TokenHash) {
     tracing::Span::current()
         .record("user.id", user_id)
         .record("session.id", session_log_id(token_hash));
@@ -801,8 +802,9 @@ pub(crate) fn record_identity(user_id: &str, token_hash: &str) {
 /// A session's name in the logs: stable for the session, and no use for
 /// finding or presenting it (it is derived from the stored hash, which is
 /// itself only a lookup key, and cut short).
-pub(crate) fn session_log_id(token_hash: &str) -> String {
+pub(crate) fn session_log_id(token_hash: &TokenHash) -> String {
     use sha2::{Digest, Sha256};
+    let token_hash = token_hash.as_str();
     hex::encode(&Sha256::digest(format!("monokulo log session:{token_hash}").as_bytes())[..8])
 }
 

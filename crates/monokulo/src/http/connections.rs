@@ -163,7 +163,8 @@ pub(super) async fn create_connection_for_user(
         })?;
 
     let id = Uuid::new_v4().to_string();
-    let encrypted_secret_token = crypto::encrypt(&state.encryption_key, &created.secret_token);
+    let encrypted_secret_token =
+        crypto::encrypt(&state.encryption_key, created.secret_token.expose());
     let (connection_id, user_id, public_key) =
         (id.clone(), user.id.clone(), created.public_key.clone());
     let engine_url = state.engine_client.base_url();
@@ -430,9 +431,12 @@ mod tests {
         );
 
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let tenant_view = engine_client.get_tenant(&decrypted).await.expect(
-            "the decrypted token should be the tenant's genuine, functioning sk_ credential",
-        );
+        let tenant_view = engine_client
+            .get_tenant(&shared::auth::RawToken::presented(&decrypted))
+            .await
+            .expect(
+                "the decrypted token should be the tenant's genuine, functioning sk_ credential",
+            );
         assert_eq!(
             tenant_view.public_key, public_key,
             "decrypting the stored value must recover the exact secret token this specific tenant was issued"

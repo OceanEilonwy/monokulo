@@ -476,10 +476,11 @@ impl FromRequestParts<AppState> for AuthedTenant {
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .ok_or(ApiError::Unauthorized)?;
-        let token = header_value
-            .strip_prefix("Bearer ")
-            .ok_or(ApiError::Unauthorized)?
-            .to_string();
+        let token = shared::auth::RawToken::presented(
+            header_value
+                .strip_prefix("Bearer ")
+                .ok_or(ApiError::Unauthorized)?,
+        );
         let tenant = state
             .read_store(move |store| store.find_tenant_by_secret_token(&token))
             .await?
