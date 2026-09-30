@@ -324,7 +324,12 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
         .await
         .expect("creating the test tenant");
     let order = engine_client
-        .create_order(&tenant.secret_token, 1_000_000, None, None)
+        .create_order(
+            &tenant.secret_token,
+            shared::xmr_amount::Piconero(1_000_000),
+            None,
+            None,
+        )
         .await
         .expect("creating the test order");
     let db = Db::open_in_memory().unwrap();

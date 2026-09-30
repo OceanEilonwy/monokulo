@@ -287,7 +287,7 @@ pub async fn create_order(
         .engine_client
         .create_order(
             &sk,
-            xmr_amount_piconero,
+            shared::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id.clone(),
             Some(resolution.confirmations_required),
         )
@@ -332,7 +332,7 @@ pub async fn create_order(
                         &order_id,
                         &order_currency,
                         &order_amount,
-                        piconero_per_unit,
+                        shared::xmr_amount::Piconero(piconero_per_unit),
                         &provider,
                         crate::now_unix(),
                         &base_currency,

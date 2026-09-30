@@ -95,6 +95,35 @@ pub fn read_only<T>(conn: &Connection, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// An unsigned value (a height, count, index, limit or amount) crossing
+/// into or out of SQLite, which stores only signed 64-bit integers. Both
+/// directions are checked: a value that doesn't fit, or a negative one read
+/// back, is an error rather than a silent wrap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unsigned<T>(pub T);
+
+impl<T: Copy + TryInto<i64>> rusqlite::ToSql for Unsigned<T>
+where
+    <T as TryInto<i64>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let value: i64 = self
+            .0
+            .try_into()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        Ok(value.into())
+    }
+}
+
+impl<T: TryFrom<i64>> rusqlite::types::FromSql for Unsigned<T> {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        let raw = value.as_i64()?;
+        T::try_from(raw)
+            .map(Unsigned)
+            .map_err(|_| rusqlite::types::FromSqlError::OutOfRange(raw))
+    }
+}
+
 /// Why a job didn't run, or didn't answer.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PoolError {

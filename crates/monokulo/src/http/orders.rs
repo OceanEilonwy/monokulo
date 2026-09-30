@@ -390,7 +390,7 @@ async fn order_detail_data(
                     format!(
                         "{} XMR per 1 {}",
                         crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(
-                            m.piconero_per_unit
+                            m.piconero_per_unit.get()
                         )),
                         m.currency
                     ),
@@ -423,7 +423,7 @@ async fn order_detail_data(
                         format!(
                             "{} XMR per 1 {base_currency}",
                             crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(
-                                rate
+                                rate.get()
                             ))
                         )
                     }
@@ -1328,7 +1328,7 @@ pub async fn create_order(
         .engine_client
         .create_order(
             &sk,
-            xmr_amount_piconero,
+            shared::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id,
             Some(resolution.confirmations_required),
         )
@@ -1355,7 +1355,7 @@ pub async fn create_order(
                         &order_id,
                         &currency,
                         &amount,
-                        piconero_per_unit,
+                        shared::xmr_amount::Piconero(piconero_per_unit),
                         &provider,
                         crate::now_unix(),
                         &base_currency,

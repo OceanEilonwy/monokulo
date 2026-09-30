@@ -145,11 +145,12 @@ impl ThresholdAmount {
 /// Selects the largest qualifying tier using exact integer arithmetic.
 /// Invalid or duplicate stored amounts fail closed instead of falling back.
 pub fn resolve_confirmations_required(
-    piconero: u64,
-    piconero_per_unit: u64,
+    piconero: shared::xmr_amount::Piconero,
+    piconero_per_unit: shared::xmr_amount::Piconero,
     default_confirmations: u64,
     thresholds: &[ConfirmationThresholdRow],
 ) -> Result<u64, &'static str> {
+    let (piconero, piconero_per_unit) = (piconero.get(), piconero_per_unit.get());
     if piconero_per_unit == 0 || default_confirmations > 720 {
         return Err("invalid confirmation policy");
     }
@@ -183,7 +184,7 @@ pub struct Resolution {
     /// currency - no separate conversion (and no separate rate lookup) was
     /// ever needed, so there's no second rate to snapshot alongside the
     /// order's own existing one.
-    pub base_currency_piconero_per_unit: Option<u64>,
+    pub base_currency_piconero_per_unit: Option<shared::xmr_amount::Piconero>,
 }
 
 /// The real, async half of this module - does the I/O
@@ -267,8 +268,8 @@ pub async fn resolve_for_order(
         "something went wrong resolving the confirmation threshold. Please try again.".to_string()
     })?;
     let confirmations_required = resolve_confirmations_required(
-        xmr_amount_piconero,
-        effective_rate,
+        shared::xmr_amount::Piconero(xmr_amount_piconero),
+        shared::xmr_amount::Piconero(effective_rate),
         default_confirmations,
         &thresholds,
     )
@@ -280,7 +281,8 @@ pub async fn resolve_for_order(
     Ok(Resolution {
         confirmations_required,
         base_currency,
-        base_currency_piconero_per_unit,
+        base_currency_piconero_per_unit: base_currency_piconero_per_unit
+            .map(shared::xmr_amount::Piconero),
     })
 }
 
@@ -347,17 +349,38 @@ mod tests {
     #[test]
     fn no_custom_thresholds_at_all_always_uses_the_default() {
         assert_eq!(
-            resolve_confirmations_required(1_000_000, 1, 10, &[]).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(1_000_000),
+                shared::xmr_amount::Piconero(1),
+                10,
+                &[]
+            )
+            .unwrap(),
             10
         );
-        assert_eq!(resolve_confirmations_required(0, 1, 10, &[]).unwrap(), 10);
+        assert_eq!(
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(0),
+                shared::xmr_amount::Piconero(1),
+                10,
+                &[]
+            )
+            .unwrap(),
+            10
+        );
     }
 
     #[test]
     fn an_amount_below_every_threshold_uses_the_default() {
         let thresholds = vec![threshold("50.00", 20), threshold("100.00", 30)];
         assert_eq!(
-            resolve_confirmations_required(10, 1, 10, &thresholds).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(10),
+                shared::xmr_amount::Piconero(1),
+                10,
+                &thresholds
+            )
+            .unwrap(),
             10
         );
     }
@@ -366,7 +389,13 @@ mod tests {
     fn an_amount_exactly_at_a_thresholds_boundary_uses_that_threshold() {
         let thresholds = vec![threshold("50.00", 20)];
         assert_eq!(
-            resolve_confirmations_required(50, 1, 10, &thresholds).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(50),
+                shared::xmr_amount::Piconero(1),
+                10,
+                &thresholds
+            )
+            .unwrap(),
             20,
             "the boundary itself must count as meeting the threshold"
         );
@@ -376,7 +405,13 @@ mod tests {
     fn an_amount_above_the_largest_threshold_uses_that_largest_thresholds_own_count() {
         let thresholds = vec![threshold("50.00", 20), threshold("100.00", 30)];
         assert_eq!(
-            resolve_confirmations_required(1_000_000, 1, 10, &thresholds).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(1_000_000),
+                shared::xmr_amount::Piconero(1),
+                10,
+                &thresholds
+            )
+            .unwrap(),
             30
         );
     }
@@ -387,7 +422,13 @@ mod tests {
         // the largest threshold that's still <= 75 wins.
         let thresholds = vec![threshold("50.00", 20), threshold("100.00", 30)];
         assert_eq!(
-            resolve_confirmations_required(75, 1, 10, &thresholds).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(75),
+                shared::xmr_amount::Piconero(1),
+                10,
+                &thresholds
+            )
+            .unwrap(),
             20
         );
     }
@@ -404,7 +445,13 @@ mod tests {
             threshold("50.00", 20),
         ];
         assert_eq!(
-            resolve_confirmations_required(60, 1, 10, &thresholds).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(60),
+                shared::xmr_amount::Piconero(1),
+                10,
+                &thresholds
+            )
+            .unwrap(),
             20
         );
     }
@@ -412,14 +459,26 @@ mod tests {
     #[test]
     fn a_malformed_stored_unit_amount_fails_closed() {
         let thresholds = vec![threshold("not-a-number", 99), threshold("50.00", 20)];
-        assert!(resolve_confirmations_required(1000, 1, 10, &thresholds).is_err());
+        assert!(resolve_confirmations_required(
+            shared::xmr_amount::Piconero(1000),
+            shared::xmr_amount::Piconero(1),
+            10,
+            &thresholds
+        )
+        .is_err());
     }
 
     #[test]
     fn zero_amount_thresholds_and_zero_order_amounts_are_handled() {
         let thresholds = vec![threshold("0", 5)];
         assert_eq!(
-            resolve_confirmations_required(0, 1, 10, &thresholds).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(0),
+                shared::xmr_amount::Piconero(1),
+                10,
+                &thresholds
+            )
+            .unwrap(),
             5,
             "a zero-amount threshold still qualifies for a zero-amount order"
         );
@@ -431,15 +490,33 @@ mod tests {
         let boundary = 9_007_199_254_740_981u64;
         let rate = 1_000_000_000_000u64;
         assert_eq!(
-            resolve_confirmations_required(boundary - 1, rate, 10, &thresholds).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(boundary - 1),
+                shared::xmr_amount::Piconero(rate),
+                10,
+                &thresholds
+            )
+            .unwrap(),
             10
         );
         assert_eq!(
-            resolve_confirmations_required(boundary, rate, 10, &thresholds).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(boundary),
+                shared::xmr_amount::Piconero(rate),
+                10,
+                &thresholds
+            )
+            .unwrap(),
             0
         );
         assert_eq!(
-            resolve_confirmations_required(boundary + 1, rate, 10, &thresholds).unwrap(),
+            resolve_confirmations_required(
+                shared::xmr_amount::Piconero(boundary + 1),
+                shared::xmr_amount::Piconero(rate),
+                10,
+                &thresholds
+            )
+            .unwrap(),
             0
         );
     }
@@ -447,6 +524,12 @@ mod tests {
     #[test]
     fn duplicate_decimal_spellings_are_rejected_even_in_stored_rows() {
         let thresholds = vec![threshold("50", 10), threshold("50.0", 0)];
-        assert!(resolve_confirmations_required(100, 1, 10, &thresholds).is_err());
+        assert!(resolve_confirmations_required(
+            shared::xmr_amount::Piconero(100),
+            shared::xmr_amount::Piconero(1),
+            10,
+            &thresholds
+        )
+        .is_err());
     }
 }

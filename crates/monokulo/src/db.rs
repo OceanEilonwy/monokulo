@@ -9,7 +9,8 @@
 
 use parking_lot::Mutex;
 pub use shared::ids::{ConnectionId, OrderId, UserId};
-use shared::sqlite::{Pool, PoolError};
+use shared::sqlite::{Pool, PoolError, Unsigned};
+use shared::xmr_amount::Piconero;
 use std::sync::Arc;
 
 use crate::fx_provider_settings::FxProviderSettings;
@@ -595,7 +596,7 @@ pub struct OrderCurrencyMetadataRow {
     pub order_id: OrderId,
     pub currency: String,
     pub amount: String,
-    pub piconero_per_unit: u64,
+    pub piconero_per_unit: Piconero,
     /// Which provider produced `piconero_per_unit` - `"xmr"` (the trivial
     /// identity rate), `"coingecko"`, `"unknown"` for a row recorded before
     /// this field existed (migration 0006), or a stale `"fixed"` for a row
@@ -610,7 +611,7 @@ pub struct OrderCurrencyMetadataRow {
     /// `store_base_currency` terms - `None` either because the order's own
     /// currency already *was* the base currency (no conversion needed), or
     /// the row predates this snapshot entirely.
-    pub base_currency_piconero_per_unit: Option<u64>,
+    pub base_currency_piconero_per_unit: Option<Piconero>,
     /// The confirmations_required this order was actually created with on
     /// the engine (`crate::confirmation_thresholds::Resolution::confirmations_required`) -
     /// `None` only for a row predating this snapshot.
@@ -620,6 +621,24 @@ pub struct OrderCurrencyMetadataRow {
     /// page using the public embed library - see migration
     /// `0021_order_created_with_key.sql`.
     pub created_with_key: bool,
+}
+
+/// An `order_currency_metadata` row, columns in the order both queries
+/// select them; every number is read with a checked conversion.
+fn metadata_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrderCurrencyMetadataRow> {
+    Ok(OrderCurrencyMetadataRow {
+        connection_id: row.get(0)?,
+        order_id: row.get(1)?,
+        currency: row.get(2)?,
+        amount: row.get(3)?,
+        piconero_per_unit: row.get(4)?,
+        provider: row.get(5)?,
+        created_at: row.get(6)?,
+        store_base_currency: row.get(7)?,
+        base_currency_piconero_per_unit: row.get(8)?,
+        confirmations_required_applied: row.get::<_, Option<Unsigned<u64>>>(9)?.map(|v| v.0),
+        created_with_key: row.get(10)?,
+    })
 }
 
 /// One row from the static `currencies` reference table - see that
@@ -1126,16 +1145,16 @@ impl Db {
         order_id: &OrderId,
         currency: &str,
         amount: &str,
-        piconero_per_unit: u64,
+        piconero_per_unit: Piconero,
         provider: &str,
         created_at: i64,
         base_currency: &str,
-        base_currency_piconero_per_unit: Option<u64>,
+        base_currency_piconero_per_unit: Option<Piconero>,
         confirmations_required_applied: u64,
         created_with_key: bool,
     ) -> Result<()> {
-        let piconero_per_unit = i64::try_from(piconero_per_unit)
-            .expect("piconero_per_unit out of i64 range - not a plausible real exchange rate");
+        // An amount too large for SQLite is refused (a conversion error), not
+        // wrapped or panicked on.
         self.conn.execute(
             "INSERT INTO order_currency_metadata
                 (connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
@@ -1150,8 +1169,8 @@ impl Db {
                 provider,
                 created_at,
                 base_currency,
-                base_currency_piconero_per_unit.map(|v| v as i64),
-                confirmations_required_applied as i64,
+                base_currency_piconero_per_unit,
+                Unsigned(confirmations_required_applied),
                 created_with_key,
             ],
         )?;
@@ -1173,24 +1192,7 @@ impl Db {
                         store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key
                  FROM order_currency_metadata WHERE connection_id = ?1 AND order_id = ?2",
                 params![connection_id, order_id],
-                |row| {
-                    let piconero_per_unit: i64 = row.get(4)?;
-                    let base_currency_piconero_per_unit: Option<i64> = row.get(8)?;
-                    let confirmations_required_applied: Option<i64> = row.get(9)?;
-                    Ok(OrderCurrencyMetadataRow {
-                        connection_id: row.get(0)?,
-                        order_id: row.get(1)?,
-                        currency: row.get(2)?,
-                        amount: row.get(3)?,
-                        piconero_per_unit: piconero_per_unit as u64,
-                        provider: row.get(5)?,
-                        created_at: row.get(6)?,
-                        store_base_currency: row.get(7)?,
-                        base_currency_piconero_per_unit: base_currency_piconero_per_unit.map(|v| v as u64),
-                        confirmations_required_applied: confirmations_required_applied.map(|v| v as u64),
-                        created_with_key: row.get(10)?,
-                    })
-                },
+                metadata_row,
             )
             .optional()
             .map_err(DbError::from)
@@ -1212,26 +1214,7 @@ impl Db {
              FROM order_currency_metadata WHERE connection_id = ?1",
         )?;
         let rows = stmt
-            .query_map(params![connection_id], |row| {
-                let piconero_per_unit: i64 = row.get(4)?;
-                let base_currency_piconero_per_unit: Option<i64> = row.get(8)?;
-                let confirmations_required_applied: Option<i64> = row.get(9)?;
-                Ok(OrderCurrencyMetadataRow {
-                    connection_id: row.get(0)?,
-                    order_id: row.get(1)?,
-                    currency: row.get(2)?,
-                    amount: row.get(3)?,
-                    piconero_per_unit: piconero_per_unit as u64,
-                    provider: row.get(5)?,
-                    created_at: row.get(6)?,
-                    store_base_currency: row.get(7)?,
-                    base_currency_piconero_per_unit: base_currency_piconero_per_unit
-                        .map(|v| v as u64),
-                    confirmations_required_applied: confirmations_required_applied
-                        .map(|v| v as u64),
-                    created_with_key: row.get(10)?,
-                })
-            })?
+            .query_map(params![connection_id], metadata_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows
             .into_iter()
@@ -1442,7 +1425,7 @@ impl Db {
             "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc)
              SELECT ?1, ?2, ?3, ?4, ?5
              WHERE (SELECT COUNT(*) FROM store_domains WHERE connection_id = ?2) < ?6",
-            params![id, connection_id, domain, token, created_at, max as i64],
+            params![id, connection_id, domain, token, created_at, Unsigned(max)],
         )?;
         Ok(changed == 1)
     }
@@ -1479,7 +1462,7 @@ impl Db {
             "INSERT INTO saved_log_searches (id, user_id, name, query_string, created_at_utc)
              SELECT ?1, ?2, ?3, ?4, ?5
              WHERE (SELECT COUNT(*) FROM saved_log_searches WHERE user_id = ?2) < ?6",
-            params![id, user_id, name, query_string, now, max as i64],
+            params![id, user_id, name, query_string, now, Unsigned(max)],
         )?;
         Ok(changed == 1)
     }
@@ -1574,7 +1557,7 @@ impl Db {
                 domain,
                 crate::embed_domains::new_token(),
                 created_at,
-                max as i64
+                Unsigned(max)
             ],
         )?;
         Ok(())
@@ -1622,7 +1605,7 @@ impl Db {
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE store_connections SET embed_restricted = ?2 WHERE id = ?1",
-            params![connection_id, restricted as i64],
+            params![connection_id, restricted],
         )?;
         Ok(())
     }
@@ -1658,7 +1641,7 @@ impl Db {
     pub fn set_client_logging(&self, connection_id: &ConnectionId, on: bool) -> Result<()> {
         self.conn.execute(
             "UPDATE store_connections SET client_logging = ?2 WHERE id = ?1",
-            params![connection_id, on as i64],
+            params![connection_id, on],
         )?;
         Ok(())
     }
@@ -1763,7 +1746,7 @@ impl Db {
                 id: row.get(0)?,
                 connection_id: row.get(1)?,
                 unit_amount: row.get(2)?,
-                confirmations_required: row.get::<_, i64>(3)? as u64,
+                confirmations_required: row.get::<_, Unsigned<u64>>(3)?.0,
                 created_at: row.get(4)?,
             })
         })?;
@@ -1799,7 +1782,7 @@ impl Db {
         self.conn.execute(
             "INSERT INTO confirmation_thresholds (id, connection_id, unit_amount, confirmations_required, created_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, connection_id, unit_amount, confirmations_required as i64, created_at],
+            params![id, connection_id, unit_amount, Unsigned(confirmations_required), created_at],
         )?;
         Ok(())
     }
@@ -1819,7 +1802,7 @@ impl Db {
             "INSERT INTO confirmation_thresholds (id, connection_id, unit_amount, confirmations_required, created_at_utc)
              SELECT ?1, ?2, ?3, ?4, ?5
              WHERE (SELECT COUNT(*) FROM confirmation_thresholds WHERE connection_id = ?2) < 5",
-            params![id, connection_id, unit_amount, confirmations_required as i64, created_at],
+            params![id, connection_id, unit_amount, Unsigned(confirmations_required), created_at],
         )?;
         Ok(changed == 1)
     }
@@ -1845,7 +1828,7 @@ impl Db {
                 "INSERT INTO confirmation_thresholds (id, connection_id, unit_amount, confirmations_required, created_at_utc)
                  SELECT ?1, ?2, ?3, ?4, ?5
                  WHERE (SELECT COUNT(*) FROM confirmation_thresholds WHERE connection_id = ?2) < 5",
-                params![id, connection_id, unit_amount, confirmations_required as i64, created_at],
+                params![id, connection_id, unit_amount, Unsigned(confirmations_required), created_at],
             )?;
             if changed == 0 {
                 return Ok(false);
@@ -3135,6 +3118,28 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
+    /// A rate too large for SQLite's integers is an error to the caller,
+    /// never a panic in the request that tried to store it.
+    #[test]
+    fn an_out_of_range_rate_is_refused_not_panicked_on() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        let stored = db.create_order_currency_metadata(
+            &ConnectionId::new(connection_id.to_string()),
+            &OrderId::new("pay_huge"),
+            "USD",
+            "1.00",
+            Piconero(u64::MAX),
+            "fixed",
+            1000,
+            "XMR",
+            None,
+            10,
+            false,
+        );
+        assert!(matches!(stored, Err(DbError::Sqlite(_))), "{stored:?}");
+    }
+
     #[test]
     fn creating_order_fiat_metadata_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
@@ -3144,7 +3149,7 @@ mod tests {
             &shared::ids::OrderId::new("pay_1"),
             "USD",
             "25.00",
-            6_700_000_000,
+            shared::xmr_amount::Piconero(6_700_000_000),
             "fixed",
             1000,
             "XMR",
@@ -3168,7 +3173,10 @@ mod tests {
         assert_eq!(row.order_id, shared::ids::OrderId::new("pay_1"));
         assert_eq!(row.currency, "USD");
         assert_eq!(row.amount, "25.00");
-        assert_eq!(row.piconero_per_unit, 6_700_000_000);
+        assert_eq!(
+            row.piconero_per_unit,
+            shared::xmr_amount::Piconero(6_700_000_000)
+        );
         assert_eq!(row.provider, "fixed");
         assert_eq!(row.created_at, 1000);
         assert_eq!(row.store_base_currency, Some("XMR".to_string()));
@@ -3222,7 +3230,7 @@ mod tests {
             &shared::ids::OrderId::new("pay_shared"),
             "USD",
             "10.00",
-            1_000_000,
+            shared::xmr_amount::Piconero(1_000_000),
             "fixed",
             1000,
             "XMR",
@@ -3236,7 +3244,7 @@ mod tests {
             &shared::ids::OrderId::new("pay_shared"),
             "EUR",
             "20.00",
-            2_000_000,
+            shared::xmr_amount::Piconero(2_000_000),
             "coingecko",
             2000,
             "XMR",
@@ -3275,7 +3283,7 @@ mod tests {
             &shared::ids::OrderId::new("pay_a"),
             "USD",
             "10.00",
-            1_000_000,
+            shared::xmr_amount::Piconero(1_000_000),
             "fixed",
             1000,
             "XMR",
@@ -3289,7 +3297,7 @@ mod tests {
             &shared::ids::OrderId::new("pay_b"),
             "EUR",
             "20.00",
-            2_000_000,
+            shared::xmr_amount::Piconero(2_000_000),
             "fixed",
             2000,
             "XMR",

@@ -326,7 +326,7 @@ impl TestEngineHandle {
                 .ok_or(scanner::store::StoreError::NotFound)?
                 .xmr_amount_piconero
         };
-        self.record_order_payment(order_id, amount, Some(101))
+        self.record_order_payment(order_id, shared::xmr_amount::Piconero(amount), Some(101))
     }
 
     /// Mines every mempool-only payment to `order_id` into a block (height
@@ -372,9 +372,10 @@ impl TestEngineHandle {
     pub fn record_order_payment(
         &self,
         order_id: &str,
-        piconero: u64,
+        piconero: shared::xmr_amount::Piconero,
         confirmations: Option<u64>,
     ) -> Result<(), scanner::store::StoreError> {
+        let piconero = piconero.get();
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
         let now = scanner::now_unix();

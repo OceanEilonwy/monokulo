@@ -7,34 +7,7 @@ use rusqlite::{params, OptionalExtension};
 
 use super::{OrderPaymentRow, Result, Store, StoreError};
 
-/// An unsigned value (a height, count, index or limit) crossing into or out
-/// of SQLite, which stores only signed 64-bit integers. Both directions are
-/// checked: a value that doesn't fit, or a negative one read back, is an
-/// error rather than a silent wrap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Unsigned<T>(pub T);
-
-impl<T: Copy + TryInto<i64>> rusqlite::ToSql for Unsigned<T>
-where
-    <T as TryInto<i64>>::Error: std::error::Error + Send + Sync + 'static,
-{
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let value: i64 = self
-            .0
-            .try_into()
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        Ok(value.into())
-    }
-}
-
-impl<T: TryFrom<i64>> rusqlite::types::FromSql for Unsigned<T> {
-    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        let raw = value.as_i64()?;
-        T::try_from(raw)
-            .map(Unsigned)
-            .map_err(|_| rusqlite::types::FromSqlError::OutOfRange(raw))
-    }
-}
+pub(crate) use shared::sqlite::Unsigned;
 
 /// A block height as SQLite stores it. Heights never come near `i64::MAX`;
 /// one that did is refused rather than wrapped negative.

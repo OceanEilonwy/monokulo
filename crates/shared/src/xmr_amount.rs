@@ -93,6 +93,51 @@ pub fn format_piconero_as_xmr(piconero: u64) -> String {
     format!("{whole}.{frac:012}")
 }
 
+/// An amount of monero in piconero (10^-12 XMR). Its own type so an amount
+/// can't be passed where a confirmation count or height is expected, or the
+/// other way round; stored in SQLite with a checked conversion.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct Piconero(pub u64);
+
+impl Piconero {
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for Piconero {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl rusqlite::ToSql for Piconero {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let value = i64::try_from(self.0)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        Ok(value.into())
+    }
+}
+
+impl rusqlite::types::FromSql for Piconero {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        crate::sqlite::Unsigned::<u64>::column_result(value).map(|v| Piconero(v.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -504,7 +504,7 @@ impl EngineClient {
     pub async fn create_order(
         &self,
         sk: &RawToken,
-        xmr_amount_piconero: u64,
+        xmr_amount_piconero: shared::xmr_amount::Piconero,
         merchant_order_id: Option<String>,
         confirmations_required: Option<u64>,
     ) -> Result<CreateOrderResponse, EngineClientError> {
@@ -514,7 +514,7 @@ impl EngineClient {
             .post(format!("{}/api/v1/admin/tenant/orders", target.base_url))
             .bearer_auth(sk.expose())
             .json(&CreateOrderRequest {
-                xmr_amount_piconero,
+                xmr_amount_piconero: xmr_amount_piconero.get(),
                 merchant_order_id,
                 confirmations_required,
             })
@@ -1138,7 +1138,12 @@ mod tests {
             .unwrap();
 
         let order = client
-            .create_order(&created.secret_token, 100_000_000_000, None, Some(3))
+            .create_order(
+                &created.secret_token,
+                shared::xmr_amount::Piconero(100_000_000_000),
+                None,
+                Some(3),
+            )
             .await
             .unwrap();
 
@@ -1171,7 +1176,12 @@ mod tests {
             .unwrap();
 
         let order = client
-            .create_order(&created.secret_token, 100_000_000_000, None, None)
+            .create_order(
+                &created.secret_token,
+                shared::xmr_amount::Piconero(100_000_000_000),
+                None,
+                None,
+            )
             .await
             .unwrap();
 

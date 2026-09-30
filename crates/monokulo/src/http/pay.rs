@@ -167,7 +167,7 @@ pub async fn create_order(
         .engine_client
         .create_order(
             &sk,
-            xmr_amount_piconero,
+            shared::xmr_amount::Piconero(xmr_amount_piconero),
             req.merchant_order_id.clone(),
             Some(resolution.confirmations_required),
         )
@@ -202,7 +202,7 @@ pub async fn create_order(
                         &order_id,
                         &currency,
                         &amount,
-                        piconero_per_unit,
+                        shared::xmr_amount::Piconero(piconero_per_unit),
                         &provider,
                         now_unix(),
                         &base_currency,
@@ -1195,7 +1195,10 @@ mod tests {
             metadata.expect("expected a real local fiat-metadata row for the order just created");
         assert_eq!(metadata.currency, TEST_CURRENCY);
         assert_eq!(metadata.amount, "10.00");
-        assert_eq!(metadata.piconero_per_unit, TEST_RATE_PICONERO_PER_UNIT);
+        assert_eq!(
+            metadata.piconero_per_unit,
+            shared::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT)
+        );
 
         // This store's base currency ("XMR", `create_connection`'s own
         // default) differs from the order's own currency ("USD"), so a
@@ -1207,7 +1210,7 @@ mod tests {
         assert_eq!(metadata.store_base_currency, Some("XMR".to_string()));
         assert_eq!(
             metadata.base_currency_piconero_per_unit,
-            Some(TEST_RATE_PICONERO_PER_UNIT)
+            Some(shared::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT))
         );
         assert_eq!(
             metadata.confirmations_required_applied,
@@ -1324,7 +1327,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        (metadata.provider, metadata.piconero_per_unit)
+        (metadata.provider, metadata.piconero_per_unit.get())
     }
 
     /// Changing a store's providers, or their order, prices the very next

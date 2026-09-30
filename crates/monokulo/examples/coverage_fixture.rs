@@ -84,10 +84,11 @@ async fn record_payment(
         return StatusCode::NOT_FOUND;
     };
     let piconero = (order.xmr_amount_piconero as f64 * query.fraction) as u64;
-    match control
-        .engine
-        .record_order_payment(&id, piconero, query.confirmations)
-    {
+    match control.engine.record_order_payment(
+        &id,
+        shared::xmr_amount::Piconero(piconero),
+        query.confirmations,
+    ) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::NOT_FOUND,
     }
@@ -114,7 +115,7 @@ async fn create_order(
         .client
         .create_order(
             &shared::auth::RawToken::presented(&control.token),
-            1_000_000_000,
+            shared::xmr_amount::Piconero(1_000_000_000),
             None,
             None,
         )
@@ -174,7 +175,7 @@ async fn mark_browser_created(
         &shared::ids::OrderId::new(id.to_string()),
         "XMR",
         "0.001",
-        1_000_000_000_000,
+        shared::xmr_amount::Piconero(1_000_000_000_000),
         "fixed",
         1,
         "XMR",
@@ -210,7 +211,7 @@ async fn main() {
     let order = engine_client
         .create_order(
             &tenant.secret_token,
-            1_000_000_000,
+            shared::xmr_amount::Piconero(1_000_000_000),
             Some("Fixture order".into()),
             None,
         )
