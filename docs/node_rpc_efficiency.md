@@ -62,7 +62,9 @@ this change needs a key custody server with it too.
 blob with its transactions. The blob's hash is the block's id, its header
 carries the parent's id and the time, and its coinbase carries the height.
 So nothing else is asked about a block, and a node answering from the wrong
-height is refused instead of scanned.
+height is refused instead of scanned. (The genesis block, which
+`get_blocks.bin` can't be asked for by height, is read from its header: it
+holds no transactions but its coinbase.)
 
 **Reorg detection without a lookup.** Hashes chain, so the recorded chain
 matches the node's if the highest recorded block does. `/get_height` returns
@@ -171,8 +173,9 @@ polls are counted apart from block fetches, as
 
 ## Removed
 
-Calls nothing in the engine made any more, taken out of
-`MoneroDaemonClient` and its implementations:
+`MoneroDaemonClient` holds what the engine asks of a node and nothing else.
+Calls nothing in the engine made any more were taken out of it and its
+implementations, with the tests that only tested them:
 
 - `get_mempool_transactions` (`/get_transaction_pool`, every pool
   transaction whole): the pool is read by its ids and changes.
@@ -180,3 +183,16 @@ Calls nothing in the engine made any more, taken out of
   ids): blocks are read with `get_chain_blocks`.
 - `find_height_at_or_before` (a binary search over block timestamps, for
   the manual rescan that was removed earlier).
+- `get_block_transactions`, `get_block_timestamp`, `get_transaction` and
+  `get_transactions` (`get_block` and whole `/get_transactions`): the
+  engine reached them only through trait defaults that the real client
+  overrode. `get_chain_blocks` and `get_transactions_with_ids` are what a
+  client implements now, and the test doubles with it. With them went the
+  real client's whole-transaction decoding, and the scanner's
+  hash-a-whole-transaction entry points (`scan_transaction`,
+  `scan_transaction_for_tenant`, `tx_id_hex`), which only tests called:
+  they are test helpers now.
+
+The client never asks for a whole transaction. Where a test wants one to
+hold a pruned one against (the replay test, the live tests), it makes that
+request itself.

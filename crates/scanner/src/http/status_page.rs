@@ -532,19 +532,20 @@ mod tests {
         async fn get_block_hash(&self, _: u64) -> Result<String, crate::daemon::DaemonError> {
             unimplemented!("not probed")
         }
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            _: u64,
-        ) -> Result<Vec<monero::Transaction>, crate::daemon::DaemonError> {
+            _start_height: u64,
+            _count: u64,
+        ) -> Result<Vec<crate::daemon::ChainBlock>, crate::daemon::DaemonError> {
             unimplemented!("not probed")
         }
         async fn get_mempool_txids(&self) -> Result<Vec<String>, crate::daemon::DaemonError> {
             unimplemented!("not probed")
         }
-        async fn get_transactions(
+        async fn get_transactions_with_ids(
             &self,
             _txids: &[String],
-        ) -> Result<Vec<monero::Transaction>, crate::daemon::DaemonError> {
+        ) -> Result<Vec<crate::daemon::FetchedTx>, crate::daemon::DaemonError> {
             unimplemented!("not probed")
         }
         async fn locate_transaction(
@@ -553,19 +554,10 @@ mod tests {
         ) -> Result<crate::daemon::TxLocation, crate::daemon::DaemonError> {
             unimplemented!("not probed")
         }
-        async fn get_transaction(
-            &self,
-            _: &str,
-        ) -> Result<monero::Transaction, crate::daemon::DaemonError> {
-            unimplemented!("not probed")
-        }
         async fn is_key_image_spent(
             &self,
             _: &[String],
         ) -> Result<Vec<crate::daemon::KeyImageStatus>, crate::daemon::DaemonError> {
-            unimplemented!("not probed")
-        }
-        async fn get_block_timestamp(&self, _: u64) -> Result<u64, crate::daemon::DaemonError> {
             unimplemented!("not probed")
         }
     }

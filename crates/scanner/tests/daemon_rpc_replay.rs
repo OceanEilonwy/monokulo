@@ -18,10 +18,10 @@ use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::Router;
 use monero::consensus::serialize;
+use monero::cryptonote::hash::Hashable;
 use monero::TxIn;
 use scanner::daemon::{ChainBlock, KeyImageStatus, MoneroDaemonClient, TxLocation};
 use scanner::daemon_rpc::RpcDaemonClient;
-use scanner::scanner::tx_id_hex;
 use serde::{Deserialize, Serialize};
 
 const FIXTURE: &str = concat!(
@@ -61,7 +61,7 @@ type Recorded = Arc<Mutex<HashMap<(String, String), VecDeque<String>>>>;
 /// Serves each recorded response for the same path and request body: in the
 /// order recorded where the same request was made more than once (the tip
 /// may have moved between two of them), the last one from then on.
-async fn replay() -> (RpcDaemonClient, tokio::task::JoinHandle<()>) {
+async fn replay() -> (RpcDaemonClient, String, tokio::task::JoinHandle<()>) {
     let exchanges: Vec<Exchange> =
         serde_json::from_str(&std::fs::read_to_string(FIXTURE).unwrap()).unwrap();
     let mut table: HashMap<(String, String), VecDeque<String>> = HashMap::new();
@@ -103,6 +103,7 @@ async fn replay() -> (RpcDaemonClient, tokio::task::JoinHandle<()>) {
     let (port, task) = serve(router).await;
     (
         RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap(),
+        format!("http://127.0.0.1:{port}"),
         task,
     )
 }
@@ -118,31 +119,46 @@ fn key_images(tx: &monero::Transaction) -> Vec<String> {
         .collect()
 }
 
-/// Every call the scanner makes, as it makes them. Returns what the recorder
-/// needs to know about the chain.
-async fn exercise(client: &RpcDaemonClient) {
+/// The transactions `txids`, whole, asked of the node at `node` with a
+/// request of the test's own (the client only ever asks for them pruned):
+/// what the client's pruned ones are held against.
+async fn whole_transactions(node: &str, txids: &[String]) -> Vec<monero::Transaction> {
+    if txids.is_empty() {
+        return Vec::new();
+    }
+    let answer: serde_json::Value = reqwest::Client::new()
+        .post(format!("{node}/get_transactions"))
+        .json(&serde_json::json!({ "txs_hashes": txids, "decode_as_json": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    answer["txs"]
+        .as_array()
+        .expect("transactions")
+        .iter()
+        .map(|entry| {
+            let blob = hex::decode(entry["as_hex"].as_str().unwrap()).unwrap();
+            monero::consensus::deserialize(&blob).unwrap()
+        })
+        .collect()
+}
+
+/// Every call the scanner makes, as it makes them, against the node (or
+/// replay of one) at `node`.
+async fn exercise(client: &RpcDaemonClient, node: &str) {
     assert!(client.get_height().await.unwrap() >= KNOWN_TX_HEIGHT);
     // The tip's height comes with its id, in one answer.
     let tip = client.get_tip().await.unwrap();
     assert!(tip.height >= KNOWN_TX_HEIGHT, "tip {}", tip.height);
     assert_eq!(tip.hash.as_ref().map(String::len), Some(64), "{tip:?}");
 
-    // Each block of the chunk fetched whole, with get_block +
-    // get_transactions: what the pruned chunk below is checked against.
-    let mut batched = Vec::new();
-    for height in START..START + COUNT {
-        batched.push(client.get_block_transactions(height).await.unwrap());
-    }
-    let known_block = &batched[(KNOWN_TX_HEIGHT - START) as usize];
-    let known = known_block
-        .iter()
-        .find(|tx| tx_id_hex(tx) == KNOWN_TX)
-        .expect("known transaction in its block");
-
-    // What the scanner reads blocks with: the same chunk with pruned
-    // transactions. Each block names itself and its parent, and each
-    // transaction carries the id its whole form hashes to, with the prefix
-    // (output keys, key images) a scan reads unchanged.
+    // What the scanner reads blocks with: a chunk with pruned transactions.
+    // Each block names itself and its parent, and each transaction comes
+    // under the id its whole form hashes to, with the prefix (output keys,
+    // key images) and RingCT base a scan reads unchanged.
     let chain = client.get_chain_blocks(START, COUNT).await.unwrap();
     assert_eq!(chain.len(), COUNT as usize);
     let mut pruned_bytes = 0;
@@ -154,10 +170,14 @@ async fn exercise(client: &RpcDaemonClient) {
         if offset > 0 {
             assert_eq!(block.prev_hash, chain[offset - 1].hash);
         }
-        let whole = &batched[offset];
+        let whole = whole_transactions(node, &block.txids).await;
         assert_eq!(block.txs.len(), whole.len(), "block {height}");
-        for (index, (pruned, whole)) in block.txs.iter().zip(whole).enumerate() {
-            assert_eq!(block.txid(index), Some(tx_id_hex(whole)), "block {height}");
+        for ((pruned, txid), whole) in block.txs.iter().zip(&block.txids).zip(&whole) {
+            assert_eq!(
+                *txid,
+                hex::encode(whole.hash().to_bytes()),
+                "block {height}"
+            );
             assert!(shared::monero_tx::is_pruned(pruned), "block {height}");
             assert_eq!(pruned.prefix, whole.prefix);
             assert_eq!(pruned.rct_signatures.sig, whole.rct_signatures.sig);
@@ -169,6 +189,13 @@ async fn exercise(client: &RpcDaemonClient) {
         pruned_bytes * 3 < whole_bytes,
         "pruned {pruned_bytes} of {whole_bytes} bytes"
     );
+    let known_block = &chain[(KNOWN_TX_HEIGHT - START) as usize];
+    let known = known_block
+        .txids
+        .iter()
+        .position(|txid| txid == KNOWN_TX)
+        .map(|index| &known_block.txs[index])
+        .expect("known transaction in its block");
 
     // Headers alone say the same about each block as the blocks do.
     let headers = client.get_chain_headers(START, COUNT).await.unwrap();
@@ -188,10 +215,6 @@ async fn exercise(client: &RpcDaemonClient) {
     assert_eq!(
         client.locate_transaction(ABSENT_TX).await.unwrap(),
         TxLocation::NotFound
-    );
-    assert_eq!(
-        tx_id_hex(&client.get_transaction(KNOWN_TX).await.unwrap()),
-        KNOWN_TX
     );
     // Several at once: each one placed or affirmatively missed.
     let both = [KNOWN_TX.to_string(), ABSENT_TX.to_string()];
@@ -228,12 +251,8 @@ async fn exercise(client: &RpcDaemonClient) {
         "{statuses:?}"
     );
 
-    let timestamp = client.get_block_timestamp(KNOWN_TX_HEIGHT).await.unwrap();
+    let timestamp = known_block.timestamp;
     assert!(timestamp > 1_750_000_000, "timestamp {timestamp}");
-    assert_eq!(
-        timestamp,
-        chain[(KNOWN_TX_HEIGHT - START) as usize].timestamp
-    );
 
     // The pool, followed by its changes: the node describes its pool in
     // answer to the wallet-style request, so the plain list of ids is never
@@ -280,8 +299,8 @@ async fn exercise(client: &RpcDaemonClient) {
 #[tokio::test]
 async fn scanner_node_client_reads_blocks_transactions_and_key_images_from_a_recorded_stagenet_node(
 ) {
-    let (client, _server) = replay().await;
-    exercise(&client).await;
+    let (client, node, _server) = replay().await;
+    exercise(&client, &node).await;
 }
 
 #[tokio::test]
@@ -345,7 +364,11 @@ async fn record_stagenet_node() {
         )
         .with_state((recorded.clone(), http));
     let (port, _server) = serve(router).await;
-    exercise(&RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap()).await;
+    exercise(
+        &RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap(),
+        &format!("http://127.0.0.1:{port}"),
+    )
+    .await;
     let exchanges = recorded.lock().clone();
     std::fs::write(FIXTURE, serde_json::to_string_pretty(&exchanges).unwrap()).unwrap();
 }

@@ -342,9 +342,10 @@ of a live node:
 pub trait MoneroDaemonClient: Send + Sync {
     async fn get_height(&self) -> Result<u64, DaemonError>;
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError>;
-    async fn get_block_transactions(&self, height: u64) -> Result<Vec<monero::Transaction>, DaemonError>;
+    async fn get_chain_blocks(&self, start_height: u64, count: u64) -> Result<Vec<ChainBlock>, DaemonError>;
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError>;
-    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<monero::Transaction>, DaemonError>;
+    async fn get_transactions_with_ids(&self, txids: &[String]) -> Result<Vec<FetchedTx>, DaemonError>;
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
     async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError>;
 }
 ```

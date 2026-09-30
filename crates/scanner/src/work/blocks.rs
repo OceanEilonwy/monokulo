@@ -601,7 +601,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &block);
     let mut progressed = !must_progress;
     for (index, tx) in block.txs.iter().enumerate() {
-        let txid = block.txid(index).ok_or_else(|| {
+        let txid = block.txids.get(index).cloned().ok_or_else(|| {
             ScannerError::Internal(format!("block {height} has no id for transaction {index}"))
         })?;
         for batch in scan.due(&scannable, index).chunks(SCAN_CONCURRENCY) {
@@ -982,7 +982,7 @@ async fn header_block(
         prev_hash: header.prev_hash.clone(),
         timestamp: header.timestamp,
         txs: Vec::new(),
-        txids: None,
+        txids: Vec::new(),
     }))
 }
 
@@ -998,7 +998,7 @@ mod tests {
             prev_hash: format!("h{}", height - 1),
             timestamp: 0,
             txs: vec![],
-            txids: None,
+            txids: Vec::new(),
         }
     }
 

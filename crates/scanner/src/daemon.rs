@@ -2,11 +2,9 @@
 //! `monerod`, so reorg/double-spend logic (`src/scanner.rs`) can be tested against a
 //! deterministic scripted fake instead of a live node. See `docs/DESIGN.md` §7.1.
 //!
-//! The real implementation (talking to `monerod` over `reqwest` + `rustls`) is not
-//! part of this pass - only the trait, its types, and the test double are
-//! implemented here, since the reorg/double-spend *logic* behind this boundary is
-//! the part worth getting right and testing thoroughly before wiring up the RPC
-//! plumbing on the other side of it.
+//! The trait holds what the engine asks of a node and nothing else: the real
+//! implementation is `daemon_rpc::RpcDaemonClient`, behind
+//! `daemon_fallback::FallbackDaemonClient`; the scripted fake is here.
 
 use monero::Transaction;
 
@@ -96,22 +94,13 @@ pub struct ChainBlock {
     pub timestamp: u64,
     /// The block's transactions, without the coinbase.
     pub txs: Vec<Transaction>,
-    /// The id of each of `txs`, in order, when they came pruned: a pruned
-    /// transaction can't be hashed to its id (`shared::monero_tx`). `None`
-    /// when `txs` are whole and hash to their own ids. Read through
-    /// [`ChainBlock::txid`].
-    pub txids: Option<Vec<String>>,
+    /// The id of each of `txs` (lowercase hex), in order. They come with
+    /// the block: a pruned transaction can't be hashed to its id
+    /// (`shared::monero_tx`).
+    pub txids: Vec<String>,
 }
 
 impl ChainBlock {
-    /// The id of transaction `index` (lowercase hex).
-    pub fn txid(&self, index: usize) -> Option<String> {
-        match &self.txids {
-            Some(txids) => txids.get(index).cloned(),
-            None => self.txs.get(index).map(txid_of_whole),
-        }
-    }
-
     pub fn header(&self) -> ChainHeader {
         ChainHeader {
             height: self.height,
@@ -120,12 +109,6 @@ impl ChainBlock {
             timestamp: self.timestamp,
         }
     }
-}
-
-/// The id of a whole transaction. Wrong for a pruned one.
-fn txid_of_whole(tx: &Transaction) -> String {
-    use monero::cryptonote::hash::Hashable;
-    hex::encode(tx.hash().to_bytes())
 }
 
 /// A block's identity without its contents
@@ -196,57 +179,23 @@ pub trait MoneroDaemonClient: Send + Sync {
         Ok(DaemonInfo::unknown())
     }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError>;
-    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError>;
 
-    /// Up to `count` whole blocks from `start_height`, in height order: each
-    /// with its id, its parent's id, its timestamp and its transactions (the
-    /// coinbase excluded), all from the same block. May be shorter than
-    /// `count` (the node's tip, or its batch limit); empty only if nothing at
-    /// `start_height` is available.
+    /// Up to `count` blocks from `start_height`, in height order: each with
+    /// its id, its parent's id, its timestamp and its transactions (the
+    /// coinbase excluded) under their ids, all from the same block. May be
+    /// shorter than `count` (the node's tip, or its batch limit); empty only
+    /// if nothing at `start_height` is available.
     ///
     /// Pairing a block's contents with its own id is the point: a scanner that
     /// reads a hash and the contents separately can record one block's
     /// payments under another block's hash if the chain moves in between.
-    ///
-    /// The default composes per-height calls (for test doubles); it re-reads
-    /// each hash after reading the contents and refuses a block that changed
-    /// meanwhile. `RpcDaemonClient` decodes the headers `get_blocks.bin`
-    /// already returns with the transactions, in one round trip.
+    /// `RpcDaemonClient` reads both from the blobs of one `get_blocks.bin`
+    /// answer.
     async fn get_chain_blocks(
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<ChainBlock>, DaemonError> {
-        let mut out: Vec<ChainBlock> = Vec::new();
-        let mut prev_hash = match start_height.checked_sub(1) {
-            Some(parent) => self.get_block_hash(parent).await?,
-            None => String::new(),
-        };
-        for height in start_height..start_height.saturating_add(count) {
-            let hash = match self.get_block_hash(height).await {
-                Ok(hash) => hash,
-                Err(error) if out.is_empty() => return Err(error),
-                Err(_) => break,
-            };
-            let timestamp = self.get_block_timestamp(height).await?;
-            let txs = self.get_block_transactions(height).await?;
-            if self.get_block_hash(height).await? != hash {
-                return Err(DaemonError::Request(format!(
-                    "block {height} changed while it was read"
-                )));
-            }
-            out.push(ChainBlock {
-                height,
-                hash: hash.clone(),
-                prev_hash,
-                timestamp,
-                txs,
-                txids: None,
-            });
-            prev_hash = hash;
-        }
-        Ok(out)
-    }
+    ) -> Result<Vec<ChainBlock>, DaemonError>;
 
     /// Up to `count` block headers from `start_height`, in height order:
     /// what [`Self::get_chain_blocks`] says about each block's identity,
@@ -275,27 +224,14 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// only for what entered and left since it last asked.
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError>;
 
-    /// Several transactions by txid, whole, in any order; ones the node
-    /// doesn't have are left out.
-    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError>;
-
-    /// [`Self::get_transactions`], each with its id, for a caller that must
-    /// not hash what it gets: `RpcDaemonClient` fetches them pruned. The
-    /// default's are whole, and hashed here.
+    /// Several transactions by txid, each with its id, in any order; ones
+    /// the node doesn't have are left out. The id comes with each because
+    /// the transaction may be pruned (`RpcDaemonClient` fetches them so),
+    /// and then can't be hashed to it.
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<FetchedTx>, DaemonError> {
-        Ok(self
-            .get_transactions(txids)
-            .await?
-            .into_iter()
-            .map(|tx| FetchedTx {
-                txid: txid_of_whole(&tx),
-                tx,
-            })
-            .collect())
-    }
+    ) -> Result<Vec<FetchedTx>, DaemonError>;
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
 
@@ -313,8 +249,7 @@ pub trait MoneroDaemonClient: Send + Sync {
     }
 
     /// A transaction and where it is, or `None` if the node has no record of
-    /// it: [`Self::locate_transaction`] and [`Self::get_transaction`] at
-    /// once. The transaction may be pruned. The default asks twice;
+    /// it. The transaction may be pruned. The default asks twice;
     /// `RpcDaemonClient` once.
     async fn find_transaction(
         &self,
@@ -324,33 +259,21 @@ pub trait MoneroDaemonClient: Send + Sync {
         if location == TxLocation::NotFound {
             return Ok(None);
         }
-        let tx = self.get_transaction(txid).await?;
-        Ok(Some((
-            FetchedTx {
-                txid: txid.to_string(),
-                tx,
-            },
-            location,
-        )))
+        let fetched = self
+            .get_transactions_with_ids(std::slice::from_ref(&txid.to_string()))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                DaemonError::Request(format!("daemon placed {txid} but sent no transaction"))
+            })?;
+        Ok(Some((fetched, location)))
     }
-    /// Fetches one transaction by its hash - `docs/txid_lookup_and_scan_
-    /// chunking_wbs.md` Part B's own "look up a payment by txid" action.
-    /// Deliberately its own method rather than reusing `locate_transaction`
-    /// (which only answers *where* a transaction is, never gives back its
-    /// content) - a caller that already knows a txid and wants to scan it
-    /// against a tenant's wallet needs the real `Transaction`, not just its
-    /// location.
-    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError>;
+
     async fn is_key_image_spent(
         &self,
         key_images: &[String],
     ) -> Result<Vec<KeyImageStatus>, DaemonError>;
-
-    /// A block's own declared timestamp (unix seconds), which the default
-    /// [`Self::get_chain_blocks`] dates each block with. Required, not
-    /// defaulted: fetching it is inherently backend-specific (a real RPC
-    /// call for `RpcDaemonClient`, scripted state for any test double).
-    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError>;
 
     /// Like `is_key_image_spent`, but for a client that knows about more than one
     /// node (see `daemon_fallback::FallbackDaemonClient::is_key_image_spent_corroborated`)
@@ -432,11 +355,11 @@ pub mod fake {
         online: std::sync::atomic::AtomicBool,
     }
 
-    fn txid_of(tx: &Transaction) -> String {
-        // Must match production's txid computation exactly (see
-        // `scanner::tx_id_hex`) - a test double using a different identity scheme
-        // than the real scanner would silently make every `locate_transaction`
-        // lookup miss, since the scanner records payments keyed by the real hash.
+    /// The id of a whole transaction, as the real chain names it: what the
+    /// fake's blocks and pool carry their transactions under, and what tests
+    /// name them by. (A pruned transaction, as the real client fetches
+    /// them, doesn't hash to its id.)
+    pub fn tx_id_hex(tx: &Transaction) -> String {
         use monero::cryptonote::hash::Hashable;
         hex::encode(tx.hash().to_bytes())
     }
@@ -476,7 +399,7 @@ pub mod fake {
             for tx in &txs {
                 state
                     .tx_locations
-                    .insert(txid_of(tx), TxLocation::InBlock(height));
+                    .insert(tx_id_hex(tx), TxLocation::InBlock(height));
             }
             state.blocks.insert(
                 height,
@@ -501,7 +424,7 @@ pub mod fake {
             for tx in &txs {
                 state
                     .tx_locations
-                    .insert(txid_of(tx), TxLocation::InBlock(height));
+                    .insert(tx_id_hex(tx), TxLocation::InBlock(height));
             }
             state.blocks.insert(
                 height,
@@ -550,7 +473,7 @@ pub mod fake {
             for tx in &txs {
                 state
                     .tx_locations
-                    .entry(txid_of(tx))
+                    .entry(tx_id_hex(tx))
                     .or_insert(TxLocation::InPool);
             }
             state.mempool = txs;
@@ -567,7 +490,7 @@ pub mod fake {
                 .blocks
                 .iter()
                 .filter(|(h, _)| **h >= from_height)
-                .flat_map(|(_, b)| b.txs.iter().map(txid_of))
+                .flat_map(|(_, b)| b.txs.iter().map(tx_id_hex))
                 .collect();
             state.blocks.retain(|h, _| *h < from_height);
 
@@ -576,7 +499,7 @@ pub mod fake {
             for (hash, txs) in new_blocks {
                 height += 1;
                 for tx in &txs {
-                    let id = txid_of(tx);
+                    let id = tx_id_hex(tx);
                     state
                         .tx_locations
                         .insert(id.clone(), TxLocation::InBlock(height));
@@ -609,8 +532,10 @@ pub mod fake {
 
         pub fn drop_from_mempool(&self, tx: &Transaction) {
             let mut state = self.state.lock();
-            state.mempool.retain(|t| txid_of(t) != txid_of(tx));
-            state.tx_locations.insert(txid_of(tx), TxLocation::NotFound);
+            state.mempool.retain(|t| tx_id_hex(t) != tx_id_hex(tx));
+            state
+                .tx_locations
+                .insert(tx_id_hex(tx), TxLocation::NotFound);
         }
     }
 
@@ -645,20 +570,6 @@ pub mod fake {
                 .ok_or_else(|| DaemonError::Request(format!("no block at height {height}")))
         }
 
-        async fn get_block_transactions(
-            &self,
-            height: u64,
-        ) -> Result<Vec<Transaction>, DaemonError> {
-            self.require_online()?;
-            Ok(self
-                .state
-                .lock()
-                .blocks
-                .get(&height)
-                .map(|b| b.txs.clone())
-                .unwrap_or_default())
-        }
-
         /// A consistent snapshot: every block and its parent's id under one
         /// lock, as a real node's single `get_blocks.bin` answer would be.
         async fn get_chain_blocks(
@@ -684,7 +595,7 @@ pub mod fake {
                     prev_hash,
                     timestamp: block.timestamp,
                     txs: block.txs.clone(),
-                    txids: None,
+                    txids: block.txs.iter().map(tx_id_hex).collect(),
                 });
             }
             if out.is_empty() {
@@ -731,21 +642,26 @@ pub mod fake {
 
         async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
             self.require_online()?;
-            Ok(self.state.lock().mempool.iter().map(txid_of).collect())
+            Ok(self.state.lock().mempool.iter().map(tx_id_hex).collect())
         }
 
-        async fn get_transactions(
+        /// From the pool or a block, as a real node finds either.
+        async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> Result<Vec<Transaction>, DaemonError> {
+        ) -> Result<Vec<FetchedTx>, DaemonError> {
             self.require_online()?;
-            Ok(self
-                .state
-                .lock()
+            let state = self.state.lock();
+            Ok(state
                 .mempool
                 .iter()
-                .filter(|tx| txids.contains(&txid_of(tx)))
-                .cloned()
+                .chain(state.blocks.values().flat_map(|block| &block.txs))
+                .map(|tx| (tx_id_hex(tx), tx))
+                .filter(|(txid, _)| txids.contains(txid))
+                .map(|(txid, tx)| FetchedTx {
+                    txid,
+                    tx: tx.clone(),
+                })
                 .collect())
         }
 
@@ -781,20 +697,6 @@ pub mod fake {
                 .collect())
         }
 
-        async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
-            self.require_online()?;
-            let state = self.state.lock();
-            for block in state.blocks.values() {
-                if let Some(tx) = block.txs.iter().find(|tx| txid_of(tx) == txid) {
-                    return Ok(tx.clone());
-                }
-            }
-            if let Some(tx) = state.mempool.iter().find(|tx| txid_of(tx) == txid) {
-                return Ok(tx.clone());
-            }
-            Err(DaemonError::Request(format!("no such transaction: {txid}")))
-        }
-
         async fn is_key_image_spent(
             &self,
             key_images: &[String],
@@ -812,19 +714,5 @@ pub mod fake {
                 })
                 .collect())
         }
-
-        async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
-            self.require_online()?;
-            self.state
-                .lock()
-                .blocks
-                .get(&height)
-                .map(|b| b.timestamp)
-                .ok_or_else(|| DaemonError::Request(format!("no block at height {height}")))
-        }
-    }
-
-    pub fn txid_hex(tx: &Transaction) -> String {
-        txid_of(tx)
     }
 }

@@ -103,7 +103,7 @@ async fn json_rpc(State(chain): State<Chain>, Json(request): Json<Value>) -> Res
         "get_info" => {
             Json(json!({ "jsonrpc": "2.0", "id": id, "result": chain.info() })).into_response()
         }
-        "get_block" | "get_block_header_by_height" => {
+        "get_block_header_by_height" => {
             let height = request
                 .pointer("/params/height")
                 .and_then(Value::as_u64)
@@ -111,10 +111,7 @@ async fn json_rpc(State(chain): State<Chain>, Json(request): Json<Value>) -> Res
             if height > top {
                 return too_high(id, height, top);
             }
-            let mut result = json!({ "block_header": block_header(height), "status": "OK" });
-            if method == "get_block" {
-                result["tx_hashes"] = json!([]);
-            }
+            let result = json!({ "block_header": block_header(height), "status": "OK" });
             Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response()
         }
         "on_get_block_hash" => {

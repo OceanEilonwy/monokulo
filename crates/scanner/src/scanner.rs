@@ -9,7 +9,6 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use monero::cryptonote::hash::Hashable;
 use monero::Transaction;
 
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
@@ -53,17 +52,6 @@ pub(crate) fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
     Ok(images)
 }
 
-/// The id of a whole transaction. A pruned one (as the node client fetches
-/// them) doesn't hash to its id: those come with it
-/// (`daemon::FetchedTx`, `daemon::ChainBlock::txid`).
-pub fn tx_id_hex(tx: &Transaction) -> String {
-    debug_assert!(
-        !shared::monero_tx::is_pruned(tx),
-        "a pruned transaction's id can't be computed from it"
-    );
-    hex::encode(tx.hash().to_bytes())
-}
-
 fn key_images_of(tx: &Transaction) -> Vec<String> {
     tx.prefix
         .inputs
@@ -96,17 +84,8 @@ pub struct ScanResult {
     pub key_images_json: String,
 }
 
-pub async fn scan_transaction(
-    key_custody: &dyn KeyCustody,
-    handle: WalletHandle,
-    tx: &Transaction,
-    minor_range: Range<u32>,
-) -> Result<ScanResult> {
-    scan_transaction_as(key_custody, handle, &tx_id_hex(tx), tx, minor_range).await
-}
-
-/// `scan_transaction` for a transaction whose id came with it (it may be
-/// pruned, and then can't be hashed to its id).
+/// Scans `tx` for the wallet behind `handle`. The transaction's id comes
+/// with it: it may be pruned, and then can't be hashed to it.
 pub async fn scan_transaction_as(
     key_custody: &dyn KeyCustody,
     handle: WalletHandle,
@@ -287,26 +266,6 @@ fn output_index(index: usize) -> Result<i64> {
             rusqlite::Error::ToSqlConversionFailure(Box::new(e)),
         ))
     })
-}
-
-/// Convenience wrapper combining `scan_transaction` + `record_scan_match`, for
-/// callers that `.await` it directly within their own task rather than spawning it
-/// (every test in this file does exactly that, so the `!Send` issue never bites
-/// them). `run_scan_tick` (spawned in production) deliberately does not use this;
-/// it calls the two halves separately instead.
-#[allow(clippy::too_many_arguments)] // one scan call's genuinely-independent inputs; a params struct would just move the ceremony, not remove it
-pub async fn scan_transaction_for_tenant(
-    store: &Store,
-    key_custody: &dyn KeyCustody,
-    handle: WalletHandle,
-    tenant_id: &crate::store::TenantId,
-    tx: &Transaction,
-    minor_range: Range<u32>,
-    seen_at: i64,
-    block_height: Option<u64>,
-) -> Result<HashSet<crate::store::OrderId>> {
-    let scan = scan_transaction(key_custody, handle, tx, minor_range).await?;
-    record_scan_match(store, tenant_id, &scan, seen_at, block_height)
 }
 
 pub struct ReconcileReport {
@@ -1380,7 +1339,7 @@ pub(crate) mod tests {
             vec![image]
         );
     }
-    use crate::daemon::fake::FakeDaemonClient;
+    use crate::daemon::fake::{tx_id_hex, FakeDaemonClient};
     use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
     use crate::key_custody::{
         KeyCustodyError, MatchedOutput, Network, PlainKeyCustody, SubaddressIndex, WalletMaterial,
@@ -1464,23 +1423,21 @@ pub(crate) mod tests {
         async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
             self.inner.get_block_hash(height).await
         }
-        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
-            self.inner.get_block_timestamp(height).await
-        }
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            height: u64,
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_block_transactions(height).await
+            start_height: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+            self.inner.get_chain_blocks(start_height, count).await
         }
         async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
             self.inner.get_mempool_txids().await
         }
-        async fn get_transactions(
+        async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_transactions(txids).await
+        ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+            self.inner.get_transactions_with_ids(txids).await
         }
         async fn locate_transaction(
             &self,
@@ -1490,12 +1447,6 @@ pub(crate) mod tests {
                 "simulated node failure mid-reconciliation".into(),
             ))
         }
-        async fn get_transaction(
-            &self,
-            txid: &str,
-        ) -> std::result::Result<Transaction, DaemonError> {
-            self.inner.get_transaction(txid).await
-        }
         async fn is_key_image_spent(
             &self,
             key_images: &[String],
@@ -1504,11 +1455,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// Wraps a `FakeDaemonClient` and fails `get_block_hash` for exactly one height,
-    /// leaving everything else - including `get_block_transactions` for that same
-    /// height - working. Models one RPC in a tick's sequence failing where its
-    /// immediate neighbours succeed, which is the only way a *gap* (rather than a
-    /// clean stopping point) can appear in the scanned-block window.
+    /// Wraps a `FakeDaemonClient` that can't serve exactly one height: asked for
+    /// that block's hash, or for blocks starting there, it fails, and a run of
+    /// blocks that reaches it stops short of it (a node may always send fewer
+    /// blocks than it was asked for). Everything else works. Models a node that
+    /// answers for some of what a tick asks and not the rest.
     struct DaemonFailingBlockHashAt {
         inner: FakeDaemonClient,
         failing_height: AtomicU64,
@@ -1532,35 +1483,39 @@ pub(crate) mod tests {
             }
             self.inner.get_block_hash(height).await
         }
-        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
-            self.inner.get_block_timestamp(height).await
-        }
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            height: u64,
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_block_transactions(height).await
+            start_height: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+            let failing = self.failing_height.load(Ordering::SeqCst);
+            if start_height == failing {
+                return Err(DaemonError::Request(format!(
+                    "simulated failure reading block {start_height}"
+                )));
+            }
+            let below = failing.saturating_sub(start_height);
+            self.inner
+                .get_chain_blocks(
+                    start_height,
+                    if below == 0 { count } else { count.min(below) },
+                )
+                .await
         }
         async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
             self.inner.get_mempool_txids().await
         }
-        async fn get_transactions(
+        async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_transactions(txids).await
+        ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+            self.inner.get_transactions_with_ids(txids).await
         }
         async fn locate_transaction(
             &self,
             txid: &str,
         ) -> std::result::Result<TxLocation, DaemonError> {
             self.inner.locate_transaction(txid).await
-        }
-        async fn get_transaction(
-            &self,
-            txid: &str,
-        ) -> std::result::Result<Transaction, DaemonError> {
-            self.inner.get_transaction(txid).await
         }
         async fn is_key_image_spent(
             &self,
@@ -1578,7 +1533,6 @@ pub(crate) mod tests {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum DaemonCall {
         Height,
-        BlockTransactions,
         /// Counts calls to `get_chain_blocks`, the block scan's one fetch for a
         /// run of blocks with their ids.
         ChainBlocks,
@@ -1683,34 +1637,13 @@ pub(crate) mod tests {
             self.gate(DaemonCall::BlockHash).await?;
             self.inner.get_block_hash(height).await
         }
-        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
-            self.inner.get_block_timestamp(height).await
-        }
-        async fn get_block_transactions(
-            &self,
-            height: u64,
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.gate(DaemonCall::BlockTransactions).await?;
-            self.inner.get_block_transactions(height).await
-        }
-        /// Straight to the inner node (its blocks are one consistent snapshot),
-        /// unless a test injects failures into individual transaction fetches:
-        /// then composed from this wrapper's own calls, so that gate applies.
         async fn get_chain_blocks(
             &self,
             start_height: u64,
             count: u64,
         ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
             self.gate(DaemonCall::ChainBlocks).await?;
-            if self.method != DaemonCall::BlockTransactions {
-                return self.inner.get_chain_blocks(start_height, count).await;
-            }
-            let mut out = Vec::new();
-            for block in self.inner.get_chain_blocks(start_height, count).await? {
-                let txs = self.get_block_transactions(block.height).await?;
-                out.push(crate::daemon::ChainBlock { txs, ..block });
-            }
-            Ok(out)
+            self.inner.get_chain_blocks(start_height, count).await
         }
         /// The pool poll is what `DaemonCall::Mempool` gates; fetching the
         /// bodies of new txids isn't a second poll, so it passes through.
@@ -1718,11 +1651,11 @@ pub(crate) mod tests {
             self.gate(DaemonCall::Mempool).await?;
             self.inner.get_mempool_txids().await
         }
-        async fn get_transactions(
+        async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_transactions(txids).await
+        ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+            self.inner.get_transactions_with_ids(txids).await
         }
         async fn locate_transaction(
             &self,
@@ -1730,12 +1663,6 @@ pub(crate) mod tests {
         ) -> std::result::Result<TxLocation, DaemonError> {
             self.gate(DaemonCall::Locate).await?;
             self.inner.locate_transaction(txid).await
-        }
-        async fn get_transaction(
-            &self,
-            txid: &str,
-        ) -> std::result::Result<Transaction, DaemonError> {
-            self.inner.get_transaction(txid).await
         }
         async fn is_key_image_spent(
             &self,
@@ -1750,6 +1677,32 @@ pub(crate) mod tests {
     /// `src/key_custody/plain.rs`'s tests - it pays subaddress 0/1. Reused here so
     /// scanner-level tests exercise real crypto end to end, not a stub that assumes
     /// matching works.
+    /// Scans a whole transaction under the id it hashes to.
+    async fn scan_transaction(
+        key_custody: &dyn KeyCustody,
+        handle: WalletHandle,
+        tx: &Transaction,
+        minor_range: Range<u32>,
+    ) -> Result<ScanResult> {
+        scan_transaction_as(key_custody, handle, &tx_id_hex(tx), tx, minor_range).await
+    }
+
+    /// Scans a whole transaction for one store and records what it pays.
+    #[allow(clippy::too_many_arguments)]
+    async fn scan_transaction_for_tenant(
+        store: &Store,
+        key_custody: &dyn KeyCustody,
+        handle: WalletHandle,
+        tenant_id: &crate::store::TenantId,
+        tx: &Transaction,
+        minor_range: Range<u32>,
+        seen_at: i64,
+        block_height: Option<u64>,
+    ) -> Result<HashSet<crate::store::OrderId>> {
+        let scan = scan_transaction(key_custody, handle, tx, minor_range).await?;
+        record_scan_match(store, tenant_id, &scan, seen_at, block_height)
+    }
+
     pub(crate) fn fixture_tx() -> Transaction {
         let raw_tx = hex::decode(include_str!("../tests/fixtures/subaddress_tx.hex")).unwrap();
         deserialize(&raw_tx).unwrap()
@@ -3794,12 +3747,10 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_block_whose_hash_cannot_be_read_stops_the_range_instead_of_leaving_a_gap() {
-        // Every other failure inside the height loop abandons the range without
-        // marking the height scanned; reading the block's *hash* was the one step
-        // whose failure was silently ignored, and it is the step that decides whether
-        // the height is recorded at all. Skipping it while carrying on to the next
-        // height leaves a hole: height H unrecorded, H+1 onwards recorded.
+    async fn a_block_that_cannot_be_read_stops_the_range_instead_of_leaving_a_gap() {
+        // The node serves the blocks below height H and not H itself. The range
+        // must stop there: carrying on to the next height would leave a hole,
+        // height H unrecorded and H+1 onwards recorded.
         //
         // A hole is worse than a stopping point, because reorg detection skips
         // heights it has no stored hash for. A later reorg genuinely starting at H is
@@ -3839,7 +3790,7 @@ pub(crate) mod tests {
             assert_eq!(
                 s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(2),
-                "the range must stop at the height whose hash could not be read, not step over it"
+                "the range must stop at the height that could not be read, not step over it"
             );
             for h in 3..=5 {
                 assert!(
@@ -5771,35 +5722,27 @@ pub(crate) mod tests {
         async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
             self.inner.get_block_hash(height).await
         }
-        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
-            self.inner.get_block_timestamp(height).await
-        }
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            height: u64,
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_block_transactions(height).await
+            start_height: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+            self.inner.get_chain_blocks(start_height, count).await
         }
         async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
             self.inner.get_mempool_txids().await
         }
-        async fn get_transactions(
+        async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_transactions(txids).await
+        ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+            self.inner.get_transactions_with_ids(txids).await
         }
         async fn locate_transaction(
             &self,
             txid: &str,
         ) -> std::result::Result<TxLocation, DaemonError> {
             self.inner.locate_transaction(txid).await
-        }
-        async fn get_transaction(
-            &self,
-            txid: &str,
-        ) -> std::result::Result<Transaction, DaemonError> {
-            self.inner.get_transaction(txid).await
         }
         async fn is_key_image_spent(
             &self,
@@ -6361,19 +6304,16 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_node_failing_partway_through_a_scan_chunk_retries_the_whole_chunk_next_tick() {
+    async fn a_node_failing_the_fetch_of_a_scan_chunk_retries_the_whole_chunk_next_tick() {
         // A tick is not atomic - it is a sequence of independent RPCs - so "the node
-        // went away mid-tick" has as many shapes as there are calls in it. Since the
-        // block-fetching path batches into `get_chain_blocks` chunks
-        // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A), a failure *within* a chunk abandons the whole chunk, not just the
-        // one block that failed - there is no partial-response concept for a real
-        // `get_blocks.bin` HTTP call to recover mid-flight the way the old
-        // one-block-at-a-time loop could. This is the accepted, real trade-off of
-        // batching, not a regression: the high-water mark simply doesn't move past
-        // wherever the chunk started until a whole chunk succeeds, and the next tick
-        // retries the identical range - no payment lost, none recorded twice, just a
-        // coarser (and, in the default-daemon test-double case only, more repeated)
-        // unit of retry than before.
+        // went away mid-tick" has as many shapes as there are calls in it. The
+        // block-fetching path reads blocks in `get_chain_blocks` chunks
+        // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A): one
+        // `get_blocks.bin` call answers for a run of blocks or for none of them,
+        // there is no partial response. So a failed fetch abandons the whole
+        // chunk: the high-water mark doesn't move past wherever the chunk started
+        // until a fetch succeeds, and the next tick retries the identical range -
+        // no payment lost, none recorded twice.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store
             .set_scanned_block(monero::Network::Mainnet, 1, "h1")
@@ -6386,12 +6326,9 @@ pub(crate) mod tests {
         fake.push_block("h3", vec![fixture_tx()]); // the payment is in the block that fails
         fake.push_block("h4", vec![]);
         // The whole 2..=4 range fits in one chunk (well under `SCAN_CHUNK_MAX_
-        // BLOCKS`), so this is really "the daemon fails while fetching the chunk
-        // that covers the whole remaining range" - the second `BlockTransactions`
-        // call this wrapper's `get_chain_blocks` makes internally
-        // (height 2 succeeds as call 0, height 3 fails as call 1), which fails the
-        // entire chunk before any of it is recorded.
-        let daemon = DaemonFailingFrom::failing_from(fake, DaemonCall::BlockTransactions, 1);
+        // BLOCKS`): the daemon fails while fetching the chunk that covers the
+        // whole remaining range, before any of it is recorded.
+        let daemon = DaemonFailingFrom::failing_from(fake, DaemonCall::ChainBlocks, 0);
 
         run_scan_tick(
             &store,
@@ -6451,7 +6388,7 @@ pub(crate) mod tests {
         // The real-world case this whole mechanism exists for
         // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A): a process that was
         // down for a while faces a scan range spanning many blocks on its very next
-        // tick. Before batching, that was one `get_block_transactions` call per
+        // tick. Before batching, that was one fetch per
         // block; now it should be a small number of `get_chain_blocks` calls
         // regardless of how wide the range is, as long as the blocks are small
         // enough to fit many per chunk under the default memory budget.
@@ -6520,17 +6457,8 @@ pub(crate) mod tests {
             );
         }
 
-        // Block-hash fetching (`get_block_hash`, for `scanned_blocks`) is
-        // deliberately *not* part of this batching (see `SCAN_CHUNK_MIN_BLOCKS`'s
-        // own "scope limit" doc comment) - still exactly one call per new block,
-        // asserted here on a fresh scenario so that scope limit is a tested
-        // guarantee, not just a comment. `reorg_check_depth` is `0` here
-        // specifically (every other test in this file conventionally passes
-        // `20`): `check_for_reorg_and_reconcile` - unconditionally called at the
-        // end of every tick, unrelated to this change - also calls
-        // `get_block_hash` to re-verify already-recorded blocks within that
-        // depth of the tip, which would otherwise inflate this count with a
-        // second, genuinely unrelated mechanism's own calls.
+        // Hash lookups (`get_block_hash`) don't grow with the blocks scanned
+        // either, asserted here on a fresh scenario.
         {
             let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
             store
@@ -7125,14 +7053,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_node_that_dies_as_a_block_is_read_has_its_hash_and_contents_come_from_the_same_fallback(
     ) {
-        // A block's hash and its transactions are two daemon calls, and
-        // `FallbackDaemonClient` fails over per call. The legacy tick read the
-        // transactions first: a primary that died between the two calls paired
-        // its own block contents with the fallback's hash for the same height,
-        // recorded as one scanned block (the gap `docs/DESIGN.md` §7.7 used to
-        // accept). The block scan now reads the hash first; once a call fails
-        // over, the client stays on the node that answered, so the contents come
-        // from the node whose hash was recorded.
+        // `FallbackDaemonClient` fails over per call, and a block's id and its
+        // transactions come in one call (`get_chain_blocks`): whichever node
+        // answers it answers for both. So a primary that can't serve a block
+        // never has its own contents paired with the fallback's hash for the
+        // same height (the gap `docs/DESIGN.md` §7.7 used to accept, when the
+        // two were separate calls).
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
 
@@ -7155,10 +7081,8 @@ pub(crate) mod tests {
         fallback.seed_block_at(50, "a_50", vec![]);
         fallback.seed_block_at(51, "b_51", vec![]);
 
-        // `get_block_transactions(51)` succeeds normally against the primary; only
-        // its `get_block_hash(51)` call - for that same height, moments later - is
-        // made to fail, which is exactly what fails over to the fallback for that one
-        // call alone.
+        // The primary has block 51 (with the payment) and fails to serve it:
+        // that call fails over to the fallback.
         let primary = std::sync::Arc::new(DaemonFailingBlockHashAt {
             inner: primary_inner,
             failing_height: AtomicU64::new(51),
@@ -7188,9 +7112,10 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_scanned_block_hash(monero::Network::Mainnet, 51).unwrap(),
+            s.get_scanned_block_hash(monero::Network::Mainnet, 51)
+                .unwrap(),
             Some("b_51".to_string()),
-            "the recorded hash for height 51 came from the fallback, whose get_block_hash call is what failed over"
+            "the recorded hash for height 51 came from the fallback, which served the block"
         );
         assert!(
             s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().is_empty(),
@@ -9881,27 +9806,24 @@ pub(crate) mod tests {
             tokio::task::yield_now().await;
             self.0.get_block_hash(height).await
         }
-        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
-            tokio::task::yield_now().await;
-            self.0.get_block_timestamp(height).await
-        }
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            height: u64,
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            start_height: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
             tokio::task::yield_now().await;
-            self.0.get_block_transactions(height).await
+            self.0.get_chain_blocks(start_height, count).await
         }
         async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
             tokio::task::yield_now().await;
             self.0.get_mempool_txids().await
         }
-        async fn get_transactions(
+        async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
+        ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
             tokio::task::yield_now().await;
-            self.0.get_transactions(txids).await
+            self.0.get_transactions_with_ids(txids).await
         }
         async fn locate_transaction(
             &self,
@@ -9909,13 +9831,6 @@ pub(crate) mod tests {
         ) -> std::result::Result<TxLocation, DaemonError> {
             tokio::task::yield_now().await;
             self.0.locate_transaction(txid).await
-        }
-        async fn get_transaction(
-            &self,
-            txid: &str,
-        ) -> std::result::Result<Transaction, DaemonError> {
-            tokio::task::yield_now().await;
-            self.0.get_transaction(txid).await
         }
         async fn is_key_image_spent(
             &self,
@@ -11240,32 +11155,27 @@ pub(crate) mod tests {
         async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
             self.inner.get_block_hash(height).await
         }
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            height: u64,
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_block_transactions(height).await
+            start_height: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+            self.inner.get_chain_blocks(start_height, count).await
         }
         async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
             self.inner.get_mempool_txids().await
         }
-        async fn get_transactions(
+        async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_transactions(txids).await
+        ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+            self.inner.get_transactions_with_ids(txids).await
         }
         async fn locate_transaction(
             &self,
             txid: &str,
         ) -> std::result::Result<TxLocation, DaemonError> {
             self.inner.locate_transaction(txid).await
-        }
-        async fn get_transaction(
-            &self,
-            txid: &str,
-        ) -> std::result::Result<Transaction, DaemonError> {
-            self.inner.get_transaction(txid).await
         }
         async fn is_key_image_spent(
             &self,
@@ -11286,9 +11196,6 @@ pub(crate) mod tests {
                 }
             }
             self.inner.is_key_image_spent(key_images).await
-        }
-        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
-            self.inner.get_block_timestamp(height).await
         }
     }
 
@@ -11733,20 +11640,21 @@ pub(crate) mod tests {
         async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
             self.0.get_block_hash(height).await
         }
-        async fn get_block_transactions(
+        async fn get_chain_blocks(
             &self,
-            height: u64,
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.0.get_block_transactions(height).await
+            start_height: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+            self.0.get_chain_blocks(start_height, count).await
         }
         async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
             self.0.get_mempool_txids().await
         }
-        async fn get_transactions(
+        async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.0.get_transactions(txids).await
+        ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+            self.0.get_transactions_with_ids(txids).await
         }
         async fn locate_transaction(
             &self,
@@ -11754,20 +11662,11 @@ pub(crate) mod tests {
         ) -> std::result::Result<TxLocation, DaemonError> {
             self.0.locate_transaction(txid).await
         }
-        async fn get_transaction(
-            &self,
-            txid: &str,
-        ) -> std::result::Result<Transaction, DaemonError> {
-            self.0.get_transaction(txid).await
-        }
         async fn is_key_image_spent(
             &self,
             _: &[String],
         ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             Ok(Vec::new())
-        }
-        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
-            self.0.get_block_timestamp(height).await
         }
     }
 
