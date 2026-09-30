@@ -587,18 +587,29 @@ impl Store {
         Ok(moved)
     }
 
-    /// Moves a tenant's cursor past a block that was scanned for it. Only a
-    /// [`ScannedBlock`](crate::work::ScannedBlock) can do this, and only the
-    /// block scan builds one. Conditional on the cursor still being at the
-    /// block's parent, so a reorg rewind in between wins; returns whether it
-    /// moved.
-    pub fn advance_scanned_cursor(&self, network: &str, scanned: &crate::work::ScannedBlock) -> Result<bool> {
-        let moved = self.conn.execute(
-            "UPDATE tenants SET scanned_through_height = ?3
-             WHERE id = ?1 AND network = ?2 AND scanned_through_height = ?4",
-            params![scanned.tenant_id(), network, scanned.height() as i64, scanned.height() as i64 - 1],
+    /// Moves tenants' cursors past a block that was scanned for them, in one
+    /// statement. Only a [`ScannedBlock`](crate::work::ScannedBlock) can do
+    /// this, and only the block scan builds one. Conditional on each cursor
+    /// still being at the block's parent, so a reorg rewind in between wins;
+    /// returns the tenants that moved.
+    pub fn advance_scanned_cursors(
+        &self, network: &str, height: u64, scanned: &[crate::work::ScannedBlock],
+    ) -> Result<std::collections::HashSet<String>> {
+        let ids: Vec<&str> = scanned.iter().filter(|b| b.height() == height).map(|b| b.tenant_id()).collect();
+        if ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let ids = serde_json::to_string(&ids)
+            .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE tenants SET scanned_through_height = ?2
+             WHERE network = ?1 AND scanned_through_height = ?2 - 1 AND id IN (SELECT value FROM json_each(?3))
+             RETURNING id",
         )?;
-        Ok(moved > 0)
+        let moved = stmt
+            .query_map(params![network, height as i64, ids], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(moved)
     }
 
     /// Up to `limit` enabled tenants on `network` with an order in scope,

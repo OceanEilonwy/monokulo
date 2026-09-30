@@ -150,7 +150,7 @@ async fn reorg_detection_costs_one_lookup_when_the_chain_agrees_and_log_depth_wh
     }
     let daemon = CountingDaemon::new(&fake);
     let db = Db::over_shared(store.clone());
-    let chain = chain::Chain { db: &db, daemon: &daemon, network: "mainnet", reorg_check_depth: 20, now: 1000 };
+    let chain = chain::Chain::new(&db, &daemon, "mainnet", 20, 1000);
     assert_eq!(chain.detect(60).await.unwrap(), None);
     assert_eq!(daemon.take_hash_lookups(), 1);
 
@@ -816,4 +816,78 @@ async fn a_failed_mempool_body_fetch_is_retried_next_round() {
     let requests = daemon.body_requests.lock();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0], requests[1], "the same slice again");
+}
+
+/// A node that takes its time serving blocks.
+struct SlowBlocks<'a> {
+    inner: &'a FakeDaemonClient,
+    delay: Duration,
+    chain_fetches: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for SlowBlocks<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.inner.get_height().await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        self.inner.get_block_hash(height).await
+    }
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_block_transactions(height).await
+    }
+    async fn get_chain_blocks(&self, start: u64, count: u64) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        self.chain_fetches.fetch_add(1, Ordering::Relaxed);
+        tokio::time::sleep(self.delay).await;
+        self.inner.get_chain_blocks(start, count).await
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_mempool_transactions().await
+    }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.inner.get_mempool_txids().await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        self.inner.locate_transaction(txid).await
+    }
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        self.inner.get_transaction(txid).await
+    }
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.inner.is_key_image_spent(key_images).await
+    }
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        self.inner.get_block_timestamp(height).await
+    }
+}
+
+/// The next blocks are fetched while the current one is scanned, and a
+/// block fetched ahead is used, not fetched again. With a 100 ms fetch and a
+/// 100 ms scan per block, five blocks take about 600 ms overlapped rather
+/// than 1000 ms one after the other, and five fetches, not ten.
+#[tokio::test(start_paused = true)]
+async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = crate::scanner::tests::SlowKeyCustody::default();
+    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.push_block("a1", vec![]);
+    fake.push_block("a2", vec![]);
+    let tenants = [(tenant.clone(), handle)];
+    run_round_on(&store, &custody, &fake, &tenants).await;
+    let start = cursor_of(&store, &tenant).unwrap();
+    for h in 3..=7 {
+        fake.push_block(&format!("a{h}"), vec![fixture_tx()]);
+    }
+    custody.delays.lock().insert(handle, Duration::from_millis(100));
+    let daemon = SlowBlocks { inner: &fake, delay: Duration::from_millis(100), chain_fetches: AtomicU64::new(0) };
+    let db = Db::over_shared(store.clone());
+    let inputs = RoundInputs { scan_chunk_memory_budget_mb: 0, ..inputs(&db, &custody, &daemon, &tenants) };
+    let started = tokio::time::Instant::now();
+    run_round(&ScanState::default(), &inputs, ROUND_BUDGET).await.into_result().unwrap();
+    let took = started.elapsed();
+    assert_eq!(cursor_of(&store, &tenant), Some(start + 5));
+    assert_eq!(daemon.chain_fetches.load(Ordering::Relaxed), 5, "each block fetched once");
+    assert!(took < Duration::from_millis(800), "fetches overlapped scans: {took:?}");
 }

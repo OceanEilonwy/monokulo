@@ -129,19 +129,21 @@ pub(crate) async fn scan_for_tenants(
     tenants: &[&(String, WalletHandle, ScanIndices)],
 ) -> Vec<(String, Result<ScanResult>)> {
     use futures_util::stream::{self, StreamExt};
-    let owned: Vec<(String, WalletHandle, ScanIndices)> = tenants.iter().map(|t| (*t).clone()).collect();
-    stream::iter(owned)
-        .map(|(tenant_id, handle, window)| {
+    // By index: a closure over borrowed tuples trips a rustc limitation that
+    // makes the future not `Send`.
+    stream::iter(0..tenants.len())
+        .map(|i| {
+            let (tenant_id, handle, window) = tenants[i];
             let span = tracing::debug_span!("scan for store", store.id = %tenant_id);
             tracing::Instrument::instrument(
                 async move {
-                    let result = match tokio::time::timeout(SCAN_CALL_DEADLINE, scan_transaction_in_window(key_custody, handle, tx, &window)).await {
+                    let result = match tokio::time::timeout(SCAN_CALL_DEADLINE, scan_transaction_in_window(key_custody, *handle, tx, window)).await {
                         Ok(result) => result,
                         Err(_) => Err(ScannerError::KeyCustody(KeyCustodyError::BackendUnavailable(format!(
                             "scan took longer than {SCAN_CALL_DEADLINE:?}"
                         )))),
                     };
-                    (tenant_id, result)
+                    (tenant_id.clone(), result)
                 },
                 span,
             )
@@ -273,7 +275,7 @@ pub async fn check_for_reorg_and_reconcile(
     use crate::work::chain::{Chain, JobStep};
     let tip = daemon.get_height().await?;
     let db = crate::store::Db::over_shared(store.clone());
-    let chain = Chain { db: &db, daemon, network, reorg_check_depth, now };
+    let chain = Chain::new(&db, daemon, network, reorg_check_depth, now);
     if let Some(fork) = chain.detect(tip).await? {
         chain.open(fork).await?;
     }
@@ -5124,8 +5126,11 @@ pub(crate) mod tests {
         }
         daemon.fail_from.store(1, Ordering::SeqCst);
 
+        // A node failure is retried next round, not a failed round (only this
+        // engine's own storage failures are); what matters is below.
         let result = run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
-        assert!(result.is_err(), "the node failure must surface");
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(daemon.call_count(), 2, "the second lookup failed, and the page stopped there");
 
         let s = store.lock();
         let payments = s.get_all_payments(&order_id).unwrap();
@@ -5755,9 +5760,9 @@ pub(crate) mod tests {
     /// during registration, before any deadlines exist: paused-time tests must
     /// not wait on CPU slots held by other tests' independent runtimes.
     #[derive(Default)]
-    struct SlowKeyCustody {
+    pub(crate) struct SlowKeyCustody {
         inner: PlainKeyCustody,
-        delays: parking_lot::Mutex<HashMap<WalletHandle, Duration>>,
+        pub(crate) delays: parking_lot::Mutex<HashMap<WalletHandle, Duration>>,
         matches: parking_lot::Mutex<HashMap<WalletHandle, Vec<MatchedOutput>>>,
     }
 

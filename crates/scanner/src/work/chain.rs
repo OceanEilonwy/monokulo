@@ -66,20 +66,24 @@ pub(crate) struct Reconciled {
 
 /// The chain work for one network, usable from a round or on its own.
 pub(crate) struct Chain<'a> {
-    pub db: &'a Db,
-    pub daemon: &'a dyn MoneroDaemonClient,
-    pub network: &'a str,
-    pub reorg_check_depth: u64,
-    pub now: i64,
+    db: &'a Db,
+    daemon: &'a dyn MoneroDaemonClient,
+    network: std::sync::Arc<str>,
+    reorg_check_depth: u64,
+    now: i64,
 }
 
-impl Chain<'_> {
+impl<'a> Chain<'a> {
+    pub fn new(db: &'a Db, daemon: &'a dyn MoneroDaemonClient, network: &str, reorg_check_depth: u64, now: i64) -> Self {
+        Self { db, daemon, network: network.into(), reorg_check_depth, now }
+    }
+
     /// Runs `f` on the database worker, with this network's name.
     async fn db<T: Send + 'static>(
         &self,
         f: impl FnOnce(&Store, &str) -> Result<T, ScannerError> + Send + 'static,
     ) -> Result<T, ScannerError> {
-        let network = self.network.to_string();
+        let network = self.network.clone();
         self.db.run(Class::Scanner, move |s| f(s, &network)).await
     }
 
@@ -365,13 +369,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
 
 async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
     let Some(tip) = round.tip else { return Progress::Blocked("chain height unknown") };
-    let chain = Chain {
-        db: round.inputs.db,
-        daemon: round.inputs.daemon,
-        network: round.inputs.network,
-        reorg_check_depth: round.inputs.reorg_check_depth,
-        now: round.now,
-    };
+    let chain = Chain::new(round.inputs.db, round.inputs.daemon, round.inputs.network, round.inputs.reorg_check_depth, round.now);
     // Detection and a step of the job share one unit: even a round with no
     // time to spare moves an open job forward.
     if !round.chain.detected {

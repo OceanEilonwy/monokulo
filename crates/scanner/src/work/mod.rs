@@ -239,6 +239,8 @@ pub struct ScanState {
 /// each tier has done so far.
 pub(crate) struct Round<'a> {
     pub inputs: &'a RoundInputs<'a>,
+    /// The network's name, shared by every database job of the round.
+    network_name: std::sync::Arc<str>,
     pub state: &'a ScanState,
     pub now: i64,
     /// The node's chain height. `None` if it couldn't be read: nothing that
@@ -266,7 +268,7 @@ impl<'a> Round<'a> {
         &self,
         f: impl FnOnce(&Store, &str) -> Result<T, ScannerError> + Send + 'static,
     ) -> Result<T, ScannerError> {
-        let network = self.inputs.network.to_string();
+        let network = self.network_name.clone();
         self.inputs.db.run(Class::Scanner, move |s| f(s, &network)).await
     }
 }
@@ -306,6 +308,7 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
     };
     let mut round = Round {
         inputs,
+        network_name: inputs.network.into(),
         state,
         now: crate::now_unix(),
         tip,

@@ -300,7 +300,27 @@ async fn advance_group(round: &mut Round<'_>, group: Group, cursor: u64, tip: u6
         if cursor >= end || (scanned > 0 && Instant::now() >= until) {
             break;
         }
-        match scan_block(round, group, cursor, high_water, end, until, scanned == 0).await? {
+        // The node's round trip for the next run of blocks overlaps this
+        // block's scan, when this block is the last one held.
+        // (This block is `cursor + 1`; the run after it starts at `cursor + 2`.)
+        // This block is fetched first (usually already held) so the fetch
+        // ahead can't duplicate it; not for a catch-up group's first block,
+        // where the scan first checks there is anyone to scan it for.
+        if group == Group::Frontier || scanned > 0 {
+            block(round, cursor + 1, end).await?;
+        }
+        let prefetch = prefetch_range(round, cursor + 2, end);
+        let daemon = round.inputs.daemon;
+        let (outcome, prefetched) = tokio::join!(scan_block(round, group, cursor, high_water, end, until, scanned == 0), async {
+            match prefetch {
+                Some((from, count)) => bounded(daemon.get_chain_blocks(from, count)).await.ok(),
+                None => None,
+            }
+        });
+        if let Some(chunk) = prefetched {
+            round.blocks.cache.add_chunk(chunk, cursor + 2, round.inputs.scan_chunk_memory_budget_mb);
+        }
+        match outcome? {
             BlockOutcome::Committed => {
                 cursor += 1;
                 high_water = high_water.max(cursor);
@@ -433,7 +453,9 @@ async fn scan_block(
     // to the high-water mark when catching up (nothing could have been paid
     // to them in the whole gap).
     let idle_to = if frontier { height } else { high_water };
-    let commit_block = CommitBlock { height, hash: block.hash.clone(), prev_hash: block.prev_hash.clone(), parent, idle_to, since, grace };
+    let checkpointed = plan.checkpoints.into_keys().collect();
+    let commit_block =
+        CommitBlock { height, checkpointed, hash: block.hash.clone(), prev_hash: block.prev_hash.clone(), parent, idle_to, since, grace };
     let now = round.now;
     let committed = round.db(move |s, network| commit(s, network, &commit_block, scanned, now)).await?;
     Ok(if committed { BlockOutcome::Committed } else { BlockOutcome::Diverged("the recorded chain changed before commit") })
@@ -530,6 +552,9 @@ fn checkpoint(
 /// The block being committed and where its idle tenants go.
 struct CommitBlock {
     height: u64,
+    /// Tenants with a checkpoint (for any block): theirs is taken, promoted
+    /// or dropped.
+    checkpointed: HashSet<String>,
     hash: String,
     prev_hash: String,
     parent: u64,
@@ -561,13 +586,18 @@ fn commit(s: &Store, network: &str, block: &CommitBlock, scanned: Vec<ScannedBlo
                 }
             }
         }
+        let moved = s.advance_scanned_cursors(network, height, &scanned)?;
         for scanned in &scanned {
-            let moved = s.advance_scanned_cursor(network, scanned)?;
-            // Staged matches go either way: promoted if the cursor moved,
-            // dropped if a rewind moved it meanwhile (they are for a chain it
-            // no longer stands on).
-            let staged = s.take_staged_payments(network, scanned.tenant_id(), height, &block.hash)?;
-            if !moved {
+            // A checkpoint's staged matches go either way: promoted if the
+            // cursor moved, dropped if a rewind moved it meanwhile (they are
+            // for a chain it no longer stands on). Only tenants that have one
+            // are asked.
+            let staged = if block.checkpointed.contains(scanned.tenant_id()) {
+                s.take_staged_payments(network, scanned.tenant_id(), height, &block.hash)?
+            } else {
+                Vec::new()
+            };
+            if !moved.contains(scanned.tenant_id()) {
                 continue;
             }
             for staged in staged {
@@ -590,6 +620,35 @@ fn commit(s: &Store, network: &str, block: &CommitBlock, scanned: Vec<ScannedBlo
     })
 }
 
+/// The run of blocks to fetch ahead, from `next` up to `end`, if `next`
+/// isn't held yet but the block before it is (the scan is about to run off
+/// the end of what it has).
+fn prefetch_range(round: &Round<'_>, next: u64, end: u64) -> Option<(u64, u64)> {
+    let cache = &round.blocks.cache;
+    if next > end || cache.blocks.contains_key(&next) || !cache.blocks.contains_key(&(next - 1)) {
+        return None;
+    }
+    let budget = (round.inputs.scan_chunk_memory_budget_mb as u64).saturating_mul(1024 * 1024);
+    Some((next, crate::scanner::next_scan_chunk_size(budget, cache.avg_bytes_per_block, end - next + 1)))
+}
+
+impl BlockCache {
+    /// Adds a fetched run of blocks, keeping within the memory budget
+    /// around `keep`.
+    fn add_chunk(&mut self, chunk: Vec<ChainBlock>, keep: u64, budget_mb: u32) {
+        if chunk.is_empty() {
+            return;
+        }
+        let sizes: Vec<usize> =
+            chunk.iter().map(|b| b.txs.iter().map(|tx| monero::consensus::encode::serialize(tx).len()).sum()).collect();
+        self.avg_bytes_per_block = crate::scanner::update_avg_bytes_per_block(self.avg_bytes_per_block, sizes.iter().sum(), chunk.len());
+        for (block, bytes) in chunk.into_iter().zip(sizes) {
+            self.insert(block, bytes);
+        }
+        self.trim(keep, (budget_mb as usize).saturating_mul(1024 * 1024));
+    }
+}
+
 /// Block `height`, fetched with the blocks after it (up to `end`) in one
 /// call sized to the scan memory budget.
 async fn block(round: &mut Round<'_>, height: u64, end: u64) -> Result<Arc<ChainBlock>, ScannerError> {
@@ -602,16 +661,10 @@ async fn block(round: &mut Round<'_>, height: u64, end: u64) -> Result<Arc<Chain
     if chunk.first().map(|b| b.height) != Some(height) {
         return Err(ScannerError::Internal(format!("the node returned no block at height {height}")));
     }
-    let cache = &mut round.blocks.cache;
-    let sizes: Vec<usize> =
-        chunk.iter().map(|b| b.txs.iter().map(|tx| monero::consensus::encode::serialize(tx).len()).sum()).collect();
-    cache.avg_bytes_per_block =
-        crate::scanner::update_avg_bytes_per_block(cache.avg_bytes_per_block, sizes.iter().sum(), chunk.len());
-    for (block, bytes) in chunk.into_iter().zip(sizes) {
-        cache.insert(block, bytes);
-    }
-    cache.trim(height, budget as usize);
-    cache
+    round.blocks.cache.add_chunk(chunk, height, round.inputs.scan_chunk_memory_budget_mb);
+    round
+        .blocks
+        .cache
         .blocks
         .get(&height)
         .map(|(block, _)| block.clone())

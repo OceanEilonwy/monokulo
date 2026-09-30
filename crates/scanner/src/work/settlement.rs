@@ -84,9 +84,13 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
     if page.is_empty() {
         return Ok(());
     }
+    // Until the time runs out (at least one), or the node fails: a node that
+    // fails or hangs for one payment would for the next. Its failures are
+    // retried, not reported; a storage failure is.
+    let mut last = None;
     let mut failure = None;
-    for (checked, (id, payment)) in page.into_iter().enumerate() {
-        if checked > 0 && Instant::now() >= until {
+    for (id, payment) in page {
+        if last.is_some() && Instant::now() >= until {
             break;
         }
         let checked = tokio::time::timeout(
@@ -95,17 +99,24 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
         )
         .await;
         match checked {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
+            Ok(Ok(_)) => last = Some(id),
+            Ok(Err(ScannerError::Daemon(error))) => {
                 tracing::warn!(network = %network, error = %error, "checking a vanished mempool payment failed (retried)");
-                failure.get_or_insert(error);
+                break;
+            }
+            Ok(Err(error)) => {
+                failure = Some(error);
+                break;
             }
             Err(_) => {
                 tracing::warn!(network = %network, "checking a vanished mempool payment took too long (retried)");
-                failure.get_or_insert(ScannerError::Internal("vanished mempool lookup exceeded its deadline".into()));
+                break;
             }
         }
-        round.db(move |s, network| Ok(s.set_scheduler_position(network, Position::VanishedPayments, &id.to_string())?)).await?;
+    }
+    // The position moves past what was checked, once per page.
+    if let Some(last) = last {
+        round.db(move |s, network| Ok(s.set_scheduler_position(network, Position::VanishedPayments, &last.to_string())?)).await?;
     }
     match failure {
         Some(error) => Err(error),
