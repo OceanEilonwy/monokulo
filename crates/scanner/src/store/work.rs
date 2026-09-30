@@ -1135,6 +1135,19 @@ mod tests {
         assert_eq!(store.due_order_ids("mainnet", 100, 10, 2).unwrap().len(), 2);
     }
 
+    /// A reorg is only finished once it is processing and has nothing
+    /// left, at the fork it was opened for.
+    #[test]
+    fn finishing_a_reorg_early_or_at_another_fork_is_refused() {
+        let store = Store::open_in_memory().unwrap();
+        store.open_reorg_job("mainnet", 5, 100).unwrap();
+        assert!(matches!(store.finish_reorg("mainnet", 5, None), Err(StoreError::NotFound)), "still collecting");
+        while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
+        assert!(matches!(store.finish_reorg("mainnet", 4, None), Err(StoreError::NotFound)), "another fork");
+        store.finish_reorg("mainnet", 5, None).unwrap();
+        assert!(matches!(store.finish_reorg("mainnet", 5, None), Err(StoreError::NotFound)), "no job");
+    }
+
     /// (store, mainnet order, stagenet order, mainnet tenant)
     fn fixture() -> ((Store, String, String, String), String) {
         let (store, path) = file_store();

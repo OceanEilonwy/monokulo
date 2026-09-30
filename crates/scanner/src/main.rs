@@ -263,8 +263,7 @@ async fn run(action: Action) {
     // (task 7.4), started and stopped as node settings are saved (task 2.1).
     // Supervised like the loops it starts: if it panics, dropping it stops
     // them, and its restart starts them again.
-    let (loops_store, loops_db, loops_custody, loops_daemons, loops_handles, loops_status, loops_settings) = (
-        store.clone(),
+    let (loops_db, loops_custody, loops_daemons, loops_handles, loops_status, loops_settings) = (
         db.clone(),
         key_custody.clone(),
         daemons.clone(),
@@ -274,7 +273,6 @@ async fn run(action: Action) {
     );
     supervise("network loop manager", move || {
         loops::manage_network_loops(
-            loops_store.clone(),
             loops_db.clone(),
             webhook_wake.clone(),
             loops_custody.clone(),

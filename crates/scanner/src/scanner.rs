@@ -91,7 +91,7 @@ pub async fn scan_transaction(
     Ok(ScanResult {
         matches,
         txid: tx_id_hex(tx),
-        key_images_json: serde_json::to_string(&key_images_of(tx)).map_err(|e| ScannerError::Internal(e.to_string()))?,
+        key_images_json: serde_json::Value::from(key_images_of(tx)).to_string(),
     })
 }
 
@@ -107,7 +107,7 @@ pub async fn scan_transaction_in_window(
     Ok(ScanResult {
         matches,
         txid: tx_id_hex(tx),
-        key_images_json: serde_json::to_string(&key_images_of(tx)).map_err(|e| ScannerError::Internal(e.to_string()))?,
+        key_images_json: serde_json::Value::from(key_images_of(tx)).to_string(),
     })
 }
 
@@ -190,11 +190,11 @@ pub fn record_scan_match(
         store.record_payment_match(
             &order.id,
             &scan.txid,
-            m.output_index as i64,
+            output_index(m.output_index)?,
             amount,
             &scan.key_images_json,
             seen_at,
-            block_height.map(|h| h as i64),
+            block_height.map(crate::store::sql_height).transpose()?,
         )?;
         touched.insert(order.id);
     }
@@ -207,16 +207,27 @@ pub(crate) fn stage_block_match(store: &Store, network: &str, tenant_id: &str, s
     for m in &scan.matches {
         let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)? else { continue };
         let Some(amount) = m.amount_piconero else {
-            tracing::warn!("scanner: output {} of tx {} matched order {} but its amount could not be decrypted", m.output_index, scan.txid, order.id);
+            tracing::warn!(
+                order.id = %order.id,
+                tx.id = %scan.txid,
+                output_index = m.output_index,
+                "an output matched an order but its amount could not be decrypted - not staging it"
+            );
             continue;
         };
         store.stage_partial_match(crate::store::StagedMatch {
             network, tenant_id, order_id: &order.id, txid: &scan.txid,
-            output_index: m.output_index as i64, amount,
+            output_index: output_index(m.output_index)?, amount,
             key_images_json: &scan.key_images_json, seen_at,
         })?;
     }
     Ok(())
+}
+
+/// An output's index as SQLite stores it. A transaction has a handful of
+/// outputs; one past `i64::MAX` is refused rather than wrapped.
+fn output_index(index: usize) -> Result<i64> {
+    i64::try_from(index).map_err(|e| ScannerError::Store(crate::store::StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))))
 }
 
 /// Convenience wrapper combining `scan_transaction` + `record_scan_match`, for
@@ -404,21 +415,20 @@ pub(crate) async fn check_vanished_candidates(
 /// timestamp being inside the signed body (rather than only an unsigned header) is
 /// what stops a captured delivery from being replayable against the merchant
 /// indefinitely.
-fn enqueue_webhook_event(store: &Store, order_id: &str, event_type: &str, payload: &serde_json::Value, now: i64) -> Result<()> {
-    let Some(tenant_id) = store.get_order_tenant_id(order_id)? else { return Ok(()) };
+fn enqueue_webhook_event(store: &Store, order_id: &str, event_type: &str, fields: &[(&str, &str)], now: i64) -> Result<()> {
+    // The caller has just written this order in the same transaction.
+    let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(crate::store::StoreError::NotFound)?;
     let webhooks: Vec<_> = store.list_webhooks(&tenant_id)?.into_iter().filter(|w| w.enabled).collect();
     if webhooks.is_empty() {
         return Ok(());
     }
 
-    let mut envelope = payload.clone();
-    let Some(fields) = envelope.as_object_mut() else {
-        return Err(ScannerError::Internal(format!("webhook payload for {event_type} is not a JSON object")));
-    };
-    fields.insert("event_id".into(), serde_json::json!(new_event_id()));
-    fields.insert("event".into(), serde_json::json!(event_type));
-    fields.insert("created_at".into(), serde_json::json!(now));
-    let body = envelope.to_string();
+    let mut envelope: serde_json::Map<String, serde_json::Value> =
+        fields.iter().map(|(name, value)| ((*name).to_string(), serde_json::Value::from(*value))).collect();
+    envelope.insert("event_id".into(), serde_json::json!(new_event_id()));
+    envelope.insert("event".into(), serde_json::json!(event_type));
+    envelope.insert("created_at".into(), serde_json::json!(now));
+    let body = serde_json::Value::Object(envelope).to_string();
 
     for webhook in webhooks {
         store.enqueue_webhook_delivery(&webhook.id, order_id, event_type, &body, now)?;
@@ -458,8 +468,7 @@ pub fn recompute_and_notify(store: &Store, order_id: &str, current_height: u64, 
 pub(crate) fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64, now: i64) -> Result<()> {
     let (old_status, new_status) = store.recompute_order_status(order_id, current_height, now)?;
     if old_status != new_status {
-        let payload = serde_json::json!({ "order_id": order_id, "status": new_status.as_str() });
-        enqueue_webhook_event(store, order_id, &format!("order.{new_status}"), &payload, now)?;
+        enqueue_webhook_event(store, order_id, &format!("order.{new_status}"), &[("order_id", order_id), ("status", new_status.as_str())], now)?;
     }
     Ok(())
 }
@@ -551,13 +560,7 @@ pub(crate) fn void_and_notify_in_tx(
     recompute_and_notify_in_tx(store, order_id, current_height, now)?;
     // One event per voided payment row (docs/DESIGN.md §11), independent of
     // whatever status transition the recompute above may also have announced.
-    enqueue_webhook_event(
-        store,
-        order_id,
-        "order.double_spend_detected",
-        &serde_json::json!({ "order_id": order_id }),
-        now,
-    )
+    enqueue_webhook_event(store, order_id, "order.double_spend_detected", &[("order_id", order_id)], now)
 }
 
 /// Reverses a payment void that a later, corroborated re-check no longer supports -
@@ -594,13 +597,7 @@ fn unvoid_as_false_positive(
             store.clear_double_spend_flag(order_id)?;
         }
         recompute_and_notify_in_tx(store, order_id, current_height, now)?;
-        enqueue_webhook_event(
-            store,
-            order_id,
-            "order.double_spend_reversed",
-            &serde_json::json!({ "order_id": order_id, "txid": txid }),
-            now,
-        )?;
+        enqueue_webhook_event(store, order_id, "order.double_spend_reversed", &[("order_id", order_id), ("txid", txid)], now)?;
         Ok(true)
     })
 }
@@ -791,13 +788,14 @@ pub async fn register_missing_wallets_checking_state(
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
     network: &str,
 ) -> usize {
-    register_missing_wallets_reporting(store, key_custody, wallet_handles, handled_epoch, network).await.registered
+    let db = crate::store::Db::over_shared(store.clone());
+    register_missing_wallets_reporting(&db, key_custody, wallet_handles, handled_epoch, network).await.registered
 }
 
 /// [`register_missing_wallets_checking_state`], also saying how many
 /// registrations failed.
 pub async fn register_missing_wallets_reporting(
-    store: &crate::store::SharedStore,
+    db: &crate::store::Db,
     key_custody: &dyn KeyCustody,
     wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
@@ -815,12 +813,9 @@ pub async fn register_missing_wallets_reporting(
             key_custody.check_state(),
         ).await {
             Ok(Ok(epoch)) => {
-                let seen = handled_epoch.load(std::sync::atomic::Ordering::SeqCst);
-                if epoch > seen
-                    && handled_epoch
-                        .compare_exchange(seen, epoch, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
-                        .is_ok()
-                {
+                // Whichever loop moves the handled epoch up acts on it; the
+                // others see it already there.
+                if handled_epoch.fetch_max(epoch, std::sync::atomic::Ordering::SeqCst) < epoch {
                     // A single backend can't say which handles it lost, so
                     // they all go; a router forgets just the lost backend's
                     // (`handle_is_live` below).
@@ -839,14 +834,8 @@ pub async fn register_missing_wallets_reporting(
             Err(_) => tracing::warn!("checking the key custody backend's state exceeded {REGISTRATION_CALL_DEADLINE:?} (retried later)"),
         }
     }
-    // On the blocking pool: this runs from the async scanner loop, and the
-    // store's lock may be waiting on SQLite's write lock.
-    let listed = {
-        let store = store.clone();
-        tokio::task::spawn_blocking(move || store.lock().list_active_tenants())
-            .await
-            .unwrap_or_else(|e| Err(crate::store::StoreError::WorkerUnavailable(e.to_string())))
-    };
+    // On the database worker: this runs from the async scanner loop.
+    let listed = db.run(crate::store::db::Class::Scanner, |s| s.list_active_tenants()).await;
     let on_network: Vec<crate::store::Tenant> = match listed {
         Ok(tenants) => tenants.into_iter().filter(|t| t.network == network).collect(),
         Err(e) => {
@@ -6641,7 +6630,7 @@ pub(crate) mod tests {
 
         // The stagenet store's backend is replaced; mainnet's loop runs first.
         router.replace(HashMap::from([("plain".to_string(), plain), ("socket".to_string(), Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>)]), "plain");
-        let pass = register_missing_wallets_reporting(&store, &router, &handles, None, "mainnet").await;
+        let pass = register_missing_wallets_reporting(&crate::store::Db::over_shared(store.clone()), &router, &handles, None, "mainnet").await;
         assert_eq!(pass, Registration { registered: 0, failed: 0 });
         let stale = handles.read()[&ids["stagenet"]];
         assert!(!router.handle_is_live(stale), "still there, so stagenet's loop sees it lost and retries soon");
@@ -6693,5 +6682,435 @@ pub(crate) mod tests {
         );
         assert_eq!(paid, stores, "every store's payment detected in the tick after its block");
         assert!(warm < Duration::from_secs(2), "an unchanged pool costs almost nothing: {warm:?}");
+    }
+
+    // -- Remaining edges: coinbase inputs, undecryptable amounts, races --------
+
+    /// A coinbase input spends nothing, so it has no key image.
+    #[test]
+    fn a_coinbase_input_has_no_key_image() {
+        let mut tx = fixture_tx();
+        tx.prefix.inputs = vec![monero::blockdata::transaction::TxIn::Gen { height: monero::VarInt(5) }];
+        assert!(key_images_of(&tx).is_empty());
+    }
+
+    /// An output that matched but whose amount couldn't be decrypted is
+    /// neither recorded nor staged (a zero row would be worse than none),
+    /// and the skip is logged.
+    #[tokio::test]
+    async fn an_undecryptable_amount_is_neither_recorded_nor_staged() {
+        let (_guard, logs) = crate::test_log::capture();
+        let (store, _custody, _handle, tenant_id, order_id) = setup().await;
+        let scan = ScanResult {
+            matches: vec![MatchedOutput { output_index: 0, subaddress_index: SubaddressIndex { major: 0, minor: 1 }, amount_piconero: None }],
+            txid: "ab".repeat(32),
+            key_images_json: "[]".into(),
+        };
+        assert!(record_scan_match(&store, &tenant_id, &scan, 100, Some(5)).unwrap().is_empty());
+        stage_block_match(&store, "mainnet", &tenant_id, &scan, 100).unwrap();
+        assert!(store.get_all_payments(&order_id).unwrap().is_empty());
+        assert!(store.take_staged_payments("mainnet", &tenant_id, "any").unwrap().is_empty());
+        assert_eq!(logs.count("its amount could not be decrypted"), 2, "{}", logs.text());
+    }
+
+    /// Every SQL statement of the "reconcile now" entry point, failed in
+    /// turn: it reports the failure, and the next call finishes the job.
+    #[tokio::test]
+    async fn every_sql_failure_in_reconcile_now_is_recovered_from() {
+        let mut faults = 0;
+        for fault in 0.. {
+            let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+            let store = store.into_shared();
+            let daemon = FakeDaemonClient::new();
+            daemon.push_block("h1", vec![]);
+            daemon.push_block("h2", vec![fixture_tx()]);
+            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+            daemon.reorg_from(2, vec![("x2", vec![]), ("x3", vec![fixture_tx()])]);
+            let seen = store.lock().fail_nth_access(Some(fault));
+            let first = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, crate::now_unix()).await;
+            store.lock().fail_nth_access(None);
+            if seen.load(Ordering::Relaxed) <= fault {
+                first.unwrap();
+                break;
+            }
+            faults += 1;
+            if first.is_err() {
+                check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, crate::now_unix()).await.unwrap();
+            }
+            assert!(store.lock().reorg_job("mainnet").unwrap().is_none(), "fault {fault}");
+            assert_eq!(store.lock().get_all_payments(&order_id).unwrap()[0].block_height, Some(3), "fault {fault}");
+        }
+        assert!(faults > 5, "reached {faults}");
+    }
+
+    /// A node that un-voids the payment (as the reorg path might) while the
+    /// void recheck is asking about its key images: the recheck finds nothing
+    /// left to restore and tells nobody twice.
+    struct UnvoidsWhileAsked {
+        inner: FakeDaemonClient,
+        store: crate::store::SharedStore,
+        order_id: String,
+    }
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for UnvoidsWhileAsked {
+        async fn get_height(&self) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_height().await
+        }
+        async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
+            self.inner.get_block_hash(height).await
+        }
+        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.inner.get_block_transactions(height).await
+        }
+        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.inner.get_mempool_transactions().await
+        }
+        async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
+            self.inner.locate_transaction(txid).await
+        }
+        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+            self.inner.get_transaction(txid).await
+        }
+        async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+            {
+                let s = self.store.lock();
+                for payment in s.get_all_payments(&self.order_id).unwrap() {
+                    s.unvoid_payment(&self.order_id, &payment.txid, payment.output_index).unwrap();
+                }
+            }
+            self.inner.is_key_image_spent(key_images).await
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_block_timestamp(height).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_void_restored_while_rechecked_is_not_restored_twice() {
+        let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
+        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let daemon = UnvoidsWhileAsked { inner: chain_replica(), store: store.clone(), order_id: order_id.clone() };
+        let db = crate::store::Db::over_shared(store.clone());
+        let restored = recheck_voided_payment(&db, &daemon, "mainnet", &payment, 10, crate::now_unix()).await.unwrap();
+        assert!(!restored, "already restored by the time it was applied");
+        let events: Vec<String> =
+            store.lock().due_webhook_deliveries(i64::MAX / 2, 10).unwrap().into_iter().map(|d| d.event_type).collect();
+        assert!(!events.contains(&"order.double_spend_reversed".to_string()), "{events:?}");
+    }
+
+    // -- Key registration's failure paths -------------------------------------
+
+    /// How a [`ScriptedCustody`] call behaves.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Behaviour {
+        Answer,
+        Fail,
+        Hang,
+    }
+
+    /// Plain key custody whose state check and registration a test scripts;
+    /// `on_register` runs before each registration answers.
+    struct ScriptedCustody {
+        inner: PlainKeyCustody,
+        check: Behaviour,
+        register: Behaviour,
+        on_register: Box<dyn Fn(&str) + Send + Sync>,
+    }
+
+    impl ScriptedCustody {
+        fn new(check: Behaviour, register: Behaviour) -> Self {
+            Self { inner: PlainKeyCustody::default(), check, register, on_register: Box::new(|_| {}) }
+        }
+
+        async fn behave(behaviour: Behaviour) -> std::result::Result<(), KeyCustodyError> {
+            match behaviour {
+                Behaviour::Answer => Ok(()),
+                Behaviour::Fail => Err(KeyCustodyError::BackendUnavailable("scripted failure".into())),
+                Behaviour::Hang => std::future::pending().await,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KeyCustody for ScriptedCustody {
+        async fn register_wallet(&self, material: WalletMaterial) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            self.inner.register_wallet(material).await
+        }
+        async fn remove_wallet(&self, handle: WalletHandle) -> std::result::Result<(), KeyCustodyError> {
+            self.inner.remove_wallet(handle).await
+        }
+        async fn seal(&self, material: &WalletMaterial) -> std::result::Result<Vec<u8>, KeyCustodyError> {
+            self.inner.seal(material).await
+        }
+        async fn unseal_and_register(&self, sealed: &[u8]) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            self.inner.unseal_and_register(sealed).await
+        }
+        async fn unseal_and_register_in_idempotent(
+            &self, _backend: &str, sealed: &[u8], registration_id: &str,
+        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            Self::behave(self.register).await?;
+            (self.on_register)(registration_id);
+            self.inner.unseal_and_register(sealed).await
+        }
+        async fn derive_subaddress(
+            &self,
+            handle: WalletHandle,
+            index: SubaddressIndex,
+            network: Network,
+        ) -> std::result::Result<Address, KeyCustodyError> {
+            self.inner.derive_subaddress(handle, index, network).await
+        }
+        async fn scan_tx_outputs(
+            &self,
+            handle: WalletHandle,
+            tx: &Transaction,
+            major_range: Range<u32>,
+            minor_range: Range<u32>,
+        ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
+            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+        }
+        async fn check_state(&self) -> std::result::Result<u64, KeyCustodyError> {
+            Self::behave(self.check).await?;
+            Ok(0)
+        }
+    }
+
+    /// `count` stores on mainnet with sealed keys `custody` can open.
+    async fn stores_with_keys(custody: &dyn KeyCustody, count: usize) -> (crate::store::SharedStore, Vec<String>) {
+        let store = Store::open_in_memory().unwrap();
+        let sealed = custody.seal(&WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey())).await.unwrap();
+        let ids = (0..count)
+            .map(|_| {
+                store
+                    .create_tenant(
+                        NewTenant {
+                            key_custody_backend: "plain".into(),
+                            sealed_key_material: sealed.clone(),
+                            primary_address: "4x".into(),
+                            network: "mainnet".into(),
+                            confirmations_required: None,
+                            order_expiry_seconds: None,
+                        },
+                        1,
+                    )
+                    .unwrap()
+                    .tenant
+                    .id
+            })
+            .collect();
+        (store.into_shared(), ids)
+    }
+
+    /// A state check that fails or never answers is logged and passed over:
+    /// the stores are still registered.
+    #[tokio::test(start_paused = true)]
+    async fn registration_carries_on_when_the_state_check_fails_or_hangs() {
+        for check in [Behaviour::Fail, Behaviour::Hang] {
+            let (_guard, logs) = crate::test_log::capture();
+            let custody = ScriptedCustody::new(check, Behaviour::Answer);
+            let (store, _) = stores_with_keys(&custody, 2).await;
+            let handles = parking_lot::RwLock::new(HashMap::new());
+            let epoch = AtomicU64::new(0);
+            let db = crate::store::Db::over_shared(store.clone());
+            let pass = register_missing_wallets_reporting(&db, &custody, &handles, Some(&epoch), "mainnet").await;
+            assert_eq!(pass, Registration { registered: 2, failed: 0 });
+            let message = if check == Behaviour::Fail { "state failed" } else { "state exceeded" };
+            assert_eq!(logs.count(message), 1, "{}", logs.text());
+        }
+    }
+
+    /// Stores that can't be listed are one failure, retried soon.
+    #[tokio::test]
+    async fn registration_that_cannot_list_stores_is_retried() {
+        let (_guard, logs) = crate::test_log::capture();
+        let custody = ScriptedCustody::new(Behaviour::Answer, Behaviour::Answer);
+        let (store, _) = stores_with_keys(&custody, 1).await;
+        let handles = parking_lot::RwLock::new(HashMap::new());
+        let db = crate::store::Db::over_shared(store.clone());
+        store.lock().fail_nth_access(Some(0));
+        let pass = register_missing_wallets_reporting(&db, &custody, &handles, None, "mainnet").await;
+        store.lock().fail_nth_access(None);
+        assert_eq!(pass, Registration { registered: 0, failed: 1 });
+        assert_eq!(logs.count("listing stores to register their keys failed"), 1, "{}", logs.text());
+    }
+
+    /// Registrations that fail or hang are counted and logged once for the
+    /// pass (the first failure shown); a pass that runs out of time leaves
+    /// the rest for the next.
+    #[tokio::test(start_paused = true)]
+    async fn failed_registrations_are_counted_and_logged_once() {
+        registrations_fail(Behaviour::Fail).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hung_registrations_are_counted_and_the_pass_is_bounded() {
+        registrations_fail(Behaviour::Hang).await;
+    }
+
+    async fn registrations_fail(register: Behaviour) {
+        {
+            let (_guard, logs) = crate::test_log::capture();
+            let custody = ScriptedCustody::new(Behaviour::Answer, register);
+            let (store, _) = stores_with_keys(&custody, 3).await;
+            let handles = parking_lot::RwLock::new(HashMap::new());
+            let db = crate::store::Db::over_shared(store.clone());
+            let started = tokio::time::Instant::now();
+            let pass = register_missing_wallets_reporting(&db, &custody, &handles, None, "mainnet").await;
+            assert_eq!(pass, Registration { registered: 0, failed: 3 });
+            assert_eq!(logs.count("registering the keys of stores failed"), 1, "{}", logs.text());
+            if register == Behaviour::Hang {
+                assert_eq!(started.elapsed(), Duration::from_secs(20), "two calls to their deadline, then the pass's end");
+            }
+        }
+    }
+
+    /// A store registered by someone else (an API call) while this pass was
+    /// registering it keeps the first handle; this pass's is removed again.
+    #[tokio::test]
+    async fn a_registration_that_loses_the_race_is_removed() {
+        let mut custody = ScriptedCustody::new(Behaviour::Answer, Behaviour::Answer);
+        let (store, ids) = stores_with_keys(&custody, 1).await;
+        let handles = std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new()));
+        let sealed = store.lock().get_tenant_by_id(&ids[0]).unwrap().unwrap().sealed_key_material;
+        let earlier = custody.inner.unseal_and_register(&sealed).await.unwrap();
+        let racing = handles.clone();
+        custody.on_register = Box::new(move |id| {
+            racing.write().insert(id.to_string(), earlier);
+        });
+        let db = crate::store::Db::over_shared(store.clone());
+        let pass = register_missing_wallets_reporting(&db, &custody, &handles, None, "mainnet").await;
+        assert_eq!(pass, Registration { registered: 0, failed: 0 });
+        assert_eq!(handles.read()[&ids[0]], earlier, "the first handle in wins");
+    }
+
+    /// A match against an index no order has is nothing to stage; a staging
+    /// write that fails is an error the caller's transaction rolls back.
+    #[tokio::test]
+    async fn staging_skips_unknown_indices_and_reports_write_failures() {
+        let (store, _custody, _handle, tenant_id, order_id) = setup().await;
+        let matched = |minor| ScanResult {
+            matches: vec![MatchedOutput { output_index: 0, subaddress_index: SubaddressIndex { major: 0, minor }, amount_piconero: Some(5) }],
+            txid: "cd".repeat(32),
+            key_images_json: "[]".into(),
+        };
+        stage_block_match(&store, "mainnet", &tenant_id, &matched(99), 100).unwrap();
+        let checkpoint = crate::store::BlockCheckpoint { height: 7, hash: "h7".into(), next_tx: 1 };
+        store.save_block_checkpoint("mainnet", &tenant_id, &checkpoint).unwrap();
+        assert!(store.take_staged_payments("mainnet", &tenant_id, "h7").unwrap().is_empty(), "nothing staged for index 99");
+        let mut failed = 0;
+        for fault in 0.. {
+            store.save_block_checkpoint("mainnet", &tenant_id, &checkpoint).unwrap();
+            let seen = store.fail_nth_access(Some(fault));
+            let result = store.in_transaction(|s| stage_block_match(s, "mainnet", &tenant_id, &matched(1), 100));
+            store.fail_nth_access(None);
+            if seen.load(Ordering::Relaxed) <= fault {
+                result.unwrap();
+                break;
+            }
+            assert!(result.is_err());
+            failed += 1;
+            assert!(store.take_staged_payments("mainnet", &tenant_id, "h7").unwrap().is_empty(), "fault {fault}: rolled back");
+        }
+        assert!(failed >= 2);
+        let staged = store.take_staged_payments("mainnet", &tenant_id, "h7").unwrap();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].order_id, order_id);
+    }
+
+    /// A node that answers for fewer key images than it was asked about has
+    /// said nothing conclusive: the void stays.
+    struct ShortAnswers(FakeDaemonClient);
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for ShortAnswers {
+        async fn get_height(&self) -> std::result::Result<u64, DaemonError> {
+            self.0.get_height().await
+        }
+        async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
+            self.0.get_block_hash(height).await
+        }
+        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.0.get_block_transactions(height).await
+        }
+        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.0.get_mempool_transactions().await
+        }
+        async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
+            self.0.locate_transaction(txid).await
+        }
+        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+            self.0.get_transaction(txid).await
+        }
+        async fn is_key_image_spent(&self, _: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+            Ok(Vec::new())
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.0.get_block_timestamp(height).await
+        }
+    }
+
+    #[tokio::test]
+    async fn short_key_image_answers_leave_a_void_alone() {
+        let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
+        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let db = crate::store::Db::over_shared(store.clone());
+        let restored = recheck_voided_payment(&db, &ShortAnswers(chain_replica()), "mainnet", &payment, 10, crate::now_unix()).await.unwrap();
+        assert!(!restored);
+        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+    }
+
+    /// With several backends, one that lost its wallets costs only its own
+    /// stores their handles: the others keep theirs.
+    #[tokio::test]
+    async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
+        use crate::key_custody::CustodyRouter;
+        use std::sync::Arc;
+        let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let forgetful = Arc::new(ForgetfulKeyCustody::default());
+        let socket: Arc<dyn KeyCustody> = forgetful.clone();
+        let router = CustodyRouter::new(HashMap::from([("plain".to_string(), plain), ("socket".to_string(), socket)]), "plain");
+        let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
+        let store = Store::open_in_memory().unwrap();
+        let mut ids = HashMap::new();
+        for backend in ["plain", "socket"] {
+            let tenant = store
+                .create_tenant(
+                    NewTenant {
+                        key_custody_backend: backend.into(),
+                        sealed_key_material: router.seal_in(backend, &material).await.unwrap(),
+                        primary_address: "4x".into(),
+                        network: "mainnet".into(),
+                        confirmations_required: None,
+                        order_expiry_seconds: None,
+                    },
+                    1,
+                )
+                .unwrap()
+                .tenant;
+            ids.insert(backend, tenant.id);
+        }
+        let store = store.into_shared();
+        let handles = parking_lot::RwLock::new(HashMap::new());
+        let handled = AtomicU64::new(0);
+        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 2);
+        let (plain_handle, socket_handle) = (handles.read()[&ids["plain"]], handles.read()[&ids["socket"]]);
+
+        forgetful.epoch.store(1, Ordering::SeqCst);
+        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 1);
+        assert_eq!(handles.read()[&ids["plain"]], plain_handle, "untouched");
+        assert_ne!(handles.read()[&ids["socket"]], socket_handle, "registered again");
+        assert_eq!(handled.load(Ordering::SeqCst), 1);
+    }
+
+    /// The test and tool entry points refuse a network name they don't know.
+    #[tokio::test]
+    async fn the_entry_points_refuse_an_unknown_network() {
+        let store = Store::open_in_memory().unwrap().into_shared();
+        let daemon = FakeDaemonClient::new();
+        let custody = PlainKeyCustody::default();
+        assert!(matches!(run_scan_tick(&store, &custody, &daemon, "moonnet", &[], 20, 0).await, Err(ScannerError::Internal(_))));
+        assert!(matches!(check_for_reorg_and_reconcile(&store, &daemon, "moonnet", 20, 0).await, Err(ScannerError::Internal(_))));
     }
 }

@@ -18,7 +18,6 @@ use crate::http::now_unix;
 use crate::key_custody::{KeyCustody, WalletHandle};
 use crate::network::network_str;
 use crate::scanner_status::{self, ScannerStatusMap};
-use crate::store::SharedStore;
 use crate::store::Db;
 use crate::webhook_delivery::run_delivery_tick_on;
 
@@ -146,7 +145,6 @@ pub fn tick_deadline(poll_interval: Duration) -> Duration {
 /// the process.
 #[allow(clippy::too_many_arguments)] // the loops' genuinely independent shared handles
 pub async fn manage_network_loops(
-    store: SharedStore,
     db: Db,
     webhooks: Arc<tokio::sync::Notify>,
     key_custody: Arc<dyn KeyCustody>,
@@ -190,8 +188,7 @@ pub async fn manage_network_loops(
                     )
                 });
             }
-            let (store, db, key_custody, daemons, wallet_handles, scanner_status, settings) = (
-                store.clone(),
+            let (db, key_custody, daemons, wallet_handles, scanner_status, settings) = (
                 db.clone(),
                 key_custody.clone(),
                 daemons.clone(),
@@ -202,7 +199,6 @@ pub async fn manage_network_loops(
             supervise_until(scanner_loop_name(network), stopped, move || {
                 run_scanner_loop(
                     scan_state.clone(),
-                    store.clone(),
                     db.clone(),
                     key_custody.clone(),
                     network,
@@ -236,7 +232,6 @@ pub const REGISTRATION_RETRY_AFTER_LOSS: Duration = Duration::from_secs(5);
 #[allow(clippy::too_many_arguments)] // the loop's genuinely independent shared handles
 pub async fn run_scanner_loop(
     scan_state: Arc<crate::work::ScanState>,
-    store: SharedStore,
     db: Db,
     key_custody: Arc<dyn KeyCustody>,
     network: Network,
@@ -279,7 +274,7 @@ pub async fn run_scanner_loop(
         if last_registration_attempt.is_none_or(|at| at.elapsed() >= retry_after) {
             last_registration_attempt = Some(tokio::time::Instant::now());
             let crate::scanner::Registration { registered, failed } = crate::scanner::register_missing_wallets_reporting(
-                &store,
+                &db,
                 key_custody.as_ref(),
                 &wallet_handles,
                 Some(&HANDLED_CUSTODY_EPOCH),
@@ -457,7 +452,6 @@ mod tests {
         let router = crate::http::build_router(state, 1 << 20);
         let db = Db::over_shared(store.clone());
         let manager = tokio::spawn(manage_network_loops(
-            store,
             db,
             Arc::default(),
             key_custody,
@@ -534,7 +528,6 @@ mod tests {
         let key_custody: Arc<dyn KeyCustody> = router.clone();
         let scan_loop = tokio::spawn(run_scanner_loop(
             Arc::default(),
-            store.clone(),
             Db::over_shared(store),
             key_custody,
             Network::Stagenet,

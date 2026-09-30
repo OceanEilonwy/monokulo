@@ -1,8 +1,12 @@
-//! Log capture for tests that assert a failure was reported. The capture is
-//! this thread's default subscriber, so it sees what the test's own
-//! (current-thread) runtime logs and nothing from tests running alongside.
+//! Log capture for tests that assert a failure was reported. One global
+//! subscriber, installed on first use, sends each event to the buffer of the
+//! thread that emitted it, if that thread is capturing. (A per-thread default
+//! subscriber instead races with tracing's global callsite cache when tests
+//! run side by side.) Events from other threads, such as the database
+//! worker's, aren't captured.
 
-use std::sync::Arc;
+use std::cell::RefCell;
+use std::sync::{Arc, Once};
 
 use parking_lot::Mutex;
 
@@ -20,9 +24,20 @@ impl Captured {
     }
 }
 
-impl std::io::Write for Captured {
+thread_local! {
+    static SINK: RefCell<Option<Captured>> = const { RefCell::new(None) };
+}
+
+/// Writes to the current thread's capture, if any.
+struct ThreadSink;
+
+impl std::io::Write for ThreadSink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().extend_from_slice(buf);
+        SINK.with(|sink| {
+            if let Some(captured) = sink.borrow().as_ref() {
+                captured.0.lock().extend_from_slice(buf);
+            }
+        });
         Ok(buf.len())
     }
 
@@ -31,15 +46,28 @@ impl std::io::Write for Captured {
     }
 }
 
-/// Captures every event on this thread, at every level, until the guard
+/// Stops this thread's capture when dropped.
+pub(crate) struct CaptureGuard(());
+
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        SINK.with(|sink| sink.borrow_mut().take());
+    }
+}
+
+/// Captures every event this thread emits, at every level, until the guard
 /// drops.
-pub(crate) fn capture() -> (tracing::subscriber::DefaultGuard, Captured) {
+pub(crate) fn capture() -> (CaptureGuard, Captured) {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(|| ThreadSink)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
     let captured = Captured::default();
-    let writer = captured.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    (tracing::subscriber::set_default(subscriber), captured)
+    SINK.with(|sink| *sink.borrow_mut() = Some(captured.clone()));
+    (CaptureGuard(()), captured)
 }

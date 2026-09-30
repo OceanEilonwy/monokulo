@@ -2184,3 +2184,63 @@ async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
     }
     assert!(faults > 5, "reached {faults}");
 }
+
+/// An open job whose every candidate is waiting out a retry delay: the
+/// chain tier waits, and says why, without failing the round.
+#[tokio::test]
+async fn a_reorg_job_with_every_candidate_waiting_waits() {
+    let stuck = "ab".repeat(32);
+    let (store, fake, orders) = open_reorg_with(&[(&stuck, 9)]).await;
+    let db = Db::over_shared(store.clone());
+    while store.lock().collect_reorg_candidates("mainnet", 64, crate::now_unix()).unwrap() != crate::store::ReorgPhase::Process {}
+    // Now in its processing phase: put the candidate well into the future.
+    let id = store.lock().get_all_payments(&orders[0]).unwrap()[0].id;
+    for _ in 0..6 {
+        store.lock().defer_reorg_candidate("mainnet", id, crate::now_unix()).unwrap();
+    }
+    let custody = FlakyKeyCustody::default();
+    let report = run_round(&ScanState::default(), &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await;
+    assert_eq!(report.outcome(Tier::Chain), TierOutcome::Blocked(Wait::ReorgCandidatesRetrying), "{report:?}");
+    assert!(report.error.is_none());
+}
+
+/// A page of recomputes mixes what is owed and what is due, and never
+/// holds more than a page.
+#[tokio::test]
+async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
+    let (store, custody, fake, tenants, _) = seeded_network(1, 20).await;
+    let tenant = tenants[0].0.clone();
+    let now = crate::now_unix();
+    {
+        let s = store.lock();
+        for i in 0..200 {
+            let index = s.allocate_minor_index(&tenant).unwrap();
+            let order = s
+                .create_order(crate::store::NewOrder {
+                    confirmations_required_override: None,
+                    tenant_id: tenant.clone(),
+                    merchant_order_id: None,
+                    minor_index: index,
+                    address: format!("due{i}"),
+                    xmr_amount_piconero: 1,
+                    description: None,
+                    created_at: now,
+                    expires_at: now + 3600,
+                })
+                .unwrap();
+            if i < 10 {
+                s.record_payment_match(&order.id, &format!("{i:064x}"), 0, 1, "[]", now, None).unwrap();
+            }
+        }
+        s.execute_raw_for_test("UPDATE orders SET next_due_at_utc = 1").unwrap();
+    }
+    let db = Db::over_shared(store.clone());
+    let state = ScanState::default();
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    let still_due = store.lock().due_order_ids("mainnet", now, 20, 1000).unwrap().len();
+    assert!(still_due >= 200 - 64, "at most a page recomputed in the unit: {still_due} left");
+    for _ in 0..3 {
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    }
+    assert_eq!(store.lock().due_order_ids("mainnet", now, 20, 1000).unwrap().len(), 0);
+}

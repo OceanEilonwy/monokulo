@@ -147,13 +147,7 @@ impl Db {
         use Inner::Inline;
         let (senders, wake) = match &self.inner {
             Inline(store) => {
-                // Bounded: a caller that (wrongly) holds the store's lock
-                // while calling this gets an error instead of a deadlock.
-                let Some(guard) = store.try_lock_for(INLINE_LOCK_WAIT) else {
-                    return Err(E::from(StoreError::WorkerUnavailable(format!(
-                        "the store stayed locked for {INLINE_LOCK_WAIT:?} (is the caller holding it?)"
-                    ))));
-                };
+                let guard = lock_inline(store)?;
                 let started = Instant::now();
                 let result = f(&guard);
                 record(&self.counters, started, started);
@@ -186,6 +180,15 @@ impl Db {
             max_run_us: self.counters.max_run_us.load(Ordering::Relaxed),
         }
     }
+}
+
+/// The shared store's lock, for an inline job. Bounded: a caller that
+/// (wrongly) holds the lock while calling gets an error instead of a
+/// deadlock.
+fn lock_inline(store: &SharedStore) -> Result<parking_lot::MutexGuard<'_, Store>> {
+    store.try_lock_for(INLINE_LOCK_WAIT).ok_or_else(|| {
+        StoreError::WorkerUnavailable(format!("the store stayed locked for {INLINE_LOCK_WAIT:?} (is the caller holding it?)"))
+    })
 }
 
 fn record(counters: &Counters, queued_at: Instant, started: Instant) {
@@ -286,16 +289,13 @@ mod tests {
         let (store, path) = file_store();
         let faults = Faults { exit_loop: true, ..Faults::default() };
         let db = Db::start(store.connect_again(&path).unwrap(), faults).unwrap();
-        // The loop exits and its queues close; give it a moment.
-        let mut result = Ok(0);
-        for _ in 0..100 {
-            result = db.run(Class::Admin, |s| s.count_tenants()).await;
-            if result.is_err() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        // The loop exits at once and its queues close.
+        let Inner::Worker { senders, .. } = &db.inner else { unreachable!() };
+        while !senders[Class::Admin.index()].is_closed() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        assert!(matches!(result, Err(StoreError::WorkerUnavailable(_))), "{result:?}");
+        let result = db.run(Class::Admin, |s| s.count_tenants()).await;
+        assert!(matches!(result, Err(StoreError::WorkerUnavailable(ref m)) if m.contains("stopped")), "{result:?}");
         drop(db);
         cleanup(&path);
     }
