@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// moment this ever runs against a real database. A clear startup panic
 /// telling the operator exactly what to set is the right placeholder
 /// behavior instead.
-fn encryption_key_from_env() -> [u8; 32] {
+fn encryption_key_from_env() -> monokulo::crypto::AtRestKey {
     let hex_key = std::env::var("MONOKULO_ENCRYPTION_KEY").expect(
         "MONOKULO_ENCRYPTION_KEY must be set to 64 hex characters (32 bytes) - \
          e.g. generate one with `openssl rand -hex 32`",
@@ -27,8 +27,9 @@ fn encryption_key_from_env() -> [u8; 32] {
     let bytes = hex::decode(&hex_key).expect(
         "MONOKULO_ENCRYPTION_KEY must be valid hex (64 hex characters decoding to exactly 32 bytes)",
     );
-    <[u8; 32]>::try_from(bytes.as_slice())
-        .expect("MONOKULO_ENCRYPTION_KEY must decode to exactly 32 bytes (64 hex characters)")
+    let bytes = <[u8; 32]>::try_from(bytes.as_slice())
+        .expect("MONOKULO_ENCRYPTION_KEY must decode to exactly 32 bytes (64 hex characters)");
+    monokulo::crypto::AtRestKey::new(bytes)
 }
 
 #[tokio::main]

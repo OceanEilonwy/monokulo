@@ -297,7 +297,7 @@ async fn main() {
     // own in-process-only `oneshot` driving ----
     let cp_state = ControlPlaneAppState {
         db: monokulo::db::Database::inline(Db::open_in_memory().unwrap().into_shared()),
-        encryption_key: [7u8; 32],
+        encryption_key: monokulo::crypto::AtRestKey::new([7u8; 32]),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Default::default(),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns(

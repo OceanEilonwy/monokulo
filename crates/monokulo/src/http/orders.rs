@@ -2299,7 +2299,7 @@ mod tests {
         "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str =
         "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
-    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+    const TEST_ENCRYPTION_KEY: crate::crypto::AtRestKey = crate::crypto::AtRestKey::new([7u8; 32]);
 
     /// `"XMR"` deliberately, not a fiat currency: these tests are about the
     /// dashboard's own order-creation/display plumbing, not about exercising

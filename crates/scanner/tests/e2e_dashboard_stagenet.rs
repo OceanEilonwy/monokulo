@@ -221,7 +221,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let cp_db = Db::open_in_memory().unwrap().into_shared();
     let cp_state = ControlPlaneAppState {
         db: monokulo::db::Database::inline(cp_db),
-        encryption_key: [7u8; 32],
+        encryption_key: monokulo::crypto::AtRestKey::new([7u8; 32]),
         // `docs/fx_refactor.md` Phase 5: order creation now goes through
         // monokulo's own `/pay/{pk}/orders`, the real path a production
         // storefront takes. The order below is priced directly in `"XMR"` -

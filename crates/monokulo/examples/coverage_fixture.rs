@@ -19,7 +19,7 @@ use monokulo::{
 };
 use scanner_test_support::{TestEngineConfig, TestEngineHandle};
 
-const ENCRYPTION_KEY: [u8; 32] = [7; 32];
+const ENCRYPTION_KEY: crypto::AtRestKey = crypto::AtRestKey::new([7; 32]);
 const VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
 const SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 const SESSION: &str = "coverage-session-token";

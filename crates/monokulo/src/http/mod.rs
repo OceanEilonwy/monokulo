@@ -148,7 +148,7 @@ pub struct AppState {
     /// `crate::crypto` and `http/connections.rs`. Sourced from an
     /// environment variable in the real binary (`main.rs`); tests just
     /// construct a fixed key directly.
-    pub encryption_key: [u8; 32],
+    pub encryption_key: crate::crypto::AtRestKey,
     /// Fiat-to-XMR conversion for monokulo's own order-creation
     /// endpoint (`docs/fx_refactor.md` Phase 1.4) - the engine no longer
     /// has any concept of this (per that document's own resolved
@@ -174,7 +174,7 @@ pub struct AppState {
 
 /// The encryption key [`AppState::for_tests`] uses.
 #[cfg(any(test, feature = "test-support"))]
-pub const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+pub const TEST_ENCRYPTION_KEY: crate::crypto::AtRestKey = crate::crypto::AtRestKey::new([7u8; 32]);
 
 #[cfg(any(test, feature = "test-support"))]
 impl AppState {

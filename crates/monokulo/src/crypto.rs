@@ -49,6 +49,23 @@ pub enum CryptoError {
     InvalidUtf8,
 }
 
+/// The key secrets are encrypted with at rest. Its bytes are only read by
+/// [`encrypt`] and [`decrypt`], and `Debug` doesn't print them.
+#[derive(Clone)]
+pub struct AtRestKey([u8; 32]);
+
+impl AtRestKey {
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        AtRestKey(bytes)
+    }
+}
+
+impl std::fmt::Debug for AtRestKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AtRestKey(..)")
+    }
+}
+
 /// Encrypts `plaintext` under `key`, returning a single hex-encoded string
 /// (nonce || ciphertext-with-tag) safe to store in a plain `TEXT` column.
 ///
@@ -56,8 +73,8 @@ pub enum CryptoError {
 /// plaintext twice yields two different encoded strings (see this module's
 /// own test), which is required for GCM's security (nonce reuse under the
 /// same key breaks the authentication guarantee).
-pub fn encrypt(key: &[u8; 32], plaintext: &str) -> String {
-    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
+pub fn encrypt(key: &AtRestKey, plaintext: &str) -> String {
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key.0));
     // A fresh, cryptographically random nonce every call - see this
     // module's doc comment on why that matters for GCM.
     let nonce = CipherNonce::generate();
@@ -77,7 +94,7 @@ pub fn encrypt(key: &[u8; 32], plaintext: &str) -> String {
 /// Inverse of [`encrypt`]. Fails (never panics) on a malformed encoded
 /// string, a truncated nonce/ciphertext, or an authentication-tag mismatch
 /// (tampered or corrupted data, or the wrong key).
-pub fn decrypt(key: &[u8; 32], encoded: &str) -> Result<String, CryptoError> {
+pub fn decrypt(key: &AtRestKey, encoded: &str) -> Result<String, CryptoError> {
     let combined = hex::decode(encoded).map_err(|_| CryptoError::InvalidEncoding)?;
     if combined.len() < NONCE_LEN {
         return Err(CryptoError::Truncated);
@@ -88,7 +105,7 @@ pub fn decrypt(key: &[u8; 32], encoded: &str) -> Result<String, CryptoError> {
     // statically.
     let nonce = CipherNonce::try_from(nonce_bytes).map_err(|_| CryptoError::Truncated)?;
 
-    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key.0));
     let plaintext_bytes = cipher
         .decrypt(&nonce, ciphertext)
         .map_err(|_| CryptoError::AuthenticationFailed)?;
@@ -99,7 +116,7 @@ pub fn decrypt(key: &[u8; 32], encoded: &str) -> Result<String, CryptoError> {
 mod tests {
     use super::*;
 
-    const TEST_KEY: [u8; 32] = [7u8; 32];
+    const TEST_KEY: AtRestKey = AtRestKey::new([7u8; 32]);
 
     #[test]
     fn encrypt_then_decrypt_round_trips_to_the_exact_original_plaintext() {
@@ -168,7 +185,7 @@ mod tests {
     fn decrypting_with_the_wrong_key_returns_an_error() {
         let plaintext = "sk_wrong_key_test";
         let encoded = encrypt(&TEST_KEY, plaintext);
-        let wrong_key = [9u8; 32];
+        let wrong_key = AtRestKey::new([9u8; 32]);
         let result = decrypt(&wrong_key, &encoded);
         assert!(
             matches!(result, Err(CryptoError::AuthenticationFailed)),

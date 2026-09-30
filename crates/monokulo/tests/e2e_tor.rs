@@ -45,7 +45,7 @@ use tokio_socks::tcp::Socks5Stream;
 const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
 const TEST_SPEND_PUBKEY_HEX: &str =
     "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
-const ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+const ENCRYPTION_KEY: monokulo::crypto::AtRestKey = monokulo::crypto::AtRestKey::new([7u8; 32]);
 
 /// Small limits so the test needs only a handful of requests over Tor.
 const SOFT: u32 = 5;

@@ -172,7 +172,7 @@ fn invite_signup_url(base_url: &str, raw_token: &str) -> String {
 }
 
 fn to_row_view(
-    encryption_key: &[u8; 32],
+    encryption_key: &crate::crypto::AtRestKey,
     base_url: &str,
     clock: &crate::views::time::Clock,
     row: InviteRequestRow,
