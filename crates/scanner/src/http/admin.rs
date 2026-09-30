@@ -106,20 +106,18 @@ pub async fn create_tenant(
     };
     let defaults = state.settings.tenant_defaults.load();
 
-    let created = state.store.lock().create_tenant(
-        NewTenant {
-            // The backend that sealed these keys and holds them (part 5).
-            key_custody_backend: backend.clone(),
-            sealed_key_material: sealed,
-            primary_address: primary_address.to_string(),
-            network: network_str(network).to_string(),
-            // Values the request doesn't give come from the instance's
-            // current defaults (task 2.9), not a hardcoded number.
-            confirmations_required: Some(req.confirmations_required.unwrap_or(defaults.confirmations_required)),
-            order_expiry_seconds: Some(req.order_expiry_seconds.unwrap_or(defaults.order_expiry_seconds)),
-        },
-        now_unix(),
-    );
+    let new_tenant = NewTenant {
+        // The backend that sealed these keys and holds them (part 5).
+        key_custody_backend: backend.clone(),
+        sealed_key_material: sealed,
+        primary_address: primary_address.to_string(),
+        network: network_str(network).to_string(),
+        // Values the request doesn't give come from the instance's
+        // current defaults (task 2.9), not a hardcoded number.
+        confirmations_required: Some(req.confirmations_required.unwrap_or(defaults.confirmations_required)),
+        order_expiry_seconds: Some(req.order_expiry_seconds.unwrap_or(defaults.order_expiry_seconds)),
+    };
+    let created = state.write_store(move |s| s.create_tenant(new_tenant, now_unix())).await;
     // A failed insert leaves a registered wallet nothing holds a handle to - key
     // material live in `KeyCustody` for the rest of the process's life, with no
     // tenant row to ever offboard it. Hand it back before returning the error.
@@ -269,7 +267,8 @@ pub async fn switch_key_custody(
             return Err(e.into());
         }
     };
-    let updated = state.store.lock().update_tenant_key_custody(&tenant.id, &backend, &sealed);
+    let (id, chosen) = (tenant.id.clone(), backend.clone());
+    let updated = state.write_store(move |s| s.update_tenant_key_custody(&id, &chosen, &sealed)).await;
     if let Err(e) = updated {
         let _ = state.key_custody.remove_wallet(handle).await;
         return Err(e.into());
@@ -281,7 +280,8 @@ pub async fn switch_key_custody(
             tracing::warn!(store.id = %tenant.id, error = %e, "moved a store's keys, but removing them from its old key custody backend failed");
         }
     }
-    let refetched = state.store.lock().get_tenant_by_id(&tenant.id)?.ok_or(ApiError::NotFound)?;
+    let id = tenant.id.clone();
+    let refetched = state.write_store(move |s| s.get_tenant_by_id(&id)).await?.ok_or(ApiError::NotFound)?;
     Ok(Json(TenantView::from(refetched)))
 }
 
@@ -348,9 +348,14 @@ pub async fn patch_own_tenant(
         confirmations_required: req.confirmations_required,
         order_expiry_seconds: req.order_expiry_seconds,
     };
-    let store = state.store.lock();
-    store.update_tenant_config(&tenant.id, patch)?;
-    let refetched = store.get_tenant_by_id(&tenant.id)?.ok_or(ApiError::NotFound)?;
+    let id = tenant.id.clone();
+    let refetched = state
+        .write_store(move |s| {
+            s.update_tenant_config(&id, patch)?;
+            s.get_tenant_by_id(&id)
+        })
+        .await?
+        .ok_or(ApiError::NotFound)?;
     Ok(Json(TenantView::from(refetched)))
 }
 
@@ -363,7 +368,8 @@ pub async fn rotate_secret(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
 ) -> Result<Json<RotateSecretResponse>, ApiError> {
-    let new_secret = state.store.lock().rotate_tenant_secret(&tenant.id)?;
+    let id = tenant.id.clone();
+    let new_secret = state.write_store(move |s| s.rotate_tenant_secret(&id)).await?;
     Ok(Json(RotateSecretResponse { secret_token: new_secret }))
 }
 
@@ -376,7 +382,8 @@ pub async fn delete_own_tenant(
         // Best-effort: an already-unknown handle is not an error worth surfacing here.
         let _ = state.key_custody.remove_wallet(handle).await;
     }
-    state.store.lock().disable_tenant(&tenant.id, now_unix())?;
+    let id = tenant.id.clone();
+    state.write_store(move |s| s.disable_tenant(&id, now_unix())).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -470,35 +477,37 @@ pub async fn list_orders(
     let status_filter: Option<OrderStatus> = q.status.as_deref().map(parse_status_query).transpose()?;
     let limit = q.limit.unwrap_or(50).min(200);
     let now = now_unix();
-    let ids: Option<Vec<&str>> = q.ids.as_deref().map(|ids| ids.split(',').map(str::trim).filter(|id| !id.is_empty()).collect());
+    let ids: Option<Vec<String>> =
+        q.ids.as_deref().map(|ids| ids.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_owned).collect());
     if ids.as_ref().is_some_and(|ids| ids.len() > MAX_LIST_ORDER_IDS) {
         return Err(ApiError::BadRequest(format!("ids may name at most {MAX_LIST_ORDER_IDS} orders")));
     }
-    let store = state.store.lock();
-    let orders = match ids {
-        Some(ids) => {
-            let mut orders = Vec::with_capacity(ids.len());
-            for id in ids {
-                if let Some(order) = store.get_order(&tenant.id, id)? {
-                    orders.push(order);
+    let search: Option<String> = q.search.as_deref().map(str::trim).filter(|term| !term.is_empty()).map(str::to_owned);
+    if search.as_deref().is_some_and(|term| term.chars().count() > 120) {
+        return Err(ApiError::BadRequest("search is too long".into()));
+    }
+    let paged = q.open.unwrap_or(false) || q.search.is_some() || q.offset.is_some();
+    let (open, offset, cursor, tenant_id) = (q.open.unwrap_or(false), q.offset.unwrap_or(0), q.cursor, tenant.id.clone());
+    let grace = state.settings.scan.load().expired_order_grace_period_seconds;
+    let views = state
+        .read_store(move |store| {
+            let orders = match ids {
+                Some(ids) => {
+                    let mut orders = Vec::with_capacity(ids.len());
+                    for id in ids {
+                        if let Some(order) = store.get_order(&tenant_id, &id)? {
+                            orders.push(order);
+                        }
+                    }
+                    orders
                 }
-            }
-            orders
-        }
-        None if q.open.unwrap_or(false) || q.search.is_some() || q.offset.is_some() => {
-            let search = q.search.as_deref().map(str::trim).filter(|term| !term.is_empty());
-            if search.is_some_and(|term| term.chars().count() > 120) {
-                return Err(ApiError::BadRequest("search is too long".into()));
-            }
-            store.list_orders_page(&tenant.id, q.open.unwrap_or(false), search, limit, q.offset.unwrap_or(0))?
-        }
-        None => store.list_orders(&tenant.id, status_filter, limit, q.cursor)?,
-    };
-    let views: std::result::Result<Vec<OrderView>, _> = orders
-        .into_iter()
-        .map(|o| build_order_view(&store, o, now, state.settings.scan.load().expired_order_grace_period_seconds))
-        .collect();
-    Ok(Json(views?))
+                None if paged => store.list_orders_page(&tenant_id, open, search.as_deref(), limit, offset)?,
+                None => store.list_orders(&tenant_id, status_filter, limit, cursor)?,
+            };
+            orders.into_iter().map(|o| build_order_view(store, o, now, grace)).collect::<std::result::Result<Vec<_>, _>>()
+        })
+        .await?;
+    Ok(Json(views))
 }
 
 #[derive(Serialize)]
@@ -536,10 +545,16 @@ pub async fn get_order_detail(
     Path(order_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<OrderDetailResponse>, ApiError> {
-    let store = state.store.lock();
-    let order = store.get_order(&tenant.id, &order_id)?.ok_or(ApiError::NotFound)?;
-    let payments = store.get_all_payments(&order.id)?;
-    let order_view = build_order_view(&store, order, now_unix(), state.settings.scan.load().expired_order_grace_period_seconds)?;
+    let grace = state.settings.scan.load().expired_order_grace_period_seconds;
+    let tenant_id = tenant.id.clone();
+    let found = state
+        .read_store(move |store| {
+            let Some(order) = store.get_order(&tenant_id, &order_id)? else { return Ok(None) };
+            let payments = store.get_all_payments(&order.id)?;
+            Ok(Some((build_order_view(store, order, now_unix(), grace)?, payments)))
+        })
+        .await?;
+    let (order_view, payments) = found.ok_or(ApiError::NotFound)?;
     Ok(Json(OrderDetailResponse {
         order: order_view,
         payments: payments.into_iter().map(PaymentView::from).collect(),
@@ -565,7 +580,8 @@ pub async fn set_order_refund_address(
     State(state): State<AppState>,
     Json(req): Json<SetRefundAddressRequest>,
 ) -> Result<(), ApiError> {
-    let updated = state.store.lock().set_refund_address(&tenant.id, &order_id, &req.refund_address)?;
+    let id = tenant.id.clone();
+    let updated = state.write_store(move |s| s.set_refund_address(&id, &order_id, &req.refund_address)).await?;
     if updated {
         Ok(())
     } else {
@@ -625,7 +641,8 @@ pub async fn list_webhooks(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<WebhookView>>, ApiError> {
-    let webhooks = state.store.lock().list_webhooks(&tenant.id)?;
+    let id = tenant.id.clone();
+    let webhooks = state.read_store(move |s| s.list_webhooks(&id)).await?;
     Ok(Json(webhooks.into_iter().map(WebhookView::from).collect()))
 }
 
@@ -634,7 +651,8 @@ pub async fn delete_webhook(
     Path(webhook_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<StatusCode, ApiError> {
-    let deleted = state.store.lock().delete_webhook(&tenant.id, &webhook_id)?;
+    let id = tenant.id.clone();
+    let deleted = state.write_store(move |s| s.delete_webhook(&id, &webhook_id)).await?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -733,10 +751,11 @@ pub async fn lookup_payment(
             Err(e) => return Err(ApiError::Internal(e.to_string())),
         }
     };
-    let touched = {
-        let store = state.store.lock();
-        crate::scanner::record_scan_match(&store, &tenant.id, &scan, now, block_height).map_err(|e| ApiError::Internal(e.to_string()))?
-    };
+    let id = tenant.id.clone();
+    let touched = state
+        .write_store(move |store| crate::scanner::record_scan_match(store, &id, &scan, now, block_height))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     if touched.is_empty() {
         return Ok(Json(PaymentLookupView::NoMatchingOrder));
@@ -747,13 +766,16 @@ pub async fn lookup_payment(
     // match has none, and even a mined match's own height could already be
     // behind the real tip by an unrelated confirmation or two).
     let current_height = daemon.get_height().await.map_err(|e| ApiError::Internal(e.to_string()))?;
-    {
-        let store = state.store.lock();
-        for order_id in &touched {
-            crate::scanner::recompute_and_notify(&store, order_id, current_height, now)
-                .map_err(|e| ApiError::Internal(e.to_string()))?;
-        }
-    }
+    let orders: Vec<String> = touched.iter().cloned().collect();
+    state
+        .write_store(move |store| {
+            for order_id in &orders {
+                crate::scanner::recompute_and_notify(store, order_id, current_height, now)?;
+            }
+            Ok::<(), crate::scanner::ScannerError>(())
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     Ok(Json(PaymentLookupView::Matched { order_ids: touched.into_iter().collect() }))
 }

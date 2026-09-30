@@ -272,9 +272,10 @@ pub async fn check_for_reorg_and_reconcile(
 ) -> Result<ReconcileReport> {
     use crate::work::chain::{Chain, JobStep};
     let tip = daemon.get_height().await?;
-    let chain = Chain { store, daemon, network, reorg_check_depth, now };
+    let db = crate::store::Db::over_shared(store.clone());
+    let chain = Chain { db: &db, daemon, network, reorg_check_depth, now };
     if let Some(fork) = chain.detect(tip).await? {
-        chain.open(fork)?;
+        chain.open(fork).await?;
     }
     let reorg_detected_at = store.lock().reorg_job(network)?.map(|job| job.fork_height);
     let mut dirty_orders = HashSet::new();
@@ -330,7 +331,7 @@ pub struct VanishedPoolReport {
 }
 
 pub(crate) async fn check_vanished_candidates(
-    store: &crate::store::SharedStore,
+    db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
     mempool_txids: &HashSet<String>,
     current_height: u64,
@@ -350,12 +351,11 @@ pub(crate) async fn check_vanished_candidates(
             // height here is the same write the block scan would have made, and
             // costs the payment nothing if the block scan gets there first.
             TxLocation::InBlock(new_height) => {
-                store.lock().update_payment_block_height(
-                    &payment.order_id,
-                    &payment.txid,
-                    payment.output_index,
-                    Some(new_height as i64),
-                )?;
+                let (order_id, txid, output) = (payment.order_id.clone(), payment.txid.clone(), payment.output_index);
+                db.run(crate::store::db::Class::Scanner, move |s| {
+                    s.update_payment_block_height(&order_id, &txid, output, Some(new_height as i64))
+                })
+                .await?;
                 dirty_orders.insert(payment.order_id.clone());
             }
             // The daemon's live pool disagrees with the snapshot taken at the top of
@@ -369,7 +369,7 @@ pub(crate) async fn check_vanished_candidates(
                 // same way `check_for_reorg_and_reconcile` resolves the identical
                 // question. Voiding on anything less would write off a payment the
                 // customer really made.
-                if void_if_double_spend_proven(store, daemon, &payment, current_height, now).await? {
+                if void_if_double_spend_proven(db, daemon, &payment, current_height, now).await? {
                     dirty_orders.insert(payment.order_id.clone());
                     double_spent_orders.insert(payment.order_id.clone());
                 }
@@ -473,7 +473,7 @@ fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64
 /// this file is kept brief: `is_key_image_spent` is network I/O, and nothing may
 /// `.await` while holding the store mutex.
 async fn void_if_double_spend_proven(
-    store: &crate::store::SharedStore,
+    db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
     payment: &crate::store::OrderPaymentRow,
     current_height: u64,
@@ -491,8 +491,8 @@ async fn void_if_double_spend_proven(
         // - never void on this evidence alone.
         return Ok(false);
     }
-    let s = store.lock();
-    void_and_notify(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now)?;
+    let (order_id, txid, output) = (payment.order_id.clone(), payment.txid.clone(), payment.output_index);
+    db.run(crate::store::db::Class::Scanner, move |s| void_and_notify(s, &order_id, &txid, output, current_height, now)).await?;
     Ok(true)
 }
 
@@ -631,6 +631,7 @@ pub async fn revalidate_recent_double_spend_voids(
     now: i64,
 ) -> Result<Vec<String>> {
     let current_height = daemon.get_height().await?;
+    let db = crate::store::Db::over_shared(store.clone());
     let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
     let mut recovered_orders = Vec::new();
     let mut after = 0;
@@ -639,7 +640,7 @@ pub async fn revalidate_recent_double_spend_voids(
         let Some(last) = page.last().map(|p| p.id) else { break };
         after = last;
         for payment in page {
-            if recheck_voided_payment(store, daemon, network, &payment, current_height, now).await {
+            if recheck_voided_payment(&db, daemon, network, &payment, current_height, now).await {
                 recovered_orders.push(payment.order_id.clone());
             }
         }
@@ -652,7 +653,7 @@ pub async fn revalidate_recent_double_spend_voids(
 /// it was restored. A failed or inconclusive recheck is logged and leaves
 /// the payment voided, for a later pass to retry.
 pub(crate) async fn recheck_voided_payment(
-    store: &crate::store::SharedStore,
+    db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
     network: &str,
     payment: &crate::store::OrderPaymentRow,
@@ -682,8 +683,11 @@ pub(crate) async fn recheck_voided_payment(
         tracing::info!(order.id = %payment.order_id, "double-spend revalidation: inconclusive key-image statuses; leaving the order voided");
         return false;
     }
-    let s = store.lock();
-    match unvoid_as_false_positive(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now) {
+    let (order_id, txid, output) = (payment.order_id.clone(), payment.txid.clone(), payment.output_index);
+    let restored = db
+        .run(crate::store::db::Class::Scanner, move |s| unvoid_as_false_positive(s, &order_id, &txid, output, current_height, now))
+        .await;
+    match restored {
         Ok(restored) => {
             if restored {
                 tracing::info!(order.id = %payment.order_id, network = %network, "double-spend revalidation reversed a void");
@@ -785,8 +789,9 @@ pub async fn run_scan_tick_with(
     expired_order_grace_period_seconds: i64,
     scan_chunk_memory_budget_mb: u32,
 ) -> Result<()> {
+    let db = crate::store::Db::over_shared(store.clone());
     let inputs = crate::work::RoundInputs {
-        store,
+        db: &db,
         custody: key_custody,
         daemon,
         network,

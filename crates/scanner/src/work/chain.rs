@@ -6,7 +6,8 @@ use std::collections::HashSet;
 
 use crate::daemon::{KeyImageStatus, MoneroDaemonClient, TxLocation};
 use crate::scanner::{void_and_notify_in_tx, ScannerError};
-use crate::store::{OpenedReorg, OrderPaymentRow, ReorgPhase, SharedStore};
+use crate::store::db::Class;
+use crate::store::{Db, OpenedReorg, OrderPaymentRow, ReorgPhase, Store};
 
 use super::{bounded, Progress, Round};
 
@@ -40,7 +41,7 @@ pub(crate) struct Reconciled {
 
 /// The chain work for one network, usable from a round or on its own.
 pub(crate) struct Chain<'a> {
-    pub store: &'a SharedStore,
+    pub db: &'a Db,
     pub daemon: &'a dyn MoneroDaemonClient,
     pub network: &'a str,
     pub reorg_check_depth: u64,
@@ -48,6 +49,15 @@ pub(crate) struct Chain<'a> {
 }
 
 impl Chain<'_> {
+    /// Runs `f` on the database worker, with this network's name.
+    async fn db<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Store, &str) -> Result<T, ScannerError> + Send + 'static,
+    ) -> Result<T, ScannerError> {
+        let network = self.network.to_string();
+        self.db.run(Class::Scanner, move |s| f(s, &network)).await
+    }
+
     /// The lowest height where the stored chain and the node's differ, if
     /// they do within the reorg window.
     ///
@@ -56,13 +66,14 @@ impl Chain<'_> {
     /// comparison settles the common case; a mismatch is narrowed down by
     /// binary search over the stored window, O(log depth) lookups.
     pub async fn detect(&self, tip: u64) -> Result<Option<u64>, ScannerError> {
-        let Some(high_water) = self.store.lock().max_scanned_height(self.network)? else { return Ok(None) };
-        let check = high_water.min(tip);
-        let rows = self.store.lock().scanned_blocks_between(
-            self.network,
-            check.saturating_sub(self.reorg_check_depth),
-            check,
-        )?;
+        let depth = self.reorg_check_depth;
+        let rows = self
+            .db(move |s, network| {
+                let Some(high_water) = s.max_scanned_height(network)? else { return Ok(Vec::new()) };
+                let check = high_water.min(tip);
+                Ok(s.scanned_blocks_between(network, check.saturating_sub(depth), check)?)
+            })
+            .await?;
         let (Some(first), Some(last)) = (rows.first(), rows.last()) else { return Ok(None) };
         if self.node_agrees(last).await? {
             return Ok(None);
@@ -91,8 +102,9 @@ impl Chain<'_> {
 
     /// Records a detected fork (or deepens the open job). Logged, because a
     /// reorg is rare and worth an operator knowing about.
-    pub fn open(&self, fork: u64) -> Result<(), ScannerError> {
-        match self.store.lock().open_reorg_job(self.network, fork, self.now)? {
+    pub async fn open(&self, fork: u64) -> Result<(), ScannerError> {
+        let now = self.now;
+        match self.db(move |s, network| Ok(s.open_reorg_job(network, fork, now)?)).await? {
             OpenedReorg::Created => {
                 tracing::warn!(network = %self.network, fork, "chain reorganisation detected - reconciling payments from this height")
             }
@@ -107,7 +119,8 @@ impl Chain<'_> {
     /// Re-examines up to `PROCESS_PAGE` due candidates not in `skip`.
     /// Each outcome and the removal of its candidate commit together.
     pub async fn process_page(&self, tip: u64, skip: &mut HashSet<i64>) -> Result<(usize, Reconciled), ScannerError> {
-        let due = self.store.lock().due_reorg_candidates(self.network, self.now, PROCESS_PAGE + skip.len())?;
+        let (now, limit) = (self.now, PROCESS_PAGE + skip.len());
+        let due = self.db(move |s, network| Ok(s.due_reorg_candidates(network, now, limit)?)).await?;
         let mut done = Reconciled::default();
         let mut processed = 0;
         let page: Vec<_> = due.into_iter().filter(|c| !skip.contains(&c.payment.id)).take(PROCESS_PAGE).collect();
@@ -122,11 +135,13 @@ impl Chain<'_> {
                         error = %error,
                         "reorg: giving up re-examining a payment the node keeps failing to answer about - leaving it as recorded"
                     );
-                    self.store.lock().complete_reorg_candidate(self.network, candidate.payment.id)?;
+                    let id = candidate.payment.id;
+                    self.db(move |s, network| Ok(s.complete_reorg_candidate(network, id)?)).await?;
                 }
                 Err(error) => {
                     tracing::warn!(network = %self.network, payment.id = candidate.payment.id, error = %error, "reorg: re-examining a payment failed (retried)");
-                    self.store.lock().defer_reorg_candidate(self.network, candidate.payment.id, self.now)?;
+                    let (id, now) = (candidate.payment.id, self.now);
+                    self.db(move |s, network| Ok(s.defer_reorg_candidate(network, id, now)?)).await?;
                     done.failure.get_or_insert(error);
                 }
             }
@@ -140,29 +155,40 @@ impl Chain<'_> {
     ///   its key images;
     /// - voided: restore it if its transaction is back on the chain.
     async fn reexamine(&self, candidate: &OrderPaymentRow, tip: u64, done: &mut Reconciled) -> Result<(), ScannerError> {
-        let network = self.network;
         // The row as it is now: something else may have changed it since
         // it was collected.
-        let Some(payment) = self.store.lock().payment_by_id(candidate.id)? else {
-            self.store.lock().complete_reorg_candidate(network, candidate.id)?;
-            return Ok(());
-        };
-        let location = bounded(self.daemon.locate_transaction(&payment.txid)).await?;
-        let (order_id, txid, output) = (&payment.order_id, &payment.txid, payment.output_index);
-        if payment.voided_at.is_some() {
-            let restored = self.store.lock().in_transaction(|s| -> Result<bool, ScannerError> {
-                let mut restored = false;
-                if let TxLocation::InBlock(height) = location {
-                    if s.unvoid_payment(order_id, txid, output)? {
-                        s.update_payment_block_height(order_id, txid, output, Some(height as i64))?;
-                        restored = true;
-                    }
+        let id = candidate.id;
+        let current = self
+            .db(move |s, network| {
+                let payment = s.payment_by_id(id)?;
+                if payment.is_none() {
+                    s.complete_reorg_candidate(network, id)?;
                 }
-                s.complete_reorg_candidate(network, payment.id)?;
-                Ok(restored)
-            })?;
+                Ok(payment)
+            })
+            .await?;
+        let Some(payment) = current else { return Ok(()) };
+        let location = bounded(self.daemon.locate_transaction(&payment.txid)).await?;
+        let (order_id, txid, output) = (payment.order_id.clone(), payment.txid.clone(), payment.output_index);
+        if payment.voided_at.is_some() {
+            let (o, t) = (order_id.clone(), txid.clone());
+            let restored = self
+                .db(move |s, network| {
+                    s.in_transaction(|s| -> Result<bool, ScannerError> {
+                        let mut restored = false;
+                        if let TxLocation::InBlock(height) = location {
+                            if s.unvoid_payment(&o, &t, output)? {
+                                s.update_payment_block_height(&o, &t, output, Some(height as i64))?;
+                                restored = true;
+                            }
+                        }
+                        s.complete_reorg_candidate(network, id)?;
+                        Ok(restored)
+                    })
+                })
+                .await?;
             if restored {
-                done.dirty_orders.insert(order_id.clone());
+                done.dirty_orders.insert(order_id);
             }
             return Ok(());
         }
@@ -172,13 +198,16 @@ impl Chain<'_> {
             TxLocation::NotFound => None,
         };
         if let Some(height) = new_height {
-            self.store.lock().in_transaction(|s| -> Result<(), ScannerError> {
-                s.update_payment_block_height(order_id, txid, output, height)?;
-                s.complete_reorg_candidate(network, payment.id)
-                    .map_err(ScannerError::from)
-            })?;
+            let (o, t) = (order_id.clone(), txid.clone());
+            self.db(move |s, network| {
+                s.in_transaction(|s| -> Result<(), ScannerError> {
+                    s.update_payment_block_height(&o, &t, output, height)?;
+                    Ok(s.complete_reorg_candidate(network, id)?)
+                })
+            })
+            .await?;
             if height != payment.block_height {
-                done.dirty_orders.insert(order_id.clone());
+                done.dirty_orders.insert(order_id);
             }
             return Ok(());
         }
@@ -193,15 +222,19 @@ impl Chain<'_> {
                 false
             }
         };
-        self.store.lock().in_transaction(|s| -> Result<(), ScannerError> {
-            if proven {
-                void_and_notify_in_tx(s, order_id, txid, output, tip, self.now)?;
-            }
-            s.complete_reorg_candidate(network, payment.id).map_err(ScannerError::from)
-        })?;
+        let (o, t, now) = (order_id.clone(), txid.clone(), self.now);
+        self.db(move |s, network| {
+            s.in_transaction(|s| -> Result<(), ScannerError> {
+                if proven {
+                    void_and_notify_in_tx(s, &o, &t, output, tip, now)?;
+                }
+                Ok(s.complete_reorg_candidate(network, id)?)
+            })
+        })
+        .await?;
         if proven {
             done.dirty_orders.insert(order_id.clone());
-            done.double_spent_orders.insert(order_id.clone());
+            done.double_spent_orders.insert(order_id);
         }
         Ok(())
     }
@@ -216,7 +249,8 @@ impl Chain<'_> {
             // there is nothing to anchor to.
             None => None,
         };
-        self.store.lock().finish_reorg(self.network, fork, ancestor.as_ref().map(|(h, hash)| (*h, hash.as_str())))?;
+        self.db(move |s, network| Ok(s.finish_reorg(network, fork, ancestor.as_ref().map(|(h, hash)| (*h, hash.as_str())))?))
+            .await?;
         tracing::info!(network = %self.network, fork, "reorganisation reconciled - replacement blocks will be scanned");
         Ok(())
     }
@@ -224,10 +258,11 @@ impl Chain<'_> {
     /// One unit of the open job, if any: collect a page, re-examine a page,
     /// or rewind. `Ok(None)` when there is no job.
     pub async fn advance_job(&self, tip: u64, skip: &mut HashSet<i64>) -> Result<Option<JobStep>, ScannerError> {
-        let Some(job) = self.store.lock().reorg_job(self.network)? else { return Ok(None) };
+        let Some(job) = self.db(|s, network| Ok(s.reorg_job(network)?)).await? else { return Ok(None) };
         match job.phase {
             ReorgPhase::CollectConfirmed { .. } | ReorgPhase::CollectUnconfirmed { .. } => {
-                self.store.lock().collect_reorg_candidates(self.network, COLLECT_PAGE, self.now)?;
+                let now = self.now;
+                self.db(move |s, network| Ok(s.collect_reorg_candidates(network, COLLECT_PAGE, now)?)).await?;
                 Ok(Some(JobStep::Collected))
             }
             ReorgPhase::Process => {
@@ -235,7 +270,7 @@ impl Chain<'_> {
                 if processed > 0 {
                     return Ok(Some(JobStep::Processed(reconciled)));
                 }
-                let (remaining, _) = self.store.lock().reorg_work_remaining(self.network)?;
+                let (remaining, _) = self.db(|s, network| Ok(s.reorg_work_remaining(network)?)).await?;
                 if remaining > 0 {
                     return Ok(Some(JobStep::Waiting));
                 }
@@ -275,7 +310,7 @@ pub(super) async fn step(round: &mut Round<'_>) -> Progress {
 async fn run(round: &mut Round<'_>) -> Progress {
     let Some(tip) = round.tip else { return Progress::Blocked("chain height unknown") };
     let chain = Chain {
-        store: round.inputs.store,
+        db: round.inputs.db,
         daemon: round.inputs.daemon,
         network: round.inputs.network,
         reorg_check_depth: round.inputs.reorg_check_depth,
@@ -287,7 +322,7 @@ async fn run(round: &mut Round<'_>) -> Progress {
         round.chain.detected = true;
         match chain.detect(tip).await {
             Ok(Some(fork)) => {
-                if let Err(error) = chain.open(fork) {
+                if let Err(error) = chain.open(fork).await {
                     return Progress::Failed(error);
                 }
             }

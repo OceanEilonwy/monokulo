@@ -165,6 +165,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
 
     let engine_state = EngineAppState {
         store: store.clone(),
+        read_pool: None,
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
         wallet_handles: wallet_handles.clone(),

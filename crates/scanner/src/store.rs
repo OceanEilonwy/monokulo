@@ -23,7 +23,9 @@ use uuid::Uuid;
 use crate::auth::{generate_public_key, generate_secret_token, hash_secret_token};
 use crate::status::{OrderStatus, PaymentView, StatusInputs, derive_status};
 
+pub mod db;
 mod work;
+pub use db::{Db, DbMetrics};
 pub use work::{BlockCheckpoint, OpenedReorg, Position, ReorgCandidate, ReorgJob, ReorgPhase, StagedPayment};
 
 /// Every migration file, applied in order, exactly once each - tracked in
@@ -366,6 +368,14 @@ impl Store {
         configure_connection(&conn)?;
         apply_migrations(&conn)?;
         Ok(Store::from_connection(conn))
+    }
+
+    /// Another connection to the same database file, sharing this store's
+    /// order-change notifications. Migrations have already run.
+    pub(crate) fn connect_again(&self, path: &str) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        configure_connection(&conn)?;
+        Ok(Store { conn, order_changes: self.order_changes.clone(), pending_order_changes: RefCell::new(None) })
     }
 
     pub fn open_file(path: &str) -> Result<Self> {

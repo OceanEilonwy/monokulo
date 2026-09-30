@@ -39,11 +39,11 @@ pub(super) async fn step(round: &mut Round<'_>) -> Progress {
     round.upkeep.first_done = true;
     let mut result = Ok(());
     if first {
-        result = prune(round).and(result);
+        result = prune(round).await.and(result);
         result = recheck_voids(round).await.and(result);
     }
     if !round.upkeep.ranges_done {
-        result = scanned_ranges(round).and(result);
+        result = scanned_ranges(round).await.and(result);
     }
     match result {
         Ok(()) => Progress::Advanced,
@@ -51,32 +51,40 @@ pub(super) async fn step(round: &mut Round<'_>) -> Progress {
     }
 }
 
-fn prune(round: &Round<'_>) -> Result<(), ScannerError> {
-    let s = round.inputs.store.lock();
-    if let Some(high_water) = s.max_scanned_height(round.network())? {
-        let keep_from = high_water.saturating_sub(round.inputs.reorg_check_depth.saturating_mul(4));
-        s.prune_scanned_blocks_below(round.network(), keep_from)?;
-    }
-    Ok(())
+async fn prune(round: &Round<'_>) -> Result<(), ScannerError> {
+    let depth = round.inputs.reorg_check_depth;
+    round
+        .db(move |s, network| {
+            if let Some(high_water) = s.max_scanned_height(network)? {
+                s.prune_scanned_blocks_below(network, high_water.saturating_sub(depth.saturating_mul(4)))?;
+            }
+            Ok(())
+        })
+        .await
 }
 
 /// One page of stores' scanned-range bookkeeping. Each store's orders show
 /// its own cursor, never the network's height: a store that is behind
 /// hasn't been checked against the blocks above its cursor.
-fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
-    let network = round.network();
-    let grace = round.inputs.grace_period_seconds;
-    let s = round.inputs.store.lock();
-    let after = s.scheduler_position(network, Position::ScanRange)?.unwrap_or_default();
-    let page = s.active_tenants_page(network, round.now, grace, &after, RANGE_PAGE)?;
-    for (tenant_id, cursor) in &page {
-        if let Some(cursor) = cursor {
-            s.bump_scanned_heights_for_tenant(tenant_id, *cursor, round.now, grace)?;
-        }
-    }
-    let finished = page.len() < RANGE_PAGE;
-    let next = if finished { String::new() } else { page.last().map(|(id, _)| id.clone()).unwrap_or_default() };
-    s.set_scheduler_position(network, Position::ScanRange, &next)?;
+async fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
+    let (grace, now) = (round.inputs.grace_period_seconds, round.now);
+    let finished = round
+        .db(move |s, network| {
+            s.in_transaction(|s| -> Result<bool, ScannerError> {
+                let after = s.scheduler_position(network, Position::ScanRange)?.unwrap_or_default();
+                let page = s.active_tenants_page(network, now, grace, &after, RANGE_PAGE)?;
+                for (tenant_id, cursor) in &page {
+                    if let Some(cursor) = cursor {
+                        s.bump_scanned_heights_for_tenant(tenant_id, *cursor, now, grace)?;
+                    }
+                }
+                let finished = page.len() < RANGE_PAGE;
+                let next = if finished { String::new() } else { page.last().map(|(id, _)| id.clone()).unwrap_or_default() };
+                s.set_scheduler_position(network, Position::ScanRange, &next)?;
+                Ok(finished)
+            })
+        })
+        .await?;
     if finished {
         round.upkeep.ranges_done = true;
     }
@@ -89,31 +97,31 @@ fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
 /// pass.
 async fn recheck_voids(round: &mut Round<'_>) -> Result<(), ScannerError> {
     let Some(tip) = round.tip else { return Ok(()) };
-    let network = round.network().to_string();
-    let store = round.inputs.store;
-    let (started, after) = {
-        let s = store.lock();
-        let started: i64 = s.scheduler_position(&network, Position::VoidRecheckPassStarted)?.and_then(|v| v.parse().ok()).unwrap_or(i64::MIN);
-        let after: i64 = s.scheduler_position(&network, Position::VoidRecheck)?.and_then(|v| v.parse().ok()).unwrap_or(0);
-        (started, after)
-    };
-    if after == 0 {
-        if round.now.saturating_sub(started) < VOID_RECHECK_INTERVAL_SECS {
-            return Ok(());
-        }
-        store.lock().set_scheduler_position(&network, Position::VoidRecheckPassStarted, &round.now.to_string())?;
-    }
-    let page = store.lock().voided_payments_page(&network, round.now - DOUBLE_SPEND_RECHECK_WINDOW_SECS, after, VOID_PAGE)?;
-    let last = page.last().map(|p| p.id);
-    for payment in page {
-        recheck_voided_payment(store, round.inputs.daemon, &network, &payment, tip, round.now).await;
+    let now = round.now;
+    let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
+    let page = round
+        .db(move |s, network| {
+            let started: i64 =
+                s.scheduler_position(network, Position::VoidRecheckPassStarted)?.and_then(|v| v.parse().ok()).unwrap_or(i64::MIN);
+            let after: i64 = s.scheduler_position(network, Position::VoidRecheck)?.and_then(|v| v.parse().ok()).unwrap_or(0);
+            if after == 0 {
+                if now.saturating_sub(started) < VOID_RECHECK_INTERVAL_SECS {
+                    return Ok(Vec::new());
+                }
+                s.set_scheduler_position(network, Position::VoidRecheckPassStarted, &now.to_string())?;
+            }
+            Ok(s.voided_payments_page(network, cutoff, after, VOID_PAGE)?)
+        })
+        .await?;
+    let Some(last) = page.last().map(|p| p.id) else { return Ok(()) };
+    for payment in &page {
+        recheck_voided_payment(round.inputs.db, round.inputs.daemon, round.network(), payment, tip, now).await;
     }
     // Back to 0 (the pass is over) once nothing follows this page.
-    let cutoff = round.now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
-    let next = match last {
-        Some(id) if !store.lock().voided_payments_page(&network, cutoff, id, 1)?.is_empty() => id,
-        _ => 0,
-    };
-    store.lock().set_scheduler_position(&network, Position::VoidRecheck, &next.to_string())?;
-    Ok(())
+    round
+        .db(move |s, network| {
+            let next = if s.voided_payments_page(network, cutoff, last, 1)?.is_empty() { 0 } else { last };
+            Ok(s.set_scheduler_position(network, Position::VoidRecheck, &next.to_string())?)
+        })
+        .await
 }

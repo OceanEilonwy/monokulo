@@ -97,8 +97,10 @@ impl FromRequestParts<AppState> for AuthedInstanceAdmin {
             parts.headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or(ApiError::Unauthorized)?;
         let token = header_value.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?;
         let presented_hash = shared::auth::hash_secret_token(token);
-        let store = state.store.lock();
-        let effective_hash = effective_admin_token_hash(&store).map_err(|_| ApiError::Internal("settings lookup failed".into()))?;
+        let effective_hash = state
+            .read_store(|store| Ok(effective_admin_token_hash(store)))
+            .await?
+            .map_err(|_| ApiError::Internal("settings lookup failed".into()))?;
         match effective_hash {
             Some(hash) if hash == presented_hash => Ok(AuthedInstanceAdmin),
             _ => Err(ApiError::Unauthorized),
@@ -165,7 +167,7 @@ pub async fn get_settings(
     let Some(registry) = state.settings.registry.as_ref() else {
         return Err(ApiError::Unavailable("settings are not available on this engine".into()));
     };
-    let tenant_counts = state.store.lock().count_tenants_by_network()?;
+    let tenant_counts = state.read_store(|s| s.count_tenants_by_network()).await?;
     let mut scalars = HashMap::new();
     let mut monero_node = HashMap::new();
     let mut networks = HashMap::new();
@@ -324,7 +326,7 @@ pub async fn update_settings(
             // Networks stores use that have no node now, or whose just-saved
             // nodes don't answer (task 2.2, decision D2). Only saved
             // networks are probed, each node briefly, all at once.
-            let counts = state.store.lock().count_tenants_by_network().unwrap_or_default();
+            let counts = state.read_store(|s| s.count_tenants_by_network()).await.unwrap_or_default();
             let saved_networks: Vec<&str> =
                 NETWORKS.iter().filter(|(_, setting)| report.changed.contains(&setting.key)).map(|(n, _)| *n).collect();
             let mut unserved = Vec::new();

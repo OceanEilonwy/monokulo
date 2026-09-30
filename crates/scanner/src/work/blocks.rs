@@ -129,27 +129,32 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
 
 async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerError> {
     let Some(tip) = round.tip else { return Ok(Progress::Blocked("chain height unknown")) };
-    let network = round.network().to_string();
-    let store = round.inputs.store;
-    if store.lock().reorg_job(&network)?.is_some() {
-        return Ok(Progress::Blocked("a reorganisation is being reconciled"));
-    }
     if round.chain.rewound {
         return Ok(Progress::Blocked("rewound this round; replacement blocks are scanned from the next"));
     }
-    let Some(high_water) = store.lock().max_scanned_height(&network)? else {
+    let repair = !round.blocks.repaired;
+    let (reorg_open, high_water) = round
+        .db(move |s, network| {
+            let reorg_open = s.reorg_job(network)?.is_some();
+            let high_water = s.max_scanned_height(network)?;
+            if let (false, true, Some(high_water)) = (reorg_open, repair, high_water) {
+                // Cheap repairs whatever happened before: no cursor ahead of
+                // the network, new tenants anchored at it, disabled ones
+                // moved along.
+                s.clamp_cursors(network, Some(high_water))?;
+                s.anchor_unset_cursors(network, high_water)?;
+                s.snap_disabled_cursors(network, high_water)?;
+            }
+            Ok((reorg_open, high_water))
+        })
+        .await?;
+    if reorg_open {
+        return Ok(Progress::Blocked("a reorganisation is being reconciled"));
+    }
+    let Some(high_water) = high_water else {
         return seed(round, tip).await;
     };
-    if !round.blocks.repaired {
-        // Cheap repairs whatever happened before: no cursor ahead of the
-        // network, new tenants anchored at it, disabled ones moved along.
-        let s = store.lock();
-        s.clamp_cursors(&network, Some(high_water))?;
-        s.anchor_unset_cursors(&network, high_water)?;
-        s.snap_disabled_cursors(&network, high_water)?;
-        drop(s);
-        round.blocks.repaired = true;
-    }
+    round.blocks.repaired = true;
 
     use std::sync::atomic::Ordering::Relaxed;
     let frontier_behind = !round.blocks.frontier_done && high_water < tip;
@@ -160,10 +165,10 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
         return Ok(Progress::Advanced);
     }
     turn.store(false, Relaxed);
-    if let Some(cursor) = next_catch_up_group(round, high_water)? {
+    if let Some(cursor) = next_catch_up_group(round, high_water).await? {
         // Tenants with nothing that could ever have been paid need no block
         // read to decide: straight to the high-water mark.
-        store.lock().advance_idle_cursors(&network, cursor, high_water, i64::MIN / 2, 0)?;
+        round.db(move |s, network| Ok(s.advance_idle_cursors(network, cursor, high_water, i64::MIN / 2, 0)?)).await?;
         advance_group(round, Group::CatchUp, cursor, tip, until).await?;
         return Ok(Progress::Advanced);
     }
@@ -183,12 +188,15 @@ async fn seed(round: &mut Round<'_>, tip: u64) -> Result<Progress, ScannerError>
     let seed = tip.saturating_sub(1);
     match bounded(round.inputs.daemon.get_block_hash(seed)).await {
         Ok(hash) => {
-            let s = round.inputs.store.lock();
-            s.in_transaction(|s| -> Result<(), ScannerError> {
-                s.set_scanned_block(network, seed, &hash)?;
-                s.anchor_unset_cursors(network, seed)?;
-                Ok(())
-            })?;
+            round
+                .db(move |s, network| {
+                    s.in_transaction(|s| -> Result<(), ScannerError> {
+                        s.set_scanned_block(network, seed, &hash)?;
+                        s.anchor_unset_cursors(network, seed)?;
+                        Ok(())
+                    })
+                })
+                .await?;
             tracing::info!(network = %network, height = seed, "started scanning this network");
             Ok(Progress::Advanced)
         }
@@ -198,24 +206,32 @@ async fn seed(round: &mut Round<'_>, tip: u64) -> Result<Progress, ScannerError>
 
 /// The next catch-up group after the last one served (wrapping), or `None`
 /// once the rotation has come round to a group already served this round.
-fn next_catch_up_group(round: &mut Round<'_>, high_water: u64) -> Result<Option<u64>, ScannerError> {
-    let network = round.network();
-    let s = round.inputs.store.lock();
-    let after = match round.blocks.last_group {
-        Some(last) => Some(last),
-        None => s.scheduler_position(network, Position::CatchUpGroup)?.and_then(|v| v.parse().ok()),
-    };
-    let mut next = s.scan_group_cursors(network, high_water, after, 1)?;
-    if next.is_empty() && after.is_some() {
-        next = s.scan_group_cursors(network, high_water, None, 1)?;
+async fn next_catch_up_group(round: &mut Round<'_>, high_water: u64) -> Result<Option<u64>, ScannerError> {
+    let last = round.blocks.last_group;
+    let visited = round.blocks.visited.clone();
+    let group = round
+        .db(move |s, network| {
+            let after = match last {
+                Some(last) => Some(last),
+                None => s.scheduler_position(network, Position::CatchUpGroup)?.and_then(|v| v.parse().ok()),
+            };
+            let mut next = s.scan_group_cursors(network, high_water, after, 1)?;
+            if next.is_empty() && after.is_some() {
+                next = s.scan_group_cursors(network, high_water, None, 1)?;
+            }
+            let Some(&group) = next.first() else { return Ok(None) };
+            if visited.contains(&group) {
+                return Ok(None);
+            }
+            s.set_scheduler_position(network, Position::CatchUpGroup, &group.to_string())?;
+            Ok(Some(group))
+        })
+        .await?;
+    if let Some(group) = group {
+        round.blocks.visited.insert(group);
+        round.blocks.last_group = Some(group);
     }
-    let Some(&group) = next.first() else { return Ok(None) };
-    if !round.blocks.visited.insert(group) {
-        return Ok(None);
-    }
-    s.set_scheduler_position(network, Position::CatchUpGroup, &group.to_string())?;
-    round.blocks.last_group = Some(group);
-    Ok(Some(group))
+    Ok(group)
 }
 
 /// Scans up to `BLOCKS_PER_UNIT` blocks for the group at `cursor`, one
@@ -225,7 +241,7 @@ fn next_catch_up_group(round: &mut Round<'_>, high_water: u64) -> Result<Option<
 async fn advance_group(round: &mut Round<'_>, group: Group, cursor: u64, tip: u64, until: Instant) -> Result<(), ScannerError> {
     let mut cursor = cursor;
     for scanned in 0..BLOCKS_PER_UNIT {
-        let high_water = round.inputs.store.lock().max_scanned_height(round.network())?.unwrap_or(cursor);
+        let high_water = round.db(|s, network| Ok(s.max_scanned_height(network)?)).await?.unwrap_or(cursor);
         let end = match group {
             Group::Frontier => tip,
             Group::CatchUp => high_water,
@@ -261,7 +277,6 @@ async fn scan_block(
 ) -> Result<BlockOutcome, ScannerError> {
     let height = parent + 1;
     let network = round.network().to_string();
-    let store = round.inputs.store;
     let grace = round.inputs.grace_period_seconds;
 
     // Which orders could have been paid in this block: as of now for a new
@@ -269,10 +284,18 @@ async fn scan_block(
     // that closed during the gap is still looked for.
     let since = if height > high_water { round.now } else { block_time(round, parent).await?.min(round.now) };
     let waiting = round.state.backoff.waiting();
-    let members = store.lock().tenants_at_cursor(&network, parent, &waiting, GROUP_PAGE)?;
+    let members = round
+        .db(move |s, network| {
+            let mut members = Vec::new();
+            for tenant_id in s.tenants_at_cursor(network, parent, &waiting, GROUP_PAGE)? {
+                let window = s.scan_window(&tenant_id, since, grace)?;
+                members.push((tenant_id, window));
+            }
+            Ok(members)
+        })
+        .await?;
     let mut scannable: Vec<(String, WalletHandle, ScanIndices)> = Vec::new();
-    for tenant_id in members {
-        let window = store.lock().scan_window(&tenant_id, since, grace)?;
+    for (tenant_id, window) in members {
         if window.is_empty() {
             continue; // nothing to find: moved along by `advance_idle_cursors`
         }
@@ -283,7 +306,8 @@ async fn scan_block(
     }
 
     let hash = bounded(round.inputs.daemon.get_block_hash(height)).await?;
-    if store.lock().get_scanned_block_hash(&network, height)?.is_some_and(|stored| stored != hash) {
+    let recorded = round.db(move |s, network| Ok(s.get_scanned_block_hash(network, height)?)).await?;
+    if recorded.is_some_and(|stored| stored != hash) {
         return Ok(BlockOutcome::Diverged("the node's block differs from the one recorded"));
     }
 
@@ -292,12 +316,18 @@ async fn scan_block(
     let mut failed: HashSet<String> = HashSet::new();
     if !scannable.is_empty() {
         let txs = block_transactions(round, height, end).await?;
-        for (tenant_id, _, _) in &scannable {
-            let resume = match store.lock().block_checkpoint(&network, tenant_id)? {
+        let ids: Vec<String> = scannable.iter().map(|(id, _, _)| id.clone()).collect();
+        let checkpoints = round
+            .db(move |s, network| {
+                ids.into_iter().map(|id| Ok((s.block_checkpoint(network, &id)?, id))).collect::<Result<Vec<_>, ScannerError>>()
+            })
+            .await?;
+        for (checkpoint, tenant_id) in checkpoints {
+            let resume = match checkpoint {
                 Some(checkpoint) if checkpoint.height == height && checkpoint.hash == hash => checkpoint.next_tx.min(txs.len()),
                 _ => 0,
             };
-            next_tx.insert(tenant_id.clone(), resume);
+            next_tx.insert(tenant_id, resume);
         }
         let mut progressed = !must_progress;
         for (index, tx) in txs.iter().enumerate() {
@@ -307,7 +337,13 @@ async fn scan_block(
                 .collect();
             for batch in due.chunks(SCAN_CONCURRENCY) {
                 if progressed && Instant::now() >= until {
-                    checkpoint(store, &network, height, &hash, &next_tx, &mut scans, &failed, round.now)?;
+                    let progress: Vec<(String, usize, Vec<ScanResult>)> = next_tx
+                        .iter()
+                        .filter(|(id, next)| !failed.contains(*id) && **next > 0)
+                        .map(|(id, next)| (id.clone(), *next, scans.remove(id).unwrap_or_default()))
+                        .collect();
+                    let (hash, now) = (hash.clone(), round.now);
+                    round.db(move |s, network| checkpoint(s, network, height, &hash, progress, now)).await?;
                     return Ok(BlockOutcome::Interrupted);
                 }
                 for (tenant_id, result) in scan_for_tenants(round.inputs.custody, tx, batch).await {
@@ -351,32 +387,27 @@ async fn scan_block(
         Group::Frontier => height,
         Group::CatchUp => high_water,
     };
-    let s = store.lock();
-    let committed = commit(&s, &network, height, &hash, parent, idle_to, since, grace, scanned, round.now)?;
+    let now = round.now;
+    let committed =
+        round.db(move |s, network| commit(s, network, height, &hash, parent, idle_to, since, grace, scanned, now)).await?;
     Ok(if committed { BlockOutcome::Committed } else { BlockOutcome::Diverged("the recorded block changed before commit") })
 }
 
 /// Records how far each tenant got through the block, with its matches
 /// staged, so the next unit resumes there.
-#[allow(clippy::too_many_arguments)]
 fn checkpoint(
-    store: &crate::store::SharedStore,
+    s: &Store,
     network: &str,
     height: u64,
     hash: &str,
-    next_tx: &HashMap<String, usize>,
-    scans: &mut HashMap<String, Vec<ScanResult>>,
-    failed: &HashSet<String>,
+    progress: Vec<(String, usize, Vec<ScanResult>)>,
     now: i64,
 ) -> Result<(), ScannerError> {
-    store.lock().in_transaction(|s| -> Result<(), ScannerError> {
-        for (tenant_id, next) in next_tx {
-            if failed.contains(tenant_id) || *next == 0 {
-                continue;
-            }
-            s.save_block_checkpoint(network, tenant_id, &BlockCheckpoint { height, hash: hash.to_string(), next_tx: *next })?;
-            for scan in scans.remove(tenant_id).unwrap_or_default() {
-                stage_block_match(s, network, tenant_id, &scan, now)?;
+    s.in_transaction(|s| -> Result<(), ScannerError> {
+        for (tenant_id, next_tx, scans) in progress {
+            s.save_block_checkpoint(network, &tenant_id, &BlockCheckpoint { height, hash: hash.to_string(), next_tx })?;
+            for scan in scans {
+                stage_block_match(s, network, &tenant_id, &scan, now)?;
             }
         }
         Ok(())

@@ -275,9 +275,23 @@ pub async fn run_delivery_tick(
     max_attempts: u32,
     now: i64,
 ) -> Result<usize, crate::store::StoreError> {
+    let db = crate::store::Db::over_shared(store.clone());
+    run_delivery_tick_on(&db, client, allow_private, timeout, max_attempts, now).await
+}
+
+/// `run_delivery_tick` through the database worker: the production path.
+pub async fn run_delivery_tick_on(
+    db: &crate::store::Db,
+    client: &reqwest::Client,
+    allow_private: bool,
+    timeout: Duration,
+    max_attempts: u32,
+    now: i64,
+) -> Result<usize, crate::store::StoreError> {
+    use crate::store::db::Class;
     use futures_util::stream::{self, StreamExt};
 
-    let due = store.lock().due_webhook_deliveries_fair(now, DELIVERY_PER_TENANT, DELIVERY_BATCH)?;
+    let due = db.run(Class::Webhook, move |s| s.due_webhook_deliveries_fair(now, DELIVERY_PER_TENANT, DELIVERY_BATCH)).await?;
     let count = due.len();
     let started = std::time::Instant::now();
 
@@ -308,8 +322,7 @@ pub async fn run_delivery_tick(
     // the batch. Still record later outcomes if an earlier write fails.
     let mut first_error = None;
     while let Some((delivery, outcome, at)) = outcomes.next().await {
-        let store = store.lock();
-        let written = if outcome.delivered {
+        let written = db.run(Class::Webhook, move |store| if outcome.delivered {
             store.mark_webhook_delivered(delivery.delivery_id, outcome.response_status.unwrap_or(0), at)
         } else if delivery.attempt_count + 1 >= max_attempts {
             // Give up: record the final failure but stop scheduling retries by
@@ -330,7 +343,7 @@ pub async fn run_delivery_tick(
                 outcome.error.as_deref(),
                 at,
             )
-        };
+        }).await;
         if let Err(e) = written {
             first_error.get_or_insert(e);
         }

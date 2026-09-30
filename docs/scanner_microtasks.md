@@ -1,6 +1,6 @@
 # Scanner work units and scheduler
 
-Status: design and implementation record.
+Status: implemented. This is the design and implementation record.
 
 This document replaces the scanner's monolithic tick with small, durable,
 idempotent **work units** chosen by one **scheduler** per network. It borrows
@@ -28,13 +28,14 @@ fixture), but not its code.
 These held before and must keep holding. Each lists how it is enforced.
 
 1. **A tenant's cursor moves only past a block that was scanned for that
-   tenant.** `Store::commit_tenant_block` takes a `ScannedBlock`. Only the
-   block-scan unit can construct one (its fields are private and it has no
-   public constructor). Every cursor update is conditional on the cursor
-   still being at the parent height, so a concurrent rewind wins. Tenants
-   with nothing that could be paid (no order in scope) are moved along in
-   the same transaction that records the block for the network. That is a
-   predicate evaluated inside SQLite, not a list built earlier.
+   tenant.** `Store::advance_scanned_cursor` takes a `ScannedBlock`. Only the
+   block scan (`work::blocks`) can construct one: its fields are private and
+   it has no public constructor. Every cursor update is conditional on the
+   cursor still being at the parent height, so a concurrent rewind wins.
+   Tenants with nothing that could be paid (no order in scope) move by
+   `Store::advance_idle_cursors`, in the same transaction that records the
+   block. That is a predicate evaluated inside SQLite, not a list built
+   earlier. The old "advance everyone except the failures" call is gone.
 2. **Matches from a block become payments only after the whole block was
    scanned and its hash rechecked.** Staged rows (`partial_block_matches`)
    are promoted in the same transaction as the cursor advance.
@@ -102,16 +103,24 @@ work is bounded by page sizes, because a timeout cannot interrupt it.
 
 **Progress floor:** every tier with work completes at least one unit per
 round, even when its share is already spent. So a throttled CPU slows every
-tier; it doesn't starve one. If the round ends with work left over, the
-loop starts the next round immediately instead of sleeping for the poll
-interval (work-conserving catch-up).
+tier; it doesn't starve one. One unit of a tier does a bounded slice of
+*every* queue the tier owns: detection and a step of the reorg job;
+the vanished-payment page and a page of recomputes; pruning, a void-recheck
+page and a scanned-range page. So a round with time for a single unit per
+tier still advances everything.
+
+If the round ends with work left over, the loop starts the next round
+immediately instead of sleeping for the poll interval (work-conserving
+catch-up).
 
 ### Fairness inside a tier
 
 - **Blocks:** tenants are grouped by cursor. Each group scans its next block
-  once: one fetch, then one view-key scan per tenant. Groups are served
-  round-robin from a persisted rotation position. The frontier group (at
-  the network high-water mark) goes first, so fresh payments stay fast.
+  once: one fetch, then one view-key scan per tenant. Catch-up groups are
+  served round-robin from a persisted rotation position. While the frontier
+  (the group at the network high-water mark) is behind the node, turns
+  alternate between it and catch-up. The turn is kept across rounds, so
+  even one-unit rounds alternate.
 - **Mempool:** a rotating window of transactions and of tenants per
   transaction (the existing policy).
 - **Recompute:** obligations first, then orders by `next_due_*`, earliest
@@ -167,22 +176,98 @@ While a job exists:
   confirmation count shown to customers changes every block).
 - **Terminal:** both are `NULL`. A later payment change creates an
   obligation through the existing triggers.
-- **Expiry held because the tenant is behind:** due again 30 s later.
+- **A transition held back** (expiry while the tenant is behind, or a
+  settlement during a reorg): due again at `now`, so it is retried next round
+  and queues behind anything due earlier.
+- **A changed deadline** (a trigger on `expires_at_utc`): due at once.
 
 Two indexed keyset pages (`next_due_at <= now`, `next_due_height <= tip`)
 replace the rotating scan over every non-terminal order.
 
 ## Database access
 
-- Scanner units never hold a database lock across a daemon, custody or
-  network await.
-- Every write transaction starts with `BEGIN IMMEDIATE`, so its decision
-  reads and its writes see the same snapshot. A deferred transaction that
-  read first could otherwise fail its first write with `SQLITE_BUSY` when
-  another connection had written in between.
-- A dedicated writer thread per engine serves write classes (`Scanner`,
-  `Webhook`, `Admin`) round-robin from bounded queues, so SQLite work never
-  blocks a Tokio worker and no class starves another.
+No SQLite call runs on a Tokio worker thread in production:
+
+- **The database worker** (`store::Db`) is one thread with its own
+  connection. The scanner's units and webhook delivery send it jobs in
+  classes (`Scanner`, `Webhook`, `Admin`), each with a bounded queue (64),
+  served round-robin. A backlog in one class delays another by at most one
+  job, and a full queue makes its callers wait instead of growing memory.
+  A job runs to completion even if its caller stops waiting, so every job
+  is a whole, idempotent step. The worker shares the main store's
+  order-change notifications, so live updates see its commits.
+- **API requests** read through the read pool (`AppState::read_store`) and
+  write on the blocking pool (`AppState::write_store`), on the main
+  connection.
+- **Two connections write:** the worker and the API. SQLite's write lock
+  arbitrates between them. Every write transaction starts with
+  `BEGIN IMMEDIATE`, so its decision reads and its writes see one snapshot;
+  a deferred transaction that read first could otherwise fail its first
+  write with `SQLITE_BUSY_SNAPSHOT`, which no busy timeout retries. Scanner
+  jobs are short (bounded pages), so an API write waits milliseconds at most.
+- Scanner units never hold a database job across a daemon, custody or
+  network await: they read, await the node, then write.
+- `Db::over_shared` runs jobs inline on the shared store, for tests and
+  in-memory databases.
+
+## Failures
+
+- **A node failure** (an error or no answer within 15 s) stops only the
+  work that needs the node, leaves durable state where it was, and is
+  retried next round. It is logged, not reported as a failed round. If the
+  chain height itself can't be read, only the mempool is scanned and the
+  round reports the error.
+- **A storage failure** stops that tier for the round and is reported.
+- **A custody failure** for one tenant leaves that tenant at its cursor
+  with a retry delay (two immediate retries, then doubling to a minute).
+  Other tenants carry on.
+- **A reorg candidate the node can't answer about** is retried with backoff
+  and, after 12 attempts, left as recorded (the rule for ambiguous evidence:
+  never void on absence alone). So one payment can't hold a network's block
+  scanning forever.
+- **A panic** in a database job fails only its caller. A panic in a round
+  restarts the network's loop (the existing supervisor), which costs only
+  in-memory state.
+
+## Where it lives
+
+| Path | What |
+| --- | --- |
+| `crates/scanner/src/work/mod.rs` | tiers, budget, progress floor, backoff, `run_round` |
+| `crates/scanner/src/work/chain.rs` | reorg detection and the reorg job |
+| `crates/scanner/src/work/blocks.rs` | block scanning, `ScannedBlock`, checkpoints |
+| `crates/scanner/src/work/mempool.rs` | mempool rotation |
+| `crates/scanner/src/work/settlement.rs` | vanished payments, recompute |
+| `crates/scanner/src/work/upkeep.rs` | pruning, scanned ranges, void recheck |
+| `crates/scanner/src/work/tests.rs` | the scheduler's guarantees |
+| `crates/scanner/src/store/work.rs` | the durable state (migration 0019) |
+| `crates/scanner/src/store/db.rs` | the database worker |
+
+`scanner::run_scan_tick*` and `check_for_reorg_and_reconcile` remain as
+entry points that run a round, or the reorg job to completion, on a shared
+store. The existing scanner tests run through them unchanged.
+
+## Decisions
+
+- **No per-order work items.** Scanning costs one key exchange per
+  transaction per *tenant* (the view key); the per-order part is a table
+  lookup. Units are per tenant group and per block, and per order only for
+  status recomputes.
+- **No event log.** New blocks are "a cursor below the high-water mark";
+  a reorg is its job row. Work is derived from state, so there is nothing to
+  keep in step.
+- **No large-tenant index paging.** Plain custody caches each wallet's
+  subaddress table and builds it in bounded batches, so scanning a
+  transaction costs the same for a store with 2 orders or 300.
+- **Reorg detection is stateless.** It costs one lookup when the chain
+  agrees, and O(log depth) otherwise, so it needs no durable progress.
+- **Block bodies are only trusted within a round.** They are cached per
+  round (one pinned node), never across rounds.
+- **After a rewind, replacement blocks are scanned from the next round,**
+  against a freshly read chain.
+- **The hash before the contents.** A block's hash is read before its
+  transactions and rechecked after. With per-call failover, the contents
+  then come from the node whose hash is recorded.
 
 ## Stress results
 
@@ -199,3 +284,32 @@ workload is the same `scenario_v3` for both engines.
 
 All three fault points recovered. The RPC fault point showed a 74 ms timer
 spike. Raw data: `docs/stress/baseline-legacy-run.json`.
+
+### Scheduler with the database worker (this branch)
+
+| Tenants | Status | 4 measured ticks | Final lag | Max timer delay | Max HTTP | Max admin write |
+| --- | --- | --- | --- | --- | --- | --- |
+| 32 | sustainable | 2.81 s (−11 %) | 0 | 3.3 ms | 4.1 ms | 35 ms (legacy 46) |
+| 64 | sustainable | 5.42 s (−9 %) | 0 | 3.6 ms | 5.1 ms | 34 ms (legacy 54) |
+| 128 | sustainable | 10.73 s (−3 %) | 0 | 3.5 ms | 5.5 ms | 56 ms (legacy 60) |
+
+All three fault points recovered. Under the RPC fault point the worst timer
+delay fell from 74 ms (legacy) to 2.9 ms. SQLite no longer runs on the
+runtime's workers. The worker's longest job (34 ms) and longest queue wait
+(1.7 ms) are dominated by the fixture's deliberate 25 ms write lock per tick.
+The fixture's admin writes still go through the main connection, as the API
+does. Raw data: `docs/stress/scheduler-db-worker-run.json`; the scheduler
+before the worker: `docs/stress/scheduler-run-1.json`.
+
+These are observations for this workload and machine, not capacity limits.
+
+## Follow-ups
+
+- The API still writes through the main connection's mutex, now on the
+  blocking pool. Moving those writes onto the worker's `Admin` class would
+  make the fairness between API and scanner writes a queue property rather
+  than SQLite's lock. It would also allow removing `SharedStore` from
+  `AppState`, which many tests and harnesses construct directly.
+- The stress fixture doesn't yet inject reorgs, process kills or slow disk
+  commands. The engine's tests cover the first two (restart mid-job,
+  mid-block, the kill-anywhere test); slow disk is untested.

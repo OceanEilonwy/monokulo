@@ -12,7 +12,7 @@ use crate::daemon::fake::FakeDaemonClient;
 use crate::daemon::{DaemonError, KeyImageStatus, TxLocation};
 use crate::scanner::tests::{cursor_of, fixture_tenant, fixture_tx, order_status, unrelated_tx, FlakyKeyCustody};
 use crate::status::OrderStatus;
-use crate::store::Store;
+use crate::store::{Db, SharedStore, Store};
 
 /// A fake node that counts the block-hash lookups made against it.
 struct CountingDaemon<'a> {
@@ -68,13 +68,13 @@ impl MoneroDaemonClient for CountingDaemon<'_> {
 }
 
 fn inputs<'a>(
-    store: &'a SharedStore,
+    db: &'a Db,
     custody: &'a dyn KeyCustody,
     daemon: &'a dyn MoneroDaemonClient,
     tenants: &'a [(String, WalletHandle)],
 ) -> RoundInputs<'a> {
     RoundInputs {
-        store,
+        db,
         custody,
         daemon,
         network: "mainnet",
@@ -89,6 +89,11 @@ fn file_store() -> (Store, String) {
     let path = std::env::temp_dir().join(format!("scanner_rounds_{}.db", uuid::Uuid::new_v4()));
     let path = path.to_string_lossy().into_owned();
     (Store::open_file(&path).unwrap(), path)
+}
+
+/// The production database path: a worker thread with its own connection.
+fn worker(store: &SharedStore, path: &str) -> Db {
+    Db::open(path, &store.lock()).unwrap()
 }
 
 fn cleanup(path: &str) {
@@ -111,7 +116,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     daemon.push_block("h2", vec![]);
     let tenants = [(tenant.clone(), handle)];
     let state = ScanState::default();
-    run_round(&state, &inputs(&store, &custody, &daemon, &tenants), Duration::ZERO).await.into_result().unwrap();
+    run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), Duration::ZERO).await.into_result().unwrap();
     let seeded = cursor_of(&store, &tenant).unwrap();
 
     for i in 0..3 {
@@ -121,7 +126,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     let mut blocks_moved = 0;
     for _ in 0..3 {
         let before = cursor_of(&store, &tenant).unwrap();
-        let report = run_round(&state, &inputs(&store, &custody, &daemon, &tenants), Duration::ZERO).await;
+        let report = run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), Duration::ZERO).await;
         for tier in Tier::ALL {
             assert!(report.steps[tier.index()] >= 1, "{} got no unit", tier.name());
         }
@@ -144,7 +149,8 @@ async fn reorg_detection_costs_one_lookup_when_the_chain_agrees_and_log_depth_wh
         store.lock().set_scanned_block("mainnet", height, &format!("a{h}")).unwrap();
     }
     let daemon = CountingDaemon::new(&fake);
-    let chain = chain::Chain { store: &store, daemon: &daemon, network: "mainnet", reorg_check_depth: 20, now: 1000 };
+    let db = Db::over_shared(store.clone());
+    let chain = chain::Chain { db: &db, daemon: &daemon, network: "mainnet", reorg_check_depth: 20, now: 1000 };
     assert_eq!(chain.detect(60).await.unwrap(), None);
     assert_eq!(daemon.take_hash_lookups(), 1);
 
@@ -189,7 +195,8 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     let tenants = [(tenant.clone(), handle)];
 
     let state = ScanState::default();
-    run_round(&state, &inputs(&store, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
+    let db = worker(&store, &path);
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), Duration::ZERO).await.into_result().unwrap();
     assert!(store.lock().reorg_job("mainnet").unwrap().is_some(), "one unit doesn't finish a 41-payment job");
     assert_ne!(order_status(&store, &order), OrderStatus::Paid, "no settlement while a reorg is open");
     let paid_events = |store: &SharedStore| {
@@ -197,12 +204,14 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     };
     assert_eq!(paid_events(&store), 0);
 
-    // Restart: a new process, a new connection, no memory.
+    // Restart: a new process, new connections, no memory.
+    drop(db);
     drop(store);
     let store = Store::open_file(&path).unwrap().into_shared();
+    let db = worker(&store, &path);
     let state = ScanState::default();
     for _ in 0..20 {
-        run_round(&state, &inputs(&store, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
         if store.lock().reorg_job("mainnet").unwrap().is_none() && order_status(&store, &order) == OrderStatus::Paid {
             break;
         }
@@ -210,6 +219,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     assert!(store.lock().reorg_job("mainnet").unwrap().is_none(), "the job finished");
     assert_eq!(order_status(&store, &order), OrderStatus::Paid);
     assert_eq!(paid_events(&store), 1, "announced once, after the rewind");
+    drop(db);
     drop(store);
     cleanup(&path);
 }
@@ -229,13 +239,13 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
     daemon.push_block("h2", vec![]);
     let tenants = [(failing.clone(), failing_handle), (healthy.clone(), healthy_handle)];
     let state = ScanState::default();
-    run_round(&state, &inputs(&store, &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
     let start = cursor_of(&store, &healthy).unwrap();
 
     custody.fail(failing_handle);
     for i in 0..6u8 {
         daemon.push_block(&format!("n{i}"), vec![unrelated_tx(60 + i)]);
-        run_round(&state, &inputs(&store, &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+        run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
         assert_eq!(cursor_of(&store, &healthy).unwrap(), start + 1 + i as u64, "the healthy tenant never waits");
     }
     let attempts = custody.attempts.lock().get(&failing_handle).copied().unwrap_or(0);
@@ -245,7 +255,7 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
     custody.recover(failing_handle);
     tokio::time::advance(Duration::from_secs(120)).await;
     for _ in 0..3 {
-        run_round(&state, &inputs(&store, &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+        run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
     }
     assert_eq!(cursor_of(&store, &failing), cursor_of(&store, &healthy), "caught up once its backend recovered");
 }
@@ -263,7 +273,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     daemon.push_block("h1", vec![]);
     daemon.push_block("h2", vec![]);
     let tenants = [(tenant.clone(), handle)];
-    run_round(&ScanState::default(), &inputs(&store, &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    run_round(&ScanState::default(), &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
     let before = cursor_of(&store, &tenant).unwrap();
 
     // The payment first, then plenty of unrelated transactions.
@@ -277,7 +287,9 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
         rounds += 1;
         assert!(rounds < 100, "never finished the block");
         let state = ScanState::default();
-        run_round(&state, &inputs(&store, &custody, &daemon, &tenants), Duration::ZERO).await.into_result().unwrap();
+        let db = worker(&store, &path);
+        run_round(&state, &inputs(&db, &custody, &daemon, &tenants), Duration::ZERO).await.into_result().unwrap();
+        drop(db);
         if cursor_of(&store, &tenant).unwrap() == before {
             assert!(store.lock().get_all_payments(&order).unwrap().is_empty(), "no payment before the block commits");
             let checkpoint = store.lock().block_checkpoint("mainnet", &tenant).unwrap().expect("progress is checkpointed");
@@ -315,12 +327,12 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     daemon.push_block("h2", vec![]);
     let tenants = [(lagging.clone(), lagging_handle), (live.clone(), live_handle)];
     let state = ScanState::default();
-    run_round(&state, &inputs(&store, &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
     custody.fail(lagging_handle);
     for i in 0..3u8 {
         daemon.push_block(&format!("m{i}"), vec![unrelated_tx(150 + i)]);
     }
-    run_round(&state, &inputs(&store, &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await.into_result().unwrap();
     let behind = cursor_of(&store, &lagging).unwrap();
     assert!(behind < cursor_of(&store, &live).unwrap());
     custody.recover(lagging_handle);
@@ -333,8 +345,145 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     }
     let frontier_start = store.lock().max_scanned_height("mainnet").unwrap().unwrap();
     for _ in 0..4 {
-        run_round(&state, &inputs(&store, &custody, &daemon, &tenants), Duration::ZERO).await.into_result().unwrap();
+        run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), Duration::ZERO).await.into_result().unwrap();
     }
     assert!(cursor_of(&store, &lagging).unwrap() > behind, "catch-up got a turn");
     assert!(store.lock().max_scanned_height("mainnet").unwrap().unwrap() > frontier_start, "and so did the frontier");
+}
+
+/// A node that can't locate one transaction (every lookup for it fails):
+/// keeps a reorg job open for as long as a test needs.
+struct CannotLocate<'a> {
+    inner: &'a FakeDaemonClient,
+    txid: String,
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for CannotLocate<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.inner.get_height().await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        self.inner.get_block_hash(height).await
+    }
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_block_transactions(height).await
+    }
+    async fn get_blocks_range(&self, start: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+        self.inner.get_blocks_range(start, count).await
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_mempool_transactions().await
+    }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.inner.get_mempool_txids().await
+    }
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_transactions(txids).await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        if txid == self.txid {
+            return Err(DaemonError::Request("this node can't find that transaction right now".into()));
+        }
+        self.inner.locate_transaction(txid).await
+    }
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        self.inner.get_transaction(txid).await
+    }
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.inner.is_key_image_spent(key_images).await
+    }
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        self.inner.get_block_timestamp(height).await
+    }
+}
+
+/// While a reorg is being reconciled, only what depends on the chain being
+/// settled waits: blocks aren't scanned and no order newly settles. The
+/// mempool is still scanned and orders still expire.
+#[tokio::test]
+async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expiry() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let now = crate::now_unix();
+    let (tenant, handle, open_order) = fixture_tenant(&store, &custody, now + 3600).await;
+    let (_, _, overdue_order) = fixture_tenant(&store, &custody, now - 10).await;
+    let (_, _, candidate_order) = fixture_tenant(&store, &custody, now + 3600).await;
+    let fake = FakeDaemonClient::new();
+    for h in 1..=10 {
+        let height = fake.push_block(&format!("a{h}"), vec![]);
+        store.set_scanned_block("mainnet", height, &format!("a{h}")).unwrap();
+    }
+    store.execute_raw_for_test("UPDATE tenants SET scanned_through_height = 10").unwrap();
+    // A reorg is open, with a candidate the node can't answer about.
+    let stuck = "ab".repeat(32);
+    store.record_payment_match(&candidate_order, &stuck, 0, 1, "[\"ki\"]", now, Some(9)).unwrap();
+    store.open_reorg_job("mainnet", 9, now).unwrap();
+    let store = store.into_shared();
+    let daemon = CannotLocate { inner: &fake, txid: stuck };
+    fake.push_block("new", vec![unrelated_tx(200)]);
+    fake.set_mempool(vec![fixture_tx()]);
+    let tenants = [(tenant.clone(), handle)];
+
+    let report = run_round(&ScanState::default(), &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), ROUND_BUDGET).await;
+    assert!(store.lock().reorg_job("mainnet").unwrap().is_some(), "the job is still open");
+    assert_eq!(report.outcome(Tier::Blocks), TierOutcome::Blocked("a reorganisation is being reconciled"));
+    assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(10), "no block scanned on a chain being reconciled");
+    assert_eq!(store.lock().get_all_payments(&open_order).unwrap().len(), 1, "the mempool was still scanned");
+    assert_eq!(order_status(&store, &open_order), OrderStatus::Unconfirmed);
+    assert_eq!(order_status(&store, &overdue_order), OrderStatus::Expired, "and orders still expire");
+}
+
+/// A deeper reorg arriving while one is being reconciled widens the open
+/// job; once both are reconciled the payment is recorded once, at its
+/// height on the final chain, and the whole window is scanned again.
+#[tokio::test]
+async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.push_block("a1", vec![]);
+    fake.push_block("a2", vec![]);
+    let tenants = [(tenant.clone(), handle)];
+    let state = ScanState::default();
+    let round = |budget| {
+        let (store, fake, tenants, state, custody) = (&store, &fake, &tenants, &state, &custody);
+        async move {
+            run_round(state, &inputs(&Db::over_shared(store.clone()), custody, fake, tenants), budget).await.into_result().unwrap();
+        }
+    };
+    round(ROUND_BUDGET).await;
+    for h in 3..=40u64 {
+        fake.push_block(&format!("a{h}"), if h == 35 { vec![fixture_tx()] } else { vec![] });
+    }
+    round(ROUND_BUDGET).await;
+    round(ROUND_BUDGET).await;
+    round(ROUND_BUDGET).await;
+    round(ROUND_BUDGET).await;
+    round(ROUND_BUDGET).await;
+    assert_eq!(store.lock().get_all_payments(&order).unwrap()[0].block_height, Some(35));
+
+    // First fork at 35: the payment moves to 36.
+    let first: Vec<(String, Vec<Transaction>)> =
+        (35..=40u64).map(|h| (format!("b{h}"), if h == 36 { vec![fixture_tx()] } else { vec![] })).collect();
+    fake.reorg_from(35, first.iter().map(|(hash, txs)| (hash.as_str(), txs.clone())).collect());
+    round(Duration::ZERO).await; // detects and starts the job, no more
+    assert!(store.lock().reorg_job("mainnet").unwrap().is_some());
+
+    // Before it finishes, a deeper fork at 30: the payment moves to 31.
+    let second: Vec<(String, Vec<Transaction>)> =
+        (30..=41u64).map(|h| (format!("c{h}"), if h == 31 { vec![fixture_tx()] } else { vec![] })).collect();
+    fake.reorg_from(30, second.iter().map(|(hash, txs)| (hash.as_str(), txs.clone())).collect());
+    for _ in 0..10 {
+        round(ROUND_BUDGET).await;
+    }
+    assert!(store.lock().reorg_job("mainnet").unwrap().is_none());
+    let payments = store.lock().get_all_payments(&order).unwrap();
+    assert_eq!(payments.len(), 1, "recorded once");
+    assert_eq!(payments[0].block_height, Some(31), "at its height on the final chain");
+    assert_eq!(payments[0].voided_at, None);
+    assert_eq!(store.lock().get_scanned_block_hash("mainnet", 41).unwrap().as_deref(), Some("c41"), "rescanned to the new tip");
+    assert_eq!(cursor_of(&store, &tenant), Some(41));
 }

@@ -20,6 +20,7 @@ use super::{Progress, Round};
 
 const VANISHED_PAGE: usize = 64;
 const RECOMPUTE_PAGE: usize = 64;
+const RECOMPUTES_PER_JOB: usize = 16;
 /// How long one vanished payment's lookups may take.
 const VANISHED_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -46,7 +47,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
             failure = Some(error);
         }
     }
-    let recomputed = match recompute_page(round, tip) {
+    let recomputed = match recompute_page(round, tip).await {
         Ok(count) => count,
         Err(error) => return Progress::Failed(error),
     };
@@ -66,14 +67,21 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
 async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(), ScannerError> {
     let Some(txids) = round.pool_txids.clone() else { return Ok(()) };
     let network = round.network().to_string();
-    let store = round.inputs.store;
-    let after: i64 = store.lock().scheduler_position(&network, Position::VanishedPayments)?.and_then(|v| v.parse().ok()).unwrap_or(0);
-    let mut page = store.lock().unconfirmed_payments_page(&network, after, VANISHED_PAGE)?;
-    if page.is_empty() && after != 0 {
-        page = store.lock().unconfirmed_payments_page(&network, 0, VANISHED_PAGE)?;
-    }
+    let db = round.inputs.db;
+    let page = round
+        .db(|s, network| {
+            let after: i64 = s.scheduler_position(network, Position::VanishedPayments)?.and_then(|v| v.parse().ok()).unwrap_or(0);
+            let mut page = s.unconfirmed_payments_page(network, after, VANISHED_PAGE)?;
+            if page.is_empty() && after != 0 {
+                page = s.unconfirmed_payments_page(network, 0, VANISHED_PAGE)?;
+            }
+            if page.is_empty() {
+                s.set_scheduler_position(network, Position::VanishedPayments, "0")?;
+            }
+            Ok(page)
+        })
+        .await?;
     if page.is_empty() {
-        store.lock().set_scheduler_position(&network, Position::VanishedPayments, "0")?;
         return Ok(());
     }
     let mut failure = None;
@@ -83,7 +91,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
         }
         let checked = tokio::time::timeout(
             VANISHED_CALL_DEADLINE,
-            check_vanished_candidates(store, round.inputs.daemon, &txids, tip, round.now, vec![payment]),
+            check_vanished_candidates(db, round.inputs.daemon, &txids, tip, round.now, vec![payment]),
         )
         .await;
         match checked {
@@ -97,7 +105,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
                 failure.get_or_insert(ScannerError::Internal("vanished mempool lookup exceeded its deadline".into()));
             }
         }
-        store.lock().set_scheduler_position(&network, Position::VanishedPayments, &id.to_string())?;
+        round.db(move |s, network| Ok(s.set_scheduler_position(network, Position::VanishedPayments, &id.to_string())?)).await?;
     }
     match failure {
         Some(error) => Err(error),
@@ -107,44 +115,58 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
 
 /// Recomputes up to a page of orders not yet recomputed this round:
 /// obligations first, then due orders. Returns how many.
-fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, ScannerError> {
-    let network = round.network().to_string();
-    let store = round.inputs.store;
+async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, ScannerError> {
+    let (after, recomputed, now) =
+        (round.state.settlement.obligations_after.lock().clone(), round.settlement.recomputed.clone(), round.now);
+    let (ids, next_after) = round.db(move |s, network| pick(s, network, &after, &recomputed, now, tip)).await?;
+    *round.state.settlement.obligations_after.lock() = next_after;
+    round.settlement.recomputed.extend(ids.iter().cloned());
+    let count = ids.len();
+    // Each recompute is its own transaction; a few per database job, so a
+    // page never holds the worker long enough to delay other work.
+    for chunk in ids.chunks(RECOMPUTES_PER_JOB) {
+        let chunk = chunk.to_vec();
+        round
+            .db(move |s, _| {
+                for id in &chunk {
+                    recompute_and_notify(s, id, tip, now)?;
+                }
+                Ok(())
+            })
+            .await?;
+    }
+    Ok(count)
+}
+
+/// The next page to recompute, and where the obligation rotation goes on
+/// from: obligations first (from `after`, wrapping once), then due orders,
+/// skipping anything already recomputed this round.
+fn pick(
+    s: &crate::store::Store,
+    network: &str,
+    after: &str,
+    recomputed: &HashSet<String>,
+    now: i64,
+    tip: u64,
+) -> Result<(Vec<String>, String), ScannerError> {
     let mut ids: Vec<String> = Vec::new();
-    {
-        let s = store.lock();
-        // Obligations rotate from a remembered position, wrapping once.
-        let mut after = round.state.settlement.obligations_after.lock();
-        let recomputed = &round.settlement.recomputed;
-        let take = |page: Vec<String>, ids: &mut Vec<String>| {
-            for id in page {
-                if ids.len() < RECOMPUTE_PAGE && !recomputed.contains(&id) && !ids.contains(&id) {
-                    ids.push(id);
-                }
-            }
-        };
-        let page = s.pending_payment_recomputes_page(&network, &after, RECOMPUTE_PAGE)?;
-        let full = page.len() == RECOMPUTE_PAGE;
-        let wrap = !full && !after.is_empty();
-        *after = if full { page.last().cloned().unwrap_or_default() } else { String::new() };
-        take(page, &mut ids);
-        if wrap {
-            take(s.pending_payment_recomputes_page(&network, "", RECOMPUTE_PAGE)?, &mut ids);
-        }
-        drop(after);
-        if ids.len() < RECOMPUTE_PAGE {
-            let due = s.due_order_ids(&network, round.now, tip, RECOMPUTE_PAGE + round.settlement.recomputed.len())?;
-            for id in due {
-                if ids.len() < RECOMPUTE_PAGE && !round.settlement.recomputed.contains(&id) && !ids.contains(&id) {
-                    ids.push(id);
-                }
+    let take = |page: Vec<String>, ids: &mut Vec<String>| {
+        for id in page {
+            if ids.len() < RECOMPUTE_PAGE && !recomputed.contains(&id) && !ids.contains(&id) {
+                ids.push(id);
             }
         }
+    };
+    let page = s.pending_payment_recomputes_page(network, after, RECOMPUTE_PAGE)?;
+    let full = page.len() == RECOMPUTE_PAGE;
+    let wrap = !full && !after.is_empty();
+    let next_after = if full { page.last().cloned().unwrap_or_default() } else { String::new() };
+    take(page, &mut ids);
+    if wrap {
+        take(s.pending_payment_recomputes_page(network, "", RECOMPUTE_PAGE)?, &mut ids);
     }
-    for id in &ids {
-        round.settlement.recomputed.insert(id.clone());
-        let s = store.lock();
-        recompute_and_notify(&s, id, tip, round.now)?;
+    if ids.len() < RECOMPUTE_PAGE {
+        take(s.due_order_ids(network, now, tip, RECOMPUTE_PAGE + recomputed.len())?, &mut ids);
     }
-    Ok(ids.len())
+    Ok((ids, next_after))
 }

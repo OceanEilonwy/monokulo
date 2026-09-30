@@ -27,7 +27,7 @@ use scanner::key_custody::{
     WalletMaterial,
 };
 use scanner::scanner_status::new_scanner_status_map;
-use scanner::store::{NewOrder, NewTenant, ReadStorePool, SharedStore, Store};
+use scanner::store::{Db, NewOrder, NewTenant, ReadStorePool, Store};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
@@ -239,7 +239,7 @@ impl Driver {
 /// One tick's worth of engine state the driver needs, kept across ticks.
 struct Engine {
     driver: Driver,
-    store: SharedStore,
+    db: Db,
     custody: Arc<dyn KeyCustody>,
     daemon: Arc<FixtureDaemon>,
     handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
@@ -247,32 +247,29 @@ struct Engine {
 }
 
 impl Engine {
-    /// Runs one tick as production does: a task on the multi-threaded
-    /// runtime, with the production defaults for reorg depth, grace period
-    /// and memory budget.
+    /// Runs one tick as production does: a round on the multi-threaded
+    /// runtime, through the database worker, with the production defaults
+    /// for reorg depth, grace period and memory budget.
     async fn tick(&self) -> Result<(), String> {
         match self.driver {
             Driver::Scheduler => {
-                let (memory, store, custody, daemon) =
-                    (self.memory.clone(), self.store.clone(), self.custody.clone(), self.daemon.clone());
+                let (memory, db, custody, daemon) =
+                    (self.memory.clone(), self.db.clone(), self.custody.clone(), self.daemon.clone());
                 let tenants: Vec<(String, WalletHandle)> =
                     self.handles.read().iter().map(|(id, handle)| (id.clone(), *handle)).collect();
                 let scan = EngineSettings::defaults().scan.load();
-                let (depth, grace, budget) =
-                    (scan.reorg_check_depth, scan.expired_order_grace_period_seconds, scan.scan_chunk_memory_budget_mb);
                 tokio::spawn(async move {
-                    scanner::scanner::run_scan_tick_with(
-                        &memory,
-                        &store,
-                        custody.as_ref(),
-                        daemon.as_ref(),
-                        NETWORK,
-                        &tenants,
-                        depth,
-                        grace,
-                        budget,
-                    )
-                    .await
+                    let inputs = scanner::work::RoundInputs {
+                        db: &db,
+                        custody: custody.as_ref(),
+                        daemon: daemon.as_ref(),
+                        network: NETWORK,
+                        tenants: &tenants,
+                        reorg_check_depth: scan.reorg_check_depth,
+                        grace_period_seconds: scan.expired_order_grace_period_seconds,
+                        scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
+                    };
+                    scanner::work::run_round(&memory, &inputs, scanner::work::ROUND_BUDGET).await.into_result()
                 })
                 .await
                 .map_err(|error| format!("tick task failed: {error}"))?
@@ -404,8 +401,10 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         rpc_failures: AtomicU64::new(0),
     });
 
-    // The engine's connections, as `main.rs` opens them: one shared store
-    // for scanning and writes, and a two-connection read pool for HTTP.
+    // The engine's connections, as `main.rs` opens them: the database
+    // worker (its own connection) for scanning, the shared store for API
+    // writes, and a read pool for HTTP.
+    let db = Db::open(&db_path, &store)?;
     let store = store.into_shared();
     let reader_pool = ReadStorePool::open(&db_path, background_readers.max(1))?;
     let background_stop = Arc::new(AtomicBool::new(false));
@@ -497,7 +496,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
 
     let engine = Engine {
         driver,
-        store: store.clone(),
+        db: db.clone(),
         custody: custody.clone(),
         daemon: daemon.clone(),
         handles,
@@ -551,7 +550,10 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     let checkpoint = rusqlite::Connection::open(&db_path)?;
     let (checkpoint_busy, wal_log_pages, wal_checkpointed_pages): (i64, i64, i64) =
         checkpoint.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-    let result = json!({"schema_version":SCHEMA_VERSION,"driver":driver.name(),"seed":seed,"tenants":tenants,
+    let db_metrics = db.metrics();
+    let result = json!({"schema_version":SCHEMA_VERSION,
+        "db_write_queue_wait_max_us":db_metrics.max_queue_wait_us,"db_write_query_max_us":db_metrics.max_run_us,
+        "db_jobs_completed":db_metrics.completed,"driver":driver.name(),"seed":seed,"tenants":tenants,
         "orders_per_tenant":orders,"large_window_orders":large_window_orders,
         "background_readers":background_readers,"background_admin_writers":background_writers,
         "background_http_readers":background_http_readers,

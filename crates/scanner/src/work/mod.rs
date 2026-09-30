@@ -21,7 +21,8 @@ use tokio::time::Instant;
 use crate::daemon::MoneroDaemonClient;
 use crate::key_custody::{KeyCustody, WalletHandle};
 use crate::scanner::ScannerError;
-use crate::store::SharedStore;
+use crate::store::db::Class;
+use crate::store::{Db, Store};
 
 pub use blocks::ScannedBlock;
 
@@ -136,7 +137,9 @@ impl RoundReport {
 
 /// Everything a round needs from outside. Borrowed for the round only.
 pub struct RoundInputs<'a> {
-    pub store: &'a SharedStore,
+    /// All database work goes through the worker: SQLite never runs on a
+    /// Tokio worker thread.
+    pub db: &'a Db,
     pub custody: &'a dyn KeyCustody,
     pub daemon: &'a dyn MoneroDaemonClient,
     pub network: &'a str,
@@ -244,6 +247,15 @@ pub(crate) struct Round<'a> {
 impl<'a> Round<'a> {
     pub(crate) fn network(&self) -> &'a str {
         self.inputs.network
+    }
+
+    /// Runs `f` on the database worker, with this round's network name.
+    pub(crate) async fn db<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Store, &str) -> Result<T, ScannerError> + Send + 'static,
+    ) -> Result<T, ScannerError> {
+        let network = self.inputs.network.to_string();
+        self.inputs.db.run(Class::Scanner, move |s| f(s, &network)).await
     }
 }
 

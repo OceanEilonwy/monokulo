@@ -84,7 +84,8 @@ async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrd
     let now = now_unix();
     let mut created = None;
     for _ in 0..8 {
-        let minor_index = state.store.lock().peek_next_minor_index(&tenant.id)?;
+        let id = tenant.id.clone();
+        let minor_index = state.write_store(move |s| s.peek_next_minor_index(&id)).await?;
         let index = SubaddressIndex { major: 0, minor: minor_index };
         let address = loop {
             match state.key_custody.derive_subaddress(handle, index, network).await {
@@ -97,9 +98,7 @@ async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrd
                 Err(e) => return Err(e.into()),
             }
         };
-        let order = state.store.lock().create_order_claiming_minor_index(
-            minor_index,
-            NewOrder {
+        let new_order = NewOrder {
                 confirmations_required_override: req.confirmations_required,
                 tenant_id: tenant.id.clone(),
                 merchant_order_id: req.merchant_order_id.clone(),
@@ -109,8 +108,8 @@ async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrd
                 description: req.description.clone(),
                 created_at: now,
                 expires_at: now + tenant.order_expiry_seconds,
-            },
-        )?;
+            };
+        let order = state.write_store(move |s| s.create_order_claiming_minor_index(minor_index, new_order)).await?;
         if let Some(order) = order {
             created = Some(order);
             break;

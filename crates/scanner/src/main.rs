@@ -244,16 +244,22 @@ async fn run(action: Action) {
         settings: engine_settings.clone(),
     };
 
-    let delivery_store = store.clone();
-    let delivery_settings = engine_settings.clone();
-    supervise("webhook delivery", move || loops::run_webhook_delivery_loop(delivery_store.clone(), delivery_settings.clone()));
+    // The database worker: its own connection, on its own thread, for the
+    // scanner and webhook delivery (docs/scanner_microtasks.md).
+    let db = scanner::store::Db::open(&cli::database_path().to_string_lossy(), &store.lock())
+        .unwrap_or_else(|e| { eprintln!("failed to start the database worker: {e}"); std::process::exit(1) });
 
-    // One scanner loop and one revalidation loop per configured network
+    let delivery_db = db.clone();
+    let delivery_settings = engine_settings.clone();
+    supervise("webhook delivery", move || loops::run_webhook_delivery_loop(delivery_db.clone(), delivery_settings.clone()));
+
+    // One scanner loop per configured network
     // (task 7.4), started and stopped as node settings are saved (task 2.1).
     // Supervised like the loops it starts: if it panics, dropping it stops
     // them, and its restart starts them again.
-    let (loops_store, loops_custody, loops_daemons, loops_handles, loops_status, loops_settings) = (
+    let (loops_store, loops_db, loops_custody, loops_daemons, loops_handles, loops_status, loops_settings) = (
         store.clone(),
+        db.clone(),
         key_custody.clone(),
         daemons.clone(),
         wallet_handles.clone(),
@@ -263,6 +269,7 @@ async fn run(action: Action) {
     supervise("network loop manager", move || {
         loops::manage_network_loops(
             loops_store.clone(),
+            loops_db.clone(),
             loops_custody.clone(),
             loops_daemons.clone(),
             loops_handles.clone(),

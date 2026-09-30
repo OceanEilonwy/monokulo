@@ -135,6 +135,21 @@ impl AppState {
 }
 
 impl AppState {
+    /// Runs a write (or a read that must see this connection's own writes)
+    /// on the blocking pool, never on a Tokio worker: a slow disk or a
+    /// write lock held by the scanner delays this request, not every task
+    /// sharing its worker.
+    pub async fn write_store<T, E>(&self, f: impl FnOnce(&Store) -> Result<T, E> + Send + 'static) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+    {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || f(&store.lock()))
+            .await
+            .map_err(|e| E::from(StoreError::WorkerUnavailable(e.to_string())))?
+    }
+
     pub async fn read_store<T: Send + 'static>(
         &self, f: impl FnOnce(&Store) -> Result<T, StoreError> + Send + 'static,
     ) -> Result<T, StoreError> {
@@ -413,7 +428,8 @@ pub async fn resolve_wallet_handle(state: &AppState, tenant: &Tenant) -> Result<
     }
     // The row as it is now, not as it was when the request was
     // authenticated: the store may have just moved to another backend.
-    let current = state.store.lock().get_tenant_by_id(&tenant.id)?;
+    let id = tenant.id.clone();
+    let current = state.write_store(move |s| s.get_tenant_by_id(&id)).await?;
     let tenant = current.as_ref().unwrap_or(tenant);
     // The registration can't happen under the lock (it's `async`, and holding a
     // std `RwLock` across an `.await` would be a deadlock waiting to happen), so two

@@ -127,6 +127,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
 
     let app_state = AppState {
         store: store.clone(),
+        read_pool: None,
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
         wallet_handles,

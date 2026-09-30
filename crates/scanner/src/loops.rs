@@ -19,9 +19,10 @@ use crate::key_custody::{KeyCustody, WalletHandle};
 use crate::network::network_str;
 use crate::scanner_status::{self, ScannerStatusMap};
 use crate::store::SharedStore;
-use crate::webhook_delivery::run_delivery_tick;
+use crate::store::Db;
+use crate::webhook_delivery::run_delivery_tick_on;
 
-pub async fn run_webhook_delivery_loop(store: SharedStore, settings: Arc<EngineSettings>) {
+pub async fn run_webhook_delivery_loop(db: Db, settings: Arc<EngineSettings>) {
     // Building the client can only fail if the TLS backend can't initialise.
     // Retry rather than panic, so the supervisor isn't left in a crash loop.
     let client = loop {
@@ -41,8 +42,8 @@ pub async fn run_webhook_delivery_loop(store: SharedStore, settings: Arc<EngineS
         // `run_delivery_tick` locks the store only around its own brief synchronous
         // sections, never across the outbound HTTP `.await`s it performs per
         // delivery - see its doc comment for why that matters.
-        let sent = match run_delivery_tick(
-            &store,
+        let sent = match run_delivery_tick_on(
+            &db,
             &client,
             config.allow_private_urls,
             config.delivery_timeout,
@@ -91,6 +92,7 @@ pub fn tick_deadline(poll_interval: Duration) -> Duration {
 /// the process.
 pub async fn manage_network_loops(
     store: SharedStore,
+    db: Db,
     key_custody: Arc<dyn KeyCustody>,
     daemons: Daemons,
     wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
@@ -115,8 +117,9 @@ pub async fn manage_network_loops(
                 continue;
             }
             let (stop, stopped) = tokio::sync::watch::channel(false);
-            let (store, key_custody, daemons, wallet_handles, scanner_status, settings) = (
+            let (store, db, key_custody, daemons, wallet_handles, scanner_status, settings) = (
                 store.clone(),
+                db.clone(),
                 key_custody.clone(),
                 daemons.clone(),
                 wallet_handles.clone(),
@@ -126,6 +129,7 @@ pub async fn manage_network_loops(
             supervise_until(loop_name("chain scanner", network), stopped, move || {
                 run_scanner_loop(
                     store.clone(),
+                    db.clone(),
                     key_custody.clone(),
                     network,
                     daemons.clone(),
@@ -153,8 +157,10 @@ pub const REGISTRATION_RETRY_AFTER_LOSS: Duration = Duration::from_secs(5);
 /// round, so new tenants, saved node settings and saved scan settings all
 /// apply from the next tick (tasks 2.1, 2.3). Each network has its own
 /// loop (task 7.4), so a slow node on one never delays another.
+#[allow(clippy::too_many_arguments)] // the loop's genuinely independent shared handles
 pub async fn run_scanner_loop(
     store: SharedStore,
+    db: Db,
     key_custody: Arc<dyn KeyCustody>,
     network: Network,
     daemons: Daemons,
@@ -217,7 +223,7 @@ pub async fn run_scanner_loop(
         // different heights or on different forks are never mixed.
         let pinned = daemon.pin();
         let inputs = crate::work::RoundInputs {
-            store: &store,
+            db: &db,
             custody: key_custody.as_ref(),
             daemon: &pinned,
             network: network_str(network),
@@ -318,7 +324,8 @@ mod tests {
             settings: settings.clone(),
         };
         let router = crate::http::build_router(state, 1 << 20);
-        let manager = tokio::spawn(manage_network_loops(store, key_custody, daemons, wallet_handles, status.clone(), settings));
+        let db = Db::over_shared(store.clone());
+        let manager = tokio::spawn(manage_network_loops(store, db, key_custody, daemons, wallet_handles, status.clone(), settings));
 
         let save = |body: serde_json::Value| {
             router.clone().oneshot(
@@ -386,7 +393,8 @@ mod tests {
         let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::default();
         let key_custody: Arc<dyn KeyCustody> = router.clone();
         let scan_loop = tokio::spawn(run_scanner_loop(
-            store,
+            store.clone(),
+            Db::over_shared(store),
             key_custody,
             Network::Stagenet,
             daemons,

@@ -106,7 +106,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     };
     round.pool_txids = Some(in_pool);
 
-    let tenants = match tenant_page(round) {
+    let tenants = match tenant_page(round).await {
         Ok(tenants) => tenants,
         Err(error) => return Progress::Failed(error),
     };
@@ -140,7 +140,8 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         for (tenant_id, result) in scan_for_tenants(round.inputs.custody, tx, &due).await {
             match result {
                 Ok(scan) => {
-                    let recorded = record_scan_match(&round.inputs.store.lock(), &tenant_id, &scan, round.now, None);
+                    let (id, now) = (tenant_id.clone(), round.now);
+                    let recorded = round.db(move |s, _| record_scan_match(s, &id, &scan, now, None)).await;
                     match recorded {
                         Ok(_) => {
                             if let Some(generation) = generations.get(&tenant_id) {
@@ -168,30 +169,37 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
 
 /// The next page of stores with something in scope, with their scan windows
 /// as of now. Wraps round to the first page after the last.
-fn tenant_page(round: &Round<'_>) -> Result<Vec<(String, WalletHandle, ScanIndices)>, crate::scanner::ScannerError> {
-    let network = round.network();
-    let grace = round.inputs.grace_period_seconds;
-    let s = round.inputs.store.lock();
-    let mut after = round.state.mempool.tenant_page_after.lock();
-    let mut page = s.active_tenants_page(network, round.now, grace, &after, TENANT_PAGE)?;
-    let full = page.len() == TENANT_PAGE;
-    let next_after = if full { page.last().map(|(id, _)| id.clone()).unwrap_or_default() } else { String::new() };
-    if !full && !after.is_empty() {
-        // Wrap round: fill the page from the start.
-        page.extend(s.active_tenants_page(network, round.now, grace, "", TENANT_PAGE - page.len())?);
-    }
-    *after = next_after;
+async fn tenant_page(round: &Round<'_>) -> Result<Vec<(String, WalletHandle, ScanIndices)>, crate::scanner::ScannerError> {
+    let (grace, now) = (round.inputs.grace_period_seconds, round.now);
+    let after = round.state.mempool.tenant_page_after.lock().clone();
+    let (page, next_after) = round
+        .db(move |s, network| {
+            let mut page = s.active_tenants_page(network, now, grace, &after, TENANT_PAGE)?;
+            let full = page.len() == TENANT_PAGE;
+            let next_after = if full { page.last().map(|(id, _)| id.clone()).unwrap_or_default() } else { String::new() };
+            if !full && !after.is_empty() {
+                // Wrap round: fill the page from the start.
+                page.extend(s.active_tenants_page(network, now, grace, "", TENANT_PAGE - page.len())?);
+            }
+            let mut seen = HashSet::new();
+            let mut windows = Vec::with_capacity(page.len());
+            for (tenant_id, _) in page {
+                if seen.insert(tenant_id.clone()) {
+                    let window = s.scan_window(&tenant_id, now, grace)?;
+                    windows.push((tenant_id, window));
+                }
+            }
+            Ok((windows, next_after))
+        })
+        .await?;
+    *round.state.mempool.tenant_page_after.lock() = next_after;
     let mut tenants = Vec::with_capacity(page.len());
-    let mut seen = HashSet::new();
-    for (tenant_id, _) in page {
-        if !seen.insert(tenant_id.clone()) || round.state.backoff.is_waiting(&tenant_id) {
+    for (tenant_id, window) in page {
+        if window.is_empty() || round.state.backoff.is_waiting(&tenant_id) {
             continue;
         }
         let Some(handle) = round.handles.get(tenant_id.as_str()) else { continue };
-        let window = s.scan_window(&tenant_id, round.now, grace)?;
-        if !window.is_empty() {
-            tenants.push((tenant_id, *handle, ScanIndices::new(window)));
-        }
+        tenants.push((tenant_id, *handle, ScanIndices::new(window)));
     }
     Ok(tenants)
 }
