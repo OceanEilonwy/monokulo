@@ -225,7 +225,7 @@ pub fn record_scan_match(
 /// payment. The caller commits this and the transaction checkpoint together.
 pub(crate) fn stage_block_match(
     store: &Store,
-    network: &str,
+    network: monero::Network,
     tenant_id: &crate::store::TenantId,
     scan: &ScanResult,
     seen_at: i64,
@@ -333,7 +333,7 @@ pub async fn check_for_reorg_and_reconcile(
     if let Some(fork) = chain.detect(tip).await? {
         chain.open(fork).await?;
     }
-    let reorg_detected_at = store.lock().reorg_job(network)?.map(|job| job.fork_height);
+    let reorg_detected_at = store.lock().reorg_job(parsed)?.map(|job| job.fork_height);
     let mut dirty_orders = HashSet::new();
     let mut double_spent_orders = HashSet::new();
     let mut attempted = HashSet::new();
@@ -734,7 +734,7 @@ pub const DOUBLE_SPEND_RECHECK_WINDOW_SECS: i64 = 48 * 3600;
 pub(crate) async fn recheck_voided_payment(
     db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
-    network: &str,
+    network: monero::Network,
     payment: &crate::store::OrderPaymentRow,
     current_height: u64,
     now: i64,
@@ -767,7 +767,7 @@ pub(crate) async fn recheck_voided_payment(
         })
         .await?;
     if restored {
-        tracing::info!(order.id = %payment.order_id, network = %network, "double-spend revalidation reversed a void");
+        tracing::info!(order.id = %payment.order_id, network = crate::network::network_str(network), "double-spend revalidation reversed a void");
     }
     Ok(restored)
 }
@@ -922,7 +922,7 @@ pub async fn register_missing_wallets(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
     wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
-    network: &str,
+    network: monero::Network,
 ) -> usize {
     register_missing_wallets_checking_state(store, key_custody, wallet_handles, None, network).await
 }
@@ -939,7 +939,7 @@ pub async fn register_missing_wallets_checking_state(
     key_custody: &dyn KeyCustody,
     wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
-    network: &str,
+    network: monero::Network,
 ) -> usize {
     let db = crate::store::Db::over_shared(store.clone());
     register_missing_wallets_reporting(&db, key_custody, wallet_handles, handled_epoch, network)
@@ -954,7 +954,7 @@ pub async fn register_missing_wallets_reporting(
     key_custody: &dyn KeyCustody,
     wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
-    network: &str,
+    network: monero::Network,
 ) -> Registration {
     const REGISTRATION_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
     const REGISTRATION_PASS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
@@ -999,10 +999,10 @@ pub async fn register_missing_wallets_reporting(
     let on_network: Vec<crate::store::Tenant> = match listed {
         Ok(tenants) => tenants
             .into_iter()
-            .filter(|t| t.network == network)
+            .filter(|t| t.network == crate::network::network_str(network))
             .collect(),
         Err(e) => {
-            tracing::warn!(network = %network, error = %e, "listing stores to register their keys failed (retried later)");
+            tracing::warn!(network = crate::network::network_str(network), error = %e, "listing stores to register their keys failed (retried later)");
             return Registration {
                 registered: 0,
                 failed: 1,
@@ -1035,7 +1035,9 @@ pub async fn register_missing_wallets_reporting(
         // network when two loops alternate and both have 32 missing tenants.
         let offset = {
             let mut offsets = NEXT_REGISTRATION_OFFSET.lock();
-            let next = offsets.entry(network.to_string()).or_default();
+            let next = offsets
+                .entry(crate::network::network_str(network).to_string())
+                .or_default();
             let offset = *next % missing.len();
             *next = next.wrapping_add(REGISTRATIONS_PER_PASS);
             offset
@@ -1095,9 +1097,9 @@ pub async fn register_missing_wallets_reporting(
         // One line per network, and not every retry: a backend that is down
         // would otherwise log every store it holds every few seconds.
         shared::throttled!(
-            format!("register-failed:{network}"),
+            format!("register-failed:{}", crate::network::network_str(network)),
             warn,
-            network = %network,
+            network = crate::network::network_str(network),
             stores = failed,
             store.id = %first_store,
             error = %first_error,
@@ -1945,13 +1947,13 @@ pub(crate) mod tests {
             store
                 .in_transaction(|s| -> Result<()> {
                     s.save_block_checkpoint(
-                        "mainnet",
+                        monero::Network::Mainnet,
                         &shared::ids::TenantId::new(tenant_id.to_string()),
                         &checkpoint(hash),
                     )?;
                     stage_block_match(
                         s,
-                        "mainnet",
+                        monero::Network::Mainnet,
                         &shared::ids::TenantId::new(tenant_id.to_string()),
                         &scan,
                         1500,
@@ -1964,7 +1966,7 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .block_checkpoint(
-                    "mainnet",
+                    monero::Network::Mainnet,
                     &shared::ids::TenantId::new(tenant_id.to_string())
                 )
                 .unwrap(),
@@ -1980,7 +1982,7 @@ pub(crate) mod tests {
         assert!(
             store
                 .take_staged_payments(
-                    "mainnet",
+                    monero::Network::Mainnet,
                     &shared::ids::TenantId::new(tenant_id.to_string()),
                     "new_hash"
                 )
@@ -1991,7 +1993,7 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .block_checkpoint(
-                    "mainnet",
+                    monero::Network::Mainnet,
                     &shared::ids::TenantId::new(tenant_id.to_string())
                 )
                 .unwrap(),
@@ -2002,7 +2004,7 @@ pub(crate) mod tests {
         stage("new_hash");
         let staged = store
             .take_staged_payments(
-                "mainnet",
+                monero::Network::Mainnet,
                 &shared::ids::TenantId::new(tenant_id.to_string()),
                 "new_hash",
             )
@@ -2017,7 +2019,7 @@ pub(crate) mod tests {
         assert!(
             store
                 .take_staged_payments(
-                    "mainnet",
+                    monero::Network::Mainnet,
                     &shared::ids::TenantId::new(tenant_id.to_string()),
                     "new_hash"
                 )
@@ -2284,7 +2286,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
 
         let daemon = FakeDaemonClient::new();
@@ -2342,7 +2344,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
 
         let daemon = FakeDaemonClient::new();
@@ -2402,7 +2404,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
 
         let daemon = FakeDaemonClient::new();
@@ -2432,7 +2434,9 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn no_reorg_when_hashes_still_match_is_a_cheap_no_op() {
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 50, "hash_50").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50")
+            .unwrap();
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
         let mut last_height = 0;
@@ -2846,7 +2850,10 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(10)
         );
     }
@@ -2885,7 +2892,10 @@ pub(crate) mod tests {
         // Falls back to seeding one behind the (unfetchable) reported tip, i.e.
         // height 10, which *does* exist.
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(10)
         );
 
@@ -2904,7 +2914,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(11)
         );
     }
@@ -3007,7 +3020,7 @@ pub(crate) mod tests {
             "a storage failure is reported, not swallowed"
         );
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
             Some(1),
             "block 2's match failed to record - marking it scanned would lose that payment permanently"
         );
@@ -3035,7 +3048,13 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(2)
+        );
         let payments = store
             .lock()
             .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
@@ -3248,7 +3267,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let (_, status) = store
             .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
@@ -3325,7 +3344,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -3347,7 +3366,7 @@ pub(crate) mod tests {
             "the node failure must surface, not be swallowed"
         );
         assert_eq!(
-            store.lock().get_scanned_block_hash("mainnet", 50).unwrap(),
+            store.lock().get_scanned_block_hash(monero::Network::Mainnet, 50).unwrap(),
             Some("hash_50_v1".to_string()),
             "the stored hash must still describe the old chain, or nothing will ever notice the reorg again"
         );
@@ -3389,7 +3408,7 @@ pub(crate) mod tests {
         // A scanner that has already worked its way up to height 51 on the old chain.
         for h in 40..=51 {
             store
-                .set_scanned_block("mainnet", h, &format!("old_{h}"))
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("old_{h}"))
                 .unwrap();
         }
         let store = store.into_shared();
@@ -3417,7 +3436,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(49),
                 "the high-water mark must fall back below the reorg point"
             );
@@ -3443,7 +3462,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.max_scanned_height("mainnet").unwrap(),
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
             Some(51),
             "and forward scanning caught back up"
         );
@@ -3483,7 +3502,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -3513,7 +3532,7 @@ pub(crate) mod tests {
         // height 50 between the two reconciliations; do that by hand here.)
         store
             .lock()
-            .set_scanned_block("mainnet", 50, "hash_50_v2")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v2")
             .unwrap();
         daemon.reorg_from(50, vec![("hash_50_v3", vec![tx.clone()])]);
 
@@ -3665,7 +3684,9 @@ pub(crate) mod tests {
         // on counting towards their order at a height that no longer exists) and
         // block H of the replacement chain is never rescanned.
         let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-        store.set_scanned_block("mainnet", 1, "h1").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+            .unwrap();
         let store = store.into_shared();
 
         let inner = FakeDaemonClient::new();
@@ -3692,13 +3713,15 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(2),
                 "the range must stop at the height whose hash could not be read, not step over it"
             );
             for h in 3..=5 {
                 assert!(
-                    s.get_scanned_block_hash("mainnet", h).unwrap().is_none(),
+                    s.get_scanned_block_hash(monero::Network::Mainnet, h)
+                        .unwrap()
+                        .is_none(),
                     "block {h} must not be recorded once the range was abandoned at 3"
                 );
             }
@@ -3722,10 +3745,15 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(5));
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(5)
+        );
         for h in 1..=5 {
             assert!(
-                s.get_scanned_block_hash("mainnet", h).unwrap().is_some(),
+                s.get_scanned_block_hash(monero::Network::Mainnet, h)
+                    .unwrap()
+                    .is_some(),
                 "block {h} must be recorded"
             );
         }
@@ -3750,7 +3778,7 @@ pub(crate) mod tests {
         // relies on.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -3782,12 +3810,12 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.get_scanned_block_hash("mainnet", 50).unwrap().as_deref(),
+                s.get_scanned_block_hash(monero::Network::Mainnet, 50).unwrap().as_deref(),
                 Some("hash_50_v1"),
                 "with no anchor available, the losing chain's hash must stay put so the reorg stays detectable"
             );
             assert!(
-                s.max_scanned_height("mainnet").unwrap().is_some(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap().is_some(),
                 "the window must never be emptied by a rewind that cannot re-anchor - an empty window reads \
                  as 'never scanned' and re-seeds at the tip"
             );
@@ -3809,7 +3837,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(49),
             "the rewind must now land on the common ancestor"
         );
@@ -3828,7 +3859,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(51));
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(51)
+        );
         let payments = s
             .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap();
@@ -3856,7 +3890,10 @@ pub(crate) mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool(vec![fixture_tx()]); // the payment arrives zero-conf
-        store.lock().set_scanned_block("mainnet", 1, "h1").unwrap();
+        store
+            .lock()
+            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+            .unwrap();
 
         let webhook = store
             .lock()
@@ -3900,7 +3937,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(1),
                 "block 2 must stay unscanned so the next tick retries it"
             );
@@ -3949,7 +3986,13 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(2)
+        );
     }
 
     #[tokio::test]
@@ -3968,7 +4011,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         // A scanner whose entire history is one block: height 50, on the old chain.
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -3992,7 +4035,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
             Some(49),
             "the rewind must leave the high-water mark at the common ancestor, not at nothing at all"
         );
@@ -4010,7 +4053,10 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(51));
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(51)
+        );
         let payments = s
             .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap();
@@ -4058,7 +4104,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let (_, status) = store
             .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 50, 1600)
@@ -4156,7 +4202,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block("mainnet", 50, "hash_50_v1")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -4190,7 +4236,7 @@ pub(crate) mod tests {
         }
         store
             .lock()
-            .set_scanned_block("mainnet", 50, "hash_50_v2")
+            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v2")
             .unwrap();
         daemon.reorg_from(50, vec![("hash_50_v3", vec![])]);
 
@@ -4277,7 +4323,10 @@ pub(crate) mod tests {
         );
 
         assert_eq!(
-            store.lock().pending_payment_recomputes("mainnet").unwrap(),
+            store
+                .lock()
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
             vec![order_id.clone()]
         );
 
@@ -4312,7 +4361,10 @@ pub(crate) mod tests {
         let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].event_type, "order.confirming");
-        assert!(s.pending_payment_recomputes("mainnet").unwrap().is_empty());
+        assert!(s
+            .pending_payment_recomputes(monero::Network::Mainnet)
+            .unwrap()
+            .is_empty());
     }
 
     // ---------------------------------------------------------------------
@@ -4354,7 +4406,7 @@ pub(crate) mod tests {
         }
         for h in recorded_from..=height {
             store
-                .set_scanned_block("mainnet", h, &format!("{prefix}_{h}"))
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("{prefix}_{h}"))
                 .unwrap();
         }
         daemon
@@ -4595,7 +4647,7 @@ pub(crate) mod tests {
         }
         for h in 50..=52 {
             store
-                .set_scanned_block("mainnet", h, &format!("old_{h}"))
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("old_{h}"))
                 .unwrap();
         }
         // The fork is at 45 - five blocks below anything this scanner recorded - and
@@ -4615,7 +4667,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(49),
             "the rewind must land just below the oldest recorded block, never on an empty window"
         );
@@ -4632,7 +4687,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(52));
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(52)
+        );
         let payments = s
             .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap();
@@ -5049,7 +5107,7 @@ pub(crate) mod tests {
         // original - takes the inputs.
         store
             .lock()
-            .set_scanned_block("mainnet", 50, "b_50")
+            .set_scanned_block(monero::Network::Mainnet, 50, "b_50")
             .unwrap();
         reorg_to_chain(&daemon, 50, 50, "c", Some((50, conflicting_tx(2))));
 
@@ -5272,12 +5330,15 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             s.set_scheduler_position::<crate::store::position::VoidRecheckPassStarted>(
-                "mainnet",
+                monero::Network::Mainnet,
                 &i64::MIN,
             )
             .unwrap();
-            s.set_scheduler_position::<crate::store::position::VoidRecheck>("mainnet", &0)
-                .unwrap();
+            s.set_scheduler_position::<crate::store::position::VoidRecheck>(
+                monero::Network::Mainnet,
+                &0,
+            )
+            .unwrap();
         }
         run_scan_tick(
             store,
@@ -6187,7 +6248,9 @@ pub(crate) mod tests {
         // coarser (and, in the default-daemon test-double case only, more repeated)
         // unit of retry than before.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        store.set_scanned_block("mainnet", 1, "h1").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+            .unwrap();
         let store = store.into_shared();
 
         let fake = FakeDaemonClient::new();
@@ -6217,7 +6280,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(1),
                 "the whole chunk failed, so the high-water mark stays exactly where it was before this tick"
             );
@@ -6241,7 +6304,10 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(4));
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(4)
+        );
         let payments = s
             .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap();
@@ -6284,7 +6350,9 @@ pub(crate) mod tests {
 
         {
             let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-            store.set_scanned_block("mainnet", 1, "h1").unwrap();
+            store
+                .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+                .unwrap();
             let store = store.into_shared();
             let fake = FakeDaemonClient::new();
             fake.push_block("h1", vec![]); // the already-scanned baseline, mirrored into the daemon too
@@ -6305,14 +6373,21 @@ pub(crate) mod tests {
                 )
                 .await
                 .unwrap();
-                if store.lock().max_scanned_height("mainnet").unwrap() == Some(NEW_BLOCK_COUNT + 1)
+                if store
+                    .lock()
+                    .max_scanned_height(monero::Network::Mainnet)
+                    .unwrap()
+                    == Some(NEW_BLOCK_COUNT + 1)
                 {
                     break;
                 }
             }
 
             assert_eq!(
-                store.lock().max_scanned_height("mainnet").unwrap(),
+                store
+                    .lock()
+                    .max_scanned_height(monero::Network::Mainnet)
+                    .unwrap(),
                 Some(NEW_BLOCK_COUNT + 1),
                 "the wide range must be fully scanned across bounded ticks"
             );
@@ -6337,7 +6412,9 @@ pub(crate) mod tests {
         // second, genuinely unrelated mechanism's own calls.
         {
             let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-            store.set_scanned_block("mainnet", 1, "h1").unwrap();
+            store
+                .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+                .unwrap();
             let store = store.into_shared();
             let fake = FakeDaemonClient::new();
             fake.push_block("h1", vec![]);
@@ -6360,7 +6437,11 @@ pub(crate) mod tests {
                 )
                 .await
                 .unwrap();
-                if store.lock().max_scanned_height("mainnet").unwrap() == Some(NEW_BLOCK_COUNT + 1)
+                if store
+                    .lock()
+                    .max_scanned_height(monero::Network::Mainnet)
+                    .unwrap()
+                    == Some(NEW_BLOCK_COUNT + 1)
                 {
                     break;
                 }
@@ -6474,7 +6555,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 None,
                 "nothing may be recorded as scanned"
             );
@@ -6562,7 +6643,9 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.get_scanned_block_hash("mainnet", 50).unwrap().as_deref(),
+                s.get_scanned_block_hash(monero::Network::Mainnet, 50)
+                    .unwrap()
+                    .as_deref(),
                 Some("old_50")
             );
             assert!(
@@ -6616,7 +6699,7 @@ pub(crate) mod tests {
         let store = store.into_shared();
         store
             .lock()
-            .set_scanned_block("mainnet", 49, "a_49")
+            .set_scanned_block(monero::Network::Mainnet, 49, "a_49")
             .unwrap();
         run_scan_tick(
             &store,
@@ -6662,7 +6745,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(48),
                 "the divergence is found and rewound, exactly as for a reorg - at 49 rather than the true fork at \
                  48 because 48 is a height this scanner never recorded a hash for, and detection can only ever be \
@@ -6690,7 +6773,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(55)
         );
 
@@ -6708,7 +6794,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
             Some(47),
             "no daemon is privileged - the stored chain is re-validated against whoever is answering"
         );
@@ -6737,7 +6823,7 @@ pub(crate) mod tests {
         let store = store.into_shared();
         store
             .lock()
-            .set_scanned_block("mainnet", 49, "a_49")
+            .set_scanned_block(monero::Network::Mainnet, 49, "a_49")
             .unwrap();
 
         let fallback = std::sync::Arc::new(FakeDaemonClient::new());
@@ -6798,7 +6884,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(48),
                 "failover to a genuinely diverging fallback reconciles exactly like the raw-swap test above"
             );
@@ -6820,7 +6906,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(52),
             "scanning continues forward on the fallback's own chain"
         );
@@ -6847,7 +6936,7 @@ pub(crate) mod tests {
         let store = store.into_shared();
         store
             .lock()
-            .set_scanned_block("mainnet", 59, "a_59")
+            .set_scanned_block(monero::Network::Mainnet, 59, "a_59")
             .unwrap();
 
         run_scan_tick(
@@ -6862,7 +6951,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(60)
         );
 
@@ -6898,7 +6990,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(60),
                 "a lagging fallback must not rewind the window back to where it currently is"
             );
@@ -6933,7 +7025,7 @@ pub(crate) mod tests {
         let store = store.into_shared();
         store
             .lock()
-            .set_scanned_block("mainnet", 50, "a_50")
+            .set_scanned_block(monero::Network::Mainnet, 50, "a_50")
             .unwrap();
 
         let fallback = std::sync::Arc::new(FakeDaemonClient::new());
@@ -6975,7 +7067,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_scanned_block_hash("mainnet", 51).unwrap(),
+            s.get_scanned_block_hash(monero::Network::Mainnet, 51).unwrap(),
             Some("b_51".to_string()),
             "the recorded hash for height 51 came from the fallback, whose get_block_hash call is what failed over"
         );
@@ -7019,7 +7111,10 @@ pub(crate) mod tests {
             .into_iter()
             .map(|p| (p.txid, p.block_height))
             .collect();
-        let scanned_before = store.lock().max_scanned_height("mainnet").unwrap();
+        let scanned_before = store
+            .lock()
+            .max_scanned_height(monero::Network::Mainnet)
+            .unwrap();
 
         let fallback = std::sync::Arc::new(FakeDaemonClient::new());
         primary.set_online(false);
@@ -7061,7 +7156,10 @@ pub(crate) mod tests {
             "a failed tick must not touch previously-recorded payments"
         );
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             scanned_before,
             "a failed tick must not move the scanned watermark"
         );
@@ -7315,7 +7413,7 @@ pub(crate) mod tests {
         .unwrap();
         for h in 70..=100 {
             store
-                .set_scanned_block("mainnet", h, &format!("old_{h}"))
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("old_{h}"))
                 .unwrap();
         }
         let (_, status) = store
@@ -7348,12 +7446,14 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.max_scanned_height("mainnet").unwrap(),
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
             Some(100),
             "the window belongs to the chain, not to whichever node is currently answering"
         );
         assert_eq!(
-            s.get_scanned_block_hash("mainnet", 95).unwrap().as_deref(),
+            s.get_scanned_block_hash(monero::Network::Mainnet, 95)
+                .unwrap()
+                .as_deref(),
             Some("old_95")
         );
         let payment = &s
@@ -7814,7 +7914,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height("mainnet").unwrap(),
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 None,
                 "nothing to seed from, so nothing recorded"
             );
@@ -7855,8 +7955,12 @@ pub(crate) mod tests {
         // nobody has ever run. The delete goes ahead with nothing to re-anchor to,
         // leaving an empty window that the next tick re-seeds from the tip.
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 0, "genesis_v0").unwrap();
-        store.set_scanned_block("mainnet", 1, "block_1_v0").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 0, "genesis_v0")
+            .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 1, "block_1_v0")
+            .unwrap();
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
@@ -7868,7 +7972,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(report.reorg_detected_at, Some(0));
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
             None,
             "there is no ancestor to preserve below genesis, so the window is emptied and re-seeded next tick"
         );
@@ -7910,9 +8014,16 @@ pub(crate) mod tests {
 
         {
             let s = store.lock();
-            assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(60));
+            assert_eq!(
+                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                Some(60)
+            );
             let retained: u64 = (0..=60)
-                .filter(|h| s.get_scanned_block_hash("mainnet", *h).unwrap().is_some())
+                .filter(|h| {
+                    s.get_scanned_block_hash(monero::Network::Mainnet, *h)
+                        .unwrap()
+                        .is_some()
+                })
                 .count() as u64;
             assert!(
                 retained > depth,
@@ -7937,7 +8048,10 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(report.reorg_detected_at, Some(60 - depth));
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(60 - depth - 1),
             "the rewind still finds an ancestor to anchor on below the pruned window"
         );
@@ -8337,7 +8451,10 @@ pub(crate) mod tests {
             .unwrap();
 
         assert_eq!(
-            store.lock().max_scanned_height("mainnet").unwrap(),
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
             Some(2),
             "the network moved on"
         );
@@ -8362,7 +8479,10 @@ pub(crate) mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(
-            store.lock().lagging_tenants("mainnet").unwrap(),
+            store
+                .lock()
+                .lagging_tenants(monero::Network::Mainnet)
+                .unwrap(),
             vec![(a.clone(), 1)]
         );
 
@@ -8399,7 +8519,11 @@ pub(crate) mod tests {
             1,
             "B's payment wasn't recorded twice"
         );
-        assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
+        assert!(store
+            .lock()
+            .lagging_tenants(monero::Network::Mainnet)
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -8589,7 +8713,13 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0)
             .await
             .unwrap();
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(2)
+        );
         assert_eq!(
             cursor_of(&store, a.as_str()),
             Some(1),
@@ -8681,13 +8811,19 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(cursor_of(&store, tenant.id.as_str()), Some(3));
-        assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
+        assert!(store
+            .lock()
+            .lagging_tenants(monero::Network::Mainnet)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn a_new_tenant_starts_at_its_networks_scanned_height() {
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 50, "h50").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 50, "h50")
+            .unwrap();
         let new = |network: &str| {
             store
                 .create_tenant(
@@ -8759,7 +8895,13 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(4));
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(4)
+        );
         assert_eq!(
             cursor_of(&store, a.as_str()),
             Some(4),
@@ -8829,7 +8971,13 @@ pub(crate) mod tests {
         // Catch-up saw block 3's hash differ from the stored one and stopped
         // without moving A; the reorg check then rewound everyone to 2.
         assert_eq!(cursor_of(&store, a.as_str()), Some(2));
-        assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
+        assert_eq!(
+            store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap(),
+            Some(2)
+        );
         for _ in 0..3 {
             run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
                 .await
@@ -9027,7 +9175,10 @@ pub(crate) mod tests {
                     .unwrap();
             }
 
-            let high_water = store.lock().max_scanned_height("mainnet").unwrap();
+            let high_water = store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap();
             for ((tenant_id, _), order_id) in tenants.iter().zip(&orders) {
                 assert_eq!(
                     cursor_of(&store, tenant_id.as_str()),
@@ -9240,7 +9391,10 @@ pub(crate) mod tests {
             );
             result.unwrap().unwrap();
             assert_eq!(
-                store.lock().max_scanned_height("mainnet").unwrap(),
+                store
+                    .lock()
+                    .max_scanned_height(monero::Network::Mainnet)
+                    .unwrap(),
                 Some(height)
             );
         }
@@ -9402,7 +9556,11 @@ pub(crate) mod tests {
             OrderStatus::Expired
         );
         assert_eq!(cursor_of(&store, a.as_str()), Some(3));
-        assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
+        assert!(store
+            .lock()
+            .lagging_tenants(monero::Network::Mainnet)
+            .unwrap()
+            .is_empty());
     }
 
     /// Only a tenant with nothing that could have been paid moves without a
@@ -9412,7 +9570,9 @@ pub(crate) mod tests {
     #[test]
     fn only_tenants_with_nothing_in_scope_move_without_a_scan() {
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 10, "h10").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 10, "h10")
+            .unwrap();
         let tenant = |network: &str, cursor: i64, with_order: bool| {
             let id = store
                 .create_tenant(
@@ -9459,7 +9619,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             store
-                .advance_idle_cursors("mainnet", 10, 11, 500, 0)
+                .advance_idle_cursors(monero::Network::Mainnet, 10, 11, 500, 0)
                 .unwrap(),
             1
         );
@@ -9522,17 +9682,17 @@ pub(crate) mod tests {
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
         assert_eq!(
-            register_missing_wallets(&store, &custody, &handles, "stagenet").await,
+            register_missing_wallets(&store, &custody, &handles, monero::Network::Stagenet).await,
             0,
             "other networks untouched"
         );
         assert_eq!(
-            register_missing_wallets(&store, &custody, &handles, "mainnet").await,
+            register_missing_wallets(&store, &custody, &handles, monero::Network::Mainnet).await,
             1
         );
         assert!(handles.read().contains_key(&tenant.id));
         assert_eq!(
-            register_missing_wallets(&store, &custody, &handles, "mainnet").await,
+            register_missing_wallets(&store, &custody, &handles, monero::Network::Mainnet).await,
             0,
             "nothing left to do"
         );
@@ -9843,7 +10003,10 @@ pub(crate) mod tests {
                     .unwrap();
             }
 
-            let high_water = store.lock().max_scanned_height("mainnet").unwrap();
+            let high_water = store
+                .lock()
+                .max_scanned_height(monero::Network::Mainnet)
+                .unwrap();
             let events = store
                 .lock()
                 .due_webhook_deliveries(i64::MAX / 2, 10_000)
@@ -10346,7 +10509,7 @@ pub(crate) mod tests {
                 &custody,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             3
@@ -10358,7 +10521,7 @@ pub(crate) mod tests {
                 &custody,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             0
@@ -10372,7 +10535,7 @@ pub(crate) mod tests {
                 &custody,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             3
@@ -10387,7 +10550,7 @@ pub(crate) mod tests {
                 &custody,
                 &handles,
                 Some(&handled),
-                "stagenet"
+                monero::Network::Stagenet
             )
             .await,
             0
@@ -10436,7 +10599,7 @@ pub(crate) mod tests {
                 &router,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             2
@@ -10455,7 +10618,7 @@ pub(crate) mod tests {
                 &router,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             0
@@ -10471,7 +10634,7 @@ pub(crate) mod tests {
                 &router,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             1
@@ -10527,7 +10690,7 @@ pub(crate) mod tests {
                 &router,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             1
@@ -10548,7 +10711,7 @@ pub(crate) mod tests {
                 &router,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             1
@@ -10574,7 +10737,7 @@ pub(crate) mod tests {
                 &router,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             1
@@ -10627,8 +10790,14 @@ pub(crate) mod tests {
         let handles = parking_lot::RwLock::new(HashMap::new());
         for network in ["mainnet", "stagenet"] {
             assert_eq!(
-                register_missing_wallets_checking_state(&store, &router, &handles, None, network)
-                    .await,
+                register_missing_wallets_checking_state(
+                    &store,
+                    &router,
+                    &handles,
+                    None,
+                    shared::network::parse_network(network).unwrap()
+                )
+                .await,
                 1
             );
         }
@@ -10649,7 +10818,7 @@ pub(crate) mod tests {
             &router,
             &handles,
             None,
-            "mainnet",
+            monero::Network::Mainnet,
         )
         .await;
         assert_eq!(
@@ -10665,8 +10834,14 @@ pub(crate) mod tests {
             "still there, so stagenet's loop sees it lost and retries soon"
         );
         assert_eq!(
-            register_missing_wallets_checking_state(&store, &router, &handles, None, "stagenet")
-                .await,
+            register_missing_wallets_checking_state(
+                &store,
+                &router,
+                &handles,
+                None,
+                monero::Network::Stagenet
+            )
+            .await,
             1
         );
         assert!(router.handle_is_live(handles.read()[&ids["stagenet"]]));
@@ -10782,7 +10957,7 @@ pub(crate) mod tests {
         .is_empty());
         stage_block_match(
             &store,
-            "mainnet",
+            monero::Network::Mainnet,
             &shared::ids::TenantId::new(tenant_id.to_string()),
             &scan,
             100,
@@ -10794,7 +10969,7 @@ pub(crate) mod tests {
             .is_empty());
         assert!(store
             .take_staged_payments(
-                "mainnet",
+                monero::Network::Mainnet,
                 &shared::ids::TenantId::new(tenant_id.to_string()),
                 "any"
             )
@@ -10858,7 +11033,11 @@ pub(crate) mod tests {
                     .unwrap();
             }
             assert!(
-                store.lock().reorg_job("mainnet").unwrap().is_none(),
+                store
+                    .lock()
+                    .reorg_job(monero::Network::Mainnet)
+                    .unwrap()
+                    .is_none(),
                 "fault {fault}"
             );
             assert_eq!(
@@ -10953,10 +11132,16 @@ pub(crate) mod tests {
             order_id: order_id.clone(),
         };
         let db = crate::store::Db::over_shared(store.clone());
-        let restored =
-            recheck_voided_payment(&db, &daemon, "mainnet", &payment, 10, crate::now_unix())
-                .await
-                .unwrap();
+        let restored = recheck_voided_payment(
+            &db,
+            &daemon,
+            monero::Network::Mainnet,
+            &payment,
+            10,
+            crate::now_unix(),
+        )
+        .await
+        .unwrap();
         assert!(!restored, "already restored by the time it was applied");
         let events: Vec<String> = store
             .lock()
@@ -11123,7 +11308,7 @@ pub(crate) mod tests {
                 &custody,
                 &handles,
                 Some(&epoch),
-                "mainnet",
+                monero::Network::Mainnet,
             )
             .await;
             assert_eq!(
@@ -11151,8 +11336,14 @@ pub(crate) mod tests {
         let handles = parking_lot::RwLock::new(HashMap::new());
         let db = crate::store::Db::over_shared(store.clone());
         store.lock().fail_nth_access(Some(0));
-        let pass =
-            register_missing_wallets_reporting(&db, &custody, &handles, None, "mainnet").await;
+        let pass = register_missing_wallets_reporting(
+            &db,
+            &custody,
+            &handles,
+            None,
+            monero::Network::Mainnet,
+        )
+        .await;
         store.lock().fail_nth_access(None);
         assert_eq!(
             pass,
@@ -11190,8 +11381,14 @@ pub(crate) mod tests {
             let handles = parking_lot::RwLock::new(HashMap::new());
             let db = crate::store::Db::over_shared(store.clone());
             let started = tokio::time::Instant::now();
-            let pass =
-                register_missing_wallets_reporting(&db, &custody, &handles, None, "mainnet").await;
+            let pass = register_missing_wallets_reporting(
+                &db,
+                &custody,
+                &handles,
+                None,
+                monero::Network::Mainnet,
+            )
+            .await;
             assert_eq!(
                 pass,
                 Registration {
@@ -11236,8 +11433,14 @@ pub(crate) mod tests {
                 .insert(crate::store::TenantId::new(id), earlier);
         });
         let db = crate::store::Db::over_shared(store.clone());
-        let pass =
-            register_missing_wallets_reporting(&db, &custody, &handles, None, "mainnet").await;
+        let pass = register_missing_wallets_reporting(
+            &db,
+            &custody,
+            &handles,
+            None,
+            monero::Network::Mainnet,
+        )
+        .await;
         assert_eq!(
             pass,
             Registration {
@@ -11264,7 +11467,7 @@ pub(crate) mod tests {
         };
         stage_block_match(
             &store,
-            "mainnet",
+            monero::Network::Mainnet,
             &shared::ids::TenantId::new(tenant_id.to_string()),
             &matched(99),
             100,
@@ -11277,7 +11480,7 @@ pub(crate) mod tests {
         };
         store
             .save_block_checkpoint(
-                "mainnet",
+                monero::Network::Mainnet,
                 &shared::ids::TenantId::new(tenant_id.to_string()),
                 &checkpoint,
             )
@@ -11285,7 +11488,7 @@ pub(crate) mod tests {
         assert!(
             store
                 .take_staged_payments(
-                    "mainnet",
+                    monero::Network::Mainnet,
                     &shared::ids::TenantId::new(tenant_id.to_string()),
                     "h7"
                 )
@@ -11297,7 +11500,7 @@ pub(crate) mod tests {
         for fault in 0.. {
             store
                 .save_block_checkpoint(
-                    "mainnet",
+                    monero::Network::Mainnet,
                     &shared::ids::TenantId::new(tenant_id.to_string()),
                     &checkpoint,
                 )
@@ -11306,7 +11509,7 @@ pub(crate) mod tests {
             let result = store.in_transaction(|s| {
                 stage_block_match(
                     s,
-                    "mainnet",
+                    monero::Network::Mainnet,
                     &shared::ids::TenantId::new(tenant_id.to_string()),
                     &matched(1),
                     100,
@@ -11322,7 +11525,7 @@ pub(crate) mod tests {
             assert!(
                 store
                     .take_staged_payments(
-                        "mainnet",
+                        monero::Network::Mainnet,
                         &shared::ids::TenantId::new(tenant_id.to_string()),
                         "h7"
                     )
@@ -11334,7 +11537,7 @@ pub(crate) mod tests {
         assert!(failed >= 2);
         let staged = store
             .take_staged_payments(
-                "mainnet",
+                monero::Network::Mainnet,
                 &shared::ids::TenantId::new(tenant_id.to_string()),
                 "h7",
             )
@@ -11401,7 +11604,7 @@ pub(crate) mod tests {
         let restored = recheck_voided_payment(
             &db,
             &ShortAnswers(chain_replica()),
-            "mainnet",
+            monero::Network::Mainnet,
             &payment,
             10,
             crate::now_unix(),
@@ -11459,7 +11662,7 @@ pub(crate) mod tests {
                 &router,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             2
@@ -11476,7 +11679,7 @@ pub(crate) mod tests {
                 &router,
                 &handles,
                 Some(&handled),
-                "mainnet"
+                monero::Network::Mainnet
             )
             .await,
             1

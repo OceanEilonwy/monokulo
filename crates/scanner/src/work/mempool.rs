@@ -169,7 +169,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         let outcome = scan_and_record(round.state, round.inputs, tx, &txid, &due, None).await;
         failed.extend(outcome.failed);
         if let Some(error) = outcome.store_error {
-            tracing::warn!(network = %network, error = %error, "recording a mempool match failed (retried next round)");
+            tracing::warn!(network = crate::network::network_str(network), error = %error, "recording a mempool match failed (retried next round)");
         }
     }
     // Advance by the work actually attempted, so a slow first transaction
@@ -473,7 +473,7 @@ async fn all_windows(
         Some(windows) => windows,
         None => {
             let (network, grace, now) = (
-                crate::network::network_str(inputs.network),
+                inputs.network,
                 inputs.grace_period_seconds,
                 crate::now_unix(),
             );

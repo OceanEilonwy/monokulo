@@ -44,6 +44,25 @@ pub fn network_str(n: Network) -> &'static str {
     }
 }
 
+/// A network as SQLite stores it: its name (`"mainnet"`), read back with
+/// [`parse_network`], so an unknown name in a row is an error, not a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqlNetwork(pub Network);
+
+impl rusqlite::ToSql for SqlNetwork {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(network_str(self.0).into())
+    }
+}
+
+impl rusqlite::types::FromSql for SqlNetwork {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        parse_network(value.as_str()?)
+            .map(SqlNetwork)
+            .map_err(|e| rusqlite::types::FromSqlError::Other(Box::new(e)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

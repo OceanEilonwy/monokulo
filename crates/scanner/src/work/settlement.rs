@@ -70,7 +70,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
     let Some(txids) = round.pool_txids.clone() else {
         return Ok(());
     };
-    let network = round.network().to_string();
+    let network = round.network();
     let db = round.inputs.db;
     let page = round
         .db(|s, network| -> Result<_, ScannerError> {
@@ -114,7 +114,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
         match checked {
             Ok(Ok(_)) => last = Some(id),
             Ok(Err(ScannerError::Daemon(error))) => {
-                tracing::warn!(network = %network, error = %error, "checking a vanished mempool payment failed (retried)");
+                tracing::warn!(network = crate::network::network_str(network), error = %error, "checking a vanished mempool payment failed (retried)");
                 break;
             }
             Ok(Err(error)) => {
@@ -122,7 +122,10 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
                 break;
             }
             Err(_) => {
-                tracing::warn!(network = %network, "checking a vanished mempool payment took too long (retried)");
+                tracing::warn!(
+                    network = crate::network::network_str(network),
+                    "checking a vanished mempool payment took too long (retried)"
+                );
                 break;
             }
         }
@@ -176,7 +179,7 @@ async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, Scanne
                     round.state.order_backoff.succeeded(&id);
                 }
                 Err(error) => {
-                    tracing::warn!(network = %round.network(), order.id = %id, error = %error, "recomputing an order's status failed (retried later)");
+                    tracing::warn!(network = crate::network::network_str(round.network()), order.id = %id, error = %error, "recomputing an order's status failed (retried later)");
                     round.state.order_backoff.failed(&id);
                     first_failure.get_or_insert(error);
                 }
@@ -198,7 +201,7 @@ async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, Scanne
 /// skipping anything already recomputed this round.
 fn pick(
     s: &crate::store::Store,
-    network: &str,
+    network: monero::Network,
     after: &str,
     recomputed: &HashSet<crate::store::OrderId>,
     now: i64,

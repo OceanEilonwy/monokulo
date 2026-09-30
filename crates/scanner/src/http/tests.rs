@@ -3337,7 +3337,7 @@ async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is
     let store = state.db.shared_store_for_test().clone();
     store
         .lock()
-        .set_scanned_block("mainnet", 100, "h100")
+        .set_scanned_block(monero::Network::Mainnet, 100, "h100")
         .unwrap();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
@@ -3355,7 +3355,7 @@ async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is
     );
     store
         .lock()
-        .set_scanned_block("mainnet", 102, "h102")
+        .set_scanned_block(monero::Network::Mainnet, 102, "h102")
         .unwrap();
     let status = get_status_json(router.clone()).await;
     assert_eq!(
@@ -3366,7 +3366,7 @@ async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is
 
     store
         .lock()
-        .set_scanned_block("mainnet", 103, "h103")
+        .set_scanned_block(monero::Network::Mainnet, 103, "h103")
         .unwrap();
     let status = get_status_json(router.clone()).await;
     assert_eq!(

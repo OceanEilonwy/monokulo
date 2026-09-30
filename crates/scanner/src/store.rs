@@ -409,7 +409,7 @@ pub struct OrderPaymentRow {
 }
 
 pub struct StagedMatch<'a> {
-    pub network: &'a str,
+    pub network: monero::Network,
     pub tenant_id: &'a TenantId,
     pub order_id: &'a OrderId,
     pub txid: &'a str,
@@ -953,10 +953,12 @@ impl Store {
 
     /// Public keys of the enabled tenants on `network`, for `/status`'s list
     /// of stores that can't be scanned (task 3.7).
-    pub fn tenant_public_keys_on_network(&self, network: &str) -> Result<Vec<String>> {
+    pub fn tenant_public_keys_on_network(&self, network: monero::Network) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare_cached("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY public_key")?;
         let rows = stmt
-            .query_map(params![network], |row| row.get::<_, String>(0))?
+            .query_map(params![shared::network::SqlNetwork(network)], |row| {
+                row.get::<_, String>(0)
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -979,7 +981,7 @@ impl Store {
     }
 
     /// `lagging_tenants`, by public key: (public key, cursor).
-    pub fn lagging_tenant_keys(&self, network: &str) -> Result<Vec<(String, u64)>> {
+    pub fn lagging_tenant_keys(&self, network: monero::Network) -> Result<Vec<(String, u64)>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT public_key, scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL
@@ -987,7 +989,7 @@ impl Store {
              ORDER BY public_key",
         )?;
         let rows = stmt
-            .query_map(params![network], |row| {
+            .query_map(params![shared::network::SqlNetwork(network)], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1237,7 +1239,7 @@ impl Store {
     /// this window has already elapsed.
     pub fn active_tenant_ids(
         &self,
-        network: &str,
+        network: monero::Network,
         now: i64,
         grace_period_seconds: i64,
     ) -> Result<Vec<TenantId>> {
@@ -1247,7 +1249,7 @@ impl Store {
         ))?;
         let rows = stmt
             .query_map(
-                rusqlite::named_params! { ":since_minus_grace": now - grace_period_seconds, ":network": network },
+                rusqlite::named_params! { ":since_minus_grace": now - grace_period_seconds, ":network": shared::network::SqlNetwork(network) },
                 |row| row.get::<_, TenantId>(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1296,7 +1298,7 @@ impl Store {
     /// comment (the same widening, one level down).
     pub fn non_terminal_order_ids(
         &self,
-        network: &str,
+        network: monero::Network,
         now: i64,
         grace_period_seconds: i64,
     ) -> Result<Vec<OrderId>> {
@@ -1314,7 +1316,7 @@ impl Store {
                     status_to_str(OrderStatus::Partial),
                     status_to_str(OrderStatus::Expired),
                     now - grace_period_seconds,
-                    network,
+                    shared::network::SqlNetwork(network),
                 ],
                 |row| row.get::<_, OrderId>(0),
             )?
@@ -1324,14 +1326,14 @@ impl Store {
 
     /// Payment changes whose status/webhook transaction has not committed yet.
     /// Unlike the live scan window this includes old, closed orders.
-    pub fn pending_payment_recomputes(&self, network: &str) -> Result<Vec<OrderId>> {
+    pub fn pending_payment_recomputes(&self, network: monero::Network) -> Result<Vec<OrderId>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT p.order_id FROM pending_payment_recomputes p
              JOIN orders o ON o.id = p.order_id
              JOIN tenants t ON t.id = o.tenant_id WHERE t.network = ?1",
         )?;
         let rows = stmt
-            .query_map([network], |row| row.get(0))?
+            .query_map([shared::network::SqlNetwork(network)], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1340,7 +1342,7 @@ impl Store {
     /// avoids an OFFSET walk over a large backlog on every tick.
     pub fn pending_payment_recomputes_page(
         &self,
-        network: &str,
+        network: monero::Network,
         after: &str,
         limit: usize,
     ) -> Result<Vec<OrderId>> {
@@ -1350,7 +1352,10 @@ impl Store {
              WHERE t.network = ?1 AND p.order_id > ?2 ORDER BY p.order_id LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(params![network, after, limit as i64], |row| row.get(0))?
+            .query_map(
+                params![shared::network::SqlNetwork(network), after, limit as i64],
+                |row| row.get(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1771,7 +1776,7 @@ impl Store {
     /// the question this query asks.
     pub fn find_payments_at_or_after_height(
         &self,
-        network: &str,
+        network: monero::Network,
         min_height: u64,
     ) -> Result<Vec<OrderPaymentRow>> {
         let mut stmt = self.conn.prepare_cached(
@@ -1783,7 +1788,10 @@ impl Store {
                AND t.network = ?2",
         )?;
         let rows = stmt
-            .query_map(params![min_height as i64, network], Self::row_to_payment)?
+            .query_map(
+                params![min_height as i64, shared::network::SqlNetwork(network)],
+                Self::row_to_payment,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1800,7 +1808,7 @@ impl Store {
     /// same reason its non-voided counterpart does - see that method's doc comment.
     pub fn find_voided_payments_at_or_after_height(
         &self,
-        network: &str,
+        network: monero::Network,
         min_height: u64,
     ) -> Result<Vec<OrderPaymentRow>> {
         let mut stmt = self.conn.prepare_cached(
@@ -1812,7 +1820,10 @@ impl Store {
                AND t.network = ?2",
         )?;
         let rows = stmt
-            .query_map(params![min_height as i64, network], Self::row_to_payment)?
+            .query_map(
+                params![min_height as i64, shared::network::SqlNetwork(network)],
+                Self::row_to_payment,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1827,7 +1838,7 @@ impl Store {
     /// forever. Scoped by network for the same reason every sibling query here is.
     pub fn find_payments_voided_since(
         &self,
-        network: &str,
+        network: monero::Network,
         cutoff: i64,
     ) -> Result<Vec<OrderPaymentRow>> {
         let mut stmt = self.conn.prepare_cached(
@@ -1839,7 +1850,10 @@ impl Store {
                AND t.network = ?2",
         )?;
         let rows = stmt
-            .query_map(params![cutoff, network], Self::row_to_payment)?
+            .query_map(
+                params![cutoff, shared::network::SqlNetwork(network)],
+                Self::row_to_payment,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1856,7 +1870,10 @@ impl Store {
     ///
     /// Scoped by network for the same reason its height-based counterparts are: one
     /// network's daemon must never be asked about another chain's transactions.
-    pub fn find_unconfirmed_payments(&self, network: &str) -> Result<Vec<OrderPaymentRow>> {
+    pub fn find_unconfirmed_payments(
+        &self,
+        network: monero::Network,
+    ) -> Result<Vec<OrderPaymentRow>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
@@ -1866,7 +1883,10 @@ impl Store {
                AND t.network = ?1",
         )?;
         let rows = stmt
-            .query_map(params![network], Self::row_to_payment)?
+            .query_map(
+                params![shared::network::SqlNetwork(network)],
+                Self::row_to_payment,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1876,7 +1896,7 @@ impl Store {
     /// at the end so transactions still absent from the pool are revisited.
     pub fn unconfirmed_payments_page(
         &self,
-        network: &str,
+        network: monero::Network,
         after_rowid: i64,
         limit: usize,
     ) -> Result<Vec<(i64, OrderPaymentRow)>> {
@@ -1889,9 +1909,14 @@ impl Store {
              ORDER BY op.rowid LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(params![network, after_rowid, limit as i64], |row| {
-                Ok((row.get(0)?, Self::row_to_payment(row)?))
-            })?
+            .query_map(
+                params![
+                    shared::network::SqlNetwork(network),
+                    after_rowid,
+                    limit as i64
+                ],
+                |row| Ok((row.get(0)?, Self::row_to_payment(row)?)),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1960,7 +1985,7 @@ impl Store {
                 .confirmations_required_override
                 .unwrap_or(confirmations_required),
             tenant_lagging: lagging,
-            settlement_frozen: self.settlement_frozen(&network)?,
+            settlement_frozen: self.settlement_frozen(network)?,
             current_height,
             now,
         });
@@ -2019,7 +2044,7 @@ impl Store {
     /// confirmations requirement, its network, and whether it is behind the
     /// network (a disabled tenant never is). One small row, not the tenant
     /// with its key material.
-    fn recompute_facts(&self, tenant_id: &TenantId) -> Result<(u64, String, bool)> {
+    fn recompute_facts(&self, tenant_id: &TenantId) -> Result<(u64, monero::Network, bool)> {
         self.conn
             .query_row(
                 "SELECT t.confirmations_required, t.network,
@@ -2027,7 +2052,13 @@ impl Store {
                         AND t.scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = t.network)
                  FROM tenants t WHERE t.id = ?1",
                 [tenant_id],
-                |row| Ok((row.get::<_, i64>(0)?.max(0) as u64, row.get(1)?, row.get::<_, Option<bool>>(2)?.unwrap_or(false))),
+                |row| {
+                    Ok((
+                        row.get::<_, shared::sqlite::Unsigned<u64>>(0)?.0,
+                        row.get::<_, shared::network::SqlNetwork>(1)?.0,
+                        row.get::<_, Option<bool>>(2)?.unwrap_or(false),
+                    ))
+                },
             )
             .optional()?
             .ok_or(StoreError::NotFound)
@@ -2074,11 +2105,11 @@ impl Store {
     /// from there (see `scanner::run_scan_tick`). Scoped by network because heights
     /// are meaningless across chains - mainnet height 100 and stagenet height 100
     /// are unrelated blocks.
-    pub fn max_scanned_height(&self, network: &str) -> Result<Option<u64>> {
+    pub fn max_scanned_height(&self, network: monero::Network) -> Result<Option<u64>> {
         self.conn
             .query_row(
                 "SELECT MAX(height) FROM scanned_blocks WHERE network = ?1",
-                params![network],
+                params![shared::network::SqlNetwork(network)],
                 |row| row.get::<_, Option<i64>>(0),
             )
             .map(|opt| opt.map(|h| h as u64))
@@ -2100,22 +2131,31 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub fn get_scanned_block_hash(&self, network: &str, height: u64) -> Result<Option<String>> {
+    pub fn get_scanned_block_hash(
+        &self,
+        network: monero::Network,
+        height: u64,
+    ) -> Result<Option<String>> {
         self.conn
             .query_row(
                 "SELECT block_hash FROM scanned_blocks WHERE network = ?1 AND height = ?2",
-                params![network, height as i64],
+                params![shared::network::SqlNetwork(network), height as i64],
                 |row| row.get(0),
             )
             .optional()
             .map_err(Into::into)
     }
 
-    pub fn set_scanned_block(&self, network: &str, height: u64, hash: &str) -> Result<()> {
+    pub fn set_scanned_block(
+        &self,
+        network: monero::Network,
+        height: u64,
+        hash: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO scanned_blocks (network, height, block_hash) VALUES (?1, ?2, ?3)
              ON CONFLICT(network, height) DO UPDATE SET block_hash = excluded.block_hash",
-            params![network, height as i64, hash],
+            params![shared::network::SqlNetwork(network), height as i64, hash],
         )?;
         Ok(())
     }
@@ -2125,20 +2165,24 @@ impl Store {
             "INSERT OR IGNORE INTO partial_block_matches
              (network, tenant_id, order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![matched.network, matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
+            params![shared::network::SqlNetwork(matched.network), matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
                 matched.amount as i64, matched.key_images_json, matched.seen_at],
         )?;
         Ok(())
     }
 
-    pub fn clear_partial_block(&self, network: &str, tenant_id: &TenantId) -> Result<()> {
+    pub fn clear_partial_block(
+        &self,
+        network: monero::Network,
+        tenant_id: &TenantId,
+    ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
-            params![network, tenant_id],
+            params![shared::network::SqlNetwork(network), tenant_id],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
-            params![network, tenant_id],
+            params![shared::network::SqlNetwork(network), tenant_id],
         )?;
         Ok(())
     }
@@ -2153,10 +2197,14 @@ impl Store {
     /// chain - the transaction was rebroadcast and mined into the fork that won - is
     /// never seen at all: the scanner's high-water mark is still above those heights,
     /// and blocks below it are never revisited.
-    pub fn forget_scanned_blocks_at_or_above(&self, network: &str, height: u64) -> Result<()> {
+    pub fn forget_scanned_blocks_at_or_above(
+        &self,
+        network: monero::Network,
+        height: u64,
+    ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height >= ?2",
-            params![network, height as i64],
+            params![shared::network::SqlNetwork(network), height as i64],
         )?;
         Ok(())
     }
@@ -2175,10 +2223,14 @@ impl Store {
         Ok(busy == 0 && log == checkpointed)
     }
 
-    pub fn prune_scanned_blocks_below(&self, network: &str, min_height: u64) -> Result<()> {
+    pub fn prune_scanned_blocks_below(
+        &self,
+        network: monero::Network,
+        min_height: u64,
+    ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height < ?2",
-            params![network, min_height as i64],
+            params![shared::network::SqlNetwork(network), min_height as i64],
         )?;
         Ok(())
     }
@@ -2192,25 +2244,25 @@ impl Store {
 
     /// Gives every tenant on `network` whose cursor was never set the
     /// network's height. Called when a network is first seeded.
-    pub fn anchor_unset_cursors(&self, network: &str, height: u64) -> Result<()> {
+    pub fn anchor_unset_cursors(&self, network: monero::Network, height: u64) -> Result<()> {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height IS NULL",
-            params![network, height as i64],
+            params![shared::network::SqlNetwork(network), height as i64],
         )?;
         Ok(())
     }
 
     /// After a reorg rewinds `network` to `height`, no tenant can be ahead of
     /// it. `None` (the reorg reached genesis) un-anchors every cursor.
-    pub fn clamp_cursors(&self, network: &str, height: Option<u64>) -> Result<()> {
+    pub fn clamp_cursors(&self, network: monero::Network, height: Option<u64>) -> Result<()> {
         match height {
             Some(h) => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height > ?2",
-                params![network, h as i64],
+                params![shared::network::SqlNetwork(network), h as i64],
             )?,
             None => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = NULL WHERE network = ?1",
-                params![network],
+                params![shared::network::SqlNetwork(network)],
             )?,
         };
         Ok(())
@@ -2218,7 +2270,7 @@ impl Store {
 
     /// Tenants on `network` whose cursor is below the network's high-water
     /// mark, with their cursors, lowest first.
-    pub fn lagging_tenants(&self, network: &str) -> Result<Vec<(TenantId, u64)>> {
+    pub fn lagging_tenants(&self, network: monero::Network) -> Result<Vec<(TenantId, u64)>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL
@@ -2226,7 +2278,7 @@ impl Store {
              ORDER BY scanned_through_height, id",
         )?;
         let rows = stmt
-            .query_map(params![network], |row| {
+            .query_map(params![shared::network::SqlNetwork(network)], |row| {
                 Ok((row.get::<_, TenantId>(0)?, row.get::<_, i64>(1)? as u64))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2235,21 +2287,21 @@ impl Store {
 
     /// Disabled tenants on `network` whose cursor is behind: nothing is
     /// scanned for them any more, so they are simply moved along.
-    pub fn snap_disabled_cursors(&self, network: &str, height: u64) -> Result<()> {
+    pub fn snap_disabled_cursors(&self, network: monero::Network, height: u64) -> Result<()> {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND disabled_at_utc IS NOT NULL AND scanned_through_height < ?2",
-            params![network, height as i64],
+            params![shared::network::SqlNetwork(network), height as i64],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [network],
+            [shared::network::SqlNetwork(network)],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [network],
+            [shared::network::SqlNetwork(network)],
         )?;
         Ok(())
     }
@@ -2830,7 +2882,9 @@ mod tests {
             std::env::temp_dir().join(format!("scanner_read_pool_{}.db", uuid::Uuid::new_v4()));
         let path_str = path.to_string_lossy().into_owned();
         let writer = Store::open_file(&path_str).unwrap();
-        writer.set_scanned_block("mainnet", 1, "h1").unwrap();
+        writer
+            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+            .unwrap();
         let pool = ReadStorePool::open(&path_str, 2).unwrap();
 
         let (started, ready) = tokio::sync::oneshot::channel();
@@ -2841,7 +2895,7 @@ mod tests {
                 .query(move |store| {
                     started.send(()).unwrap();
                     wait.recv().unwrap();
-                    store.max_scanned_height("mainnet")
+                    store.max_scanned_height(monero::Network::Mainnet)
                 })
                 .await
         });
@@ -2850,7 +2904,7 @@ mod tests {
         // deliberately occupied. No async worker or writer mutex is involved.
         let second = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            pool.query(|store| store.max_scanned_height("mainnet")),
+            pool.query(|store| store.max_scanned_height(monero::Network::Mainnet)),
         )
         .await
         .unwrap()
@@ -3135,11 +3189,13 @@ mod tests {
         drop(store);
         let store = Store::open_file(path.to_str().unwrap()).unwrap();
         assert_eq!(
-            store.pending_payment_recomputes("mainnet").unwrap(),
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
             vec![order.id.clone()]
         );
         assert!(store
-            .pending_payment_recomputes("stagenet")
+            .pending_payment_recomputes(monero::Network::Stagenet)
             .unwrap()
             .is_empty());
         store.clear_pending_payment_recompute(&order.id).unwrap();
@@ -3148,7 +3204,7 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .pending_payment_recomputes("mainnet")
+                .pending_payment_recomputes(monero::Network::Mainnet)
                 .unwrap()
                 .is_empty(),
             "duplicate sightings aren't new work"
@@ -3157,19 +3213,25 @@ mod tests {
             .update_payment_block_height(&order.id, "tx", 0, None)
             .unwrap();
         assert_eq!(
-            store.pending_payment_recomputes("mainnet").unwrap(),
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
             vec![order.id.clone()]
         );
         store.clear_pending_payment_recompute(&order.id).unwrap();
         store.void_payment(&order.id, "tx", 0, 1002).unwrap();
         assert_eq!(
-            store.pending_payment_recomputes("mainnet").unwrap(),
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
             vec![order.id.clone()]
         );
         store.clear_pending_payment_recompute(&order.id).unwrap();
         store.unvoid_payment(&order.id, "tx", 0).unwrap();
         assert_eq!(
-            store.pending_payment_recomputes("mainnet").unwrap(),
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
             vec![order.id.clone()]
         );
         // Reapply just the new DDL to pre-existing payments: an upgrade also
@@ -3188,7 +3250,9 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(
-            store.pending_payment_recomputes("mainnet").unwrap(),
+            store
+                .pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
             vec![order.id]
         );
         drop(store);
@@ -3743,7 +3807,7 @@ mod tests {
         }
 
         let active: std::collections::HashSet<TenantId> = store
-            .active_tenant_ids("mainnet", i64::MAX, 0)
+            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
             .unwrap()
             .into_iter()
             .collect();
@@ -3784,41 +3848,41 @@ mod tests {
 
         // Exactly at the boundary (`expires_at >= now - grace`) - inclusive.
         assert!(store
-            .active_tenant_ids("mainnet", 2000, 0)
+            .active_tenant_ids(monero::Network::Mainnet, 2000, 0)
             .unwrap()
             .contains(&tenant.tenant.id));
         assert!(store
-            .non_terminal_order_ids("mainnet", 2000, 0)
+            .non_terminal_order_ids(monero::Network::Mainnet, 2000, 0)
             .unwrap()
             .contains(&order.id));
 
         // One second past, with no grace at all - excluded.
         assert!(!store
-            .active_tenant_ids("mainnet", 2001, 0)
+            .active_tenant_ids(monero::Network::Mainnet, 2001, 0)
             .unwrap()
             .contains(&tenant.tenant.id));
         assert!(!store
-            .non_terminal_order_ids("mainnet", 2001, 0)
+            .non_terminal_order_ids(monero::Network::Mainnet, 2001, 0)
             .unwrap()
             .contains(&order.id));
 
         // A real grace window: still within it.
         assert!(store
-            .active_tenant_ids("mainnet", 2500, 600)
+            .active_tenant_ids(monero::Network::Mainnet, 2500, 600)
             .unwrap()
             .contains(&tenant.tenant.id));
         assert!(store
-            .non_terminal_order_ids("mainnet", 2500, 600)
+            .non_terminal_order_ids(monero::Network::Mainnet, 2500, 600)
             .unwrap()
             .contains(&order.id));
 
         // Past even the grace window - excluded again.
         assert!(!store
-            .active_tenant_ids("mainnet", 2601, 600)
+            .active_tenant_ids(monero::Network::Mainnet, 2601, 600)
             .unwrap()
             .contains(&tenant.tenant.id));
         assert!(!store
-            .non_terminal_order_ids("mainnet", 2601, 600)
+            .non_terminal_order_ids(monero::Network::Mainnet, 2601, 600)
             .unwrap()
             .contains(&order.id));
     }
@@ -3864,7 +3928,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         assert!(!store
-            .active_tenant_ids("mainnet", i64::MAX, 0)
+            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
             .unwrap()
             .contains(&tenant.tenant.id));
     }
@@ -3882,7 +3946,7 @@ mod tests {
         let order_a = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         assert!(store
-            .active_tenant_ids("mainnet", i64::MAX, 0)
+            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
             .unwrap()
             .contains(&tenant.tenant.id));
 
@@ -3893,7 +3957,7 @@ mod tests {
         assert_eq!(status, OrderStatus::Paid);
         assert!(
             !store
-                .active_tenant_ids("mainnet", i64::MAX, 0)
+                .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
                 .unwrap()
                 .contains(&tenant.tenant.id),
             "tenant must drop off once its only order is fully settled"
@@ -3902,7 +3966,7 @@ mod tests {
         let order_b = new_order(&store, tenant.tenant.id.as_str(), 2);
         assert!(
             store
-                .active_tenant_ids("mainnet", i64::MAX, 0)
+                .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
                 .unwrap()
                 .contains(&tenant.tenant.id),
             "a fresh order must bring the tenant straight back onto the watchlist"
@@ -3924,7 +3988,7 @@ mod tests {
 
         assert!(
             store
-                .active_tenant_ids("mainnet", i64::MAX, 0)
+                .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
                 .unwrap()
                 .contains(&tenant.tenant.id),
             "order_b is still pending, so the tenant must stay active even though order_a settled"
@@ -4008,11 +4072,23 @@ mod tests {
     #[test]
     fn max_scanned_height_reflects_the_highest_recorded_block() {
         let store = Store::open_in_memory().unwrap();
-        assert_eq!(store.max_scanned_height("mainnet").unwrap(), None);
-        store.set_scanned_block("mainnet", 100, "h100").unwrap();
-        store.set_scanned_block("mainnet", 105, "h105").unwrap();
-        store.set_scanned_block("mainnet", 102, "h102").unwrap();
-        assert_eq!(store.max_scanned_height("mainnet").unwrap(), Some(105));
+        assert_eq!(
+            store.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            None
+        );
+        store
+            .set_scanned_block(monero::Network::Mainnet, 100, "h100")
+            .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 105, "h105")
+            .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 102, "h102")
+            .unwrap();
+        assert_eq!(
+            store.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(105)
+        );
     }
 
     #[test]
@@ -4035,26 +4111,41 @@ mod tests {
     #[test]
     fn scanned_blocks_round_trip_and_prune() {
         let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 100, "hash100").unwrap();
-        store.set_scanned_block("mainnet", 101, "hash101").unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 100, "hash100")
+            .unwrap();
+        store
+            .set_scanned_block(monero::Network::Mainnet, 101, "hash101")
+            .unwrap();
         assert_eq!(
-            store.get_scanned_block_hash("mainnet", 100).unwrap(),
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
             Some("hash100".to_string())
         );
 
         // Reorg overwrite at the same height.
         store
-            .set_scanned_block("mainnet", 100, "hash100_v2")
+            .set_scanned_block(monero::Network::Mainnet, 100, "hash100_v2")
             .unwrap();
         assert_eq!(
-            store.get_scanned_block_hash("mainnet", 100).unwrap(),
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
             Some("hash100_v2".to_string())
         );
 
-        store.prune_scanned_blocks_below("mainnet", 101).unwrap();
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), None);
+        store
+            .prune_scanned_blocks_below(monero::Network::Mainnet, 101)
+            .unwrap();
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
+            None
+        );
         assert!(store
-            .get_scanned_block_hash("mainnet", 101)
+            .get_scanned_block_hash(monero::Network::Mainnet, 101)
             .unwrap()
             .is_some());
     }
@@ -4067,38 +4158,59 @@ mod tests {
         // one network must never see the other's data.
         let store = Store::open_in_memory().unwrap();
         store
-            .set_scanned_block("mainnet", 100, "mainnet_hash_100")
+            .set_scanned_block(monero::Network::Mainnet, 100, "mainnet_hash_100")
             .unwrap();
         store
-            .set_scanned_block("stagenet", 100, "stagenet_hash_100")
+            .set_scanned_block(monero::Network::Stagenet, 100, "stagenet_hash_100")
             .unwrap();
 
         assert_eq!(
-            store.get_scanned_block_hash("mainnet", 100).unwrap(),
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
             Some("mainnet_hash_100".to_string())
         );
         assert_eq!(
-            store.get_scanned_block_hash("stagenet", 100).unwrap(),
+            store
+                .get_scanned_block_hash(monero::Network::Stagenet, 100)
+                .unwrap(),
             Some("stagenet_hash_100".to_string())
         );
         assert_eq!(
-            store.get_scanned_block_hash("testnet", 100).unwrap(),
+            store
+                .get_scanned_block_hash(monero::Network::Testnet, 100)
+                .unwrap(),
             None,
             "a third, never-written network must see nothing"
         );
 
         // Advancing one network's tip must not affect the other's.
         store
-            .set_scanned_block("mainnet", 105, "mainnet_hash_105")
+            .set_scanned_block(monero::Network::Mainnet, 105, "mainnet_hash_105")
             .unwrap();
-        assert_eq!(store.max_scanned_height("mainnet").unwrap(), Some(105));
-        assert_eq!(store.max_scanned_height("stagenet").unwrap(), Some(100));
+        assert_eq!(
+            store.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(105)
+        );
+        assert_eq!(
+            store.max_scanned_height(monero::Network::Stagenet).unwrap(),
+            Some(100)
+        );
 
         // Pruning one network's old blocks must not touch the other's.
-        store.prune_scanned_blocks_below("mainnet", 105).unwrap();
-        assert_eq!(store.get_scanned_block_hash("mainnet", 100).unwrap(), None);
+        store
+            .prune_scanned_blocks_below(monero::Network::Mainnet, 105)
+            .unwrap();
         assert_eq!(
-            store.get_scanned_block_hash("stagenet", 100).unwrap(),
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 100)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Stagenet, 100)
+                .unwrap(),
             Some("stagenet_hash_100".to_string()),
             "pruning mainnet must not prune stagenet's row at the same height"
         );
@@ -4125,14 +4237,18 @@ mod tests {
             .unwrap();
         new_order(&store, stagenet_tenant.tenant.id.as_str(), 1);
 
-        let mainnet_active = store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap();
+        let mainnet_active = store
+            .active_tenant_ids(monero::Network::Mainnet, i64::MAX, 0)
+            .unwrap();
         assert!(mainnet_active.contains(&mainnet_tenant.tenant.id));
         assert!(
             !mainnet_active.contains(&stagenet_tenant.tenant.id),
             "a stagenet tenant must never appear in a mainnet query"
         );
 
-        let stagenet_active = store.active_tenant_ids("stagenet", i64::MAX, 0).unwrap();
+        let stagenet_active = store
+            .active_tenant_ids(monero::Network::Stagenet, i64::MAX, 0)
+            .unwrap();
         assert!(stagenet_active.contains(&stagenet_tenant.tenant.id));
         assert!(!stagenet_active.contains(&mainnet_tenant.tenant.id));
     }
@@ -4184,13 +4300,13 @@ mod tests {
             .unwrap();
 
         let mainnet_affected = store
-            .find_payments_at_or_after_height("mainnet", 50)
+            .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
             .unwrap();
         assert_eq!(mainnet_affected.len(), 1);
         assert_eq!(mainnet_affected[0].txid, "tx_mainnet");
 
         let stagenet_affected = store
-            .find_payments_at_or_after_height("stagenet", 50)
+            .find_payments_at_or_after_height(monero::Network::Stagenet, 50)
             .unwrap();
         assert_eq!(stagenet_affected.len(), 1);
         assert_eq!(stagenet_affected[0].txid, "tx_stagenet");
@@ -4247,7 +4363,9 @@ mod tests {
             )
             .unwrap();
 
-        let found = store.find_unconfirmed_payments("mainnet").unwrap();
+        let found = store
+            .find_unconfirmed_payments(monero::Network::Mainnet)
+            .unwrap();
         assert_eq!(
             found.len(),
             1,
@@ -4255,15 +4373,19 @@ mod tests {
         );
         assert_eq!(found[0].txid, "tx_pool");
 
-        let first_page = store.unconfirmed_payments_page("mainnet", 0, 1).unwrap();
+        let first_page = store
+            .unconfirmed_payments_page(monero::Network::Mainnet, 0, 1)
+            .unwrap();
         assert_eq!(first_page.len(), 1);
         assert_eq!(first_page[0].1.txid, "tx_pool");
         assert!(store
-            .unconfirmed_payments_page("mainnet", first_page[0].0, 1)
+            .unconfirmed_payments_page(monero::Network::Mainnet, first_page[0].0, 1)
             .unwrap()
             .is_empty());
 
-        let stagenet_found = store.find_unconfirmed_payments("stagenet").unwrap();
+        let stagenet_found = store
+            .find_unconfirmed_payments(monero::Network::Stagenet)
+            .unwrap();
         assert_eq!(stagenet_found.len(), 1);
         assert_eq!(stagenet_found[0].txid, "tx_stagenet_pool");
     }
@@ -4278,7 +4400,9 @@ mod tests {
                 .record_payment_match(&order.id, &format!("tx_{index}"), 0, 100, "[]", 1500, None)
                 .unwrap();
         }
-        let first = store.unconfirmed_payments_page("mainnet", 0, 2).unwrap();
+        let first = store
+            .unconfirmed_payments_page(monero::Network::Mainnet, 0, 2)
+            .unwrap();
         assert_eq!(
             first
                 .iter()
@@ -4287,7 +4411,7 @@ mod tests {
             vec!["tx_1", "tx_2"]
         );
         let second = store
-            .unconfirmed_payments_page("mainnet", first.last().unwrap().0, 2)
+            .unconfirmed_payments_page(monero::Network::Mainnet, first.last().unwrap().0, 2)
             .unwrap();
         assert_eq!(
             second
@@ -4297,7 +4421,7 @@ mod tests {
             vec!["tx_3"]
         );
         assert!(store
-            .unconfirmed_payments_page("mainnet", second.last().unwrap().0, 2)
+            .unconfirmed_payments_page(monero::Network::Mainnet, second.last().unwrap().0, 2)
             .unwrap()
             .is_empty());
     }
@@ -4340,7 +4464,7 @@ mod tests {
         // reconciliation, which filters on `block_height >= ?`.
         assert_eq!(
             store
-                .find_payments_at_or_after_height("mainnet", 50)
+                .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
                 .unwrap()
                 .len(),
             1
@@ -4492,7 +4616,7 @@ mod tests {
         }
 
         let ids: std::collections::HashSet<OrderId> = store
-            .non_terminal_order_ids("mainnet", i64::MAX, 0)
+            .non_terminal_order_ids(monero::Network::Mainnet, i64::MAX, 0)
             .unwrap()
             .into_iter()
             .collect();
@@ -4533,11 +4657,11 @@ mod tests {
             .unwrap();
         let stagenet_order = new_order(&store, stagenet.tenant.id.as_str(), 1);
         assert!(!store
-            .non_terminal_order_ids("mainnet", i64::MAX, 0)
+            .non_terminal_order_ids(monero::Network::Mainnet, i64::MAX, 0)
             .unwrap()
             .contains(&stagenet_order.id));
         assert!(store
-            .non_terminal_order_ids("stagenet", i64::MAX, 0)
+            .non_terminal_order_ids(monero::Network::Stagenet, i64::MAX, 0)
             .unwrap()
             .contains(&stagenet_order.id));
     }
@@ -4893,7 +5017,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .find_payments_at_or_after_height("mainnet", 50)
+                .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
                 .unwrap()
                 .len(),
             1
@@ -4904,7 +5028,7 @@ mod tests {
             .update_payment_block_height(&order.id, "tx_a", 0, None)
             .unwrap();
         let still_visible = store
-            .find_payments_at_or_after_height("mainnet", 50)
+            .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
             .unwrap();
         assert_eq!(
             still_visible.len(),
@@ -4916,12 +5040,12 @@ mod tests {
         // The same applies to the voided half of the pair, which un-voiding depends on.
         store.void_payment(&order.id, "tx_a", 0, 1600).unwrap();
         assert!(store
-            .find_payments_at_or_after_height("mainnet", 50)
+            .find_payments_at_or_after_height(monero::Network::Mainnet, 50)
             .unwrap()
             .is_empty());
         assert_eq!(
             store
-                .find_voided_payments_at_or_after_height("mainnet", 50)
+                .find_voided_payments_at_or_after_height(monero::Network::Mainnet, 50)
                 .unwrap()
                 .len(),
             1
@@ -4929,11 +5053,11 @@ mod tests {
 
         // And a network scope violation is still impossible either way.
         assert!(store
-            .find_payments_at_or_after_height("stagenet", 50)
+            .find_payments_at_or_after_height(monero::Network::Stagenet, 50)
             .unwrap()
             .is_empty());
         assert!(store
-            .find_voided_payments_at_or_after_height("stagenet", 50)
+            .find_voided_payments_at_or_after_height(monero::Network::Stagenet, 50)
             .unwrap()
             .is_empty());
     }
@@ -4952,11 +5076,15 @@ mod tests {
         store.void_payment(&order.id, "tx_old", 0, 1000).unwrap();
         store.void_payment(&order.id, "tx_recent", 1, 5000).unwrap();
 
-        let recent_only = store.find_payments_voided_since("mainnet", 3000).unwrap();
+        let recent_only = store
+            .find_payments_voided_since(monero::Network::Mainnet, 3000)
+            .unwrap();
         assert_eq!(recent_only.len(), 1);
         assert_eq!(recent_only[0].txid, "tx_recent");
 
-        let both = store.find_payments_voided_since("mainnet", 0).unwrap();
+        let both = store
+            .find_payments_voided_since(monero::Network::Mainnet, 0)
+            .unwrap();
         assert_eq!(
             both.len(),
             2,
@@ -4965,14 +5093,14 @@ mod tests {
 
         assert!(
             store
-                .find_payments_voided_since("mainnet", 5001)
+                .find_payments_voided_since(monero::Network::Mainnet, 5001)
                 .unwrap()
                 .is_empty(),
             "a cutoff after every void returns nothing"
         );
         assert!(
             store
-                .find_payments_voided_since("stagenet", 0)
+                .find_payments_voided_since(monero::Network::Stagenet, 0)
                 .unwrap()
                 .is_empty(),
             "network scope violation must still be impossible"
@@ -5049,23 +5177,28 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         for h in 100..=105 {
             store
-                .set_scanned_block("mainnet", h, &format!("hash{h}"))
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("hash{h}"))
                 .unwrap();
         }
         store
-            .set_scanned_block("stagenet", 103, "stagenet_hash")
+            .set_scanned_block(monero::Network::Stagenet, 103, "stagenet_hash")
             .unwrap();
 
         store
-            .forget_scanned_blocks_at_or_above("mainnet", 103)
+            .forget_scanned_blocks_at_or_above(monero::Network::Mainnet, 103)
             .unwrap();
-        assert_eq!(store.max_scanned_height("mainnet").unwrap(), Some(102));
+        assert_eq!(
+            store.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(102)
+        );
         assert!(store
-            .get_scanned_block_hash("mainnet", 103)
+            .get_scanned_block_hash(monero::Network::Mainnet, 103)
             .unwrap()
             .is_none());
         assert_eq!(
-            store.get_scanned_block_hash("stagenet", 103).unwrap(),
+            store
+                .get_scanned_block_hash(monero::Network::Stagenet, 103)
+                .unwrap(),
             Some("stagenet_hash".to_string()),
             "another network's window at the same height must be untouched"
         );

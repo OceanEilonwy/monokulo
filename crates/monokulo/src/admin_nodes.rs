@@ -13,10 +13,12 @@
 //! list is a normal save and works without JavaScript: the submitted rows
 //! are the list, in order, and the button says what to do to it first.
 
+use monero::Network;
+use shared::network::{network_str, parse_network};
 use std::collections::{HashMap, HashSet};
 
 /// The networks the engine can scan, in the order the page shows them.
-pub const NETWORKS: [&str; 3] = ["mainnet", "stagenet", "testnet"];
+pub const NETWORKS: [Network; 3] = [Network::Mainnet, Network::Stagenet, Network::Testnet];
 
 /// One node row as submitted (or as saved): what the admin typed and
 /// ticked, and what's wrong with it, if anything.
@@ -140,15 +142,15 @@ pub fn format_address(host: &str, port: u16) -> String {
 /// one submitted row are here: a tab without the node form sends none.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NodeForm {
-    pub networks: Vec<(String, Vec<NodeRow>)>,
+    pub networks: Vec<(Network, Vec<NodeRow>)>,
 }
 
 /// A row button: what to do to the submitted rows before saving them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeAction {
-    Remove { network: String, index: usize },
-    Up { network: String, index: usize },
-    Down { network: String, index: usize },
+    Remove { network: Network, index: usize },
+    Up { network: Network, index: usize },
+    Down { network: Network, index: usize },
 }
 
 impl NodeAction {
@@ -158,10 +160,10 @@ impl NodeAction {
         let mut parts = value.split(':');
         let (verb, network, index) = (
             parts.next()?,
-            parts.next()?.to_string(),
+            parse_network(parts.next()?).ok()?,
             parts.next()?.parse().ok()?,
         );
-        if parts.next().is_some() || network.is_empty() {
+        if parts.next().is_some() {
             return None;
         }
         match verb {
@@ -175,22 +177,24 @@ impl NodeAction {
     /// The button's value: the inverse of [`NodeAction::parse`].
     pub fn value(&self) -> String {
         match self {
-            NodeAction::Remove { network, index } => format!("remove:{network}:{index}"),
-            NodeAction::Up { network, index } => format!("up:{network}:{index}"),
-            NodeAction::Down { network, index } => format!("down:{network}:{index}"),
+            NodeAction::Remove { network, index } => {
+                format!("remove:{}:{index}", network_str(*network))
+            }
+            NodeAction::Up { network, index } => format!("up:{}:{index}", network_str(*network)),
+            NodeAction::Down { network, index } => {
+                format!("down:{}:{index}", network_str(*network))
+            }
         }
     }
 }
 
-/// One `node_<network>_<index>_<field>` form name, split.
-fn node_field(name: &str) -> Option<(&str, usize, &str)> {
+/// One `node_<network>_<index>_<field>` form name, split; `None` for a
+/// network there isn't.
+fn node_field(name: &str) -> Option<(Network, usize, &str)> {
     let rest = name.strip_prefix("node_")?;
     let (network, rest) = rest.split_once('_')?;
     let (index, field) = rest.split_once('_')?;
-    if network.is_empty() || !network.chars().all(|c| c.is_ascii_lowercase()) {
-        return None;
-    }
-    Some((network, index.parse().ok()?, field))
+    Some((parse_network(network).ok()?, index.parse().ok()?, field))
 }
 
 /// Whether a form field belongs to the node form: a row field or a row
@@ -206,14 +210,14 @@ impl NodeForm {
     /// the order networks are shown in; any other network submitted comes
     /// after them. A checkbox that isn't ticked isn't sent, so a row's boxes
     /// are ticked only when their field is there.
-    pub fn from_form(form: &HashMap<String, String>, order: &[&str]) -> NodeForm {
-        let mut by_network: HashMap<&str, Vec<(usize, NodeRow)>> = HashMap::new();
+    pub fn from_form(form: &HashMap<String, String>, order: &[Network]) -> NodeForm {
+        let mut by_network: HashMap<Network, Vec<(usize, NodeRow)>> = HashMap::new();
         for (name, value) in form {
             let Some((network, index, "address")) = node_field(name) else {
                 continue;
             };
-            let ticked =
-                |field: &str| form.contains_key(&format!("node_{network}_{index}_{field}"));
+            let name = network_str(network);
+            let ticked = |field: &str| form.contains_key(&format!("node_{name}_{index}_{field}"));
             by_network.entry(network).or_default().push((
                 index,
                 NodeRow {
@@ -224,11 +228,11 @@ impl NodeForm {
                 },
             ));
         }
-        let mut names: Vec<&str> = by_network.keys().copied().collect();
+        let mut names: Vec<Network> = by_network.keys().copied().collect();
         names.sort_by_key(|name| {
             (
                 order.iter().position(|o| o == name).unwrap_or(usize::MAX),
-                name.to_string(),
+                network_str(*name),
             )
         });
         let action = form
@@ -237,7 +241,7 @@ impl NodeForm {
         let networks = names
             .into_iter()
             .map(|network| {
-                let mut rows = by_network.remove(network).unwrap_or_default();
+                let mut rows = by_network.remove(&network).unwrap_or_default();
                 rows.sort_by_key(|(index, _)| *index);
                 let rows: Vec<(usize, NodeRow)> = rows
                     .into_iter()
@@ -248,7 +252,7 @@ impl NodeForm {
                     None => rows.into_iter().map(|(_, row)| row).collect(),
                 };
                 check_rows(&mut rows);
-                (network.to_string(), rows)
+                (network, rows)
             })
             .collect();
         NodeForm { networks }
@@ -262,10 +266,10 @@ impl NodeForm {
     }
 
     /// One network's rows, if it was submitted.
-    pub fn rows(&self, network: &str) -> Option<&[NodeRow]> {
+    pub fn rows(&self, network: Network) -> Option<&[NodeRow]> {
         self.networks
             .iter()
-            .find(|(n, _)| n == network)
+            .find(|(n, _)| *n == network)
             .map(|(_, rows)| rows.as_slice())
     }
 }
@@ -274,12 +278,16 @@ impl NodeForm {
 /// index). A button for another network, or for a row that isn't there
 /// (a blank one), changes nothing; so do Up on the first row and Down on
 /// the last.
-fn apply_action(rows: Vec<(usize, NodeRow)>, network: &str, action: &NodeAction) -> Vec<NodeRow> {
+fn apply_action(
+    rows: Vec<(usize, NodeRow)>,
+    network: Network,
+    action: &NodeAction,
+) -> Vec<NodeRow> {
     let position = |index: usize| rows.iter().position(|(i, _)| *i == index);
     let (at, verb) = match action {
-        NodeAction::Remove { network: n, index } if n == network => (position(*index), 'r'),
-        NodeAction::Up { network: n, index } if n == network => (position(*index), 'u'),
-        NodeAction::Down { network: n, index } if n == network => (position(*index), 'd'),
+        NodeAction::Remove { network: n, index } if *n == network => (position(*index), 'r'),
+        NodeAction::Up { network: n, index } if *n == network => (position(*index), 'u'),
+        NodeAction::Down { network: n, index } if *n == network => (position(*index), 'd'),
         _ => (None, ' '),
     };
     let mut rows: Vec<NodeRow> = rows.into_iter().map(|(_, row)| row).collect();
@@ -460,10 +468,10 @@ mod tests {
             .collect()
     }
 
-    const ORDER: &[&str] = &["mainnet", "stagenet", "testnet"];
+    const ORDER: &[Network] = &NETWORKS;
 
     fn addresses(form: &NodeForm, network: &str) -> Vec<String> {
-        form.rows(network)
+        form.rows(shared::network::parse_network(network).unwrap())
             .unwrap()
             .iter()
             .map(|row| row.address.clone())
@@ -500,15 +508,15 @@ mod tests {
             nodes
                 .networks
                 .iter()
-                .map(|(n, _)| n.as_str())
+                .map(|(n, _)| network_str(*n))
                 .collect::<Vec<_>>(),
             ["mainnet", "stagenet"]
         );
         assert!(
-            nodes.rows("mainnet").unwrap().is_empty(),
+            nodes.rows(monero::Network::Mainnet).unwrap().is_empty(),
             "only the blank row: an empty list"
         );
-        let rows = nodes.rows("stagenet").unwrap();
+        let rows = nodes.rows(monero::Network::Stagenet).unwrap();
         assert_eq!(
             addresses(&nodes, "stagenet"),
             ["a.example:1", "b.example:2", "c.example:3"]
@@ -516,7 +524,7 @@ mod tests {
         assert!(!rows[0].ssl && rows[0].self_signed);
         assert!(rows[1].ssl && !rows[1].self_signed);
         assert!(!nodes.has_errors());
-        assert_eq!(nodes.rows("testnet"), None, "not submitted");
+        assert_eq!(nodes.rows(monero::Network::Testnet), None, "not submitted");
     }
 
     #[test]
@@ -577,7 +585,7 @@ mod tests {
         );
         // A moved row takes its boxes with it.
         let moved = NodeForm::from_form(&three_rows(&[("node_action", "up:stagenet:1")]), ORDER);
-        assert!(moved.rows("stagenet").unwrap()[0].ssl);
+        assert!(moved.rows(monero::Network::Stagenet).unwrap()[0].ssl);
 
         let only = form(&[
             ("node_testnet_0_address", "only.example:1"),
@@ -586,7 +594,7 @@ mod tests {
         ]);
         assert!(
             NodeForm::from_form(&only, ORDER)
-                .rows("testnet")
+                .rows(monero::Network::Testnet)
                 .unwrap()
                 .is_empty(),
             "removing the only row leaves none"
@@ -597,15 +605,15 @@ mod tests {
     fn a_button_value_round_trips() {
         for action in [
             NodeAction::Remove {
-                network: "stagenet".into(),
+                network: Network::Stagenet,
                 index: 2,
             },
             NodeAction::Up {
-                network: "mainnet".into(),
+                network: Network::Mainnet,
                 index: 1,
             },
             NodeAction::Down {
-                network: "testnet".into(),
+                network: Network::Testnet,
                 index: 0,
             },
         ] {
@@ -633,7 +641,7 @@ mod tests {
             ]),
             ORDER,
         );
-        let rows = nodes.rows("mainnet").unwrap();
+        let rows = nodes.rows(monero::Network::Mainnet).unwrap();
         assert!(nodes.has_errors());
         assert_eq!(
             rows[0].error, None,

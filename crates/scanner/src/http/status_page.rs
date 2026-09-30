@@ -239,11 +239,10 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
             }
         };
 
-        let network_name = network_str(network).to_string();
         let (lagging_tenants, max_blocks_behind) = state
             .read_store(move |store| {
-                let high_water = store.max_scanned_height(&network_name)?.unwrap_or(0);
-                let lagging = store.lagging_tenants(&network_name)?;
+                let high_water = store.max_scanned_height(network)?.unwrap_or(0);
+                let lagging = store.lagging_tenants(network)?;
                 let behind = lagging
                     .iter()
                     .map(|(_, cursor)| high_water.saturating_sub(*cursor))
@@ -360,12 +359,16 @@ fn unserved_tenants(
     let mut unserved = Vec::new();
     let with_tenants = store.count_tenants_by_network().unwrap_or_default();
     for (network, count) in with_tenants {
+        // A name no network has is a corrupted row: nothing to report on.
+        let Ok(parsed) = crate::network::parse_network(&network) else {
+            continue;
+        };
         if count == 0 {
             continue;
         }
         if network_unreachable(networks.iter().find(|n| n.network == network)) {
             for public_key in store
-                .tenant_public_keys_on_network(&network)
+                .tenant_public_keys_on_network(parsed)
                 .unwrap_or_default()
             {
                 unserved.push(UnservedTenant {
@@ -377,12 +380,8 @@ fn unserved_tenants(
             }
             continue;
         }
-        let high_water = store
-            .max_scanned_height(&network)
-            .ok()
-            .flatten()
-            .unwrap_or(0);
-        for (public_key, cursor) in store.lagging_tenant_keys(&network).unwrap_or_default() {
+        let high_water = store.max_scanned_height(parsed).ok().flatten().unwrap_or(0);
+        for (public_key, cursor) in store.lagging_tenant_keys(parsed).unwrap_or_default() {
             if high_water.saturating_sub(cursor) < CATCHING_UP_REPORT_BLOCKS {
                 continue;
             }

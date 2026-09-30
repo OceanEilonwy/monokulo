@@ -185,7 +185,7 @@ async fn recheck_voids(
         {
             Ok(_) => last = Some(payment.id),
             Err(error) => {
-                tracing::warn!(network = %round.network(), order.id = %payment.order_id, error = %error,
+                tracing::warn!(network = crate::network::network_str(round.network()), order.id = %payment.order_id, error = %error,
                     "double-spend revalidation: rechecking a voided payment failed - leaving it voided, retried next pass");
                 failure = Some(error);
                 break;

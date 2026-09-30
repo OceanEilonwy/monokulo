@@ -220,9 +220,9 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         // there. Only this engine's own failures (storage) fail the round.
         Err(ScannerError::Daemon(error)) => {
             shared::throttled!(
-                format!("blocks-node:{}", round.network()),
+                format!("blocks-node:{}", crate::network::network_str(round.network())),
                 warn,
-                network = %round.network(),
+                network = crate::network::network_str(round.network()),
                 error = %error,
                 "block scanning stopped: the node failed. If this repeats, no payment on this network is being detected"
             );
@@ -336,7 +336,11 @@ async fn seed(round: &mut Round<'_>, tip: u64) -> Result<Progress, ScannerError>
                     })
                 })
                 .await?;
-            tracing::info!(network = %round.network(), height = seed, "started scanning this network");
+            tracing::info!(
+                network = crate::network::network_str(round.network()),
+                height = seed,
+                "started scanning this network"
+            );
             Ok(Progress::Advanced)
         }
         Err(_) => Ok(Progress::Blocked(Wait::NodeCannotServeTip)),
@@ -408,7 +412,12 @@ async fn advance_group(
             }
             BlockOutcome::Interrupted | BlockOutcome::NobodyToScan => break,
             BlockOutcome::Diverged(reason) => {
-                tracing::warn!(network = %round.network(), height = cursor + 1, reason, "block differs from the stored chain; waiting for reorg reconciliation");
+                tracing::warn!(
+                    network = crate::network::network_str(round.network()),
+                    height = cursor + 1,
+                    reason,
+                    "block differs from the stored chain; waiting for reorg reconciliation"
+                );
                 return Ok(Reached {
                     cursor,
                     diverged: true,
@@ -574,7 +583,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
                 match result {
                     Ok(found) => scan.scanned(tenant_id, index, found),
                     Err(error) => {
-                        shared::throttled!(format!("block-scan:{tenant_id}"), warn, store.id = %tenant_id, network = %round.network(),
+                        shared::throttled!(format!("block-scan:{tenant_id}"), warn, store.id = %tenant_id, network = crate::network::network_str(round.network()),
                             height, error = %error, "scanning a block failed for this store; it is caught up later");
                         round.state.backoff.failed(&tenant_id);
                         scan.failed(tenant_id);
@@ -706,7 +715,7 @@ impl BlockScan {
 /// staged, so the next unit resumes there.
 fn checkpoint(
     s: &Store,
-    network: &str,
+    network: monero::Network,
     height: u64,
     hash: &str,
     progress: Vec<(crate::store::TenantId, usize, Vec<ScanResult>)>,
@@ -755,7 +764,7 @@ struct CommitBlock {
 /// recorded parent (if any) is its parent.
 fn commit(
     s: &Store,
-    network: &str,
+    network: monero::Network,
     block: &CommitBlock,
     scanned: Vec<ScannedBlock>,
     now: i64,

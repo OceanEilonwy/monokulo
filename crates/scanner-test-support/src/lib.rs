@@ -268,7 +268,7 @@ impl TestEngineHandle {
             self.key_custody.as_ref(),
             &self.wallet_handles,
             None,
-            network,
+            shared::network::parse_network(network).unwrap(),
         )
         .await
     }

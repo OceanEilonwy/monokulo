@@ -263,7 +263,7 @@ async fn fetch_scanner_settings(
     networks.sort_by_key(|n| {
         admin_nodes::NETWORKS
             .iter()
-            .position(|known| *known == n.network)
+            .position(|known| shared::network::network_str(*known) == n.network)
             .unwrap_or(usize::MAX)
     });
     Ok(Some((fields, networks)))
@@ -340,7 +340,10 @@ async fn build_view_model(
     // with the engine's word on a network at the top of its block.
     if let Some(nodes) = &nodes {
         for network in &mut view.scanner_networks {
-            if let Some(rows) = nodes.rows(&network.network) {
+            let rows = shared::network::parse_network(&network.network)
+                .ok()
+                .and_then(|n| nodes.rows(n));
+            if let Some(rows) = rows {
                 network.rows = rows
                     .iter()
                     .map(|row| NodeRowView {
@@ -418,9 +421,10 @@ fn attach_node_status(
             else {
                 continue;
             };
-            let wrong_network = node.network.clone().filter(|on| {
-                admin_nodes::NETWORKS.contains(&on.as_str()) && *on != network.network
-            });
+            let wrong_network = node
+                .network
+                .clone()
+                .filter(|on| shared::network::parse_network(on).is_ok() && *on != network.network);
             row.status = Some(NodeStatusView {
                 height: node.height,
                 error: node.error.clone(),
@@ -882,10 +886,14 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutco
                 .networks
                 .iter()
                 .find(|(_, rows)| rows.iter().any(|row| row.error.is_some()))
-                .map(|(n, _)| n.clone());
+                .map(|(n, _)| *n);
             return SaveOutcome {
-                error_key: first
-                    .map(|network| (format!("monero_node.{network}"), SettingOwner::Engine)),
+                error_key: first.map(|network| {
+                    (
+                        format!("monero_node.{}", shared::network::network_str(network)),
+                        SettingOwner::Engine,
+                    )
+                }),
                 nodes: Some(nodes.clone()),
                 ..SaveOutcome::refused(
                     "Nothing was saved: some node addresses need fixing (marked below)."
@@ -894,10 +902,10 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutco
             };
         }
         for (network, rows) in &nodes.networks {
-            split
-                .engine
-                .monero_node
-                .insert(network.clone(), admin_nodes::rows_to_setting(rows));
+            split.engine.monero_node.insert(
+                shared::network::network_str(*network).to_string(),
+                admin_nodes::rows_to_setting(rows),
+            );
         }
     }
     let mut outcome = SaveOutcome::default();

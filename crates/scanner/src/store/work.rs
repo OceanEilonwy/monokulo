@@ -165,13 +165,13 @@ impl Store {
         Ok(rows)
     }
 
-    pub fn reorg_job(&self, network: &str) -> Result<Option<ReorgJob>> {
+    pub fn reorg_job(&self, network: monero::Network) -> Result<Option<ReorgJob>> {
         self.conn
             .query_row(
                 "SELECT network, fork_height, phase, candidate_max_id, collect_after_height, collect_after_id,
                         created_at_utc
                  FROM reorg_jobs WHERE network = ?1",
-                [network],
+                [shared::network::SqlNetwork(network)],
                 |row| {
                     Ok(ReorgJob {
                         network: row.get(0)?,
@@ -189,7 +189,12 @@ impl Store {
     /// Records a reorg forking at `fork_height`, or lowers the open job's
     /// fork to it. From this commit on, the network's orders can't newly
     /// settle (see `settlement_frozen`).
-    pub fn open_reorg_job(&self, network: &str, fork_height: u64, now: i64) -> Result<OpenedReorg> {
+    pub fn open_reorg_job(
+        &self,
+        network: monero::Network,
+        fork_height: u64,
+        now: i64,
+    ) -> Result<OpenedReorg> {
         self.in_transaction(|s| {
             let max_id: i64 = s.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM order_payments", [], |r| r.get(0))?;
             match s.reorg_job(network)? {
@@ -198,7 +203,7 @@ impl Store {
                         "INSERT INTO reorg_jobs (network, fork_height, phase, candidate_max_id,
                              collect_after_height, collect_after_id, created_at_utc, updated_at_utc)
                          VALUES (?1, ?2, 'collect_confirmed', ?3, ?2, 0, ?4, ?4)",
-                        params![network, Unsigned(fork_height), max_id, now],
+                        params![shared::network::SqlNetwork(network), Unsigned(fork_height), max_id, now],
                     )?;
                     Ok(OpenedReorg::Created)
                 }
@@ -207,7 +212,7 @@ impl Store {
                         "UPDATE reorg_jobs SET fork_height = ?2, phase = 'collect_confirmed', candidate_max_id = ?3,
                              collect_after_height = ?2, collect_after_id = 0, updated_at_utc = ?4
                          WHERE network = ?1",
-                        params![network, Unsigned(fork_height), max_id.max(job.candidate_max_id), now],
+                        params![shared::network::SqlNetwork(network), Unsigned(fork_height), max_id.max(job.candidate_max_id), now],
                     )?;
                     Ok(OpenedReorg::Deepened { from: job.fork_height })
                 }
@@ -221,7 +226,7 @@ impl Store {
     /// phase afterwards (`Process` once collection is complete).
     pub fn collect_reorg_candidates(
         &self,
-        network: &str,
+        network: monero::Network,
         limit: usize,
         now: i64,
     ) -> Result<ReorgPhase> {
@@ -236,7 +241,7 @@ impl Store {
                            AND (op.block_height > ?3 OR (op.block_height = ?3 AND op.id > ?4))
                            AND op.id <= ?5 AND t.network = ?1
                          ORDER BY op.block_height, op.id LIMIT ?6",
-                        params![network, Unsigned(job.fork_height), Unsigned(after_height), after_id, job.candidate_max_id, Unsigned(limit)],
+                        params![shared::network::SqlNetwork(network), Unsigned(job.fork_height), Unsigned(after_height), after_id, job.candidate_max_id, Unsigned(limit)],
                         |row| Ok((row.get(0)?, unsigned(row, 1)?)),
                     )?;
                     let next = match rows.last() {
@@ -253,7 +258,7 @@ impl Store {
                          JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
                          WHERE op.block_height IS NULL AND op.id > ?2 AND op.id <= ?3 AND t.network = ?1
                          ORDER BY op.id LIMIT ?4",
-                        params![network, after_id, job.candidate_max_id, Unsigned(limit)],
+                        params![shared::network::SqlNetwork(network), after_id, job.candidate_max_id, Unsigned(limit)],
                         |row| row.get(0),
                     )?;
                     let next = match ids.last() {
@@ -267,7 +272,7 @@ impl Store {
             for id in ids {
                 s.conn.execute(
                     "INSERT OR IGNORE INTO reorg_work (network, payment_id) VALUES (?1, ?2)",
-                    params![network, id],
+                    params![shared::network::SqlNetwork(network), id],
                 )?;
             }
             let (phase, after_height, after_id) = match next {
@@ -278,7 +283,7 @@ impl Store {
             s.conn.execute(
                 "UPDATE reorg_jobs SET phase = ?2, collect_after_height = ?3, collect_after_id = ?4, updated_at_utc = ?5
                  WHERE network = ?1",
-                params![network, phase, Unsigned(after_height), after_id, now],
+                params![shared::network::SqlNetwork(network), phase, Unsigned(after_height), after_id, now],
             )?;
             Ok(next)
         })
@@ -287,7 +292,7 @@ impl Store {
     /// Up to `limit` candidates whose retry time has come, oldest retry first.
     pub fn due_reorg_candidates(
         &self,
-        network: &str,
+        network: monero::Network,
         now: i64,
         limit: usize,
     ) -> Result<Vec<ReorgCandidate>> {
@@ -296,7 +301,7 @@ impl Store {
              JOIN order_payments op ON op.id = w.payment_id
              WHERE w.network = ?1 AND w.next_attempt_at_utc <= ?2
              ORDER BY w.next_attempt_at_utc, w.payment_id LIMIT ?3",
-            params![network, now, Unsigned(limit)],
+            params![shared::network::SqlNetwork(network), now, Unsigned(limit)],
             |row| {
                 Ok(ReorgCandidate {
                     payment: Self::row_to_payment(row)?,
@@ -307,11 +312,11 @@ impl Store {
     }
 
     /// How many candidates are left, and when the soonest one is due.
-    pub fn reorg_work_remaining(&self, network: &str) -> Result<(u64, Option<i64>)> {
+    pub fn reorg_work_remaining(&self, network: monero::Network) -> Result<(u64, Option<i64>)> {
         self.conn
             .query_row(
                 "SELECT COUNT(*), MIN(next_attempt_at_utc) FROM reorg_work WHERE network = ?1",
-                [network],
+                [shared::network::SqlNetwork(network)],
                 |row| Ok((unsigned(row, 0)?, row.get(1)?)),
             )
             .map_err(Into::into)
@@ -319,21 +324,30 @@ impl Store {
 
     /// Removes a candidate. Call inside the transaction that applies its
     /// outcome, so the two can't come apart.
-    pub fn complete_reorg_candidate(&self, network: &str, payment_id: i64) -> Result<()> {
+    pub fn complete_reorg_candidate(
+        &self,
+        network: monero::Network,
+        payment_id: i64,
+    ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM reorg_work WHERE network = ?1 AND payment_id = ?2",
-            params![network, payment_id],
+            params![shared::network::SqlNetwork(network), payment_id],
         )?;
         Ok(())
     }
 
     /// A candidate whose lookup failed: retried later, after the others.
-    pub fn defer_reorg_candidate(&self, network: &str, payment_id: i64, now: i64) -> Result<()> {
+    pub fn defer_reorg_candidate(
+        &self,
+        network: monero::Network,
+        payment_id: i64,
+        now: i64,
+    ) -> Result<()> {
         let attempts: Option<u32> = self
             .conn
             .query_row(
                 "SELECT attempts FROM reorg_work WHERE network = ?1 AND payment_id = ?2",
-                params![network, payment_id],
+                params![shared::network::SqlNetwork(network), payment_id],
                 |row| unsigned(row, 0),
             )
             .optional()?;
@@ -341,7 +355,7 @@ impl Store {
             let attempts = attempts.saturating_add(1);
             self.conn.execute(
                 "UPDATE reorg_work SET attempts = ?3, next_attempt_at_utc = ?4 WHERE network = ?1 AND payment_id = ?2",
-                params![network, payment_id, attempts, now + reorg_retry_delay(attempts)],
+                params![shared::network::SqlNetwork(network), payment_id, attempts, now + reorg_retry_delay(attempts)],
             )?;
         }
         Ok(())
@@ -358,7 +372,7 @@ impl Store {
     /// reconciled first.
     pub fn finish_reorg(
         &self,
-        network: &str,
+        network: monero::Network,
         fork_height: u64,
         ancestor: Option<(u64, &str)>,
     ) -> Result<()> {
@@ -378,24 +392,24 @@ impl Store {
             s.conn.execute(
                 "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN
                  (SELECT tenant_id FROM partial_block_progress WHERE network = ?1 AND height >= ?2)",
-                params![network, Unsigned(fork_height)],
+                params![shared::network::SqlNetwork(network), Unsigned(fork_height)],
             )?;
             s.conn.execute(
                 "DELETE FROM partial_block_progress WHERE network = ?1 AND height >= ?2",
-                params![network, Unsigned(fork_height)],
+                params![shared::network::SqlNetwork(network), Unsigned(fork_height)],
             )?;
-            s.conn.execute("DELETE FROM reorg_jobs WHERE network = ?1", [network])?;
+            s.conn.execute("DELETE FROM reorg_jobs WHERE network = ?1", [shared::network::SqlNetwork(network)])?;
             Ok(())
         })
     }
 
     /// Whether new settlements on `network` must wait: a reorg is being
     /// reconciled there, so confirmations may be counted on a losing chain.
-    pub fn settlement_frozen(&self, network: &str) -> Result<bool> {
+    pub fn settlement_frozen(&self, network: monero::Network) -> Result<bool> {
         self.conn
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM reorg_jobs WHERE network = ?1)",
-                [network],
+                [shared::network::SqlNetwork(network)],
                 |row| row.get(0),
             )
             .map_err(Into::into)
@@ -405,13 +419,13 @@ impl Store {
     /// lowest first. Bounded by the retained window.
     pub fn scanned_blocks_between(
         &self,
-        network: &str,
+        network: monero::Network,
         from: u64,
         to: u64,
     ) -> Result<Vec<(u64, String)>> {
         self.rows(
             "SELECT height, block_hash FROM scanned_blocks WHERE network = ?1 AND height BETWEEN ?2 AND ?3 ORDER BY height",
-            params![network, Unsigned(from), Unsigned(to)],
+            params![shared::network::SqlNetwork(network), Unsigned(from), Unsigned(to)],
             |row| Ok((unsigned(row, 0)?, row.get::<_, String>(1)?)),
         )
     }
@@ -421,7 +435,7 @@ impl Store {
     /// earliest due first.
     pub fn due_order_ids(
         &self,
-        network: &str,
+        network: monero::Network,
         now: i64,
         tip: u64,
         limit: usize,
@@ -442,9 +456,11 @@ impl Store {
                 tip,
             ),
         ] {
-            for id in self.rows(sql, params![network, due, Unsigned(limit)], |row| {
-                row.get::<_, OrderId>(0)
-            })? {
+            for id in self.rows(
+                sql,
+                params![shared::network::SqlNetwork(network), due, Unsigned(limit)],
+                |row| row.get::<_, OrderId>(0),
+            )? {
                 if ids.len() < limit && !ids.contains(&id) {
                     ids.push(id);
                 }
@@ -456,19 +472,22 @@ impl Store {
     /// A rotation position, if one was recorded. A value that doesn't parse
     /// (a hand-edited row) is logged and treated as absent: the rotation
     /// starts over, which costs repeated work, never skipped work.
-    pub fn scheduler_position<P: Position>(&self, network: &str) -> Result<Option<P::Value>> {
+    pub fn scheduler_position<P: Position>(
+        &self,
+        network: monero::Network,
+    ) -> Result<Option<P::Value>> {
         let raw: Option<String> = self
             .conn
             .query_row(
                 "SELECT value FROM scheduler_positions WHERE network = ?1 AND position = ?2",
-                params![network, P::KEY],
+                params![shared::network::SqlNetwork(network), P::KEY],
                 |row| row.get(0),
             )
             .optional()?;
         Ok(raw.and_then(|raw| match raw.parse() {
             Ok(value) => Some(value),
             Err(_) => {
-                tracing::warn!(network, position = P::KEY, value = %raw, "an unreadable scheduler position; starting that rotation over");
+                tracing::warn!(network = crate::network::network_str(network), position = P::KEY, value = %raw, "an unreadable scheduler position; starting that rotation over");
                 None
             }
         }))
@@ -476,13 +495,17 @@ impl Store {
 
     pub fn set_scheduler_position<P: Position>(
         &self,
-        network: &str,
+        network: monero::Network,
         value: &P::Value,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO scheduler_positions (network, position, value) VALUES (?1, ?2, ?3)
              ON CONFLICT (network, position) DO UPDATE SET value = excluded.value",
-            params![network, P::KEY, value.to_string()],
+            params![
+                shared::network::SqlNetwork(network),
+                P::KEY,
+                value.to_string()
+            ],
         )?;
         Ok(())
     }
@@ -504,7 +527,7 @@ impl Store {
     /// for false double-spend accusations.
     pub fn voided_payments_page(
         &self,
-        network: &str,
+        network: monero::Network,
         cutoff: i64,
         after: i64,
         limit: usize,
@@ -514,7 +537,7 @@ impl Store {
              JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
              WHERE op.voided_at_utc IS NOT NULL AND op.voided_at_utc >= ?2 AND op.id > ?3 AND t.network = ?1
              ORDER BY op.id LIMIT ?4",
-            params![network, cutoff, after, Unsigned(limit)],
+            params![shared::network::SqlNetwork(network), cutoff, after, Unsigned(limit)],
             Self::row_to_payment,
         )
     }
@@ -543,13 +566,13 @@ pub struct StagedPayment {
 impl Store {
     pub fn block_checkpoint(
         &self,
-        network: &str,
+        network: monero::Network,
         tenant_id: &TenantId,
     ) -> Result<Option<BlockCheckpoint>> {
         self.conn
             .query_row(
                 "SELECT height, block_hash, next_tx_index FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
-                params![network, tenant_id],
+                params![shared::network::SqlNetwork(network), tenant_id],
                 |row| {
                     Ok(BlockCheckpoint {
                         height: unsigned(row, 0)?,
@@ -568,7 +591,7 @@ impl Store {
     /// this block's matches.
     pub fn save_block_checkpoint(
         &self,
-        network: &str,
+        network: monero::Network,
         tenant_id: &TenantId,
         checkpoint: &BlockCheckpoint,
     ) -> Result<()> {
@@ -583,7 +606,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, '', ?5)
              ON CONFLICT (network, tenant_id) DO UPDATE SET
                  height = excluded.height, block_hash = excluded.block_hash, next_tx_index = excluded.next_tx_index",
-            params![network, tenant_id, Unsigned(checkpoint.height), checkpoint.hash, Unsigned(checkpoint.next_tx)],
+            params![shared::network::SqlNetwork(network), tenant_id, Unsigned(checkpoint.height), checkpoint.hash, Unsigned(checkpoint.next_tx)],
         )?;
         Ok(())
     }
@@ -592,7 +615,7 @@ impl Store {
     /// for the block with this hash; a stale one is dropped.
     pub fn take_staged_payments(
         &self,
-        network: &str,
+        network: monero::Network,
         tenant_id: &TenantId,
         hash: &str,
     ) -> Result<Vec<StagedPayment>> {
@@ -603,7 +626,7 @@ impl Store {
             self.rows(
                 "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc
                  FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
-                params![network, tenant_id],
+                params![shared::network::SqlNetwork(network), tenant_id],
                 |row| {
                     Ok(StagedPayment {
                         order_id: row.get(0)?,
@@ -627,7 +650,7 @@ impl Store {
     /// `None`): the catch-up groups, in rotation order.
     pub fn scan_group_cursors(
         &self,
-        network: &str,
+        network: monero::Network,
         below: u64,
         after: Option<u64>,
         limit: usize,
@@ -638,7 +661,7 @@ impl Store {
                AND scanned_through_height < ?2 AND scanned_through_height >= ?3
              ORDER BY scanned_through_height LIMIT ?4",
             params![
-                network,
+                shared::network::SqlNetwork(network),
                 Unsigned(below),
                 Unsigned(after.map_or(0, |a| a.saturating_add(1))),
                 Unsigned(limit)
@@ -652,7 +675,7 @@ impl Store {
     /// order.
     pub fn tenants_at_cursor(
         &self,
-        network: &str,
+        network: monero::Network,
         cursor: u64,
         excluding: &[TenantId],
         limit: usize,
@@ -663,7 +686,12 @@ impl Store {
              WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height = ?2
                AND id NOT IN (SELECT value FROM json_each(?3))
              ORDER BY id LIMIT ?4",
-            params![network, Unsigned(cursor), excluding, Unsigned(limit)],
+            params![
+                shared::network::SqlNetwork(network),
+                Unsigned(cursor),
+                excluding,
+                Unsigned(limit)
+            ],
             |row| row.get::<_, TenantId>(0),
         )
     }
@@ -702,7 +730,7 @@ impl Store {
     /// moved.
     pub fn advance_idle_cursors(
         &self,
-        network: &str,
+        network: monero::Network,
         from: u64,
         to: u64,
         since: i64,
@@ -716,7 +744,7 @@ impl Store {
                 super::tenant_in_scope("tenants.id")
             ),
             rusqlite::named_params! {
-                ":network": network,
+                ":network": shared::network::SqlNetwork(network),
                 ":from": Unsigned(from),
                 ":to": Unsigned(to),
                 ":since_minus_grace": since.saturating_sub(grace_period_seconds),
@@ -732,7 +760,7 @@ impl Store {
     /// returns the tenants that moved.
     pub fn advance_scanned_cursors(
         &self,
-        network: &str,
+        network: monero::Network,
         height: u64,
         scanned: &[crate::work::ScannedBlock],
     ) -> Result<std::collections::HashSet<TenantId>> {
@@ -749,7 +777,7 @@ impl Store {
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND scanned_through_height = ?2 - 1 AND id IN (SELECT value FROM json_each(?3))
              RETURNING id",
-            params![network, Unsigned(height), ids],
+            params![shared::network::SqlNetwork(network), Unsigned(height), ids],
             |row| row.get::<_, TenantId>(0),
         )?;
         Ok(moved.into_iter().collect())
@@ -760,7 +788,7 @@ impl Store {
     /// scanned-range bookkeeping.
     pub fn active_tenants_page(
         &self,
-        network: &str,
+        network: monero::Network,
         now: i64,
         grace_period_seconds: i64,
         after: &str,
@@ -774,7 +802,7 @@ impl Store {
                 super::tenant_in_scope("t.id")
             ),
             rusqlite::named_params! {
-                ":network": network,
+                ":network": shared::network::SqlNetwork(network),
                 ":after": after,
                 ":limit": Unsigned(limit),
                 ":since_minus_grace": now - grace_period_seconds,
@@ -870,7 +898,11 @@ mod tests {
 
     fn work(store: &Store, network: &str) -> Vec<i64> {
         store
-            .due_reorg_candidates(network, i64::MAX, 1000)
+            .due_reorg_candidates(
+                shared::network::parse_network(network).unwrap(),
+                i64::MAX,
+                1000,
+            )
             .unwrap()
             .into_iter()
             .map(|c| c.payment.id)
@@ -893,20 +925,26 @@ mod tests {
         let unconfirmed = pay(s, main_order, "pool", None);
         let _other_network = pay(s, other_order, "other", Some(12));
         assert_eq!(
-            s.open_reorg_job("mainnet", 10, 1000).unwrap(),
+            s.open_reorg_job(monero::Network::Mainnet, 10, 1000)
+                .unwrap(),
             OpenedReorg::Created
         );
         let late = pay(s, main_order, "late", Some(12));
 
         // Two candidates per page, restarting the process between pages.
         assert!(matches!(
-            s.collect_reorg_candidates("mainnet", 2, 1001).unwrap(),
+            s.collect_reorg_candidates(monero::Network::Mainnet, 2, 1001)
+                .unwrap(),
             ReorgPhase::CollectConfirmed { .. }
         ));
         let s = reopen(store, &path);
-        let mut phase = s.collect_reorg_candidates("mainnet", 2, 1002).unwrap();
+        let mut phase = s
+            .collect_reorg_candidates(monero::Network::Mainnet, 2, 1002)
+            .unwrap();
         while phase != ReorgPhase::Process {
-            phase = s.collect_reorg_candidates("mainnet", 2, 1003).unwrap();
+            phase = s
+                .collect_reorg_candidates(monero::Network::Mainnet, 2, 1003)
+                .unwrap();
         }
         let mut collected = work(&s, "mainnet");
         collected.sort();
@@ -928,18 +966,26 @@ mod tests {
         let s = &store.0;
         let deep = pay(s, &store.1, "deep", Some(5));
         let shallow = pay(s, &store.1, "shallow", Some(10));
-        s.open_reorg_job("mainnet", 8, 1000).unwrap();
-        while s.collect_reorg_candidates("mainnet", 10, 1000).unwrap() != ReorgPhase::Process {}
+        s.open_reorg_job(monero::Network::Mainnet, 8, 1000).unwrap();
+        while s
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 1000)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
         assert_eq!(work(s, "mainnet"), vec![shallow]);
         assert_eq!(
-            s.open_reorg_job("mainnet", 9, 1001).unwrap(),
+            s.open_reorg_job(monero::Network::Mainnet, 9, 1001).unwrap(),
             OpenedReorg::Covered
         );
         assert_eq!(
-            s.open_reorg_job("mainnet", 4, 1002).unwrap(),
+            s.open_reorg_job(monero::Network::Mainnet, 4, 1002).unwrap(),
             OpenedReorg::Deepened { from: 8 }
         );
-        while s.collect_reorg_candidates("mainnet", 10, 1003).unwrap() != ReorgPhase::Process {}
+        while s
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 1003)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
         let mut collected = work(s, "mainnet");
         collected.sort();
         assert_eq!(collected, vec![deep, shallow]);
@@ -956,17 +1002,23 @@ mod tests {
         let first = pay(s, &store.1, "first", Some(10));
         let second = pay(s, &store.1, "second", Some(11));
         for h in 8..=12 {
-            s.set_scanned_block("mainnet", h, &format!("old{h}"))
+            s.set_scanned_block(monero::Network::Mainnet, h, &format!("old{h}"))
                 .unwrap();
         }
-        s.open_reorg_job("mainnet", 10, 1000).unwrap();
-        while s.collect_reorg_candidates("mainnet", 10, 1000).unwrap() != ReorgPhase::Process {}
-        assert!(s.settlement_frozen("mainnet").unwrap());
-        assert!(!s.settlement_frozen("stagenet").unwrap());
+        s.open_reorg_job(monero::Network::Mainnet, 10, 1000)
+            .unwrap();
+        while s
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 1000)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
+        assert!(s.settlement_frozen(monero::Network::Mainnet).unwrap());
+        assert!(!s.settlement_frozen(monero::Network::Stagenet).unwrap());
 
         // The first retries are due at once; the third failure waits.
         for _ in 0..3 {
-            s.defer_reorg_candidate("mainnet", first, 1000).unwrap();
+            s.defer_reorg_candidate(monero::Network::Mainnet, first, 1000)
+                .unwrap();
         }
         assert_eq!(
             (
@@ -977,35 +1029,41 @@ mod tests {
             (0, 0, 1)
         );
         let due: Vec<i64> = s
-            .due_reorg_candidates("mainnet", 1000, 10)
+            .due_reorg_candidates(monero::Network::Mainnet, 1000, 10)
             .unwrap()
             .iter()
             .map(|c| c.payment.id)
             .collect();
         assert_eq!(due, vec![second], "the failed one waits");
         assert!(matches!(
-            s.finish_reorg("mainnet", 10, Some((9, "old9"))),
+            s.finish_reorg(monero::Network::Mainnet, 10, Some((9, "old9"))),
             Err(StoreError::NotFound)
         ));
-        s.complete_reorg_candidate("mainnet", second).unwrap();
+        s.complete_reorg_candidate(monero::Network::Mainnet, second)
+            .unwrap();
         let later = s
-            .due_reorg_candidates("mainnet", 1000 + reorg_retry_delay(3), 10)
+            .due_reorg_candidates(monero::Network::Mainnet, 1000 + reorg_retry_delay(3), 10)
             .unwrap();
         assert_eq!(later.len(), 1);
         assert_eq!((later[0].payment.id, later[0].attempts), (first, 3));
-        s.complete_reorg_candidate("mainnet", first).unwrap();
+        s.complete_reorg_candidate(monero::Network::Mainnet, first)
+            .unwrap();
 
         assert!(
             matches!(
-                s.finish_reorg("mainnet", 9, Some((8, "old8"))),
+                s.finish_reorg(monero::Network::Mainnet, 9, Some((8, "old8"))),
                 Err(StoreError::NotFound)
             ),
             "wrong fork"
         );
-        s.finish_reorg("mainnet", 10, Some((9, "old9"))).unwrap();
-        assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(9));
-        assert!(s.reorg_job("mainnet").unwrap().is_none());
-        assert!(!s.settlement_frozen("mainnet").unwrap());
+        s.finish_reorg(monero::Network::Mainnet, 10, Some((9, "old9")))
+            .unwrap();
+        assert_eq!(
+            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            Some(9)
+        );
+        assert!(s.reorg_job(monero::Network::Mainnet).unwrap().is_none());
+        assert!(!s.settlement_frozen(monero::Network::Mainnet).unwrap());
         drop(store);
         cleanup(&path);
     }
@@ -1017,15 +1075,24 @@ mod tests {
     fn a_rewind_that_empties_the_window_keeps_the_ancestor_and_clamps_cursors() {
         let (store, path) = fixture();
         let s = &store.0;
-        s.set_scanned_block("mainnet", 20, "old20").unwrap();
-        s.set_scanned_block("mainnet", 21, "old21").unwrap();
+        s.set_scanned_block(monero::Network::Mainnet, 20, "old20")
+            .unwrap();
+        s.set_scanned_block(monero::Network::Mainnet, 21, "old21")
+            .unwrap();
         s.execute_raw_for_test("UPDATE tenants SET scanned_through_height = 21")
             .unwrap();
-        s.open_reorg_job("mainnet", 20, 1000).unwrap();
-        while s.collect_reorg_candidates("mainnet", 10, 1000).unwrap() != ReorgPhase::Process {}
-        s.finish_reorg("mainnet", 20, Some((19, "new19"))).unwrap();
+        s.open_reorg_job(monero::Network::Mainnet, 20, 1000)
+            .unwrap();
+        while s
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 1000)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
+        s.finish_reorg(monero::Network::Mainnet, 20, Some((19, "new19")))
+            .unwrap();
         assert_eq!(
-            s.scanned_blocks_between("mainnet", 0, 100).unwrap(),
+            s.scanned_blocks_between(monero::Network::Mainnet, 0, 100)
+                .unwrap(),
             vec![(19, "new19".to_string())]
         );
         let cursors: Vec<Option<u64>> = s
@@ -1048,11 +1115,13 @@ mod tests {
         let s = &store.0;
         let expiring = order(s, &store.3, 5_000);
         assert_eq!(
-            s.due_order_ids("mainnet", 4_999, 0, 10).unwrap(),
+            s.due_order_ids(monero::Network::Mainnet, 4_999, 0, 10)
+                .unwrap(),
             Vec::<String>::new()
         );
         assert_eq!(
-            s.due_order_ids("mainnet", 5_000, 0, 10).unwrap(),
+            s.due_order_ids(monero::Network::Mainnet, 5_000, 0, 10)
+                .unwrap(),
             vec![expiring.clone()]
         );
 
@@ -1071,15 +1140,16 @@ mod tests {
         s.recompute_order_status(&shared::ids::OrderId::new(expiring.to_string()), 52, 1_000)
             .unwrap();
         assert!(s
-            .due_order_ids("mainnet", 1_000, 52, 10)
+            .due_order_ids(monero::Network::Mainnet, 1_000, 52, 10)
             .unwrap()
             .is_empty());
         assert_eq!(
-            s.due_order_ids("mainnet", 1_000, 53, 10).unwrap(),
+            s.due_order_ids(monero::Network::Mainnet, 1_000, 53, 10)
+                .unwrap(),
             vec![expiring.clone()]
         );
         assert!(
-            s.due_order_ids("mainnet", 9_999, 52, 10)
+            s.due_order_ids(monero::Network::Mainnet, 9_999, 52, 10)
                 .unwrap()
                 .is_empty(),
             "no deadline once fully paid"
@@ -1087,7 +1157,7 @@ mod tests {
         s.recompute_order_status(&shared::ids::OrderId::new(expiring.to_string()), 59, 1_000)
             .unwrap();
         assert!(
-            !s.due_order_ids("mainnet", i64::MAX, u64::MAX, 10)
+            !s.due_order_ids(monero::Network::Mainnet, i64::MAX, u64::MAX, 10)
                 .unwrap()
                 .contains(&shared::ids::OrderId::new(expiring.to_string())),
             "settled"
@@ -1113,28 +1183,39 @@ mod tests {
             Some(50),
         )
         .unwrap();
-        s.open_reorg_job("mainnet", 70, 1_000).unwrap();
+        s.open_reorg_job(monero::Network::Mainnet, 70, 1_000)
+            .unwrap();
         let (_, frozen) = s
             .recompute_order_status(&shared::ids::OrderId::new(o.to_string()), 59, 1_000)
             .unwrap();
         assert_eq!(frozen, crate::status::OrderStatus::Confirming);
         assert_eq!(
-            s.pending_payment_recomputes("mainnet").unwrap(),
+            s.pending_payment_recomputes(monero::Network::Mainnet)
+                .unwrap(),
             vec![o.clone()]
         );
         assert_eq!(
-            s.due_order_ids("mainnet", 1_000, 0, 10).unwrap(),
+            s.due_order_ids(monero::Network::Mainnet, 1_000, 0, 10)
+                .unwrap(),
             vec![o.clone()],
             "due again at once"
         );
 
-        while s.collect_reorg_candidates("mainnet", 10, 1000).unwrap() != ReorgPhase::Process {}
-        s.finish_reorg("mainnet", 70, Some((69, "h69"))).unwrap();
+        while s
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 1000)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
+        s.finish_reorg(monero::Network::Mainnet, 70, Some((69, "h69")))
+            .unwrap();
         let (_, settled) = s
             .recompute_order_status(&shared::ids::OrderId::new(o.to_string()), 59, 1_000)
             .unwrap();
         assert_eq!(settled, crate::status::OrderStatus::Paid);
-        assert!(s.pending_payment_recomputes("mainnet").unwrap().is_empty());
+        assert!(s
+            .pending_payment_recomputes(monero::Network::Mainnet)
+            .unwrap()
+            .is_empty());
         drop(store);
         cleanup(&path);
     }
@@ -1206,33 +1287,36 @@ mod tests {
         let (store, path) = fixture();
         store
             .0
-            .set_scheduler_position::<CatchUpGroup>("mainnet", &42)
+            .set_scheduler_position::<CatchUpGroup>(monero::Network::Mainnet, &42)
             .unwrap();
         store
             .0
-            .set_scheduler_position::<CatchUpGroup>("mainnet", &43)
+            .set_scheduler_position::<CatchUpGroup>(monero::Network::Mainnet, &43)
             .unwrap();
         store
             .0
-            .set_scheduler_position::<ScanRange>("mainnet", &"tn_x".to_string())
+            .set_scheduler_position::<ScanRange>(monero::Network::Mainnet, &"tn_x".to_string())
             .unwrap();
         let s = reopen(store, &path);
         assert_eq!(
-            s.scheduler_position::<CatchUpGroup>("mainnet").unwrap(),
+            s.scheduler_position::<CatchUpGroup>(monero::Network::Mainnet)
+                .unwrap(),
             Some(43)
         );
         assert_eq!(
-            s.scheduler_position::<ScanRange>("mainnet")
+            s.scheduler_position::<ScanRange>(monero::Network::Mainnet)
                 .unwrap()
                 .as_deref(),
             Some("tn_x")
         );
         assert_eq!(
-            s.scheduler_position::<CatchUpGroup>("stagenet").unwrap(),
+            s.scheduler_position::<CatchUpGroup>(monero::Network::Stagenet)
+                .unwrap(),
             None
         );
         assert_eq!(
-            s.scheduler_position::<VoidRecheck>("mainnet").unwrap(),
+            s.scheduler_position::<VoidRecheck>(monero::Network::Mainnet)
+                .unwrap(),
             None
         );
         // A hand-edited, unreadable value starts that rotation over.
@@ -1241,7 +1325,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            s.scheduler_position::<CatchUpGroup>("mainnet").unwrap(),
+            s.scheduler_position::<CatchUpGroup>(monero::Network::Mainnet)
+                .unwrap(),
             None
         );
         drop(s);
@@ -1286,7 +1371,7 @@ mod tests {
         // `other` has no order: nothing in scope, ever.
         for h in 1..=12u64 {
             store
-                .set_scanned_block("mainnet", h, &format!("a{h}"))
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("a{h}"))
                 .unwrap();
         }
         store
@@ -1342,61 +1427,107 @@ mod tests {
             .id;
 
         // A reorg's life.
-        sweep(&store, |s| s.open_reorg_job("mainnet", 11, 200));
-        assert!(sweep(&store, |s| s.settlement_frozen("mainnet")));
+        sweep(&store, |s| {
+            s.open_reorg_job(monero::Network::Mainnet, 11, 200)
+        });
+        assert!(sweep(&store, |s| s.settlement_frozen(monero::Network::Mainnet)));
         assert_eq!(
-            sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200)),
+            sweep(&store, |s| s.collect_reorg_candidates(
+                monero::Network::Mainnet,
+                1,
+                200
+            )),
             ReorgPhase::CollectConfirmed {
                 after_height: 11,
                 after_id: 1
             }
         );
-        sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200));
-        sweep(&store, |s| s.collect_reorg_candidates("mainnet", 1, 200));
+        sweep(&store, |s| {
+            s.collect_reorg_candidates(monero::Network::Mainnet, 1, 200)
+        });
+        sweep(&store, |s| {
+            s.collect_reorg_candidates(monero::Network::Mainnet, 1, 200)
+        });
         assert_eq!(
-            sweep(&store, |s| s.collect_reorg_candidates("mainnet", 64, 200)),
+            sweep(&store, |s| s.collect_reorg_candidates(
+                monero::Network::Mainnet,
+                64,
+                200
+            )),
             ReorgPhase::Process
         );
-        let due = sweep(&store, |s| s.due_reorg_candidates("mainnet", 200, 10));
+        let due = sweep(&store, |s| {
+            s.due_reorg_candidates(monero::Network::Mainnet, 200, 10)
+        });
         assert_eq!(due.len(), 2);
         sweep(&store, |s| {
-            s.defer_reorg_candidate("mainnet", due[0].payment.id, 200)
+            s.defer_reorg_candidate(monero::Network::Mainnet, due[0].payment.id, 200)
         });
-        assert_eq!(sweep(&store, |s| s.reorg_work_remaining("mainnet")).0, 2);
+        assert_eq!(
+            sweep(&store, |s| s.reorg_work_remaining(monero::Network::Mainnet)).0,
+            2
+        );
         sweep(&store, |s| {
-            s.complete_reorg_candidate("mainnet", due[0].payment.id)
+            s.complete_reorg_candidate(monero::Network::Mainnet, due[0].payment.id)
         });
         sweep(&store, |s| {
-            s.complete_reorg_candidate("mainnet", due[1].payment.id)
+            s.complete_reorg_candidate(monero::Network::Mainnet, due[1].payment.id)
         });
-        sweep(&store, |s| s.finish_reorg("mainnet", 11, Some((10, "a10"))));
-        assert!(sweep(&store, |s| s.reorg_job("mainnet")).is_none());
+        sweep(&store, |s| {
+            s.finish_reorg(monero::Network::Mainnet, 11, Some((10, "a10")))
+        });
+        assert!(sweep(&store, |s| s.reorg_job(monero::Network::Mainnet)).is_none());
 
         // Positions, pages and lookups.
         sweep(&store, |s| {
-            s.set_scheduler_position::<position::VoidRecheck>("mainnet", &5)
+            s.set_scheduler_position::<position::VoidRecheck>(monero::Network::Mainnet, &5)
         });
         assert_eq!(
-            sweep(&store, |s| s
-                .scheduler_position::<position::VoidRecheck>("mainnet")),
+            sweep(&store, |s| s.scheduler_position::<position::VoidRecheck>(
+                monero::Network::Mainnet
+            )),
             Some(5)
         );
         assert_eq!(
-            sweep(&store, |s| s.scanned_blocks_between("mainnet", 9, 10)).len(),
+            sweep(&store, |s| s.scanned_blocks_between(
+                monero::Network::Mainnet,
+                9,
+                10
+            ))
+            .len(),
             2
         );
-        sweep(&store, |s| s.due_order_ids("mainnet", 20_000, 12, 10));
+        sweep(&store, |s| {
+            s.due_order_ids(monero::Network::Mainnet, 20_000, 12, 10)
+        });
         assert_eq!(
-            sweep(&store, |s| s.voided_payments_page("mainnet", 0, 0, 10)).len(),
+            sweep(&store, |s| s.voided_payments_page(
+                monero::Network::Mainnet,
+                0,
+                0,
+                10
+            ))
+            .len(),
             1
         );
         assert!(sweep(&store, |s| s.payment_by_id(voided_id)).is_some());
         assert_eq!(
-            sweep(&store, |s| s.scan_group_cursors("mainnet", 20, None, 10)),
+            sweep(&store, |s| s.scan_group_cursors(
+                monero::Network::Mainnet,
+                20,
+                None,
+                10
+            )),
             vec![10]
         );
         assert_eq!(
-            sweep(&store, |s| s.tenants_at_cursor("mainnet", 10, &[], 10)).len(),
+            sweep(&store, |s| s.tenants_at_cursor(
+                monero::Network::Mainnet,
+                10,
+                &[],
+                10
+            ))
+            .len(),
             2
         );
         assert_eq!(
@@ -1412,7 +1543,14 @@ mod tests {
             1
         );
         assert_eq!(
-            sweep(&store, |s| s.active_tenants_page("mainnet", 150, 0, "", 10)).len(),
+            sweep(&store, |s| s.active_tenants_page(
+                monero::Network::Mainnet,
+                150,
+                0,
+                "",
+                10
+            ))
+            .len(),
             1
         );
 
@@ -1425,7 +1563,7 @@ mod tests {
         sweep(&store, |s| {
             s.in_transaction(|s| {
                 s.save_block_checkpoint(
-                    "mainnet",
+                    monero::Network::Mainnet,
                     &shared::ids::TenantId::new(tenant_id.to_string()),
                     &checkpoint,
                 )
@@ -1433,7 +1571,7 @@ mod tests {
         });
         sweep(&store, |s| {
             s.stage_partial_match(crate::store::StagedMatch {
-                network: "mainnet",
+                network: monero::Network::Mainnet,
                 tenant_id: &shared::ids::TenantId::new(tenant_id.to_string()),
                 order_id: &shared::ids::OrderId::new(order_id.to_string()),
                 txid: "tx_staged",
@@ -1451,7 +1589,7 @@ mod tests {
         sweep(&store, |s| {
             s.in_transaction(|s| {
                 s.save_block_checkpoint(
-                    "mainnet",
+                    monero::Network::Mainnet,
                     &shared::ids::TenantId::new(tenant_id.to_string()),
                     &replaced,
                 )
@@ -1459,7 +1597,7 @@ mod tests {
         });
         assert!(
             sweep(&store, |s| s.in_transaction(|s| s.take_staged_payments(
-                "mainnet",
+                monero::Network::Mainnet,
                 &shared::ids::TenantId::new(tenant_id.to_string()),
                 "c11"
             )))
@@ -1468,7 +1606,7 @@ mod tests {
         );
         assert_eq!(
             sweep(&store, |s| s.block_checkpoint(
-                "mainnet",
+                monero::Network::Mainnet,
                 &shared::ids::TenantId::new(tenant_id.to_string())
             )),
             None
@@ -1478,14 +1616,17 @@ mod tests {
             11,
         )];
         assert_eq!(
-            sweep(&store, |s| s
-                .advance_scanned_cursors("mainnet", 11, &scanned))
+            sweep(&store, |s| s.advance_scanned_cursors(
+                monero::Network::Mainnet,
+                11,
+                &scanned
+            ))
             .len(),
             1
         );
         assert_eq!(
             sweep(&store, |s| s.advance_idle_cursors(
-                "mainnet",
+                monero::Network::Mainnet,
                 10,
                 11,
                 i64::MAX / 2,
@@ -1503,7 +1644,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant_id = tenant(&store, "mainnet");
         assert!(matches!(
-            store.scan_group_cursors("mainnet", u64::MAX, None, 10),
+            store.scan_group_cursors(monero::Network::Mainnet, u64::MAX, None, 10),
             Err(StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(
                 _
             )))
@@ -1520,13 +1661,19 @@ mod tests {
                 Some(7),
             )
             .unwrap();
-        store.open_reorg_job("mainnet", 5, 100).unwrap();
-        while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
+        store
+            .open_reorg_job(monero::Network::Mainnet, 5, 100)
+            .unwrap();
+        while store
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 100)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
         store
             .execute_raw_for_test("UPDATE reorg_work SET attempts = -3")
             .unwrap();
         assert!(matches!(
-            store.due_reorg_candidates("mainnet", 100, 10),
+            store.due_reorg_candidates(monero::Network::Mainnet, 100, 10),
             Err(StoreError::Sqlite(
                 rusqlite::Error::IntegralValueOutOfRange(_, -3)
             ))
@@ -1538,9 +1685,11 @@ mod tests {
     #[test]
     fn an_unknown_reorg_phase_is_an_error() {
         let store = Store::open_in_memory().unwrap();
-        store.open_reorg_job("mainnet", 5, 100).unwrap();
+        store
+            .open_reorg_job(monero::Network::Mainnet, 5, 100)
+            .unwrap();
         store.execute_raw_for_test("PRAGMA ignore_check_constraints = ON; UPDATE reorg_jobs SET phase = 'later'; PRAGMA ignore_check_constraints = OFF").unwrap();
-        let error = store.reorg_job("mainnet").unwrap_err();
+        let error = store.reorg_job(monero::Network::Mainnet).unwrap_err();
         assert!(error.to_string().contains("unknown reorg phase"), "{error}");
     }
 
@@ -1549,14 +1698,24 @@ mod tests {
     #[test]
     fn late_collects_and_defers_are_no_ops() {
         let store = Store::open_in_memory().unwrap();
-        store.open_reorg_job("mainnet", 5, 100).unwrap();
-        while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
+        store
+            .open_reorg_job(monero::Network::Mainnet, 5, 100)
+            .unwrap();
+        while store
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 100)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
         let before = store.dump_for_test();
         assert_eq!(
-            store.collect_reorg_candidates("mainnet", 10, 100).unwrap(),
+            store
+                .collect_reorg_candidates(monero::Network::Mainnet, 10, 100)
+                .unwrap(),
             ReorgPhase::Process
         );
-        store.defer_reorg_candidate("mainnet", 12345, 100).unwrap();
+        store
+            .defer_reorg_candidate(monero::Network::Mainnet, 12345, 100)
+            .unwrap();
         assert_eq!(store.dump_for_test(), before);
     }
 
@@ -1570,12 +1729,20 @@ mod tests {
         store
             .execute_raw_for_test("UPDATE orders SET next_due_at_utc = 50, next_due_height = 7")
             .unwrap();
-        let due = store.due_order_ids("mainnet", 100, 10, 10).unwrap();
+        let due = store
+            .due_order_ids(monero::Network::Mainnet, 100, 10, 10)
+            .unwrap();
         assert_eq!(due.len(), 3, "each once: {due:?}");
         assert!(orders
             .iter()
             .all(|o| due.contains(&shared::ids::OrderId::new(o.to_string()))));
-        assert_eq!(store.due_order_ids("mainnet", 100, 10, 2).unwrap().len(), 2);
+        assert_eq!(
+            store
+                .due_order_ids(monero::Network::Mainnet, 100, 10, 2)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     /// A reorg is only finished once it is processing and has nothing
@@ -1583,26 +1750,34 @@ mod tests {
     #[test]
     fn finishing_a_reorg_early_or_at_another_fork_is_refused() {
         let store = Store::open_in_memory().unwrap();
-        store.open_reorg_job("mainnet", 5, 100).unwrap();
+        store
+            .open_reorg_job(monero::Network::Mainnet, 5, 100)
+            .unwrap();
         assert!(
             matches!(
-                store.finish_reorg("mainnet", 5, None),
+                store.finish_reorg(monero::Network::Mainnet, 5, None),
                 Err(StoreError::NotFound)
             ),
             "still collecting"
         );
-        while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
+        while store
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 100)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
         assert!(
             matches!(
-                store.finish_reorg("mainnet", 4, None),
+                store.finish_reorg(monero::Network::Mainnet, 4, None),
                 Err(StoreError::NotFound)
             ),
             "another fork"
         );
-        store.finish_reorg("mainnet", 5, None).unwrap();
+        store
+            .finish_reorg(monero::Network::Mainnet, 5, None)
+            .unwrap();
         assert!(
             matches!(
-                store.finish_reorg("mainnet", 5, None),
+                store.finish_reorg(monero::Network::Mainnet, 5, None),
                 Err(StoreError::NotFound)
             ),
             "no job"

@@ -378,16 +378,16 @@ pub(crate) struct Round<'a> {
 }
 
 impl<'a> Round<'a> {
-    pub(crate) fn network(&self) -> &'static str {
-        crate::network::network_str(self.inputs.network)
+    pub(crate) fn network(&self) -> monero::Network {
+        self.inputs.network
     }
 
-    /// Runs `f` on the database worker, with this round's network name:
+    /// Runs `f` on the database worker, with this round's network:
     /// `round.db(|s, network| s.reorg_job(network))`. `f` may fail with a
     /// store error or a scanner error.
     pub(crate) async fn db<T, E>(
         &self,
-        f: impl FnOnce(&Store, &str) -> Result<T, E> + Send + 'static,
+        f: impl FnOnce(&Store, monero::Network) -> Result<T, E> + Send + 'static,
     ) -> Result<T, ScannerError>
     where
         T: Send + 'static,

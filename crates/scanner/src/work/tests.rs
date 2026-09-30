@@ -191,7 +191,7 @@ async fn reorg_detection_costs_one_lookup_when_the_chain_agrees_and_log_depth_wh
         let height = fake.push_block(&format!("a{h}"), vec![]);
         store
             .lock()
-            .set_scanned_block("mainnet", height, &format!("a{h}"))
+            .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
             .unwrap();
     }
     let daemon = CountingDaemon::new(&fake);
@@ -257,7 +257,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         let txs = if h == 30 { vec![fixture_tx()] } else { vec![] };
         let height = fake.push_block(&format!("a{h}"), txs);
         store
-            .set_scanned_block("mainnet", height, &format!("a{h}"))
+            .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
             .unwrap();
     }
     store
@@ -308,7 +308,11 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     .into_result()
     .unwrap();
     assert!(
-        store.lock().reorg_job("mainnet").unwrap().is_some(),
+        store
+            .lock()
+            .reorg_job(monero::Network::Mainnet)
+            .unwrap()
+            .is_some(),
         "one unit doesn't finish a 41-payment job"
     );
     assert_ne!(
@@ -345,7 +349,11 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         .await
         .into_result()
         .unwrap();
-        if store.lock().reorg_job("mainnet").unwrap().is_none()
+        if store
+            .lock()
+            .reorg_job(monero::Network::Mainnet)
+            .unwrap()
+            .is_none()
             && order_status(
                 &store,
                 &shared::ids::OrderId::new(order.as_str().to_string()),
@@ -355,7 +363,11 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         }
     }
     assert!(
-        store.lock().reorg_job("mainnet").unwrap().is_none(),
+        store
+            .lock()
+            .reorg_job(monero::Network::Mainnet)
+            .unwrap()
+            .is_none(),
         "the job finished"
     );
     assert_eq!(
@@ -508,7 +520,10 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
             );
             let checkpoint = store
                 .lock()
-                .block_checkpoint("mainnet", &shared::ids::TenantId::new(tenant.to_string()))
+                .block_checkpoint(
+                    monero::Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant.to_string()),
+                )
                 .unwrap()
                 .expect("progress is checkpointed");
             assert!(
@@ -534,7 +549,10 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     assert_eq!(
         store
             .lock()
-            .block_checkpoint("mainnet", &shared::ids::TenantId::new(tenant.to_string()))
+            .block_checkpoint(
+                monero::Network::Mainnet,
+                &shared::ids::TenantId::new(tenant.to_string())
+            )
             .unwrap(),
         None,
         "checkpoint cleared at commit"
@@ -592,7 +610,11 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     for i in 0..100u8 {
         daemon.push_block(&format!("far{i}"), vec![]);
     }
-    let frontier_start = store.lock().max_scanned_height("mainnet").unwrap().unwrap();
+    let frontier_start = store
+        .lock()
+        .max_scanned_height(monero::Network::Mainnet)
+        .unwrap()
+        .unwrap();
     for _ in 0..4 {
         run_round(
             &state,
@@ -608,7 +630,12 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
         "catch-up got a turn"
     );
     assert!(
-        store.lock().max_scanned_height("mainnet").unwrap().unwrap() > frontier_start,
+        store
+            .lock()
+            .max_scanned_height(monero::Network::Mainnet)
+            .unwrap()
+            .unwrap()
+            > frontier_start,
         "and so did the frontier"
     );
 }
@@ -685,7 +712,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
     for h in 1..=10 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
         store
-            .set_scanned_block("mainnet", height, &format!("a{h}"))
+            .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
             .unwrap();
     }
     store
@@ -704,7 +731,9 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
             Some(9),
         )
         .unwrap();
-    store.open_reorg_job("mainnet", 9, now).unwrap();
+    store
+        .open_reorg_job(monero::Network::Mainnet, 9, now)
+        .unwrap();
     let store = store.into_shared();
     let daemon = CannotLocate {
         inner: &fake,
@@ -721,7 +750,11 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
     )
     .await;
     assert!(
-        store.lock().reorg_job("mainnet").unwrap().is_some(),
+        store
+            .lock()
+            .reorg_job(monero::Network::Mainnet)
+            .unwrap()
+            .is_some(),
         "the job is still open"
     );
     assert_eq!(
@@ -729,7 +762,10 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
         TierOutcome::Blocked(Wait::ReorgBeingReconciled)
     );
     assert_eq!(
-        store.lock().max_scanned_height("mainnet").unwrap(),
+        store
+            .lock()
+            .max_scanned_height(monero::Network::Mainnet)
+            .unwrap(),
         Some(10),
         "no block scanned on a chain being reconciled"
     );
@@ -835,7 +871,11 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
             .collect(),
     );
     round(Duration::ZERO).await; // detects and starts the job, no more
-    assert!(store.lock().reorg_job("mainnet").unwrap().is_some());
+    assert!(store
+        .lock()
+        .reorg_job(monero::Network::Mainnet)
+        .unwrap()
+        .is_some());
 
     // Before it finishes, a deeper fork at 30: the payment moves to 31.
     let second: Vec<(String, Vec<Transaction>)> = (30..=41u64)
@@ -856,7 +896,11 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
     for _ in 0..10 {
         round(ROUND_BUDGET).await;
     }
-    assert!(store.lock().reorg_job("mainnet").unwrap().is_none());
+    assert!(store
+        .lock()
+        .reorg_job(monero::Network::Mainnet)
+        .unwrap()
+        .is_none());
     let payments = store
         .lock()
         .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
@@ -871,7 +915,7 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
     assert_eq!(
         store
             .lock()
-            .get_scanned_block_hash("mainnet", 41)
+            .get_scanned_block_hash(monero::Network::Mainnet, 41)
             .unwrap()
             .as_deref(),
         Some("c41"),
@@ -1012,7 +1056,7 @@ async fn a_store_far_behind_does_not_hold_every_catch_up_turn() {
     for h in 1..=400 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
         store
-            .set_scanned_block("mainnet", height, &format!("a{h}"))
+            .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
             .unwrap();
     }
     store
@@ -1081,7 +1125,7 @@ async fn a_tip_replaced_after_it_was_fetched_leaves_no_phantom_payment() {
     assert_eq!(
         store
             .lock()
-            .get_scanned_block_hash("mainnet", 11)
+            .get_scanned_block_hash(monero::Network::Mainnet, 11)
             .unwrap()
             .as_deref(),
         Some("new11"),
@@ -1115,7 +1159,7 @@ async fn a_group_with_nobody_to_scan_fetches_nothing() {
     for h in 1..=20 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
         store
-            .set_scanned_block("mainnet", height, &format!("a{h}"))
+            .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
             .unwrap();
     }
     store
@@ -1240,7 +1284,7 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
     for h in 1..=10 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
         store
-            .set_scanned_block("mainnet", height, &format!("a{h}"))
+            .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
             .unwrap();
     }
     for i in 0..20u8 {
@@ -1260,7 +1304,7 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
             .unwrap();
     }
     store
-        .open_reorg_job("mainnet", 9, crate::now_unix())
+        .open_reorg_job(monero::Network::Mainnet, 9, crate::now_unix())
         .unwrap();
     let store = store.into_shared();
     let daemon = Lookups::new(&fake);
@@ -1295,7 +1339,7 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
     for h in 1..=3 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
         store
-            .set_scanned_block("mainnet", height, &format!("a{h}"))
+            .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
             .unwrap();
     }
     store
@@ -1968,7 +2012,11 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
         "the round didn't spend its budget re-asking"
     );
     assert!(
-        store.lock().reorg_job("mainnet").unwrap().is_none(),
+        store
+            .lock()
+            .reorg_job(monero::Network::Mainnet)
+            .unwrap()
+            .is_none(),
         "no job yet: the node couldn't be asked"
     );
 
@@ -1986,7 +2034,8 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     }
     let s = store.lock();
     assert_eq!(
-        s.scanned_blocks_between("mainnet", 5, 6).unwrap(),
+        s.scanned_blocks_between(monero::Network::Mainnet, 5, 6)
+            .unwrap(),
         vec![(5, "b5".to_string()), (6, "b6".to_string())]
     );
 }
@@ -2132,7 +2181,7 @@ async fn open_reorg_with(
     for h in 1..=10 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
         store
-            .set_scanned_block("mainnet", height, &format!("a{h}"))
+            .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
             .unwrap();
     }
     let mut orders = Vec::new();
@@ -2146,7 +2195,9 @@ async fn open_reorg_with(
     store
         .execute_raw_for_test("UPDATE tenants SET scanned_through_height = 10")
         .unwrap();
-    store.open_reorg_job("mainnet", 9, now).unwrap();
+    store
+        .open_reorg_job(monero::Network::Mainnet, 9, now)
+        .unwrap();
     (store.into_shared(), fake, orders)
 }
 
@@ -2233,7 +2284,11 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
         (Some(9), None),
         "left as recorded"
     );
-    assert!(store.lock().reorg_job("mainnet").unwrap().is_none());
+    assert!(store
+        .lock()
+        .reorg_job(monero::Network::Mainnet)
+        .unwrap()
+        .is_none());
 }
 
 /// A candidate whose payment is deleted (its order removed) between the
@@ -2346,7 +2401,14 @@ async fn a_reorg_page_with_no_time_left_does_one_candidate() {
     let spent = tokio::time::Instant::now();
     let (processed, _, failure) = chain.process_page(10, &mut skip, spent).await.unwrap();
     assert_eq!((processed, failure.is_none()), (1, true));
-    assert_eq!(store.lock().reorg_work_remaining("mainnet").unwrap().0, 1);
+    assert_eq!(
+        store
+            .lock()
+            .reorg_work_remaining(monero::Network::Mainnet)
+            .unwrap()
+            .0,
+        1
+    );
 }
 
 // -- Block tier edge cases ----------------------------------------------------
@@ -2479,7 +2541,10 @@ async fn seeded_network(
     .into_result()
     .unwrap();
     assert_eq!(
-        store.lock().max_scanned_height("mainnet").unwrap(),
+        store
+            .lock()
+            .max_scanned_height(monero::Network::Mainnet)
+            .unwrap(),
         Some(20)
     );
     store
@@ -2514,7 +2579,10 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     .unwrap();
     let stale = store
         .lock()
-        .block_checkpoint("mainnet", &shared::ids::TenantId::new(tenant.to_string()))
+        .block_checkpoint(
+            monero::Network::Mainnet,
+            &shared::ids::TenantId::new(tenant.to_string()),
+        )
         .unwrap()
         .expect("checkpointed partway");
     assert_eq!(stale.hash, "big");
@@ -2543,7 +2611,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     assert_eq!(
         store
             .lock()
-            .get_scanned_block_hash("mainnet", 21)
+            .get_scanned_block_hash(monero::Network::Mainnet, 21)
             .unwrap()
             .as_deref(),
         Some("big2")
@@ -2551,7 +2619,10 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     assert_eq!(
         store
             .lock()
-            .block_checkpoint("mainnet", &shared::ids::TenantId::new(tenant.to_string()))
+            .block_checkpoint(
+                monero::Network::Mainnet,
+                &shared::ids::TenantId::new(tenant.to_string())
+            )
             .unwrap(),
         None
     );
@@ -2586,7 +2657,10 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
         .filter(|(id, _)| {
             store
                 .lock()
-                .block_checkpoint("mainnet", &shared::ids::TenantId::new(id.to_string()))
+                .block_checkpoint(
+                    monero::Network::Mainnet,
+                    &shared::ids::TenantId::new(id.to_string()),
+                )
                 .unwrap()
                 .is_some()
         })
@@ -2599,7 +2673,7 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
         store
             .lock()
             .block_checkpoint(
-                "mainnet",
+                monero::Network::Mainnet,
                 &shared::ids::TenantId::new(tenants[0].0.to_string())
             )
             .unwrap(),
@@ -2660,7 +2734,7 @@ async fn catching_up_onto_a_replaced_recorded_block_waits() {
     assert_eq!(
         store
             .lock()
-            .get_scanned_block_hash("mainnet", 19)
+            .get_scanned_block_hash(monero::Network::Mainnet, 19)
             .unwrap()
             .as_deref(),
         Some("a19")
@@ -2697,7 +2771,7 @@ async fn a_recorded_chain_changed_mid_scan_stops_the_commit() {
         assert_eq!(
             store
                 .lock()
-                .get_scanned_block_hash("mainnet", changed)
+                .get_scanned_block_hash(monero::Network::Mainnet, changed)
                 .unwrap()
                 .as_deref(),
             Some("zzz"),
@@ -2739,7 +2813,10 @@ async fn catching_up_below_the_recorded_history_records_nothing_for_the_network(
         Some(12)
     );
     assert_eq!(
-        store.lock().get_scanned_block_hash("mainnet", 12).unwrap(),
+        store
+            .lock()
+            .get_scanned_block_hash(monero::Network::Mainnet, 12)
+            .unwrap(),
         None,
         "only the tip grows the record"
     );
@@ -3072,7 +3149,9 @@ async fn a_vanished_check_the_node_fails_or_stalls_is_retried() {
         let position = || {
             store
                 .lock()
-                .scheduler_position::<crate::store::position::VanishedPayments>("mainnet")
+                .scheduler_position::<crate::store::position::VanishedPayments>(
+                    monero::Network::Mainnet,
+                )
                 .unwrap()
         };
         let before = position();
@@ -3108,7 +3187,7 @@ async fn vanished_payments_are_checked_one_a_round_with_no_time_to_spare() {
     unconfirmed(&store, &orders[0], &"cd".repeat(32));
     let ids: Vec<i64> = store
         .lock()
-        .unconfirmed_payments_page("mainnet", 0, 10)
+        .unconfirmed_payments_page(monero::Network::Mainnet, 0, 10)
         .unwrap()
         .into_iter()
         .map(|(id, _)| id)
@@ -3118,7 +3197,9 @@ async fn vanished_payments_are_checked_one_a_round_with_no_time_to_spare() {
     let position = || {
         store
             .lock()
-            .scheduler_position::<crate::store::position::VanishedPayments>("mainnet")
+            .scheduler_position::<crate::store::position::VanishedPayments>(
+                monero::Network::Mainnet,
+            )
             .unwrap()
     };
     run_round(
@@ -3159,7 +3240,7 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
     fake.set_mempool(vec![pooled]);
     let candidates: Vec<_> = store
         .lock()
-        .unconfirmed_payments_page("mainnet", 0, 10)
+        .unconfirmed_payments_page(monero::Network::Mainnet, 0, 10)
         .unwrap()
         .into_iter()
         .map(|(_, p)| p)
@@ -3228,11 +3309,11 @@ fn voided_payments(store: &SharedStore, order: &crate::store::OrderId, count: u8
 fn void_recheck_due(store: &SharedStore) {
     let s = store.lock();
     s.set_scheduler_position::<crate::store::position::VoidRecheckPassStarted>(
-        "mainnet",
+        monero::Network::Mainnet,
         &i64::MIN,
     )
     .unwrap();
-    s.set_scheduler_position::<crate::store::position::VoidRecheck>("mainnet", &0)
+    s.set_scheduler_position::<crate::store::position::VoidRecheck>(monero::Network::Mainnet, &0)
         .unwrap();
 }
 
@@ -3267,7 +3348,7 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
     let position = || {
         store
             .lock()
-            .scheduler_position::<crate::store::position::VoidRecheck>("mainnet")
+            .scheduler_position::<crate::store::position::VoidRecheck>(monero::Network::Mainnet)
             .unwrap()
     };
     assert_ne!(position(), Some(0), "the pass is still going");
@@ -3530,7 +3611,7 @@ async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
         assert!(store
             .lock()
             .block_checkpoint(
-                "mainnet",
+                monero::Network::Mainnet,
                 &shared::ids::TenantId::new(tenants[0].0.to_string())
             )
             .unwrap()
@@ -3597,7 +3678,11 @@ async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
             run_round(&state, &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await;
         }
         assert!(
-            store.lock().reorg_job("mainnet").unwrap().is_none(),
+            store
+                .lock()
+                .reorg_job(monero::Network::Mainnet)
+                .unwrap()
+                .is_none(),
             "fault {fault}: the job finished"
         );
         assert_eq!(
@@ -3622,7 +3707,7 @@ async fn a_reorg_job_with_every_candidate_waiting_waits() {
     let db = Db::over_shared(store.clone());
     while store
         .lock()
-        .collect_reorg_candidates("mainnet", 64, crate::now_unix())
+        .collect_reorg_candidates(monero::Network::Mainnet, 64, crate::now_unix())
         .unwrap()
         != crate::store::ReorgPhase::Process
     {}
@@ -3635,7 +3720,7 @@ async fn a_reorg_job_with_every_candidate_waiting_waits() {
     for _ in 0..6 {
         store
             .lock()
-            .defer_reorg_candidate("mainnet", id, crate::now_unix())
+            .defer_reorg_candidate(monero::Network::Mainnet, id, crate::now_unix())
             .unwrap();
     }
     let custody = FlakyKeyCustody::default();
@@ -3699,7 +3784,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
     .unwrap();
     let still_due = store
         .lock()
-        .due_order_ids("mainnet", now, 20, 1000)
+        .due_order_ids(monero::Network::Mainnet, now, 20, 1000)
         .unwrap()
         .len();
     assert!(
@@ -3719,7 +3804,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
     assert_eq!(
         store
             .lock()
-            .due_order_ids("mainnet", now, 20, 1000)
+            .due_order_ids(monero::Network::Mainnet, now, 20, 1000)
             .unwrap()
             .len(),
         0

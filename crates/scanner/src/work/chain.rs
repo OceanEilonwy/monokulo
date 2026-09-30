@@ -72,7 +72,7 @@ pub(crate) struct Reconciled {
 pub(crate) struct Chain<'a> {
     db: &'a Db,
     daemon: &'a dyn MoneroDaemonClient,
-    network: &'static str,
+    network: monero::Network,
     reorg_check_depth: u64,
     now: i64,
 }
@@ -88,17 +88,17 @@ impl<'a> Chain<'a> {
         Self {
             db,
             daemon,
-            network: crate::network::network_str(network),
+            network,
             reorg_check_depth,
             now,
         }
     }
 
-    /// Runs `f` on the database worker, with this network's name. `f` may
-    /// fail with a store error or a scanner error.
+    /// Runs `f` on the database worker, with this network. `f` may fail
+    /// with a store error or a scanner error.
     async fn db<T, E>(
         &self,
-        f: impl FnOnce(&Store, &str) -> Result<T, E> + Send + 'static,
+        f: impl FnOnce(&Store, monero::Network) -> Result<T, E> + Send + 'static,
     ) -> Result<T, ScannerError>
     where
         T: Send + 'static,
@@ -165,10 +165,19 @@ impl<'a> Chain<'a> {
             .await?
         {
             OpenedReorg::Created => {
-                tracing::warn!(network = %self.network, fork, "chain reorganisation detected - reconciling payments from this height")
+                tracing::warn!(
+                    network = crate::network::network_str(self.network),
+                    fork,
+                    "chain reorganisation detected - reconciling payments from this height"
+                )
             }
             OpenedReorg::Deepened { from } => {
-                tracing::warn!(network = %self.network, fork, previous_fork = from, "the reorganisation being reconciled goes deeper")
+                tracing::warn!(
+                    network = crate::network::network_str(self.network),
+                    fork,
+                    previous_fork = from,
+                    "the reorganisation being reconciled goes deeper"
+                )
             }
             OpenedReorg::Covered => {}
         }
@@ -210,7 +219,7 @@ impl<'a> Chain<'a> {
                 Ok(()) => {}
                 Err(error) if candidate.attempts + 1 >= MAX_CANDIDATE_ATTEMPTS => {
                     tracing::error!(
-                        network = %self.network, payment.id = candidate.payment.id, order.id = %candidate.payment.order_id,
+                        network = crate::network::network_str(self.network), payment.id = candidate.payment.id, order.id = %candidate.payment.order_id,
                         error = %error,
                         "reorg: giving up re-examining a payment the node keeps failing to answer about - leaving it as recorded"
                     );
@@ -219,7 +228,7 @@ impl<'a> Chain<'a> {
                         .await?;
                 }
                 Err(error) => {
-                    tracing::warn!(network = %self.network, payment.id = candidate.payment.id, error = %error, "reorg: re-examining a payment failed (retried)");
+                    tracing::warn!(network = crate::network::network_str(self.network), payment.id = candidate.payment.id, error = %error, "reorg: re-examining a payment failed (retried)");
                     let (id, now) = (candidate.payment.id, self.now);
                     self.db(move |s, network| s.defer_reorg_candidate(network, id, now))
                         .await?;
@@ -347,7 +356,11 @@ impl<'a> Chain<'a> {
             )
         })
         .await?;
-        tracing::info!(network = %self.network, fork, "reorganisation reconciled - replacement blocks will be scanned");
+        tracing::info!(
+            network = crate::network::network_str(self.network),
+            fork,
+            "reorganisation reconciled - replacement blocks will be scanned"
+        );
         Ok(())
     }
 
@@ -450,9 +463,9 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         // hashes) exactly where they were; the next round carries on.
         Progress::Failed(ScannerError::Daemon(error)) => {
             shared::throttled!(
-                format!("chain-node:{}", round.network()),
+                format!("chain-node:{}", crate::network::network_str(round.network())),
                 warn,
-                network = %round.network(),
+                network = crate::network::network_str(round.network()),
                 error = %error,
                 "reorg work stopped: the node failed (retried next round)"
             );

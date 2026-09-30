@@ -16,7 +16,6 @@ use tracing::Instrument;
 use crate::engine_settings::{Daemons, EngineSettings};
 use crate::http::now_unix;
 use crate::key_custody::{KeyCustody, WalletHandle};
-use crate::network::network_str;
 use crate::scanner_status::{self, ScannerStatusMap};
 use crate::store::Db;
 use crate::webhook_delivery::run_delivery_tick_on;
@@ -311,7 +310,7 @@ pub async fn run_scanner_loop(
                     key_custody.as_ref(),
                     &wallet_handles,
                     Some(&HANDLED_CUSTODY_EPOCH),
-                    network_str(network),
+                    network,
                 )
                 .instrument(tick.clone())
                 .await;
