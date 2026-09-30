@@ -891,3 +891,70 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
     assert_eq!(daemon.chain_fetches.load(Ordering::Relaxed), 5, "each block fetched once");
     assert!(took < Duration::from_millis(800), "fetches overlapped scans: {took:?}");
 }
+
+/// A payment is settled from the pool without waiting for a round: the fast
+/// pass records it, recomputes its order, enqueues the webhook and wakes
+/// delivery, and the round's rotation then has nothing left to do for it.
+#[tokio::test]
+async fn the_fast_path_settles_a_new_pool_payment_at_once() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    store.create_webhook(&tenant, "https://merchant.example/hook", "{}", "secret", 1000).unwrap();
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.push_block("a1", vec![]);
+    fake.set_mempool(vec![fixture_tx()]);
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let state = ScanState::waking(wake.clone());
+    let tenants = [(tenant.clone(), handle)];
+    let db = Db::over_shared(store.clone());
+    let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants)).await.unwrap();
+    assert_eq!(report, FastReport { scanned: 1, paid_orders: 1, deferred: 0 });
+    assert_eq!(order_status(&store, &order), OrderStatus::Unconfirmed);
+    assert!(store.lock().due_webhook_deliveries(i64::MAX / 2, 10).unwrap().iter().any(|d| d.event_type == "order.unconfirmed"));
+    tokio::time::timeout(Duration::from_millis(100), wake.notified()).await.expect("delivery was woken");
+
+    // Seen: the next pass has nothing new, and the rotation skips it.
+    let again = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants)).await.unwrap();
+    assert_eq!(again, FastReport::default());
+    let before = custody.attempts.lock().get(&handle).copied();
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    assert_eq!(custody.attempts.lock().get(&handle).copied(), before, "already scanned for this store");
+}
+
+/// A flood of new transactions is scanned up to the pass's budget; the rest
+/// is left to the next passes and the rotation, never dropped.
+#[tokio::test]
+async fn the_fast_path_defers_what_its_budget_does_not_cover() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let mut tenants = Vec::new();
+    for _ in 0..64 {
+        let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        tenants.push((tenant, handle));
+    }
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.push_block("a1", vec![]);
+    fake.set_mempool((0..100u8).map(unrelated_tx).collect());
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    let first = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants)).await.unwrap();
+    assert_eq!(first.scanned, 4096 / 64);
+    assert_eq!(first.deferred, 100 - 4096 / 64);
+    let second = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants)).await.unwrap();
+    assert_eq!(second.scanned, 100 - 4096 / 64, "the rest on the next pass");
+    assert_eq!(second.deferred, 0);
+}
+
+/// A pool that can't be read is not an empty pool.
+#[tokio::test]
+async fn the_fast_path_reports_an_unreadable_pool() {
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let custody = FlakyKeyCustody::default();
+    let fake = FakeDaemonClient::new();
+    fake.set_online(false);
+    let db = Db::over_shared(store.clone());
+    assert_eq!(fast_pass(&ScanState::default(), &inputs(&db, &custody, &fake, &[])).await, None);
+}

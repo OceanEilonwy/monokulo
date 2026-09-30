@@ -25,6 +25,7 @@ use crate::store::db::Class;
 use crate::store::{Db, Store};
 
 pub use blocks::ScannedBlock;
+pub use mempool::{fast_pass, FastReport};
 
 /// The kinds of work, in priority order within a round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -225,6 +226,9 @@ impl Backoff {
 /// the durable state is in SQLite.
 #[derive(Default)]
 pub struct ScanState {
+    /// Wakes webhook delivery when something was just enqueued, so a
+    /// settlement's webhook goes out at once rather than on the next poll.
+    webhooks: std::sync::Arc<tokio::sync::Notify>,
     mempool: mempool::MempoolState,
     blocks: blocks::BlockState,
     settlement: settlement::SettlementState,
@@ -233,6 +237,17 @@ pub struct ScanState {
     backoff: Backoff,
     /// Orders whose status recompute keeps failing.
     order_backoff: Backoff,
+}
+
+impl ScanState {
+    /// State that wakes `webhooks` whenever it enqueues webhook deliveries.
+    pub fn waking(webhooks: std::sync::Arc<tokio::sync::Notify>) -> Self {
+        Self { webhooks, ..Self::default() }
+    }
+
+    pub(crate) fn wake_webhooks(&self) {
+        self.webhooks.notify_one();
+    }
 }
 
 /// One round in progress: the inputs, the facts read at its start, and what
@@ -306,6 +321,9 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
             (None, Some(error))
         }
     };
+    if let Some(tip) = tip {
+        state.mempool.last_tip.store(tip, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut round = Round {
         inputs,
         network_name: inputs.network.into(),

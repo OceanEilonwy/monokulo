@@ -252,7 +252,12 @@ async fn run(action: Action) {
 
     let delivery_db = db.clone();
     let delivery_settings = engine_settings.clone();
-    supervise("webhook delivery", move || loops::run_webhook_delivery_loop(delivery_db.clone(), delivery_settings.clone()));
+    // Woken by the scanner as soon as it enqueues a webhook.
+    let webhook_wake = Arc::new(tokio::sync::Notify::new());
+    let delivery_wake = webhook_wake.clone();
+    supervise("webhook delivery", move || {
+        loops::run_webhook_delivery_loop(delivery_db.clone(), delivery_settings.clone(), delivery_wake.clone())
+    });
 
     // One scanner loop per configured network
     // (task 7.4), started and stopped as node settings are saved (task 2.1).
@@ -271,6 +276,7 @@ async fn run(action: Action) {
         loops::manage_network_loops(
             loops_store.clone(),
             loops_db.clone(),
+            webhook_wake.clone(),
             loops_custody.clone(),
             loops_daemons.clone(),
             loops_handles.clone(),

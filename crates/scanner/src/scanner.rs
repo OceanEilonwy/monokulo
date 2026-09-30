@@ -451,7 +451,7 @@ pub fn recompute_and_notify(store: &Store, order_id: &str, current_height: u64, 
 /// already inside one - `Store::in_transaction` uses `unchecked_transaction`, so
 /// nesting it would fail at SQLite's "cannot start a transaction within a
 /// transaction" rather than composing.
-fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64, now: i64) -> Result<()> {
+pub(crate) fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64, now: i64) -> Result<()> {
     let (old_status, new_status) = store.recompute_order_status(order_id, current_height, now)?;
     if old_status != new_status {
         let payload = serde_json::json!({ "order_id": order_id, "status": new_status.as_str() });

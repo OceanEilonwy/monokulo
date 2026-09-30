@@ -386,7 +386,19 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
     }
     match chain.advance_job(tip, &mut round.chain.attempted, until).await {
         Ok(None) => Progress::Idle,
-        Ok(Some(JobStep::Processed(Reconciled { failure: Some(error), .. }))) => Progress::Failed(error),
+        Ok(Some(JobStep::Processed(Reconciled { failure: Some(error), double_spent_orders, .. }))) => {
+            if !double_spent_orders.is_empty() {
+                round.state.wake_webhooks();
+            }
+            Progress::Failed(error)
+        }
+        Ok(Some(JobStep::Processed(Reconciled { double_spent_orders, .. }))) => {
+            // A void enqueues its webhook in the same transaction.
+            if !double_spent_orders.is_empty() {
+                round.state.wake_webhooks();
+            }
+            Progress::Advanced
+        }
         Ok(Some(JobStep::Waiting)) => Progress::Blocked("reorg candidates are waiting to be retried"),
         Ok(Some(JobStep::Rewound)) => {
             round.chain.rewound = true;
