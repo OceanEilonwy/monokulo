@@ -5,14 +5,14 @@
 //! "wrong password" - a client must not be able to tell the two apart via
 //! status code or message (standard account-enumeration defense). The
 //! obvious way to get this wrong is an early return for an unknown email
-//! that skips `verify_password` entirely, which is also observable via
+//! that skips `Hasher::verify` entirely, which is also observable via
 //! timing; to avoid that specific short-circuit, an unknown email still
-//! runs a full `verify_password` call against a fixed dummy hash before
+//! runs a full `Hasher::verify` call against a fixed dummy hash before
 //! failing. This isn't a hard constant-time guarantee (allocation, cache
 //! effects, etc. can still differ) but it keeps the two code paths doing
 //! the same expensive work rather than one of them being obviously cheaper.
 
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -36,10 +36,10 @@ pub struct LoginResponse {
 
 /// A real Argon2id hash of a fixed, nobody-has-this-password string,
 /// computed once and reused - just something for the "unknown email" path
-/// to run `verify_password` against so it does comparable work to the
+/// to run `Hasher::verify` against so it does comparable work to the
 /// real-user path instead of short-circuiting. See module doc comment.
-static DUMMY_PASSWORD_HASH: LazyLock<String> =
-    LazyLock::new(|| shared::password::hash_password("not-a-real-account-dummy-password").unwrap());
+/// Made by the first login's own password job (`shared::password::run`).
+static DUMMY_PASSWORD_HASH: OnceLock<String> = OnceLock::new();
 
 /// The two ways login can fail - kept separate from [`ApiError`] so the
 /// browser-facing form handler (`http/dashboard.rs`, WBS 1.3.1) can map a
@@ -81,9 +81,16 @@ pub(super) async fn authenticate(
         password.to_string(),
         user.as_ref().map(|u| u.password_hash.clone()),
     );
-    let password_ok = shared::password::run(move || {
-        let hash = stored.as_deref().unwrap_or(&DUMMY_PASSWORD_HASH);
-        shared::password::verify_password(&password, hash)
+    let password_ok = shared::password::run(move |hasher| {
+        let hash = match &stored {
+            Some(hash) => hash.as_str(),
+            None => DUMMY_PASSWORD_HASH.get_or_init(|| {
+                hasher
+                    .hash("not-a-real-account-dummy-password")
+                    .unwrap_or_default()
+            }),
+        };
+        hasher.verify(&password, hash)
     })
     .await
     .ok_or(LoginError::Internal)?;

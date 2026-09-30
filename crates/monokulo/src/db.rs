@@ -116,6 +116,13 @@ fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
 pub const TEST_ADMIN_EMAIL: &str = "admin@monokulo.test";
 pub const TEST_ADMIN_PASSWORD: &str = "correct horse battery staple admin";
 
+/// [`TEST_ADMIN_PASSWORD`]'s Argon2id hash, computed once and kept here:
+/// hashing happens only on the blocking pool (`shared::password::run`),
+/// and a synchronous test fixture has no business waiting for it.
+#[cfg(any(test, feature = "test-support"))]
+const TEST_ADMIN_PASSWORD_HASH: &str =
+    "$argon2id$v=19$m=19456,t=2,p=1$DbEpa9uloUGQgzhdDwix1g$fzhZPyckZkFC3STfRtsxa6LuDNdV9ej3r7sxuX1S1yw";
+
 pub struct Db {
     conn: Connection,
 }
@@ -879,10 +886,14 @@ impl Db {
     /// exactly as fatal to the test as that would be.
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_test_admin(&self) {
-        let password_hash = shared::password::hash_password(TEST_ADMIN_PASSWORD)
-            .expect("hashing the fixed test admin password");
-        self.create_user("test-admin", TEST_ADMIN_EMAIL, &password_hash, true, 0)
-            .expect("seeding the test admin account");
+        self.create_user(
+            "test-admin",
+            TEST_ADMIN_EMAIL,
+            TEST_ADMIN_PASSWORD_HASH,
+            true,
+            0,
+        )
+        .expect("seeding the test admin account");
         self.mark_setup_complete()
             .expect("marking setup complete for the seeded test admin");
         self.set_setting("signup.mode", "public")
@@ -2067,6 +2078,15 @@ mod tests {
             .write(|db| db.insert_pos_order("no-such-store", "o1", None, None, 1))
             .await;
         assert!(matches!(orphan, Err(DbError::Sqlite(_))), "{orphan:?}");
+    }
+
+    /// The seeded test admin's stored hash really is its password's.
+    #[tokio::test]
+    async fn the_test_admin_hash_matches_the_test_admin_password() {
+        let matches =
+            shared::password::run(|h| h.verify(TEST_ADMIN_PASSWORD, TEST_ADMIN_PASSWORD_HASH))
+                .await;
+        assert_eq!(matches, Some(true));
     }
 
     /// A test's inline database refuses a write inside a read, as the read

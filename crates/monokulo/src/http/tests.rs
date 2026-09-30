@@ -131,10 +131,11 @@ async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_passwo
         "expected a PHC-format Argon2 hash, got: {}",
         row.password_hash
     );
-    assert!(shared::password::verify_password(
-        plaintext,
-        &row.password_hash
-    ));
+    let stored = row.password_hash.clone();
+    assert_eq!(
+        shared::password::run(move |hasher| hasher.verify(plaintext, &stored)).await,
+        Some(true)
+    );
 }
 
 #[tokio::test]

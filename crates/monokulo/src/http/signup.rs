@@ -60,7 +60,7 @@ pub(super) enum CreateAccountError {
 }
 
 /// The actual account-creation logic - `Db::create_user`/
-/// `Db::redeem_invite_and_create_user` plus `shared::password::hash_password`
+/// `Db::redeem_invite_and_create_user` plus `shared::password::Hasher::hash`
 /// — shared by `POST /signup` (below), `POST /dashboard/signup`
 /// (`http/dashboard.rs`), and the first-run admin setup wizard
 /// (`http/admin_setup.rs`, the one caller that ever passes `is_admin: true`),
@@ -81,7 +81,7 @@ pub(super) async fn create_account(
     // Off the async threads (`shared::password::run`): a hash takes tens of
     // milliseconds of CPU.
     let password = password.to_string();
-    let password_hash = shared::password::run(move || shared::password::hash_password(&password))
+    let password_hash = shared::password::run(move |hasher| hasher.hash(&password))
         .await
         .and_then(Result::ok)
         .ok_or(CreateAccountError::Internal)?;
