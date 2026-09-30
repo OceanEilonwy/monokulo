@@ -355,6 +355,7 @@ pub async fn run_delivery_tick_on(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::store::Store;

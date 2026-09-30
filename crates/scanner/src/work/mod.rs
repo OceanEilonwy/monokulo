@@ -129,6 +129,10 @@ pub enum Wait {
     MempoolUnreadable,
     /// Every remaining reorg candidate is waiting out a retry delay.
     ReorgCandidatesRetrying,
+    /// The node's next block doesn't extend the recorded chain: a reorg the
+    /// chain tier hasn't opened a job for yet (it failed this round, or the
+    /// fork happened since it looked).
+    ChainDiverged,
 }
 
 impl std::fmt::Display for Wait {
@@ -141,6 +145,7 @@ impl std::fmt::Display for Wait {
             Wait::NodeCannotServeTip => "the node can't serve its own tip yet",
             Wait::MempoolUnreadable => "the mempool couldn't be read",
             Wait::ReorgCandidatesRetrying => "reorg candidates are waiting to be retried",
+            Wait::ChainDiverged => "the node's chain differs from the recorded one; waiting for reorg reconciliation",
         })
     }
 }
@@ -461,4 +466,5 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;

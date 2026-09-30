@@ -406,6 +406,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;

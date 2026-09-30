@@ -110,6 +110,7 @@ pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderSta
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

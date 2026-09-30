@@ -173,6 +173,7 @@ fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, S
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

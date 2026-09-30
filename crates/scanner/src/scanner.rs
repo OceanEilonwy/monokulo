@@ -942,6 +942,7 @@ pub struct Registration {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod tests {
     //! Scenario coverage checklist for the scanner.
     //!

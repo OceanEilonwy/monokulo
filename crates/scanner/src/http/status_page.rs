@@ -339,6 +339,7 @@ fn unserved_tenants(store: &crate::store::Store, networks: &[NetworkStatus]) -> 
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

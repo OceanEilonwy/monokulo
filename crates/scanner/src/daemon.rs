@@ -268,6 +268,7 @@ pub trait MoneroDaemonClient: Send + Sync {
 /// rare in production, so bugs here are exactly the kind that go unnoticed for a
 /// long time otherwise).
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub mod fake {
     use super::*;
     use std::collections::HashMap;
@@ -583,6 +584,7 @@ pub mod fake {
 /// "does this actually work against real monerod" proof, not the main
 /// suite).
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::fake::FakeDaemonClient;
     use super::*;

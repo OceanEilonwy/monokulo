@@ -94,6 +94,19 @@ fn tune_connection(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// A column value as plain text, for comparing database states in tests.
+#[cfg(test)]
+pub(crate) fn value_text(value: rusqlite::types::ValueRef<'_>) -> String {
+    use rusqlite::types::ValueRef;
+    match value {
+        ValueRef::Null => "null".into(),
+        ValueRef::Integer(i) => i.to_string(),
+        ValueRef::Real(r) => r.to_string(),
+        ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+        ValueRef::Blob(b) => hex::encode(b),
+    }
+}
+
 /// How long a connection waits for another's lock. Scanner transactions are
 /// bounded pages, so this is only reached if something is badly wrong.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -495,9 +508,32 @@ impl Store {
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
+        #[cfg(test)]
+        return Self::open_in_memory_from_template();
+        #[cfg(not(test))]
+        {
+            let conn = Connection::open_in_memory()?;
+            configure_connection(&conn)?;
+            apply_migrations(&conn)?;
+            Ok(Store::from_connection(conn))
+        }
+    }
+
+    /// Under test, a fresh in-memory store is a copy of one migrated once
+    /// per test binary: running every migration costs tens of milliseconds,
+    /// and tests open thousands of stores. `open_file` still migrates, and
+    /// the migration tests run the migrations themselves.
+    #[cfg(test)]
+    fn open_in_memory_from_template() -> Result<Self> {
+        static TEMPLATE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+            let conn = Connection::open_in_memory().expect("an in-memory database");
+            configure_connection(&conn).expect("configured");
+            apply_migrations(&conn).expect("migrated");
+            conn.serialize(rusqlite::MAIN_DB).expect("serialized").to_vec()
+        });
+        let mut conn = Connection::open_in_memory()?;
+        conn.deserialize_read_exact(rusqlite::MAIN_DB, TEMPLATE.as_slice(), TEMPLATE.len(), false)?;
         configure_connection(&conn)?;
-        apply_migrations(&conn)?;
         Ok(Store::from_connection(conn))
     }
 
@@ -620,6 +656,88 @@ impl Store {
     pub fn execute_raw_for_test(&self, sql: &str) -> Result<()> {
         self.conn.execute_batch(sql)?;
         Ok(())
+    }
+
+    /// Fault injection: the `n`th statement-level access check from now (0-based,
+    /// counted over every statement prepared) is denied, once, so that
+    /// statement fails with an authorization error. `None` disarms. While
+    /// armed the statement cache is off, so every statement is prepared, and
+    /// checked, each time it runs. Returns the running count of checks, so a
+    /// sweep knows when `n` was past the last one.
+    #[cfg(test)]
+    pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let seen = std::sync::Arc::new(AtomicUsize::new(0));
+        match n {
+            Some(n) => {
+                self.conn.set_prepared_statement_cache_capacity(0);
+                self.conn.flush_prepared_statement_cache();
+                let counter = seen.clone();
+                self.conn
+                    .authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
+                        use rusqlite::hooks::AuthAction::*;
+                        // Counted once per statement (its kind), not per
+                        // column it reads, and not inside triggers: failing
+                        // a later check of the same statement takes the
+                        // same path.
+                        let statement = context.accessor.is_none()
+                            && matches!(
+                                context.action,
+                                Select | Insert { .. } | Update { .. } | Delete { .. } | Transaction { .. } | Savepoint { .. } | Pragma { .. }
+                            );
+                        if statement && counter.fetch_add(1, Ordering::Relaxed) == n {
+                            rusqlite::hooks::Authorization::Deny
+                        } else {
+                            rusqlite::hooks::Authorization::Allow
+                        }
+                    }))
+                    .unwrap();
+            }
+            None => {
+                self.conn.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>).unwrap();
+                self.conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
+            }
+        }
+        seen
+    }
+
+    /// The connection itself, for tests that query it directly.
+    #[cfg(test)]
+    pub(crate) fn conn_for_test(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Every row of every table, as text, for comparing whole-database
+    /// states in tests.
+    #[cfg(test)]
+    pub(crate) fn dump_for_test(&self) -> String {
+        use std::fmt::Write;
+        let tables: Vec<String> = self
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let mut out = String::new();
+        for table in tables {
+            let mut stmt = self.conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+            let columns = stmt.column_count();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |row| {
+                    Ok((0..columns).map(|i| value_text(row.get_ref(i).unwrap())).collect::<Vec<_>>().join("|"))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            rows.sort();
+            let _ = writeln!(out, "[{table}]");
+            for row in rows {
+                let _ = writeln!(out, "{row}");
+            }
+        }
+        out
     }
 
     // -- Tenants --------------------------------------------------------
@@ -2119,6 +2237,7 @@ pub struct DueDelivery {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

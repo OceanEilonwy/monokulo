@@ -23,3 +23,15 @@ members = [
 opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
+# The same for Monero output scanning (curve arithmetic and hashing): the
+# scanner's fault-sweep tests scan the same payment thousands of times.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.monero]
+opt-level = 3
+[profile.dev.package.keccak]
+opt-level = 3
+[profile.dev.package.tiny-keccak]
+opt-level = 3
+[profile.dev.package.sha3]
+opt-level = 3

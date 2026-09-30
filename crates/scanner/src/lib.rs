@@ -2,6 +2,8 @@
 // loop stops payment detection until the supervisor restarts it. Tests may
 // unwrap freely. Each remaining allow names the invariant that makes it safe.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// Test code is left out of coverage reports (`cargo +nightly llvm-cov`).
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod auth;
 pub mod cli;
@@ -19,6 +21,9 @@ pub mod scanner_status;
 pub mod settings;
 pub mod status;
 pub mod store;
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) mod test_log;
 pub mod webhook_delivery;
 pub mod webhook_sign;
 pub mod work;

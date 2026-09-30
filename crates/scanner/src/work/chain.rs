@@ -12,6 +12,7 @@ use crate::store::db::Class;
 use crate::store::{Db, OpenedReorg, OrderPaymentRow, ReorgPhase, Store};
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod decide_tests {
     use super::*;
 

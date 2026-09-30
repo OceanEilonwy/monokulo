@@ -227,6 +227,7 @@ fn serve(store: &Store, receivers: &mut [tokio::sync::mpsc::Receiver<Job>], woke
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

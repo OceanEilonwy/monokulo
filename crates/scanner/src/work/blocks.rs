@@ -227,8 +227,8 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
     let turn = &round.state.blocks.catch_up_turn;
     if frontier_behind && !turn.load(Ordering::Relaxed) {
         turn.store(true, Ordering::Relaxed);
-        advance_group(round, Group::Frontier, high_water, tip, until).await?;
-        return Ok(Progress::Advanced);
+        let reached = advance_group(round, Group::Frontier, high_water, tip, until).await?;
+        return Ok(frontier_progress(round, reached));
     }
     turn.store(false, Ordering::Relaxed);
     let mut rotation = std::mem::take(&mut round.blocks.rotation);
@@ -238,11 +238,23 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
         return Ok(Progress::Advanced);
     }
     if frontier_behind {
-        advance_group(round, Group::Frontier, high_water, tip, until).await?;
-        return Ok(Progress::Advanced);
+        let reached = advance_group(round, Group::Frontier, high_water, tip, until).await?;
+        return Ok(frontier_progress(round, reached));
     }
     round.blocks.frontier_done = true;
     Ok(Progress::Idle)
+}
+
+/// What a frontier unit amounts to. A frontier that diverged from the
+/// recorded chain can't move until the chain tier reconciles the fork, so
+/// it stops for the round instead of asking again and again.
+fn frontier_progress(round: &mut Round<'_>, reached: Reached) -> Progress {
+    if reached.diverged {
+        round.blocks.frontier_done = true;
+        Progress::Blocked(Wait::ChainDiverged)
+    } else {
+        Progress::Advanced
+    }
 }
 
 /// Serves the next catch-up group, if the rotation has one this round.
@@ -257,8 +269,10 @@ async fn serve_catch_up(
     // Tenants with nothing that could ever have been paid need no block read
     // to decide: straight to the high-water mark.
     round.db(move |s, network| s.advance_idle_cursors(network, group, high_water, i64::MIN / 2, 0)).await?;
+    // A group that diverged stays where it is; the rotation still moves on
+    // past it, so the round's other groups are served.
     let reached = advance_group(round, Group::CatchUp, group, tip, until).await?;
-    rotation.served(round, group, reached).await?;
+    rotation.served(round, group, reached.cursor).await?;
     Ok(true)
 }
 
@@ -289,8 +303,9 @@ async fn seed(round: &mut Round<'_>, tip: u64) -> Result<Progress, ScannerError>
 /// after another, as far as its time allows (always at least one step of
 /// progress). The frontier stops at the tip; catch-up stops at the
 /// network's high-water mark, where it joins the frontier. Returns the
-/// cursor the group reached.
-async fn advance_group(round: &mut Round<'_>, group: Group, cursor: u64, tip: u64, until: Instant) -> Result<u64, ScannerError> {
+/// cursor the group reached, and whether it stopped at a block that doesn't
+/// extend the recorded chain.
+async fn advance_group(round: &mut Round<'_>, group: Group, cursor: u64, tip: u64, until: Instant) -> Result<Reached, ScannerError> {
     let mut cursor = cursor;
     let mut high_water = round.db(|s, network| s.max_scanned_height(network)).await?.unwrap_or(cursor);
     for scanned in 0..BLOCKS_PER_UNIT {
@@ -330,14 +345,20 @@ async fn advance_group(round: &mut Round<'_>, group: Group, cursor: u64, tip: u6
             BlockOutcome::Interrupted | BlockOutcome::NobodyToScan => break,
             BlockOutcome::Diverged(reason) => {
                 tracing::warn!(network = %round.network(), height = cursor + 1, reason, "block differs from the stored chain; waiting for reorg reconciliation");
-                break;
+                return Ok(Reached { cursor, diverged: true });
             }
         }
     }
     if group == Group::Frontier && cursor >= tip {
         round.blocks.frontier_done = true;
     }
-    Ok(cursor)
+    Ok(Reached { cursor, diverged: false })
+}
+
+/// Where a group's unit left it.
+struct Reached {
+    cursor: u64,
+    diverged: bool,
 }
 
 /// What one database read tells a block scan before it starts.
@@ -680,6 +701,7 @@ async fn block(round: &mut Round<'_>, height: u64, end: u64) -> Result<Arc<Chain
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

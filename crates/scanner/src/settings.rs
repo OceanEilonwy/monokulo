@@ -55,6 +55,7 @@ pub fn is_private_bind_address(ip: std::net::IpAddr) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

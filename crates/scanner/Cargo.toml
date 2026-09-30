@@ -124,3 +124,12 @@ required-features = ["e2e"]
 # environment that parallel tests share.
 shared = { path = "../shared", features = ["test-support"] }
 tokio = { version = "1.53.1", features = ["rt", "macros", "test-util"] }
+# SQLite's authorizer hook (fault injection) and serialization (a migrated
+# template database) for tests.
+rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "serialize"] }
+# Captures log events in tests that assert a failure was reported.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt"] }
+
+[lints.rust]
+# Set by `cargo +nightly llvm-cov`, which leaves test code out of reports.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }

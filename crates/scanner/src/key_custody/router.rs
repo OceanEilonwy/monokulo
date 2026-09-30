@@ -321,6 +321,7 @@ pub fn free_handles(handles: Vec<(Arc<dyn KeyCustody>, WalletHandle)>) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::key_custody::PlainKeyCustody;

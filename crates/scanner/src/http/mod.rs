@@ -31,6 +31,7 @@ mod orders;
 pub mod rate_limit;
 mod status_page;
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
 use std::collections::HashMap;

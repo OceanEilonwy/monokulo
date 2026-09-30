@@ -839,6 +839,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     //! Hermetic counterparts to the `#[ignore]`d live tests below: the response
     //! shapes a real node can produce, exercised without a network.
@@ -1164,6 +1165,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod live_node_tests {
     //! These hit a real public Monero node over the network and are excluded from
     //! the default `cargo test` run (`#[ignore]`) so the main suite stays hermetic

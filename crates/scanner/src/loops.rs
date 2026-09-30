@@ -348,6 +348,7 @@ pub async fn run_scanner_loop(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::daemon::fake::FakeDaemonClient;

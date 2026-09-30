@@ -958,3 +958,259 @@ async fn the_fast_path_reports_an_unreadable_pool() {
     let db = Db::over_shared(store.clone());
     assert_eq!(fast_pass(&ScanState::default(), &inputs(&db, &custody, &fake, &[])).await, None);
 }
+
+// -- Fault sweeps ------------------------------------------------------------
+//
+// Every SQL statement a round runs is failed in turn, one per run: the round
+// may report the failure or wait it out, but it must not panic, and it must
+// leave nothing a later clean round can't finish. The database has to end
+// exactly where a run without the fault ends. A failure that left a cursor
+// moved without its matches, a job half-open or a webhook sent twice shows
+// up as a difference.
+
+/// One run of the sweep's story: a payment seen in the pool, mined, reorged
+/// out and back in, then confirmed.
+struct Story {
+    store: SharedStore,
+    custody: FlakyKeyCustody,
+    daemon: FakeDaemonClient,
+    tenants: Vec<(String, WalletHandle)>,
+    state: ScanState,
+}
+
+impl Story {
+    async fn new() -> Self {
+        let store = Store::open_in_memory().unwrap();
+        let custody = FlakyKeyCustody::default();
+        let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        store.create_webhook(&tenant, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        Self { store: store.into_shared(), custody, daemon, tenants: vec![(tenant, handle)], state: ScanState::default() }
+    }
+
+    /// Sets up the chain and pool for step `step`, before its round.
+    fn stage(&self, step: usize) {
+        let tx = fixture_tx();
+        match step {
+            0 => {}
+            1 => self.daemon.set_mempool(vec![tx, unrelated_tx(3)]),
+            2 => {
+                self.daemon.set_mempool(vec![]);
+                self.daemon.push_block("b3", vec![tx, unrelated_tx(4)]);
+            }
+            3 => {
+                // Reorged out: back in the pool, the block replaced.
+                self.daemon.reorg_from(3, vec![("b3x", vec![unrelated_tx(5)]), ("b4x", vec![])]);
+                self.daemon.set_mempool(vec![tx]);
+            }
+            4 => {
+                self.daemon.set_mempool(vec![]);
+                self.daemon.push_block("b5", vec![tx]);
+            }
+            5 => {
+                for i in 0..10 {
+                    self.daemon.push_block(&format!("c{i}"), vec![]);
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    const STEPS: usize = 6;
+
+    async fn round(&self) -> RoundReport {
+        let db = Db::over_shared(self.store.clone());
+        let report = run_round(&self.state, &inputs(&db, &self.custody, &self.daemon, &self.tenants), ROUND_BUDGET).await;
+        // The story is a few blocks: a tier that needs more units than this
+        // is asking again for work it can't do.
+        for (tier, steps) in report.steps.iter() {
+            assert!(steps < 64, "{tier} ran {steps} units in one round: {report:?}");
+        }
+        report
+    }
+
+    /// Clean rounds until nothing is left.
+    async fn settle(&self) {
+        for _ in 0..8 {
+            let report = self.round().await;
+            if report.error.is_none() && !report.backlogged() {
+                return;
+            }
+        }
+        panic!("the story never settled");
+    }
+
+    /// What the story's outcome is, without ids and timestamps that differ
+    /// between runs.
+    fn outcome(&self) -> String {
+        let s = self.store.lock();
+        let rows = |sql: &str| -> Vec<String> {
+            let mut stmt = s.conn_for_test().prepare(sql).unwrap();
+            let columns = stmt.column_count();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |row| Ok((0..columns).map(|i| crate::store::value_text(row.get_ref(i).unwrap())).collect::<Vec<_>>().join("|")))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            rows.sort();
+            rows
+        };
+        format!(
+            "orders {:?}\npayments {:?}\ncursors {:?}\nblocks {:?}\nreorg {:?}\nwebhooks {:?}\npartial {:?}",
+            rows("SELECT status, amount_received_piconero, double_spend_detected_at_utc IS NOT NULL FROM orders"),
+            rows("SELECT txid, output_index, amount_piconero, block_height, voided_at_utc IS NOT NULL FROM order_payments"),
+            rows("SELECT scanned_through_height FROM tenants"),
+            rows("SELECT height, block_hash FROM scanned_blocks"),
+            rows("SELECT (SELECT COUNT(*) FROM reorg_jobs), (SELECT COUNT(*) FROM reorg_work)"),
+            rows("SELECT event_type FROM webhook_deliveries"),
+            rows("SELECT (SELECT COUNT(*) FROM partial_block_progress), (SELECT COUNT(*) FROM partial_block_matches)"),
+        )
+    }
+}
+
+/// The story with a fault at SQL access `fault` during step `faulted`'s
+/// round. Returns the outcome and whether the fault was reached.
+async fn run_story(faulted: Option<(usize, usize)>) -> (String, bool) {
+    let story = Story::new().await;
+    let mut reached = faulted.is_none();
+    for step in 0..Story::STEPS {
+        story.stage(step);
+        match faulted {
+            Some((at, fault)) if at == step => {
+                let seen = story.store.lock().fail_nth_access(Some(fault));
+                // The round may report the failure or wait it out; what
+                // matters is where the story ends.
+                story.round().await;
+                story.store.lock().fail_nth_access(None);
+                reached = seen.load(Ordering::Relaxed) > fault;
+            }
+            _ => {
+                story.round().await;
+            }
+        }
+        story.settle().await;
+    }
+    (story.outcome(), reached)
+}
+
+/// Fails every SQL statement of step `step`'s round in turn.
+async fn sweep_step(step: usize) {
+    let (expected, _) = run_story(None).await;
+    assert!(expected.contains("orders [\"overpaid|7000000000|0\"]"), "the story ends paid: {expected}");
+    let mut faults = 0;
+    for fault in 0.. {
+        let (outcome, reached) = run_story(Some((step, fault))).await;
+        if !reached {
+            break;
+        }
+        faults += 1;
+        assert_eq!(outcome, expected, "a fault at SQL statement {fault} in step {step} changed the outcome");
+    }
+    assert!(faults > 10, "the sweep reached only {faults} statements");
+}
+
+// One test per step, so they run side by side.
+#[tokio::test]
+async fn every_sql_failure_while_seeding_is_recovered_from() {
+    sweep_step(0).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_is_in_the_pool_is_recovered_from() {
+    sweep_step(1).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_is_mined_is_recovered_from() {
+    sweep_step(2).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_during_a_reorg_is_recovered_from() {
+    sweep_step(3).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_is_mined_again_is_recovered_from() {
+    sweep_step(4).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from() {
+    sweep_step(5).await;
+}
+
+/// A node that fails block-hash lookups (the chain tier's fork check) but
+/// serves blocks.
+struct HashLookupsFail<'a>(&'a FakeDaemonClient);
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for HashLookupsFail<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.0.get_height().await
+    }
+    async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
+        Err(DaemonError::Request("hash lookups are failing".into()))
+    }
+    async fn get_chain_blocks(&self, start: u64, count: u64) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        self.0.get_chain_blocks(start, count).await
+    }
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        self.0.get_block_transactions(height).await
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.0.get_mempool_transactions().await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        self.0.locate_transaction(txid).await
+    }
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        self.0.get_transaction(txid).await
+    }
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.0.is_key_image_spent(key_images).await
+    }
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        self.0.get_block_timestamp(height).await
+    }
+}
+
+/// A fork the chain tier couldn't open a job for this round (its node
+/// lookups failed) stops the frontier for the round: it waits, rather than
+/// asking for the diverging block again and again until the round's time
+/// runs out.
+#[tokio::test]
+async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    for i in 0..4 {
+        fake.push_block(&format!("a{i}"), vec![]);
+    }
+    let tenants = [(tenant, handle)];
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    fake.push_block("a4", vec![]);
+    run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    fake.reorg_from(5, vec![("b5", vec![]), ("b6", vec![])]);
+
+    let started = std::time::Instant::now();
+    let report = run_round(&state, &inputs(&db, &custody, &HashLookupsFail(&fake), &tenants), ROUND_BUDGET).await;
+    assert_eq!(report.outcome(Tier::Blocks), TierOutcome::Blocked(Wait::ChainDiverged), "{report:?}");
+    assert_eq!(report.steps[Tier::Blocks], 1);
+    assert!(started.elapsed() < Duration::from_secs(1), "the round didn't spend its budget re-asking");
+    assert!(store.lock().reorg_job("mainnet").unwrap().is_none(), "no job yet: the node couldn't be asked");
+
+    // With the node answering again, the fork is reconciled and scanning
+    // carries on along the new chain.
+    for _ in 0..3 {
+        run_round(&state, &inputs(&db, &custody, &fake, &tenants), ROUND_BUDGET).await.into_result().unwrap();
+    }
+    let s = store.lock();
+    assert_eq!(s.scanned_blocks_between("mainnet", 5, 6).unwrap(), vec![(5, "b5".to_string()), (6, "b6".to_string())]);
+}

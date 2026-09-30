@@ -433,6 +433,7 @@ fn with_handles(state: &ScanState, handles: &HashMap<&str, WalletHandle>, window
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
