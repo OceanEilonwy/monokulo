@@ -108,8 +108,20 @@ pub fn known_health(engine: &Engine) -> Option<bool> {
             cache.refreshing = true;
             let engine = engine.clone();
             runtime.spawn(async move {
-                let _ = get_status_cached(&engine).await;
-                status_cache(&engine).refreshing = false;
+                // Cleared however the refresh ends: finished, failed,
+                // timed out, or the task dropped.
+                struct Done(Engine);
+                impl Drop for Done {
+                    fn drop(&mut self) {
+                        status_cache(&self.0).refreshing = false;
+                    }
+                }
+                let _done = Done(engine.clone());
+                let _ = tokio::time::timeout(
+                    crate::engine_client::ENGINE_CALL_TIMEOUT,
+                    get_status_cached(&engine),
+                )
+                .await;
             });
         }
     }

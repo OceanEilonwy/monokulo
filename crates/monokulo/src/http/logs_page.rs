@@ -1088,7 +1088,12 @@ pub async fn pos_timeline(
     let mut previous: Option<i64> = None;
     let mut entries = Vec::with_capacity(rows.len());
     for row in &rows {
-        let client_ms = attr_i64(row, "pos.client_ts").unwrap_or(row.ts / 1_000_000);
+        // The tablet's own clock, when it is a plausible one (milliseconds
+        // since 1970, before 2286): the value is the client's, and one
+        // out of range would overflow the arithmetic below.
+        let client_ms = attr_i64(row, "pos.client_ts")
+            .filter(|ms| (0..10_000_000_000_000).contains(ms))
+            .unwrap_or(row.ts / 1_000_000);
         let kind = attr_str(row, "pos.kind").unwrap_or("unknown").to_string();
         let detail = attr_str(row, "pos.detail")
             .map(super::pos_logs::detail_pairs)
@@ -1117,11 +1122,11 @@ pub async fn pos_timeline(
         if severity >= Severity::Warn {
             problems += 1;
         }
-        let since = previous.map(|p| client_ms - p);
+        let since = previous.map(|p| client_ms.saturating_sub(p));
         let gap_before = since
             .filter(|ms| *ms >= 60_000)
             .map(|ms| format!("Nothing recorded for {}", human_duration(ms)));
-        let late_ms = row.ts / 1_000_000 - client_ms;
+        let late_ms = (row.ts / 1_000_000).saturating_sub(client_ms);
         let order = attr_str(row, "order.id").map(|order| {
             let href = match &store {
                 Some(store) => format!("/dashboard/stores/{store}/orders/{order}"),

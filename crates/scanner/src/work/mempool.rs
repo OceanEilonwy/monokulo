@@ -42,9 +42,11 @@ use crate::store::db::Class;
 
 use super::{bounded, Progress, Round, RoundInputs, ScanState, Wait};
 
-/// Most mempool transaction bodies remembered; beyond this (a spam wave)
+/// Most mempool transaction bodies remembered, by count and by serialized
+/// size; beyond either (a spam wave of many, or of large, transactions)
 /// new ones are scanned but not kept.
 const MAX_BODIES: usize = 20_000;
+const MAX_BODY_BYTES: usize = 128 * 1024 * 1024;
 /// Transactions the round's tier takes per round.
 const TXS_PER_ROUND: usize = 64;
 /// Stores one transaction is scanned for per round by the rotation.
@@ -78,9 +80,54 @@ pub(crate) struct MempoolState {
     pub(crate) last_tip: AtomicU64,
 }
 
+/// Mempool bodies kept between rounds, with their serialized size.
+#[derive(Default)]
+struct Bodies {
+    by_txid: HashMap<String, (Arc<Transaction>, usize)>,
+    bytes: usize,
+}
+
+impl Bodies {
+    fn get(&self, txid: &str) -> Option<&Arc<Transaction>> {
+        self.by_txid.get(txid).map(|(tx, _)| tx)
+    }
+
+    fn contains_key(&self, txid: &str) -> bool {
+        self.by_txid.contains_key(txid)
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&String) -> bool) {
+        let mut freed = 0;
+        self.by_txid.retain(|txid, (_, size)| {
+            let kept = keep(txid);
+            if !kept {
+                freed += *size;
+            }
+            kept
+        });
+        self.bytes -= freed;
+    }
+
+    /// Keeps a fetched body for later rounds, up to `max_count` bodies and
+    /// `max_bytes` serialized bytes: past either (a pool far bigger than
+    /// any real one) bodies are fetched each time instead, and memory stays
+    /// bounded.
+    fn remember(&mut self, txid: &str, tx: &Arc<Transaction>, max_count: usize, max_bytes: usize) {
+        if self.by_txid.len() >= max_count || self.by_txid.contains_key(txid) {
+            return;
+        }
+        let size = monero::consensus::encode::serialize(tx.as_ref()).len();
+        if self.bytes + size > max_bytes {
+            return;
+        }
+        self.bytes += size;
+        self.by_txid.insert(txid.to_string(), (tx.clone(), size));
+    }
+}
+
 #[derive(Default)]
 struct Remembered {
-    bodies: HashMap<String, Arc<Transaction>>,
+    bodies: Bodies,
     /// txid -> store -> the window generation it was scanned with.
     scanned: HashMap<String, HashMap<crate::store::TenantId, u64>>,
 }
@@ -89,14 +136,14 @@ impl MempoolState {
     /// Forgets what left the pool.
     fn retain_pool(&self, in_pool: &HashSet<String>) {
         let mut remembered = self.inner.lock();
-        remembered.bodies.retain(|txid, _| in_pool.contains(txid));
+        remembered.bodies.retain(|txid| in_pool.contains(txid));
         remembered.scanned.retain(|txid, _| in_pool.contains(txid));
     }
 
     /// Drops everything remembered: the pool isn't being watched.
     fn forget(&self) {
         let mut remembered = self.inner.lock();
-        remembered.bodies = HashMap::new();
+        remembered.bodies = Bodies::default();
         remembered.scanned = HashMap::new();
     }
 
@@ -434,7 +481,7 @@ async fn bodies(
         let remembered = state.inner.lock();
         txids
             .iter()
-            .filter(|txid| !remembered.bodies.contains_key(*txid))
+            .filter(|txid| !remembered.bodies.contains_key(txid))
             .cloned()
             .collect()
     };
@@ -446,7 +493,9 @@ async fn bodies(
                 let mut remembered = state.inner.lock();
                 for crate::daemon::FetchedTx { txid, tx } in txs {
                     let tx = Arc::new(tx);
-                    remember_body(&mut remembered.bodies, &txid, &tx, MAX_BODIES);
+                    remembered
+                        .bodies
+                        .remember(&txid, &tx, MAX_BODIES, MAX_BODY_BYTES);
                     fetched.insert(txid, tx);
                 }
             }
@@ -469,20 +518,6 @@ async fn bodies(
         })
         .collect();
     (pool, fetch_failed)
-}
-
-/// Keeps a fetched body for later rounds, up to `cap` bodies: past that
-/// (a pool far bigger than any real one) bodies are fetched each time
-/// instead, and memory stays bounded.
-fn remember_body(
-    bodies: &mut HashMap<String, Arc<Transaction>>,
-    txid: &str,
-    tx: &Arc<Transaction>,
-    cap: usize,
-) {
-    if bodies.len() < cap {
-        bodies.insert(txid.to_string(), tx.clone());
-    }
 }
 
 /// The next page of stores with something in scope, with their scan windows
@@ -612,17 +647,30 @@ fn with_handles(
 mod tests {
     use super::*;
 
-    /// Past the cap, bodies are used but not kept.
+    /// Past either cap, count or bytes, bodies are used but not kept; what
+    /// leaves the pool gives its bytes back.
     #[test]
-    fn remembered_bodies_stop_at_the_cap() {
-        let mut bodies = HashMap::new();
+    fn remembered_bodies_stop_at_the_count_or_byte_cap() {
         let tx = Arc::new(crate::scanner::tests::fixture_tx());
-        remember_body(&mut bodies, "a", &tx, 2);
-        remember_body(&mut bodies, "b", &tx, 2);
-        remember_body(&mut bodies, "c", &tx, 2);
-        let mut kept: Vec<&String> = bodies.keys().collect();
+        let size = monero::consensus::encode::serialize(tx.as_ref()).len();
+        let mut bodies = Bodies::default();
+        bodies.remember("a", &tx, 2, usize::MAX);
+        bodies.remember("b", &tx, 2, usize::MAX);
+        bodies.remember("c", &tx, 2, usize::MAX);
+        let mut kept: Vec<&String> = bodies.by_txid.keys().collect();
         kept.sort();
         assert_eq!(kept, ["a", "b"]);
+
+        let mut bodies = Bodies::default();
+        bodies.remember("a", &tx, 100, size * 2);
+        bodies.remember("b", &tx, 100, size * 2);
+        bodies.remember("c", &tx, 100, size * 2);
+        assert_eq!(bodies.by_txid.len(), 2, "the byte cap holds");
+        assert_eq!(bodies.bytes, size * 2);
+        bodies.retain(|txid| txid != "a");
+        assert_eq!(bodies.bytes, size);
+        bodies.remember("c", &tx, 100, size * 2);
+        assert!(bodies.contains_key("c"), "freed bytes are reused");
     }
 
     /// New transactions (no store scanned for them yet) come before the

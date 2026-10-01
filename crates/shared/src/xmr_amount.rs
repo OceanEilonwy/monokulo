@@ -21,8 +21,8 @@ pub enum AmountError {
     InvalidDecimal,
     #[error("amount must be positive")]
     NotPositive,
-    #[error("amount has more than 2 decimal places")]
-    TooManyDecimalPlaces,
+    #[error("amount has more than {max} decimal places")]
+    TooManyDecimalPlaces { max: u8 },
     #[error("amount is too large to represent in piconero")]
     TooLarge,
 }
@@ -59,7 +59,7 @@ pub(crate) fn split_decimal(s: &str) -> Result<(&str, &str), AmountError> {
 pub fn parse_xmr_to_piconero(xmr_amount: &str) -> Result<u64, AmountError> {
     let (whole, fraction) = split_decimal(xmr_amount)?;
     if fraction.len() > 12 {
-        return Err(AmountError::TooManyDecimalPlaces);
+        return Err(AmountError::TooManyDecimalPlaces { max: 12 });
     }
     let whole: u128 = if whole.is_empty() {
         0
@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(parse_xmr_to_piconero("0.000000000001").unwrap(), 1); // one piconero
         assert_eq!(
             parse_xmr_to_piconero("0.0000000000001"),
-            Err(AmountError::TooManyDecimalPlaces)
+            Err(AmountError::TooManyDecimalPlaces { max: 12 })
         ); // 13 places
     }
 
