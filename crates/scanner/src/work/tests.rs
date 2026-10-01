@@ -89,21 +89,34 @@ fn inputs<'a>(
     }
 }
 
-fn file_store() -> (Store, String) {
+fn file_store() -> (Store, TempDb) {
     let path = std::env::temp_dir().join(format!("scanner_rounds_{}.db", uuid::Uuid::new_v4()));
     let path = path.to_string_lossy().into_owned();
-    (Store::open_file(&path).unwrap(), path)
+    (Store::open_file(&path).unwrap(), TempDb(path))
+}
+
+/// A database file (and its WAL and shared-memory files) removed when the
+/// test ends, passed or failed.
+struct TempDb(String);
+
+impl std::ops::Deref for TempDb {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for TempDb {
+    fn drop(&mut self) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", self.0));
+        }
+    }
 }
 
 /// The production database path: a worker thread with its own connection.
 fn worker(store: &SharedStore, path: &str) -> Db {
     Db::open(path, &store.lock()).unwrap()
-}
-
-fn cleanup(path: &str) {
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{path}{suffix}"));
-    }
 }
 
 /// With no time at all, each tier with work still completes one unit a
@@ -373,7 +386,6 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     assert_eq!(paid_events(&store), 1, "announced once, after the rewind");
     drop(db);
     drop(store);
-    cleanup(&path);
 }
 
 /// A tenant whose key custody keeps failing is retried at once twice, then
@@ -552,7 +564,6 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
         "checkpoint cleared at commit"
     );
     drop(store);
-    cleanup(&path);
 }
 
 /// A tenant catching up gets turns while the frontier is still far behind
@@ -3777,12 +3788,19 @@ async fn a_reorg_job_with_every_candidate_waiting_waits() {
     let stuck = "ab".repeat(32);
     let (store, fake, orders) = open_reorg_with(&[(&stuck, 9)]).await;
     let db = Db::over_shared(store.clone());
-    while store
-        .lock()
-        .collect_reorg_candidates(monero::Network::Mainnet, 64, crate::now_unix())
-        .unwrap()
-        != crate::store::ReorgPhase::Process
-    {}
+    // A few passes reach the processing phase; more means it never will.
+    let mut phase = None;
+    for _ in 0..16 {
+        let now_in = store
+            .lock()
+            .collect_reorg_candidates(monero::Network::Mainnet, 64, crate::now_unix())
+            .unwrap();
+        if now_in == crate::store::ReorgPhase::Process {
+            phase = Some(now_in);
+            break;
+        }
+    }
+    assert_eq!(phase, Some(crate::store::ReorgPhase::Process));
     // Now in its processing phase: put the candidate well into the future.
     let id = store
         .lock()
