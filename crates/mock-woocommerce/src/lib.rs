@@ -61,6 +61,15 @@ pub struct ConnectedCredentials {
     pub webhook_receiver: WebhookReceiver,
 }
 
+/// The credentials [`run_connect_flow_without_webhook`] returns: no webhook
+/// is registered, so there is no signing secret and no receiver.
+#[derive(Debug)]
+pub struct Credentials {
+    pub public_key: String,
+    pub secret_token: String,
+    pub endpoint: String,
+}
+
 /// The plain fields `/finish` hands back once webhook registration has been
 /// folded in - the oneshot channel's payload type between [`callback_handler`]
 /// (which calls `/finish`) and [`run_connect_flow`] (which owns the
@@ -74,7 +83,8 @@ struct FinishedCredentials {
     public_key: String,
     secret_token: String,
     endpoint: String,
-    webhook_signing_secret: String,
+    /// Present when the flow registered a webhook.
+    webhook_signing_secret: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,12 +92,7 @@ struct FinishResponseBody {
     public_key: String,
     secret_token: String,
     endpoint: String,
-    // Required (not `Option`), unlike monokulo's own `FinishResponse` field of
-    // the same name: this driver always supplies a `webhook_url` (see
-    // `run_connect_flow`/`call_finish`), so a real engine always echoes this back on
-    // success - a response missing it here would mean something is genuinely wrong,
-    // not a caller-chosen omission.
-    webhook_signing_secret: String,
+    webhook_signing_secret: Option<String>,
 }
 
 /// One event this driver's webhook receiver verified and recorded - see
@@ -322,6 +327,8 @@ pub enum ConnectFlowError {
     },
     #[error("the callback server never reported an outcome - the redirect chain never reached it")]
     CallbackNeverReceived,
+    #[error("the control plane registered no webhook although the flow asked for one")]
+    WebhookNotRegistered,
 }
 
 /// Same fixed-scalar view-key/spend-pubkey construction every other test in
@@ -443,6 +450,21 @@ pub async fn run_connect_flow_with_wallet(
     run_connect_flow_with(monokulo_base_url, None, wallet).await
 }
 
+/// Same as [`run_connect_flow`], but registers no webhook. For the CLI,
+/// which exits once it has printed the credentials: a receiver that dies
+/// with it would leave the tenant with a dead webhook URL the engine keeps
+/// retrying.
+pub async fn run_connect_flow_without_webhook(
+    monokulo_base_url: &str,
+) -> Result<Credentials, ConnectFlowError> {
+    let finished = connect(monokulo_base_url, None, ConnectFlowWallet::default(), None).await?;
+    Ok(Credentials {
+        public_key: finished.public_key,
+        secret_token: finished.secret_token,
+        endpoint: finished.endpoint,
+    })
+}
+
 /// The shared implementation behind [`run_connect_flow`]/
 /// [`run_connect_flow_with_order_expiry_seconds`]/[`run_connect_flow_with_wallet`] -
 /// a builder-style config parameter here would be overkill for two independent
@@ -454,6 +476,44 @@ async fn run_connect_flow_with(
     order_expiry_seconds: Option<i64>,
     wallet: ConnectFlowWallet,
 ) -> Result<ConnectedCredentials, ConnectFlowError> {
+    // Spawned *before* the flow starts and deliberately outlives it (unlike the
+    // callback server): its address has to exist so it can be handed to
+    // `/finish` as `webhook_url`, and it must keep running afterward to receive
+    // whatever real deliveries arrive later - see `WebhookReceiver`'s own doc
+    // comment.
+    let webhook_receiver = spawn_webhook_receiver().await?;
+    let webhook = CallbackWebhook {
+        url: Arc::from(format!(
+            "http://{}/moneropay/webhook",
+            webhook_receiver.addr
+        )),
+        state: webhook_receiver.state.clone(),
+    };
+    let finished = connect(
+        monokulo_base_url,
+        order_expiry_seconds,
+        wallet,
+        Some(webhook),
+    )
+    .await?;
+    Ok(ConnectedCredentials {
+        public_key: finished.public_key,
+        secret_token: finished.secret_token,
+        endpoint: finished.endpoint,
+        webhook_signing_secret: finished
+            .webhook_signing_secret
+            .ok_or(ConnectFlowError::WebhookNotRegistered)?,
+        webhook_receiver,
+    })
+}
+
+/// Runs the flow, registering `webhook` at `/finish` when given.
+async fn connect(
+    monokulo_base_url: &str,
+    order_expiry_seconds: Option<i64>,
+    wallet: ConnectFlowWallet,
+    webhook: Option<CallbackWebhook>,
+) -> Result<FinishedCredentials, ConnectFlowError> {
     let platform = "woocommerce";
     let nonce = format!("nonce-{}", Uuid::new_v4());
     // A fresh, unique email every run so repeated invocations (e.g. this
@@ -462,20 +522,11 @@ async fn run_connect_flow_with(
     let email = format!("mock-woocommerce+{}@example.com", Uuid::new_v4());
     let password = "correct horse battery staple";
 
-    // Spawned *before* the flow starts and deliberately outlives it (unlike the
-    // callback server below): its address has to exist so it can be handed to
-    // `/finish` as `webhook_url`, and it must keep running afterward to receive
-    // whatever real deliveries arrive later - see `WebhookReceiver`'s own doc
-    // comment.
-    let webhook_receiver = spawn_webhook_receiver().await?;
-    let webhook_url = format!("http://{}/moneropay/webhook", webhook_receiver.addr);
-
     let callback = spawn_callback_server(
         nonce.clone(),
         monokulo_base_url.to_string(),
         platform.to_string(),
-        webhook_url,
-        webhook_receiver.state.clone(),
+        webhook,
     )
     .await?;
     // The shop is where its callback is, as a real site's admin page is:
@@ -494,14 +545,7 @@ async fn run_connect_flow_with(
     )
     .await;
     callback.task.abort();
-
-    result.map(|finished| ConnectedCredentials {
-        public_key: finished.public_key,
-        secret_token: finished.secret_token,
-        endpoint: finished.endpoint,
-        webhook_signing_secret: finished.webhook_signing_secret,
-        webhook_receiver,
-    })
+    result
 }
 
 /// The actual HTTP walk (module doc comment / [`run_connect_flow`]'s own doc
@@ -673,14 +717,13 @@ pub async fn create_order(
 /// that placement matters (it mirrors where the real WordPress plugin's
 /// callback handler will do this at WBS 1.5.3).
 ///
-/// `webhook_url` (WBS 1.4.4) is this driver's own [`WebhookReceiver`]'s
-/// address - always supplied, unlike monokulo's own optional field of
-/// the same name, since this driver always wants a real webhook registered.
+/// `webhook_url` (WBS 1.4.4), when given, is this driver's own
+/// [`WebhookReceiver`]'s address.
 async fn call_finish(
     monokulo_base_url: &str,
     platform: &str,
     token: &str,
-    webhook_url: &str,
+    webhook_url: Option<&str>,
 ) -> Result<FinishedCredentials, ConnectFlowError> {
     let client = reqwest::Client::new();
     let response = client
@@ -725,9 +768,7 @@ type ResultSender = oneshot::Sender<Result<FinishedCredentials, ConnectFlowError
 /// generated for this flow (to check the incoming one against), where to
 /// reach the control plane for the server-to-server `/finish` call, which
 /// platform this connection is for, this driver's own webhook receiver's
-/// URL (passed to `/finish` as `webhook_url`, WBS 1.4.4) and a handle to that
-/// same receiver's shared state (to set its `signing_secret` once `/finish`
-/// returns one - see [`ReceiverState`]), and a slot for the one-shot result
+/// webhook, if any ([`CallbackWebhook`]), and a slot for the one-shot result
 /// sender - wrapped in `Arc<Mutex<Option<..>>>` so it can be taken exactly
 /// once (a `oneshot::Sender` is itself single-use; the `Option`/`Mutex` layer
 /// is just what lets it live inside `Clone`-able `axum` state until that one
@@ -737,9 +778,18 @@ struct CallbackState {
     expected_nonce: Arc<str>,
     monokulo_base_url: Arc<str>,
     platform: Arc<str>,
-    webhook_url: Arc<str>,
-    webhook_state: Arc<StdMutex<ReceiverState>>,
+    webhook: Option<CallbackWebhook>,
     result_tx: Arc<Mutex<Option<ResultSender>>>,
+}
+
+/// The webhook a flow registers: this driver's own receiver's URL (passed
+/// to `/finish` as `webhook_url`, WBS 1.4.4) and a handle to that same
+/// receiver's shared state (to set its `signing_secret` once `/finish`
+/// returns one - see [`ReceiverState`]).
+#[derive(Clone)]
+struct CallbackWebhook {
+    url: Arc<str>,
+    state: Arc<StdMutex<ReceiverState>>,
 }
 
 /// `GET /moneropay/callback` - the callback route standing in for the real
@@ -761,7 +811,7 @@ async fn callback_handler(
                 &state.monokulo_base_url,
                 &state.platform,
                 &query.token,
-                &state.webhook_url,
+                state.webhook.as_ref().map(|webhook| &*webhook.url),
             )
             .await
         };
@@ -769,8 +819,8 @@ async fn callback_handler(
     // Tell this driver's own webhook receiver its real signing secret, now that
     // `/finish` has handed one back - see `ReceiverState::signing_secret`'s own doc
     // comment for why the receiver couldn't have known this any earlier.
-    if let Ok(finished) = &outcome {
-        state.webhook_state.lock().signing_secret = Some(finished.webhook_signing_secret.clone());
+    if let (Ok(finished), Some(webhook)) = (&outcome, &state.webhook) {
+        webhook.state.lock().signing_secret = finished.webhook_signing_secret.clone();
     }
 
     let response = match &outcome {
@@ -824,22 +874,20 @@ impl CallbackServer {
 /// background task - same low-level pattern
 /// `scanner_test_support::TestEngineConfig::spawn` already uses for the
 /// engine itself, just for one callback route rather than a whole app.
-/// `webhook_url`/`webhook_state` (WBS 1.4.4) are threaded straight into
-/// [`CallbackState`] - see that type's own doc comment.
+/// `webhook` (WBS 1.4.4) is threaded straight into [`CallbackState`] - see
+/// that type's own doc comment.
 async fn spawn_callback_server(
     expected_nonce: String,
     monokulo_base_url: String,
     platform: String,
-    webhook_url: String,
-    webhook_state: Arc<StdMutex<ReceiverState>>,
+    webhook: Option<CallbackWebhook>,
 ) -> Result<CallbackServer, ConnectFlowError> {
     let (tx, rx) = oneshot::channel();
     let state = CallbackState {
         expected_nonce: Arc::from(expected_nonce.as_str()),
         monokulo_base_url: Arc::from(monokulo_base_url.as_str()),
         platform: Arc::from(platform.as_str()),
-        webhook_url: Arc::from(webhook_url.as_str()),
-        webhook_state,
+        webhook,
         result_tx: Arc::new(Mutex::new(Some(tx))),
     };
 
@@ -1007,6 +1055,31 @@ mod tests {
         assert!(
             credentials.webhook_receiver.events().is_empty(),
             "no event has been delivered yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_flow_without_a_webhook_registers_none() {
+        let engine =
+            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                .await;
+        let monokulo = spawn_test_monokulo(engine.addr).await;
+        let monokulo_base_url = format!("http://{}", monokulo.addr);
+
+        let credentials = run_connect_flow_without_webhook(&monokulo_base_url)
+            .await
+            .unwrap();
+        let engine_client =
+            monokulo::engine_client::EngineClient::new(format!("http://{}", engine.addr));
+        let webhooks = engine_client
+            .list_webhooks(&shared::auth::RawToken::presented(
+                &credentials.secret_token,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            webhooks.is_empty(),
+            "the CLI exits after printing, so nothing could receive deliveries"
         );
     }
 
@@ -1185,8 +1258,7 @@ mod tests {
             correct_nonce.clone(),
             monokulo_base_url.clone(),
             platform.to_string(),
-            "http://127.0.0.1:1/moneropay/webhook".to_string(),
-            Arc::new(StdMutex::new(ReceiverState::default())),
+            None,
         )
         .await
         .unwrap();

@@ -7045,7 +7045,9 @@ pub(crate) mod tests {
         );
     }
 
-    #[tokio::test]
+    // The paused clock lets the daemon's 20 ms "timeout" resolve without
+    // real waiting.
+    #[tokio::test(start_paused = true)]
     async fn a_request_that_times_out_rather_than_failing_fast_is_still_just_a_failed_tick() {
         // At this boundary a timeout and a refused connection are the same event -
         // `RpcDaemonClient` gives every request a 15-second client timeout and
