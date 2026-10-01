@@ -316,10 +316,7 @@ impl EngineClient {
             &format!("{}/api/v1/admin/tenant/orders", target.base_url),
             params,
         )
-        .map_err(|e| EngineClientError::EngineError {
-            status: reqwest::StatusCode::BAD_REQUEST,
-            message: e.to_string(),
-        })?;
+        .map_err(|e| EngineClientError::InvalidUrl(e.to_string()))?;
         let response = target
             .http
             .get(url)
@@ -356,10 +353,7 @@ impl EngineClient {
                     .join(","),
             )],
         )
-        .map_err(|e| EngineClientError::EngineError {
-            status: reqwest::StatusCode::BAD_REQUEST,
-            message: e.to_string(),
-        })?;
+        .map_err(|e| EngineClientError::InvalidUrl(e.to_string()))?;
         let response = target
             .http
             .get(url)
@@ -725,6 +719,10 @@ pub enum EngineClientError {
         status: reqwest::StatusCode,
         message: String,
     },
+    /// The request couldn't be addressed (the configured engine URL with
+    /// this path doesn't parse): a local problem, not an engine answer.
+    #[error("could not build the engine request URL: {0}")]
+    InvalidUrl(String),
 }
 
 /// Mirrors the engine's own `CreateTenantRequest` (`src/http/admin.rs` at the

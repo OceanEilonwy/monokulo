@@ -5,6 +5,10 @@
 use std::fmt;
 use std::str::FromStr;
 
+/// Most block confirmations an order may require (about a day of blocks):
+/// the engine and monokulo check against the same number.
+pub const MAX_CONFIRMATIONS_REQUIRED: u64 = 720;
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]

@@ -420,14 +420,6 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(orders::update_base_currency),
         )
         .route(
-            "/dashboard/stores/{id}/settings/confirmation-thresholds",
-            axum::routing::post(orders::create_confirmation_threshold),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings/confirmation-thresholds/{threshold_id}/delete",
-            axum::routing::post(orders::delete_confirmation_threshold),
-        )
-        .route(
             "/dashboard/stores/{id}/settings/confirmation-thresholds/save",
             axum::routing::post(orders::save_confirmation_thresholds),
         )

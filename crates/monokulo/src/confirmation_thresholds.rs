@@ -151,14 +151,18 @@ pub fn resolve_confirmations_required(
     thresholds: &[ConfirmationThresholdRow],
 ) -> Result<u64, &'static str> {
     let (piconero, piconero_per_unit) = (piconero.get(), piconero_per_unit.get());
-    if piconero_per_unit == 0 || default_confirmations > 720 {
+    if piconero_per_unit == 0
+        || default_confirmations > shared::order_status::MAX_CONFIRMATIONS_REQUIRED
+    {
         return Err("invalid confirmation policy");
     }
     let mut best: Option<(ThresholdAmount, u64)> = None;
     let mut seen = std::collections::HashSet::new();
     for threshold in thresholds {
         let amount = ThresholdAmount::parse(&threshold.unit_amount)?;
-        if threshold.confirmations_required > 720 || !seen.insert(amount.0) {
+        if threshold.confirmations_required > shared::order_status::MAX_CONFIRMATIONS_REQUIRED
+            || !seen.insert(amount.0)
+        {
             return Err("invalid or duplicate confirmation threshold");
         }
         if amount.is_met_by(piconero, piconero_per_unit)

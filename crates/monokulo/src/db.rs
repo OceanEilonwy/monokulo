@@ -1809,29 +1809,6 @@ impl Db {
             .unwrap();
     }
 
-    /// Inserts one custom threshold. Fails with a unique-violation
-    /// `DbError` (see [`DbError::is_unique_violation`]) if `connection_id`
-    /// already has a row at this exact `unit_amount` - "you cannot enter
-    /// two thresholds for the same unit amount" - the real, friendlier
-    /// rejection message is the caller's job (`http::orders::create_confirmation_threshold`);
-    /// this is just the backstop. This lower-level method is also used by
-    /// test fixtures; HTTP handlers use the capped insertion instead.
-    pub fn create_confirmation_threshold(
-        &self,
-        id: &str,
-        connection_id: &ConnectionId,
-        unit_amount: &str,
-        confirmations_required: u64,
-        created_at: i64,
-    ) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO confirmation_thresholds (id, connection_id, unit_amount, confirmations_required, created_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, connection_id, unit_amount, Unsigned(confirmations_required), created_at],
-        )?;
-        Ok(())
-    }
-
     /// The count predicate and insert run in one SQLite write statement, so
     /// concurrent requests cannot both claim the last available slot.
     pub fn create_confirmation_threshold_with_limit(
@@ -3459,7 +3436,8 @@ mod tests {
     fn a_created_confirmation_threshold_round_trips() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-1",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "50.00",
@@ -3522,7 +3500,8 @@ mod tests {
     fn a_failed_threshold_replacement_rolls_back_deletions() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "original",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "50",
@@ -3530,7 +3509,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "taken",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "100",
@@ -3559,7 +3539,8 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         for i in 0..5 {
-            db.create_confirmation_threshold(
+            db.create_confirmation_threshold_with_limit(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
                 &format!("id-{i}"),
                 &shared::ids::ConnectionId::new(connection_id.to_string()),
                 &i.to_string(),
@@ -3606,7 +3587,8 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         // Lexicographically "10" < "9" - this must not happen here.
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-a",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "9",
@@ -3614,7 +3596,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-b",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "10",
@@ -3622,7 +3605,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-c",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "2.5",
@@ -3644,7 +3628,8 @@ mod tests {
     fn confirmation_thresholds_preserve_adjacent_twelve_decimal_order() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "upper",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "9007.199254740981",
@@ -3652,7 +3637,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "lower",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "9007.199254740980",
@@ -3675,7 +3661,8 @@ mod tests {
     fn creating_a_second_threshold_at_the_same_amount_is_a_unique_violation() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-1",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "50.00",
@@ -3685,7 +3672,8 @@ mod tests {
         .unwrap();
 
         let err = db
-            .create_confirmation_threshold(
+            .create_confirmation_threshold_with_limit(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
                 "thresh-2",
                 &shared::ids::ConnectionId::new(connection_id.to_string()),
                 "50.00",
@@ -3733,7 +3721,8 @@ mod tests {
         )
         .unwrap();
 
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-1",
             &shared::ids::ConnectionId::new(connection_id_a.to_string()),
             "50.00",
@@ -3741,7 +3730,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-2",
             &shared::ids::ConnectionId::new("conn-b"),
             "50.00",
@@ -3777,7 +3767,8 @@ mod tests {
             .unwrap(),
             0
         );
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-1",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "50.00",
@@ -3785,7 +3776,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-2",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "100.00",
@@ -3826,7 +3818,8 @@ mod tests {
             "XMR",
         )
         .unwrap();
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-1",
             &shared::ids::ConnectionId::new(connection_id_a.to_string()),
             "50.00",
@@ -3882,7 +3875,8 @@ mod tests {
     fn changing_a_stores_base_currency_deletes_every_one_of_its_custom_thresholds() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-1",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "50.00",
@@ -3890,7 +3884,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_confirmation_threshold(
+        db.create_confirmation_threshold_with_limit(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "thresh-2",
             &shared::ids::ConnectionId::new(connection_id.to_string()),
             "100.00",
