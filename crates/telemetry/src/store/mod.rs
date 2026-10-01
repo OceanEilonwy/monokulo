@@ -671,8 +671,18 @@ impl LogStore {
         buckets: u32,
     ) -> Result<Vec<u64>, StoreError> {
         let buckets = buckets.clamp(1, 500);
-        // Rounded up, so the last slice reaches `to`.
-        let width = ((to - from + i64::from(buckets) - 1) / i64::from(buckets)).max(1);
+        // An empty or backwards range has nothing in it, whatever the
+        // caller sent as bounds.
+        if to <= from {
+            return Ok(vec![0; buckets as usize]);
+        }
+        // Rounded up, so the last slice reaches `to`. Saturating: the
+        // bounds are the caller's, and `i64::MIN..i64::MAX` must not panic.
+        let width = (to
+            .saturating_sub(from)
+            .saturating_add(i64::from(buckets) - 1)
+            / i64::from(buckets))
+        .max(1);
         // In the order they appear in the SQL: the bucket, the filter, the range.
         let mut params: Vec<SqlValue> = vec![SqlValue::Integer(from), SqlValue::Integer(width)];
         let mut condition = String::new();

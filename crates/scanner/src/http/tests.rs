@@ -23,7 +23,8 @@ use crate::store::Store;
 
 use super::rate_limit::RateLimiter;
 use super::{
-    build_router, request_limit_middleware, stream_limit_middleware, AppState, RequestLimits,
+    build_router, request_limit_middleware, stream_limit_middleware, ApiError, AppState,
+    RequestLimits,
 };
 
 fn valid_scalar_bytes(seed: u8) -> [u8; 32] {
@@ -49,7 +50,6 @@ fn json_request(
     method: &str,
     uri: &str,
     bearer: Option<&str>,
-    origin: Option<&str>,
     body: serde_json::Value,
 ) -> Request<Body> {
     let mut builder = Request::builder()
@@ -58,9 +58,6 @@ fn json_request(
         .header("content-type", "application/json");
     if let Some(token) = bearer {
         builder = builder.header("authorization", format!("Bearer {token}"));
-    }
-    if let Some(origin) = origin {
-        builder = builder.header("origin", origin);
     }
     builder.body(Body::from(body.to_string())).unwrap()
 }
@@ -79,7 +76,6 @@ async fn create_tenant(router: &Router, seed: u8) -> TestTenant {
     let req = json_request(
         "POST",
         "/api/v1/admin/tenants",
-        None,
         None,
         serde_json::json!({
             "view_key_hex": valid_view_key_hex(seed),
@@ -104,7 +100,6 @@ async fn create_tenant_then_create_order_happy_path() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -138,7 +133,6 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 3 }),
     );
     let response = router.oneshot(req).await.unwrap();
@@ -172,7 +166,6 @@ async fn creating_an_order_with_no_confirmations_required_override_leaves_it_uns
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
@@ -206,7 +199,6 @@ async fn creating_an_order_with_an_out_of_range_confirmations_required_is_reject
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 721u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
@@ -228,7 +220,6 @@ async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 0u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
@@ -272,7 +263,6 @@ async fn create_tenant_rejects_a_syntactically_valid_but_off_curve_spend_pubkey_
         "POST",
         "/api/v1/admin/tenants",
         None,
-        None,
         serde_json::json!({
             "view_key_hex": valid_view_key_hex(1),
             // 32 well-formed hex bytes, all 0xff - not a valid Ed25519/Monero
@@ -305,7 +295,6 @@ async fn create_tenant_rejects_a_non_canonical_view_key_scalar_as_bad_request_no
     let req = json_request(
         "POST",
         "/api/v1/admin/tenants",
-        None,
         None,
         serde_json::json!({
             // 0xff * 32 as a little-endian scalar is far larger than the curve
@@ -346,7 +335,6 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(&tenant.secret_token),
-            None,
             serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
         );
         let response = router.clone().oneshot(req).await.unwrap();
@@ -430,7 +418,6 @@ async fn tenant_a_cannot_read_tenant_bs_order_via_admin_api() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant_b.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -519,7 +506,6 @@ async fn the_engine_serves_no_public_order_routes_and_no_cors() {
             method,
             &uri,
             None,
-            None,
             serde_json::json!({ "xmr_amount_piconero": 1u64, "refund_address": "x" }),
         );
         let response = router.clone().oneshot(req).await.unwrap();
@@ -565,7 +551,6 @@ async fn webhook_lifecycle_is_scoped_to_the_owning_tenant() {
         "POST",
         "/api/v1/admin/tenant/webhooks",
         Some(&tenant_b.secret_token),
-        None,
         serde_json::json!({ "url": "https://b.example/hook" }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -612,7 +597,6 @@ async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": 0u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -626,11 +610,113 @@ async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": "not_a_number" }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// An order above what SQLite's signed integer holds would be stored
+/// negative; it is refused with the limit named.
+#[tokio::test]
+async fn an_xmr_amount_above_the_cap_is_rejected_with_bad_request() {
+    let router = test_router();
+    let tenant = create_tenant(&router, 9).await;
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
+        serde_json::json!({ "xmr_amount_piconero": u64::MAX }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(body_json(response).await["error"]
+        .as_str()
+        .unwrap()
+        .contains(&crate::http::orders::MAX_ORDER_PICONERO.to_string()));
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
+        serde_json::json!({ "xmr_amount_piconero": crate::http::orders::MAX_ORDER_PICONERO }),
+    );
+    assert_eq!(
+        router.oneshot(req).await.unwrap().status(),
+        StatusCode::OK,
+        "the cap itself is allowed"
+    );
+}
+
+/// Extra webhook headers are checked when the webhook is saved: a name or
+/// value no HTTP client would send, or one the engine sets itself, would
+/// otherwise fail every delivery of that webhook until it was deleted.
+#[tokio::test]
+async fn webhook_extra_headers_are_validated_when_saved() {
+    let router = test_router();
+    let tenant = create_tenant(&router, 7).await;
+    let create = |extra_headers: serde_json::Value| {
+        let router = router.clone();
+        let token = tenant.secret_token.clone();
+        async move {
+            let response = router
+                .oneshot(json_request(
+                    "POST",
+                    "/api/v1/admin/tenant/webhooks",
+                    Some(&token),
+                    serde_json::json!({ "url": "https://b.example/hook", "extra_headers": extra_headers }),
+                ))
+                .await
+                .unwrap();
+            (response.status(), body_json(response).await)
+        }
+    };
+    for (refused, why) in [
+        (serde_json::json!(["x"]), "not an object"),
+        (serde_json::json!({ "x-count": 3 }), "not a string"),
+        (
+            serde_json::json!({ "bad header": "v" }),
+            "a space in the name",
+        ),
+        (
+            serde_json::json!({ "x-note": "line\nbreak" }),
+            "a newline in the value",
+        ),
+        (serde_json::json!({ "Host": "evil.example" }), "the host"),
+        (serde_json::json!({ "Content-Length": "0" }), "the length"),
+        (
+            serde_json::json!({ "X-Monokulo-Signature": "forged" }),
+            "the engine's own",
+        ),
+        (
+            serde_json::json!({ "x-long": "v".repeat(5 * 1024) }),
+            "too many bytes",
+        ),
+    ] {
+        let (status, body) = create(refused).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {body}");
+    }
+    let too_many: serde_json::Map<String, serde_json::Value> = (0..21)
+        .map(|i| (format!("x-h{i}"), serde_json::Value::String("v".into())))
+        .collect();
+    let (status, _) = create(serde_json::Value::Object(too_many)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "too many headers");
+
+    // Valid ones are kept, with their names in lowercase.
+    let (status, body) = create(serde_json::json!({ "X-Api-Key": "k", "x-shop": "main" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = router
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/tenant/webhooks",
+            Some(&tenant.secret_token),
+            serde_json::Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(stored.status(), StatusCode::OK);
+    let (status, _) = create(serde_json::Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "no extra headers at all");
 }
 
 #[tokio::test]
@@ -644,7 +730,6 @@ async fn tenant_creation_is_rejected_for_a_network_with_no_configured_node() {
     let req = json_request(
         "POST",
         "/api/v1/admin/tenants",
-        None,
         None,
         serde_json::json!({
             "view_key_hex": valid_view_key_hex(20),
@@ -661,7 +746,6 @@ async fn tenant_creation_is_rejected_for_a_network_with_no_configured_node() {
     let req = json_request(
         "POST",
         "/api/v1/admin/tenants",
-        None,
         None,
         serde_json::json!({
             "view_key_hex": valid_view_key_hex(20),
@@ -700,11 +784,50 @@ async fn tenant_deletion_disables_it_and_admin_routes_stop_working() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// A request that authenticated just before its store was deleted finds
+/// no live handle afterwards; it must not register the store's keys again
+/// (nothing would ever remove them), it is simply refused.
+#[tokio::test]
+async fn a_deleted_stores_keys_are_not_registered_again_by_a_request_in_flight() {
+    let state = AppState::for_tests();
+    let router = build_router(state.clone(), 1_000_000);
+    let created = create_tenant(&router, 10).await;
+    let tenant = state
+        .db
+        .lock()
+        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&created.secret_token))
+        .unwrap()
+        .unwrap();
+    assert!(state.custody.wallet_handles.read().contains_key(&tenant.id));
+
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/admin/tenant")
+        .header("authorization", format!("Bearer {}", created.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        router.oneshot(delete).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!state.custody.wallet_handles.read().contains_key(&tenant.id));
+
+    // The stale `Tenant` an in-flight request still holds.
+    let resolved = crate::http::resolve_wallet_handle(&state, &tenant).await;
+    assert!(
+        matches!(resolved, Err(ApiError::Unauthorized)),
+        "{resolved:?}"
+    );
+    assert!(
+        !state.custody.wallet_handles.read().contains_key(&tenant.id),
+        "no handle came back"
+    );
 }
 
 #[tokio::test]
@@ -896,7 +1019,6 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
                 "POST",
                 "/api/v1/admin/tenants",
                 None,
-                None,
                 create_body,
             ))
             .await
@@ -921,7 +1043,6 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
                 "PATCH",
                 "/api/v1/admin/tenant",
                 Some(&tenant.secret_token),
-                None,
                 bad.clone(),
             ))
             .await
@@ -941,7 +1062,6 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
             "PATCH",
             "/api/v1/admin/tenant",
             Some(&tenant.secret_token),
-            None,
             serde_json::json!({ "confirmations_required": 3, "order_expiry_seconds": 900 }),
         ))
         .await
@@ -959,7 +1079,6 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
             "PATCH",
             "/api/v1/admin/tenant",
             Some(&tenant.secret_token),
-            None,
             serde_json::json!({ "confirmations_required": 0 }),
         ))
         .await
@@ -981,7 +1100,6 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
         .oneshot(json_request(
             "POST",
             "/api/v1/admin/tenants",
-            None,
             None,
             create_body,
         ))
@@ -1008,7 +1126,6 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
                 "POST",
                 "/api/v1/admin/tenant/orders",
                 Some(&a.secret_token),
-                None,
                 serde_json::json!({ "xmr_amount_piconero": 1_000_000u64 }),
             ))
             .await
@@ -1021,7 +1138,7 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
 
     let no_key = router
         .clone()
-        .oneshot(json_request("POST", &uri, None, None, body.clone()))
+        .oneshot(json_request("POST", &uri, None, body.clone()))
         .await
         .unwrap();
     assert_eq!(no_key.status(), StatusCode::UNAUTHORIZED);
@@ -1032,7 +1149,6 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
             "POST",
             &uri,
             Some(&b.secret_token),
-            None,
             body.clone(),
         ))
         .await
@@ -1045,13 +1161,7 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
 
     let owner = router
         .clone()
-        .oneshot(json_request(
-            "POST",
-            &uri,
-            Some(&a.secret_token),
-            None,
-            body,
-        ))
+        .oneshot(json_request("POST", &uri, Some(&a.secret_token), body))
         .await
         .unwrap();
     assert_eq!(owner.status(), StatusCode::OK);
@@ -1088,7 +1198,6 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
                 "POST",
                 "/api/v1/admin/tenant/orders",
                 Some(&a.secret_token),
-                None,
                 serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
             ))
             .await
@@ -1103,7 +1212,6 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
                 "POST",
                 "/api/v1/admin/tenant/webhooks",
                 Some(&a.secret_token),
-                None,
                 serde_json::json!({ "url": "https://a.example/hook" }),
             ))
             .await
@@ -1137,35 +1245,6 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
                 .body(Body::empty())
                 .unwrap(),
         )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
-    // The rescan family (`docs/order_rescan_wbs.md` Phase 2) - both the trigger and
-    // the status route resolve their order the same tenant-scoped way `get_order`
-    // does, so they get the same IDOR check as every other order-scoped route above.
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!("/api/v1/admin/tenant/orders/{a_order_id}/rescan"))
-                .header("authorization", format!("Bearer {}", b.secret_token))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let response = router
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v1/admin/tenant/orders/{a_order_id}/rescan"),
-            Some(&b.secret_token),
-            None,
-            serde_json::json!({ "mode": "simple" }),
-        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -1230,7 +1309,6 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
             "POST",
             "/api/v1/admin/tenant/rotate-secret",
             Some(&b.secret_token),
-            None,
             serde_json::json!({ "tenant_id": "whatever" }),
         ))
         .await
@@ -1272,7 +1350,6 @@ async fn every_path_that_can_set_a_webhook_url_validates_the_scheme() {
                 "POST",
                 "/api/v1/admin/tenant/webhooks",
                 Some(&tenant.secret_token),
-                None,
                 serde_json::json!({ "url": bad_url }),
             ))
             .await
@@ -1291,7 +1368,6 @@ async fn every_path_that_can_set_a_webhook_url_validates_the_scheme() {
             "PATCH",
             "/api/v1/admin/tenant",
             Some(&tenant.secret_token),
-            None,
             serde_json::json!({ "webhook_url": "file:///etc/passwd", "url": "file:///etc/passwd" }),
         ))
         .await
@@ -1964,7 +2040,8 @@ async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
 #[tokio::test]
 async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_token_authenticates() {
     let store = Store::open_in_memory().unwrap();
-    let generated = crate::http::instance_admin::ensure_admin_token_seeded(&store)
+    let no_env = live_settings::Env::fixed(Vec::<(String, String)>::new());
+    let generated = crate::http::instance_admin::ensure_admin_token_seeded(&store, &no_env)
         .expect("a fresh database has no token yet");
 
     let store = store.into_shared();
@@ -1984,7 +2061,8 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
         },
         ..AppState::for_tests_with_store(store)
     };
-    let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.db.lock());
+    let second_call =
+        crate::http::instance_admin::ensure_admin_token_seeded(&state.db.lock(), &no_env);
     assert_eq!(second_call, None, "a token that already exists must never be silently regenerated (that would invalidate the first one)");
 
     let router = build_router(state, 1_000_000);
@@ -2006,7 +2084,6 @@ fn lookup_request(token: &str, txid: &str) -> Request<Body> {
         "POST",
         "/api/v1/admin/tenant/payments/lookup",
         Some(token),
-        None,
         serde_json::json!({ "txid": txid }),
     )
 }
@@ -2051,7 +2128,6 @@ async fn create_fixture_tenant(router: &Router) -> TestTenant {
         "POST",
         "/api/v1/admin/tenants",
         None,
-        None,
         serde_json::json!({
             "view_key_hex": fixture_view_key_hex(),
             "spend_pubkey_hex": fixture_spend_pubkey_hex(),
@@ -2087,7 +2163,6 @@ async fn lookup_payment_requires_authentication() {
     let req = json_request(
         "POST",
         "/api/v1/admin/tenant/payments/lookup",
-        None,
         None,
         serde_json::json!({ "txid": "0".repeat(64) }),
     );
@@ -2150,7 +2225,6 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        None,
         serde_json::json!({ "xmr_amount_piconero": 1u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -2250,7 +2324,6 @@ async fn create_admin_order(router: &Router, tenant: &TestTenant) -> String {
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(&tenant.secret_token),
-            None,
             serde_json::json!({ "xmr_amount_piconero": 1_000_000_000_000u64 }),
         ))
         .await
@@ -2306,7 +2379,6 @@ async fn order_events_stream_reports_only_the_authenticated_tenants_changes() {
                 "POST",
                 &format!("/api/v1/admin/tenant/orders/{id}/refund-address"),
                 Some(&owner.secret_token),
-                None,
                 serde_json::json!({ "refund_address": "refund" }),
             ))
             .await
@@ -2332,7 +2404,6 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(token),
-            None,
             serde_json::json!({ "xmr_amount_piconero": 1_000u64 }),
         );
         body_json(router.clone().oneshot(req).await.unwrap()).await["order_id"]
@@ -2354,7 +2425,6 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
             "GET",
             &uri,
             Some(&tenant.secret_token),
-            None,
             serde_json::Value::Null,
         ))
         .await
@@ -2382,7 +2452,6 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
             "GET",
             &format!("/api/v1/admin/tenant/orders?ids={too_many}"),
             Some(&tenant.secret_token),
-            None,
             serde_json::Value::Null,
         ))
         .await
@@ -2402,7 +2471,6 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(&tenant.secret_token),
-            None,
             serde_json::json!({ "xmr_amount_piconero": 1_000u64, "merchant_order_id": reference }),
         );
         ids.push(
@@ -2445,7 +2513,6 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
                     "GET",
                     &uri,
                     Some(&token),
-                    None,
                     serde_json::Value::Null,
                 ))
                 .await
@@ -2486,20 +2553,55 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
         tables[2..].to_vec()
     );
     assert_eq!(list("search=nothing").await, Vec::<String>::new());
+    // A blank search is no search: the plain list, status filter honoured.
+    assert_eq!(
+        sorted(list("search=%20%20&status=paid").await),
+        vec!["Table 2"]
+    );
+    // The two shapes of listing don't mix: a parameter of the other shape
+    // is refused, never quietly ignored.
+    for query in [
+        "open=true&status=paid",
+        "search=table&cursor=1",
+        "offset=1&cursor_id=x",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/admin/tenant/orders?{query}"),
+                Some(&tenant.secret_token),
+                serde_json::Value::Null,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+    }
 }
 
 // -- Request and stream limits (admin_settings_v2.md task 7.10) ---------------
 
-fn limited_router(limits: RequestLimits, notify: Arc<tokio::sync::Notify>) -> axum::Router {
+/// `/wait` holds its request permit until `release` is notified, and says
+/// so on `holding` once it has it: a test that needs the limit reached
+/// waits for that, never for a clock.
+fn limited_router(
+    limits: RequestLimits,
+    holding: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+) -> axum::Router {
     use axum::routing::get;
     let slow = get(|| async {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         "slow"
     });
     let wait = get(move || {
-        let notify = notify.clone();
+        let (holding, release) = (holding.clone(), release.clone());
         async move {
-            notify.notified().await;
+            // Registered before `holding` is signalled, so a `notify_one`
+            // sent before this task is back here is still seen.
+            let released = release.notified();
+            holding.notify_one();
+            released.await;
             "released"
         }
     });
@@ -2533,7 +2635,7 @@ async fn status_of(router: &axum::Router, path: &str) -> StatusCode {
 #[tokio::test(start_paused = true)]
 async fn a_request_that_takes_too_long_gets_503() {
     let limits = RequestLimits::new(10, 10, std::time::Duration::from_millis(100));
-    let router = limited_router(limits, Arc::new(tokio::sync::Notify::new()));
+    let router = limited_router(limits, Arc::default(), Arc::default());
     assert_eq!(
         status_of(&router, "/slow").await,
         StatusCode::SERVICE_UNAVAILABLE
@@ -2542,27 +2644,27 @@ async fn a_request_that_takes_too_long_gets_503() {
 
 #[tokio::test]
 async fn requests_beyond_the_concurrency_limit_get_503_at_once_instead_of_queueing() {
-    let notify = Arc::new(tokio::sync::Notify::new());
+    let holding = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
     let limits = RequestLimits::new(1, 10, std::time::Duration::from_secs(60));
-    let router = limited_router(limits, notify.clone());
+    let router = limited_router(limits, holding.clone(), release.clone());
     let held = tokio::spawn({
         let router = router.clone();
         async move { status_of(&router, "/wait").await }
     });
-    tokio::task::yield_now().await;
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    holding.notified().await;
     assert_eq!(
         status_of(&router, "/wait").await,
         StatusCode::SERVICE_UNAVAILABLE
     );
-    notify.notify_waiters();
+    release.notify_one();
     assert_eq!(held.await.unwrap(), StatusCode::OK);
 }
 
 #[tokio::test(start_paused = true)]
 async fn event_streams_outlive_the_request_timeout_and_have_their_own_cap() {
     let limits = RequestLimits::new(1, 1, std::time::Duration::from_millis(100));
-    let router = limited_router(limits, Arc::new(tokio::sync::Notify::new()));
+    let router = limited_router(limits, Arc::default(), Arc::default());
     let first = router
         .clone()
         .oneshot(
@@ -2595,7 +2697,6 @@ async fn event_streams_outlive_the_request_timeout_and_have_their_own_cap() {
 
 #[test]
 fn a_full_or_locked_database_is_503_but_a_constraint_violation_is_500() {
-    use super::ApiError;
     use crate::store::StoreError;
     let sqlite = |code| {
         StoreError::Sqlite(rusqlite::Error::SqliteFailure(
@@ -2690,7 +2791,6 @@ fn stagenet_tenant_request(seed: u8) -> Request<Body> {
     json_request(
         "POST",
         "/api/v1/admin/tenants",
-        None,
         None,
         serde_json::json!({
             "view_key_hex": valid_view_key_hex(seed),
@@ -2801,7 +2901,6 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
         "POST",
         "/api/v1/admin/tenants",
         None,
-        None,
         serde_json::json!({ "view_key_hex": "a".repeat(400), "spend_pubkey_hex": "b" }),
     );
     assert_eq!(
@@ -2828,6 +2927,22 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
         router.clone().oneshot(streamed).await.unwrap().status(),
         StatusCode::PAYLOAD_TOO_LARGE
     );
+    // A chunked body that breaks off (the client went away) is not an
+    // oversized one.
+    let broken: Vec<Result<Vec<u8>, std::io::Error>> = vec![
+        Ok(b"{\"view_key".to_vec()),
+        Err(std::io::Error::other("connection reset")),
+    ];
+    let broken = Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/tenants")
+        .header("content-type", "application/json")
+        .body(Body::from_stream(futures_util::stream::iter(broken)))
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(broken).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
 
     save_settings(
         &router,
@@ -2843,7 +2958,6 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
             "GET",
             "/api/v1/admin/tenant",
             Some(&tenant.secret_token),
-            None,
             serde_json::json!({}),
         ))
         .await
@@ -3002,7 +3116,6 @@ async fn create_order_for(router: &Router, token: &str) -> axum::response::Respo
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(token),
-            None,
             serde_json::json!({ "xmr_amount_piconero": 1_000_000_000u64 }),
         ))
         .await
@@ -3014,7 +3127,6 @@ fn switch_request(token: &str, backend: &str, seed: u8) -> Request<Body> {
         "PUT",
         "/api/v1/admin/tenant/key-custody",
         Some(token),
-        None,
         serde_json::json!({
             "backend": backend,
             "view_key_hex": valid_view_key_hex(seed),
@@ -3039,7 +3151,6 @@ async fn a_new_store_goes_to_the_default_backend_or_the_one_it_asks_for() {
         .oneshot(json_request(
             "POST",
             "/api/v1/admin/tenants",
-            None,
             None,
             serde_json::json!({
                 "view_key_hex": valid_view_key_hex(3),
@@ -3073,7 +3184,6 @@ async fn a_new_store_can_not_use_a_backend_that_is_not_enabled() {
         .oneshot(json_request(
             "POST",
             "/api/v1/admin/tenants",
-            None,
             None,
             serde_json::json!({
                 "view_key_hex": valid_view_key_hex(3),
@@ -3333,7 +3443,6 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
             "POST",
             "/api/v1/admin/tenants",
             None,
-            None,
             serde_json::json!({
                 "view_key_hex": valid_view_key_hex(3),
                 "spend_pubkey_hex": valid_spend_pubkey_hex(4),
@@ -3498,14 +3607,24 @@ fn a_disabled_store_can_not_be_moved() {
 
 // -- The log API (structured_logging.md 3.3) ---------------------------------
 
+/// A directory removed when the test ends, passed or failed.
+struct TempDir(std::path::PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[tokio::test]
 async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_errors() {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = TempDir(std::env::temp_dir().join(format!(
         "engine-log-api-{}-{}",
         std::process::id(),
-        crate::http::now_unix()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+        uuid::Uuid::new_v4()
+    )));
+    let dir = &dir.0;
+    std::fs::create_dir_all(dir).unwrap();
     let (telemetry, subscriber) = telemetry::build(
         "scanner",
         telemetry::Format::Json,
@@ -3524,21 +3643,20 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
             .trace_id()
             .to_string()
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while log_store
-        .query(&telemetry::store::LogQuery {
-            limit: 10,
-            ..Default::default()
-        })
-        .unwrap()
-        .len()
-        < 2
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the lines were never stored"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    // The store says when it has stored a batch; that is waited for, not
+    // a clock.
+    let mut latest = log_store.subscribe();
+    let stored = |store: &telemetry::store::LogStore| {
+        store
+            .query(&telemetry::store::LogQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap()
+            .len()
+    };
+    while stored(&log_store) < 2 {
+        latest.changed().await.unwrap();
     }
 
     let mut state = AppState::for_tests();
@@ -3633,8 +3751,6 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
     let names: telemetry::store::api::AttributesResponse =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert!(names.names.contains(&"store.id".to_string()), "{names:?}");
-
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[tokio::test]

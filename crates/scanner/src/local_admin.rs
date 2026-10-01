@@ -33,6 +33,8 @@ pub enum LocalAdminError {
     BackendNotEnabled(String, String),
     #[error("--primary-address doesn't belong to these keys on {0}: {1}")]
     AddressMismatch(String, String),
+    #[error("--network {0:?} is not a network: use mainnet, stagenet or testnet")]
+    InvalidNetwork(String),
 }
 
 /// `--bootstrap-wallet`'s own arguments - the explicit-flags replacement for what
@@ -81,7 +83,7 @@ pub async fn bootstrap_wallet(
     }
     let material = WalletMaterial::from_hex(&args.view_key_hex, &args.spend_pubkey_hex)?;
     let network = crate::http::parse_network(&args.network)
-        .map_err(|e| LocalAdminError::AddressMismatch(args.network.clone(), e.to_string()))?;
+        .map_err(|_| LocalAdminError::InvalidNetwork(args.network.clone()))?;
     match crate::key_custody::wallet_matches_address(&material, &args.primary_address, network) {
         Ok(true) => {}
         Ok(false) => {
@@ -260,27 +262,9 @@ mod tests {
         );
 
         // But naming one directly still works with two present.
-        let (_, tenant, pk) = store_with_tenant().await;
-        let _ = tenant;
-        let store2 = Store::open_in_memory().unwrap();
-        let material = WalletMaterial::new([9u8; 32], [10u8; 32]);
-        let sealed = key_custody.seal(&material).await.unwrap();
-        let created = store2
-            .create_tenant(
-                NewTenant {
-                    key_custody_backend: "plain".to_string(),
-                    sealed_key_material: sealed,
-                    primary_address: "4abc".to_string(),
-                    network: "mainnet".to_string(),
-                    confirmations_required: None,
-                    order_expiry_seconds: None,
-                },
-                1_700_000_000,
-            )
-            .unwrap();
-        let resolved = resolve_tenant(&store2, Some(&created.tenant.public_key)).unwrap();
-        assert_eq!(resolved.id, created.tenant.id);
-        let _ = pk;
+        let second = &store.list_active_tenants().unwrap()[1];
+        let resolved = resolve_tenant(&store, Some(&second.public_key)).unwrap();
+        assert_eq!(resolved.id, second.id);
     }
 
     #[tokio::test]
@@ -396,6 +380,16 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not a Monero address"), "{err}");
+        // A misspelt network is named as such, not blamed on the address.
+        let mut args = bootstrap_args();
+        args.network = "mainet".to_string();
+        let err = bootstrap_wallet(&store, &key_custody, "plain", args)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, LocalAdminError::InvalidNetwork(network) if network == "mainet"),
+            "{err}"
+        );
         assert_eq!(store.lock().count_tenants().unwrap(), 0);
     }
 

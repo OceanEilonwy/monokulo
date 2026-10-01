@@ -89,6 +89,9 @@ pub async fn histogram(
         Ok(filter) => filter,
         Err(e) => return bad_query(e),
     };
+    if request.from > request.to {
+        return ApiError::BadRequest("from must not be after to".into()).into_response();
+    }
     let result = match store(log_store) {
         Ok(store) => {
             read(store, move |s| {

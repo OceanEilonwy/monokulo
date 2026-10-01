@@ -709,6 +709,11 @@ impl live_settings::SettingsStore for StoreSettings {
 /// and describes settings (absent in tests that don't need one).
 pub struct EngineSettings {
     pub registry: Option<Registry>,
+    /// The environment the settings were read from: the real process
+    /// environment, or a fixed one in tests. What the instance admin token
+    /// is read from too (`http::instance_admin`), so no test depends on the
+    /// shell it runs in.
+    pub env: live_settings::Env,
     pub nodes: Live<NodeConfig>,
     pub scan: Live<ScanConfig>,
     pub webhooks: Live<WebhookConfig>,
@@ -764,6 +769,7 @@ impl EngineSettings {
     pub fn defaults() -> Arc<Self> {
         Arc::new(EngineSettings {
             registry: None,
+            env: live_settings::Env::fixed(Vec::<(String, String)>::new()),
             nodes: Live::new(NodeConfig::default()),
             scan: Live::new(defaults_of()),
             webhooks: Live::new(defaults_of()),
@@ -957,7 +963,8 @@ impl EngineSettings {
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
     ) -> Result<Arc<Self>, String> {
-        let mut builder = Registry::builder_with_env(Arc::new(StoreSettings(store)), ALL, env);
+        let mut builder =
+            Registry::builder_with_env(Arc::new(StoreSettings(store)), ALL, env.clone());
         let nodes = match nodes {
             Some(reloadable) => builder.reloadable(reloadable),
             None => builder.section::<NodeConfig>(),
@@ -993,6 +1000,7 @@ impl EngineSettings {
         }
         Ok(Arc::new(EngineSettings {
             registry: Some(registry),
+            env,
             nodes,
             scan,
             webhooks,

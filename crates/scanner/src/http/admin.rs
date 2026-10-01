@@ -9,9 +9,7 @@ use crate::daemon::MoneroDaemonClient;
 use crate::engine_settings::EngineSettings;
 use crate::key_custody::{KeyCustodyError, SubaddressIndex, WalletMaterial};
 use crate::status::OrderStatus;
-use crate::store::{
-    Database, NewTenant, Order, OrderPaymentRow, Store, TenantConfigPatch, Webhook,
-};
+use crate::store::{Database, NewTenant, Order, OrderPaymentRow, TenantConfigPatch, Webhook};
 
 use super::{
     network_str, now_unix, parse_network, parse_status_query, resolve_wallet_handle, ApiError,
@@ -83,9 +81,30 @@ pub struct CreateTenantResponse {
     secret_token: String,
 }
 
+/// Runs `work` to its end even if the request it serves is dropped (the
+/// request timeout fired, the caller went away). Registering keys in a
+/// backend, sealing them, writing the row and swapping the live handle
+/// are one sequence: abandoned between two of its steps, the row would
+/// name a backend the live handle isn't in, and keys registered in the new
+/// one would be held with nothing able to remove them.
+async fn to_completion<T: Send + 'static>(
+    work: impl std::future::Future<Output = Result<T, ApiError>> + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::spawn(work)
+        .await
+        .map_err(|e| ApiError::Internal(format!("key custody work panicked: {e}")))?
+}
+
 pub async fn create_tenant(
     State(state): State<AppState>,
     Json(req): Json<CreateTenantRequest>,
+) -> Result<Json<CreateTenantResponse>, ApiError> {
+    to_completion(create_tenant_to_completion(state, req)).await
+}
+
+async fn create_tenant_to_completion(
+    state: AppState,
+    req: CreateTenantRequest,
 ) -> Result<Json<CreateTenantResponse>, ApiError> {
     let material = WalletMaterial::from_hex(&req.view_key_hex, &req.spend_pubkey_hex)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
@@ -281,6 +300,14 @@ pub async fn switch_key_custody(
     State(state): State<AppState>,
     Json(req): Json<SwitchKeyCustodyRequest>,
 ) -> Result<Json<TenantView>, ApiError> {
+    to_completion(switch_key_custody_to_completion(state, tenant, req)).await
+}
+
+async fn switch_key_custody_to_completion(
+    state: AppState,
+    tenant: crate::store::Tenant,
+    req: SwitchKeyCustodyRequest,
+) -> Result<Json<TenantView>, ApiError> {
     let material = WalletMaterial::from_hex(&req.view_key_hex, &req.spend_pubkey_hex)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let network = parse_network(&tenant.network).map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -438,18 +465,22 @@ pub async fn rotate_secret(
     }))
 }
 
+/// The row is disabled first, then the keys leave custody: a request that
+/// authenticated just before this one finds the store gone when it looks
+/// for a handle (`resolve_wallet_handle`), instead of registering the keys
+/// again after they were removed.
 pub async fn delete_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
     State(custody): State<Custody>,
     State(db): State<Database>,
 ) -> Result<StatusCode, ApiError> {
+    let id = tenant.id.clone();
+    db.write(move |s| s.disable_tenant(&id, now_unix())).await?;
     let removed_handle = custody.wallet_handles.write().remove(&tenant.id);
     if let Some(handle) = removed_handle {
         // Best-effort: an already-unknown handle is not an error worth surfacing here.
         let _ = custody.backends.remove_wallet(handle).await;
     }
-    let id = tenant.id.clone();
-    db.write(move |s| s.disable_tenant(&id, now_unix())).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -480,21 +511,12 @@ pub struct OrderView {
     currently_scanning: bool,
 }
 
-/// Builds an `OrderView`, including the one field (`currently_scanning`) that
-/// can't come from `Order` alone - a real `Store` query, since it also depends on
-/// `order_rescans` and on wall-clock time (Phase 4's grace window). Deliberately
-/// not a plain `From<Order>` impl for that reason - every call site needs the
-/// same `now`/`grace_period_seconds` a caller-supplied `impl From` has no way to
-/// thread through.
-fn build_order_view(
-    store: &Store,
-    order: Order,
-    now: i64,
-    grace_period_seconds: i64,
-) -> std::result::Result<OrderView, crate::store::StoreError> {
-    let currently_scanning =
-        store.is_order_currently_scanning(&order.id, now, grace_period_seconds)?;
-    Ok(OrderView {
+/// Builds an `OrderView`, including the one field (`currently_scanning`)
+/// that isn't a column: it depends on wall-clock time (the grace window),
+/// which is why this isn't a plain `From<Order>`.
+fn build_order_view(order: Order, now: i64, grace_period_seconds: i64) -> OrderView {
+    let currently_scanning = order.in_scan_window(now, grace_period_seconds);
+    OrderView {
         order_id: order.id,
         merchant_order_id: order.merchant_order_id,
         address: order.address,
@@ -510,7 +532,7 @@ fn build_order_view(
         first_scanned_height: order.first_scanned_height,
         last_scanned_height: order.last_scanned_height,
         currently_scanning,
-    })
+    }
 }
 
 #[derive(Deserialize)]
@@ -578,7 +600,12 @@ pub async fn list_orders(
     {
         return Err(ApiError::BadRequest("search is too long".into()));
     }
-    let paged = q.open.unwrap_or(false) || q.search.is_some() || q.offset.is_some();
+    let paged = q.open.unwrap_or(false) || search.is_some() || q.offset.is_some();
+    if paged && (q.status.is_some() || q.cursor.is_some() || q.cursor_id.is_some()) {
+        return Err(ApiError::BadRequest(
+            "status and cursor can't be combined with open, search or offset".into(),
+        ));
+    }
     let (open, offset, cursor, tenant_id) = (
         q.open.unwrap_or(false),
         q.offset.unwrap_or(0),
@@ -609,10 +636,10 @@ pub async fn list_orders(
                     cursor.as_ref().map(|(at, id)| (*at, id.as_str())),
                 )?,
             };
-            orders
+            Ok(orders
                 .into_iter()
-                .map(|o| build_order_view(store, o, now, grace))
-                .collect::<std::result::Result<Vec<_>, _>>()
+                .map(|o| build_order_view(o, now, grace))
+                .collect::<Vec<_>>())
         })
         .await?;
     Ok(Json(views))
@@ -662,10 +689,7 @@ pub async fn get_order_detail(
                 return Ok(None);
             };
             let payments = store.get_all_payments(&order.id)?;
-            Ok(Some((
-                build_order_view(store, order, now_unix(), grace)?,
-                payments,
-            )))
+            Ok(Some((build_order_view(order, now_unix(), grace), payments)))
         })
         .await?;
     let (order_view, payments) = found.ok_or(ApiError::NotFound)?;
@@ -711,6 +735,74 @@ pub struct CreateWebhookRequest {
     extra_headers: Option<serde_json::Value>,
 }
 
+/// Most extra headers one webhook may carry, and most bytes of names and
+/// values together.
+const MAX_EXTRA_HEADERS: usize = 20;
+const MAX_EXTRA_HEADER_BYTES: usize = 4 * 1024;
+
+/// Header names the engine sets itself on every delivery, or that the HTTP
+/// client sets from the request; a merchant header of one of these would
+/// replace or break what the delivery carries.
+const RESERVED_HEADERS: [&str; 5] = [
+    "host",
+    "content-length",
+    "content-type",
+    "transfer-encoding",
+    "connection",
+];
+
+/// The `extra_headers` a webhook is saved with: a JSON object of string
+/// values, each a valid header name and value (what `reqwest` would
+/// otherwise refuse at every delivery, failing them all with a cryptic
+/// error until the webhook is deleted), none of them the engine's own, in
+/// lowercase. Nothing given is an empty object.
+fn validate_extra_headers(extra_headers: Option<serde_json::Value>) -> Result<String, ApiError> {
+    let Some(extra_headers) = extra_headers else {
+        return Ok("{}".to_string());
+    };
+    let serde_json::Value::Object(map) = extra_headers else {
+        return Err(ApiError::BadRequest(
+            "extra_headers must be an object of string values".into(),
+        ));
+    };
+    if map.len() > MAX_EXTRA_HEADERS {
+        return Err(ApiError::BadRequest(format!(
+            "extra_headers may hold at most {MAX_EXTRA_HEADERS} headers"
+        )));
+    }
+    let mut checked = serde_json::Map::with_capacity(map.len());
+    let mut bytes = 0;
+    for (name, value) in map {
+        let Some(value) = value.as_str() else {
+            return Err(ApiError::BadRequest(format!(
+                "extra header {name:?} must be a string"
+            )));
+        };
+        let name = axum::http::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| ApiError::BadRequest(format!("{name:?} is not a valid header name")))?;
+        axum::http::HeaderValue::from_str(value).map_err(|_| {
+            ApiError::BadRequest(format!("the value of extra header {name} is not valid"))
+        })?;
+        let name = name.as_str();
+        if RESERVED_HEADERS.contains(&name) || name.starts_with("x-monokulo-") {
+            return Err(ApiError::BadRequest(format!(
+                "extra header {name} is set by the engine itself"
+            )));
+        }
+        bytes += name.len() + value.len();
+        if bytes > MAX_EXTRA_HEADER_BYTES {
+            return Err(ApiError::BadRequest(format!(
+                "extra_headers may hold at most {MAX_EXTRA_HEADER_BYTES} bytes"
+            )));
+        }
+        checked.insert(
+            name.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+    Ok(serde_json::Value::Object(checked).to_string())
+}
+
 #[derive(Serialize)]
 pub struct CreateWebhookResponse {
     webhook_id: crate::store::WebhookId,
@@ -733,11 +825,8 @@ pub async fn create_webhook(
     // at delivery time in the not-yet-built delivery worker, not here - DNS can
     // change between registration and delivery, so a registration-time-only check
     // would be insufficient on its own regardless.
+    let extra_headers_json = validate_extra_headers(req.extra_headers)?;
     let secret = generate_webhook_secret();
-    let extra_headers_json = req
-        .extra_headers
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "{}".to_string());
     let (tenant_id, url, signing_secret) = (tenant.id.clone(), req.url.clone(), secret.clone());
     let webhook = db
         .write(move |store| {
@@ -873,10 +962,7 @@ pub async fn lookup_payment(
 
     // The transaction and where it is, in one answer. It may come pruned
     // (all a scan reads), which is why its id is passed along with it.
-    let found = daemon
-        .find_transaction(&txid)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let found = daemon.find_transaction(&txid).await?;
     let (tx, block_height) = match found {
         None | Some((_, crate::daemon::TxLocation::NotFound)) => {
             return Ok(Json(PaymentLookupView::NotFoundOnChain))
@@ -910,16 +996,14 @@ pub async fn lookup_payment(
                 super::forget_wallet_handle(&state, &tenant.id, handle);
                 handle = resolve_wallet_handle(&state, &tenant).await?;
             }
-            Err(crate::scanner::ScannerError::KeyCustody(e)) => return Err(e.into()),
-            Err(e) => return Err(ApiError::Internal(e.to_string())),
+            Err(e) => return Err(e.into()),
         }
     };
     let id = tenant.id.clone();
     let touched = state
         .db
         .write(move |store| crate::scanner::record_scan_match(store, &id, &scan, now, block_height))
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .await?;
 
     if touched.is_empty() {
         return Ok(Json(PaymentLookupView::NoMatchingOrder));
@@ -929,10 +1013,7 @@ pub async fn lookup_payment(
     // against - `block_height` itself is not a safe substitute (a mempool
     // match has none, and even a mined match's own height could already be
     // behind the real tip by an unrelated confirmation or two).
-    let current_height = daemon
-        .get_height()
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let current_height = daemon.get_height().await?;
     let orders: Vec<crate::store::OrderId> = touched.iter().cloned().collect();
     state
         .db
@@ -942,8 +1023,7 @@ pub async fn lookup_payment(
             }
             Ok::<(), crate::scanner::ScannerError>(())
         })
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .await?;
 
     Ok(Json(PaymentLookupView::Matched {
         order_ids: touched.into_iter().collect(),

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 use crate::engine_settings::{EngineSettings, NETWORKS};
 use crate::store::{Database, Store};
@@ -38,20 +39,27 @@ const ADMIN_TOKEN_ENV_VAR: &str = "SCANNER_ADMIN_TOKEN";
 
 /// The admin token's *currently effective* hash - `SCANNER_ADMIN_TOKEN`
 /// (hashed fresh on every check, never persisted just for being present) if
-/// set, otherwise whatever is stored. `None` only if neither exists yet,
-/// which should never actually happen against a store that has been through
-/// [`ensure_admin_token_seeded`] - callers still treat that as "reject every
-/// request" (a missing credential can never mean "open access"), not a panic.
-fn effective_admin_token_hash(store: &Store) -> Result<Option<String>, StatusCode> {
-    if let Ok(raw) = std::env::var(ADMIN_TOKEN_ENV_VAR) {
-        if !raw.trim().is_empty() {
-            return Ok(Some(
-                shared::auth::RawToken::presented(&raw)
-                    .hash()
-                    .as_str()
-                    .to_string(),
-            ));
-        }
+/// set in `env`, otherwise whatever is stored. `None` only if neither exists
+/// yet, which should never actually happen against a store that has been
+/// through [`ensure_admin_token_seeded`] - callers still treat that as
+/// "reject every request" (a missing credential can never mean "open
+/// access"), not a panic.
+///
+/// `env` is the same `live_settings::Env` every other setting is read
+/// through (`EngineSettings::env`): the process environment in the binary,
+/// a fixed one in tests, so a `SCANNER_ADMIN_TOKEN` exported in the shell
+/// running the tests changes nothing.
+fn effective_admin_token_hash(
+    store: &Store,
+    env: &live_settings::Env,
+) -> Result<Option<String>, StatusCode> {
+    if let Some(raw) = env.get(ADMIN_TOKEN_ENV_VAR) {
+        return Ok(Some(
+            shared::auth::RawToken::presented(&raw)
+                .hash()
+                .as_str()
+                .to_string(),
+        ));
     }
     store
         .get_setting(ADMIN_TOKEN_HASH_KEY)
@@ -71,8 +79,11 @@ fn effective_admin_token_hash(store: &Store) -> Result<Option<String>, StatusCod
     clippy::expect_used,
     reason = "boot-time only: without a stored token the admin API is unusable, so failing loudly is right"
 )]
-pub fn ensure_admin_token_seeded(store: &Store) -> Option<shared::auth::RawToken> {
-    if std::env::var(ADMIN_TOKEN_ENV_VAR).is_ok_and(|v| !v.trim().is_empty()) {
+pub fn ensure_admin_token_seeded(
+    store: &Store,
+    env: &live_settings::Env,
+) -> Option<shared::auth::RawToken> {
+    if env.get(ADMIN_TOKEN_ENV_VAR).is_some() {
         return None;
     }
     if store
@@ -127,13 +138,18 @@ impl FromRequestParts<AppState> for AuthedInstanceAdmin {
             .strip_prefix("Bearer ")
             .ok_or(ApiError::Unauthorized)?;
         let presented_hash = shared::auth::RawToken::presented(token).hash();
+        let env = state.settings.env.clone();
         let effective_hash = state
             .db
-            .read(|store| Ok(effective_admin_token_hash(store)))
+            .read(move |store| Ok(effective_admin_token_hash(store, &env)))
             .await?
             .map_err(|_| ApiError::Internal("settings lookup failed".into()))?;
+        // Compared in constant time, like every other secret in this
+        // workspace, although both sides are already hashes.
         match effective_hash {
-            Some(hash) if hash == presented_hash.as_str() => Ok(AuthedInstanceAdmin),
+            Some(hash) if bool::from(hash.as_bytes().ct_eq(presented_hash.as_str().as_bytes())) => {
+                Ok(AuthedInstanceAdmin)
+            }
             _ => Err(ApiError::Unauthorized),
         }
     }
