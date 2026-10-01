@@ -1776,10 +1776,12 @@ mod tests {
         // An hour on, DNS answers again: the failing domain's more frequent
         // re-check clears it with no action from the merchant.
         dns.publish(name, &embed_domains::record_value(&row.token));
+        // Measured from when the failing check was recorded (the re-check
+        // records at the time it was run for, not the wall clock).
         embed_domains::recheck_due(
             &state.db,
             dns.as_ref(),
-            crate::now_unix() + embed_domains::FAILING_RECHECK_EVERY_SECS + 1,
+            failing_since + embed_domains::FAILING_RECHECK_EVERY_SECS + 1,
         )
         .await;
         let row = state

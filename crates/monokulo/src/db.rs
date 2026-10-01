@@ -1264,6 +1264,12 @@ impl Db {
         nonce: &str,
         created_at: i64,
     ) -> Result<()> {
+        // Tokens a day old are long past any use (they live minutes):
+        // dropped as new ones are made, so the table doesn't grow forever.
+        self.conn.execute(
+            "DELETE FROM connect_tokens WHERE created_at_utc < ?1",
+            params![created_at.saturating_sub(24 * 60 * 60)],
+        )?;
         self.conn.execute(
             "INSERT INTO connect_tokens (token_hash, connection_id, nonce, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
             params![token_hash, connection_id, nonce, created_at],
@@ -1783,8 +1789,15 @@ impl Db {
             })
         })?;
         let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        // By amount; one that doesn't parse (a hand-edited row) sorts last
+        // and is logged, rather than quietly coming first.
         rows.sort_by_key(|row| {
-            crate::confirmation_thresholds::ThresholdAmount::parse(&row.unit_amount).ok()
+            let amount = crate::confirmation_thresholds::ThresholdAmount::parse(&row.unit_amount);
+            if amount.is_err() {
+                tracing::warn!(unit_amount = %row.unit_amount, "a confirmation threshold's amount does not parse");
+            }
+            let amount = amount.ok();
+            (amount.is_none(), amount)
         });
         Ok(rows)
     }

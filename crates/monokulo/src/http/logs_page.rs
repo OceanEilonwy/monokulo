@@ -910,7 +910,8 @@ pub async fn row_page(
     let (zone, _) = zone(&tz, &admin);
     let search = params.search_only();
     let back_url = search.url(LOGS);
-    let found = match Cursor::parse(&cursor) {
+    // An id at the very top of the range has no "just after": not found.
+    let found = match Cursor::parse(&cursor).filter(|wanted| wanted.id.checked_add(1).is_some()) {
         // The first line before one just after it, in the order every
         // store pages in, is the line itself when it is still kept.
         Some(wanted) => {

@@ -434,7 +434,7 @@ pub async fn recheck_due(db: &Database, dns: &dyn TxtLookup, now: i64) {
         }
     };
     for row in due {
-        if let Err(e) = check_and_record(db, dns, &row, crate::now_unix()).await {
+        if let Err(e) = check_and_record(db, dns, &row, now).await {
             tracing::warn!(domain = %row.domain, error = %e, "could not record a domain re-check");
         }
     }
@@ -446,7 +446,16 @@ pub fn spawn_rechecks(db: Database, dns: Arc<dyn TxtLookup>) -> tokio::task::Joi
         let mut ticker = tokio::time::interval(Duration::from_secs(5 * 60));
         loop {
             ticker.tick().await;
-            recheck_due(&db, dns.as_ref(), crate::now_unix()).await;
+            // Each pass on a task of its own: a panic in one is logged and
+            // the next pass still runs, rather than ending the re-checks
+            // for the life of the process.
+            let (db, dns) = (db.clone(), dns.clone());
+            let pass = tokio::spawn(async move {
+                recheck_due(&db, dns.as_ref(), crate::now_unix()).await;
+            });
+            if let Err(e) = pass.await {
+                tracing::error!(error = %e, "a domain re-check pass failed");
+            }
         }
     })
 }

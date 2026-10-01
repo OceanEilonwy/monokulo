@@ -949,6 +949,11 @@ pub async fn order_events(
         if !order_ids.iter().any(|seen| seen.as_str() == order_id) {
             order_ids.push(crate::db::OrderId::new(order_id));
         }
+        // Past the cap the request is refused anyway: no point walking a
+        // longer list (the de-duplication is quadratic).
+        if order_ids.len() > MAX_WATCHED_ORDERS {
+            break;
+        }
     }
     if order_ids.is_empty() || order_ids.len() > MAX_WATCHED_ORDERS {
         return ApiError::BadRequest(format!(
