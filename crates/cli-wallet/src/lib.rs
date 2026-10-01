@@ -803,14 +803,10 @@ async fn locate_height(
 /// retries past (see this crate's own module doc comment). Baking the retry
 /// in here once, rather than duplicating it at every call site, is what
 /// "a robust library is sufficient" actually means in practice.
-///
-/// `split_change_into` forwards to [`Wallet::send_with_change_split`]
-/// when `Some` (`None` keeps the single-`Change`-output behavior).
 pub async fn send_payment(
     wallet: ResolvedWallet,
     to: &str,
     amount: u64,
-    split_change_into: Option<usize>,
 ) -> Result<[u8; 32], WalletError> {
     const ATTEMPTS: u32 = 5;
     const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
@@ -820,10 +816,7 @@ pub async fn send_payment(
             // Each retry starts from the next node (see
             // `ResolvedWallet::connect_starting_at`).
             let wallet = wallet.connect_starting_at((attempt - 1) as usize).await?;
-            match split_change_into {
-                Some(n) => wallet.send_with_change_split(to, amount, n).await,
-                None => wallet.send(to, amount).await,
-            }
+            wallet.send(to, amount).await
         }
         .await;
         match result {

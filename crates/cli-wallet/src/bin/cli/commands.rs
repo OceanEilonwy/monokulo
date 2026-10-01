@@ -1101,7 +1101,6 @@ async fn transfer(session: &mut Session, words: &[String]) -> Result<(), CliErro
         kind: TransferKind::Pay {
             destinations: parsed.destinations,
             subtract_fee_from,
-            split_change_into: None,
         },
     };
     send_prepared(session, request, |prepared, unit| {
@@ -1745,7 +1744,11 @@ async fn set(session: &mut Session, args: &[String]) -> Result<(), CliError> {
         println!("default-ring-size = {RING_LEN}");
         println!(
             "priority = {} ({})",
-            settings.priority, PRIORITY_NAMES[settings.priority as usize]
+            settings.priority,
+            PRIORITY_NAMES
+                .get(settings.priority as usize)
+                .copied()
+                .unwrap_or("unknown")
         );
         println!("unit = {}", settings.unit.name());
         return Ok(());

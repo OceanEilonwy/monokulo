@@ -126,7 +126,10 @@ impl WalletMeta {
         account.label = label.to_string();
         // The reference wallet keeps an account's label and its address 0's
         // label as one and the same.
-        account.subaddress_labels[0] = label.to_string();
+        match account.subaddress_labels.first_mut() {
+            Some(first) => *first = label.to_string(),
+            None => account.subaddress_labels.push(label.to_string()),
+        }
         Ok(())
     }
 

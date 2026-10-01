@@ -419,9 +419,6 @@ pub enum TransferKind {
         /// Destinations (indexes into `destinations`) that share the fee
         /// between them instead of the sender paying it on top.
         subtract_fee_from: Vec<usize>,
-        /// Instead of one change output, split whatever's left over into
-        /// this many self-addressed outputs.
-        split_change_into: Option<usize>,
     },
     /// Spend every selected output and send all of it, less the fee, to
     /// `address`, split over `outputs` outputs.
@@ -456,7 +453,7 @@ pub enum SweepSelect {
 impl TransferRequest {
     /// A payment from account 0, at the priority this crate has always
     /// used for the e2e suites.
-    pub fn pay(destinations: Vec<(String, u64)>, split_change_into: Option<usize>) -> Self {
+    pub fn pay(destinations: Vec<(String, u64)>) -> Self {
         TransferRequest {
             account: 0,
             subaddress_indexes: None,
@@ -464,7 +461,6 @@ impl TransferRequest {
             kind: TransferKind::Pay {
                 destinations,
                 subtract_fee_from: vec![],
-                split_change_into,
             },
         }
     }
@@ -826,7 +822,6 @@ impl Wallet {
             TransferKind::Pay {
                 destinations,
                 subtract_fee_from,
-                split_change_into,
             } => {
                 let destinations: Vec<(MoneroAddress, u64)> = destinations
                     .iter()
@@ -881,18 +876,7 @@ impl Wallet {
                         })?;
                     }
 
-                    // Recomputed every iteration against `inputs` as it
-                    // grows - once big enough to also cover the split
-                    // pieces' own share of the fee, this succeeds.
-                    let mut payments = destinations.clone();
-                    if let Some(n) = split_change_into.filter(|&n| n >= 2) {
-                        if let Some(leftover) = total_in.checked_sub(amount) {
-                            let piece = leftover / n as u64;
-                            if piece > 0 {
-                                payments.extend(std::iter::repeat_n((self.address, piece), n - 1));
-                            }
-                        }
-                    }
+                    let payments = destinations.clone();
                     match build(&inputs, payments) {
                         Ok(built) => break built,
                         Err(SendError::NotEnoughFunds { necessary_fee, .. }) => {
@@ -1012,27 +996,8 @@ impl Wallet {
     /// sending `amount` piconero to `to` from the wallet's own spendable
     /// outputs, and records it. Returns the new transaction's hash.
     pub async fn send(&self, to: &str, amount: u64) -> Result<[u8; 32], WalletError> {
-        self.transfer(TransferRequest::pay(vec![(to.to_string(), amount)], None))
+        self.transfer(TransferRequest::pay(vec![(to.to_string(), amount)]))
             .await
-    }
-
-    /// Same as [`Self::send`], but splits whatever's left over after
-    /// `amount` + fee into `split_change_into` explicit self-addressed
-    /// outputs instead of one opaque `Change` output - so an ordinary
-    /// payment also grows the pool of independently-aged spendable outputs
-    /// a later send can draw on, at no extra RPC cost (same tx, more
-    /// outputs). `split_change_into < 2` behaves exactly like `send`.
-    pub async fn send_with_change_split(
-        &self,
-        to: &str,
-        amount: u64,
-        split_change_into: usize,
-    ) -> Result<[u8; 32], WalletError> {
-        self.transfer(TransferRequest::pay(
-            vec![(to.to_string(), amount)],
-            Some(split_change_into),
-        ))
-        .await
     }
 
     /// Splits account 0's `inputs` largest spendable outputs into `pieces`
@@ -1046,7 +1011,7 @@ impl Wallet {
     ) -> Result<[u8; 32], WalletError> {
         self.transfer(TransferRequest {
             kind: TransferKind::Pocketchange { pieces, inputs },
-            ..TransferRequest::pay(vec![], None)
+            ..TransferRequest::pay(vec![])
         })
         .await
     }

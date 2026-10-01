@@ -201,8 +201,7 @@ async fn send_payment_handler(
                     .into_response()
             }
         };
-    let tx_hash = match cli_wallet::send_payment(spender, &req.address, piconero_amount, None).await
-    {
+    let tx_hash = match cli_wallet::send_payment(spender, &req.address, piconero_amount).await {
         Ok(hash) => hash,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };

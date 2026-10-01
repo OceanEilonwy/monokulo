@@ -210,7 +210,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     // (no wallet-rpc or any other external wallet process - see
     // crates/cli-wallet, whose own `send_payment` retries the whole
     // connect-then-send sequence internally on real, observed node flakiness) --
-    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
+    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero)
         .await
         .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
