@@ -102,31 +102,33 @@ impl OwnedOutput {
 }
 
 impl WalletKeys {
-    /// Derives keys from a wallet file's hex-encoded private keys,
-    /// asserting the derived address matches the recorded one.
-    pub(crate) fn from_data(data: &WalletData, path: PathBuf) -> WalletKeys {
-        let spend_key = scalar_from_hex(&data.private_spend_key);
-        let view_key = scalar_from_hex(&data.private_view_key);
+    /// Derives keys from a wallet file's hex-encoded private keys, refusing
+    /// them (a wallet file error, not a panic) unless the derived address
+    /// is the recorded one.
+    pub(crate) fn from_data(data: &WalletData, path: PathBuf) -> Result<WalletKeys, WalletError> {
+        let spend_key = scalar_from_hex(&data.private_spend_key)?;
+        let view_key = scalar_from_hex(&data.private_view_key)?;
         let spend_key_dalek: Zeroizing<curve25519_dalek::Scalar> =
             Zeroizing::new((*spend_key).into());
         let public_spend =
             Point::from(&*spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
-        let view_pair = ViewPair::new(public_spend, view_key.clone())
-            .expect("torsioned spend key in a wallet file");
+        let view_pair = ViewPair::new(public_spend, view_key.clone()).map_err(|_| {
+            WalletError::WalletFile("the spend key in the wallet file is torsioned".to_string())
+        })?;
         let address = view_pair.legacy_address(Network::Stagenet);
-        assert_eq!(
-            address.to_string(),
-            data.address,
-            "derived address doesn't match the expected address - private_spend_key/private_view_key don't match that address"
-        );
-        WalletKeys {
+        if address.to_string() != data.address {
+            return Err(WalletError::WalletFile(
+                "private_spend_key/private_view_key don't match the recorded address".to_string(),
+            ));
+        }
+        Ok(WalletKeys {
             view_pair,
             spend_key,
             view_key,
             address,
             path,
             busy_handler: default_busy_handler(),
-        }
+        })
     }
 
     pub fn address(&self) -> String {
@@ -962,17 +964,25 @@ impl Wallet {
                 unrelayed_hex: Some(hex::encode(tx.serialize())),
             });
         }
+        let txid = hex::encode(hash);
         self.rpc
             .publish_transaction(&tx)
             .await
-            .map_err(WalletError::Broadcast)?;
+            .map_err(|source| WalletError::Broadcast {
+                txid: txid.clone(),
+                source,
+            })?;
 
         // Only now, after a successful broadcast, change the file - a
         // failure anywhere above must leave it exactly as it was, so a
         // caller's own retry sees the same spendable set again. The lock
-        // `prepared` holds is still held, so a fresh load is current.
-        let txid = hex::encode(hash);
-        let mut file = self.load()?;
+        // `prepared` holds is still held, so a fresh load is current. A
+        // failure from here on is past the broadcast: never retried.
+        let recorded = |e: WalletError| WalletError::RecordFailed {
+            txid: txid.clone(),
+            reason: e.to_string(),
+        };
+        let mut file = self.load().map_err(recorded)?;
         update_records(&mut file.data, &prepared.spent, |record| {
             record.spent = true
         });
@@ -986,7 +996,7 @@ impl Wallet {
             timestamp: None,
         });
         file.data.add_pending(&txid, prepared.change);
-        file.save()?;
+        file.save().map_err(recorded)?;
         Ok(CommittedTransfer {
             hash,
             unrelayed_hex: None,
@@ -1046,6 +1056,10 @@ impl Wallet {
     /// it's already confirmed. Adding one that's already recorded picks up
     /// any of its outputs the file is missing.
     pub async fn add_output(&self, txid: &str) -> Result<(), WalletError> {
+        // As the node writes it, or it could never be matched: a txid that
+        // never resolves would be looked for on every operation, forever.
+        let txid = normalize_txid(txid)?;
+        let txid = txid.as_str();
         let _lock = self.lock().await?;
         let mut file = self.load()?;
         let known = file.data.outputs.iter().any(|record| record.txid == txid);
@@ -1138,4 +1152,32 @@ fn settle_fee(
         }
     }
     Err(WalletError::Invalid("the fee didn't settle".to_string()))
+}
+
+/// A transaction id as the node writes it: 64 lowercase hex characters.
+pub(crate) fn normalize_txid(txid: &str) -> Result<String, WalletError> {
+    let txid = txid.trim().to_ascii_lowercase();
+    if txid.len() == 64 && txid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(txid)
+    } else {
+        Err(WalletError::Invalid(format!(
+            "{txid:?} is not a transaction id (64 hex characters)"
+        )))
+    }
+}
+
+#[cfg(test)]
+mod txid_tests {
+    use super::normalize_txid;
+
+    #[test]
+    fn a_txid_is_lowercased_and_must_be_64_hex_characters() {
+        let upper = "AB".repeat(32);
+        assert_eq!(
+            normalize_txid(&format!(" {upper} ")).unwrap(),
+            "ab".repeat(32)
+        );
+        assert!(normalize_txid("abc").is_err());
+        assert!(normalize_txid(&"zz".repeat(32)).is_err());
+    }
 }

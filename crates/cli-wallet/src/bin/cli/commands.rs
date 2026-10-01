@@ -265,7 +265,7 @@ impl Session {
         do_not_relay: bool,
     ) -> Result<Self, CliError> {
         let resolved = ResolvedWallet::open(ctx, path)?;
-        let mut keys = resolved.keys();
+        let mut keys = resolved.keys()?;
         keys.set_busy_handler(busy_handler());
         Ok(Session {
             resolved,
