@@ -27,7 +27,7 @@ use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use tokio::sync::watch;
 
-use crate::engine_client::EngineClient;
+use crate::engine_client::{EngineClient, OrderDetailResponse};
 
 /// Longest wait between upstream reconnect attempts - and so the effective
 /// polling interval while the engine's event stream is unavailable.
@@ -51,6 +51,57 @@ struct StoreWatch {
 struct OrderWatch {
     changed: watch::Sender<u64>,
     watchers: usize,
+    detail: Arc<tokio::sync::Mutex<Option<CachedDetail>>>,
+}
+
+/// The order's detail as last read for its watchers, and when.
+struct CachedDetail {
+    /// The order's change count when it was read: a newer change means it
+    /// is out of date.
+    generation: u64,
+    read_at: std::time::Instant,
+    detail: OrderDetailResponse,
+}
+
+/// One order's detail, read from the engine once per change however many
+/// streams are watching it ([`OrderSubscription::shared_detail`]).
+#[derive(Clone)]
+pub struct SharedDetail {
+    changed: watch::Receiver<u64>,
+    cached: Arc<tokio::sync::Mutex<Option<CachedDetail>>>,
+}
+
+/// How old a shared read may be when no change has come in since: the
+/// streams' own clock-driven refreshes (every 30s each, not in step) then
+/// cost at most one engine read a second per order between them.
+const SHARED_DETAIL_MAX_AGE: Duration = Duration::from_secs(1);
+
+impl SharedDetail {
+    /// The order's detail: the one already read since its latest change
+    /// (and within [`SHARED_DETAIL_MAX_AGE`]), or `read`'s, which then
+    /// serves every other watcher. Watchers woken by one change wait for
+    /// the first one's read rather than each making their own.
+    pub async fn get<E>(
+        &self,
+        read: impl Future<Output = Result<OrderDetailResponse, E>>,
+    ) -> Result<OrderDetailResponse, E> {
+        let generation = *self.changed.borrow();
+        let mut cached = self.cached.lock().await;
+        if let Some(c) = cached.as_ref() {
+            if c.generation == generation && c.read_at.elapsed() < SHARED_DETAIL_MAX_AGE {
+                return Ok(c.detail.clone());
+            }
+        }
+        // Started after the change was seen, so it reads what changed.
+        let read_at = std::time::Instant::now();
+        let detail = read.await?;
+        *cached = Some(CachedDetail {
+            generation,
+            read_at,
+            detail: detail.clone(),
+        });
+        Ok(detail)
+    }
 }
 
 /// A live handle on one order. Wakes on every change the engine reports for
@@ -61,6 +112,15 @@ pub struct OrderSubscription {
     connection_id: crate::db::ConnectionId,
     order_id: crate::db::OrderId,
     changed: watch::Receiver<u64>,
+    detail: SharedDetail,
+}
+
+impl OrderSubscription {
+    /// The order's detail, shared by every stream watching it: read for
+    /// one, reused by the rest until it next changes.
+    pub fn shared_detail(&self) -> SharedDetail {
+        self.detail.clone()
+    }
 }
 
 impl LiveHub {
@@ -91,6 +151,7 @@ impl LiveHub {
             .or_insert_with(|| OrderWatch {
                 changed: watch::channel(0).0,
                 watchers: 0,
+                detail: Arc::default(),
             });
         order.watchers += 1;
         OrderSubscription {
@@ -98,6 +159,10 @@ impl LiveHub {
             connection_id: connection_id.clone(),
             order_id: order_id.clone(),
             changed: order.changed.subscribe(),
+            detail: SharedDetail {
+                changed: order.changed.subscribe(),
+                cached: Arc::clone(&order.detail),
+            },
         }
     }
 
@@ -485,6 +550,49 @@ mod tests {
                 ("ready".to_string(), "{}".to_string())
             ]
         );
+    }
+
+    /// Every stream on an order woken by one change shares one engine read;
+    /// the next change reads again.
+    #[tokio::test]
+    async fn watchers_woken_by_one_change_share_one_read_of_the_order() {
+        let (changed, _) = watch::channel(0u64);
+        let shared = SharedDetail {
+            changed: changed.subscribe(),
+            cached: Arc::default(),
+        };
+        let detail: OrderDetailResponse = serde_json::from_value(serde_json::json!({
+            "order_id": "o1", "merchant_order_id": null, "address": "4abc",
+            "xmr_amount_piconero": 1, "amount_received_piconero": 0, "status": "pending",
+            "confirmations": 0, "double_spend_detected_at": null, "refund_address": null,
+            "created_at": 0, "expires_at": 0, "updated_at": 0,
+            "first_scanned_height": null, "last_scanned_height": null,
+            "currently_scanning": false, "payments": [],
+        }))
+        .unwrap();
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let read = || {
+            let (reads, detail) = (Arc::clone(&reads), detail.clone());
+            async move {
+                reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok::<_, ()>(detail)
+            }
+        };
+
+        let watchers = (0..16).map(|_| {
+            let shared = shared.clone();
+            let read = read();
+            async move { shared.get(read).await.unwrap() }
+        });
+        let seen = futures_util::future::join_all(watchers).await;
+        assert_eq!(seen.len(), 16);
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        changed.send_modify(|n| *n += 1);
+        shared.get(read()).await.unwrap();
+        shared.get(read()).await.unwrap();
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
