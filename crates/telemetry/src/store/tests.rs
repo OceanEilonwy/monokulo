@@ -34,7 +34,7 @@ impl Drop for TempDir {
 
 fn setup(level: &str) -> Setup {
     let dir = TempDir::new();
-    let (telemetry, subscriber) = build("scanner", Format::Json, false, level, std::io::sink);
+    let (telemetry, subscriber) = build("engine", Format::Json, false, level, std::io::sink);
     let guard = tracing::subscriber::set_default(subscriber);
     let telemetry = Arc::new(telemetry);
     let store = telemetry.open_store(&dir.0.join("logs.db")).unwrap();
@@ -100,7 +100,7 @@ fn lines_are_stored_with_their_attributes_and_trace_and_found_by_filter() {
         "newest first"
     );
     let first = &rows[2];
-    assert_eq!(first.service, "scanner");
+    assert_eq!(first.service, "engine");
     assert_eq!(first.severity(), Severity::Info);
     assert_eq!(first.attributes["store.id"], "s_1");
     assert_eq!(first.attributes["attempts"], 3);

@@ -3,7 +3,7 @@
 Status: implemented. This is the record of what is asked, why, and what it
 costs.
 
-Only the engine (`crates/scanner`) talks to `monerod`. Monokulo never does:
+Only the engine (`crates/engine`) talks to `monerod`. Monokulo never does:
 it reads the engine's `/status` (cached for 10 seconds) and its admin API.
 Every request goes through `RpcDaemonClient` (`src/daemon_rpc.rs`), one per
 configured node, behind `FallbackDaemonClient` (failover, cooldowns, one node
@@ -152,7 +152,7 @@ polls are counted apart from block fetches, as
 - `tests/daemon_rpc_replay.rs` replays a recording of a real stagenet node:
   every request above, pruned and whole forms compared transaction for
   transaction. Re-record it when a request changes
-  (`cargo test -p scanner --test daemon_rpc_replay -- --ignored`).
+  (`cargo test -p engine --test daemon_rpc_replay -- --ignored`).
 - `daemon_rpc::wire_tests` script a node: the pool followed by its changes,
   the fallback for a node that can't say them, the tip asked about with the
   pool (unmoved, moved, and a node that can't answer both), batched lookups,
@@ -162,7 +162,7 @@ polls are counted apart from block fetches, as
   pool while watching, headers for blocks nobody is scanned for, two round
   trips for a page of vanished payments.
 - The ignored live tests in `daemon_rpc::live_node_tests` run the same
-  requests against a mainnet node (`SCANNER_LIVE_TEST_NODE=host:port` names
+  requests against a mainnet node (`ENGINE_LIVE_TEST_NODE=host:port` names
   another than the default).
 
 ## Not done

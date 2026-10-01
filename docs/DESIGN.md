@@ -87,7 +87,7 @@ difference is how many rows exist in `tenants`:
   restart (§7.3).
 
 **The engine is private.** It listens on `127.0.0.1:8443` by default (`server.bind`,
-`SCANNER_SERVER_BIND`) and only monokulo, on the same machine or a private network,
+`ENGINE_SERVER_BIND`) and only monokulo, on the same machine or a private network,
 should ever reach it. At boot the engine prints a loud warning if it is bound to
 anything other than a loopback, RFC 1918, IPv6 unique-local (`fc00::/7`) or
 link-local address (`0.0.0.0` and `::` count as public, since they listen on every
@@ -95,7 +95,7 @@ interface). Monokulo is the only public address; see §4.2.
 
 ### 4.1 Onboarding tooling
 
-`scanner --init` (optionally `--stagenet`/`--testnet`, `--config <path>`) is
+`monokulo-engine --init` (optionally `--stagenet`/`--testnet`, `--config <path>`) is
 an interactive wizard that produces or merges `moneropay.toml` — curated node
 choice with a live "test this connection now" check, the `[wallet]` bootstrap
 walked through field by field (or, on a re-run against an existing bootstrap,
@@ -120,21 +120,21 @@ front of it).
 The database always lives next to whichever config file was actually used
 (`moneropay.db` in the config's own directory, not the process's CWD) so these
 commands, and the server itself, reliably agree on which file they mean
-regardless of the directory `scanner` happens to be launched from.
+regardless of the directory `monokulo-engine` happens to be launched from.
 
 ### 4.2 The monokulo boundary
 
 Two processes, one public:
 
-- **The engine** (`crates/scanner`, private) watches the chain, stores orders and
+- **The engine** (`crates/engine`, private) watches the chain, stores orders and
   payments, and sends webhooks out to shops. It listens on loopback by default, has
   no public routes, no CORS and no origin lists, and is reached only by monokulo:
   through its admin API (§10.2) plus `GET /status`. Every request must carry the
-  engine admin token (`SCANNER_ADMIN_TOKEN`, sent as `X-Engine-Token`), whatever
+  engine token (`ENGINE_TOKEN`, sent as `X-Engine-Token`), whatever
   the route; anything without it is refused with `401` before it reaches a route,
   a limit or the database. A store's routes also need that store's `sk_`. The
   token is required at start by both processes (monokulo's copy is
-  `MONOKULO_SCANNER_ADMIN_TOKEN`, read with `MONOKULO_ENGINE_URL` from the
+  `MONOKULO_ENGINE_TOKEN`, read with `MONOKULO_ENGINE_URL` from the
   environment only, and shown locked on its admin page). Monokulo's engine client
   is guarded by a test that every URL it builds is one of those.
 - **Monokulo** (`crates/monokulo`, public) is everything people and plugins touch:
@@ -923,7 +923,7 @@ every handler an already-scoped tenant context, not re-implemented per handler.
 
 ### 10.2 Admin API (`/api/v1/admin/...`)
 
-Every route below, and `GET /status`, also requires the engine admin token in
+Every route below, and `GET /status`, also requires the engine token in
 `X-Engine-Token` (§4.2); the Auth column is what a route needs beyond it.
 
 | Method | Path | Auth | Notes |
@@ -950,7 +950,7 @@ order status and refund address) with a CORS layer and a per-tenant `allowed_ori
 check. They are gone: the engine is private (§4), and everything a browser, merchant
 or plugin touches is served by monokulo, which reaches the engine only through §10.2
 (plus `GET /status`, the JSON health report monokulo's status page reads). Both,
-like everything else here, need the engine admin token; `POST
+like everything else here, need the engine token; `POST
 /api/v1/admin/tenants` needs nothing more (monokulo provisions a store before it has
 any `sk_`).
 
@@ -1024,7 +1024,7 @@ in front of customers.
 ## 12. DDoS Protections
 
 The engine has no public surface to protect: it listens on loopback by default (§4),
-refuses any request without the engine admin token before doing any other work,
+refuses any request without the engine token before doing any other work,
 serves only the admin API and `/status`, and is reached only by monokulo. Its own
 remaining layers are:
 

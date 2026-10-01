@@ -128,27 +128,27 @@ pub fn generate_connect_token() -> RawToken {
     RawToken(format!("conn_{}", random_hex(32)))
 }
 
-/// The header every request to the engine carries the engine's admin token
+/// The header every request to the engine carries the engine token
 /// in. The engine refuses a request without it, whatever the route: only
 /// monokulo, which is given the token, may talk to the engine.
 pub const ENGINE_TOKEN_HEADER: &str = "x-engine-token";
 
-/// The engine admin token every test engine and test client uses.
+/// The engine token every test engine and test client uses.
 #[cfg(any(test, feature = "test-support"))]
 pub const TEST_ENGINE_TOKEN: &str = "engine_test_token_0123456789abcdef0123456789abcdef";
 
-/// The shortest engine admin token accepted. `openssl rand -hex 32` gives 64
+/// The shortest engine token accepted. `openssl rand -hex 32` gives 64
 /// characters.
 pub const MIN_ENGINE_TOKEN_LEN: usize = 32;
 
-/// The engine admin token from the environment variable `name` (its value
+/// The engine token from the environment variable `name` (its value
 /// `value`): refused when unset, blank, or shorter than
 /// [`MIN_ENGINE_TOKEN_LEN`], with a message saying how to make one. The
-/// engine (`SCANNER_ADMIN_TOKEN`) and monokulo
-/// (`MONOKULO_SCANNER_ADMIN_TOKEN`) both start only with one.
+/// engine (`ENGINE_TOKEN`) and monokulo
+/// (`MONOKULO_ENGINE_TOKEN`) both start only with one.
 pub fn engine_token_from_env(name: &str, value: Option<String>) -> Result<RawToken, String> {
     let how = "generate one with `openssl rand -hex 32` and give the same value to the engine \
-               (SCANNER_ADMIN_TOKEN) and monokulo (MONOKULO_SCANNER_ADMIN_TOKEN)";
+               (ENGINE_TOKEN) and monokulo (MONOKULO_ENGINE_TOKEN)";
     let value = value.map(|v| v.trim().to_string()).unwrap_or_default();
     if value.is_empty() {
         return Err(format!("{name} is not set: {how}"));

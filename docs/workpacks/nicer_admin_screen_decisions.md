@@ -71,7 +71,7 @@ made.
 
 ## D6 (step 2): the test engine can apply saved nodes
 
-- **Decision:** `scanner_test_support::TestEngineConfig::with_live_nodes()`
+- **Decision:** `engine_test_support::TestEngineConfig::with_live_nodes()`
   wires the engine's real `NodesReloadable` into the test engine, so a saved
   node gets a real RPC client and the settings API probes it, as in
   production.

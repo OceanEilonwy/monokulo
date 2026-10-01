@@ -20,7 +20,7 @@ Out of the box, with nothing to configure:
 
 - **stderr**, one JSON object per line when stderr isn't a terminal (what
   journald and container runtimes collect), readable text at a terminal.
-  `MONOKULO_LOG_FORMAT`, `SCANNER_LOG_FORMAT` or `KEY_CUSTODY_LOG_FORMAT`
+  `MONOKULO_LOG_FORMAT`, `ENGINE_LOG_FORMAT` or `KEY_CUSTODY_LOG_FORMAT`
   (`json` or `pretty`) chooses explicitly.
 - **A local log store**, `<database>.logs.db` next to each process's main
   database (`monokulo.logs.db`, `engine.logs.db`). It holds lines and spans
@@ -32,7 +32,7 @@ Optionally, **an OpenTelemetry collector** as well (below).
 A JSON line looks like this:
 
 ```json
-{"timestamp":"2026-09-28T12:00:00.123456Z","level":"WARN","service":"scanner","target":"scanner::webhook_delivery",
+{"timestamp":"2026-09-28T12:00:00.123456Z","level":"WARN","service":"engine","target":"engine::webhook_delivery",
  "trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7",
  "message":"webhook delivery failed; will retry",
  "attributes":{"webhook.id":"wh_1","order.id":"o_9","attempt":2,"http.response.status_code":502},
@@ -46,7 +46,7 @@ engine's, each under its own heading), and apply on save without a restart.
 
 - `logging.level`: `info` by default. A `tracing` filter, so parts of a
   process can be louder: `info,scanner::loops=debug`. The environment
-  variables `MONOKULO_LOG`, `SCANNER_LOG` and `KEY_CUSTODY_LOG` set it too and
+  variables `MONOKULO_LOG`, `ENGINE_LOG` and `KEY_CUSTODY_LOG` set it too and
   win over the saved value.
 - `logging.dev_mode_until`: development logging, chosen as off or on for 1,
   4 or 24 hours. Until then the process logs at `debug` (chatty libraries
@@ -56,15 +56,15 @@ engine's, each under its own heading), and apply on save without a restart.
 
 `/dashboard/admin/logs`, for admins (the **logs** link in the nav). It shows
 monokulo's and the engine's lines together, newest first. Monokulo reads the
-engine's store through the engine's admin API, with the engine admin token it
-sends on every engine request (`MONOKULO_SCANNER_ADMIN_TOKEN`).
+engine's store through the engine's admin API, with the engine token it
+sends on every engine request (`MONOKULO_ENGINE_TOKEN`).
 
 Search with a small filter language:
 
 ```text
 level >= warn and store.id = 's_1'
 order.id = 'o_9' or message contains 'timeout'
-not (service = 'scanner') and has error
+not (service = 'engine') and has error
 'payment'                      -- lines whose message contains it
 ```
 
@@ -138,8 +138,8 @@ merchant or customer data.
 Set `logging.otlp_endpoint` (and, if the collector needs an API key,
 `logging.otlp_headers`) on the admin settings page's Logging tab, under both
 Monokulo and Engine, or with the environment variables
-`MONOKULO_LOGGING_OTLP_ENDPOINT`, `SCANNER_LOGGING_OTLP_ENDPOINT`,
-`MONOKULO_LOGGING_OTLP_HEADERS` and `SCANNER_LOGGING_OTLP_HEADERS`.
+`MONOKULO_LOGGING_OTLP_ENDPOINT`, `ENGINE_LOGGING_OTLP_ENDPOINT`,
+`MONOKULO_LOGGING_OTLP_HEADERS` and `ENGINE_LOGGING_OTLP_HEADERS`.
 
 Lines and spans are sent as OTLP over HTTP with protobuf, to
 `{endpoint}/v1/logs` and `{endpoint}/v1/traces`, in batches every two
@@ -172,7 +172,7 @@ A single container with a trace and log viewer, useful next to
 ```sh
 docker run --rm -it -p 18888:18888 -p 4318:18890 mcr.microsoft.com/dotnet/aspire-dashboard:latest
 export MONOKULO_LOGGING_OTLP_ENDPOINT=http://127.0.0.1:4318
-export SCANNER_LOGGING_OTLP_ENDPOINT=http://127.0.0.1:4318
+export ENGINE_LOGGING_OTLP_ENDPOINT=http://127.0.0.1:4318
 scripts/dev-run.sh
 ```
 

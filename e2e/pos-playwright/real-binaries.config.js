@@ -1,7 +1,7 @@
 // @ts-check
 const { defineConfig } = require('@playwright/test');
 
-// End-to-end tests against the real scanner and monokulo binaries and a
+// End-to-end tests against the real engine and monokulo binaries and a
 // local fake monerod (real-stack.js). Offline and quick; run with
 // `npx playwright test -c real-binaries.config.js`. KEEP_E2E_LOGS=1 keeps
 // the processes' logs and databases.

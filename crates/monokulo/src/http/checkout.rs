@@ -1013,8 +1013,8 @@ mod tests {
     // order needs no provider configured at all.
     const TEST_CURRENCY: &str = "XMR";
 
-    async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
-        let engine = scanner_test_support::TestEngineConfig::new()
+    async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .spawn()
             .await;

@@ -112,7 +112,7 @@ Format for each entry:
 
 ### 18. Old engine API callers sending `allowed_origins` are not refused; the CLI flag is
 - **Step:** 8
-- **Decision:** The engine's create/patch request types no longer have `allowed_origins`; serde ignores unknown fields, so a request still carrying one succeeds and the value is dropped. The `--bootstrap-wallet --allowed-origins` CLI flag is removed and now errors as an unrecognized argument (`scripts/dev-run.sh` updated). Migration `0014_drop_tenant_allowed_origins.sql` drops the column with a plain `DROP COLUMN` (no index/constraint uses it, same as 0005/0006/0013). `crates/scanner/src/http/public.rs` becomes `orders.rs` holding only the admin order creation.
+- **Decision:** The engine's create/patch request types no longer have `allowed_origins`; serde ignores unknown fields, so a request still carrying one succeeds and the value is dropped. The `--bootstrap-wallet --allowed-origins` CLI flag is removed and now errors as an unrecognized argument (`scripts/dev-run.sh` updated). Migration `0014_drop_tenant_allowed_origins.sql` drops the column with a plain `DROP COLUMN` (no index/constraint uses it, same as 0005/0006/0013). `crates/engine/src/http/public.rs` becomes `orders.rs` holding only the admin order creation.
 - **Alternatives considered:** `deny_unknown_fields` on the requests; keep the CLI flag as a silently ignored no-op.
 - **Why:** Silently accepting an ignored JSON field keeps any remaining script working (the field never did anything monokulo needs); an operator typing a CLI flag is better told it no longer exists than led to believe it did something.
 
@@ -190,7 +190,7 @@ Format for each entry:
 
 ### 30. (Reviewer) The pre-existing scanner test flake is reported, not fixed here
 - **Step:** review
-- **Decision:** Left `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` alone. It fails occasionally because a sibling test sets `SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED` in the process environment while it runs.
+- **Decision:** Left `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` alone. It fails occasionally because a sibling test sets `ENGINE_PAYMENT_CONFIRMATIONS_REQUIRED` in the process environment while it runs.
 - **Alternatives considered:** Serialise the env-var tests behind a lock now.
 - **Why:** It predates this work and is unrelated to the plan. It should be fixed separately (serialise the tests that touch `std::env`, or inject the environment).
 

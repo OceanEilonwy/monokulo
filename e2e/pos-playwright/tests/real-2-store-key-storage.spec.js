@@ -2,7 +2,7 @@
 // A store moving its keys between key custody backends through the UI,
 // with the real binaries and a real key-custody-server
 // (admin_settings_v2.md task 6.4). Payments after a move are covered by
-// the Rust integration test in scanner-test-support: the fake node here
+// the Rust integration test in engine-test-support: the fake node here
 // can't make them.
 const { test, expect } = require('@playwright/test');
 const { spawn } = require('node:child_process');

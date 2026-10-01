@@ -29,12 +29,12 @@ test('a search swaps the results in place, keeps the URL, and back returns to th
 
   // A marker that only survives if the page is never reloaded.
   await page.evaluate(() => { window.__notReloaded = true; });
-  await page.locator('#log-q').fill("service = 'scanner'");
+  await page.locator('#log-q').fill("service = 'engine'");
   await page.locator('#log-q').press('Enter');
   await expect(page).toHaveURL(/q=service/);
   await expect(page.locator('#log-rows .log-row').first()).toBeVisible();
   for (const service of await page.locator('#log-rows .log-row .svc').allTextContents()) {
-    expect(service).toBe('scanner');
+    expect(service).toBe('engine');
   }
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
 
@@ -143,7 +143,7 @@ test('a request from monokulo to the engine is one trace with spans from both', 
   await expect(page.getByRole('heading', { name: /Trace/ })).toBeVisible();
   const spans = page.locator('.trace-span');
   await expect(spans.filter({ hasText: 'monokulo' }).first()).toBeVisible();
-  await expect(spans.filter({ hasText: 'scanner' }).first()).toBeVisible();
+  await expect(spans.filter({ hasText: 'engine' }).first()).toBeVisible();
   await stage(page, 'logs-trace');
 });
 
@@ -249,7 +249,7 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
     .poll(async () => {
       await page.goto(`${base}/dashboard/admin/logs/trace/${traceId}`);
       const spans = await page.locator('.trace-span').allTextContents();
-      return spans.some((s) => s.includes('monokulo')) && spans.some((s) => s.includes('scanner'));
+      return spans.some((s) => s.includes('monokulo')) && spans.some((s) => s.includes('engine'));
     }, { timeout: 15_000, intervals: [500] })
     .toBe(true);
 });

@@ -345,7 +345,7 @@ fn run_fixture(
     let binary = target.join("debug/stress_fixture");
     if !binary.exists() {
         return Err(io::Error::other(format!(
-            "{} does not exist: build it first (cargo build -p scanner --bin stress_fixture)",
+            "{} does not exist: build it first (cargo build -p engine --bin stress_fixture)",
             binary.display()
         )));
     }
@@ -441,7 +441,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
         .args([
             "build",
             "-p",
-            "scanner",
+            "engine",
             "--bin",
             "stress_fixture",
             "--locked",

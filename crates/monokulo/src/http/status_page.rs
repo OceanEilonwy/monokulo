@@ -550,7 +550,7 @@ mod tests {
         #[tokio::test]
         async fn get_status_cached_reuses_a_fresh_fetch_instead_of_refetching() {
             let engine =
-                scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                     .await;
             let state =
                 state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
@@ -594,14 +594,14 @@ mod tests {
 
         use crate::http::test_support::body_json;
 
-        /// Real engine, no daemons configured (`scanner_test_support`'s harness
+        /// Real engine, no daemons configured (`engine_test_support`'s harness
         /// never populates them - see `get_status_round_trips_against_a_real_engine`'s
         /// own doc comment) - proves the page renders the honest "no nodes
         /// configured" state end to end, not a fabricated one.
         #[tokio::test]
         async fn status_page_is_reachable_with_no_authentication_and_shows_no_configured_networks()
         {
-            let engine = scanner_test_support::spawn_test_engine().await;
+            let engine = engine_test_support::spawn_test_engine().await;
             let state =
                 state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
             let router: Router = build_router(state);
@@ -631,7 +631,7 @@ mod tests {
         #[tokio::test]
         async fn status_summary_reports_unhealthy_when_there_are_no_configured_networks() {
             let engine =
-                scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                     .await;
             let state =
                 state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
@@ -693,7 +693,7 @@ mod tests {
         /// claiming health.
         #[tokio::test]
         async fn status_page_lists_a_configured_networks_node_and_a_scanner_not_yet_run() {
-            let engine = scanner_test_support::TestEngineConfig::new()
+            let engine = engine_test_support::TestEngineConfig::new()
                 .with_networks(&[monero::Network::Mainnet])
                 .with_admin_lookup_daemon()
                 .spawn()

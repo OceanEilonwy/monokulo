@@ -1,4 +1,4 @@
-// Starts the real `scanner` and `monokulo` binaries - their real `main` and
+// Starts the real `monokulo-engine` and `monokulo` binaries - their real `main` and
 // boot wiring - against empty databases in a temporary directory, plus a
 // local fake monerod, so tests exercise exactly what an operator runs
 // (admin_settings_v2.md task 6.0). Everything is offline: no stagenet node,
@@ -61,17 +61,17 @@ function readyLine(child, marker) {
 }
 
 // The process environment without the services' own settings, so a
-// developer's SCANNER_* or MONOKULO_* variables can't override what the
+// developer's ENGINE_* or MONOKULO_* variables can't override what the
 // specs save.
 function cleanEnv() {
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('SCANNER_') && !key.startsWith('MONOKULO_')));
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ENGINE_') && !key.startsWith('MONOKULO_')));
 }
 
 function buildBinaries() {
-  console.log('[real-binaries] building scanner, monokulo, fake-monerod and key-custody-server...');
+  console.log('[real-binaries] building monokulo-engine, monokulo, fake-monerod and key-custody-server...');
   execFileSync(
     'cargo',
-    ['build', '-p', 'scanner', '--bin', 'scanner', '-p', 'monokulo', '--bin', 'monokulo', '-p', 'scanner-test-support', '--bin', 'fake-monerod', '-p', 'key-custody-server', '--bin', 'key-custody-server'],
+    ['build', '-p', 'engine', '--bin', 'monokulo-engine', '-p', 'monokulo', '--bin', 'monokulo', '-p', 'engine-test-support', '--bin', 'fake-monerod', '-p', 'key-custody-server', '--bin', 'key-custody-server'],
     { cwd: REPO_ROOT, stdio: 'inherit' },
   );
 }
@@ -90,18 +90,19 @@ async function startStack() {
 
   const enginePort = await freePort();
   const engineToken = crypto.randomBytes(32).toString('hex');
-  // E2E_SCANNER_BIN runs another engine build, e.g. an older one to check a
+  // E2E_ENGINE_BIN runs another engine build, e.g. an older one to check a
   // spec fails against the bug it guards.
-  const engine = spawn(process.env.E2E_SCANNER_BIN || BIN('scanner'), [], {
+  const engine = spawn(process.env.E2E_ENGINE_BIN || BIN('monokulo-engine'), [], {
     env: {
       ...cleanEnv(),
-      SCANNER_DB_PATH: path.join(dir, 'engine.db'),
-      SCANNER_SERVER_BIND: `127.0.0.1:${enginePort}`,
-      SCANNER_ADMIN_TOKEN: engineToken,
-      // Every spec shares this engine and monokulo's one admin token, so the
+      ENGINE_DB_PATH: path.join(dir, 'engine.db'),
+      ENGINE_SERVER_BIND: `127.0.0.1:${enginePort}`,
+      ENGINE_TOKEN: engineToken,
+      // Every spec shares this engine, and monokulo's requests to it without a
+      // store key share one budget (keyed on its address), so the
       // default 120 a minute is spent across specs (status reloads, the Logs
       // page) and a later spec's settings save gets a 429 on a slow runner.
-      SCANNER_SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN: '100000',
+      ENGINE_SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN: '100000',
     },
     stdio: ['ignore', log('engine'), log('engine')],
   });
@@ -118,7 +119,7 @@ async function startStack() {
       MONOKULO_DB_PATH: path.join(dir, 'monokulo.db'),
       MONOKULO_BIND: `127.0.0.1:${monokuloPort}`,
       MONOKULO_ENGINE_URL: engineUrl,
-      MONOKULO_SCANNER_ADMIN_TOKEN: engineToken,
+      MONOKULO_ENGINE_TOKEN: engineToken,
     },
     stdio: ['ignore', log('monokulo'), log('monokulo')],
   });

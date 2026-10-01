@@ -1,4 +1,4 @@
-// Boots the real backend for this suite (crates/scanner/src/bin/e2e_harness.rs
+// Boots the real backend for this suite (crates/engine/src/bin/e2e_harness.rs
 // - a real, network-bound engine against the real public stagenet node, a
 // real, network-bound monokulo with one real account/store already connected,
 // and this process's own internal /send-payment endpoint) once, before either
@@ -24,7 +24,7 @@ module.exports = async function globalSetup() {
   console.log('[global-setup] building the real stagenet e2e harness (cargo build --features e2e)...');
   execFileSync(
     'cargo',
-    ['build', '-p', 'scanner', '--features', 'e2e', '--bin', 'e2e-harness'],
+    ['build', '-p', 'engine', '--features', 'e2e', '--bin', 'e2e-harness'],
     { cwd: REPO_ROOT, stdio: 'inherit' },
   );
 

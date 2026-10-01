@@ -1031,13 +1031,13 @@ mod tests {
     const TEST_SPEND_PUBKEY_HEX: &str =
         "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
-    async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
-        test_state_with_engine(scanner_test_support::TestEngineConfig::new()).await
+    async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
+        test_state_with_engine(engine_test_support::TestEngineConfig::new()).await
     }
 
     async fn test_state_with_engine(
-        config: scanner_test_support::TestEngineConfig,
-    ) -> (AppState, scanner_test_support::TestEngineHandle) {
+        config: engine_test_support::TestEngineConfig,
+    ) -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = config
             .with_networks(&[monero::Network::Mainnet])
             .spawn()
@@ -2025,7 +2025,7 @@ mod tests {
     #[tokio::test]
     async fn a_rate_limited_engine_is_a_retryable_503_not_an_internal_error() {
         let (state, _engine) = test_state_with_engine(
-            scanner_test_support::TestEngineConfig::new().with_rate_limit(20),
+            engine_test_support::TestEngineConfig::new().with_rate_limit(20),
         )
         .await;
         let router = build_router(state);

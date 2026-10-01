@@ -1,10 +1,10 @@
 # Monokulo
 
-A self-hosted Monero payment processor: `scanner` (the engine - chain scanning,
-tenants, webhooks, admin API) and `monokulo` (the control plane - the merchant
-dashboard and checkout-facing HTTP surface) run as two separate processes,
-`monokulo` talking to `scanner` over its own admin API, which answers only
-requests carrying the engine admin token the two share. There is no config
+A self-hosted Monero payment processor: the engine (`monokulo-engine`: chain
+scanning, stores, webhooks and its admin API) and `monokulo` (the control plane:
+the merchant dashboard and checkout-facing HTTP surface) run as two separate
+processes, `monokulo` talking to the engine over the engine's admin API, which
+answers only requests carrying the engine token the two share. There is no config
 file - every runtime setting lives in the engine's `settings` table, read/
 written over its instance-admin HTTP API (`/api/v1/admin/settings`) or the
 admin settings page in monokulo (one tab per job: General, Monero nodes,
@@ -20,13 +20,13 @@ default, and each store can move by entering its keys again.
 The `Dockerfile` builds one image with both binaries (and
 `key-custody-server`); `compose.yaml` runs the engine and monokulo from it
 as two containers, publishing only monokulo on port 8081. Put the two
-secrets in a `.env` file beside it. `SCANNER_ADMIN_TOKEN` is the engine
-admin token: `compose.yaml` gives it to the engine and, as
-`MONOKULO_SCANNER_ADMIN_TOKEN`, to monokulo, and neither starts without it
+secrets in a `.env` file beside it. `ENGINE_TOKEN` is the engine
+token: `compose.yaml` gives it to the engine and, as
+`MONOKULO_ENGINE_TOKEN`, to monokulo, and neither starts without it
 (see step 2 below):
 
 ```sh
-printf 'MONOKULO_ENCRYPTION_KEY=%s\nSCANNER_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
+printf 'MONOKULO_ENCRYPTION_KEY=%s\nENGINE_TOKEN=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
 docker compose up -d
 ```
 
@@ -37,7 +37,7 @@ databases live in the `engine-data` and `monokulo-data` volumes.
 
 ### From release binaries or source
 
-Each version tag's GitHub release has `scanner`, `monokulo` and
+Each version tag's GitHub release has `monokulo-engine`, `monokulo` and
 `key-custody-server` for Linux (x86_64, aarch64) and macOS (arm64); CI's
 `publish` jobs also keep them for every push to main. With those, skip
 step 1.
@@ -50,10 +50,10 @@ step 1.
 
    ```sh
    (cd crates/monokulo/pos-ui && npm ci)
-   cargo build --release -p scanner --bin scanner -p monokulo --bin monokulo
+   cargo build --release -p engine --bin monokulo-engine -p monokulo --bin monokulo
    ```
 
-2. Generate the engine admin token, a secret the engine and monokulo
+2. Generate the engine token, a secret the engine and monokulo
    share. The engine refuses every request that doesn't carry it, so only
    monokulo can use the engine, and neither process starts without it
    (at least 32 characters):
@@ -71,10 +71,10 @@ step 1.
    afterward on monokulo's admin settings page:
 
    ```sh
-   SCANNER_ADMIN_TOKEN=<the engine admin token> \
-   SCANNER_DB_PATH=/var/lib/monokulo/scanner.db \
-   SCANNER_SERVER_BIND=127.0.0.1:8080 \
-       ./target/release/scanner
+   ENGINE_TOKEN=<the engine token> \
+   ENGINE_DB_PATH=/var/lib/monokulo/engine.db \
+   ENGINE_SERVER_BIND=127.0.0.1:8080 \
+       ./target/release/monokulo-engine
    ```
 
    Bind it where only monokulo can reach it (the same machine, or a private
@@ -86,13 +86,13 @@ step 1.
    ```sh
    MONOKULO_ENCRYPTION_KEY=<64 hex chars, 32 bytes> \
    MONOKULO_ENGINE_URL=http://127.0.0.1:8080 \
-   MONOKULO_SCANNER_ADMIN_TOKEN=<the engine admin token> \
+   MONOKULO_ENGINE_TOKEN=<the engine token> \
        ./target/release/monokulo
    ```
 
    `MONOKULO_ENGINE_URL` is where monokulo reaches the engine (default
    `http://127.0.0.1:8443`, the engine's default bind). Both it and
-   `MONOKULO_SCANNER_ADMIN_TOKEN` are read only when monokulo starts: the
+   `MONOKULO_ENGINE_TOKEN` are read only when monokulo starts: the
    admin settings page shows them locked, and changing either means
    changing the environment and restarting.
 
@@ -136,7 +136,7 @@ scripts/dev-run.sh logs [engine|monokulo]   # tails both by default
 - monokulo: `http://127.0.0.1:8081` (open this one - first visit redirects to
   its own first-run admin setup wizard)
 
-The dev engine admin token and `MONOKULO_ENCRYPTION_KEY` are generated once
+The dev engine token and `MONOKULO_ENCRYPTION_KEY` are generated once
 and persisted under `.dev-run/`, so they're reused across restarts.
 
 ## Using the CLI wallet during development

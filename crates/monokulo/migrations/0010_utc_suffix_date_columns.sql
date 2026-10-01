@@ -1,4 +1,4 @@
--- Same reasoning as the engine's own `crates/scanner/migrations/
+-- Same reasoning as the engine's own `crates/engine/migrations/
 -- 0009_utc_suffix_date_columns.sql`: every date/datetime column here is,
 -- and always has been, a plain unix-second integer, so it was never
 -- actually ambiguous - but nothing in a column's own name said so, and that

@@ -1,4 +1,4 @@
-//! `shared`: logic shared between the engine (`scanner`) and the
+//! `shared`: logic shared between the engine (`engine`) and the
 //! monokulo (accounts, store connections, dashboard backend).
 //!
 //! See WBS items 0.2-0.5 in `docs/WOOCOMMERCE_WBS.md` for what lands here
@@ -7,7 +7,7 @@
 //! are a later, structural addition (WBS 2.1.3) rather than more of the same
 //! kind of thing - see `key_custody`'s own module doc comment for why the
 //! `KeyCustody` trait and its domain types had to move here specifically to
-//! keep `key-custody-service` and `scanner` from forming a cyclic Cargo
+//! keep `key-custody-service` and `engine` from forming a cyclic Cargo
 //! dependency once `main.rs` needed to depend on both.
 
 pub mod auth;

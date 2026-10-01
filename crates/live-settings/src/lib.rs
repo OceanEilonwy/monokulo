@@ -59,7 +59,7 @@ pub use async_trait::async_trait;
 ///     /// Checked again on every scan.
 ///     REORG_CHECK_DEPTH: u64 {
 ///         key: "payment.reorg_check_depth",
-///         env: "SCANNER_PAYMENT_REORG_CHECK_DEPTH",
+///         env: "ENGINE_PAYMENT_REORG_CHECK_DEPTH",
 ///         default: 20,
 ///         check: range(1, 10_000),
 ///         description: "How many recent blocks are checked again on every scan for a chain reorganisation.",
@@ -67,7 +67,7 @@ pub use async_trait::async_trait;
 ///     },
 ///     WORKER_THREADS: usize {
 ///         key: "server.worker_threads",
-///         env: "SCANNER_SERVER_WORKER_THREADS",
+///         env: "ENGINE_SERVER_WORKER_THREADS",
 ///         default: 2,
 ///         check: range(1, 256),
 ///         description: "Threads serving requests.",

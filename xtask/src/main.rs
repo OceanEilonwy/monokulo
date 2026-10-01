@@ -161,7 +161,7 @@ fn summarize_rust(output: &Path) -> io::Result<()> {
     let files = data["files"]
         .as_array()
         .ok_or_else(|| io::Error::other("Rust JSON has no files"))?;
-    for crate_name in ["scanner", "monokulo"] {
+    for crate_name in ["engine", "monokulo"] {
         let branch_count: u64 = files
             .iter()
             .filter(|f| {

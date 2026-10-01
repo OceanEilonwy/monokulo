@@ -8,7 +8,7 @@ parking_lot = "0.12.5"
 # Kept from WBS 0.1 - not directly used by this task's own code, but left in
 # place rather than ripped out; a later WBS task (1.4.3, order creation) is
 # expected to want it.
-scanner = { path = "../scanner" }
+engine = { path = "../engine" }
 axum = "0.8.9"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "cookies", "form"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -26,13 +26,13 @@ uuid = { version = "1.26.0", features = ["v4"] }
 # WBS 1.4.5's real stagenet connect-flow test (and its sibling,
 # e2e_stagenet_confirmation_threshold.rs) only - the fast, no-scanning,
 # cached-decoys wallet that sends the real payment. Optional, same reasoning
-# `scanner`'s own Cargo.toml gives for the same dependency: keep the real
+# `engine`'s own Cargo.toml gives for the same dependency: keep the real
 # transaction-construction deps it pulls in out of the tree for a normal
 # `cargo build`/`cargo test --workspace`.
 cli-wallet = { path = "../cli-wallet", optional = true }
 
 # Test-only: lets mock-woocommerce's own integration tests start a real,
-# network-bound scanner instance (scanner-test-support) and a
+# network-bound scanner instance (engine-test-support) and a
 # real, network-bound monokulo instance (monokulo's own
 # http::AppState/build_router, constructed directly here since no shared
 # monokulo-test-support crate exists yet - see this crate's own test
@@ -40,7 +40,7 @@ cli-wallet = { path = "../cli-wallet", optional = true }
 # build.
 [dev-dependencies]
 monokulo = { path = "../monokulo", features = ["test-support"] }
-scanner-test-support = { path = "../scanner-test-support" }
+engine-test-support = { path = "../engine-test-support" }
 monero = "0.22.0"
 # WBS 1.4.5's real stagenet connect-flow test only (hex-encodes the sent
 # transaction's hash for logging/persisting to its wallet file) -

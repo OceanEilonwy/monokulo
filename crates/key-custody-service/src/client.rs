@@ -6,11 +6,11 @@
 //!
 //! This is the caller-facing half of the split: everything that already
 //! depends on `shared::key_custody::KeyCustody` (re-exported unchanged as
-//! `scanner::key_custody::KeyCustody` - the HTTP API, the chain scanner,
+//! `engine::key_custody::KeyCustody` - the HTTP API, the chain scanner,
 //! tenant bootstrap at startup) can hold a `SocketKeyCustody` exactly where it
 //! would otherwise hold a `PlainKeyCustody`, with no other code change - that's
 //! the whole point of drawing the boundary as a trait in the first place.
-//! `scanner`'s own `main.rs` is wired to actually select this type behind
+//! `engine`'s own `main.rs` is wired to actually select this type behind
 //! a config flag as of WBS 2.1.3 - see `src/config.rs`'s `KeyCustodyConfig` and
 //! `main.rs`'s `build_key_custody`.
 //!

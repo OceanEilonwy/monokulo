@@ -2,7 +2,7 @@
 //! stderr (the production format), and rows for the log store.
 //!
 //! ```json
-//! {"timestamp":"2026-09-28T12:00:00.123456Z","level":"WARN","service":"scanner","target":"scanner::loops",
+//! {"timestamp":"2026-09-28T12:00:00.123456Z","level":"WARN","service":"engine","target":"engine::loops",
 //!  "trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7","message":"scan tick failed","attributes":{"network":"Stagenet","error":"timeout"},"spans":["network loop"]}
 //! ```
 //!

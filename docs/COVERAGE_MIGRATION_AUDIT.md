@@ -1,7 +1,7 @@
 # Browser migration audit
 
 The default browser profile uses a real Monokulo router and a controlled
-`scanner-test-support` engine. It does not spend wallet funds or depend on a
+`engine-test-support` engine. It does not spend wallet funds or depend on a
 public node. The instrumented baseline was captured before removing any
 fabricated-page test. The final deterministic profile passed 38 tests on
 2026-09-26 with two workers.

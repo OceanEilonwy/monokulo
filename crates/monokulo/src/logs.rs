@@ -221,14 +221,16 @@ mod tests {
             row(10, "monokulo", 1),
         ];
         let engine = vec![
-            row(40, "scanner", 4),
-            row(30, "scanner", 3),
-            row(20, "scanner", 2),
+            row(40, "engine", 4),
+            row(30, "engine", 3),
+            row(20, "engine", 2),
         ];
         let first = merge(monokulo.clone(), engine.clone(), 3, false);
+        // Lines at the same time are ordered by service, so the two at 30
+        // can't swap between pages.
         assert_eq!(
             messages(&first),
-            ["monokulo 50", "scanner 40", "scanner 30"]
+            ["monokulo 50", "engine 40", "monokulo 30"]
         );
         // The next page: each store asked for rows before the last one shown.
         let cursor = first.last().unwrap().cursor();
@@ -239,19 +241,16 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let second = merge(older(&monokulo), older(&engine), 3, false);
-        assert_eq!(
-            messages(&second),
-            ["monokulo 30", "scanner 20", "monokulo 10"]
-        );
+        assert_eq!(messages(&second), ["engine 30", "engine 20", "monokulo 10"]);
     }
 
     #[test]
     fn a_page_of_newer_lines_keeps_those_closest_to_the_cursor() {
         let monokulo = vec![row(50, "monokulo", 5), row(30, "monokulo", 3)];
-        let engine = vec![row(40, "scanner", 4), row(35, "scanner", 3)];
+        let engine = vec![row(40, "engine", 4), row(35, "engine", 3)];
         assert_eq!(
             messages(&merge(monokulo, engine, 2, true)),
-            ["scanner 35", "monokulo 30"]
+            ["engine 35", "monokulo 30"]
         );
     }
 
@@ -326,8 +325,8 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let local_store = store_with("monokulo", &dir, &["monokulo one", "monokulo two"]);
-        let engine_store = store_with("scanner", &dir, &["engine one"]);
-        let engine = scanner_test_support::TestEngineConfig::new()
+        let engine_store = store_with("engine", &dir, &["engine one"]);
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_log_store(engine_store)
             .spawn()
             .await;
@@ -359,7 +358,7 @@ mod tests {
         let trace_id = page
             .rows
             .iter()
-            .find(|r| r.service == "scanner")
+            .find(|r| r.service == "engine")
             .unwrap()
             .trace_id
             .clone()

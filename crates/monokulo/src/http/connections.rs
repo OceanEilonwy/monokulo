@@ -277,10 +277,9 @@ mod tests {
     const TEST_SPEND_PUBKEY_HEX: &str =
         "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
-    async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
+    async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),

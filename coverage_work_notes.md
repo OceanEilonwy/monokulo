@@ -43,7 +43,7 @@ precede deletion of old browser tests.
   24/24 passed in 29.1 seconds. No tests removed. Browser source coverage
   baseline remains pending collector tasks 3.1–3.2, before any migration.
 - 2.2 complete: `monokulo`'s `coverage_fixture` example starts its normal
-  router and a controlled `scanner-test-support` engine, creates a store and
+  router and a controlled `engine-test-support` engine, creates a store and
   order, and exposes only example-local health/paid controls. Playwright's
   fixture builds offline, starts/stops the server, and verifies real checkout,
   compact iframe, and POS landmarks. `npx playwright test -c

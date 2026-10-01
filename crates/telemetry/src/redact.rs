@@ -236,7 +236,7 @@ mod tests {
         for name in [
             "secret_token",
             "admin_token",
-            "engine.admin_token",
+            "engine.token",
             "view_key",
             "spend_key",
             "encryption_key",

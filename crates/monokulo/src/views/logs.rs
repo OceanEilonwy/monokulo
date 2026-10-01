@@ -132,7 +132,7 @@ const LEVELS: &[(&str, &str)] = &[
 const SERVICES: &[(&str, &str)] = &[
     ("", "Monokulo and the engine"),
     ("monokulo", "Monokulo only"),
-    ("scanner", "The engine only"),
+    ("engine", "The engine only"),
 ];
 
 const PAGE_STYLE: &str = r#"
@@ -597,10 +597,10 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         &[
             ("level >= warn and store.id = 's_1'", "both"),
             (
-                "service = 'scanner' or has error",
+                "service = 'engine' or has error",
                 "either; has means the line has that property",
             ),
-            ("not (service = 'scanner')", "brackets group; not negates"),
+            ("not (service = 'engine')", "brackets group; not negates"),
         ],
     ),
 ];

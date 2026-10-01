@@ -371,11 +371,11 @@ pub const ENGINE_URL_ENV: &str = "MONOKULO_ENGINE_URL";
 /// The engine's address when [`ENGINE_URL_ENV`] isn't set: an engine on the
 /// same machine with its default `server.bind`.
 pub const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:8443";
-/// The environment variable holding the engine's admin token (the engine's
-/// `SCANNER_ADMIN_TOKEN`).
-pub const ENGINE_TOKEN_ENV: &str = "MONOKULO_SCANNER_ADMIN_TOKEN";
+/// The environment variable holding the engine token (the engine's
+/// `ENGINE_TOKEN`).
+pub const ENGINE_TOKEN_ENV: &str = "MONOKULO_ENGINE_TOKEN";
 
-/// How monokulo reaches the engine: its address and admin token, read from
+/// How monokulo reaches the engine: its address and the engine token, read from
 /// the environment once at start and never from the admin page, which
 /// shows both locked. The token is required, since the engine refuses
 /// every request without it.
@@ -981,7 +981,7 @@ mod tests {
 
         let missing = EngineEnv::from_env(&env(&[])).unwrap_err();
         assert!(
-            missing.starts_with("MONOKULO_SCANNER_ADMIN_TOKEN is not set"),
+            missing.starts_with("MONOKULO_ENGINE_TOKEN is not set"),
             "{missing}"
         );
         let short = EngineEnv::from_env(&env(&[(ENGINE_TOKEN_ENV, "short")])).unwrap_err();

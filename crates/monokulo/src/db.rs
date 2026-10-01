@@ -1,9 +1,9 @@
 //! The monokulo's own SQLite database — entirely separate from the
-//! engine's (`scanner::store::Store`); the two services never share a
+//! engine's (`engine::store::Store`); the two services never share a
 //! database file or a connection.
 //!
 //! [`Db`] wraps one `rusqlite::Connection` and holds every query, migrated
-//! on open via `shared::migrations::apply` (the same runner `scanner::store`
+//! on open via `shared::migrations::apply` (the same runner `engine::store`
 //! uses). Handlers reach it through [`Database`]: read-only connections for
 //! reads, one writing connection for writes, each on its own thread.
 
@@ -435,7 +435,7 @@ impl DbError {
     /// True for a `UNIQUE` constraint violation (e.g. a duplicate `email`),
     /// as opposed to any other database failure. Callers use this to map a
     /// duplicate-email signup to `409 Conflict` rather than `500` — see
-    /// `scanner::store`'s own tests for the same
+    /// `engine::store`'s own tests for the same
     /// `SqliteFailure`/`ErrorCode::ConstraintViolation` shape this checks.
     pub fn is_unique_violation(&self) -> bool {
         matches!(
@@ -839,7 +839,7 @@ impl Db {
     }
 
     /// One runtime-configurable setting's stored value, or `None` if nothing
-    /// has ever been saved for `key` - see `crates/scanner/src/store.rs`'s
+    /// has ever been saved for `key` - see `crates/engine/src/store.rs`'s
     /// own `get_setting` (identical shape, identical reasoning) and
     /// `shared::settings`'s own doc comment for the env > database > default
     /// precedence this feeds into.
@@ -3158,7 +3158,7 @@ mod tests {
 
     #[test]
     fn reopening_an_existing_database_file_does_not_reapply_migrations() {
-        // Same regression this guards against in `scanner::store`:
+        // Same regression this guards against in `engine::store`:
         // re-running the raw `CREATE TABLE` DDL against an already-migrated
         // file crashes with "table already exists".
         let path = std::env::temp_dir().join(format!("monokulo_test_{}.db", uuid::Uuid::new_v4()));

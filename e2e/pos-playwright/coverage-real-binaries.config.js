@@ -3,7 +3,7 @@ const { defineConfig } = require('@playwright/test');
 const realBinaries = require('./real-binaries.config.js');
 
 // The real-binaries suite as part of the coverage run
-// (scripts/coverage-browser.sh): the same tests against the real scanner and
+// (scripts/coverage-browser.sh): the same tests against the real engine and
 // monokulo binaries, with their own HTML report, their stages added to the
 // screenshot gallery the browser suite started, and - in the specs that use
 // coverage-test.js - the instrumented browser assets and their coverage.

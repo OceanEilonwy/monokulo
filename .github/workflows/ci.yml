@@ -382,7 +382,7 @@ jobs:
       - name: Build release binaries
         run: >-
           cargo build --release --locked
-          -p scanner --bin scanner
+          -p engine --bin monokulo-engine
           -p monokulo --bin monokulo
           -p key-custody-server --bin key-custody-server
       - name: Package
@@ -393,7 +393,7 @@ jobs:
           if test "$GITHUB_REF_TYPE" != tag; then version="main-${GITHUB_SHA::7}"; fi
           name="monokulo-${version}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp target/release/scanner target/release/monokulo target/release/key-custody-server README.md "dist/$name/"
+          cp target/release/monokulo-engine target/release/monokulo target/release/key-custody-server README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           echo "name=$name" >> "$GITHUB_OUTPUT"
@@ -402,7 +402,7 @@ jobs:
             echo
             echo "| File | Size |"
             echo "| --- | ---: |"
-            for f in scanner monokulo key-custody-server; do
+            for f in monokulo-engine monokulo key-custody-server; do
               echo "| \`$f\` | $(du -h "dist/$name/$f" | cut -f1) |"
             done
           } >> "$GITHUB_STEP_SUMMARY"

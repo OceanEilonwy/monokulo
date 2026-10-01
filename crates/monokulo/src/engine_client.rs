@@ -1,12 +1,12 @@
 //! A `reqwest`-based client the control plane uses to call a *separately
-//! running* engine (`scanner`) instance's admin API. See
+//! running* engine (`engine`) instance's admin API. See
 //! `docs/WOOCOMMERCE_WBS.md` 1.2.1.
 //!
 //! This is a different role from `monokulo::http`: that module is the
 //! control plane's *own* router, serving requests from browsers/plugins.
 //! This module is the control plane acting as a *client* of a real,
 //! independently-deployed engine instance, over genuine HTTP — one instance
-//! of the same relationship `mock-woocommerce` and `scanner-test-support`'s
+//! of the same relationship `mock-woocommerce` and `engine-test-support`'s
 //! tests already exercise against the engine directly, just now from the
 //! control plane's own side.
 //!
@@ -17,8 +17,8 @@
 //! Rust types, since the two crates talk over HTTP as separate services,
 //! not by linking against each other.
 //!
-//! Every request carries the engine's admin token
-//! (`MONOKULO_SCANNER_ADMIN_TOKEN`, the engine's `SCANNER_ADMIN_TOKEN`) in
+//! Every request carries the engine token
+//! (`MONOKULO_ENGINE_TOKEN`, the engine's `ENGINE_TOKEN`) in
 //! `shared::auth::ENGINE_TOKEN_HEADER`: the engine refuses anything
 //! without it. A store's routes (`/api/v1/admin/tenant/...`) also need the
 //! store's own `sk_...` secret, sent as `Authorization: Bearer sk_...` — the
@@ -80,7 +80,7 @@ pub struct EngineClient {
     current: std::sync::Arc<parking_lot::RwLock<std::sync::Arc<EngineTarget>>>,
 }
 
-/// The engine's address and admin token, with an HTTP client that sends the
+/// The engine's address and the engine token, with an HTTP client that sends the
 /// token on every request, and the live-update hub.
 struct EngineTarget {
     base_url: String,
@@ -118,8 +118,8 @@ impl EngineTarget {
 }
 
 impl EngineClient {
-    /// The engine at `base_url`, reached with its admin token `token`
-    /// (`SCANNER_ADMIN_TOKEN`), which every request carries.
+    /// The engine at `base_url`, reached with the engine token `token`
+    /// (`ENGINE_TOKEN`), which every request carries.
     pub fn new(base_url: impl Into<String>, token: RawToken) -> Self {
         Self::with_cache_limit(
             base_url,
@@ -221,7 +221,7 @@ impl EngineClient {
     }
 
     /// A request to `path` on the engine (`/api/v1/admin/settings`, say),
-    /// carrying the admin token and this request's trace, and bounded in
+    /// carrying the engine token and this request's trace, and bounded in
     /// time like every call here: a stalled engine must not hang a page.
     pub fn request(
         &self,
@@ -1122,8 +1122,8 @@ mod tests {
     }
 
     /// Full round trip against a *real*, network-bound engine instance
-    /// (`scanner_test_support::spawn_test_engine`) — genuine `reqwest` over a
-    /// real TCP socket, exactly the case WBS 0.6 built `scanner-test-support`
+    /// (`engine_test_support::spawn_test_engine`) — genuine `reqwest` over a
+    /// real TCP socket, exactly the case WBS 0.6 built `engine-test-support`
     /// for. `spawn_test_engine` configures no Monero networks by default, so
     /// this uses `spawn_test_engine_with_networks` (added alongside this
     /// test — see its doc comment) to get a real `mainnet` tenant through
@@ -1132,8 +1132,7 @@ mod tests {
     #[tokio::test]
     async fn create_tenant_then_get_tenant_round_trips_against_a_real_engine() {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let client = EngineClient::for_tests(format!("http://{}", engine.addr));
 
         let created = client
@@ -1162,8 +1161,7 @@ mod tests {
     #[tokio::test]
     async fn create_webhook_then_list_webhooks_round_trips_against_a_real_engine() {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let client = EngineClient::for_tests(format!("http://{}", engine.addr));
 
         let created = client
@@ -1199,8 +1197,7 @@ mod tests {
     #[tokio::test]
     async fn get_status_round_trips_against_a_real_engine() {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let client = EngineClient::for_tests(format!("http://{}", engine.addr));
 
         let status = client
@@ -1251,14 +1248,13 @@ mod tests {
     /// Proves `create_order`'s own `confirmations_required` argument
     /// actually reaches the engine's stored order row, not just that it's
     /// accepted on the wire - reads the real value back via the engine's
-    /// own `Store` directly (`scanner_test_support::TestEngineHandle::store`),
+    /// own `Store` directly (`engine_test_support::TestEngineHandle::store`),
     /// the same way scanner's own equivalent HTTP-level test does.
     #[tokio::test]
     async fn create_order_with_a_confirmations_required_override_reaches_the_real_engines_stored_order(
     ) {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let created = client
             .create_tenant(test_create_tenant_request())
@@ -1296,8 +1292,7 @@ mod tests {
     async fn create_order_with_no_confirmations_required_override_leaves_the_real_engines_stored_order_unset(
     ) {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let created = client
             .create_tenant(test_create_tenant_request())
@@ -1342,7 +1337,7 @@ mod tests {
         // shape. `with_admin_lookup_daemon` wires an inert `NoopDaemonClient`
         // into the engine's live-scanner daemon map, which
         // `admin::lookup_payment` reads unconditionally.
-        let engine = scanner_test_support::TestEngineConfig::new()
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .with_admin_lookup_daemon()
             .spawn()

@@ -13,10 +13,10 @@
 //! (`KeyCustodyServer`, wrapping a real `PlainKeyCustody`) and its
 //! `bin/key-custody-server.rs` standalone binary here too, under the same
 //! "extend, don't fork" framing - WBS 2.1.3 moved both to a new sibling crate,
-//! `key-custody-server`, once `scanner`'s own `main.rs` needed to depend
+//! `key-custody-server`, once `engine`'s own `main.rs` needed to depend
 //! on *this* crate for `SocketKeyCustody`: this crate depending on
-//! `scanner` (for `server.rs`'s real `PlainKeyCustody`) while
-//! `scanner` depended on this crate (for `client.rs`'s
+//! `engine` (for `server.rs`'s real `PlainKeyCustody`) while
+//! `engine` depended on this crate (for `client.rs`'s
 //! `SocketKeyCustody`) is a real Cargo dependency cycle, not a style problem -
 //! see `shared::key_custody`'s module doc comment (`shared/src/key_custody.rs`)
 //! for the full account. That's a real split of previously-single-crate scope,
@@ -25,7 +25,7 @@
 //! `bin/key-custody-server.rs` to have moved, not been deleted.
 //!
 //! Every type here exists because `shared::key_custody`'s real types (moved
-//! there from `scanner`'s own `src/key_custody/mod.rs` for the same
+//! there from `engine`'s own `src/key_custody/mod.rs` for the same
 //! reason described above) don't (and mostly shouldn't) derive
 //! `Serialize`/`Deserialize` themselves:
 //! - `KeyCustodyError` is a `thiserror` enum with `String` payloads, not
@@ -33,7 +33,7 @@
 //!   an error type nothing outside it currently needs to serialize.
 //! - `WalletHandle` wraps a private `uuid::Uuid` with no public accessor before
 //!   WBS 2.1.1 - see the `as_bytes`/`from_bytes` pair added to it (now in
-//!   `shared::key_custody`, originally `scanner`'s own
+//!   `shared::key_custody`, originally `engine`'s own
 //!   `src/key_custody/mod.rs`) for this exact purpose, documented there.
 //! - `WalletMaterial` is `ZeroizeOnDrop` and deliberately *not* `Serialize` - it
 //!   already exposes `to_raw_bytes`/`from_raw_bytes` for exactly this kind of
@@ -62,10 +62,10 @@
 // WBS 2.1.2's socket half, built on the DTOs this file defines - see their own
 // doc comments. `server.rs` moved to the separate `key-custody-server` crate as
 // of WBS 2.1.3 - see `shared::key_custody`'s module doc comment for why (it needs
-// a real `PlainKeyCustody`, which only exists in `scanner`, and this crate
-// can no longer depend on `scanner` without recreating the exact Cargo
+// a real `PlainKeyCustody`, which only exists in `engine`, and this crate
+// can no longer depend on `engine` without recreating the exact Cargo
 // dependency cycle that split was meant to avoid). `client.rs` (`SocketKeyCustody`)
-// stays here: it's what `scanner`'s own `main.rs` needs to depend on this
+// stays here: it's what `engine`'s own `main.rs` needs to depend on this
 // crate for.
 pub mod client;
 pub mod protocol;
@@ -435,7 +435,7 @@ impl From<RangeWire> for Range<u32> {
 // ---------------------------------------------------------------------------
 
 /// Wire form of `monero::Network`, reusing `shared::network::
-/// network_str`/`parse_network` (re-exported unchanged by `scanner`'s own
+/// network_str`/`parse_network` (re-exported unchanged by `engine`'s own
 /// `src/network.rs` as of WBS 2.1.3) rather than a second string mapping that
 /// could drift from the one the config file and admin API already use - the
 /// WBS's own suggestion, and the obviously correct one: those helpers are
@@ -660,7 +660,7 @@ mod tests {
     /// case that would round-trip even with a field dropped.
     fn fixture_tx() -> Transaction {
         let raw = hex::decode(include_str!(
-            "../../scanner/tests/fixtures/subaddress_tx.hex"
+            "../../engine/tests/fixtures/subaddress_tx.hex"
         ))
         .expect("fixture is valid hex");
         deserialize(&raw).expect("fixture is a valid monero transaction")

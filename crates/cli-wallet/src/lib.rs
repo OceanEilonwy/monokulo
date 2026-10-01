@@ -1,13 +1,13 @@
 //! A purpose-built, fast, reliable **stagenet-only test wallet** - not a
 //! general-purpose Monero wallet, and never meant to become one. Built to
-//! replace `scanner::e2e_wallet::StagenetSpendWallet` as the thing this
+//! replace `engine::e2e_wallet::StagenetSpendWallet` as the thing this
 //! repo's real-stagenet e2e suites use to pay a real order with a real,
 //! signed, broadcast transaction, and driven by hand through the
 //! `stagenet-wallet-cli` binary, whose commands follow `monero-wallet-cli`.
 //!
 //! # Why this exists
 //!
-//! The predecessor (`scanner::e2e_wallet`) does real, correct Monero wallet
+//! The predecessor (`engine::e2e_wallet`) does real, correct Monero wallet
 //! work: it scans the chain to discover its own outputs and does full
 //! gamma-distribution decoy selection, the same way a real wallet would.
 //! That correctness is also exactly what makes it slow and, worse,
@@ -83,7 +83,7 @@ pub use wallet::{
 
 /// The ring size required for the `ClsagBulletproofPlus` RCT type this
 /// module always signs with - the standard type on every live Monero
-/// network today. Mirrors `scanner::e2e_wallet`'s own constant.
+/// network today. Mirrors `engine::e2e_wallet`'s own constant.
 pub const RING_LEN: u8 = 16;
 
 /// Monero requires this many confirmations on any output before it's
@@ -147,7 +147,7 @@ pub enum WalletError {
 }
 
 /// `monero-daemon-rpc`'s `HttpTransport` over a plain `reqwest::Client` -
-/// verbatim from `scanner::e2e_wallet::ReqwestTransport`, see that type's
+/// verbatim from `engine::e2e_wallet::ReqwestTransport`, see that type's
 /// own doc comment for why this is implemented directly rather than pulling
 /// in a second TLS stack.
 #[derive(Clone)]
@@ -310,7 +310,7 @@ pub const DEFAULT_STAGENET_NODES: [&str; 3] = [
 /// package's* manifest directory, so a caller-relative path like `"e2e/..."`
 /// is only ever correct for whichever one crate happened to inspire it, and
 /// silently wrong for every other crate's tests (confirmed the hard way:
-/// this bit both `crates/scanner`'s and `crates/mock-woocommerce`'s real
+/// this bit both `crates/engine`'s and `crates/mock-woocommerce`'s real
 /// e2e tests before this fix). `CARGO_MANIFEST_DIR` is fixed at compile
 /// time to wherever *this* crate's `Cargo.toml` lives, so this is correct
 /// everywhere, always, by construction.

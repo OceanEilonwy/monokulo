@@ -35,7 +35,7 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
 - Clippy baseline: 69 warnings workspace-wide, none new. Pre-existing ones
   in files this work touches: `monokulo/src/http/admin_settings.rs` 1
   (a test helper's doc comment), `scanner/src/daemon.rs` 1,
-  `scanner/src/engine_settings.rs` 1, `scanner-test-support/src/lib.rs` 2.
+  `scanner/src/engine_settings.rs` 1, `engine-test-support/src/lib.rs` 2.
 - After step 1: `cargo test --workspace` 1249 passed, 0 failed, 24 ignored;
   clippy 69 warnings (unchanged).
 - After step 2: `cargo test --workspace` 1256 passed, 0 failed, 24 ignored;
@@ -62,7 +62,7 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
 
 - After step 8: `cargo test --workspace` 1288 passed, 0 failed, 24 ignored;
   clippy 68 warnings, none in lines this work added (the pre-existing ones
-  in `scanner/src/daemon.rs` and `scanner-test-support/src/lib.rs` remain);
+  in `scanner/src/daemon.rs` and `engine-test-support/src/lib.rs` remain);
   Playwright real-binaries 39 passed, 0 failed.
 
 ## Notes per step
@@ -104,7 +104,7 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   With fixi: the section fragment, as before (step 3 changes it).
 - Success text is now "Settings saved and applied." (decision D4).
 - `crates/monokulo/src/http/dashboard.rs`: `redirect_303`.
-- `crates/scanner-test-support/src/lib.rs`: `with_live_nodes()` (decision
+- `crates/engine-test-support/src/lib.rs`: `with_live_nodes()` (decision
   D6).
 - Acceptance, all HTTP tests in `admin_settings.rs`:
   `a_tab_with_only_monokulo_settings_saves_only_monokulo` (engine address
@@ -179,18 +179,18 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
 
 ### Step 4
 
-- `crates/scanner/src/daemon.rs`: `DaemonInfo { nettype }` with
+- `crates/engine/src/daemon.rs`: `DaemonInfo { nettype }` with
   `DaemonInfo::unknown()` and `network()` (only mainnet/stagenet/testnet
   map to a network); `MoneroDaemonClient::get_info` defaults to unknown, so
   no test double changed.
-- `crates/scanner/src/daemon_rpc.rs`: `RpcDaemonClient::get_info` calls
+- `crates/engine/src/daemon_rpc.rs`: `RpcDaemonClient::get_info` calls
   JSON-RPC `get_info` through `post_json_rpc` (same client, 15s timeout and
   response cap as `get_height`); `GetInfoResult` reads `nettype`, or the
   older `mainnet`/`stagenet`/`testnet` flags, else "unknown".
-- `crates/scanner/src/http/status_page.rs`: `NodeStatus.network`; the probe
+- `crates/engine/src/http/status_page.rs`: `NodeStatus.network`; the probe
   runs `get_height` and `get_info` together, each within the 5s timeout
   (decision D14).
-- `crates/scanner/src/http/instance_admin.rs`: `nodes_that_cannot_work`
+- `crates/engine/src/http/instance_admin.rs`: `nodes_that_cannot_work`
   runs before anything is saved, with no lock held: duplicates ("<host>:<port>
   is listed twice.") and nodes answering a different known network
   ("<host>:<port> is on <nettype>, not <network>.") are refused with 400 and
@@ -198,9 +198,9 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   as other refusals (`refused`). Unchanged networks aren't probed (D13).
 - `crates/monokulo/src/engine_client.rs`: `NodeStatus` gains `in_cooldown`
   and `network`, both `#[serde(default)]`.
-- `crates/scanner-test-support/src/bin/fake-monerod.rs`: `--nettype`
+- `crates/engine-test-support/src/bin/fake-monerod.rs`: `--nettype`
   (default `stagenet`), served by JSON-RPC `get_info` and `/get_info`.
-- Acceptance: engine tests in `crates/scanner/src/http/tests.rs`
+- Acceptance: engine tests in `crates/engine/src/http/tests.rs`
   (`a_stagenet_node_that_says_it_is_on_mainnet_is_refused_and_nothing_changes`,
   also covering a wrong fallback and that the rest of the request isn't
   saved; `nodes_that_do_not_answer_or_do_not_say_are_saved` for a node that
@@ -324,5 +324,5 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   `value_json` went in steps 3 and 5. A module comment in
   `http/admin_settings.rs` no longer mentions two forms.
 - Acceptance: `grep -rn 'scanner-settings\|monokulo_section\|engine_section\|monero_node_' crates e2e`
-  finds only two engine API tests in `crates/scanner/src/http/tests.rs`
+  finds only two engine API tests in `crates/engine/src/http/tests.rs`
   whose names contain `monero_node_` (they test the engine's JSON API).

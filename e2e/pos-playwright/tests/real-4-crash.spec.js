@@ -7,7 +7,7 @@
 // task inside one process can't show what SQLite does when the process
 // really dies.) Payments can't be made against the fake node, so payment
 // recording under crashes is covered by the in-process crash-injection
-// test in the scanner crate.
+// test in the engine crate.
 const { test, expect } = require('@playwright/test');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -17,7 +17,7 @@ const { useRealStack, fixture, VIEW_KEY, SPEND_PUBKEY } = require('./real-helper
 
 useRealStack(test);
 
-const SCANNER = process.env.E2E_SCANNER_BIN || path.resolve(__dirname, '..', '..', '..', 'target', 'debug', 'scanner');
+const ENGINE_BIN = process.env.E2E_ENGINE_BIN || path.resolve(__dirname, '..', '..', '..', 'target', 'debug', 'monokulo-engine');
 
 function freePort() {
   return new Promise((resolve) => {
@@ -36,9 +36,9 @@ test('killing the engine at random moments never loses a confirmed order or reus
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
   const token = crypto.randomBytes(16).toString('hex');
-  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('SCANNER_')));
-  const env = { ...inherited, SCANNER_DB_PATH: path.join(logs, 'crash.db'), SCANNER_SERVER_BIND: `127.0.0.1:${port}`, SCANNER_ADMIN_TOKEN: token };
-  // The engine answers nothing without its admin token, so every request
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ENGINE_')));
+  const env = { ...inherited, ENGINE_DB_PATH: path.join(logs, 'crash.db'), ENGINE_SERVER_BIND: `127.0.0.1:${port}`, ENGINE_TOKEN: token };
+  // The engine answers nothing without the engine token, so every request
   // carries it, as monokulo's do.
   const engineFetch = (pathAndQuery, init = {}) =>
     fetch(`${url}${pathAndQuery}`, { ...init, headers: { 'x-engine-token': token, ...(init.headers || {}) } });
@@ -50,7 +50,7 @@ test('killing the engine at random moments never loses a confirmed order or reus
   });
   let engine = null;
   const start = async () => {
-    engine = spawn(SCANNER, [], { env, stdio: 'ignore' });
+    engine = spawn(ENGINE_BIN, [], { env, stdio: 'ignore' });
     await expect.poll(async () => {
       try { return (await engineFetch(`/status`)).status; } catch { return 0; }
     }, { timeout: 20_000, intervals: [100] }).toBe(200);

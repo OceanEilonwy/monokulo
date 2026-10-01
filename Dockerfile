@@ -1,9 +1,9 @@
-# Monokulo for production: one image holding the engine (`scanner`), the
+# Monokulo for production: one image holding the engine (`monokulo-engine`), the
 # control plane (`monokulo`) and the optional key storage service
 # (`key-custody-server`). Run the engine and monokulo as two containers from
 # it, as compose.yaml does; `docker build -t monokulo .` builds it.
 #
-# The default command runs monokulo; `scanner` and `key-custody-server` are
+# The default command runs monokulo; `monokulo-engine` and `key-custody-server` are
 # on the PATH for the other containers. Both keep their SQLite databases in
 # /var/lib/monokulo, the image's one volume.
 
@@ -29,11 +29,11 @@ COPY rust-toolchain.toml ./
 RUN rustup toolchain install
 COPY . .
 RUN cargo build --release --locked \
-        -p scanner --bin scanner \
+        -p engine --bin monokulo-engine \
         -p monokulo --bin monokulo \
         -p key-custody-server --bin key-custody-server \
  && mkdir /out \
- && cp target/release/scanner target/release/monokulo target/release/key-custody-server /out/
+ && cp target/release/monokulo-engine target/release/monokulo target/release/key-custody-server /out/
 
 FROM debian:${DEBIAN_VERSION}-slim
 RUN apt-get update \
@@ -48,8 +48,8 @@ VOLUME /var/lib/monokulo
 # port. The engine's API is for monokulo alone.
 ENV MONOKULO_BIND=0.0.0.0:8081 \
     MONOKULO_DB_PATH=/var/lib/monokulo/monokulo.db \
-    SCANNER_SERVER_BIND=0.0.0.0:8443 \
-    SCANNER_DB_PATH=/var/lib/monokulo/scanner.db
+    ENGINE_SERVER_BIND=0.0.0.0:8443 \
+    ENGINE_DB_PATH=/var/lib/monokulo/engine.db
 EXPOSE 8081
 # tini passes SIGTERM on, so `docker stop` lets requests in flight finish.
 ENTRYPOINT ["tini", "--"]

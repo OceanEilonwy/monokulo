@@ -58,7 +58,7 @@ the invariants above and is independently testable.
 
 ### Context
 
-`check_for_reorg_and_reconcile` in `crates/scanner/src/scanner.rs` detects the
+`check_for_reorg_and_reconcile` in `crates/engine/src/scanner.rs` detects the
 first hash divergence, then loads all non-voided affected payments through
 `Store::find_payments_at_or_after_height` and all previously voided payments
 through `Store::find_voided_payments_at_or_after_height`. It performs sequential
@@ -130,7 +130,7 @@ anchoring, double spends, and webhooks live in `scanner.rs` and `store.rs`.
 
 ### Context
 
-`SharedStore = Arc<Mutex<Store>>` in `crates/scanner/src/store.rs`. Scanner,
+`SharedStore = Arc<Mutex<Store>>` in `crates/engine/src/store.rs`. Scanner,
 webhook, background-loop, settings, and HTTP write calls commonly execute
 `rusqlite` synchronously after `store.lock()`. A slow query or disk stall blocks
 the Tokio worker, and Tokio timeouts cannot preempt that operation. The
@@ -457,7 +457,7 @@ without a retry key.
 
 ### 6.5 Gates and report
 
-- [ ] Run `taskset -c 0 cargo test -p scanner -p key-custody-service
+- [ ] Run `taskset -c 0 cargo test -p engine -p key-custody-service
       -p key-custody-server --tests --locked -- --test-threads=4`, relevant
       integration tests, `cargo check`/Clippy for touched crates, and
       `git diff --check`. Note pre-existing Clippy warnings separately.

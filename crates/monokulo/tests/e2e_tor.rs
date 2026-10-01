@@ -411,7 +411,7 @@ fn circuits(state: &AppState) -> Vec<u32> {
 #[ignore = "needs a real tor and the live Tor network; see the module doc comment"]
 async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slowed() {
     let engine =
-        scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let (state, onion_listener, store) = start_monokulo(engine.addr).await;
     let tor = start_tor(onion_listener.port()).await;
     println!("tor data and log in {}", tor.dir.display());

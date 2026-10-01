@@ -4,7 +4,7 @@
 //! component (e.g. the monokulo database) can reuse the same
 //! transactional, tracked-by-version migration mechanism instead of hand-rolling
 //! its own and risking reintroducing the failure modes this module's test
-//! guards against. The engine (`scanner`) keeps its own `MIGRATIONS`
+//! guards against. The engine (`engine`) keeps its own `MIGRATIONS`
 //! list and `apply_migrations` wrapper in `src/store.rs` - only the generic
 //! mechanism moved here, since a migration list of `include_str!("../migrations/...")`
 //! paths is meaningless outside the crate that owns those files.
@@ -47,7 +47,7 @@ pub fn apply(conn: &Connection, migrations: &[(i64, &str)]) -> rusqlite::Result<
         if !already_applied {
             // `unchecked_transaction` rather than `Connection::transaction` since
             // callers generally hold `&Connection`, not `&mut Connection` (see
-            // `scanner::store`'s single-writer discipline for why the
+            // `engine::store`'s single-writer discipline for why the
             // borrow-level check `Connection::transaction` would enforce is
             // redundant there).
             let tx = conn.unchecked_transaction()?;

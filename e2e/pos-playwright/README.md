@@ -58,7 +58,7 @@ npx playwright install chromium
 ```
 
 The Rust binary this suite drives is built automatically by `global-setup.js`
-(`cargo build -p scanner --features e2e --bin e2e-harness`) the first time you run
+(`cargo build -p engine --features e2e --bin e2e-harness`) the first time you run
 it - that first build pulls in `cli-wallet`'s own real transaction-signing
 dependencies (`monero-wallet`, `monero-daemon-rpc`, `curve25519-dalek`) and can take a
 little while; every run after that is a fast no-op rebuild check.
@@ -78,7 +78,7 @@ screenshots on failure).
 
 ## How it's wired together
 
-- `global-setup.js` builds and spawns `crates/scanner/src/bin/e2e_harness.rs`
+- `global-setup.js` builds and spawns `crates/engine/src/bin/e2e_harness.rs`
   (`target/debug/e2e-harness`), a real `[[bin]]` (not a `cargo test`) so this script
   can spawn/discover/kill it as a predictable, ordinary child process. That binary
   prints one `POS_E2E_READY {...}` JSON line to stdout once both real servers are up
@@ -126,7 +126,7 @@ Run `npx playwright test -c coverage-real.config.js` from this directory, or
 `cargo xtask coverage browser` from the repository root for instrumentation,
 screenshots, and the offline report.
 The suite builds `monokulo`'s `coverage_fixture` example with Cargo's offline
-mode, starts a real Monokulo router and `scanner-test-support` engine on local
+mode, starts a real Monokulo router and `engine-test-support` engine on local
 ephemeral ports, and stops the fixture after the tests. It seeds one merchant,
 store, session, and order. The full checkout and the POS app are the
 product's own HTML, CSS, and JavaScript. No public node or wallet is involved.
@@ -150,14 +150,14 @@ Its global setup (`real-binaries-setup.js`) builds the binaries once. Each
 spec file (`tests/real-*.spec.js`) then starts its own real `scanner` and
 `monokulo` - their real `main` and boot wiring - against empty databases in
 a temporary directory, plus `fake-monerod`
-(`crates/scanner-test-support/src/bin/fake-monerod.rs`), a stand-in node
+(`crates/engine-test-support/src/bin/fake-monerod.rs`), a stand-in node
 serving a fixed chain of empty blocks (`real-stack.js`, through
 `useRealStack(test)` at the top of the spec). So every file starts from a
 fresh instance, a file's tests run in order against its own processes, and
 files run side by side on four workers (`E2E_WORKERS=1` runs one at a time).
 The fake node can't produce payments, so payment flows stay in the Rust
 integration tests. `KEEP_E2E_LOGS=1` keeps the processes' logs and
-databases; `E2E_SCANNER_BIN=<path>` runs another engine build, for
+databases; `E2E_ENGINE_BIN=<path>` runs another engine build, for
 checking a spec fails against the bug it guards (`real-1-settings.spec.js`
 fails against the engine from before 8830c92, at the status page step).
 
