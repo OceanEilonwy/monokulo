@@ -46,7 +46,9 @@ tracing = "0.1.44"
 uuid = { version = "1.26.0", features = ["v4"] }
 hickory-resolver = "0.26.3"
 serde_urlencoded = "0.7"
-jiff = "0.2"
+# The time zone database is built in, so time zones work (and tests pass)
+# on a host without tzdata installed.
+jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 
 [dev-dependencies]
 # Turns on `test-support` for this crate's own integration tests and examples.

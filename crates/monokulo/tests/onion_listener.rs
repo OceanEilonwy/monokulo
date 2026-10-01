@@ -119,12 +119,17 @@ async fn junk_is_refused_and_a_stalled_connection_does_not_block_the_next_circui
 
     // Opens, then says nothing.
     let _stalled = TcpStream::connect(addr).await.unwrap();
-    let started = std::time::Instant::now();
-    assert_eq!(request(addr, &circuit(7)).await, Some(404));
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "the stalled connection held up a real one"
-    );
+    // Answered before the stalled connection's header timeout (5 s) could
+    // have run out: had it held this one up, the request would have waited
+    // for it. The bound is that timeout, not a guess at how fast the
+    // machine is.
+    let answered = tokio::time::timeout(
+        std::time::Duration::from_millis(4500),
+        request(addr, &circuit(7)),
+    )
+    .await
+    .expect("the stalled connection held up a real one");
+    assert_eq!(answered, Some(404));
 
     // A TLS ClientHello's first bytes: binary, no line ending.
     let mut junk = TcpStream::connect(addr).await.unwrap();

@@ -1432,7 +1432,7 @@ mod tests {
         // (`scanner_test_support::BACKGROUND_LOOP_INTERVAL`), and this only needs to
         // wait for the first tick after this order's 1-second `expires_at` has
         // actually passed and the delivery worker has had one more tick to send it.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
         let matched = loop {
             let found = credentials.webhook_receiver.events().into_iter().find(|e| {
                 e.payload.get("order_id").and_then(|v| v.as_str()) == Some(order.order_id.as_str())
@@ -1554,7 +1554,7 @@ mod tests {
             .mark_order_paid(&order.order_id)
             .expect("marking the order paid failed");
 
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
         let paid = loop {
             let found = credentials.webhook_receiver.events().into_iter().find(|e| {
                 e.event == "order.paid"

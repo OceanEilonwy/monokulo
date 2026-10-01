@@ -57,7 +57,8 @@ fn all(store: &LogStore) -> Vec<LogRow> {
 
 /// Waits for the writer thread to have stored `count` lines.
 fn wait_for(store: &LogStore, count: usize) -> Vec<LogRow> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Bounds only a hung writer, not how fast it is on a loaded machine.
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let rows = all(store);
         if rows.len() >= count || Instant::now() > deadline {
@@ -132,6 +133,13 @@ fn lines_are_stored_with_their_attributes_and_trace_and_found_by_filter() {
 fn pages_follow_the_cursor_both_ways_and_time_ranges_apply() {
     let s = setup("info");
     for n in 0..7 {
+        // Each line on a later clock reading than the one before: the time
+        // ranges below select by timestamp, and on a coarse clock two lines
+        // logged back to back could share one.
+        let before = std::time::SystemTime::now();
+        while std::time::SystemTime::now() <= before {
+            std::hint::spin_loop();
+        }
         tracing::info!("line {n}");
     }
     let rows = wait_for(&s.store, 7);
