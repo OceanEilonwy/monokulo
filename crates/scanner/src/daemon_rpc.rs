@@ -59,6 +59,9 @@ pub struct RpcDaemonClient {
 /// far below what would hurt the machine.
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
+/// How long one request to a node may take.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Reads a response body, refusing one larger than `cap` bytes, whether or
 /// not it declared its length.
 async fn read_capped(
@@ -111,12 +114,24 @@ impl RpcDaemonClient {
         let scheme = if ssl { "https" } else { "http" };
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(danger_accept_invalid_certs)
-            .timeout(Duration::from_secs(15))
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|e| DaemonError::Request(format!("failed to build HTTP client: {e}")))?;
+        // An IPv6 literal goes in brackets; anything else that isn't a
+        // host name or address makes no URL.
+        let host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        };
+        let base_url = format!("{scheme}://{host}:{port}");
+        url::Url::parse(&base_url)
+            .ok()
+            .filter(|url| url.host_str().is_some())
+            .ok_or_else(|| DaemonError::Request(format!("not a node address: {host}:{port}")))?;
         Ok(RpcDaemonClient {
             client,
-            base_url: format!("{scheme}://{host}:{port}"),
+            base_url,
             max_response_bytes: MAX_RESPONSE_BYTES,
             stats: Default::default(),
             pool: Default::default(),
@@ -128,11 +143,19 @@ impl RpcDaemonClient {
 
     /// Other pool timings, for tests: how long an answer is reused, and how
     /// often the plain list of ids replaces what was followed.
-    #[cfg(test)]
-    fn with_pool_timing(mut self, reuse: Duration, resync: Duration) -> Self {
+    #[doc(hidden)]
+    pub fn with_pool_timing(mut self, reuse: Duration, resync: Duration) -> Self {
         self.pool_reuse = reuse;
         self.pool_resync = resync;
         self
+    }
+
+    /// Forgets when the pool was last asked about, so the next poll asks
+    /// the node whatever the reuse window: for tests that would otherwise
+    /// wait it out.
+    #[doc(hidden)]
+    pub async fn forget_pool_answer_time(&self) {
+        self.pool.lock().await.polled_at = None;
     }
 
     /// Every endpoint asked since this client was built, busiest (by bytes
@@ -237,8 +260,8 @@ impl RpcDaemonClient {
         // note), not a network problem. Including a snippet of the actual body in
         // the error is what makes that diagnosable from the error message alone,
         // rather than needing to reproduce it with a packet capture.
-        serde_json::from_value(value.clone()).map_err(|e| {
-            let full = value.to_string();
+        let full = value.to_string();
+        serde_json::from_value(value).map_err(|e| {
             // `String` slicing panics off a char boundary; `char_indices` finds the
             // nearest safe cut at or before 500 bytes rather than assuming ASCII.
             let cut = full
@@ -352,7 +375,14 @@ fn classify_located_transaction(
     if resp.missed_tx.iter().any(|h| h == txid) {
         return Ok(TxLocation::NotFound);
     }
-    match resp.txs.and_then(|v| v.into_iter().next()) {
+    // The entry for the transaction asked about, not whatever came first:
+    // an entry for another hash (a cache or proxy answering for someone
+    // else) is a non-answer.
+    let entry = resp.txs.and_then(|v| {
+        v.into_iter()
+            .find(|entry| entry.tx_hash.is_empty() || entry.tx_hash.eq_ignore_ascii_case(txid))
+    });
+    match entry {
         Some(entry) if entry.in_pool => Ok(TxLocation::InPool),
         Some(entry) => match entry.block_height {
             Some(h) => Ok(TxLocation::InBlock(h)),
@@ -454,12 +484,14 @@ const POOL_INFO_FULL: u8 = 2;
 
 /// A `get_blocks.bin` request for what changed in the pool since `since`
 /// (a `daemon_time` from an earlier answer; 0 for the whole pool), with
-/// the added transactions pruned. The request wallets poll with.
+/// the added transactions whole: a pool entry carries no prunable hash, so
+/// only a whole body can be checked against the id it came under (see
+/// `PoolView::apply`). The request wallets poll with.
 fn pool_changes_request(since: u64) -> Vec<u8> {
     epee_request(&[
         ("requested_info", EpeeField::U8(REQUESTED_INFO_POOL_ONLY)),
         ("pool_info_since", EpeeField::U64(since)),
-        ("prune", EpeeField::Bool(true)),
+        ("prune", EpeeField::Bool(false)),
     ])
 }
 
@@ -479,7 +511,7 @@ fn pool_changes_and_tip_request(since: u64, tip_id: &[u8; 32]) -> Vec<u8> {
             EpeeField::U8(REQUESTED_INFO_BLOCKS_AND_POOL),
         ),
         ("pool_info_since", EpeeField::U64(since)),
-        ("prune", EpeeField::Bool(true)),
+        ("prune", EpeeField::Bool(false)),
         ("block_ids", EpeeField::Blob(tip_id)),
         ("start_height", EpeeField::U64(1)),
         ("max_block_count", EpeeField::U64(1)),
@@ -569,7 +601,9 @@ impl BinBlock {
 /// node (or the block the transaction came in) `claimed` an id, a computed
 /// one that differs is an error: the transaction isn't the one named. Only
 /// where nothing can be computed (a pruned version 1 transaction, or no
-/// prunable hash sent) is the claimed id taken as given.
+/// prunable hash sent - a node does not send one for every transaction;
+/// stagenet nodes answer `get_blocks.bin` without) is the claimed id taken
+/// as given: in a block, that is the block's own list, which its id covers.
 fn decode_tx_blob(
     blob: &[u8],
     prunable_hash: Option<&[u8; 32]>,
@@ -778,8 +812,15 @@ struct PoolChanges {
 /// (an older monerod), to be asked the old way instead.
 fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> {
     let epee_err = |e| epee_err("pool get_blocks.bin", e);
-    fn ids(blob: &[u8]) -> Vec<String> {
-        blob.as_chunks::<32>().0.iter().map(hex::encode).collect()
+    fn ids(blob: &[u8]) -> Result<Vec<String>, DaemonError> {
+        let (whole, rest) = blob.as_chunks::<32>();
+        if !rest.is_empty() {
+            return Err(DaemonError::Request(format!(
+                "invalid pool get_blocks.bin response: a transaction id list of {} bytes",
+                blob.len()
+            )));
+        }
+        Ok(whole.iter().map(hex::encode).collect())
     }
 
     let mut epee = monero_epee::Epee::new(bytes).map_err(epee_err)?;
@@ -803,10 +844,10 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
                 }
             }
             b"remaining_added_pool_txids" => {
-                changes.added_ids = ids(value.to_str().map_err(epee_err)?.consume());
+                changes.added_ids = ids(value.to_str().map_err(epee_err)?.consume())?;
             }
             b"removed_pool_txids" => {
-                changes.removed = ids(value.to_str().map_err(epee_err)?.consume());
+                changes.removed = ids(value.to_str().map_err(epee_err)?.consume())?;
             }
             b"added_pool_txs" => {
                 let mut entries = value.iterate().map_err(epee_err)?;
@@ -909,11 +950,25 @@ impl PoolView {
             self.bodies.clear();
         }
         for (txid, blob) in changes.added {
-            // A body that doesn't decode is left to be fetched (and
-            // reported) by whoever asks for it.
+            // Only a body that hashes to the id it came under is kept: the
+            // pool entry has no prunable hash, so a pruned body (a node
+            // ignoring `prune = false`) can't be checked and is left to be
+            // fetched by `/get_transactions`, which sends one. A body that
+            // doesn't decode or hashes to something else is left to be
+            // fetched (and reported) the same way.
             if self.bodies.len() < POOL_BODIES_MAX {
-                if let Ok(tx) = shared::monero_tx::decode_any(&blob) {
-                    self.bodies.insert(txid.clone(), tx);
+                match decode_tx_blob(&blob, None, Some(&txid)) {
+                    Ok(fetched) if !shared::monero_tx::is_pruned(&fetched.tx) => {
+                        self.bodies.insert(txid.clone(), fetched.tx);
+                    }
+                    Ok(_) => {}
+                    Err(error) => shared::throttled!(
+                        "pool-body-mismatch",
+                        warn,
+                        tx.id = %txid,
+                        error = %error,
+                        "the node sent a pool transaction that isn't the one it named"
+                    ),
                 }
             }
             self.txids.insert(txid);
@@ -999,18 +1054,36 @@ struct BlockHeader {
 
 impl BlockHeader {
     /// The header as the chain tier and block recorder use it. The genesis
-    /// block's parent is the empty string here, not monerod's 64 zeros.
-    fn into_chain_header(self, height: u64) -> ChainHeader {
-        ChainHeader {
-            height,
-            hash: self.hash,
-            prev_hash: if height == 0 {
-                String::new()
-            } else {
-                self.prev_hash
-            },
-            timestamp: self.timestamp,
+    /// block's parent is the empty string here, not monerod's 64 zeros. The
+    /// hashes are checked for shape and lowercased, as `get_block_hash`'s
+    /// are: a hash recorded in another form would never equal the one read
+    /// later, and read as a reorg at that height forever.
+    fn into_chain_header(self, height: u64) -> Result<ChainHeader, DaemonError> {
+        let hash = self.hash.to_ascii_lowercase();
+        if !is_txid(&hash) {
+            return Err(DaemonError::Request(format!(
+                "block {height}'s header has an invalid hash: {:?}",
+                self.hash
+            )));
         }
+        let prev_hash = if height == 0 {
+            String::new()
+        } else {
+            let prev_hash = self.prev_hash.to_ascii_lowercase();
+            if !is_txid(&prev_hash) {
+                return Err(DaemonError::Request(format!(
+                    "block {height}'s header has an invalid parent hash: {:?}",
+                    self.prev_hash
+                )));
+            }
+            prev_hash
+        };
+        Ok(ChainHeader {
+            height,
+            hash,
+            prev_hash,
+            timestamp: self.timestamp,
+        })
     }
 }
 
@@ -1375,7 +1448,19 @@ impl MoneroDaemonClient for RpcDaemonClient {
         if wanted > 0 {
             let blocks = self.get_blocks_bin(from, wanted).await?;
             for (offset, block) in blocks.into_iter().take(wanted as usize).enumerate() {
-                out.push(block.into_chain_block(from + offset as u64)?);
+                let block = block.into_chain_block(from + offset as u64)?;
+                // One answer, one chain: a node mixing blocks from two
+                // forks is refused here, not found by reorg detection
+                // later.
+                if let Some(previous) = out.last() {
+                    if block.prev_hash != previous.hash {
+                        return Err(DaemonError::Request(format!(
+                            "get_blocks.bin: block {} does not follow block {} in the same answer",
+                            block.height, previous.height
+                        )));
+                    }
+                }
+                out.push(block);
             }
         }
         if out.is_empty() {
@@ -1409,21 +1494,32 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 "start_height": start_height,
                 "end_height": start_height.saturating_add(count - 1),
             });
-            if let Ok(Headers { headers }) =
-                self.post_json_rpc("get_block_headers_range", range).await
-            {
-                let mut out = Vec::with_capacity(headers.len());
-                for (height, header) in (start_height..).zip(headers) {
-                    if header.height.is_some_and(|own| own != height) {
-                        return Err(DaemonError::Request(format!(
-                            "get_block_headers_range: asked for block {height}, the node sent another"
-                        )));
+            match self.post_json_rpc("get_block_headers_range", range).await {
+                Ok(Headers { headers }) => {
+                    let mut out = Vec::with_capacity(headers.len());
+                    for (height, header) in
+                        (start_height..).zip(headers.into_iter().take(count as usize))
+                    {
+                        if header.height.is_some_and(|own| own != height) {
+                            return Err(DaemonError::Request(format!(
+                                "get_block_headers_range: asked for block {height}, the node sent another"
+                            )));
+                        }
+                        out.push(header.into_chain_header(height)?);
                     }
-                    out.push(header.into_chain_header(height));
+                    if !out.is_empty() {
+                        return Ok(out);
+                    }
                 }
-                if !out.is_empty() {
-                    return Ok(out);
-                }
+                // Refused past the tip, which is expected; a node that
+                // refuses every range makes this one header a call, which
+                // an operator should be able to see.
+                Err(error) => shared::throttled!(
+                    "headers-range-refused",
+                    debug,
+                    error = %error,
+                    "get_block_headers_range refused; asking for one header"
+                ),
             }
         }
         let header = self.block_header(start_height).await?;
@@ -1432,7 +1528,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 "get_block_header_by_height: asked for block {start_height}, the node sent another"
             )));
         }
-        Ok(vec![header.into_chain_header(start_height)])
+        Ok(vec![header.into_chain_header(start_height)?])
     }
 
     /// The pool's transaction ids, followed by its changes where the node
@@ -1906,6 +2002,12 @@ mod wire_tests {
 
     /// The fixture transaction as a node sends it pruned: its id, its
     /// prefix and RingCT base, and the hash of what was left out.
+    /// The fixture transaction whole, with its id.
+    fn whole_fixture() -> (String, Vec<u8>) {
+        let whole = whole_tx();
+        (hex::encode(whole.hash().to_bytes()), serialize(&whole))
+    }
+
     fn pruned_fixture() -> (String, Vec<u8>, [u8; 32]) {
         let whole = whole_tx();
         let base = whole.rct_signatures.sig.as_ref().unwrap();
@@ -2189,7 +2291,7 @@ mod wire_tests {
                 "0111010101010201011c",
                 "0e7265717565737465645f696e666f0801",
                 "0f706f6f6c5f696e666f5f73696e6365054d00000000000000",
-                "057072756e650b01",
+                "057072756e650b00",
                 "09626c6f636b5f6964730a80",
                 &"ab".repeat(32),
                 "0c73746172745f686569676874050100000000000000",
@@ -2207,7 +2309,7 @@ mod wire_tests {
     #[tokio::test]
     async fn the_pool_is_followed_by_its_changes() {
         let (client, node) = scripted().await;
-        let (a, blob, _) = pruned_fixture();
+        let (a, blob) = whole_fixture();
         node.answer(
             "/get_blocks.bin",
             pool_answer(POOL_INFO_FULL, 100, &[(&a, &blob)], &[B], &[]),
@@ -2225,15 +2327,15 @@ mod wire_tests {
             sorted(client.get_mempool_txids().await.unwrap()),
             sorted(vec![a.clone(), B.to_string()])
         );
-        // The body came with the pool: no request for it, and it is pruned
-        // and carries its id.
+        // The body came with the pool: no request for it, and it is whole
+        // (checked against its id) and carries the id.
         let bodies = client
             .get_transactions_with_ids(std::slice::from_ref(&a))
             .await
             .unwrap();
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0].txid, a);
-        assert!(shared::monero_tx::is_pruned(&bodies[0].tx));
+        assert!(!shared::monero_tx::is_pruned(&bodies[0].tx));
         assert_eq!(bodies[0].tx.prefix, whole_tx().prefix);
         assert!(node.requests_to("/get_transactions").is_empty());
 
@@ -2441,7 +2543,7 @@ mod wire_tests {
     /// transactions still there.
     #[test]
     fn the_pool_view_applies_changes_and_corrections() {
-        let (a, blob, _) = pruned_fixture();
+        let (a, blob) = whole_fixture();
         let mut view = PoolView::default();
         view.apply(PoolChanges {
             full: true,
@@ -2454,6 +2556,28 @@ mod wire_tests {
         assert_eq!(view.since, 5);
         assert_eq!(sorted(view.list()), sorted(vec![a.clone(), B.to_string()]));
         assert!(view.bodies.contains_key(&a));
+        // A body under another id, or a pruned one (nothing to check it
+        // against), is a known id without a body.
+        let (_, pruned, _) = pruned_fixture();
+        view.apply(PoolChanges {
+            full: false,
+            daemon_time: 5,
+            added: vec![(D.to_string(), blob.clone()), (C.to_string(), pruned)],
+            added_ids: vec![],
+            removed: vec![],
+            ..PoolChanges::default()
+        });
+        assert!(!view.bodies.contains_key(D));
+        assert!(!view.bodies.contains_key(C));
+        assert!(view.txids.contains(D) && view.txids.contains(C));
+        view.apply(PoolChanges {
+            full: false,
+            daemon_time: 5,
+            added: vec![],
+            added_ids: vec![],
+            removed: vec![C.to_string(), D.to_string()],
+            ..PoolChanges::default()
+        });
         // An undecodable body is a known id without a body.
         view.apply(PoolChanges {
             full: false,
@@ -2812,7 +2936,7 @@ mod wire_tests {
         let (client, node) = scripted().await;
         node.answer(
             "/json_rpc",
-            rpc_result(json!({ "status": "OK", "headers": [header(5, B, "aa"), header(6, C, B)] })),
+            rpc_result(json!({ "status": "OK", "headers": [header(5, B, D), header(6, C, B)] })),
         );
         let headers = client.get_chain_headers(5, 2).await.unwrap();
         assert_eq!(
@@ -2821,7 +2945,7 @@ mod wire_tests {
                 ChainHeader {
                     height: 5,
                     hash: B.to_string(),
-                    prev_hash: "aa".to_string(),
+                    prev_hash: D.to_string(),
                     timestamp: 1_005
                 },
                 ChainHeader {

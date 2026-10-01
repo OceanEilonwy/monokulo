@@ -6,21 +6,21 @@
 //!
 //! ## Failover policy
 //!
-//! Every call starts at whichever node index last succeeded (`current`), not always
-//! at index 0 - a live deployment whose primary node has gone down and stayed down
-//! should not re-try it (and pay its connection-timeout cost) on every single scan
-//! tick forever; it should settle onto whichever node is actually answering. If that
-//! node fails, the next node in order is tried, wrapping around, until either one
-//! succeeds (which becomes the new `current`) or every node has been tried once, in
+//! Every call tries the nodes in their configured order, skipping the ones
+//! in cooldown after a failure (5 s after the first failure in a row,
+//! doubling up to 5 minutes): a down primary is not paid for on every scan
+//! tick, and once its cooldown ends it is tried again ahead of the
+//! fallbacks, so a deployment never settles on a fallback for good - one
+//! that answers but is thousands of blocks behind would otherwise hide new
+//! confirmations until the operator noticed. If a node fails, the next in
+//! order is tried, until one succeeds or every node has been tried once, in
 //! which case the last error is returned. There is no separate health-check
-//! loop or background probing - the next real call is the health check, which keeps
-//! this simple and means it never reports a node "up" based on stale information.
+//! loop or background probing - the next real call is the health check,
+//! which keeps this simple and means it never reports a node "up" based on
+//! stale information.
 //!
-//! A single down node therefore costs at most one failed request's worth of latency
-//! per call while it stays down (not a cascading retry storm), and recovery is
-//! automatic: the moment the current node starts failing, the very next call moves
-//! on, and a previously-failed node earlier in priority order is naturally retried
-//! again once the chain of calls wraps back around to it.
+//! A down node therefore costs at most one failed request's worth of
+//! latency per call, and then nothing until its cooldown ends.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,8 +52,11 @@ const MAX_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 /// every node dead fails in bounded time rather than one full request
 /// timeout per node.
 pub const CALL_DEADLINE: Duration = Duration::from_secs(30);
-/// Least time one node gets within a call, however many nodes are left.
-const MIN_ATTEMPT: Duration = Duration::from_secs(5);
+/// Longest one node gets within a call: the client's own request timeout
+/// (`daemon_rpc::REQUEST_TIMEOUT`). A node is never cut off short of what
+/// its own client would give it; the shrinking deadline limits how many
+/// nodes a call gets to try instead.
+const MAX_ATTEMPT: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
 
 #[derive(Default)]
 struct NodeHealth {
@@ -64,10 +67,9 @@ struct NodeHealth {
 pub struct FallbackDaemonClient {
     nodes: Vec<FallbackNode>,
     health: Vec<Mutex<NodeHealth>>,
-    /// Index into `nodes` of whichever node most recently answered successfully -
-    /// where the *next* call starts trying from. Relaxed ordering is enough: this is
-    /// an optimization (skip nodes already known-bad) rather than a correctness
-    /// requirement, since every call still tries every node in order if needed.
+    /// Index into `nodes` of whichever node most recently answered
+    /// successfully, for the status page and the failover log. Relaxed
+    /// ordering is enough: it is reported, not relied on.
     current: AtomicUsize,
 }
 
@@ -97,11 +99,9 @@ impl FallbackDaemonClient {
         &self.nodes
     }
 
-    /// Index into [`Self::nodes`] of whichever node this client would try
-    /// first on its *next* call right now - see the module doc comment's
-    /// own "Failover policy" section. A snapshot, not a guarantee: another
-    /// concurrent call can change it the instant after this returns, same
-    /// as any other use of `current` in this type.
+    /// Index into [`Self::nodes`] of whichever node last answered a call.
+    /// A snapshot, not a guarantee: another concurrent call can change it
+    /// the instant after this returns.
     pub fn current_index(&self) -> usize {
         self.current.load(Ordering::Relaxed)
     }
@@ -115,16 +115,13 @@ impl FallbackDaemonClient {
         })
     }
 
-    /// The order to try nodes in for one call: from `current` round the list,
-    /// nodes out of cooldown first, then (so that recovery is never blocked)
-    /// the ones in cooldown.
+    /// The order to try nodes in for one call: the configured order, nodes
+    /// out of cooldown first, then (so that recovery is never blocked) the
+    /// ones in cooldown. The primary is first whenever it is not cooling
+    /// down, so a fallback is never kept for good.
     fn attempt_order(&self) -> Vec<usize> {
-        let start = self.current.load(Ordering::Relaxed);
-        let all: Vec<usize> = (0..self.nodes.len())
-            .map(|offset| (start + offset) % self.nodes.len())
-            .collect();
         let (ready, cooling): (Vec<usize>, Vec<usize>) =
-            all.into_iter().partition(|&idx| !self.in_cooldown(idx));
+            (0..self.nodes.len()).partition(|&idx| !self.in_cooldown(idx));
         ready.into_iter().chain(cooling).collect()
     }
 
@@ -173,7 +170,7 @@ impl FallbackDaemonClient {
     /// tick (task 7.6). Different nodes can be at different heights or on
     /// different forks, and one tick mixing their answers (a height from one,
     /// blocks from another) can reach wrong conclusions. The pinned node is
-    /// the first one out of cooldown, starting from `current`. If it fails,
+    /// the first configured one out of cooldown. If it fails,
     /// the call fails (the tick ends and retries next time, when another node
     /// is picked) and the failure counts towards its cooldown here.
     pub fn pin(&self) -> PinnedDaemon<'_> {
@@ -197,10 +194,11 @@ impl FallbackDaemonClient {
                 )));
                 break;
             }
-            // A node that hangs gets its share of what's left, not all of it,
-            // so the nodes after it still get a turn.
-            let nodes_left = (order.len() - tried) as u32;
-            let this_attempt = (remaining / nodes_left).max(MIN_ATTEMPT).min(remaining);
+            // A node gets what its own client would give it, within what's
+            // left of the call: one that hangs costs the nodes after it
+            // their turn in this call, never the call its deadline.
+            let _ = tried;
+            let this_attempt = remaining.min(MAX_ATTEMPT);
             let outcome =
                 match tokio::time::timeout(this_attempt, call(self.nodes[idx].client.as_ref()))
                     .await
@@ -1130,21 +1128,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_node_in_cooldown_is_skipped_while_another_answers() {
-        let (a_node, _a) = node("a", Arc::new(FlakyDaemonClient::new(true)));
+    async fn a_node_in_cooldown_is_skipped_and_the_primary_is_back_first_after_it() {
+        let (a_node, a) = node("a", Arc::new(FlakyDaemonClient::new(false)));
         let (b_node, b) = node("b", Arc::new(FlakyDaemonClient::new(false)));
-        let (c_node, _c) = node("c", Arc::new(FlakyDaemonClient::new(true)));
+        let (c_node, c) = node("c", Arc::new(FlakyDaemonClient::new(true)));
         let client = FallbackDaemonClient::new(vec![a_node, b_node, c_node]);
-        // Settle on b, then b dies: the call moves on to c, and b cools down.
-        client.current.store(1, Ordering::Relaxed);
+        // The primary and the first fallback die: the call moves on to c,
+        // and both cool down.
         assert_eq!(client.get_height().await.unwrap(), 1);
         assert_eq!(client.current_index(), 2);
-        // Even starting from b again, b isn't tried while it cools down: the
-        // ready nodes come first, and one of them answers.
-        let b_calls = b.call_count();
-        client.current.store(1, Ordering::Relaxed);
+        assert_eq!((a.call_count(), b.call_count(), c.call_count()), (1, 1, 1));
+        // While they cool down neither is tried: the ready node comes first
+        // and answers.
         assert_eq!(client.get_height().await.unwrap(), 1);
-        assert_eq!(b.call_count(), b_calls, "the cooling-down node was skipped");
+        assert_eq!((a.call_count(), b.call_count(), c.call_count()), (1, 1, 2));
+        // Once its cooldown ends the primary is tried first again, even
+        // though c kept answering: a fallback is never kept for good (it
+        // could be answering from far behind the chain).
+        a.set_healthy(true);
+        tokio::time::advance(FIRST_COOLDOWN + Duration::from_millis(1)).await;
+        assert_eq!(client.get_height().await.unwrap(), 1);
+        assert_eq!(client.current_index(), 0);
+        assert_eq!((a.call_count(), b.call_count(), c.call_count()), (2, 1, 2));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1163,8 +1168,8 @@ mod tests {
             "the second node still got its turn"
         );
         assert!(
-            started.elapsed() <= CALL_DEADLINE / 2 + Duration::from_millis(10),
-            "took {:?}",
+            started.elapsed() <= MAX_ATTEMPT + Duration::from_millis(10),
+            "the hanging node got its client's own timeout, no more: took {:?}",
             started.elapsed()
         );
         assert_eq!(ok.call_count(), 1);
@@ -1187,7 +1192,7 @@ mod tests {
         let started = Instant::now();
         assert!(all_hanging.get_height().await.is_err());
         assert!(
-            started.elapsed() <= CALL_DEADLINE + MIN_ATTEMPT,
+            started.elapsed() <= CALL_DEADLINE + MAX_ATTEMPT,
             "took {:?}",
             started.elapsed()
         );

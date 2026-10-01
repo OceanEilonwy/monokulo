@@ -127,8 +127,11 @@ settings! {
         key: "payment.scan_chunk_memory_budget_mb",
         env: "SCANNER_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB",
         default: 8,
-        check: range(1, 4096),
-        description: "Megabytes of block data fetched at once when catching up on many blocks.",
+        // Under `daemon_rpc::MAX_RESPONSE_BYTES` (64 MB) with room for the
+        // wire format: a chunk the node's answer could never fit in would
+        // be refused, and asked for again, forever.
+        check: range(1, 48),
+        description: "Megabytes of block data fetched at once when catching up on many blocks (at most 48).",
         example: "8",
     },
     SERVER_BIND: BindAddr {
