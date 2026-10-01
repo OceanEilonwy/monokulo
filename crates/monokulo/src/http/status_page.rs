@@ -353,6 +353,22 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
             generated_at_display: String::new(),
         },
     };
+    // Node addresses and the raw text of node and scanner errors (which
+    // can name internal hosts) are for operators only: anyone else sees
+    // each node's place in the list and whether it answers.
+    if !admin {
+        for network in &mut view_model.networks {
+            for (i, node) in network.nodes.iter_mut().enumerate() {
+                node.label = format!("node {}", i + 1);
+                if node.error.is_some() {
+                    node.error = Some("not answering".to_string());
+                }
+            }
+            if network.scanner.last_error.is_some() {
+                network.scanner.last_error = Some("the last scan failed".to_string());
+            }
+        }
+    }
     // Challenge activity is for operators only; anonymous visitors and
     // merchants don't see it.
     if admin {
@@ -703,9 +719,12 @@ mod tests {
             )
             .await;
             assert!(html.contains("mainnet"), "got: {html}");
+            // An anonymous visitor sees the node's place in the list, not
+            // its address (`status_view`).
+            assert!(html.contains("node 1"), "the node is listed: {html}");
             assert!(
-                html.contains("lookup-test-daemon"),
-                "the node is listed by its label: {html}"
+                !html.contains("lookup-test-daemon"),
+                "its label is for operators only: {html}"
             );
             assert!(html.contains("has not been scanned yet"), "got: {html}");
             let summary = body_json(

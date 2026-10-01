@@ -61,6 +61,9 @@ pub struct CreateOrderResponse {
     pub expires_at: i64,
 }
 
+/// Longest merchant order reference accepted.
+pub const MAX_MERCHANT_ORDER_ID_CHARS: usize = 120;
+
 /// `POST /pay/{pk}/orders`. Open to anyone for an unrestricted store; a
 /// shop's server may authenticate with `Authorization: Bearer sk_...`
 /// (`super::store_key`, checked before this runs), which is recorded on the
@@ -70,8 +73,24 @@ pub async fn create_order(
     State(state): State<AppState>,
     Path(pk): Path<String>,
     key: Option<Extension<super::store_key::StoreKeyAuthenticated>>,
-    Json(req): Json<CreateOrderRequest>,
+    Json(mut req): Json<CreateOrderRequest>,
 ) -> Response {
+    // The merchant's own order reference, from anyone: trimmed, empty is
+    // none, and bounded before it is stored and shown on dashboards.
+    req.merchant_order_id = req
+        .merchant_order_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    if req
+        .merchant_order_id
+        .as_deref()
+        .is_some_and(|id| id.chars().count() > MAX_MERCHANT_ORDER_ID_CHARS)
+    {
+        return ApiError::BadRequest(format!(
+            "merchant_order_id must be at most {MAX_MERCHANT_ORDER_ID_CHARS} characters"
+        ))
+        .into_response();
+    }
     let created_with_key = key.is_some();
     let policy = crate::confirmation_thresholds::lock_policy(&pk).await;
     let (key, currency) = (pk.clone(), req.currency.clone());

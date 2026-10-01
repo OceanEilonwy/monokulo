@@ -156,7 +156,7 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                     }
                     label {
                         "View key (hex)"
-                        input type="text" name="view_key_hex" value=(data.view_key_hex) required pattern="[0-9a-fA-F]{64}" placeholder="64 hex characters";
+                        input type="password" name="view_key_hex" value=(data.view_key_hex) required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
                         span class="field-help" {
                             "The " em { "private view key" } " of a watch-only wallet - lets this "
                             "service detect incoming payments. This is not your spend key and cannot move funds by itself."
@@ -164,7 +164,7 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                     }
                     label {
                         "Spend public key (hex)"
-                        input type="text" name="spend_pubkey_hex" value=(data.spend_pubkey_hex) required pattern="[0-9a-fA-F]{64}" placeholder="64 hex characters";
+                        input type="text" name="spend_pubkey_hex" value=(data.spend_pubkey_hex) required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
                         span class="field-help" {
                             "The " em { "public" } " half of your spend key pair (not the private spend "
                             "key - never enter that anywhere). Together with the view key above, this is everything needed to "
@@ -248,12 +248,12 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
                 input type="hidden" name="mode" value="new";
                 label {
                     "View key (hex)"
-                    input type="text" name="view_key_hex" value=(data.view_key_hex) required pattern="[0-9a-fA-F]{64}" placeholder="64 hex characters";
+                    input type="password" name="view_key_hex" value=(data.view_key_hex) required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
                     span class="field-help" { "The private view key of a watch-only wallet." }
                 }
                 label {
                     "Spend public key (hex)"
-                    input type="text" name="spend_pubkey_hex" value=(data.spend_pubkey_hex) required pattern="[0-9a-fA-F]{64}" placeholder="64 hex characters";
+                    input type="text" name="spend_pubkey_hex" value=(data.spend_pubkey_hex) required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
                     span class="field-help" { "The public half of your spend key pair - never your private spend key." }
                 }
                 label {
