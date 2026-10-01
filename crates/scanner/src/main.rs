@@ -337,7 +337,7 @@ async fn run(action: Action) {
         }
     }
     // On SIGTERM or Ctrl-C (task 7.11): stop accepting connections and let
-    // requests in flight finish, for up to SHUTDOWN_GRACE, then exit. The
+    // requests in flight finish, for up to shared::shutdown::GRACE, then exit. The
     // background loops simply stop with the process: every step they take is
     // safe to interrupt (payments are recorded idempotently, a block is only
     // marked scanned after everything in it is recorded, webhooks are marked
@@ -346,17 +346,22 @@ async fn run(action: Action) {
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal());
+    .with_graceful_shutdown(shared::shutdown::signal());
     let served = tokio::spawn(async move { server.await });
-    let _ = shutdown_signal().await;
-    tracing::info!(grace = ?SHUTDOWN_GRACE, "shutting down: finishing requests in flight");
-    match tokio::time::timeout(SHUTDOWN_GRACE, served).await {
+    shared::shutdown::signal().await;
+    tracing::info!(grace = ?shared::shutdown::GRACE, "shutting down: finishing requests in flight");
+    match tokio::time::timeout(shared::shutdown::GRACE, served).await {
         Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),
         Ok(Ok(Err(e))) => tracing::error!(error = %e, "server error while shutting down"),
         Ok(Err(e)) => tracing::error!(error = %e, "server task failed while shutting down"),
         Err(_) => {
-            tracing::warn!(grace = ?SHUTDOWN_GRACE, "requests still running after the grace period, exiting anyway")
+            tracing::warn!(grace = ?shared::shutdown::GRACE, "requests still running after the grace period, exiting anyway")
         }
+    }
+    // The lines above, and any still on their way, stored (and exported)
+    // before the process ends.
+    if let Some(telemetry) = telemetry::global() {
+        telemetry.flush(shared::shutdown::LOG_FLUSH).await;
     }
 }
 
@@ -443,35 +448,4 @@ async fn register_all_tenants(
         }
     }
     handles
-}
-
-/// How long requests in flight get to finish after SIGTERM or Ctrl-C.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
-
-/// Resolves on SIGTERM (what a service manager sends) or Ctrl-C.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::warn!(error = %e, "could not listen for Ctrl-C");
-            std::future::pending::<()>().await;
-        }
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "could not listen for SIGTERM");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    tokio::select! {
-        () = ctrl_c => {}
-        () = terminate => {}
-    }
 }

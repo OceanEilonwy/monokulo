@@ -241,6 +241,10 @@ pub(crate) struct StoreSink {
     sender: OnceLock<SyncSender<Record>>,
     early: Mutex<Vec<Record>>,
     dropped: AtomicU64,
+    /// Records handed to the writer thread, and records it has finished
+    /// with (stored, or failed to), so `Telemetry::flush` can wait for it.
+    queued: AtomicU64,
+    finished: AtomicU64,
     /// OTLP export, when configured: gets a copy of every record.
     pub(crate) otlp: parking_lot::RwLock<Option<crate::otlp::Exporter>>,
 }
@@ -272,10 +276,24 @@ impl StoreSink {
         }
     }
 
+    /// How many records have reached the writer thread so far.
+    pub(crate) fn queued(&self) -> u64 {
+        self.queued.load(Ordering::SeqCst)
+    }
+
+    /// How many records the writer thread has finished with.
+    pub(crate) fn finished(&self) -> u64 {
+        self.finished.load(Ordering::SeqCst)
+    }
+
     fn try_send(&self, sender: &SyncSender<Record>, record: Record) {
+        // Counted before the send, so the writer can never have finished
+        // more than were queued.
+        self.queued.fetch_add(1, Ordering::SeqCst);
         match sender.try_send(record) {
             Ok(()) => {}
             Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                self.queued.fetch_sub(1, Ordering::SeqCst);
                 self.dropped.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -511,6 +529,7 @@ impl LogStore {
                 Err(RecvTimeoutError::Disconnected) => return,
             }
             if !batch.is_empty() {
+                let count = batch.len() as u64;
                 match insert(&mut conn, &mut batch) {
                     Ok(Some(latest)) => {
                         self.inner.latest.send_replace(latest);
@@ -519,6 +538,7 @@ impl LogStore {
                     Err(e) => shared_warn(&e),
                 }
                 batch.clear();
+                sink.finished.fetch_add(count, Ordering::SeqCst);
             }
             if last_maintenance.elapsed() >= MAINTENANCE_EVERY {
                 last_maintenance = Instant::now();

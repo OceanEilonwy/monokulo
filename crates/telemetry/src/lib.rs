@@ -383,6 +383,33 @@ impl Telemetry {
         *current = config;
     }
 
+    /// Waits, up to `timeout`, until every line and span logged so far is
+    /// stored and, with OTLP export on, sent: the last thing a process's
+    /// `main` does, so the lines saying why it stopped aren't lost with it.
+    /// False if the time ran out first.
+    pub async fn flush(&self, timeout: Duration) -> bool {
+        let stored = self.sink.queued();
+        let exported = self.sink.otlp.read().as_ref().map(|exporter| {
+            let progress = exporter.progress();
+            let target = progress.queued();
+            (progress, target)
+        });
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let done = self.sink.finished() >= stored
+                && exported
+                    .as_ref()
+                    .is_none_or(|(progress, target)| progress.finished() >= *target);
+            if done {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     /// The log store, once [`Self::open_store`] has run.
     pub fn store(&self) -> Option<store::LogStore> {
         self.store.get().cloned()

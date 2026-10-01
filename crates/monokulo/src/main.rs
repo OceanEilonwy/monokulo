@@ -35,7 +35,7 @@ fn encryption_key_from_env() -> monokulo::crypto::AtRestKey {
 #[tokio::main]
 async fn main() {
     // First, so everything after it is logged (structured_logging.md 1.1).
-    let _telemetry = telemetry::init("monokulo", "MONOKULO");
+    let telemetry = telemetry::init("monokulo", "MONOKULO");
     // Where the database lives and where monokulo listens: boot-only, from
     // the environment, like `MONOKULO_ENCRYPTION_KEY` (task 6.0 needs them
     // to run a test instance on a temporary database and a free port).
@@ -131,10 +131,23 @@ async fn main() {
     // would never see a real peer address in production, and would fail
     // open for every request (the "no signal at all" case that should only
     // ever happen in a test harness driven via `tower::ServiceExt::oneshot`).
-    axum::serve(
+    // On SIGTERM or Ctrl-C: stop accepting connections, let requests in
+    // flight finish for up to the grace period, then store the last lines.
+    let server = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await
-    .expect("server error");
+    .with_graceful_shutdown(shared::shutdown::signal());
+    let served = tokio::spawn(async move { server.await });
+    shared::shutdown::signal().await;
+    tracing::info!(grace = ?shared::shutdown::GRACE, "shutting down: finishing requests in flight");
+    match tokio::time::timeout(shared::shutdown::GRACE, served).await {
+        Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),
+        Ok(Ok(Err(e))) => tracing::error!(error = %e, "server error while shutting down"),
+        Ok(Err(e)) => tracing::error!(error = %e, "server task failed while shutting down"),
+        Err(_) => {
+            tracing::warn!(grace = ?shared::shutdown::GRACE, "requests still running after the grace period, exiting anyway")
+        }
+    }
+    telemetry.flush(shared::shutdown::LOG_FLUSH).await;
 }

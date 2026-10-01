@@ -25,6 +25,9 @@ use opentelemetry_proto::tonic::trace::v1::{
 use prost::Message;
 use serde_json::{Map, Value};
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use crate::store::{LogRow, Record, SpanRow};
 
 /// Records waiting to be sent; more are dropped.
@@ -286,6 +289,25 @@ pub(crate) fn requests(
 /// dropped.
 pub(crate) struct Exporter {
     sender: tokio::sync::mpsc::Sender<Record>,
+    progress: Arc<Progress>,
+}
+
+/// Records queued for export, and records whose request has finished
+/// (sent, or failed), so `Telemetry::flush` can wait for them.
+#[derive(Default)]
+pub(crate) struct Progress {
+    queued: AtomicU64,
+    finished: AtomicU64,
+}
+
+impl Progress {
+    pub(crate) fn queued(&self) -> u64 {
+        self.queued.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn finished(&self) -> u64 {
+        self.finished.load(Ordering::SeqCst)
+    }
 }
 
 impl Exporter {
@@ -294,17 +316,33 @@ impl Exporter {
     pub(crate) fn start(config: OtlpConfig) -> Option<Exporter> {
         let runtime = tokio::runtime::Handle::try_current().ok()?;
         let (sender, receiver) = tokio::sync::mpsc::channel(QUEUE);
-        runtime.spawn(run(config, receiver));
-        Some(Exporter { sender })
+        let progress = Arc::new(Progress::default());
+        runtime.spawn(run(config, receiver, Arc::clone(&progress)));
+        Some(Exporter { sender, progress })
     }
 
     /// Queues a record; false when the queue is full.
     pub(crate) fn offer(&self, record: Record) -> bool {
-        self.sender.try_send(record).is_ok()
+        // Counted before the send, so the task can never have finished
+        // more than were queued.
+        self.progress.queued.fetch_add(1, Ordering::SeqCst);
+        let queued = self.sender.try_send(record).is_ok();
+        if !queued {
+            self.progress.queued.fetch_sub(1, Ordering::SeqCst);
+        }
+        queued
+    }
+
+    pub(crate) fn progress(&self) -> Arc<Progress> {
+        Arc::clone(&self.progress)
     }
 }
 
-async fn run(config: OtlpConfig, mut receiver: tokio::sync::mpsc::Receiver<Record>) {
+async fn run(
+    config: OtlpConfig,
+    mut receiver: tokio::sync::mpsc::Receiver<Record>,
+    progress: Arc<Progress>,
+) {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -324,6 +362,7 @@ async fn run(config: OtlpConfig, mut receiver: tokio::sync::mpsc::Receiver<Recor
                 Ok(_) | Err(_) => true,
             };
         if !batch.is_empty() {
+            let count = batch.len() as u64;
             let (logs, spans) = requests(&batch);
             batch.clear();
             let mut result = Ok(());
@@ -341,6 +380,7 @@ async fn run(config: OtlpConfig, mut receiver: tokio::sync::mpsc::Receiver<Recor
                     tracing::warn!(error = %e, endpoint = %config.endpoint, "OTLP export failed; records were dropped");
                 }
             }
+            progress.finished.fetch_add(count, Ordering::SeqCst);
         }
         if !open {
             return;

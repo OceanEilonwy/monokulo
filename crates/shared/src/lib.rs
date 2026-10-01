@@ -25,6 +25,7 @@ pub mod order_status;
 pub mod password;
 pub mod rate_limit;
 pub mod settings;
+pub mod shutdown;
 pub mod sqlite;
 pub mod supervise;
 pub mod time;
