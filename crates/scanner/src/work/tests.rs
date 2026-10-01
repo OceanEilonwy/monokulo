@@ -1976,7 +1976,6 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     .unwrap();
     fake.reorg_from(5, vec![("b5", vec![]), ("b6", vec![])]);
 
-    let started = std::time::Instant::now();
     let report = run_round(
         &state,
         &inputs(&db, &custody, &HashLookupsFail(&fake), &tenants),
@@ -1988,11 +1987,8 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
         TierOutcome::Blocked(Wait::ChainDiverged),
         "{report:?}"
     );
+    // One step, not a budget's worth of re-asking (counted, not timed).
     assert_eq!(report.steps[Tier::Blocks], 1);
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "the round didn't spend its budget re-asking"
-    );
     assert!(
         store
             .lock()

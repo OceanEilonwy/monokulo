@@ -2430,11 +2430,21 @@ mod tests {
         let engine_client = state.engine.client.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
+        // Addresses nothing listens on: ports this process bound and let
+        // go, rather than ports assumed closed on every machine.
+        let closed = || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().to_string()
+        };
+        let (first_node, second_node) = (closed(), closed());
         // A store on stagenet, which needs a stagenet node saved first.
         let first = post_settings(
             &router,
             &cookie,
-            &[("tab", "nodes"), ("node_stagenet_0_address", "127.0.0.1:9")],
+            &[
+                ("tab", "nodes"),
+                ("node_stagenet_0_address", first_node.as_str()),
+            ],
         )
         .await;
         assert_eq!(first.status(), StatusCode::SEE_OTHER);
@@ -2452,13 +2462,13 @@ mod tests {
         let html = unescaped(&follow(&router, &cookie, restart).await);
         assert!(html.contains("Saved. These settings take effect after the engine restarts: server.worker_threads."), "{html}");
 
-        // Nothing answers on ports 9 or 10.
+        // Nothing answers on either node's port.
         let unserved = post_settings(
             &router,
             &cookie,
             &[
                 ("tab", "nodes"),
-                ("node_stagenet_0_address", "127.0.0.1:10"),
+                ("node_stagenet_0_address", second_node.as_str()),
             ],
         )
         .await;
