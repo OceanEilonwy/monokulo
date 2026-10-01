@@ -943,7 +943,9 @@ async fn at_boot_a_section_whose_values_break_a_rule_uses_its_defaults_until_fix
     assert_eq!(view(&h.registry.describe(), "limits.soft").problem, None);
 }
 
-#[tokio::test]
+// The paused clock makes each sleep below return only once every task is
+// blocked, so the assertion sees the second save parked, not unscheduled.
+#[tokio::test(start_paused = true)]
 async fn install_is_awaited_under_the_save_mutex() {
     let store = TestStore::with(&[]);
     let (gate, mut entered) = Gate::new();
@@ -1005,7 +1007,8 @@ async fn an_install_finishes_even_if_the_caller_stops_waiting() {
     assert_eq!(h.node_a.load().url, url("http://new-a.example"));
 }
 
-#[tokio::test]
+// Paused clock: the timeout elapses only once every task is blocked.
+#[tokio::test(start_paused = true)]
 async fn two_concurrent_saves_run_one_after_the_other() {
     let store = TestStore::with(&[]);
     let (gate, mut entered) = Gate::new();

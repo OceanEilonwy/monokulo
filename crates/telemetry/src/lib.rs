@@ -42,7 +42,6 @@ use live_settings::{FieldError, Reloadable, Section, Warning};
 use opentelemetry::trace::TracerProvider as _;
 use parking_lot::Mutex;
 use tracing::Subscriber;
-use tracing_subscriber::field::MakeExt;
 use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -270,7 +269,7 @@ where
             tracing_subscriber::fmt::layer()
                 .with_writer(writer)
                 .with_ansi(ansi)
-                .fmt_fields(tracing_subscriber::fmt::format::debug_fn(pretty_field).delimited(" "))
+                .fmt_fields(PrettyFields)
                 .and_then(json::EventLayer::<W>::new(service, None, sink.clone())),
         ),
     };
@@ -312,22 +311,59 @@ where
 }
 
 /// Field formatting for [`Format::Pretty`]: `name=value`, redacted, and
-/// the message as plain text.
-fn pretty_field(
-    writer: &mut tracing_subscriber::fmt::format::Writer<'_>,
-    field: &tracing::field::Field,
-    value: &dyn std::fmt::Debug,
-) -> std::fmt::Result {
-    let raw = format!("{value:?}");
-    if field.name() == "message" {
-        write!(writer, "{}", redact::text(&raw))
-    } else {
-        write!(
+/// the message as plain text. A `&str` field is written as the string
+/// itself (not Debug-quoted), so the redaction rules see the same value
+/// they see in [`Format::Json`].
+struct PrettyFields;
+
+impl<'writer> tracing_subscriber::fmt::FormatFields<'writer> for PrettyFields {
+    fn format_fields<R: tracing_subscriber::field::RecordFields>(
+        &self,
+        writer: tracing_subscriber::fmt::format::Writer<'writer>,
+        fields: R,
+    ) -> std::fmt::Result {
+        let mut visitor = PrettyVisitor {
             writer,
-            "{}={}",
-            field.name(),
-            redact::field(field.name(), &raw)
-        )
+            first: true,
+            result: Ok(()),
+        };
+        fields.record(&mut visitor);
+        visitor.result
+    }
+}
+
+struct PrettyVisitor<'writer> {
+    writer: tracing_subscriber::fmt::format::Writer<'writer>,
+    first: bool,
+    result: std::fmt::Result,
+}
+
+impl PrettyVisitor<'_> {
+    fn write(&mut self, field: &tracing::field::Field, raw: &str) {
+        if self.result.is_err() {
+            return;
+        }
+        let separator = if std::mem::take(&mut self.first) { "" } else { " " };
+        self.result = if field.name() == "message" {
+            write!(self.writer, "{separator}{}", redact::text(raw))
+        } else {
+            write!(
+                self.writer,
+                "{separator}{}={}",
+                field.name(),
+                redact::field(field.name(), raw)
+            )
+        };
+    }
+}
+
+impl tracing::field::Visit for PrettyVisitor<'_> {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.write(field, value);
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.write(field, &format!("{value:?}"));
     }
 }
 

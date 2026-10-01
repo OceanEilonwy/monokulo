@@ -44,6 +44,8 @@ pub enum VerifyError {
     VcekNotSignedByAsk,
     #[error("the VCEK's TCB certificate extensions ({field}) don't match the report's reported_tcb - report may be tampered or mismatched with the wrong VCEK")]
     VcekTcbMismatch { field: &'static str },
+    #[error("the VCEK's hwID certificate extension doesn't match the report's chip_id - the VCEK belongs to another chip")]
+    VcekHwIdMismatch,
     #[error(
         "the attestation report's own ECDSA signature does not verify against the VCEK public key"
     )]
@@ -180,6 +182,9 @@ pub async fn verify(
     //    two independent paths - the URL query string and the cert's own
     //    signed extensions - rather than trusting either alone).
     verify_vcek_tcb_extensions(&vcek_cert, &report.reported_tcb)?;
+    //    Likewise the chip: the fetch URL carries the report's chip_id, and
+    //    the VCEK's own signed hwID extension must name the same chip.
+    verify_vcek_hw_id(&vcek_cert, product, &report.chip_id)?;
 
     // 5. The report's own ECDSA P-384 signature, verified against the VCEK's
     //    public key.
@@ -251,6 +256,9 @@ mod oid {
     pub fn ucode_spl() -> Oid<'static> {
         Oid::from(&[1, 3, 6, 1, 4, 1, 3704, 1, 3, 8]).unwrap()
     }
+    pub fn hw_id() -> Oid<'static> {
+        Oid::from(&[1, 3, 6, 1, 4, 1, 3704, 1, 4]).unwrap()
+    }
 }
 
 /// Extracts a DER `INTEGER`'s value as a `u8` from an extension's raw value
@@ -297,6 +305,37 @@ fn verify_vcek_tcb_extensions(
         }
     }
     Ok(())
+}
+
+/// Refuses a VCEK whose hwID extension names a chip other than `chip_id`.
+fn verify_vcek_hw_id(
+    vcek_cert: &X509Certificate<'_>,
+    product: Product,
+    chip_id: &[u8; 64],
+) -> Result<(), VerifyError> {
+    let ext = vcek_cert
+        .get_extension_unique(&oid::hw_id())
+        .map_err(|e| VerifyError::CertParse(e.to_string()))?
+        .ok_or(VerifyError::VcekHwIdMismatch)?;
+    if hw_id_matches(ext.value, product, chip_id) {
+        Ok(())
+    } else {
+        Err(VerifyError::VcekHwIdMismatch)
+    }
+}
+
+/// Whether a hwID extension value (a DER `OCTET STRING`) names the chip
+/// `chip_id`. The extension holds the chip ID in the form KDS indexes the
+/// product's VCEKs by (`kds::hw_id_for_product`: 8 bytes on Turin, all 64
+/// elsewhere); the full 64 bytes are accepted too, since they name the
+/// same chip.
+fn hw_id_matches(der: &[u8], product: Product, chip_id: &[u8; 64]) -> bool {
+    // Tag(1) + Length(1, short form: hwIDs are at most 64 bytes) + Value.
+    let value = match der {
+        [0x04, len, value @ ..] if usize::from(*len) == value.len() && *len < 0x80 => value,
+        _ => return false,
+    };
+    value == kds::hw_id_for_product(product, chip_id).as_slice() || value == chip_id.as_slice()
 }
 
 fn verify_report_signature(
@@ -524,6 +563,50 @@ mod tests {
         let report = crate::report::parse(&raw, Product::Milan).unwrap();
         verify_report_signature_with_key(&report, signing_key.verifying_key())
             .expect("round-tripped signature must verify");
+    }
+
+    #[test]
+    fn the_vcek_hw_id_must_name_the_reports_chip() {
+        let chip_id: [u8; 64] = std::array::from_fn(|i| i as u8 + 1);
+        let octets = |bytes: &[u8]| {
+            let mut der = vec![0x04, bytes.len() as u8];
+            der.extend_from_slice(bytes);
+            der
+        };
+
+        assert!(hw_id_matches(&octets(&chip_id), Product::Milan, &chip_id));
+        assert!(hw_id_matches(&octets(&chip_id), Product::Genoa, &chip_id));
+        assert!(hw_id_matches(
+            &octets(&chip_id[..8]),
+            Product::Turin,
+            &chip_id
+        ));
+        assert!(hw_id_matches(&octets(&chip_id), Product::Turin, &chip_id));
+
+        let mut other_chip = chip_id;
+        other_chip[0] ^= 0xff;
+        assert!(!hw_id_matches(
+            &octets(&other_chip),
+            Product::Milan,
+            &chip_id
+        ));
+        assert!(!hw_id_matches(
+            &octets(&other_chip[..8]),
+            Product::Turin,
+            &chip_id
+        ));
+        assert!(
+            !hw_id_matches(&octets(&chip_id[..8]), Product::Milan, &chip_id),
+            "outside Turin, KDS names a chip by all 64 bytes"
+        );
+        assert!(!hw_id_matches(&[], Product::Milan, &chip_id));
+        assert!(
+            !hw_id_matches(&[0x02, 1, 0], Product::Milan, &chip_id),
+            "not an OCTET STRING"
+        );
+        let mut truncated = octets(&chip_id);
+        truncated.pop();
+        assert!(!hw_id_matches(&truncated, Product::Milan, &chip_id));
     }
 
     #[test]

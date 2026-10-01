@@ -1,4 +1,4 @@
-//! Thin CLI wrapper around [`mock_woocommerce::run_connect_flow`] - see
+//! Thin CLI wrapper around [`mock_woocommerce::run_connect_flow_without_webhook`] - see
 //! `docs/WOOCOMMERCE_WBS.md` 1.4.2. Drives the real WBS 1.4.1 connect flow
 //! against a real, already-running monokulo instance and prints the
 //! resulting credentials; exits `0` with valid credentials in hand, or
@@ -21,7 +21,9 @@ async fn main() -> ExitCode {
         .or_else(|| std::env::var("MOCK_WOOCOMMERCE_CONTROL_PLANE_URL").ok())
         .unwrap_or_else(|| DEFAULT_CONTROL_PLANE_BASE_URL.to_string());
 
-    match mock_woocommerce::run_connect_flow(&monokulo_base_url).await {
+    // No webhook: this process exits once it has printed the credentials, so
+    // a receiver it ran would leave the tenant with a dead webhook URL.
+    match mock_woocommerce::run_connect_flow_without_webhook(&monokulo_base_url).await {
         Ok(credentials) => {
             println!("connect flow succeeded against {monokulo_base_url}");
             println!("public_key={}", credentials.public_key);

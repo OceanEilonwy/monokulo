@@ -140,6 +140,15 @@ fn pretty_output_is_redacted_too() {
 }
 
 #[test]
+fn pretty_output_truncates_a_client_address_like_json_does() {
+    let (_telemetry, capture, _guard) = subscriber(Format::Pretty, "info");
+    tracing::info!(client.address = "203.0.113.77:4000", note = "plain", "request");
+    let text = capture.text();
+    assert!(text.contains("client.address=203.0.113.0"), "{text}");
+    assert!(text.contains("note=plain"), "a string field is not quoted: {text}");
+}
+
+#[test]
 fn applying_a_level_changes_what_is_written_straight_away() {
     let (telemetry, capture, _guard) = subscriber(Format::Json, "info");
     tracing::debug!("hidden");
