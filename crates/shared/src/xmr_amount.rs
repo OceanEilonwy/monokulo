@@ -78,7 +78,12 @@ pub fn parse_xmr_to_piconero(xmr_amount: &str) -> Result<u64, AmountError> {
     // a plausible-looking config value can cross it. `as u64` would wrap it to
     // something small and wrong, and since this feeds `piconero_per_unit` for a whole
     // currency, every order priced in that currency would inherit the error.
-    u64::try_from(piconero).map_err(|_| AmountError::TooLarge)
+    let piconero = u64::try_from(piconero).map_err(|_| AmountError::TooLarge)?;
+    // Zero XMR is no rate and no amount, as on the fiat path.
+    if piconero == 0 {
+        return Err(AmountError::NotPositive);
+    }
+    Ok(piconero)
 }
 
 /// Inverse of `parse_xmr_to_piconero`, for display purposes (the payment page,
@@ -163,7 +168,7 @@ mod tests {
 
     #[test]
     fn format_and_parse_xmr_round_trip() {
-        for piconero in [0u64, 1, 6_700_000_000, 1_000_000_000_000, 167_500_000_000] {
+        for piconero in [1u64, 6_700_000_000, 1_000_000_000_000, 167_500_000_000] {
             let formatted = format_piconero_as_xmr(piconero);
             assert_eq!(
                 parse_xmr_to_piconero(&formatted).unwrap(),
@@ -171,6 +176,11 @@ mod tests {
                 "round trip failed for {piconero}"
             );
         }
+        // Zero formats, but is no amount: refused like a fiat zero.
+        assert_eq!(
+            parse_xmr_to_piconero(&format_piconero_as_xmr(0)),
+            Err(AmountError::NotPositive)
+        );
     }
 
     #[test]

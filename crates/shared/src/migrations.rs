@@ -27,6 +27,14 @@ use rusqlite::{params, Connection};
 /// database - e.g. every time a server restarts against its existing database file -
 /// is safe and a no-op for anything already applied.
 pub fn apply(conn: &Connection, migrations: &[(i64, &str)]) -> rusqlite::Result<()> {
+    // A duplicated or out-of-order version would be skipped as "already
+    // applied", or applied out of order, without a word.
+    if let Some(pair) = migrations.windows(2).find(|w| w[0].0 >= w[1].0) {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "migration versions must strictly increase: {} then {}",
+            pair[0].0, pair[1].0
+        )));
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)",
     )?;

@@ -122,7 +122,7 @@ impl HavenoRateProvider {
         HavenoRateProvider {
             base_url: base_url.into(),
             client: crate::http_cache::build_client(
-                concat!("scanner/", env!("CARGO_PKG_VERSION")),
+                concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
                 crate::http_cache::max_cache_bytes_from_env(),
             ),
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(Cache::default())),
@@ -194,10 +194,13 @@ impl HavenoRateProvider {
             let mut offers = 0u64;
             let mut xmr = 0.0f64;
             for level in levels {
-                offers += level
-                    .get("offer_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0);
+                // Third-party numbers: summed without overflowing.
+                offers = offers.saturating_add(
+                    level
+                        .get("offer_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                );
                 let amount = level
                     .get("amount")
                     .and_then(serde_json::Value::as_f64)

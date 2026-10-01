@@ -114,7 +114,8 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
             state.buckets.shrink_to_fit();
         }
         let entry = state.buckets.entry(key).or_insert((0, now));
-        if now - entry.1 >= WINDOW_SECONDS {
+        // A window that has passed, or a clock that went backwards.
+        if now.saturating_sub(entry.1) >= WINDOW_SECONDS || now < entry.1 {
             *entry = (0, now);
         }
         if entry.0
