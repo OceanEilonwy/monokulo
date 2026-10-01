@@ -93,6 +93,11 @@ pub fn cert_chain_url(product: Product) -> String {
     format!("{KDS_BASE}/vcek/v1/{}/cert_chain", product.kds_name())
 }
 
+/// AMD's certificate revocation list for one product's ASK and VCEKs.
+pub fn crl_url(product: Product) -> String {
+    format!("{KDS_BASE}/vcek/v1/{}/crl", product.kds_name())
+}
+
 /// The hwID KDS expects in the VCEK URL path - full 64-byte `chip_id` on
 /// legacy products, first 8 bytes only on Turin+.
 pub fn hw_id_for_product(product: Product, chip_id: &[u8; 64]) -> Vec<u8> {
@@ -137,6 +142,21 @@ pub async fn fetch_cert_chain_pem(
     }
     let body = bounded_body(resp, &url).await?;
     Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Fetches AMD's revocation list for `product` (DER, issued and signed by
+/// that product's ARK): the certificates of chips whose keys AMD has
+/// revoked.
+pub async fn fetch_crl_der(
+    client: &reqwest::Client,
+    product: Product,
+) -> Result<Vec<u8>, KdsError> {
+    let url = crl_url(product);
+    let resp = client.get(&url).send().await?;
+    if !resp.status().is_success() {
+        return Err(KdsError::BadStatus(resp.status(), url));
+    }
+    bounded_body(resp, &url).await
 }
 
 #[cfg(test)]
@@ -191,6 +211,10 @@ mod tests {
         assert_eq!(
             cert_chain_url(Product::Genoa),
             "https://kdsintf.amd.com/vcek/v1/Genoa/cert_chain"
+        );
+        assert_eq!(
+            crl_url(Product::Turin),
+            "https://kdsintf.amd.com/vcek/v1/Turin/crl"
         );
     }
 

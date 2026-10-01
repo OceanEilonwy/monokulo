@@ -28,6 +28,7 @@ use p384::ecdsa::{Signature as P384Signature, VerifyingKey as P384VerifyingKey};
 use x509_parser::certificate::X509Certificate;
 use x509_parser::pem::Pem;
 use x509_parser::prelude::FromDer;
+use x509_parser::revocation_list::CertificateRevocationList;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
@@ -53,6 +54,10 @@ pub enum VerifyError {
     CertExpired { which: &'static str },
     #[error("the guest's policy allows the hypervisor to debug it (policy bit 19): its memory is not protected, whatever the report says")]
     DebugAllowed,
+    #[error("AMD's revocation list does not verify against the pinned ARK - refusing to trust it")]
+    CrlNotSignedByArk,
+    #[error("AMD has revoked the {which} certificate: its key is not to be trusted")]
+    Revoked { which: &'static str },
 }
 
 /// Outcome of a full verification run - every check this tool performed, so
@@ -158,6 +163,15 @@ pub async fn verify(
     }
     require_pss("VCEK", &vcek_cert)?;
 
+    //    And neither may be on AMD's revocation list: a chip whose key was
+    //    revoked still signs reports that check out against the chain.
+    let crl_der = kds::fetch_crl_der(client, product).await?;
+    check_not_revoked(
+        &crl_der,
+        &pinned_ark_cert,
+        &[("ASK", &ask_cert), ("VCEK", &vcek_cert)],
+    )?;
+
     // 4. Cross-check the VCEK's own embedded TCB extensions against the
     //    report's reported_tcb - a VCEK is issued bound to one specific TCB
     //    tuple, so this catches a report paired with the wrong VCEK (e.g. a
@@ -181,6 +195,28 @@ pub async fn verify(
         current_tcb: report.current_tcb,
         chain_verified: true,
     })
+}
+
+/// Refuses `certs` if the revocation list `crl_der`, which must be signed
+/// by `ark`, lists any of them.
+fn check_not_revoked(
+    crl_der: &[u8],
+    ark: &X509Certificate<'_>,
+    certs: &[(&'static str, &X509Certificate<'_>)],
+) -> Result<(), VerifyError> {
+    let (_, crl) = CertificateRevocationList::from_der(crl_der)
+        .map_err(|e| VerifyError::CertParse(e.to_string()))?;
+    crl.verify_signature(ark.public_key())
+        .map_err(|_| VerifyError::CrlNotSignedByArk)?;
+    for (which, cert) in certs {
+        if crl
+            .iter_revoked_certificates()
+            .any(|revoked| revoked.serial() == &cert.tbs_certificate.serial)
+        {
+            return Err(VerifyError::Revoked { which });
+        }
+    }
+    Ok(())
 }
 
 /// Refuses a certificate not signed with RSASSA-PSS.
@@ -355,6 +391,71 @@ mod tests {
                     panic!("{product:?}: real ASK must verify against pinned ARK: {e:?}")
                 });
         }
+    }
+
+    /// AMD's real revocation lists (fetched from KDS, see
+    /// `tests/fixtures/test_crl/README.md`) verify against each product's
+    /// pinned ARK and don't list its real ASK; one product's list is refused
+    /// under another's root.
+    #[test]
+    fn real_crls_verify_against_the_pinned_ark_and_list_no_ask() {
+        for (product, crl, chain) in [
+            (
+                Product::Milan,
+                &include_bytes!("../tests/fixtures/milan_crl.der")[..],
+                include_str!("../tests/fixtures/milan_ask_ark_chain.pem"),
+            ),
+            (
+                Product::Genoa,
+                &include_bytes!("../tests/fixtures/genoa_crl.der")[..],
+                include_str!("../tests/fixtures/genoa_ask_ark_chain.pem"),
+            ),
+            (
+                Product::Turin,
+                &include_bytes!("../tests/fixtures/turin_crl.der")[..],
+                include_str!("../tests/fixtures/turin_ask_ark_chain.pem"),
+            ),
+        ] {
+            let chain = parse_pem_chain(chain).unwrap();
+            let ask = chain[0].parse_x509().unwrap();
+            let pinned = parse_pem_chain(pinned_ark::pinned_ark_pem(product)).unwrap();
+            let ark = pinned[0].parse_x509().unwrap();
+            check_not_revoked(crl, &ark, &[("ASK", &ask)])
+                .unwrap_or_else(|e| panic!("{product:?}: {e}"));
+        }
+
+        let genoa = parse_pem_chain(pinned_ark::pinned_ark_pem(Product::Genoa)).unwrap();
+        assert!(matches!(
+            check_not_revoked(
+                include_bytes!("../tests/fixtures/milan_crl.der"),
+                &genoa[0].parse_x509().unwrap(),
+                &[],
+            ),
+            Err(VerifyError::CrlNotSignedByArk)
+        ));
+    }
+
+    /// A certificate the list names is refused, by name; one it doesn't is
+    /// not. Test material of our own (AMD's lists are empty so far).
+    #[test]
+    fn a_certificate_on_the_revocation_list_is_refused() {
+        let crl = include_bytes!("../tests/fixtures/test_crl/crl.der");
+        let ca = parse_der_cert(include_bytes!("../tests/fixtures/test_crl/ca.der")).unwrap();
+        let revoked =
+            parse_der_cert(include_bytes!("../tests/fixtures/test_crl/revoked.der")).unwrap();
+        let good = parse_der_cert(include_bytes!("../tests/fixtures/test_crl/good.der")).unwrap();
+
+        assert!(check_not_revoked(crl, &ca, &[("VCEK", &good)]).is_ok());
+        assert!(matches!(
+            check_not_revoked(crl, &ca, &[("ASK", &good), ("VCEK", &revoked)]),
+            Err(VerifyError::Revoked { which: "VCEK" })
+        ));
+        // Signed by someone else: refused before its contents count.
+        let milan = parse_pem_chain(pinned_ark::pinned_ark_pem(Product::Milan)).unwrap();
+        assert!(matches!(
+            check_not_revoked(crl, &milan[0].parse_x509().unwrap(), &[("VCEK", &good)]),
+            Err(VerifyError::CrlNotSignedByArk)
+        ));
     }
 
     #[test]

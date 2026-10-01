@@ -163,7 +163,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    println!("    chain ok: report signature verifies against a genuine AMD-issued VCEK, chained to the pinned AMD root");
+    println!("    chain ok: report signature verifies against a genuine AMD-issued VCEK, chained to the pinned AMD root, and not on AMD's revocation list");
     println!(
         "    reported_tcb: bootloader={} tee={} snp={} microcode={}{}",
         outcome.reported_tcb.bootloader,
