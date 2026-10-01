@@ -38,9 +38,11 @@ Each version tag's GitHub release has `scanner`, `monokulo` and
 `publish` jobs also keep them for every push to main. With those, skip
 step 1.
 
-1. Build release binaries from the repository root. Building monokulo
-   also builds its POS app, so it needs Node 24 or later and the app's
-   dependencies, installed once from the lockfile:
+1. Build release binaries from the repository root. The project builds on
+   the latest nightly Rust (`rust-toolchain.toml`; rustup installs it on
+   first use, and `rustup update nightly` keeps it current). Building
+   monokulo also builds its POS app, so it needs Node 24 or later and the
+   app's dependencies, installed once from the lockfile:
 
    ```sh
    (cd crates/monokulo/pos-ui && npm ci)

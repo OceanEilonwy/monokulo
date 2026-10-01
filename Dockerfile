@@ -7,6 +7,8 @@
 # on the PATH for the other containers. Both keep their SQLite databases in
 # /var/lib/monokulo, the image's one volume.
 
+# The base image only supplies rustup: the build installs the latest nightly,
+# as rust-toolchain.toml names it.
 ARG RUST_VERSION=1
 ARG NODE_VERSION=24
 ARG DEBIAN_VERSION=bookworm
@@ -23,6 +25,8 @@ WORKDIR /src
 # The POS app's dependencies first, so they stay cached until its lockfile changes.
 COPY crates/monokulo/pos-ui/package.json crates/monokulo/pos-ui/package-lock.json crates/monokulo/pos-ui/
 RUN npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install
 COPY . .
 RUN cargo build --release --locked \
         -p scanner --bin scanner \

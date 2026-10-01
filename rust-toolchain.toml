@@ -1,0 +1,9 @@
+# The project builds on the latest nightly, unpinned, everywhere: locally,
+# in CI, in the Docker image and for coverage. A new warning or a compiler
+# regression shows up the day it lands, which is when it is cheapest to fix
+# or report upstream. `rustup update nightly` brings a local checkout up to
+# date.
+[toolchain]
+channel = "nightly"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
