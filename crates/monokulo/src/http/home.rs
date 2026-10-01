@@ -247,7 +247,7 @@ mod tests {
                 .with_networks(&[monero::Network::Mainnet])
                 .spawn()
                 .await;
-            let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+            let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
             let state = AppState {
                 engine: crate::http::Engine::new(engine_client),
                 ..AppState::for_tests()
@@ -315,7 +315,7 @@ mod tests {
                 .unwrap()
                 .expect("connection exists");
             let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
-            let response = reqwest::Client::new()
+            let response = scanner_test_support::engine_http_client()
                 .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
                 .bearer_auth(sk.expose())
                 .json(

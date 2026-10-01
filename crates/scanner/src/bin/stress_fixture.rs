@@ -24,6 +24,9 @@ use scanner::daemon::{
 use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::engine_settings::{Daemons, EngineSettings};
 use scanner::http::{build_router, rate_limit::RateLimiter, AppState};
+
+/// The engine admin token the fixture's in-process router accepts.
+const FIXTURE_ENGINE_TOKEN: &str = "stress_fixture_engine_token_0123456789abcdef";
 use scanner::key_custody::{
     KeyCustody, KeyCustodyError, MatchedOutput, PlainKeyCustody, ScanIndices, ScanInput,
     SubaddressIndex, TxMatches, WalletHandle, WalletMaterial,
@@ -570,6 +573,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         db: scanner::store::Database::from_parts(db.clone(), reader_pool.clone(), &store.lock()),
         admin_rate_limiter: Arc::new(RateLimiter::new(100_000)),
         log_store: None,
+        engine_token: Arc::new(shared::auth::RawToken::presented(FIXTURE_ENGINE_TOKEN).hash()),
         settings: EngineSettings::defaults(),
         custody: scanner::http::Custody {
             backends: custody.clone(),
@@ -602,6 +606,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
                 let started = Instant::now();
                 let request = Request::builder()
                     .uri("/status")
+                    .header(shared::auth::ENGINE_TOKEN_HEADER, FIXTURE_ENGINE_TOKEN)
                     .body(Body::empty())
                     .expect("static request");
                 if router

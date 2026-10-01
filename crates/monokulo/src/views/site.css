@@ -279,6 +279,11 @@ form .field-help { display: block; font-weight: 400; color: var(--muted); margin
    starting its own line below the form - block, like `.field-help` above,
    fixes that regardless of how much room is left on the line. */
 .setting-source { display: block; margin-top: 0.15em; }
+/* A setting fixed by the environment (the engine's address and token):
+   shown in a disabled box with a padlock inside it. */
+.locked-input { position: relative; display: block; }
+.locked-input input[disabled] { padding-right: 2.4em; background: var(--surface-sunken); color: var(--muted); cursor: not-allowed; }
+.locked-input .lock-icon { position: absolute; right: 0.8em; top: 50%; width: 1em; height: 1em; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
 /* Every text-like input: a type left out here keeps the browser's own
    border and padding (the Logs page's search box once did). */
 input[type=text], input[type=email], input[type=password], input[type=url], input[type=search], input[type=number],

@@ -38,6 +38,10 @@ test('killing the engine at random moments never loses a confirmed order or reus
   const token = crypto.randomBytes(16).toString('hex');
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('SCANNER_')));
   const env = { ...inherited, SCANNER_DB_PATH: path.join(logs, 'crash.db'), SCANNER_SERVER_BIND: `127.0.0.1:${port}`, SCANNER_ADMIN_TOKEN: token };
+  // The engine answers nothing without its admin token, so every request
+  // carries it, as monokulo's do.
+  const engineFetch = (pathAndQuery, init = {}) =>
+    fetch(`${url}${pathAndQuery}`, { ...init, headers: { 'x-engine-token': token, ...(init.headers || {}) } });
 
   const kill = (child) => new Promise((resolve) => {
     if (!child || child.exitCode !== null || child.signalCode !== null) return resolve(undefined);
@@ -48,22 +52,22 @@ test('killing the engine at random moments never loses a confirmed order or reus
   const start = async () => {
     engine = spawn(SCANNER, [], { env, stdio: 'ignore' });
     await expect.poll(async () => {
-      try { return (await fetch(`${url}/status`)).status; } catch { return 0; }
+      try { return (await engineFetch(`/status`)).status; } catch { return 0; }
     }, { timeout: 20_000, intervals: [100] }).toBe(200);
   };
 
   try {
   await start();
-  const saved = await fetch(`${url}/api/v1/admin/settings`, {
+  const saved = await engineFetch(`/api/v1/admin/settings`, {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       scalars: { 'payment.mempool_poll_interval_ms': '100', 'server.rate_limit_per_token_per_min': '100000' },
       monero_node: { stagenet: { host: fakeHost, port: Number(fakePort), ssl: false, accept_self_signed_certs: true, fallbacks: [] } },
     }),
   });
   expect(saved.status).toBe(200);
-  const created = await (await fetch(`${url}/api/v1/admin/tenants`, {
+  const created = await (await engineFetch(`/api/v1/admin/tenants`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ view_key_hex: VIEW_KEY, spend_pubkey_hex: SPEND_PUBKEY, network: 'stagenet' }),
@@ -76,7 +80,7 @@ test('killing the engine at random moments never loses a confirmed order or reus
     const makeOrders = (async () => {
       while (running) {
         try {
-          const response = await fetch(`${url}/api/v1/admin/tenant/orders`, {
+          const response = await engineFetch(`/api/v1/admin/tenant/orders`, {
             method: 'POST',
             headers: { authorization: `Bearer ${sk}`, 'content-type': 'application/json' },
             body: JSON.stringify({ xmr_amount_piconero: 1000 + round }),
@@ -100,7 +104,7 @@ test('killing the engine at random moments never loses a confirmed order or reus
     expect(confirmed.size).toBeGreaterThan(10);
     // Every confirmed order survived, with the address it was given.
     for (const [orderId, address] of confirmed) {
-      const response = await fetch(`${url}/api/v1/admin/tenant/orders/${orderId}`, { headers: { authorization: `Bearer ${sk}` } });
+      const response = await engineFetch(`/api/v1/admin/tenant/orders/${orderId}`, { headers: { authorization: `Bearer ${sk}` } });
       expect(response.status, `order ${orderId} lost`).toBe(200);
       expect((await response.json()).address).toBe(address);
     }
@@ -109,7 +113,7 @@ test('killing the engine at random moments never loses a confirmed order or reus
     // a kill whose response never arrived.
     const all = [];
     for (let offset = 0; ; offset += 200) {
-      const page = await (await fetch(`${url}/api/v1/admin/tenant/orders?limit=200&offset=${offset}`, { headers: { authorization: `Bearer ${sk}` } })).json();
+      const page = await (await engineFetch(`/api/v1/admin/tenant/orders?limit=200&offset=${offset}`, { headers: { authorization: `Bearer ${sk}` } })).json();
       all.push(...page);
       if (page.length < 200) break;
     }
@@ -117,7 +121,7 @@ test('killing the engine at random moments never loses a confirmed order or reus
     expect(new Set(all.map((order) => order.address)).size).toBe(all.length);
     // And it's scanning again.
     await expect.poll(async () => {
-      const status = await (await fetch(`${url}/status`)).json();
+      const status = await (await engineFetch(`/status`)).json();
       const stagenet = status.networks.find((n) => n.network === 'stagenet');
       return Boolean(stagenet && stagenet.scanner.last_tick_ok);
     }, { timeout: 20_000 }).toBe(true);

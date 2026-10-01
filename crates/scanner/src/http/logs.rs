@@ -20,7 +20,6 @@ use telemetry::store::api::{
 };
 use telemetry::store::{LogStore, StoreError};
 
-use super::instance_admin::AuthedInstanceAdmin;
 use super::ApiError;
 
 fn store(log_store: Option<LogStore>) -> Result<LogStore, ApiError> {
@@ -43,7 +42,6 @@ fn bad_query(e: telemetry::query::ParseError) -> Response {
 }
 
 pub async fn list(
-    _: AuthedInstanceAdmin,
     State(log_store): State<Option<LogStore>>,
     Query(request): Query<LogsRequest>,
 ) -> Response {
@@ -62,7 +60,6 @@ pub async fn list(
 }
 
 pub async fn trace(
-    _: AuthedInstanceAdmin,
     State(log_store): State<Option<LogStore>>,
     Path(trace_id): Path<String>,
 ) -> Response {
@@ -81,7 +78,6 @@ pub async fn trace(
 }
 
 pub async fn histogram(
-    _: AuthedInstanceAdmin,
     State(log_store): State<Option<LogStore>>,
     Query(request): Query<HistogramRequest>,
 ) -> Response {
@@ -107,10 +103,7 @@ pub async fn histogram(
     }
 }
 
-pub async fn attributes(
-    _: AuthedInstanceAdmin,
-    State(log_store): State<Option<LogStore>>,
-) -> Response {
+pub async fn attributes(State(log_store): State<Option<LogStore>>) -> Response {
     let result = match store(log_store) {
         Ok(store) => read(store, |s| s.attribute_names()).await,
         Err(e) => Err(e),

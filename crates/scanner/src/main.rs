@@ -25,7 +25,6 @@ use scanner::cli::{self, Action};
 use scanner::engine_settings::{
     CustodyConfig, CustodyReloadable, Daemons, EngineSettings, RuntimeConfig, StoreSettings,
 };
-use scanner::http::instance_admin::ensure_admin_token_seeded;
 use scanner::http::rate_limit::RateLimiter;
 use scanner::http::{build_router, AppState};
 use scanner::key_custody::{CustodyRouter, KeyCustody, WalletHandle};
@@ -171,18 +170,22 @@ async fn run(action: Action) {
         Action::RunServer { strict_tls } => strict_tls,
     };
 
+    // Every request must carry it (`http::engine_token_middleware`): without
+    // one, nothing could talk to this engine, so it doesn't start.
+    let engine_token = match shared::auth::engine_token_from_env(
+        "SCANNER_ADMIN_TOKEN",
+        std::env::var("SCANNER_ADMIN_TOKEN").ok(),
+    ) {
+        Ok(token) => Arc::new(token.hash()),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
     let store = open_store().into_shared();
     // Beside the main database; lines logged since start-up go in too.
     let log_store = telemetry::global().and_then(|t| t.open_store_beside(&cli::database_path()));
-
-    if let Some(token) = ensure_admin_token_seeded(&store.lock(), &live_settings::Env::process()) {
-        println!(
-            "==> generated a new instance admin token (shown once - it is stored only as a hash from here on):\n    {}\n\
-             Set the SCANNER_ADMIN_TOKEN environment variable to this value on future boots if you'd rather manage it \
-             that way than let it live in the database.",
-            token.expose()
-        );
-    }
 
     // Every setting, live (admin_settings_v2.md part 1). Node clients are
     // built into `daemons` from the saved node settings, and rebuilt whenever
@@ -266,6 +269,7 @@ async fn run(action: Action) {
         db: scanner::store::Database::from_parts(db.clone(), read_pool, &store.lock()),
         admin_rate_limiter,
         log_store: log_store.clone(),
+        engine_token,
         settings: engine_settings.clone(),
         custody: scanner::http::Custody {
             backends: key_custody.clone(),

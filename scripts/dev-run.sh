@@ -22,7 +22,7 @@
 # engine's own real SQLite database (settings, tenant, everything - there
 # is no config file any more, see below), the monokulo's own real SQLite
 # database, and two locally-generated secrets (MONOKULO_ENCRYPTION_KEY and
-# the engine's own instance-admin token). Nothing here is checked in, and
+# the engine admin token). Nothing here is checked in, and
 # nothing here is a real credential worth protecting beyond your own
 # machine - this is a local dev stack against a real *stagenet* wallet
 # (worthless XMR only), the same wallet e2e/moneropay-stagenet.toml
@@ -36,14 +36,12 @@
 # file. This script provisions the same dev-friendly values the old TOML
 # had (the same stagenet node, the same fast-iteration payment thresholds)
 # by POSTing them to that API right after the engine's first boot - see
-# ensure_engine_settings() below - and mints/reuses a fixed instance-admin
-# token to authenticate those calls (ENGINE_ADMIN_TOKEN_FILE), the same
-# "generate once, persist, reuse" treatment this script already gives
-# MONOKULO_ENCRYPTION_KEY. That same token is also handed to monokulo as
-# MONOKULO_SCANNER_ADMIN_TOKEN, so monokulo's own admin settings/invites
-# pages can reach the engine's admin API immediately - see
-# `crates/monokulo/src/http/admin_settings.rs`'s own module doc comment
-# for what that page actually does with it.
+# ensure_engine_settings() below - and mints/reuses the engine admin token
+# (ENGINE_ADMIN_TOKEN_FILE), the same "generate once, persist, reuse"
+# treatment this script already gives MONOKULO_ENCRYPTION_KEY. The engine
+# answers no request without it (sent as X-Engine-Token), and neither
+# process starts without it: the engine gets it as SCANNER_ADMIN_TOKEN and
+# monokulo as MONOKULO_SCANNER_ADMIN_TOKEN.
 #
 # ENGINE_URL is fixed at 127.0.0.1:8080 here, set on both sides: the engine's
 # SCANNER_SERVER_BIND and monokulo's MONOKULO_ENGINE_URL below. (Left to
@@ -137,10 +135,10 @@ ensure_engine_admin_token() {
         return
     fi
     if ! command -v openssl >/dev/null 2>&1; then
-        echo "error: openssl not found - needed once, to generate a dev engine instance-admin token" >&2
+        echo "error: openssl not found - needed once, to generate a dev engine admin token" >&2
         exit 1
     fi
-    echo "==> generating a dev engine instance-admin token (persisted at $ENGINE_ADMIN_TOKEN_FILE, reused on every future start)"
+    echo "==> generating a dev engine admin token (persisted at $ENGINE_ADMIN_TOKEN_FILE, reused on every future start)"
     openssl rand -hex 32 > "$ENGINE_ADMIN_TOKEN_FILE"
     chmod 600 "$ENGINE_ADMIN_TOKEN_FILE"
 }
@@ -210,7 +208,7 @@ ensure_engine_settings() {
 EOF
 )
     for attempt in $(seq 1 10); do
-        if curl -sf -o /dev/null -X POST "$url" -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "$body"; then
+        if curl -sf -o /dev/null -X POST "$url" -H "X-Engine-Token: $token" -H "Content-Type: application/json" -d "$body"; then
             echo "    engine settings provisioned (stagenet node + dev payment thresholds)"
             return
         fi
@@ -300,9 +298,9 @@ start_control_plane() {
     # across restarts) under .dev-run/monokulo/ rather than
     # wherever this script happened to be invoked from.
     #
-    # MONOKULO_SCANNER_ADMIN_TOKEN/MONOKULO_ENGINE_URL wire monokulo's own
-    # admin settings/invites pages up to the engine's admin API out of the
-    # box - see this script's own header comment.
+    # MONOKULO_SCANNER_ADMIN_TOKEN/MONOKULO_ENGINE_URL are how monokulo
+    # reaches the engine, read once at start - see this script's own header
+    # comment.
     (
         cd "$CP_DIR"
         MONOKULO_ENCRYPTION_KEY="$(cat "$CP_KEY_FILE")" \

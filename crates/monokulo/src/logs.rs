@@ -26,37 +26,18 @@ pub struct Sources {
 pub enum EngineSource {
     Api {
         client: EngineClient,
-        admin_token: String,
     },
+    /// Not read, for the reason given (a page of monokulo's own lines only).
     Unavailable(String),
 }
 
 impl Sources {
     pub async fn from_state(state: &crate::http::AppState) -> Sources {
-        let admin_token = state
-            .db
-            .read(|db| {
-                Ok::<_, crate::db::DbError>(
-                    crate::settings::get(db, &crate::settings::SCANNER_ADMIN_TOKEN)
-                        .expose()
-                        .to_string(),
-                )
-            })
-            .await
-            .unwrap_or_default();
-        let engine = if admin_token.trim().is_empty() {
-            EngineSource::Unavailable(
-                "The engine's lines aren't shown: set the engine admin token in Settings.".into(),
-            )
-        } else {
-            EngineSource::Api {
-                client: state.engine.client.clone(),
-                admin_token,
-            }
-        };
         Sources {
             local: state.log_store.clone(),
-            engine,
+            engine: EngineSource::Api {
+                client: state.engine.client.clone(),
+            },
         }
     }
 }
@@ -115,13 +96,7 @@ pub async fn read(sources: &Sources, request: &LogsRequest) -> Result<Page, Pars
         local(&sources.local, move |s| s.query(&local_query)),
         async {
             match &sources.engine {
-                EngineSource::Api {
-                    client,
-                    admin_token,
-                } => client
-                    .logs(admin_token, request)
-                    .await
-                    .map_err(engine_problem),
+                EngineSource::Api { client } => client.logs(request).await.map_err(engine_problem),
                 EngineSource::Unavailable(why) => Err(why.clone()),
             }
         }
@@ -146,13 +121,9 @@ pub async fn trace(sources: &Sources, trace_id: &str) -> (Trace, Option<String>)
     let (local_trace, engine_trace) =
         tokio::join!(local(&sources.local, move |s| s.trace(&id)), async {
             match &sources.engine {
-                EngineSource::Api {
-                    client,
-                    admin_token,
-                } => client
-                    .log_trace(admin_token, trace_id)
-                    .await
-                    .map_err(engine_problem),
+                EngineSource::Api { client } => {
+                    client.log_trace(trace_id).await.map_err(engine_problem)
+                }
                 EngineSource::Unavailable(why) => Err(why.clone()),
             }
         });
@@ -188,10 +159,7 @@ pub async fn histogram(sources: &Sources, request: &HistogramRequest) -> Vec<u64
         )),
         async {
             match &sources.engine {
-                EngineSource::Api {
-                    client,
-                    admin_token,
-                } => client.log_histogram(admin_token, request).await.ok(),
+                EngineSource::Api { client } => client.log_histogram(request).await.ok(),
                 EngineSource::Unavailable(_) => None,
             }
         }
@@ -211,10 +179,7 @@ pub async fn attribute_names(sources: &Sources) -> Vec<String> {
     let (local_names, engine_names) =
         tokio::join!(local(&sources.local, |s| s.attribute_names()), async {
             match &sources.engine {
-                EngineSource::Api {
-                    client,
-                    admin_token,
-                } => client.log_attributes(admin_token).await.ok(),
+                EngineSource::Api { client } => client.log_attributes().await.ok(),
                 EngineSource::Unavailable(_) => None,
             }
         });
@@ -291,14 +256,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_an_engine_token_or_a_store_the_page_says_why() {
+    async fn without_the_engine_or_a_store_the_page_says_why() {
         let sources = Sources {
             local: None,
-            engine: EngineSource::Unavailable("no token".into()),
+            engine: EngineSource::Unavailable("not read".into()),
         };
         let page = read(&sources, &LogsRequest::default()).await.unwrap();
         assert!(page.rows.is_empty());
-        assert_eq!(page.engine_problem.as_deref(), Some("no token"));
+        assert_eq!(page.engine_problem.as_deref(), Some("not read"));
         assert!(page.local_problem.is_some());
         let error = read(
             &sources,
@@ -366,21 +331,10 @@ mod tests {
             .with_log_store(engine_store)
             .spawn()
             .await;
-        engine
-            .store()
-            .lock()
-            .set_setting(
-                "instance_admin_token_hash",
-                shared::auth::RawToken::presented("reader_admin")
-                    .hash()
-                    .as_str(),
-            )
-            .unwrap();
         let sources = Sources {
             local: Some(local_store),
             engine: EngineSource::Api {
-                client: EngineClient::new(format!("http://{}", engine.addr)),
-                admin_token: "reader_admin".into(),
+                client: EngineClient::for_tests(format!("http://{}", engine.addr)),
             },
         };
 
@@ -422,8 +376,10 @@ mod tests {
         let wrong = Sources {
             local: sources.local.clone(),
             engine: EngineSource::Api {
-                client: EngineClient::new(format!("http://{}", engine.addr)),
-                admin_token: "wrong".into(),
+                client: EngineClient::new(
+                    format!("http://{}", engine.addr),
+                    shared::auth::RawToken::presented("wrong_engine_token_0123456789abcdef"),
+                ),
             },
         };
         let page = read(&wrong, &LogsRequest::default()).await.unwrap();

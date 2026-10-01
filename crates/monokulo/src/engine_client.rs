@@ -17,13 +17,13 @@
 //! Rust types, since the two crates talk over HTTP as separate services,
 //! not by linking against each other.
 //!
-//! `POST /api/v1/admin/tenants` is intentionally called with no
-//! `Authorization` header — the engine's own design leaves that endpoint
-//! open (see `work_notes.md`'s notes on admin-API network isolation being
-//! an ops-level concern, not one enforced by the endpoint itself).
-//! `GET /api/v1/admin/tenant` requires the tenant's own `sk_...` secret
-//! token, sent as `Authorization: Bearer sk_...` — the exact format
-//! `AuthedTenant` (`src/http/mod.rs` at the repo root) parses.
+//! Every request carries the engine's admin token
+//! (`MONOKULO_SCANNER_ADMIN_TOKEN`, the engine's `SCANNER_ADMIN_TOKEN`) in
+//! `shared::auth::ENGINE_TOKEN_HEADER`: the engine refuses anything
+//! without it. A store's routes (`/api/v1/admin/tenant/...`) also need the
+//! store's own `sk_...` secret, sent as `Authorization: Bearer sk_...` — the
+//! exact format `AuthedTenant` (`src/http/mod.rs` at the repo root) parses.
+//! Tenant creation has no store secret yet, so it carries only the token.
 
 use serde::{Deserialize, Serialize};
 use shared::auth::RawToken;
@@ -75,15 +75,16 @@ fn path_id(id: &str) -> Result<&str, EngineClientError> {
 /// cacheable endpoint needs no client-side plumbing changes to benefit.
 #[derive(Clone)]
 pub struct EngineClient {
-    /// Swapped whole when `engine.url` or `http_cache.max_mb` is saved
-    /// (admin_settings_v2.md task 3.2); every clone sees the change, since
-    /// they share this handle.
+    /// Swapped whole when `http_cache.max_mb` is saved (admin_settings_v2.md
+    /// task 3.2); every clone sees the change, since they share this handle.
     current: std::sync::Arc<parking_lot::RwLock<std::sync::Arc<EngineTarget>>>,
 }
 
-/// One engine address with its HTTP client and live-update hub.
+/// The engine's address and admin token, with an HTTP client that sends the
+/// token on every request, and the live-update hub.
 struct EngineTarget {
     base_url: String,
+    token: RawToken,
     max_cache_bytes: u64,
     http: reqwest_middleware::ClientWithMiddleware,
     /// Live order updates from this engine - see `crate::live`. Shared by
@@ -93,13 +94,23 @@ struct EngineTarget {
 }
 
 impl EngineTarget {
-    fn new(base_url: String, max_cache_bytes: u64) -> Self {
+    fn new(base_url: String, token: RawToken, max_cache_bytes: u64) -> Self {
+        // The engine refuses any request without it, whatever the route.
+        let mut value = reqwest::header::HeaderValue::from_str(token.expose())
+            .expect("an engine token read from the environment is a valid header value");
+        value.set_sensitive(true);
+        let headers = reqwest::header::HeaderMap::from_iter([(
+            reqwest::header::HeaderName::from_static(shared::auth::ENGINE_TOKEN_HEADER),
+            value,
+        )]);
         EngineTarget {
             base_url,
+            token,
             max_cache_bytes,
-            http: shared::http_cache::build_traced_client(
+            http: shared::http_cache::build_traced_client_with_headers(
                 concat!("monokulo/", env!("CARGO_PKG_VERSION")),
                 max_cache_bytes,
+                headers,
             ),
             live: Default::default(),
         }
@@ -107,8 +118,24 @@ impl EngineTarget {
 }
 
 impl EngineClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self::with_cache_limit(base_url, shared::http_cache::max_cache_bytes_from_env())
+    /// The engine at `base_url`, reached with its admin token `token`
+    /// (`SCANNER_ADMIN_TOKEN`), which every request carries.
+    pub fn new(base_url: impl Into<String>, token: RawToken) -> Self {
+        Self::with_cache_limit(
+            base_url,
+            token,
+            shared::http_cache::max_cache_bytes_from_env(),
+        )
+    }
+
+    /// [`Self::new`] with the token every test engine accepts
+    /// (`shared::auth::TEST_ENGINE_TOKEN`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_tests(base_url: impl Into<String>) -> Self {
+        Self::new(
+            base_url,
+            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+        )
     }
 
     /// Same as [`Self::new`], but with an explicit byte cap rather than
@@ -121,10 +148,14 @@ impl EngineClient {
     /// dedicated named constructor here, rather than threading a new
     /// parameter through `new` itself, is what keeps every one of those call
     /// sites compiling unchanged.
-    pub fn with_cache_limit(base_url: impl Into<String>, max_cache_bytes: u64) -> Self {
+    pub fn with_cache_limit(
+        base_url: impl Into<String>,
+        token: RawToken,
+        max_cache_bytes: u64,
+    ) -> Self {
         EngineClient {
             current: std::sync::Arc::new(parking_lot::RwLock::new(std::sync::Arc::new(
-                EngineTarget::new(base_url.into(), max_cache_bytes),
+                EngineTarget::new(base_url.into(), token, max_cache_bytes),
             ))),
         }
     }
@@ -133,21 +164,20 @@ impl EngineClient {
         self.current.read().clone()
     }
 
-    /// Points every clone of this client at `base_url` with a fresh HTTP
-    /// cache of `max_cache_bytes` (task 3.2). Live-update streams to the old
-    /// engine are ended, so browsers watching orders reconnect and land on
-    /// the new one.
-    /// Nothing happens when both are what they already are, so open
-    /// streams aren't cut for no reason.
-    pub fn retarget(&self, base_url: impl Into<String>, max_cache_bytes: u64) {
-        let base_url = base_url.into();
-        {
+    /// Gives every clone of this client a fresh HTTP cache of
+    /// `max_cache_bytes` (task 3.2). Live-update streams are ended with the
+    /// old client, so browsers watching orders reconnect. Nothing happens
+    /// when the size is what it already is, so open streams aren't cut for
+    /// no reason.
+    pub fn set_cache_limit(&self, max_cache_bytes: u64) {
+        let (base_url, token) = {
             let current = self.current.read();
-            if current.base_url == base_url && current.max_cache_bytes == max_cache_bytes {
+            if current.max_cache_bytes == max_cache_bytes {
                 return;
             }
-        }
-        let next = std::sync::Arc::new(EngineTarget::new(base_url, max_cache_bytes));
+            (current.base_url.clone(), current.token.clone())
+        };
+        let next = std::sync::Arc::new(EngineTarget::new(base_url, token, max_cache_bytes));
         let previous = std::mem::replace(&mut *self.current.write(), next);
         previous.live.shutdown();
     }
@@ -190,6 +220,21 @@ impl EngineClient {
         check_status(response).await
     }
 
+    /// A request to `path` on the engine (`/api/v1/admin/settings`, say),
+    /// carrying the admin token and this request's trace, and bounded in
+    /// time like every call here: a stalled engine must not hang a page.
+    pub fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+    ) -> reqwest_middleware::RequestBuilder {
+        let target = self.target();
+        target
+            .http
+            .request(method, format!("{}{path}", target.base_url))
+            .timeout(ENGINE_CALL_TIMEOUT)
+    }
+
     /// The engine base URL this client was constructed with — e.g. so a
     /// caller storing a `store_connections` row can record which engine
     /// endpoint a tenant lives on without threading the URL through
@@ -199,7 +244,7 @@ impl EngineClient {
     }
 
     /// `POST {base_url}/api/v1/admin/tenants` — provisions a new tenant on
-    /// the engine. No auth header (see module doc comment).
+    /// the engine. No store secret: it has none yet.
     pub async fn create_tenant(
         &self,
         req: CreateTenantRequest,
@@ -617,12 +662,11 @@ impl EngineClient {
 /// all - the engine's own handler returns `Result<(), ApiError>`, which
 /// axum serializes as an empty response, not `null` or `{}`) need - trying
 /// to `.json()` an empty body would fail even on a genuine success.
-/// The engine's log API (structured_logging.md 3.3), with the instance
-/// admin token. Never cached: its responses carry no cache headers.
+/// The engine's log API (structured_logging.md 3.3). Never cached: its
+/// responses carry no cache headers.
 impl EngineClient {
     async fn get_logs_api<T: serde::de::DeserializeOwned>(
         &self,
-        admin_token: &str,
         path: &str,
         query: &impl Serialize,
     ) -> Result<T, EngineClientError> {
@@ -632,7 +676,6 @@ impl EngineClient {
         let response = target
             .http
             .get(url)
-            .bearer_auth(admin_token)
             .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
@@ -641,41 +684,32 @@ impl EngineClient {
 
     pub async fn logs(
         &self,
-        admin_token: &str,
         request: &telemetry::store::api::LogsRequest,
     ) -> Result<Vec<telemetry::store::LogRow>, EngineClientError> {
-        let response: telemetry::store::api::LogsResponse =
-            self.get_logs_api(admin_token, "", request).await?;
+        let response: telemetry::store::api::LogsResponse = self.get_logs_api("", request).await?;
         Ok(response.rows)
     }
 
     pub async fn log_trace(
         &self,
-        admin_token: &str,
         trace_id: &str,
     ) -> Result<telemetry::store::Trace, EngineClientError> {
         let trace_id = path_id(trace_id)?;
-        self.get_logs_api(admin_token, &format!("/trace/{trace_id}"), &())
-            .await
+        self.get_logs_api(&format!("/trace/{trace_id}"), &()).await
     }
 
     pub async fn log_histogram(
         &self,
-        admin_token: &str,
         request: &telemetry::store::api::HistogramRequest,
     ) -> Result<Vec<u64>, EngineClientError> {
-        let response: telemetry::store::api::HistogramResponse = self
-            .get_logs_api(admin_token, "/histogram", request)
-            .await?;
+        let response: telemetry::store::api::HistogramResponse =
+            self.get_logs_api("/histogram", request).await?;
         Ok(response.counts)
     }
 
-    pub async fn log_attributes(
-        &self,
-        admin_token: &str,
-    ) -> Result<Vec<String>, EngineClientError> {
+    pub async fn log_attributes(&self) -> Result<Vec<String>, EngineClientError> {
         let response: telemetry::store::api::AttributesResponse =
-            self.get_logs_api(admin_token, "/attributes", &()).await?;
+            self.get_logs_api("/attributes", &()).await?;
         Ok(response.names)
     }
 }
@@ -1037,21 +1071,29 @@ mod tests {
     }
 
     #[test]
-    fn retargeting_to_the_same_engine_changes_nothing_and_to_another_one_does() {
-        let client = EngineClient::with_cache_limit("http://127.0.0.1:8443", 1024);
+    fn the_same_cache_size_changes_nothing_and_a_new_one_makes_a_new_client() {
+        let client = EngineClient::with_cache_limit(
+            "http://127.0.0.1:8443",
+            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+            1024,
+        );
         let before = client.target();
-        client.retarget("http://127.0.0.1:8443", 1024);
+        client.set_cache_limit(1024);
         assert!(
             std::sync::Arc::ptr_eq(&before, &client.target()),
-            "same address and cache: kept, streams stay open"
+            "same cache: kept, streams stay open"
         );
-        client.retarget("http://127.0.0.1:8443", 2048);
+        client.set_cache_limit(2048);
         assert!(
             !std::sync::Arc::ptr_eq(&before, &client.target()),
             "a new cache size is a new client"
         );
-        client.retarget("http://127.0.0.1:9443", 2048);
-        assert_eq!(client.base_url(), "http://127.0.0.1:9443");
+        assert_eq!(client.base_url(), "http://127.0.0.1:8443", "same engine");
+        assert_eq!(
+            client.target().token,
+            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+            "same token"
+        );
     }
 
     /// Same fixed-scalar construction `src/http/tests.rs` (engine crate) uses
@@ -1092,7 +1134,7 @@ mod tests {
         let engine =
             scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                 .await;
-        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
 
         let created = client
             .create_tenant(test_create_tenant_request())
@@ -1122,7 +1164,7 @@ mod tests {
         let engine =
             scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                 .await;
-        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
 
         let created = client
             .create_tenant(test_create_tenant_request())
@@ -1159,7 +1201,7 @@ mod tests {
         let engine =
             scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                 .await;
-        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
 
         let status = client
             .get_status()
@@ -1217,7 +1259,7 @@ mod tests {
         let engine =
             scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                 .await;
-        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let created = client
             .create_tenant(test_create_tenant_request())
             .await
@@ -1256,7 +1298,7 @@ mod tests {
         let engine =
             scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                 .await;
-        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let created = client
             .create_tenant(test_create_tenant_request())
             .await
@@ -1305,7 +1347,7 @@ mod tests {
             .with_admin_lookup_daemon()
             .spawn()
             .await;
-        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let created = client
             .create_tenant(test_create_tenant_request())
             .await
@@ -1391,7 +1433,7 @@ mod tests {
             order_body,
         )
         .await;
-        let client = EngineClient::new(base_url);
+        let client = EngineClient::for_tests(base_url);
 
         client
             .get_order_detail(
@@ -1433,7 +1475,7 @@ mod tests {
         });
         let (base_url, calls) =
             spawn_counting_server("/api/v1/admin/tenant/orders/{order_id}", None, order_body).await;
-        let client = EngineClient::new(base_url);
+        let client = EngineClient::for_tests(base_url);
 
         client
             .get_order_detail(

@@ -56,8 +56,8 @@ engine's, each under its own heading), and apply on save without a restart.
 
 `/dashboard/admin/logs`, for admins (the **logs** link in the nav). It shows
 monokulo's and the engine's lines together, newest first. Monokulo reads the
-engine's store through the engine's admin API, so the engine admin token must
-be set in the settings for its lines to show.
+engine's store through the engine's admin API, with the engine admin token it
+sends on every engine request (`MONOKULO_SCANNER_ADMIN_TOKEN`).
 
 Search with a small filter language:
 

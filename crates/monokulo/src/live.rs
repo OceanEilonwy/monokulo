@@ -599,7 +599,7 @@ mod tests {
     async fn last_subscription_dropped_closes_the_upstream() {
         let hub = Arc::new(LiveHub::default());
         // Nothing listens here; the upstream task just keeps retrying.
-        let engine = EngineClient::new("http://127.0.0.1:9");
+        let engine = EngineClient::for_tests("http://127.0.0.1:9");
         let a = hub.subscribe(
             &engine,
             &shared::ids::ConnectionId::new("conn"),
@@ -622,7 +622,7 @@ mod tests {
     #[tokio::test]
     async fn wake_reaches_only_the_named_order() {
         let hub = Arc::new(LiveHub::default());
-        let engine = EngineClient::new("http://127.0.0.1:9");
+        let engine = EngineClient::for_tests("http://127.0.0.1:9");
         let mut a = hub.subscribe(
             &engine,
             &shared::ids::ConnectionId::new("conn"),
@@ -645,16 +645,15 @@ mod tests {
         assert!(!b.changed.has_changed().unwrap());
     }
     #[tokio::test]
-    async fn changing_the_engine_url_ends_live_streams_to_the_old_engine() {
-        let engine =
-            crate::engine_client::EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
+    async fn a_new_cache_size_ends_live_streams_on_the_old_client() {
+        let engine = crate::engine_client::EngineClient::for_tests("http://127.0.0.1:1");
         let mut subscription = engine.subscribe_order(
             &shared::ids::ConnectionId::new("conn"),
             &shared::auth::RawToken::presented("sk_test"),
             &shared::ids::OrderId::new("order"),
         );
         assert_eq!(engine.live_upstream_count(), 1);
-        engine.retarget("http://127.0.0.1:2", 1024 * 1024);
+        engine.set_cache_limit(1024 * 1024);
         assert_eq!(
             engine.live_upstream_count(),
             0,
@@ -667,7 +666,7 @@ mod tests {
         .await;
         assert!(
             matches!(ended, Ok(Err(_))),
-            "the old stream ends, so the browser reconnects to the new engine"
+            "the old stream ends, so the browser reconnects through the new client"
         );
     }
 }

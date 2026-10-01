@@ -16,10 +16,13 @@
 //!    token bucket - simpler, and sufficient for the actual goal (§DESIGN.md §12).
 //!
 //! **The engine is private** (`docs/DESIGN.md` §4 and the monokulo boundary
-//! section): the only thing meant to reach it is monokulo, through the
-//! `sk_`-authenticated admin API plus `/status`. There are no public
-//! (`/api/v1/t/{pk}/...`) routes, no CORS and no per-origin checks; everything
-//! a customer's browser, a merchant or a plugin touches is served by monokulo.
+//! section): the only thing meant to reach it is monokulo. Every request
+//! must carry the engine's admin token (`SCANNER_ADMIN_TOKEN`) in
+//! [`shared::auth::ENGINE_TOKEN_HEADER`], checked before any route
+//! ([`engine_token_middleware`]); a store's routes also need that store's
+//! `sk_`. There are no public (`/api/v1/t/{pk}/...`) routes, no CORS and no
+//! per-origin checks; everything a customer's browser, a merchant or a
+//! plugin touches is served by monokulo.
 //!
 //! Not implemented in this pass: TLS termination (expected to sit behind a reverse
 //! proxy or terminate via `rustls` in `main`, not implemented here).
@@ -109,7 +112,15 @@ pub struct AppState {
     /// monokulo's Logs page (structured_logging.md 3.3). `None` in tests
     /// and when it couldn't be opened.
     pub log_store: Option<telemetry::store::LogStore>,
+    /// The hash of the engine's admin token (`SCANNER_ADMIN_TOKEN`), which
+    /// every request must carry ([`engine_token_middleware`]).
+    pub engine_token: Arc<shared::auth::TokenHash>,
 }
+
+/// The engine admin token every test state (and `scanner-test-support`'s
+/// engines) accepts.
+#[cfg(any(test, feature = "test-support"))]
+pub use shared::auth::TEST_ENGINE_TOKEN;
 
 #[cfg(test)]
 impl AppState {
@@ -137,6 +148,7 @@ impl AppState {
             admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
             settings: crate::engine_settings::EngineSettings::defaults(),
             log_store: None,
+            engine_token: Arc::new(shared::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash()),
             custody: crate::http::Custody {
                 backends: Arc::new(crate::key_custody::PlainKeyCustody::default()),
                 default_backend: "plain".to_string(),
@@ -158,14 +170,14 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     // on the same private network), never a browser. No CORS layer, no
     // public routes.
     //
-    // Unauthenticated, but reachable only by monokulo now (see the module doc
-    // comment): tenant creation (monokulo provisions a store's tenant before
-    // it has any `sk_`) and `/status` (a JSON status *API* - monokulo's own
+    // No store credential (the engine admin token is checked for every route,
+    // below): tenant creation (monokulo provisions a store's tenant before it
+    // has any `sk_`) and `/status` (a JSON status *API* - monokulo's own
     // `GET /status` calls it and renders the real, styled page; it reports
     // node/scanner health across every configured network, not tenant-scoped
     // data, so it sits outside the versioned `/api/v1/...` prefix like a
     // service's own `/healthz`). Both share the admin limiter, which keys a
-    // token-less request on its address.
+    // request without an `sk_` on its address.
     let unauthenticated_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
         .route("/status", get(status_page::status_page))
@@ -273,10 +285,61 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         // A fixed outer ceiling; the live limit above (server.max_body_bytes,
         // task 2.6) is what normally applies.
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
+        // Before anything else looks at a request, so nothing without the
+        // engine admin token reaches a route, a limit or the database.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            engine_token_middleware,
+        ))
         // Outermost, so every line from the layers above carries the
         // request's span (structured_logging.md 2.1).
         .layer(middleware::from_fn(telemetry::http::server))
         .with_state(state)
+}
+
+/// [`build_router`] as monokulo reaches it: every request carries the
+/// engine admin token ([`TEST_ENGINE_TOKEN`], which the test states accept).
+/// Tests of the token itself use [`build_router`].
+#[cfg(test)]
+pub(crate) fn router_as_monokulo(state: AppState, max_body_bytes: usize) -> Router {
+    async fn with_engine_token(mut request: axum::extract::Request) -> axum::extract::Request {
+        request
+            .headers_mut()
+            .entry(shared::auth::ENGINE_TOKEN_HEADER)
+            .or_insert(axum::http::HeaderValue::from_static(TEST_ENGINE_TOKEN));
+        request
+    }
+    build_router(state, max_body_bytes).layer(middleware::map_request(with_engine_token))
+}
+
+/// Refuses, with `401`, any request whose
+/// [`shared::auth::ENGINE_TOKEN_HEADER`] isn't the engine's admin token:
+/// only monokulo, which is given it, may talk to the engine.
+async fn engine_token_middleware(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    use subtle::ConstantTimeEq;
+    let accepted = request
+        .headers()
+        .get(shared::auth::ENGINE_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|presented| {
+            // Both sides hashed, so the comparison is over equal lengths.
+            let presented = shared::auth::RawToken::presented(presented).hash();
+            bool::from(
+                presented
+                    .as_str()
+                    .as_bytes()
+                    .ct_eq(state.engine_token.as_str().as_bytes()),
+            )
+        });
+    if accepted {
+        next.run(request).await
+    } else {
+        ApiError::Unauthorized.into_response()
+    }
 }
 
 /// Refuses a request whose body is larger than the current

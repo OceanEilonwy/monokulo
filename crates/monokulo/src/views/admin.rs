@@ -287,6 +287,9 @@ pub struct AdminScalarFieldView {
     pub pending_restart: bool,
     /// Why the value in effect isn't the one set, if it isn't.
     pub problem: Option<String>,
+    /// Fixed by the environment at start (the engine's address and token):
+    /// shown, with a padlock, but not editable or sent with the form.
+    pub locked: bool,
 }
 
 /// A node's status from the engine's `/status`, for its row.
@@ -498,8 +501,6 @@ pub struct AdminSettingsViewModel {
     pub success: Option<String>,
     pub notices: Vec<Notice>,
     pub monokulo_fields: Vec<AdminScalarFieldView>,
-    /// `true` once `engine.url`/`engine.admin_token` are both non-empty.
-    pub scanner_configured: bool,
     /// `true` only after a real, successful fetch of the scanner's own
     /// settings.
     pub scanner_reachable: bool,
@@ -629,8 +630,30 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
             div class="setting-field" {
                 label class="setting-label" for=(field_id(field.form_name())) { (field.label) }
                 (help)
-                (scalar_input(field))
+                @if field.locked { (locked_input(field)) } @else { (scalar_input(field)) }
                 (field_status(field))
+            }
+        }
+    }
+}
+
+/// A setting fixed by the environment: its value in a disabled box with a
+/// padlock inside, and no `name`, so it is never sent with the form. A
+/// secret shows as dots, never its value.
+fn locked_input(field: &AdminScalarFieldView) -> Markup {
+    let secret = matches!(field.kind, SettingKindView::Secret);
+    html! {
+        span class="locked-input" title="Set in the environment when monokulo starts" {
+            @if secret {
+                input type="password" value="locked" id=(field_id(field.form_name()))
+                    aria-describedby=[help_id(field)] disabled;
+            } @else {
+                input type="text" value=(field.value) id=(field_id(field.form_name()))
+                    aria-describedby=[help_id(field)] disabled;
+            }
+            svg class="lock-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+                path d="M5 7V5a3 3 0 0 1 6 0v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" {}
+                rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor" {}
             }
         }
     }
@@ -864,25 +887,18 @@ pub fn banners(data: &AdminSettingsViewModel, oob: bool) -> Markup {
     }
 }
 
-/// The engine is configured and answered, so its settings are on hand.
+/// The engine answered, so its settings are on hand.
 fn engine_available(data: &AdminSettingsViewModel) -> bool {
-    data.scanner_configured && data.scanner_reachable
+    data.scanner_reachable
 }
 
 /// Where the engine's settings would be, while it can't be reached
 /// (nicer_admin_screen.md T6).
 fn engine_unavailable(data: &AdminSettingsViewModel) -> Markup {
     html! {
-        @if !data.scanner_configured {
-            p class="engine-unavailable" {
-                "Set " code { "engine.url" } " and " code { "engine.admin_token" } " on the "
-                a href=(SettingsTab::General.href()) { "General" } " tab and save to manage this instance's engine settings from here."
-            }
-        } @else {
-            p class="error engine-unavailable" role="alert" {
-                "Could not reach the configured engine: "
-                @if let Some(scanner_error) = &data.scanner_error { (scanner_error) }
-            }
+        p class="error engine-unavailable" role="alert" {
+            "Could not reach the configured engine: "
+            @if let Some(scanner_error) = &data.scanner_error { (scanner_error) }
         }
     }
 }
@@ -1258,8 +1274,6 @@ mod tests {
         use SettingsTab::*;
         &[
             ("signup.mode", M, General, None),
-            ("engine.url", M, General, None),
-            ("engine.admin_token", M, General, None),
             ("public_url", M, General, None),
             (
                 "exchange_rate.coingecko_enabled",
@@ -1588,7 +1602,6 @@ mod tests {
         AdminSettingsViewModel {
             tab,
             monokulo_fields: fields(SettingOwner::Monokulo),
-            scanner_configured: true,
             scanner_reachable: true,
             scanner_fields: fields(SettingOwner::Engine),
             scanner_networks: ["mainnet", "stagenet", "testnet"]
@@ -1836,7 +1849,7 @@ mod tests {
         assert!(marked(&page(&data), SettingsTab::Logging));
     }
 
-    /// T6: an engine that isn't set up or doesn't answer. Its own tabs say
+    /// T6: an engine that doesn't answer. Its own tabs say
     /// so instead of a form; the mixed ones still show and save monokulo's
     /// settings, with the message where the engine's would be.
     #[test]
@@ -1847,49 +1860,34 @@ mod tests {
             scanner_fields: vec![],
             ..full_view(tab)
         };
-        let unconfigured = |tab| AdminSettingsViewModel {
-            scanner_configured: false,
-            scanner_reachable: false,
-            scanner_fields: vec![],
-            ..full_view(tab)
-        };
         for tab in SettingsTab::ALL
             .into_iter()
             .filter(|tab| *tab != SettingsTab::Other)
         {
-            for (data, message) in [
-                (
-                    unreachable(tab),
-                    "Could not reach the configured engine: connection refused",
-                ),
-                (
-                    unconfigured(tab),
-                    "Set <code>engine.url</code> and <code>engine.admin_token</code> on the",
-                ),
-            ] {
-                let html = page(&data);
-                let engine_part = tab
-                    .groups()
-                    .iter()
-                    .any(|(_, owner)| *owner == SettingOwner::Engine);
-                assert_eq!(
-                    html.matches(message).count(),
-                    usize::from(engine_part),
-                    "{tab:?}: {html}"
+            let data = unreachable(tab);
+            let message = "Could not reach the configured engine: connection refused";
+            let html = page(&data);
+            let engine_part = tab
+                .groups()
+                .iter()
+                .any(|(_, owner)| *owner == SettingOwner::Engine);
+            assert_eq!(
+                html.matches(message).count(),
+                usize::from(engine_part),
+                "{tab:?}: {html}"
+            );
+            if tab.engine_only() {
+                assert!(!html.contains("<form "), "nothing to save on {tab:?}");
+            } else {
+                assert!(
+                    html.contains("<form ")
+                        && html.contains(r#"class="btn-primary">Save</button>"#),
+                    "{tab:?}"
                 );
-                if tab.engine_only() {
-                    assert!(!html.contains("<form "), "nothing to save on {tab:?}");
-                } else {
-                    assert!(
-                        html.contains("<form ")
-                            && html.contains(r#"class="btn-primary">Save</button>"#),
-                        "{tab:?}"
-                    );
-                    assert!(
-                        !html.contains("<h3>Webhooks</h3>"),
-                        "one message, not a heading per group: {html}"
-                    );
-                }
+                assert!(
+                    !html.contains("<h3>Webhooks</h3>"),
+                    "one message, not a heading per group: {html}"
+                );
             }
         }
         let payments = page(&unreachable(SettingsTab::Payments));
@@ -2104,7 +2102,6 @@ mod tests {
         let page = |enabled: &str| {
             let data = AdminSettingsViewModel {
                 tab: SettingsTab::Custody,
-                scanner_configured: true,
                 scanner_reachable: true,
                 scanner_fields: vec![
                     field(
@@ -2279,7 +2276,6 @@ mod tests {
                 Notice::Info("Saved, but set by an environment variable.".into()),
             ],
             tab: SettingsTab::Server,
-            scanner_configured: true,
             scanner_reachable: true,
             scanner_fields: vec![AdminScalarFieldView {
                 key: "server.worker_threads".into(),

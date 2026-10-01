@@ -757,7 +757,7 @@ mod tests {
         let engine =
             scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                 .await;
-        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
@@ -978,7 +978,7 @@ mod tests {
         // Strong proof: `secret_token` is the tenant's real, working `sk_`
         // credential, not just a string that happens to start with `sk_` -
         // same pattern 1.2.3/1.3.2 already established.
-        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let tenant_view = engine_client.get_tenant(&shared::auth::RawToken::presented(secret_token)).await.expect(
             "the returned secret_token should be the tenant's genuine, functioning sk_ credential",
         );
@@ -1157,7 +1157,7 @@ mod tests {
         // exists on the real engine, under this tenant, with the exact URL
         // submitted - and the tenant's order_expiry_seconds genuinely reached the
         // engine too.
-        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let webhooks = engine_client
             .list_webhooks(&shared::auth::RawToken::presented(&secret_token))
             .await

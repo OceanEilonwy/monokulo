@@ -903,7 +903,7 @@ const TEST_SPEND_PUBKEY_HEX: &str =
 async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
     let engine =
         scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-    let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+    let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
     let state = AppState {
         engine: crate::http::Engine::new(engine_client),
         ..AppState::for_tests()
@@ -1751,32 +1751,6 @@ async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
             "{alerts:?}"
         );
     }
-}
-
-#[tokio::test]
-async fn a_status_cached_from_the_old_engine_is_not_shown_after_the_engine_url_changes() {
-    let (state, owner, _) = state_with_owner_and_store("pk_shop");
-    crate::http::status_page::seed_status_for_tests(
-        &state.engine,
-        status_with(vec![crate::engine_client::UnservedTenant {
-            public_key: "pk_shop".into(),
-            network: "stagenet".into(),
-            reason: "no_reachable_node".into(),
-            blocks_behind: None,
-        }]),
-    );
-    assert_eq!(
-        super::page_chrome(&state, Some(&owner), "/dashboard")
-            .await
-            .alerts
-            .len(),
-        1
-    );
-    state.engine.client.retarget("http://127.0.0.1:2", 1024);
-    assert!(
-        crate::http::status_page::known_unserved(&state.engine).is_empty(),
-        "the old engine's status is gone"
-    );
 }
 
 #[tokio::test]

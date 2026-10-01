@@ -89,7 +89,7 @@ pub fn max_cache_bytes_from_env() -> u64 {
 /// `CoingeckoRateProvider`'s own existing app-level TTL cache (`piconero_per_unit_cached`)
 /// remains the thing actually bounding how often it hits the real API.
 pub fn build_client(user_agent: &str, max_cache_bytes: u64) -> ClientWithMiddleware {
-    client_builder(user_agent)
+    client_builder(user_agent, reqwest::header::HeaderMap::new())
         .with(CacheMiddleware::new(max_cache_bytes))
         .build()
 }
@@ -99,7 +99,21 @@ pub fn build_client(user_agent: &str, max_cache_bytes: u64) -> ClientWithMiddlew
 /// (structured_logging.md 2.3). Not for third parties such as exchange-rate
 /// APIs, which have no use for our trace ids.
 pub fn build_traced_client(user_agent: &str, max_cache_bytes: u64) -> ClientWithMiddleware {
-    client_builder(user_agent)
+    build_traced_client_with_headers(
+        user_agent,
+        max_cache_bytes,
+        reqwest::header::HeaderMap::new(),
+    )
+}
+
+/// [`build_traced_client`], sending `headers` on every request (a
+/// credential the peer requires on every route, say).
+pub fn build_traced_client_with_headers(
+    user_agent: &str,
+    max_cache_bytes: u64,
+    headers: reqwest::header::HeaderMap,
+) -> ClientWithMiddleware {
+    client_builder(user_agent, headers)
         .with(PropagateTrace)
         .with(CacheMiddleware::new(max_cache_bytes))
         .build()
@@ -112,9 +126,10 @@ pub fn build_traced_client(user_agent: &str, max_cache_bytes: u64) -> ClientWith
 pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-fn client_builder(user_agent: &str) -> ClientBuilder {
+fn client_builder(user_agent: &str, headers: reqwest::header::HeaderMap) -> ClientBuilder {
     let inner = reqwest::Client::builder()
         .user_agent(user_agent.to_string())
+        .default_headers(headers)
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .build()
@@ -524,7 +539,9 @@ mod tests {
         // so the test can run the cache's housekeeping itself.
         let middleware = CacheMiddleware::new(3 * 1024);
         let cache = middleware.cache.clone();
-        let client = client_builder("test-agent").with(middleware).build();
+        let client = client_builder("test-agent", reqwest::header::HeaderMap::new())
+            .with(middleware)
+            .build();
         for n in ["a", "b", "c"] {
             client
                 .get(format!("{base_url}/item/{n}"))

@@ -22,9 +22,10 @@ use crate::key_custody::{KeyCustody, PlainKeyCustody};
 use crate::store::Store;
 
 use super::rate_limit::RateLimiter;
+use super::router_as_monokulo as build_router;
 use super::{
-    build_router, request_limit_middleware, stream_limit_middleware, ApiError, AppState,
-    RequestLimits,
+    request_limit_middleware, stream_limit_middleware, ApiError, AppState, RequestLimits,
+    TEST_ENGINE_TOKEN,
 };
 
 fn valid_scalar_bytes(seed: u8) -> [u8; 32] {
@@ -1676,21 +1677,101 @@ async fn test_app_state_with_real_daemon_and_env(
     (state, fake_daemon)
 }
 
+// -- The engine admin token ---------------------------------------------------
+
+/// Every route, whatever credential of its own it takes, refuses a request
+/// without the engine admin token, or with any other value in its header
+/// (a store's own `sk_` included); with it, a route answers as usual.
+#[tokio::test]
+async fn every_route_refuses_a_request_without_the_engine_token() {
+    let state = AppState::for_tests();
+    let tenant = create_tenant(&build_router(state.clone(), 1_000_000), 1).await;
+    let router = super::build_router(state, 1_000_000);
+    let routes = [
+        ("POST", "/api/v1/admin/tenants"),
+        ("GET", "/status"),
+        ("GET", "/api/v1/admin/settings"),
+        ("POST", "/api/v1/admin/settings"),
+        ("GET", "/api/v1/admin/logs"),
+        ("GET", "/api/v1/admin/tenant"),
+        ("GET", "/api/v1/admin/tenant/orders"),
+        ("GET", "/api/v1/admin/tenant/events"),
+        ("GET", "/no/such/route"),
+    ];
+    let wrong_values = [None, Some("wrong"), Some(tenant.secret_token.as_str())];
+    for (method, uri) in routes {
+        for wrong in wrong_values {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", format!("Bearer {}", tenant.secret_token))
+                .header("content-type", "application/json");
+            if let Some(value) = wrong {
+                request = request.header(shared::auth::ENGINE_TOKEN_HEADER, value);
+            }
+            let response = router
+                .clone()
+                .oneshot(request.body(Body::from("{}")).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} with {wrong:?}"
+            );
+        }
+    }
+
+    let status = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/status")
+                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::OK);
+    let own = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/tenant")
+                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .header("authorization", format!("Bearer {}", tenant.secret_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(own.status(), StatusCode::OK);
+}
+
+/// The engine token doesn't stand in for a store's own `sk_`: a store's
+/// routes still need it.
+#[tokio::test]
+async fn a_stores_routes_still_need_its_own_secret() {
+    let router = test_router();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/tenant")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
 // -- Instance admin settings API -------------------------------------------
 
-fn settings_request(
-    method: &str,
-    bearer: Option<&str>,
-    body: Option<serde_json::Value>,
-) -> Request<Body> {
-    let mut builder = Request::builder()
+fn settings_request(method: &str, body: Option<serde_json::Value>) -> Request<Body> {
+    Request::builder()
         .method(method)
         .uri("/api/v1/admin/settings")
-        .header("content-type", "application/json");
-    if let Some(token) = bearer {
-        builder = builder.header("authorization", format!("Bearer {token}"));
-    }
-    builder
+        .header("content-type", "application/json")
         .body(
             body.map(|b| Body::from(b.to_string()))
                 .unwrap_or(Body::empty()),
@@ -1699,43 +1780,10 @@ fn settings_request(
 }
 
 #[tokio::test]
-async fn instance_admin_settings_requires_a_bearer_token_at_all() {
-    let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
-    let router = build_router(state, 1_000_000);
-    let response = router
-        .oneshot(settings_request("GET", None, None))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn a_tenants_own_secret_token_cannot_authenticate_as_the_instance_admin() {
-    let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
-    let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1).await;
-    let response = router
-        .oneshot(settings_request("GET", Some(&tenant.secret_token), None))
-        .await
-        .unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::UNAUTHORIZED,
-        "a tenant's own sk_ must never satisfy the instance-wide admin API"
-    );
-}
-
-#[tokio::test]
 async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
-    let response = router
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
-        .await
-        .unwrap();
+    let response = router.oneshot(settings_request("GET", None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(
@@ -1756,14 +1804,12 @@ async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
 #[tokio::test]
 async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "3" } })),
         ))
         .await
@@ -1775,10 +1821,7 @@ async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
         body_json(post).await
     );
 
-    let get = router
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
-        .await
-        .unwrap();
+    let get = router.oneshot(settings_request("GET", None)).await.unwrap();
     let body = body_json(get).await;
     assert_eq!(
         body["scalars"]["payment.confirmations_required"]["value"],
@@ -1797,14 +1840,12 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
         "99",
     )]))
     .await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "3" } })),
         ))
         .await
@@ -1816,10 +1857,7 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
         "got: {saved}"
     );
 
-    let get = router
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
-        .await
-        .unwrap();
+    let get = router.oneshot(settings_request("GET", None)).await.unwrap();
     let body = body_json(get).await;
     assert_eq!(
         body["scalars"]["payment.confirmations_required"]["value"],
@@ -1834,7 +1872,6 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
 #[tokio::test]
 async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     // `0` is a legal value now (native 0-conf) - `1000` (over the 720 cap) is the
@@ -1843,17 +1880,13 @@ async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "1000" } })),
         ))
         .await
         .unwrap();
     assert_eq!(post.status(), StatusCode::BAD_REQUEST);
 
-    let get = router
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
-        .await
-        .unwrap();
+    let get = router.oneshot(settings_request("GET", None)).await.unwrap();
     let body = body_json(get).await;
     assert_eq!(
         body["scalars"]["payment.confirmations_required"]["value"], "10",
@@ -1868,12 +1901,10 @@ async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
 #[tokio::test]
 async fn otlp_headers_that_are_not_name_value_pairs_are_refused_without_being_shown_back() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let save = |headers: &str| {
         router.clone().oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "scalars": { "logging.otlp_headers": headers } })),
         ))
     };
@@ -1885,7 +1916,7 @@ async fn otlp_headers_that_are_not_name_value_pairs_are_refused_without_being_sh
     assert!(!body.contains("sk-live-abc123"), "{body}");
     let get = router
         .clone()
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
+        .oneshot(settings_request("GET", None))
         .await
         .unwrap();
     assert_eq!(
@@ -1903,14 +1934,12 @@ async fn otlp_headers_that_are_not_name_value_pairs_are_refused_without_being_sh
 #[tokio::test]
 async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({
                 "scalars": {
                     "payment.reorg_check_depth": "50",
@@ -1922,10 +1951,7 @@ async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
         .unwrap();
     assert_eq!(post.status(), StatusCode::BAD_REQUEST);
 
-    let get = router
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
-        .await
-        .unwrap();
+    let get = router.oneshot(settings_request("GET", None)).await.unwrap();
     let body = body_json(get).await;
     assert_eq!(
         body["scalars"]["payment.reorg_check_depth"]["value"], "20",
@@ -1936,13 +1962,11 @@ async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
 #[tokio::test]
 async fn enabling_the_socket_key_custody_backend_without_a_socket_path_is_rejected() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "scalars": { "key_custody.enabled_backends": "plain,socket" } })),
         ))
         .await
@@ -1953,14 +1977,12 @@ async fn enabling_the_socket_key_custody_backend_without_a_socket_path_is_reject
 #[tokio::test]
 async fn enabling_the_socket_key_custody_backend_with_a_socket_path_in_the_same_request_succeeds() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({
                 "scalars": {
                     "key_custody.enabled_backends": "plain,socket",
@@ -1978,10 +2000,7 @@ async fn enabling_the_socket_key_custody_backend_with_a_socket_path_in_the_same_
         body_json(post).await
     );
 
-    let get = router
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
-        .await
-        .unwrap();
+    let get = router.oneshot(settings_request("GET", None)).await.unwrap();
     let body = body_json(get).await;
     assert_eq!(
         body["scalars"]["key_custody.default_backend"]["value"],
@@ -1999,14 +2018,12 @@ async fn enabling_the_socket_key_custody_backend_using_an_already_saved_socket_p
     // request's own body - a caller enabling "socket" in a request
     // that doesn't also repeat an already-saved `socket_path` must still succeed.
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     router
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "scalars": { "key_custody.socket_path": "/run/moneropay/key-custody.sock" } })),
         ))
         .await
@@ -2015,7 +2032,6 @@ async fn enabling_the_socket_key_custody_backend_using_an_already_saved_socket_p
     let post = router
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "scalars": { "key_custody.enabled_backends": "socket", "key_custody.default_backend": "socket" } })),
         ))
         .await
@@ -2045,7 +2061,6 @@ fn closed_port() -> u16 {
 #[tokio::test]
 async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let [primary, backup] = closed_ports();
@@ -2062,7 +2077,6 @@ async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "monero_node": { "mainnet": node.clone() } })),
         ))
         .await
@@ -2074,10 +2088,7 @@ async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
         body_json(post).await
     );
 
-    let get = router
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
-        .await
-        .unwrap();
+    let get = router.oneshot(settings_request("GET", None)).await.unwrap();
     let body = body_json(get).await;
     assert_eq!(body["monero_node"]["mainnet"], node);
 }
@@ -2085,7 +2096,6 @@ async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
 #[tokio::test]
 async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let node = serde_json::json!({ "host": "127.0.0.1", "port": closed_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
@@ -2093,7 +2103,6 @@ async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "monero_node": { "mainnet": node } })),
         ))
         .await
@@ -2103,58 +2112,14 @@ async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "monero_node": { "mainnet": null } })),
         ))
         .await
         .unwrap();
 
-    let get = router
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
-        .await
-        .unwrap();
+    let get = router.oneshot(settings_request("GET", None)).await.unwrap();
     let body = body_json(get).await;
     assert_eq!(body["monero_node"]["mainnet"], serde_json::Value::Null);
-}
-
-#[tokio::test]
-async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_token_authenticates() {
-    let store = Store::open_in_memory().unwrap();
-    let no_env = live_settings::Env::fixed(Vec::<(String, String)>::new());
-    let generated = crate::http::instance_admin::ensure_admin_token_seeded(&store, &no_env)
-        .expect("a fresh database has no token yet");
-
-    let store = store.into_shared();
-    let settings = crate::engine_settings::EngineSettings::load_with(
-        store.clone(),
-        None,
-        Arc::new(RateLimiter::new(10_000)),
-        live_settings::Env::fixed(Vec::<(String, String)>::new()),
-    )
-    .await
-    .unwrap();
-    let state = AppState {
-        settings,
-        networks: crate::http::Networks {
-            daemons: crate::engine_settings::Daemons::fixed(HashMap::new()),
-            scanner_status: crate::scanner_status::new_scanner_status_map(),
-        },
-        ..AppState::for_tests_with_store(store)
-    };
-    let second_call =
-        crate::http::instance_admin::ensure_admin_token_seeded(&state.db.lock(), &no_env);
-    assert_eq!(second_call, None, "a token that already exists must never be silently regenerated (that would invalidate the first one)");
-
-    let router = build_router(state, 1_000_000);
-    let response = router
-        .oneshot(settings_request("GET", Some(generated.expose()), None))
-        .await
-        .unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "the freshly generated token must actually authenticate"
-    );
 }
 
 // -- Payment lookup by txid (`docs/txid_lookup_and_scan_chunking_wbs.md` Part B) --
@@ -2825,7 +2790,6 @@ async fn engine_that_applies_node_settings() -> (
     Arc<RateLimiter<String>>,
 ) {
     let store = Store::open_in_memory().unwrap().into_shared();
-    crate::http::instance_admin::seed_admin_token_for_tests(&store.lock(), "admin_test_token");
     let daemons = crate::engine_settings::Daemons::default();
     let rate_limiter = Arc::new(RateLimiter::new(10_000));
     let settings = crate::engine_settings::EngineSettings::load_with(
@@ -2854,11 +2818,7 @@ async fn engine_that_applies_node_settings() -> (
 async fn save_settings(router: &Router, body: serde_json::Value) -> serde_json::Value {
     let response = router
         .clone()
-        .oneshot(settings_request(
-            "POST",
-            Some("admin_test_token"),
-            Some(body),
-        ))
+        .oneshot(settings_request("POST", Some(body)))
         .await
         .unwrap();
     let status = response.status();
@@ -3064,7 +3024,7 @@ async fn saving_a_restart_only_setting_says_so() {
     );
     let get = router
         .clone()
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
+        .oneshot(settings_request("GET", None))
         .await
         .unwrap();
     let body = body_json(get).await;
@@ -3093,7 +3053,6 @@ async fn an_unknown_setting_is_refused_and_nothing_is_saved() {
         .clone()
         .oneshot(settings_request(
             "POST",
-            Some("admin_test_token"),
             Some(serde_json::json!({ "scalars": { "payment.default_rescan_lookback_days": "3", "payment.confirmations_required": "4" } })),
         ))
         .await
@@ -3101,7 +3060,7 @@ async fn an_unknown_setting_is_refused_and_nothing_is_saved() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let get = router
         .clone()
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
+        .oneshot(settings_request("GET", None))
         .await
         .unwrap();
     assert_eq!(
@@ -3716,39 +3675,14 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
     }
 
     let mut state = AppState::for_tests();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     state.log_store = Some(log_store);
     let router = build_router(state, 1_000_000);
-    let get = |uri: String, token: Option<&str>| {
-        let mut builder = Request::builder().uri(uri);
-        if let Some(token) = token {
-            builder = builder.header("authorization", format!("Bearer {token}"));
-        }
-        builder.body(Body::empty()).unwrap()
-    };
-
-    let response = router
-        .clone()
-        .oneshot(get("/api/v1/admin/logs".into(), None))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let response = router
-        .clone()
-        .oneshot(get("/api/v1/admin/logs".into(), Some("sk_not_the_admin")))
-        .await
-        .unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::UNAUTHORIZED,
-        "a store's key is not the admin token"
-    );
+    let get = |uri: String| Request::builder().uri(uri).body(Body::empty()).unwrap();
 
     let response = router
         .clone()
         .oneshot(get(
-            "/api/v1/admin/logs?q=store.id%20%3D%20%27s_log_api%27".into(),
-            Some("admin_test_token"),
+            "/api/v1/admin/logs?q=store.id%20%3D%20%27s_log_api%27".into()
         ))
         .await
         .unwrap();
@@ -3761,10 +3695,7 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
 
     let response = router
         .clone()
-        .oneshot(get(
-            "/api/v1/admin/logs?q=level%20%3D%20loud".into(),
-            Some("admin_test_token"),
-        ))
+        .oneshot(get("/api/v1/admin/logs?q=level%20%3D%20loud".into()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -3775,10 +3706,7 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
 
     let response = router
         .clone()
-        .oneshot(get(
-            format!("/api/v1/admin/logs/trace/{trace_id}"),
-            Some("admin_test_token"),
-        ))
+        .oneshot(get(format!("/api/v1/admin/logs/trace/{trace_id}")))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -3788,20 +3716,14 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
 
     let response = router
         .clone()
-        .oneshot(get(
-            "/api/v1/admin/logs/trace/not-a-trace".into(),
-            Some("admin_test_token"),
-        ))
+        .oneshot(get("/api/v1/admin/logs/trace/not-a-trace".into()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let response = router
         .clone()
-        .oneshot(get(
-            "/api/v1/admin/logs/attributes".into(),
-            Some("admin_test_token"),
-        ))
+        .oneshot(get("/api/v1/admin/logs/attributes".into()))
         .await
         .unwrap();
     let names: telemetry::store::api::AttributesResponse =
@@ -3812,11 +3734,9 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
 #[tokio::test]
 async fn without_a_log_store_the_log_api_says_so() {
     let state = AppState::for_tests();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let request = Request::builder()
         .uri("/api/v1/admin/logs")
-        .header("authorization", "Bearer admin_test_token")
         .body(Body::empty())
         .unwrap();
     assert_eq!(
@@ -3861,14 +3781,13 @@ fn node_json(addr: std::net::SocketAddr, fallbacks: &[std::net::SocketAddr]) -> 
 
 async fn settings_router() -> Router {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.db.lock(), "admin_test_token");
     build_router(state, 1_000_000)
 }
 
 async fn saved_node(router: &Router, network: &str) -> serde_json::Value {
     let get = router
         .clone()
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
+        .oneshot(settings_request("GET", None))
         .await
         .unwrap();
     body_json(get).await["monero_node"][network].clone()
@@ -3877,11 +3796,7 @@ async fn saved_node(router: &Router, network: &str) -> serde_json::Value {
 async fn try_save(router: &Router, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
     let response = router
         .clone()
-        .oneshot(settings_request(
-            "POST",
-            Some("admin_test_token"),
-            Some(body),
-        ))
+        .oneshot(settings_request("POST", Some(body)))
         .await
         .unwrap();
     let status = response.status();
@@ -3913,7 +3828,7 @@ async fn a_stagenet_node_that_says_it_is_on_mainnet_is_refused_and_nothing_chang
     );
     let get = router
         .clone()
-        .oneshot(settings_request("GET", Some("admin_test_token"), None))
+        .oneshot(settings_request("GET", None))
         .await
         .unwrap();
     assert_eq!(

@@ -15,9 +15,9 @@
 //! this crate already persists. The scanner half is a live HTTP proxy - this
 //! page holds no scanner state of its own at all, it just calls the
 //! configured scanner instance's own `GET`/`POST /api/v1/admin/settings`
-//! (`scanner::http::instance_admin`) using the `engine.url`/
-//! `engine.admin_token` monokulo settings, and renders/forwards whatever
-//! that instance reports. This is deliberately the single-configured-scanner
+//! (`scanner::http::instance_admin`) through monokulo's engine client
+//! (`MONOKULO_ENGINE_URL` and `MONOKULO_SCANNER_ADMIN_TOKEN`, both fixed at
+//! start), and renders/forwards whatever that instance reports. This is deliberately the single-configured-scanner
 //! shape a self-hosted one-box deployment has (`scripts/dev-run.sh`), not a
 //! multi-tenant "one monokulo, many engines" design - see this crate's own
 //! `EngineClient`, which already assumes exactly one engine base URL.
@@ -84,23 +84,68 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
     let Some(registry) = state.settings.registry.as_ref() else {
         return Vec::new();
     };
-    registry
-        .describe()
+    engine_connection_fields(state)
         .into_iter()
-        .map(|view| AdminScalarFieldView {
-            key: view.key.to_string(),
-            name: String::new(),
-            label: humanize_key(view.key),
-            value: view.value,
-            source_label: source_label(live_source(view.source)),
-            help: Some(view.description.to_string()),
-            kind: SettingKindView::from(view.kind),
-            example: view.example.map(str::to_string),
-            restart_only: view.applies == live_settings::Applies::Restart,
-            pending_restart: view.pending_restart,
-            problem: view.problem.map(|p| p.message),
-        })
+        .chain(
+            registry
+                .describe()
+                .into_iter()
+                .map(|view| AdminScalarFieldView {
+                    key: view.key.to_string(),
+                    name: String::new(),
+                    label: humanize_key(view.key),
+                    value: view.value,
+                    source_label: source_label(live_source(view.source)),
+                    help: Some(view.description.to_string()),
+                    kind: SettingKindView::from(view.kind),
+                    example: view.example.map(str::to_string),
+                    restart_only: view.applies == live_settings::Applies::Restart,
+                    pending_restart: view.pending_restart,
+                    problem: view.problem.map(|p| p.message),
+                    locked: false,
+                }),
+        )
         .collect()
+}
+
+/// The engine's address and admin token, which monokulo reads from the
+/// environment when it starts: shown locked on the General tab, never
+/// saved from the page.
+fn engine_connection_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
+    use crate::settings::{ENGINE_TOKEN_ENV, ENGINE_URL_ENV};
+    let url_source = if std::env::var_os(ENGINE_URL_ENV).is_some() {
+        "environment variable"
+    } else {
+        "default"
+    };
+    vec![
+        AdminScalarFieldView {
+            key: "engine.url".to_string(),
+            label: humanize_key("engine.url"),
+            value: state.engine.client.base_url(),
+            source_label: url_source.to_string(),
+            help: Some(format!(
+                "Where monokulo reaches the engine. Set by {ENGINE_URL_ENV} when monokulo starts; change it there and restart monokulo."
+            )),
+            kind: SettingKindView::Url,
+            restart_only: true,
+            locked: true,
+            ..Default::default()
+        },
+        AdminScalarFieldView {
+            key: "engine.admin_token".to_string(),
+            label: humanize_key("engine.admin_token"),
+            value: "set".to_string(),
+            source_label: "environment variable".to_string(),
+            help: Some(format!(
+                "The engine's admin token, sent with every request to the engine, which refuses anything without it. Set by {ENGINE_TOKEN_ENV} (the engine's SCANNER_ADMIN_TOKEN) when monokulo starts; change both and restart both."
+            )),
+            kind: SettingKindView::Secret,
+            restart_only: true,
+            locked: true,
+            ..Default::default()
+        },
+    ]
 }
 
 /// Whether `key` is one of monokulo's own settings.
@@ -118,45 +163,6 @@ fn engine_form_name(key: &str) -> String {
         String::new()
     }
 }
-
-/// A request to the engine carrying this request's trace
-/// (structured_logging.md 2.3) and bounded in time, like every
-/// `EngineClient` call: a stalled engine must not hang the admin page.
-fn traced(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    let request = request.timeout(crate::engine_client::ENGINE_CALL_TIMEOUT);
-    match telemetry::trace::current_traceparent() {
-        Some(traceparent) => request.header(telemetry::trace::TRACEPARENT, traceparent),
-        None => request,
-    }
-}
-
-/// This instance's engine connection, read synchronously with the lock
-/// held - the two owned `String`s are then free to travel across an
-/// `.await` on their own.
-/// The engine's URL and admin token (empty when not set).
-async fn engine_connection(state: &AppState) -> Result<(String, String), crate::db::DbError> {
-    state
-        .db
-        .read(|db| {
-            Ok::<_, crate::db::DbError>((
-                crate::settings::get(db, &crate::settings::ENGINE_URL)
-                    .as_str()
-                    .to_string(),
-                crate::settings::get(db, &crate::settings::SCANNER_ADMIN_TOKEN)
-                    .expose()
-                    .to_string(),
-            ))
-        })
-        .await
-        .inspect_err(
-            |e| tracing::error!(error = %e, "could not read the engine connection settings"),
-        )
-}
-
-/// Shown when [`engine_connection`] fails: the settings exist but couldn't
-/// be read, which is not the same as there being none.
-const ENGINE_CONNECTION_UNREADABLE: &str =
-    "Could not read the engine connection settings from monokulo's database.";
 
 #[derive(Deserialize)]
 struct RemoteScalarSetting {
@@ -194,21 +200,13 @@ struct RemoteSettingsResponse {
     networks: BTreeMap<String, RemoteNetwork>,
 }
 
-/// Fetches the engine's own settings over HTTP - `Ok(None)` when no engine
-/// connection is configured at all, `Err` for a real reachability, auth or
-/// parse failure worth showing. Takes owned strings, never a `&Db`, since it
-/// awaits.
+/// Fetches the engine's own settings over HTTP; `Err` for a reachability,
+/// auth or parse failure worth showing.
 async fn fetch_scanner_settings(
-    engine_url: &str,
-    admin_token: &str,
-) -> Result<Option<(Vec<AdminScalarFieldView>, Vec<AdminNetworkFieldView>)>, String> {
-    if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
-        return Ok(None);
-    }
-
-    let url = format!("{}/api/v1/admin/settings", engine_url.trim_end_matches('/'));
-    let response = traced(reqwest::Client::new().get(&url))
-        .bearer_auth(admin_token)
+    engine: &crate::engine_client::EngineClient,
+) -> Result<(Vec<AdminScalarFieldView>, Vec<AdminNetworkFieldView>), String> {
+    let response = engine
+        .request(reqwest::Method::GET, "/api/v1/admin/settings")
         .send()
         .await
         .map_err(|e| format!("request failed: {e}"))?;
@@ -235,6 +233,7 @@ async fn fetch_scanner_settings(
             restart_only: s.applies.as_deref() == Some("restart"),
             pending_restart: s.pending_restart,
             problem: s.problem,
+            locked: false,
         })
         .collect();
     let mut networks_meta = parsed.networks;
@@ -275,7 +274,7 @@ async fn fetch_scanner_settings(
             .position(|known| shared::network::network_str(*known) == n.network)
             .unwrap_or(usize::MAX)
     });
-    Ok(Some((fields, networks)))
+    Ok((fields, networks))
 }
 
 /// Assembles the whole page's view model: monokulo's fields from its
@@ -333,23 +332,14 @@ async fn build_view_model(
         monokulo_fields,
         ..Default::default()
     };
-    let fetched = match engine_connection(state).await {
-        Ok((engine_url, admin_token)) => fetch_scanner_settings(&engine_url, &admin_token).await,
-        Err(_) => Err(ENGINE_CONNECTION_UNREADABLE.to_string()),
-    };
-    match fetched {
-        Ok(Some((mut fields, networks))) => {
+    match fetch_scanner_settings(&state.engine.client).await {
+        Ok((mut fields, networks)) => {
             with_time_limits(&mut fields, &clock);
-            view.scanner_configured = true;
             view.scanner_reachable = true;
             view.scanner_fields = fields;
             view.scanner_networks = networks;
         }
-        Ok(None) => {
-            view.scanner_configured = false;
-        }
         Err(e) => {
-            view.scanner_configured = true;
             view.scanner_reachable = false;
             view.scanner_error = Some(e);
         }
@@ -778,17 +768,15 @@ fn scanner_save_notices(warnings: RemoteSaveWarnings, submitted_bind: Option<&st
 /// Which of the submitted settings are secrets is the engine's to say, so
 /// it's asked, only when there's an empty value or a ticked box to decide.
 async fn apply_engine_secrets(
-    engine_url: &str,
-    admin_token: &str,
+    engine: &crate::engine_client::EngineClient,
     req: &mut RemoteUpdateRequest,
     clears: &[String],
 ) -> Result<(), Box<SaveOutcome>> {
     if clears.is_empty() && !req.scalars.values().any(String::is_empty) {
         return Ok(());
     }
-    let fields = match fetch_scanner_settings(engine_url, admin_token).await {
-        Ok(Some((fields, _))) => fields,
-        Ok(None) => Vec::new(),
+    let fields = match fetch_scanner_settings(engine).await {
+        Ok((fields, _)) => fields,
         Err(e) => {
             return Err(Box::new(SaveOutcome::refused(format!(
                 "Could not reach the configured engine: {e}"
@@ -824,21 +812,16 @@ async fn save_engine(
     mut req: RemoteUpdateRequest,
     clears: &[String],
 ) -> SaveOutcome {
-    let Ok((engine_url, admin_token)) = engine_connection(state).await else {
-        return SaveOutcome::refused(ENGINE_CONNECTION_UNREADABLE.to_string());
-    };
-    if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
-        return SaveOutcome::refused("No engine connection is configured.".to_string());
-    }
-    if let Err(refused) = apply_engine_secrets(&engine_url, &admin_token, &mut req, clears).await {
+    if let Err(refused) = apply_engine_secrets(&state.engine.client, &mut req, clears).await {
         return *refused;
     }
     if req.is_empty() {
         return SaveOutcome::default();
     }
-    let url = format!("{}/api/v1/admin/settings", engine_url.trim_end_matches('/'));
-    let result = traced(reqwest::Client::new().post(&url))
-        .bearer_auth(&admin_token)
+    let result = state
+        .engine
+        .client
+        .request(reqwest::Method::POST, "/api/v1/admin/settings")
         .json(&req)
         .send()
         .await;
@@ -1092,53 +1075,26 @@ mod tests {
     use crate::engine_client::EngineClient;
     use crate::http::{build_router, AppState};
 
-    const SCANNER_ADMIN_TOKEN: &str = "admin_test_token_for_monokulo_admin_settings_tests";
-
     fn test_exchange_rate_provider(
     ) -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
         std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
     }
 
-    /// Spawns a real scanner engine (`scanner_test_support`) and seeds a
-    /// known instance-admin token directly into its store - the same
-    /// "give the test real, direct access" pattern `TestEngineHandle::store`
-    /// already exists for, applied here since `scanner::http::instance_admin`'s
-    /// own `seed_admin_token_for_tests` is `#[cfg(test)]`-gated to scanner's
-    /// own crate and not reachable from here.
-    async fn spawn_scanner_with_known_admin_token() -> scanner_test_support::TestEngineHandle {
-        let engine = scanner_test_support::TestEngineConfig::new().spawn().await;
-        engine
-            .store()
-            .lock()
-            .set_setting(
-                "instance_admin_token_hash",
-                shared::auth::RawToken::presented(SCANNER_ADMIN_TOKEN)
-                    .hash()
-                    .as_str(),
-            )
-            .unwrap();
-        engine
+    /// A real engine, which accepts the test engine token every test
+    /// client sends.
+    async fn spawn_scanner() -> scanner_test_support::TestEngineHandle {
+        scanner_test_support::TestEngineConfig::new().spawn().await
     }
 
-    /// A monokulo instance with a seeded admin account and a real, reachable
-    /// scanner connection already configured (`engine.url`/`engine.admin_token`):
+    /// A monokulo instance with a seeded admin account and its engine client
+    /// pointed at `scanner_addr`:
     /// what most tests in this module want, since the whole point of this
     /// page is proxying that connection.
     async fn test_app_state_connected_to(scanner_addr: std::net::SocketAddr) -> AppState {
         let db = Db::open_in_memory().unwrap();
         db.seed_test_admin();
-        db.set_setting(
-            crate::settings::ENGINE_URL.key,
-            &format!("http://{scanner_addr}"),
-        )
-        .unwrap();
-        db.set_setting(
-            crate::settings::SCANNER_ADMIN_TOKEN.key,
-            SCANNER_ADMIN_TOKEN,
-        )
-        .unwrap();
         let db = db.into_shared();
-        let engine_client = EngineClient::new(format!("http://{scanner_addr}"));
+        let engine_client = EngineClient::for_tests(format!("http://{scanner_addr}"));
         let exchange_rate = test_exchange_rate_provider();
         let abuse: std::sync::Arc<crate::abuse::AbuseProtection> = Default::default();
         let settings = crate::settings::MonokuloSettings::load(
@@ -1336,7 +1292,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_admin_can_reach_the_settings_page_and_see_the_reachable_scanner_settings() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -1410,8 +1366,6 @@ mod tests {
 
         let new_values: &[(&str, &str)] = &[
             ("signup.mode", "public"),
-            ("engine.url", "http://scanner.internal:8443"),
-            ("engine.admin_token", "admin_a_new_token_value"),
             ("exchange_rate.coingecko_enabled", "false"),
             ("exchange_rate.coingecko_base_url", "http://127.0.0.1:9999"),
             ("exchange_rate.coinmarketcap_enabled", "false"),
@@ -1466,14 +1420,10 @@ mod tests {
             html.contains("Settings saved and applied."),
             "expected a success banner, got: {html}"
         );
-        assert!(
-            html.contains("didn&#39;t answer") || html.contains("didn't answer"),
-            "the new engine URL doesn't answer, and the page says so (D4): {html}"
-        );
 
         let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
-            if *key == "engine.admin_token" || *key == "logging.otlp_headers" {
+            if *key == "logging.otlp_headers" {
                 assert!(!html.contains(value), "a secret is never echoed back");
                 continue;
             }
@@ -1491,7 +1441,7 @@ mod tests {
     /// itself - see this module's own doc comment).
     #[tokio::test]
     async fn every_scanner_setting_on_the_admin_page_saves_correctly() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -1730,62 +1680,105 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_saved_engine_admin_token_is_what_the_next_page_uses() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+    async fn the_engine_address_and_token_show_locked_and_are_never_saved() {
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
+        let db = state.db.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let engine_tab = crate::views::admin::SettingsTab::Payments.href();
-        let reachable = |html: String| html.contains(r#"name="payment.confirmations_required""#);
-        assert!(
-            reachable(body_text(get(&router, &engine_tab, Some(&cookie)).await).await),
-            "the right token"
-        );
 
+        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(
+            page.contains(&format!(
+                r#"<span class="locked-input" title="Set in the environment when monokulo starts"><input type="text" value="http://{}" id="setting-engine.url" aria-describedby="setting-help-engine.url" disabled>"#,
+                engine.addr
+            )),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"<input type="password" value="locked" id="setting-engine.admin_token" aria-describedby="setting-help-engine.admin_token" disabled>"#),
+            "{page}"
+        );
+        assert_eq!(
+            page.matches(r#"<svg class="lock-icon""#).count(),
+            2,
+            "{page}"
+        );
+        assert!(
+            page.contains("MONOKULO_SCANNER_ADMIN_TOKEN"),
+            "the help names the variable"
+        );
+        for never in [
+            r#"name="engine.url""#,
+            r#"name="engine.admin_token""#,
+            r#"name="clear:engine.admin_token""#,
+            shared::auth::TEST_ENGINE_TOKEN,
+        ] {
+            assert!(!page.contains(never), "{never}: {page}");
+        }
+
+        // A hand-made form that sends them anyway changes nothing.
         router
             .clone()
             .oneshot(authed_form_request(
                 "POST",
                 "/dashboard/admin/settings",
                 &cookie,
-                &[(crate::settings::SCANNER_ADMIN_TOKEN.key, "wrong-token")],
+                &[
+                    ("tab", "general"),
+                    ("engine.url", "http://127.0.0.1:1"),
+                    ("engine.admin_token", "x".repeat(40).as_str()),
+                ],
             ))
             .await
             .unwrap();
-        let page = body_text(get(&router, &engine_tab, Some(&cookie)).await).await;
+        for key in ["engine.url", "engine.admin_token"] {
+            assert_eq!(db.lock().get_setting(key).unwrap(), None, "{key}");
+        }
+        let payments = body_text(
+            get(
+                &router,
+                &crate::views::admin::SettingsTab::Payments.href(),
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
         assert!(
-            page.contains("Could not reach the configured engine"),
-            "the wrong one, used at once: {page}"
-        );
-
-        router
-            .clone()
-            .oneshot(authed_form_request(
-                "POST",
-                "/dashboard/admin/settings",
-                &cookie,
-                &[(
-                    crate::settings::SCANNER_ADMIN_TOKEN.key,
-                    SCANNER_ADMIN_TOKEN,
-                )],
-            ))
-            .await
-            .unwrap();
-        assert!(
-            reachable(body_text(get(&router, &engine_tab, Some(&cookie)).await).await),
-            "and back"
+            payments.contains(r#"name="payment.confirmations_required""#),
+            "the engine is still reached: {payments}"
         );
     }
 
     #[tokio::test]
-    async fn the_engine_admin_token_is_kept_when_left_empty_and_removed_when_cleared() {
+    async fn a_secret_is_kept_when_left_empty_and_removed_when_cleared() {
         let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let db = state.db.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let key = crate::settings::SCANNER_ADMIN_TOKEN.key;
+        let key = crate::settings::LOGGING_OTLP_HEADERS.key;
+        // Through the page, so the loaded settings see it too.
+        let set = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("tab", "logging"), (key, "authorization=Bearer kept")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(set.status(), StatusCode::SEE_OTHER);
 
-        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        let page = body_text(
+            get(
+                &router,
+                &crate::views::admin::SettingsTab::Logging.href(),
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
         assert!(
             page.contains(&format!(r#"name="clear:{key}""#)),
             "a set secret can be cleared: {page}"
@@ -1797,14 +1790,14 @@ mod tests {
                 "POST",
                 "/dashboard/admin/settings",
                 &cookie,
-                &[(key, "")],
+                &[("tab", "logging"), (key, "")],
             ))
             .await
             .unwrap();
         assert_eq!(kept.status(), StatusCode::SEE_OTHER);
         assert_eq!(
             db.lock().get_setting(key).unwrap().as_deref(),
-            Some(SCANNER_ADMIN_TOKEN),
+            Some("authorization=Bearer kept"),
             "empty keeps it"
         );
 
@@ -1815,33 +1808,47 @@ mod tests {
                 "POST",
                 "/dashboard/admin/settings",
                 &cookie,
-                &[(key, ""), (clear.as_str(), "on")],
+                &[("tab", "logging"), (key, ""), (clear.as_str(), "on")],
             ))
             .await
             .unwrap();
         assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
         assert_eq!(db.lock().get_setting(key).unwrap(), None);
-        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        let page = body_text(
+            get(
+                &router,
+                &crate::views::admin::SettingsTab::Logging.href(),
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
         assert!(
             !page.contains(&format!(r#"name="clear:{key}""#)),
             "nothing left to clear"
         );
 
-        db.lock().set_setting(key, "some-token").unwrap();
+        db.lock()
+            .set_setting(key, "authorization=Bearer some")
+            .unwrap();
         let both = router
             .clone()
             .oneshot(authed_form_request(
                 "POST",
                 "/dashboard/admin/settings",
                 &cookie,
-                &[(key, "new-token"), (clear.as_str(), "on")],
+                &[
+                    ("tab", "logging"),
+                    (key, "authorization=Bearer new"),
+                    (clear.as_str(), "on"),
+                ],
             ))
             .await
             .unwrap();
         assert!(body_text(both).await.contains("not both"));
         assert_eq!(
             db.lock().get_setting(key).unwrap().as_deref(),
-            Some("some-token"),
+            Some("authorization=Bearer some"),
             "nothing changed"
         );
     }
@@ -1917,7 +1924,6 @@ mod tests {
                 "0",
                 "Enter a whole number from 1 to 100000.",
             ),
-            ("engine.url", " ", "Enter a full web address"),
             (
                 "public_url",
                 "not a url",
@@ -1966,7 +1972,7 @@ mod tests {
 
     #[tokio::test]
     async fn saving_a_scanner_setting_forwards_it_and_the_change_is_visible_on_the_next_load() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2011,7 +2017,7 @@ mod tests {
     /// nothing else on the page is replaced.
     #[tokio::test]
     async fn a_fixi_save_answers_with_the_panel_and_the_banners_and_tab_bar_out_of_band() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2100,24 +2106,11 @@ mod tests {
     /// Saving a wrong engine token on General with fixi: the engine's tabs
     /// say at once that the engine can't be reached.
     #[tokio::test]
-    async fn a_fixi_save_that_breaks_the_engine_connection_shows_on_the_engine_tabs() {
-        let engine = spawn_scanner_with_known_admin_token().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+    async fn a_fixi_tab_link_shows_an_engine_it_cannot_reach_in_the_panel() {
+        // Nothing listens there.
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let key = crate::settings::SCANNER_ADMIN_TOKEN.key;
-
-        let changed = router
-            .clone()
-            .oneshot(fixi(authed_form_request(
-                "POST",
-                "/dashboard/admin/settings",
-                &cookie,
-                &[("tab", "general"), (key, "wrong-token")],
-            )))
-            .await
-            .unwrap();
-        assert_eq!(changed.status(), StatusCode::OK);
         let tab = router
             .clone()
             .oneshot(fixi(
@@ -2149,7 +2142,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_invalid_scanner_setting_is_rejected_by_the_scanner_and_surfaced_as_an_error() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2172,53 +2165,24 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_unconfigured_scanner_connection_shows_a_configuration_prompt_instead_of_a_form() {
-        let state = AppState::for_tests();
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-
-        let html = body_text(
-            get(
-                &router,
-                "/dashboard/admin/settings?tab=payments",
-                Some(&cookie),
-            )
-            .await,
-        )
-        .await;
-        assert!(
-            html.contains("Set <code>engine.url</code>"),
-            "expected the configure-first prompt, got: {html}"
-        );
-    }
-
     // -- One save for a whole tab (nicer_admin_screen.md step 2) ----------
 
-    /// [`spawn_scanner_with_known_admin_token`] for an engine built from
+    /// [`spawn_scanner`] for an engine built from
     /// `config`.
     async fn spawn_configured_scanner(
         config: scanner_test_support::TestEngineConfig,
     ) -> scanner_test_support::TestEngineHandle {
-        let engine = config.spawn().await;
-        engine
-            .store()
-            .lock()
-            .set_setting(
-                "instance_admin_token_hash",
-                shared::auth::RawToken::presented(SCANNER_ADMIN_TOKEN)
-                    .hash()
-                    .as_str(),
-            )
-            .unwrap();
-        engine
+        config.spawn().await
     }
 
     /// The engine's own view of its settings, straight from its admin API.
     async fn engine_settings(engine: &scanner_test_support::TestEngineHandle) -> serde_json::Value {
         reqwest::Client::new()
             .get(format!("http://{}/api/v1/admin/settings", engine.addr))
-            .bearer_auth(SCANNER_ADMIN_TOKEN)
+            .header(
+                shared::auth::ENGINE_TOKEN_HEADER,
+                shared::auth::TEST_ENGINE_TOKEN,
+            )
             .send()
             .await
             .unwrap()
@@ -2295,7 +2259,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_tab_with_only_engine_settings_saves_only_the_engine() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let db = state.db.clone();
         let router = build_router(state);
@@ -2324,7 +2288,7 @@ mod tests {
     /// both, and both read back.
     #[tokio::test]
     async fn a_mixed_tab_saves_both_halves() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let db = state.db.clone();
         let router = build_router(state);
@@ -2373,7 +2337,7 @@ mod tests {
     /// half isn't sent, so nothing changes anywhere.
     #[tokio::test]
     async fn an_invalid_monokulo_value_in_a_mixed_tab_saves_neither_half() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let db = state.db.clone();
         let router = build_router(state);
@@ -2415,14 +2379,17 @@ mod tests {
 
     #[tokio::test]
     async fn an_engine_refusal_shows_the_engines_own_message() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
         let direct: serde_json::Value = reqwest::Client::new()
             .post(format!("http://{}/api/v1/admin/settings", engine.addr))
-            .bearer_auth(SCANNER_ADMIN_TOKEN)
+            .header(
+                shared::auth::ENGINE_TOKEN_HEADER,
+                shared::auth::TEST_ENGINE_TOKEN,
+            )
             .json(&serde_json::json!({ "scalars": { "payment.confirmations_required": "-1" } }))
             .send()
             .await
@@ -2547,7 +2514,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_tab_opens() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2577,7 +2544,7 @@ mod tests {
     /// its own box.
     #[tokio::test]
     async fn the_logging_tab_keeps_each_processs_secret_apart() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let db = state.db.clone();
         let router = build_router(state);
@@ -2793,7 +2760,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_node_is_added_through_the_blank_row_and_ordered_by_its_buttons() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2894,7 +2861,7 @@ mod tests {
     /// back with every value as typed and the problem under its address.
     #[tokio::test]
     async fn a_bad_address_is_shown_on_its_row_and_nothing_is_saved() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2956,7 +2923,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_node_on_another_network_is_refused_on_its_block() {
-        let engine = spawn_scanner_with_known_admin_token().await;
+        let engine = spawn_scanner().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;

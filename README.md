@@ -3,7 +3,8 @@
 A self-hosted Monero payment processor: `scanner` (the engine - chain scanning,
 tenants, webhooks, admin API) and `monokulo` (the control plane - the merchant
 dashboard and checkout-facing HTTP surface) run as two separate processes,
-`monokulo` talking to `scanner` over its own admin API. There is no config
+`monokulo` talking to `scanner` over its own admin API, which answers only
+requests carrying the engine admin token the two share. There is no config
 file - every runtime setting lives in the engine's `settings` table, read/
 written over its instance-admin HTTP API (`/api/v1/admin/settings`) or the
 admin settings page in monokulo (one tab per job: General, Monero nodes,
@@ -19,14 +20,17 @@ default, and each store can move by entering its keys again.
 The `Dockerfile` builds one image with both binaries (and
 `key-custody-server`); `compose.yaml` runs the engine and monokulo from it
 as two containers, publishing only monokulo on port 8081. Put the two
-secrets in a `.env` file beside it:
+secrets in a `.env` file beside it. `SCANNER_ADMIN_TOKEN` is the engine
+admin token: `compose.yaml` gives it to the engine and, as
+`MONOKULO_SCANNER_ADMIN_TOKEN`, to monokulo, and neither starts without it
+(see step 2 below):
 
 ```sh
 printf 'MONOKULO_ENCRYPTION_KEY=%s\nSCANNER_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
 docker compose up -d
 ```
 
-then open http://localhost:8081 and continue from step 4 below. Each
+then open http://localhost:8081 and continue from step 5 below. Each
 version tag's image is also on `ghcr.io/oceaneilonwy/monokulo`. Keep
 `MONOKULO_ENCRYPTION_KEY`: it encrypts monokulo's data at rest. The
 databases live in the `engine-data` and `monokulo-data` volumes.
@@ -49,33 +53,48 @@ step 1.
    cargo build --release -p scanner --bin scanner -p monokulo --bin monokulo
    ```
 
-2. Start the engine first. It needs a writable path for its SQLite database
-   and a bind address; everything else (Monero node endpoints, confirmation/
-   expiry thresholds, rate limits, webhook policy) is configured afterward
-   through its admin API, not at boot:
+2. Generate the engine admin token, a secret the engine and monokulo
+   share. The engine refuses every request that doesn't carry it, so only
+   monokulo can use the engine, and neither process starts without it
+   (at least 32 characters):
 
    ```sh
+   openssl rand -hex 32
+   ```
+
+   Keep it with your other secrets. To change it, set the new value on both
+   processes and restart both.
+
+3. Start the engine. It needs the token, a writable path for its SQLite
+   database and a bind address. Everything else (Monero node endpoints,
+   confirmation/expiry thresholds, rate limits, webhook policy) is set
+   afterward on monokulo's admin settings page:
+
+   ```sh
+   SCANNER_ADMIN_TOKEN=<the engine admin token> \
    SCANNER_DB_PATH=/var/lib/monokulo/scanner.db \
-   SCANNER_SERVER_BIND=0.0.0.0:8080 \
+   SCANNER_SERVER_BIND=127.0.0.1:8080 \
        ./target/release/scanner
    ```
 
-   On first boot with no admin token yet configured, it prints a generated
-   instance-admin token once - save it (or set `SCANNER_ADMIN_TOKEN`
-   explicitly to control it yourself). Use that token to configure the
-   Monero node(s) and payment thresholds via `POST /api/v1/admin/settings`
-   (a network's nodes as JSON: a primary with its `fallbacks`), or later on
-   monokulo's admin settings page, whose Monero nodes tab is a form with a
-   row per node; and to provision each merchant tenant.
+   Bind it where only monokulo can reach it (the same machine, or a private
+   network): the token keeps everything else out, but nothing outside
+   monokulo has a reason to reach the engine at all.
 
-3. Start the control plane, pointed at the engine:
+4. Start the control plane, pointed at the engine, with the same token:
 
    ```sh
    MONOKULO_ENCRYPTION_KEY=<64 hex chars, 32 bytes> \
-   MONOKULO_ENGINE_URL=http://<engine-host>:8080 \
-   MONOKULO_SCANNER_ADMIN_TOKEN=<the engine's instance-admin token> \
+   MONOKULO_ENGINE_URL=http://127.0.0.1:8080 \
+   MONOKULO_SCANNER_ADMIN_TOKEN=<the engine admin token> \
        ./target/release/monokulo
    ```
+
+   `MONOKULO_ENGINE_URL` is where monokulo reaches the engine (default
+   `http://127.0.0.1:8443`, the engine's default bind). Both it and
+   `MONOKULO_SCANNER_ADMIN_TOKEN` are read only when monokulo starts: the
+   admin settings page shows them locked, and changing either means
+   changing the environment and restarting.
 
    `MONOKULO_ENCRYPTION_KEY` must be 64 hex characters decoding to exactly 32
    bytes - generate one with `openssl rand -hex 32` and keep it, since it's
@@ -83,9 +102,11 @@ step 1.
    its SQLite database at the relative path `monokulo.db`, so run it from a
    writable working directory dedicated to it.
 
-4. Open `monokulo` in a browser. The first visit redirects to a first-run
-   admin setup wizard to create the one admin account; from there its admin
-   settings page already has the engine connection pre-wired.
+5. Open `monokulo` in a browser. The first visit redirects to a first-run
+   admin setup wizard to create the one admin account. Its admin settings
+   page then manages both processes: the Monero nodes tab has a row per
+   node, and the other tabs hold payment thresholds, rate limits and the
+   rest.
 
 Run both processes under whatever supervisor you normally use (systemd,
 etc.) - each is a single long-running binary with no daemonization of its
@@ -115,7 +136,7 @@ scripts/dev-run.sh logs [engine|monokulo]   # tails both by default
 - monokulo: `http://127.0.0.1:8081` (open this one - first visit redirects to
   its own first-run admin setup wizard)
 
-The dev instance-admin token and `MONOKULO_ENCRYPTION_KEY` are generated once
+The dev engine admin token and `MONOKULO_ENCRYPTION_KEY` are generated once
 and persisted under `.dev-run/`, so they're reused across restarts.
 
 ## Using the CLI wallet during development

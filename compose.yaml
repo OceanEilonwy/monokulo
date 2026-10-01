@@ -5,9 +5,16 @@
 # Put the two secrets in a .env file beside this one (never commit it):
 #
 #   MONOKULO_ENCRYPTION_KEY=<openssl rand -hex 32>   # encrypts monokulo's data at rest; keep it
-#   SCANNER_ADMIN_TOKEN=<openssl rand -hex 32>       # the engine's instance-admin token
+#   SCANNER_ADMIN_TOKEN=<openssl rand -hex 32>       # the engine admin token
 #
-# then `docker compose up -d` and open http://localhost:8081 to create the
+# The engine admin token is required: the engine answers no request without
+# it, and neither container starts without it (at least 32 characters). The
+# engine gets it as SCANNER_ADMIN_TOKEN and monokulo, which sends it with every
+# request to the engine, as MONOKULO_SCANNER_ADMIN_TOKEN. Monokulo's engine
+# address and token come only from here: its admin page shows them locked. To
+# change the token, edit .env and recreate both containers.
+#
+# Then `docker compose up -d` and open http://localhost:8081 to create the
 # admin account. Monero nodes and everything else are set on its admin page.
 
 services:
