@@ -177,7 +177,7 @@ class MerchantExperienceTest extends WP_UnitTestCase {
 					$fields
 				)
 			);
-			$this->assertSame( 200, $gateway->process_webhook_request( $body, hash_hmac( 'sha256', $body, 'whsec_experience' ) ), $fields['event'] );
+			$this->assertSame( 200, $gateway->process_webhook_request( $body, monokulo_test_signature( $body, 'whsec_experience' ) ), $fields['event'] );
 			$this->assertTrue( wc_get_order( $order->get_id() )->has_status( 'pending' ), $fields['event'] );
 		}
 		$this->assertTrue( $this->logged_contains( 'unrecognized event type "order.refunded"' ) );

@@ -1591,9 +1591,18 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * Verifies `X-Monokulo-Signature` against a freshly computed HMAC-
-	 * SHA256 of `$raw_body`, keyed by this gateway's stored
-	 * `webhook_signing_secret`.
+	 * How far a delivery's signed timestamp may be from this site's clock,
+	 * either way, for it to be accepted: the same five minutes as
+	 * `SIGNATURE_TOLERANCE_SECS` in `shared/src/webhook_sign.rs`.
+	 */
+	const SIGNATURE_TOLERANCE_SECS = 300;
+
+	/**
+	 * Verifies an `X-Monokulo-Signature` header, `t=<unix time>,v1=<hex>`:
+	 * the time must be within `SIGNATURE_TOLERANCE_SECS` of now, and the
+	 * tag must be HMAC-SHA256, keyed by this gateway's stored
+	 * `webhook_signing_secret`, of `"<time>.<raw body>"`. The time is signed
+	 * with the body, so a captured delivery can't be replayed later.
 	 *
 	 * **`hash_equals()`, never `===`** - this step's own brief states the
 	 * requirement explicitly, and the reasoning is worth restating here, in
@@ -1629,28 +1638,30 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *
 	 * Cross-checked against `shared/src/webhook_sign.rs`'s own fixed
 	 * known-vector test constants in `tests/WebhookSignatureTest.php` - see
-	 * that file for the exact secret/payload/signature triple this method
-	 * must reproduce byte-for-byte.
+	 * that file for the exact secret/payload/time/header this method must
+	 * accept.
 	 *
-	 * @param string $raw_body  The exact raw request body bytes.
-	 * @param string $signature The presented `X-Monokulo-Signature` value.
+	 * @param string   $raw_body  The exact raw request body bytes.
+	 * @param string   $signature The presented `X-Monokulo-Signature` value.
+	 * @param int|null $now       The current unix time; `time()` if null.
 	 * @return bool
 	 */
-	private function verify_webhook_signature( $raw_body, $signature ) {
-		if ( '' === $this->webhook_signing_secret || '' === $signature ) {
+	private function verify_webhook_signature( $raw_body, $signature, $now = null ) {
+		if ( '' === $this->webhook_signing_secret || ! is_string( $signature )
+			|| ! preg_match( '/\At=(\d{1,18}),v1=([0-9a-fA-F]{64})\z/', $signature, $parts ) ) {
 			// No configured secret (gateway never connected, or an admin
-			// blanked the field by hand) or no presented header - neither
-			// is a "wrong" signature to log as a forgery attempt, just an
-			// unauthenticated request; still rejected identically below via
-			// hash_equals() returning false against an empty comparand, but
-			// short-circuited here so hash_hmac() never runs against an
-			// empty key for no reason.
+			// blanked the field by hand), or no well-formed header: an
+			// unauthenticated request, rejected before any HMAC runs.
+			return false;
+		}
+		if ( abs( ( null === $now ? time() : (int) $now ) - (int) $parts[1] ) > self::SIGNATURE_TOLERANCE_SECS ) {
+			// Signed too long ago (a replay) or too far ahead.
 			return false;
 		}
 
-		$expected = hash_hmac( 'sha256', $raw_body, $this->webhook_signing_secret );
+		$expected = hash_hmac( 'sha256', $parts[1] . '.' . $raw_body, $this->webhook_signing_secret );
 
-		return hash_equals( $expected, $signature );
+		return hash_equals( $expected, strtolower( $parts[2] ) );
 	}
 
 	/**

@@ -58,8 +58,8 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 	/**
 	 * Builds a real event envelope exactly as `enqueue_webhook_event()` in
 	 * `src/scanner.rs` shapes one, and signs it exactly as `sign_payload()`
-	 * in `shared/src/webhook_sign.rs` does - hex HMAC-SHA256 of the raw JSON
-	 * bytes. Returns both the raw body and its real signature, so a test can
+	 * in `shared/src/webhook_sign.rs` does - `t=<now>,v1=<hex HMAC-SHA256
+	 * of "<now>.<raw JSON>">`. Returns both the raw body and its real signature, so a test can
 	 * corrupt either independently.
 	 *
 	 * @param array  $fields Event-specific fields (plus event/event_id/order_id,
@@ -79,7 +79,7 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 				$fields
 			)
 		);
-		return array( $body, hash_hmac( 'sha256', $body, $secret ) );
+		return array( $body, monokulo_test_signature( $body, $secret ) );
 	}
 
 	// --- Signature verification, at the request-handling level. ------------
@@ -141,11 +141,31 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 		$this->assertSame( 'pending', wc_get_order( $order->get_id() )->get_status() );
 	}
 
+	public function test_a_delivery_signed_too_long_ago_is_rejected_as_a_replay() {
+		// A captured genuine delivery, replayed ten minutes later: the
+		// signature is right for its body and time, but the time is outside
+		// the tolerance.
+		$order = $this->create_order_for_order_id( 'pay_receiver_replay', 'pending' );
+		$body  = wp_json_encode(
+			array(
+				'event'      => 'order.paid',
+				'event_id'   => 'evt_replay',
+				'created_at' => time() - 600,
+				'order_id'   => 'pay_receiver_replay',
+				'status'     => 'paid',
+			)
+		);
+		$sig = monokulo_test_signature( $body, self::SECRET, time() - 600 );
+
+		$this->assertSame( 401, $this->create_gateway()->process_webhook_request( $body, $sig ) );
+		$this->assertSame( 'pending', wc_get_order( $order->get_id() )->get_status() );
+	}
+
 	// --- Envelope validation. ------------------------------------------------
 
 	public function test_correctly_signed_but_malformed_body_is_rejected_as_bad_request() {
 		$body = 'this is not json at all';
-		$sig  = hash_hmac( 'sha256', $body, self::SECRET );
+		$sig  = monokulo_test_signature( $body, self::SECRET );
 
 		$status_code = $this->create_gateway()->process_webhook_request( $body, $sig );
 
@@ -154,7 +174,7 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 
 	public function test_correctly_signed_body_missing_required_envelope_fields_is_rejected_as_bad_request() {
 		$body = wp_json_encode( array( 'event' => 'order.paid' ) ); // no event_id, no order_id
-		$sig  = hash_hmac( 'sha256', $body, self::SECRET );
+		$sig  = monokulo_test_signature( $body, self::SECRET );
 
 		$status_code = $this->create_gateway()->process_webhook_request( $body, $sig );
 

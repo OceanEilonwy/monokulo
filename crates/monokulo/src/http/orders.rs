@@ -3507,10 +3507,12 @@ mod tests {
         };
         assert_eq!(headers["authorization"], "Bearer shop-endpoint-secret");
         assert_eq!(headers["x-monokulo-event"], "order.paid");
-        assert_eq!(
+        assert!(shared::webhook_sign::verify_signature(
+            &secret,
+            body.as_bytes(),
             headers["x-monokulo-signature"].to_str().unwrap(),
-            shared::webhook_sign::sign_payload(&secret, body.as_bytes())
-        );
+            shared::time::now_unix()
+        ));
         let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(payload["order_id"], order_id.as_str(), "{payload}");
         assert_eq!(

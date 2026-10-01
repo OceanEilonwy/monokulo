@@ -47,7 +47,7 @@ class WebhookStatusMappingTest extends WP_UnitTestCase {
 				$fields
 			)
 		);
-		$sig = hash_hmac( 'sha256', $body, self::SECRET );
+		$sig = monokulo_test_signature( $body, self::SECRET );
 		return $gateway->process_webhook_request( $body, $sig );
 	}
 

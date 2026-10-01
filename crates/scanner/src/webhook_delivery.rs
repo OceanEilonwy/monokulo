@@ -220,8 +220,11 @@ async fn attempt_delivery_inner(
     }
     let client = &client.client;
 
+    // Signed at the moment of sending, so the receiver's tolerance window
+    // is measured from this attempt, not from when the event happened.
     let signature = sign_payload(
         delivery.signing_secret.expose(),
+        shared::time::now_unix(),
         delivery.payload_json.as_bytes(),
     );
     let extra_headers: Value =
@@ -485,12 +488,20 @@ mod tests {
         .await;
 
         let delivery = due_delivery(&url, "whsec_test");
-        let expected_signature = sign_payload("whsec_test", delivery.payload_json.as_bytes());
 
         let outcome = attempt_delivery(&test_client(), &delivery, Duration::from_secs(2)).await;
         assert!(outcome.delivered);
         assert_eq!(outcome.response_status, Some(200));
-        assert_eq!(*captured_signature.lock(), Some(expected_signature));
+        let signature = captured_signature.lock().clone().expect("signed");
+        assert!(crate::webhook_sign::verify_signature(
+            "whsec_test",
+            delivery.payload_json.as_bytes(),
+            &signature,
+            shared::time::now_unix(),
+        ));
+        // Signed with the time of sending.
+        let signed_at: i64 = signature[2..signature.find(',').unwrap()].parse().unwrap();
+        assert!(shared::time::now_unix().abs_diff(signed_at) <= 5);
     }
 
     #[tokio::test]
