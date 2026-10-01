@@ -264,12 +264,19 @@ fn encode_query_value(s: &str) -> String {
 /// value is always a same-origin relative path built entirely from this
 /// route's own known shape, so it always passes that validation on the way
 /// back). A valid session: render the confirm form.
+/// The platforms the connect flow takes: anything else in the path is not
+/// stored as a store's platform.
+const PLATFORMS: [&str; 2] = ["woocommerce", "custom"];
+
 pub async fn start(
     State(state): State<AppState>,
     Path(platform): Path<String>,
     Query(query): Query<ConnectQuery>,
     headers: HeaderMap,
 ) -> Response {
+    if !PLATFORMS.contains(&platform.as_str()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let Some((user, _)) = super::resolve_authed_user(&state, &headers).await else {
         let this_url = format!(
             "/connect/{}?site_url={}&return_url={}&nonce={}",
@@ -372,6 +379,9 @@ pub async fn confirm_submit(
     Path(platform): Path<String>,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
+    if !PLATFORMS.contains(&platform.as_str()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let target = ConnectTarget::parse(&form.site_url, &form.return_url);
     let target = match target {
         Ok(target) if public_url_for_plugins(&state).await.is_ok() => target,
@@ -978,9 +988,8 @@ mod tests {
             format!("http://{}", engine.addr),
             "never the engine's"
         );
-        // No webhook signing secret yet (WBS 1.4.4, not this task).
-        assert!(!obj.contains_key("webhook_secret"));
-        assert!(!obj.contains_key("signing_secret"));
+        // No webhook was asked for, so no signing secret comes back.
+        assert!(!obj.contains_key("webhook_signing_secret"));
 
         // Strong proof: `secret_token` is the tenant's real, working `sk_`
         // credential, not just a string that happens to start with `sk_` -

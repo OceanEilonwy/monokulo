@@ -215,19 +215,6 @@ impl EngineClient {
         parse_response(response).await
     }
 
-    /// `GET {base_url}/api/v1/admin/key-custody` — the key custody backends
-    /// a store can choose from, and the default (part 5).
-    pub async fn key_custody_options(&self) -> Result<KeyCustodyOptions, EngineClientError> {
-        let target = self.target();
-        let response = target
-            .http
-            .get(format!("{}/api/v1/admin/key-custody", target.base_url))
-            .timeout(ENGINE_CALL_TIMEOUT)
-            .send()
-            .await?;
-        parse_response(response).await
-    }
-
     /// `PUT {base_url}/api/v1/admin/tenant/key-custody` — moves `sk`'s store
     /// to another key custody backend. The keys must be the store's own
     /// wallet's; the engine checks.
@@ -271,13 +258,7 @@ impl EngineClient {
             .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            let status = response.status();
-            let message = response.text().await.unwrap_or_default();
-            Err(EngineClientError::EngineError { status, message })
-        }
+        check_status(response).await.map(drop)
     }
 
     /// `GET {base_url}/api/v1/admin/tenant` — fetches the tenant that owns
@@ -528,17 +509,7 @@ impl EngineClient {
             .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
-                .unwrap_or(body);
-            Err(EngineClientError::EngineError { status, message })
-        }
+        check_status(response).await.map(drop)
     }
 
     /// `PATCH {base_url}/api/v1/admin/tenant` — sets `sk`'s tenant's
@@ -771,19 +742,6 @@ pub struct CreateTenantRequest {
     /// The engine's default when `None` (part 5).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_custody_backend: Option<String>,
-}
-
-/// Mirrors the engine's `KeyCustodyView`: the backends a store may choose.
-#[derive(Debug, Deserialize, Clone)]
-pub struct KeyCustodyOptions {
-    pub enabled: Vec<KeyCustodyBackendOption>,
-    pub default: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct KeyCustodyBackendOption {
-    pub name: String,
-    pub description: String,
 }
 
 #[derive(Serialize)]

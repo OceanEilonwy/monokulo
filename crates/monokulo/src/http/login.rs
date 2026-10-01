@@ -85,13 +85,24 @@ pub(super) async fn authenticate(
         user.as_ref().map(|u| u.password_hash.clone()),
     );
     let password_ok = shared::password::run(move |hasher| {
+        // A failed dummy hash is not cached: an empty one would make an
+        // unknown email answer faster than a wrong password, which is what
+        // the dummy exists to prevent.
+        let dummy;
         let hash = match &stored {
             Some(hash) => hash.as_str(),
-            None => DUMMY_PASSWORD_HASH.get_or_init(|| {
-                hasher
-                    .hash("not-a-real-account-dummy-password")
-                    .unwrap_or_default()
-            }),
+            None => match DUMMY_PASSWORD_HASH.get() {
+                Some(hash) => hash.as_str(),
+                None => {
+                    dummy = hasher
+                        .hash("not-a-real-account-dummy-password")
+                        .unwrap_or_default();
+                    if !dummy.is_empty() {
+                        let _ = DUMMY_PASSWORD_HASH.set(dummy.clone());
+                    }
+                    dummy.as_str()
+                }
+            },
         };
         hasher.verify(&password, hash)
     })

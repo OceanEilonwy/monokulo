@@ -573,6 +573,21 @@ pub fn build_router(state: AppState) -> Router {
     // state-changing request to any of them that a browser says came from
     // another site is refused first (`http::csrf`).
     let router = router
+        // Baseline headers for the site's own pages: no MIME sniffing, no
+        // full URLs (which can carry order ids) in the Referer to other
+        // sites. The checkout pages set their own framing policy.
+        .layer(middleware::map_response(
+            |mut response: Response| async move {
+                let headers = response.headers_mut();
+                headers
+                    .entry(header::X_CONTENT_TYPE_OPTIONS)
+                    .or_insert(axum::http::HeaderValue::from_static("nosniff"));
+                headers.entry(header::REFERRER_POLICY).or_insert(
+                    axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
+                );
+                response
+            },
+        ))
         .layer(middleware::from_fn(csrf::same_origin_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),

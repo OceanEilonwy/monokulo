@@ -120,11 +120,19 @@ pub(super) async fn order_rows(
     let (fiat_metadata, details) = state
         .db
         .read(move |db| {
-            Ok::<_, crate::db::DbError>((
-                db.list_order_currency_metadata_for_connection(&id)
-                    .unwrap_or_default(),
-                db.order_listing_details(&id, &ids).unwrap_or_default(),
-            ))
+            // Missing metadata shows as "—"; the failure is logged rather
+            // than hidden.
+            let metadata = db
+                .list_order_currency_metadata_for_connection(&id)
+                .inspect_err(
+                    |e| tracing::error!(error = %e, "could not read order currency metadata"),
+                )
+                .unwrap_or_default();
+            let details = db
+                .order_listing_details(&id, &ids)
+                .inspect_err(|e| tracing::error!(error = %e, "could not read order details"))
+                .unwrap_or_default();
+            Ok::<_, crate::db::DbError>((metadata, details))
         })
         .await
         .unwrap_or_default();
@@ -1387,7 +1395,9 @@ pub async fn create_order(
                         // the key.
                         true,
                     );
-                    let _ = db.set_order_source(&store_id, &order_id, "dashboard");
+                    if let Err(e) = db.set_order_source(&store_id, &order_id, "dashboard") {
+                        tracing::warn!(error = %e, order.id = %order_id, "could not record where an order came from");
+                    }
                     recorded
                 })
                 .await;

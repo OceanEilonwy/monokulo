@@ -396,12 +396,27 @@ pub async fn delete_invite_request(
     Query(query): Query<InvitesPageQuery>,
 ) -> Response {
     let deleted = id.clone();
-    state
+    let page = query.page.unwrap_or(1);
+    let result = state
         .db
         .write(move |db| db.delete_invite_request(&deleted, now_unix()))
-        .await
-        .ok();
-    let page = query.page.unwrap_or(1);
+        .await;
+    // A delete that didn't happen is said so, not shown struck through.
+    if let Err(e) = result {
+        tracing::error!(error = %e, "failed to delete an invite request");
+        return render_invites_page(
+            &state,
+            &admin_user,
+            &headers,
+            page,
+            None,
+            None,
+            Some("Something went wrong deleting that request. Please try again.".to_string()),
+            None,
+            fx,
+        )
+        .await;
+    }
     if fx.0 {
         return render_invites_page(
             &state,

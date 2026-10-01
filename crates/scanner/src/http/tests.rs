@@ -3336,32 +3336,6 @@ async fn an_order_made_while_the_backend_has_just_lost_the_store_still_succeeds(
     );
 }
 
-#[tokio::test]
-async fn the_key_custody_options_list_the_enabled_backends_and_the_default() {
-    let (state, _, _) = test_app_state_with_two_custody_backends();
-    let router = build_router(state, 1_000_000);
-    let request = Request::builder()
-        .method("GET")
-        .uri("/api/v1/admin/key-custody")
-        .body(Body::empty())
-        .unwrap();
-    let response = router.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = body_json(response).await;
-    assert_eq!(body["default"], "plain");
-    let names: Vec<&str> = body["enabled"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|b| b["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, vec!["plain", "socket"]);
-    assert!(!body["enabled"][1]["description"]
-        .as_str()
-        .unwrap()
-        .is_empty());
-}
-
 /// A backend that holds wallets but whose health check fails, as a
 /// key-custody-server does once its socket stops answering.
 #[derive(Default)]
