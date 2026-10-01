@@ -216,6 +216,26 @@ impl RoundReport {
             None => Ok(()),
         }
     }
+
+    /// [`Self::into_result`], and a tier the node blocked counts as a
+    /// failure too: for the status page, a round in which no block (or the
+    /// pool) could be read is not a round that went well, however cleanly
+    /// the tier stopped and waited.
+    pub fn into_status_result(self) -> Result<(), ScannerError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        for (tier, outcome) in self.outcomes.iter() {
+            if let TierOutcome::Blocked(wait @ (Wait::NodeFailed | Wait::MempoolUnreadable)) =
+                outcome
+            {
+                return Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
+                    format!("the {tier:?} tier was blocked: {wait:?}"),
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Everything a round needs from outside. Borrowed for the round only.
