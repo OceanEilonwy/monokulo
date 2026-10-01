@@ -917,12 +917,22 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutco
             return outcome;
         }
     }
+    let mut saved_here: Vec<String> = split.monokulo.keys().cloned().collect();
+    saved_here.sort();
     if !split.engine.is_empty() || !split.engine_clears.is_empty() {
         let engine = save_engine(state, split.engine, &split.engine_clears).await;
         if engine.error.is_some() {
             outcome.nodes = nodes;
         }
-        outcome.error = engine.error;
+        // Monokulo's own settings on this tab were already saved: say so,
+        // or the page reads as if nothing was.
+        outcome.error = match engine.error {
+            Some(error) if !saved_here.is_empty() => Some(format!(
+                "Saved {} here; the engine refused its settings: {error}",
+                saved_here.join(", ")
+            )),
+            other => other,
+        };
         outcome.error_key = engine.error_key;
         outcome.field_errors = engine.field_errors;
         outcome.notices.extend(engine.notices);

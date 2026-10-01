@@ -332,7 +332,7 @@ pub async fn order_detail(
         format!("/dashboard/stores/{id}/orders/{order_id}"),
     )
     .await;
-    let payment_link = payment_link_for(&headers, &row.tenant_public_key, &order_id);
+    let payment_link = payment_link_for(&state, &headers, &row.tenant_public_key, &order_id).await;
 
     match order_detail_data(&state, &row, &sk, &order_id, payment_link).await {
         Ok(Some(order)) => {
@@ -508,7 +508,7 @@ pub async fn order_detail_events(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let payment_link = payment_link_for(&headers, &row.tenant_public_key, &order_id);
+    let payment_link = payment_link_for(&state, &headers, &row.tenant_public_key, &order_id).await;
     let subscription = state.engine.client.subscribe_order(&row.id, &sk, &order_id);
     let row = std::sync::Arc::new(row);
     // Times in the viewer's zone, as the page itself shows them.
@@ -554,25 +554,40 @@ pub async fn order_detail_events(
 /// A real, absolute, copy-pasteable URL for paying an order - not just the
 /// path - since the whole point is something a merchant can paste into an
 /// email or chat to someone who isn't already looking at this dashboard.
-/// This instance has no configured "external base URL" of its own yet, so
-/// it's built from the incoming request's own `Host` header (what the
-/// merchant's browser just used to reach this page) plus
-/// `X-Forwarded-Proto` if a reverse proxy set it, falling back to plain
-/// `http` for local/dev use.
-fn payment_link_for(
+/// Built on this instance's configured public URL (`site.public_url`) when
+/// it has one: a link sent to a customer must not depend on what the
+/// request that made it said its host was. Without one (local/dev use) it
+/// falls back to the request's own `Host`, with `X-Forwarded-Proto` taken
+/// only when it is `http` or `https`.
+async fn payment_link_for(
+    state: &AppState,
     headers: &HeaderMap,
     public_key: &str,
     order_id: &crate::db::OrderId,
 ) -> String {
+    let path = format!("/pay/{public_key}/orders/{order_id}/share");
+    let configured = state
+        .db
+        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::public_url(db)))
+        .await
+        .ok()
+        .flatten();
+    if let Some(base) = configured {
+        return format!("{base}{path}");
+    }
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let scheme = headers
+    let scheme = match headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("http");
-    format!("{scheme}://{host}/pay/{public_key}/orders/{order_id}/share")
+        .map(str::trim)
+    {
+        Some("https") => "https",
+        _ => "http",
+    };
+    format!("{scheme}://{host}{path}")
 }
 
 #[derive(Deserialize)]
