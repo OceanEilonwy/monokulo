@@ -476,7 +476,8 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         shared::webhook_sign::verify_signature(
             &credentials.webhook_signing_secret,
             &event.raw_body,
-            &event.signature
+            &event.signature,
+            shared::time::now_unix()
         ),
         "the delivered signature must verify against this tenant's real signing_secret"
     );
@@ -484,7 +485,8 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         !shared::webhook_sign::verify_signature(
             "definitely-the-wrong-secret",
             &event.raw_body,
-            &event.signature
+            &event.signature,
+            shared::time::now_unix()
         ),
         "an arbitrary wrong secret must not verify the same real bytes/signature"
     );

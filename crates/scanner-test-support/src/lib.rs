@@ -1177,7 +1177,12 @@ mod tests {
         // above - a signature computed with any other secret must not verify.
         let signature = signature.expect("a real delivery must carry X-Monokulo-Signature");
         assert!(
-            scanner::webhook_sign::verify_signature(&signing_secret, &raw_payload, &signature),
+            scanner::webhook_sign::verify_signature(
+                &signing_secret,
+                &raw_payload,
+                &signature,
+                shared::time::now_unix()
+            ),
             "the delivered signature must verify against this tenant's real signing_secret"
         );
 

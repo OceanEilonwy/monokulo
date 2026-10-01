@@ -92,6 +92,20 @@ function _monokulo_manually_load_plugins() {
 }
 tests_add_filter( 'muplugins_loaded', '_monokulo_manually_load_plugins' );
 
+/**
+ * The `X-Monokulo-Signature` header Monokulo sends for `$body`, signed at
+ * `$timestamp` (now by default): `t=<time>,v1=<HMAC-SHA256 of "<time>.<body>">`.
+ *
+ * @param string   $body      The raw request body.
+ * @param string   $secret    The webhook signing secret.
+ * @param int|null $timestamp The signing time; `time()` if null.
+ * @return string
+ */
+function monokulo_test_signature( $body, $secret, $timestamp = null ) {
+	$timestamp = null === $timestamp ? time() : $timestamp;
+	return 't=' . $timestamp . ',v1=' . hash_hmac( 'sha256', $timestamp . '.' . $body, $secret );
+}
+
 // Hands off to the real WP core test bootstrap: installs a fresh test
 // database, finishes loading WordPress (firing the `muplugins_loaded` hook
 // registered above along the way), and makes `WP_UnitTestCase` and friends

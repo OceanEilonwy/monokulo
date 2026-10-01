@@ -981,17 +981,20 @@ in front of customers.
   (`delivered_at IS NULL AND next_attempt_at <= now()`) and performs the HTTP call —
   never the writer itself, so a slow or unresponsive merchant endpoint cannot stall
   order-state commits.
-- Each delivery is signed: HMAC-SHA256 of the body using the webhook's
-  `signing_secret`, sent as a header (`X-Monokulo-Signature`).
+- Each delivery attempt is signed when sent: `X-Monokulo-Signature:
+  t=<unix seconds>,v1=<hex>`, where `<hex>` is HMAC-SHA256, keyed by the
+  webhook's `signing_secret`, of `"<t>.<body>"`. A receiver accepts it only
+  while `t` is within five minutes of its own clock, so a captured delivery
+  can't be replayed after that (and within it, `event_id` dedupe refuses it).
 - Every payload carries a common envelope alongside its event-specific fields:
   `event_id` (`evt_…`, minted once per *event* — every retry of that delivery re-sends
-  the same id under the same signature), `event` (the event type, mirroring
+  the same id, freshly signed), `event` (the event type, mirroring
   `X-Monokulo-Event`), and `created_at` (unix seconds). `event_id` is also sent as
   `X-Monokulo-Event-Id`, read back out of the signed body so header and body can
   never disagree. Both fields are *inside* the signed body deliberately: without an
   id, a retry of a lost-ack delivery is byte-identical to a genuine second transition
-  to the same status, and without a timestamp a captured delivery can be replayed
-  against the merchant indefinitely.
+  to the same status, and `created_at` tells the merchant when the event happened
+  (the signed `t` tells them when this attempt was sent).
 - Failure handling: short timeout (a few seconds), exponential backoff via
   `attempt_count`/`next_attempt_at`, giving up after a bounded number of attempts (row
   stays for inspection via the admin API, retries just stop).

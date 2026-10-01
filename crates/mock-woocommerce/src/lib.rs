@@ -195,7 +195,12 @@ async fn webhook_handler(
         return StatusCode::UNAUTHORIZED;
     };
 
-    if !shared::webhook_sign::verify_signature(&signing_secret, &body, presented_signature) {
+    if !shared::webhook_sign::verify_signature(
+        &signing_secret,
+        &body,
+        presented_signature,
+        shared::time::now_unix(),
+    ) {
         return StatusCode::UNAUTHORIZED;
     }
 
@@ -1238,8 +1243,9 @@ mod tests {
     const KNOWN_VECTOR_SECRET: &str = "known_vector_secret_for_php_crosscheck";
     const KNOWN_VECTOR_PAYLOAD: &[u8] =
         br#"{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}"#;
-    const KNOWN_VECTOR_SIGNATURE_HEX: &str =
-        "436a60c6f66d20b611c7e4a3f78ab13167fb26680a65d8b2e5a114c182de80f1";
+    const KNOWN_VECTOR_TIMESTAMP: i64 = 1_700_000_000;
+    const KNOWN_VECTOR_SIGNATURE_HEADER: &str =
+        "t=1700000000,v1=36a7d36d510620adf9ae9e3e42891dcc796ae88c6ac19818bab778998d2a35e6";
 
     /// A direct unit test of signature verification (WBS 1.4.4's own explicit ask),
     /// decoupled from any HTTP round trip - this is exactly the check
@@ -1250,7 +1256,8 @@ mod tests {
         assert!(shared::webhook_sign::verify_signature(
             KNOWN_VECTOR_SECRET,
             KNOWN_VECTOR_PAYLOAD,
-            KNOWN_VECTOR_SIGNATURE_HEX
+            KNOWN_VECTOR_SIGNATURE_HEADER,
+            KNOWN_VECTOR_TIMESTAMP
         ));
 
         // A tampered payload (one byte flipped in the trailing amount) must not
@@ -1265,7 +1272,8 @@ mod tests {
         assert!(!shared::webhook_sign::verify_signature(
             KNOWN_VECTOR_SECRET,
             &tampered,
-            KNOWN_VECTOR_SIGNATURE_HEX
+            KNOWN_VECTOR_SIGNATURE_HEADER,
+            KNOWN_VECTOR_TIMESTAMP
         ));
     }
 
@@ -1290,7 +1298,8 @@ mod tests {
             "status": "expired",
         });
         let body = payload.to_string();
-        let signature = shared::webhook_sign::sign_payload(secret, body.as_bytes());
+        let signature =
+            shared::webhook_sign::sign_payload(secret, shared::time::now_unix(), body.as_bytes());
 
         let client = reqwest::Client::new();
         let url = format!("http://{}/moneropay/webhook", receiver.addr);
@@ -1332,8 +1341,11 @@ mod tests {
         let url = format!("http://{}/moneropay/webhook", receiver.addr);
 
         // Wrong secret entirely - genuinely invalid, not just a near miss.
-        let wrong_signature =
-            shared::webhook_sign::sign_payload("not-the-real-secret", body.as_bytes());
+        let wrong_signature = shared::webhook_sign::sign_payload(
+            "not-the-real-secret",
+            shared::time::now_unix(),
+            body.as_bytes(),
+        );
         let rejected = client
             .post(&url)
             .header("X-Monokulo-Signature", &wrong_signature)
@@ -1366,7 +1378,11 @@ mod tests {
         // Signed with a secret this receiver could not possibly know yet - the
         // point is that even a "plausible" signature is rejected before the real
         // secret exists to check it against.
-        let signature = shared::webhook_sign::sign_payload("whsec_guessed_early", body.as_bytes());
+        let signature = shared::webhook_sign::sign_payload(
+            "whsec_guessed_early",
+            shared::time::now_unix(),
+            body.as_bytes(),
+        );
 
         let response = reqwest::Client::new()
             .post(format!("http://{}/moneropay/webhook", receiver.addr))
@@ -1474,7 +1490,8 @@ mod tests {
         assert!(shared::webhook_sign::verify_signature(
             &credentials.webhook_signing_secret,
             &event.raw_body,
-            &event.signature
+            &event.signature,
+            shared::time::now_unix()
         ));
         // And a specificity check: an arbitrary wrong secret must not verify the
         // same real bytes/signature - ruling out a `verify_signature` that
@@ -1482,7 +1499,8 @@ mod tests {
         assert!(!shared::webhook_sign::verify_signature(
             "definitely-the-wrong-secret",
             &event.raw_body,
-            &event.signature
+            &event.signature,
+            shared::time::now_unix()
         ));
     }
 
@@ -1577,7 +1595,8 @@ mod tests {
         assert!(shared::webhook_sign::verify_signature(
             &credentials.webhook_signing_secret,
             &paid.raw_body,
-            &paid.signature
+            &paid.signature,
+            shared::time::now_unix()
         ));
 
         // And monokulo's own status route, which the checkout page polls, agrees.
