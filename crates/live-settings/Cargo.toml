@@ -5,6 +5,7 @@ edition = "2021"
 description = "Typed settings that resolve env > stored > default and can be applied to a running process"
 
 [dependencies]
+zeroize = "1.9.0"
 # `Reloadable` is an async trait used behind `dyn`, like `KeyCustody` in `shared`.
 async-trait = "0.1.92"
 # `join_all`, so every changed reloadable prepares at the same time without

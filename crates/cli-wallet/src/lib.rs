@@ -247,7 +247,7 @@ impl ProvidesUnvalidatedDecoys for DecoyCache {
 /// A wallet's key material: what a new wallet file starts from, and how
 /// the old shared `stagenet-wallets.json` recorded each wallet (hence the
 /// serde names).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WalletCredentials {
     pub address: String,
     #[serde(rename = "private_spend_key")]
@@ -349,7 +349,7 @@ impl WalletCtx {
 /// A wallet file's key material plus enough of a [`WalletCtx`] to connect
 /// to it - what [`WalletStore::wallet`] returns, and everything
 /// [`Self::connect`]/[`send_payment`] need.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedWallet {
     /// The wallet file.
     pub path: PathBuf,
@@ -360,6 +360,26 @@ pub struct ResolvedWallet {
     pub node_urls: Vec<String>,
     pub accept_invalid_certs: bool,
     pub decoy_distribution_path: String,
+}
+
+/// Without the private keys or the mnemonic.
+impl std::fmt::Debug for WalletCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletCredentials")
+            .field("address", &self.address)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Without the private keys.
+impl std::fmt::Debug for ResolvedWallet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedWallet")
+            .field("path", &self.path)
+            .field("address", &self.address)
+            .field("node_urls", &self.node_urls)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ResolvedWallet {
