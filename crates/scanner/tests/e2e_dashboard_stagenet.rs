@@ -375,7 +375,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     println!("created order {order_id}: {amount_piconero} piconero to {address}");
 
     // ---- 4. pay it for real - genuine signed + broadcast stagenet transaction ----
-    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
+    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero)
         .await
         .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);

@@ -182,6 +182,15 @@ impl WalletFile {
                 data.version
             )));
         }
+        // This wallet derives stagenet addresses only: keys recorded for
+        // another network would be used as if they were stagenet's.
+        if data.network != "stagenet" {
+            return Err(WalletError::WalletFile(format!(
+                "{} is a {} wallet; this tool works on stagenet only",
+                path.display(),
+                data.network
+            )));
+        }
         Ok(WalletFile {
             path: path.to_path_buf(),
             data,
@@ -191,17 +200,28 @@ impl WalletFile {
     /// Writes a new wallet file. Refuses to replace one that exists.
     pub fn create(path: impl AsRef<Path>, data: WalletData) -> Result<Self, WalletError> {
         let path = path.as_ref();
-        if path.exists() {
-            return Err(WalletError::WalletFile(format!(
-                "wallet file {} already exists",
-                path.display()
-            )));
-        }
         if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).map_err(|e| {
                 WalletError::WalletFile(format!("failed to create {}: {e}", dir.display()))
             })?;
         }
+        // Claimed atomically: of two creates of one path, one gets the file
+        // and the other an error, rather than both "succeeding" and the
+        // second overwriting the first's keys.
+        let mut claim = std::fs::OpenOptions::new();
+        claim.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            claim.mode(0o600);
+        }
+        claim.open(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                WalletError::WalletFile(format!("wallet file {} already exists", path.display()))
+            } else {
+                WalletError::WalletFile(format!("failed to create {}: {e}", path.display()))
+            }
+        })?;
         let file = WalletFile {
             path: path.to_path_buf(),
             data,

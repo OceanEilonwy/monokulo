@@ -446,7 +446,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // the real order's status - the order requires one real confirmation
     // (the order's own confirmation requirement is nonzero), so
     // this can only succeed once the payment has a real confirmation.
-    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
+    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero)
         .await
         .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);

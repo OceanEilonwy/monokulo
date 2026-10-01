@@ -356,7 +356,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // crate's own doc comment) replaces this file's local `retry` helper for this
     // one call - the ledger write-back (this run's own new change output) happens
     // internally too, no separate record-keeping call needed here any more.
-    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
+    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero)
         .await
         .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);

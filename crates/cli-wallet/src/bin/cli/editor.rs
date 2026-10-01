@@ -186,6 +186,7 @@ impl CompletionData {
             .iter()
             .filter_map(|account| account.tag.clone())
             .collect();
+        tags.sort();
         tags.dedup();
         self.account_tags = tags;
         self.address_book_rows = data
