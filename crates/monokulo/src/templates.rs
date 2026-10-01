@@ -1,14 +1,10 @@
-//! Plain, engine-agnostic display/formatting helpers shared by several
-//! `views`/`http` modules (duration formatting, the connect forms'
-//! network-select flags, ...) - all that's left here since every page this
-//! module used to render through its own Handlebars-based `TemplateEngine`
-//! now renders through `views` (Maud) instead.
+//! Plain display/formatting helpers shared by several `views`/`http`
+//! modules: duration formatting and the connect forms' network-select
+//! flags.
 
 /// The three `<option>` "selected" flags both connect forms' network
 /// `<select>` need, derived from a submitted (or default) network value.
-/// Handlebars-rust has no built-in string-equality helper - three plain
-/// bools computed once here is simpler and more consistent with this
-/// codebase's style than registering one. `network` not matching any known
+/// `network` not matching any known
 /// value (shouldn't happen - the `<select>` only ever offers these three -
 /// but a resubmitted form is still untrusted input) selects none of them,
 /// same as an unrecognized value would render in a plain `<select>` anyway.
@@ -64,9 +60,18 @@ pub fn display_scan_range(
 /// 30m" or "1d 0h"). `"any moment"` once `target_unix` has passed.
 ///
 /// Computed here, server-side, rather than by client JavaScript from a raw
-/// timestamp - `checkout.html.hbs` (the only caller) is the real customer-
-/// facing payment page, which must stay fully meaningful with JavaScript
-/// disabled.
+/// timestamp: the checkout page, which must stay fully meaningful with
+/// JavaScript disabled, shows it as the time left to pay.
+/// How long ago `then` was, in the same units as [`format_duration_until`]:
+/// `"<1m"` under a minute, never `"any moment"`.
+pub fn format_duration_since(then_unix: i64, now_unix: i64) -> String {
+    if now_unix - then_unix < 60 {
+        "<1m".to_string()
+    } else {
+        format_duration_until(now_unix, then_unix)
+    }
+}
+
 pub fn format_duration_until(target_unix: i64, now_unix: i64) -> String {
     let seconds_left = target_unix - now_unix;
     if seconds_left <= 0 {
@@ -93,16 +98,6 @@ pub fn format_duration_until(target_unix: i64, now_unix: i64) -> String {
     parts.truncate(2);
     parts.join(" ")
 }
-
-// SetupViewModel/RequestInviteViewModel/AdminInviteRequestRow/AdminInvitesViewModel/
-// AdminScalarFieldView/AdminNetworkFieldView/AdminSettingsViewModel moved to
-// `views::admin`, PosViewModel to `views::pos`, and CheckoutViewModel/
-// CheckoutPaymentViewModel/CheckoutShareViewModel to `views::checkout`, as
-// part of the Maud migration - every page that used to go through this
-// module's own `TemplateEngine`/Handlebars now renders through `views`
-// instead, so that engine (and the `handlebars` dependency itself) is gone;
-// only the plain, engine-agnostic display/formatting helpers below remain,
-// still used directly by several `views`/`http` modules.
 
 #[cfg(test)]
 mod tests {

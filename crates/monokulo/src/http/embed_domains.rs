@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::db::StoreDomainRow;
 use crate::embed_domains::{self, DomainState};
-use crate::templates::format_duration_until;
+use crate::templates::{format_duration_since, format_duration_until};
 use crate::views::store_detail::{EmbedWarnings, FailingDomainWarning};
 use crate::views::store_settings::EmbedDomainView;
 
@@ -145,7 +145,7 @@ pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<EmbedDoma
                     "Failing",
                     Some(format!(
                         "Record missing for {}. Still counts as verified for {}.",
-                        format_duration_until(now, since),
+                        format_duration_since(since, now),
                         format_duration_until(since + embed_domains::GRACE_SECS, now)
                     )),
                 ),
@@ -154,7 +154,7 @@ pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<EmbedDoma
                     "No longer verified",
                     Some(format!(
                         "Record missing for {}. Publish it again and check.",
-                        format_duration_until(now, since)
+                        format_duration_since(since, now)
                     )),
                 ),
             };
@@ -207,7 +207,7 @@ pub(super) async fn store_page_warnings(
             Some(FailingDomainWarning {
                 record_name: embed_domains::record_name(&row.domain),
                 domain: row.domain,
-                missing_for: format_duration_until(now, since),
+                missing_for: format_duration_since(since, now),
                 lapsed,
                 counts_for: format_duration_until(since + embed_domains::GRACE_SECS, now),
             })

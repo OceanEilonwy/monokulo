@@ -999,10 +999,9 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// Deletes a session by its hashed token. Returns whether a row was
-    /// actually deleted (`false` if it was already gone), so a future
-    /// logout handler (WBS 1.1.3 - not implemented here) can tell "revoked"
-    /// from "already revoked" if it ever needs to. Nothing calls this yet.
+    /// Deletes a session by its hashed token (logging out, both the JSON
+    /// API's and the dashboard's). Returns whether a row was actually
+    /// deleted (`false` if it was already gone).
     pub fn delete_session(&self, token_hash: &shared::auth::TokenHash) -> Result<bool> {
         let affected = self
             .conn
@@ -1018,7 +1017,6 @@ impl Db {
     /// (`http/connections.rs`) is responsible for passing an already
     /// `crate::crypto::encrypt`-ed value, never the engine's raw `sk_...`
     /// secret token.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn create_store_connection(
         &self,
@@ -1164,7 +1162,7 @@ impl Db {
     /// orders of magnitude below `i64::MAX`, this only guards against a
     /// `u64` value SQLite genuinely cannot represent, not a plausible real
     /// one.
-    #[allow(clippy::too_many_arguments)]
+    ///
     /// `confirmations_required_applied`/`base_currency`/`base_currency_piconero_per_unit`
     /// are the order-creation-time snapshot of how its confirmation
     /// threshold was decided (migration `0016_order_confirmation_snapshot.sql`'s
