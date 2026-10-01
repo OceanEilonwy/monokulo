@@ -529,6 +529,37 @@ pub async fn set_refund_address(
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
+    // Once the order is settled (paid, overpaid or expired) a refund
+    // address already on record is locked: a refund may be on its way to
+    // it, and anyone who comes by the order URL later (a shared link, a
+    // browser history) must not be able to redirect it. An order with
+    // nothing received and no address yet can still have one set.
+    let settled = matches!(
+        detail.order.status,
+        shared::order_status::OrderStatus::Paid
+            | shared::order_status::OrderStatus::Overpaid
+            | shared::order_status::OrderStatus::Expired
+    );
+    if settled && detail.order.refund_address.is_some() {
+        if wants_json {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "The refund address for this order can no longer be changed."})),
+            )
+                .into_response();
+        }
+        return render_checkout_page(
+            &state,
+            pk,
+            row,
+            sk,
+            detail,
+            Some("The refund address for this order can no longer be changed.".to_string()),
+            &options,
+        )
+        .await;
+    }
+
     let refund_address = form.refund_address.trim();
     if refund_address.is_empty() {
         if wants_json {

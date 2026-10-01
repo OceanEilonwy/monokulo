@@ -75,6 +75,20 @@ pub async fn request_invite_submit(
         )
         .await;
     }
+    // Anyone may post this form: what it stores (and the admin page later
+    // decrypts and renders) is bounded, and an address with a request
+    // still waiting doesn't get a second one, each with a live invite.
+    if super::signup::normalize_email(email).is_none() {
+        return render_request_invite(&state, Some("That is not an email address."), false).await;
+    }
+    if message.chars().count() > MAX_REQUEST_MESSAGE_CHARS {
+        return render_request_invite(
+            &state,
+            Some("Please keep your message under 2000 characters."),
+            false,
+        )
+        .await;
+    }
 
     let request_id = uuid::Uuid::new_v4().to_string();
     let now = now_unix();
@@ -86,6 +100,12 @@ pub async fn request_invite_submit(
     let created = state
         .db
         .write(move |db| {
+            if db.has_pending_invite_request(&email)? {
+                // Already asked and not yet answered: nothing more to add,
+                // and the same confirmation, so the form tells a visitor
+                // nothing about who has asked before.
+                return Ok::<_, crate::db::DbError>(());
+            }
             db.create_invite_request(&request_id, &email, &message, now)?;
             // A failure here leaves a request with no linked invite - not
             // ideal, but the admin invites page tolerates it gracefully (no
@@ -115,6 +135,9 @@ pub async fn request_invite_submit(
 
     render_request_invite(&state, None, true).await
 }
+
+/// Most characters an invite request's message may have.
+pub const MAX_REQUEST_MESSAGE_CHARS: usize = 2000;
 
 /// Minimal, correct percent-encoding for a `mailto:` URI's `subject`/`body`
 /// query components (RFC 6068) - deliberately *not* `url::form_urlencoded`

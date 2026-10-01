@@ -257,6 +257,29 @@ impl EngineClient {
         parse_response(response).await
     }
 
+    /// `DELETE {base_url}/api/v1/admin/tenant` — disables the tenant that
+    /// owns `sk` and drops its keys from custody. Used when a tenant was
+    /// provisioned but the connection that would own it couldn't be saved:
+    /// left alone, nobody would hold its secret, and the engine would scan
+    /// for it forever.
+    pub async fn delete_tenant(&self, sk: &RawToken) -> Result<(), EngineClientError> {
+        let target = self.target();
+        let response = target
+            .http
+            .delete(format!("{}/api/v1/admin/tenant", target.base_url))
+            .bearer_auth(sk.expose())
+            .timeout(ENGINE_CALL_TIMEOUT)
+            .send()
+            .await?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let message = response.text().await.unwrap_or_default();
+            Err(EngineClientError::EngineError { status, message })
+        }
+    }
+
     /// `GET {base_url}/api/v1/admin/tenant` — fetches the tenant that owns
     /// `sk`, authenticated as that tenant via `Authorization: Bearer sk_...`.
     pub async fn get_tenant(&self, sk: &RawToken) -> Result<TenantView, EngineClientError> {

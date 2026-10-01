@@ -205,24 +205,28 @@ impl EmbedPolicy {
     }
 }
 
-/// The policy of the store with this public key, or `None` for an unknown
-/// key. A database error reads as unrestricted, so a fault never takes every
-/// store's checkout offline.
-pub async fn policy_for_public_key(db: &Database, public_key: &str) -> Option<EmbedPolicy> {
+/// The policy of the store with this public key, `None` for an unknown
+/// key, or `Err` when the database didn't answer. The error is the
+/// caller's to fail closed on: a store that restricted its checkout to
+/// its verified domains must not accept orders from anywhere while the
+/// policy can't be read.
+pub async fn policy_for_public_key(
+    db: &Database,
+    public_key: &str,
+) -> Result<Option<EmbedPolicy>, crate::db::DbError> {
     let key = public_key.to_string();
-    match db
-        .read(move |db| db.embed_policy_for_public_key(&key))
+    db.read(move |db| db.embed_policy_for_public_key(&key))
         .await
-    {
-        Ok(policy) => policy.map(|(restricted, domains)| EmbedPolicy {
-            restricted,
-            domains,
-        }),
-        Err(e) => {
+        .map(|policy| {
+            policy.map(|(restricted, domains)| EmbedPolicy {
+                restricted,
+                domains,
+            })
+        })
+        .map_err(|e| {
             tracing::error!(public_key = %public_key, error = %e, "could not read the embed policy");
-            None
-        }
-    }
+            e
+        })
 }
 
 /// The domain of a store's site URL, when it's one that can be verified.

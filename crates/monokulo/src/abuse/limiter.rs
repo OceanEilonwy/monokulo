@@ -71,10 +71,41 @@ impl Entry {
         self.window_start = window_start;
     }
 
-    /// Requests over the last rolling minute, including the one being made.
+    /// Requests counted over the last rolling minute, not including the one
+    /// being made.
     fn estimate(&self, now: i64) -> f64 {
         let into_window = (now - self.window_start) as f64 / WINDOW_SECS as f64;
         self.previous as f64 * (1.0 - into_window) + self.current as f64
+    }
+
+    /// How many seconds until one more request would be under `hard`: what
+    /// `Retry-After` promises. Refused requests aren't counted, so the
+    /// estimate only falls with time: within this window as the previous
+    /// window's count decays, and failing that from the next window on as
+    /// this window's count does.
+    fn seconds_until_allowed(&self, hard: u32, now: i64) -> u64 {
+        let window = WINDOW_SECS as f64;
+        let into_window = (now - self.window_start) as f64;
+        let (previous, current, hard) = (self.previous as f64, self.current as f64, hard as f64);
+        let wait = if current + 1.0 <= hard {
+            // previous * (1 - (into + d) / window) + current + 1 <= hard
+            let room = hard - current - 1.0;
+            if previous <= room {
+                0.0
+            } else {
+                (window * (1.0 - room / previous) - into_window).ceil()
+            }
+        } else {
+            // Next window: current * (1 - t / window) + 1 <= hard.
+            let room = hard - 1.0;
+            let decay = if current <= room {
+                0.0
+            } else {
+                (window * (1.0 - room / current)).ceil()
+            };
+            (self.window_start + WINDOW_SECS - now) as f64 + decay
+        };
+        wait.max(1.0) as u64
     }
 }
 
@@ -141,12 +172,15 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
 
         let entry = state.entries.get_mut(client).expect("just inserted");
         entry.roll(now);
-        entry.current = entry.current.saturating_add(1);
-        let estimate = entry.estimate(now);
+        // With this request counted: a refused request is not counted, or
+        // a client that obeyed `Retry-After` would be refused again by its
+        // own refused requests.
+        let estimate = entry.estimate(now) + 1.0;
         if estimate > limits.hard_per_min as f64 {
-            let retry_after_secs = (entry.window_start + WINDOW_SECS - now).max(1) as u64;
+            let retry_after_secs = entry.seconds_until_allowed(limits.hard_per_min, now);
             return Tier::Blocked { retry_after_secs };
         }
+        entry.current = entry.current.saturating_add(1);
         let has_pass = entry.pass_until > now;
         if !has_pass && (force_soft || estimate > limits.soft_per_min as f64) {
             return Tier::Challenge;
@@ -154,12 +188,38 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
         Tier::Allowed
     }
 
-    /// Gives `client` a pass for [`PASS_SECS`] after a solved challenge.
+    /// Gives `client` a pass for [`PASS_SECS`] after a solved challenge. A
+    /// client not tracked (evicted between its challenge and its proof,
+    /// which under attack is the usual case) is tracked again: a pass that
+    /// went nowhere would challenge it again, proof after proof.
     pub fn grant_pass(&self, client: &K, now: i64) {
         let mut state = self.state.lock();
+        let state = &mut *state;
+        let seen = state.next_seen;
+        state.next_seen += 1;
         if let Some(entry) = state.entries.get_mut(client) {
+            state.order.remove(&entry.seen);
+            entry.seen = seen;
             entry.pass_until = now + PASS_SECS;
+        } else {
+            while state.entries.len() >= self.max_clients {
+                let Some((_, oldest)) = state.order.pop_first() else {
+                    break;
+                };
+                state.entries.remove(&oldest);
+            }
+            state.entries.insert(
+                client.clone(),
+                Entry {
+                    window_start: now - now.rem_euclid(WINDOW_SECS),
+                    current: 0,
+                    previous: 0,
+                    pass_until: now + PASS_SECS,
+                    seen,
+                },
+            );
         }
+        state.order.insert(seen, client.clone());
     }
 
     pub fn has_pass(&self, client: &K, now: i64) -> bool {
@@ -199,10 +259,12 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(limiter.check(&1, LIMITS, false, now), Tier::Challenge);
         }
+        // 40 s to the next window, then 10 s for this window's 6 to decay
+        // to 5, leaving room for one request.
         assert_eq!(
             limiter.check(&1, LIMITS, false, now),
             Tier::Blocked {
-                retry_after_secs: 40
+                retry_after_secs: 50
             }
         );
         assert_eq!(
@@ -210,6 +272,52 @@ mod tests {
             Tier::Allowed,
             "another client is unaffected"
         );
+    }
+
+    /// `Retry-After` is kept: a client that waits exactly that long is let
+    /// through, because the requests refused meanwhile were not counted
+    /// against it.
+    #[test]
+    fn a_client_that_waits_for_retry_after_is_let_through() {
+        let limiter = TieredLimiter::<u32>::default();
+        let now = 1_000_040;
+        for _ in 0..6 {
+            limiter.check(&1, LIMITS, false, now);
+        }
+        let Tier::Blocked { retry_after_secs } = limiter.check(&1, LIMITS, false, now) else {
+            panic!("past hard")
+        };
+        // Hammering while blocked changes nothing.
+        for i in 1..30 {
+            assert!(matches!(
+                limiter.check(&1, LIMITS, false, now + i),
+                Tier::Blocked { .. }
+            ));
+        }
+        let later = now + retry_after_secs as i64;
+        assert!(
+            !matches!(
+                limiter.check(&1, LIMITS, false, later),
+                Tier::Blocked { .. }
+            ),
+            "allowed (or challenged) at the promised time"
+        );
+    }
+
+    /// A pass reaches a client that was evicted between its challenge and
+    /// its proof (under attack, every request evicts someone).
+    #[test]
+    fn a_pass_granted_to_an_evicted_client_still_counts() {
+        let limiter = TieredLimiter::<u32>::with_capacity(2);
+        let now = 1_000_000;
+        assert_eq!(limiter.check(&1, LIMITS, true, now), Tier::Challenge);
+        limiter.check(&2, LIMITS, true, now);
+        limiter.check(&3, LIMITS, true, now); // evicts 1
+        assert!(!limiter.clients().contains(&1));
+        limiter.grant_pass(&1, now);
+        assert!(limiter.has_pass(&1, now));
+        assert_eq!(limiter.check(&1, LIMITS, true, now + 1), Tier::Allowed);
+        assert_eq!(limiter.tracked(), 2, "the cap still holds");
     }
 
     #[test]
