@@ -149,7 +149,14 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     span class="store-header-status" {
                         span class=(format!("tag tag-{}", store.health)) { (store.health_label) }
                         span class="muted" { (store.platform) } span class="muted" aria-hidden="true" { "·" }
-                        a class="store-site" href=(store.site_url) title=(store.site_url) { (site_host(&store.site_url)) }
+                        // A link only to an http(s) site: the URL is the
+                        // merchant's (or an API caller's) text, and a
+                        // `javascript:` one must not become a link.
+                        @if store.site_url.starts_with("https://") || store.site_url.starts_with("http://") {
+                            a class="store-site" href=(store.site_url) title=(store.site_url) { (site_host(&store.site_url)) }
+                        } @else {
+                            span class="store-site" title=(store.site_url) { (site_host(&store.site_url)) }
+                        }
                     }
                     a class="btn btn-secondary settings-link" href=(format!("/dashboard/stores/{}/settings", store.connection_id)) {
                         "Settings " span aria-hidden="true" { "→" }

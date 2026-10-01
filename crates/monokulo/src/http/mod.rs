@@ -553,7 +553,19 @@ pub fn build_router(state: AppState) -> Router {
         ))
         // Outside the rate limit, so a preflight never spends budget and a
         // `429` still carries the headers a cross-origin caller needs to read it.
-        .layer(embed_cors_layer(&state));
+        .layer(embed_cors_layer(&state))
+        // A checkout page, its status and its share page carry a payment
+        // address and amount, and (once given) a refund address: never
+        // kept by a browser or a shared cache.
+        .layer(middleware::map_response(
+            |mut response: Response| async move {
+                response
+                    .headers_mut()
+                    .entry(header::CACHE_CONTROL)
+                    .or_insert(axum::http::HeaderValue::from_static("no-store"));
+                response
+            },
+        ));
 
     // Every other route (the dashboard, login, sign-up, the landing and
     // status pages) is counted too - see `http::abuse::site_middleware`.

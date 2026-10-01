@@ -1256,8 +1256,15 @@ fn format_duration(nanos: i64) -> String {
     }
 }
 
+/// One CSV field. A value a spreadsheet would read as a formula (`=`, `+`,
+/// `-`, `@`, a tab or a carriage return first) is prefixed with `'` and
+/// quoted: log lines carry text from anyone (a URL, a header), and an
+/// exported `=HYPERLINK(...)` must not run when the file is opened.
 fn csv_field(text: &str) -> String {
-    if text.contains([',', '"', '\n', '\r']) {
+    let formula = text.starts_with(['=', '+', '-', '@', '\t', '\r']);
+    if formula {
+        format!("\"'{}\"", text.replace('"', "\"\""))
+    } else if text.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", text.replace('"', "\"\""))
     } else {
         text.to_string()
