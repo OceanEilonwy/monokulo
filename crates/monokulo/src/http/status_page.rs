@@ -67,15 +67,27 @@ pub struct StatusCacheState {
     refreshing: bool,
 }
 
-pub type StatusCache = Arc<Mutex<StatusCacheState>>;
+/// The cache, and the one fetch from the engine that may be in flight.
+pub struct StatusCacheShared {
+    state: Mutex<StatusCacheState>,
+    /// Held while fetching: requests that find the cache stale meanwhile
+    /// wait for that fetch and take its answer, so a burst of page loads
+    /// costs the engine (and every node it asks) one request, not one each.
+    fetching: tokio::sync::Mutex<()>,
+}
+
+pub type StatusCache = Arc<StatusCacheShared>;
 
 pub(crate) fn new_status_cache() -> StatusCache {
-    Arc::new(Mutex::new(StatusCacheState::default()))
+    Arc::new(StatusCacheShared {
+        state: Mutex::new(StatusCacheState::default()),
+        fetching: tokio::sync::Mutex::new(()),
+    })
 }
 
 /// The status cache.
 pub(crate) fn status_cache(engine: &Engine) -> parking_lot::MutexGuard<'_, StatusCacheState> {
-    engine.status_cache.lock()
+    engine.status_cache.state.lock()
 }
 
 /// How old a cached status may be and still be rendered into a page as the
@@ -241,17 +253,19 @@ fn is_healthy(result: &Result<EngineStatusResponse, String>) -> bool {
 }
 
 /// Returns the cached engine status if it's still fresh, otherwise fetches a
-/// real one and caches it before returning. The lock is only ever held for
-/// the plain read/write, never across the `.await` itself - two requests
-/// racing past a just-expired cache both fetch and both cache, which is
-/// simpler than a mutex-held-across-await or a dedicated refresh task, and
-/// "occasionally two real fetches instead of one" is a fine outcome for what
-/// this exists to bound (typical page-view volume, not a flood).
+/// real one and caches it before returning. One fetch at a time: a request
+/// that finds the cache stale while another is fetching waits for that
+/// fetch (bounded by the engine call timeout) and returns its answer. Each
+/// engine `/status` asks every Monero node, so a burst of visitors to the
+/// public status page must not turn into a burst of node requests.
 pub(crate) async fn get_status_cached(engine: &Engine) -> Result<EngineStatusResponse, String> {
-    if let Some(cached) = status_cache(engine).cached.as_ref() {
-        if cached.fetched_at.elapsed() < CACHE_TTL {
-            return cached.result.clone();
-        }
+    if let Some(fresh) = fresh_status(engine) {
+        return fresh;
+    }
+    let _fetching = engine.status_cache.fetching.lock().await;
+    // Filled while this one waited.
+    if let Some(fresh) = fresh_status(engine) {
+        return fresh;
     }
     let result = engine
         .client
@@ -263,6 +277,15 @@ pub(crate) async fn get_status_cached(engine: &Engine) -> Result<EngineStatusRes
         result: result.clone(),
     });
     result
+}
+
+/// The cached status, if it's still fresh.
+fn fresh_status(engine: &Engine) -> Option<Result<EngineStatusResponse, String>> {
+    status_cache(engine)
+        .cached
+        .as_ref()
+        .filter(|cached| cached.fetched_at.elapsed() < CACHE_TTL)
+        .map(|cached| cached.result.clone())
 }
 
 /// `GET /status` - the full page. Unauthenticated, so `logged_in` is a real
@@ -581,6 +604,82 @@ mod tests {
                 first.generated_at, second.generated_at,
                 "a reused cache entry must hand back the exact same response"
             );
+        }
+
+        /// Many requests finding the cache empty at once - a burst of
+        /// visitors to the public status page - make one engine request
+        /// between them, and all get its answer.
+        #[tokio::test]
+        async fn requests_that_arrive_during_a_fetch_share_it() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            // A real engine's status body, served by a slow fake that
+            // counts how often it's asked.
+            let real =
+                engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
+                    .await;
+            let body: String = engine_test_support::engine_http_client()
+                .get(format!("http://{}/status", real.addr))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            let hits = std::sync::Arc::new(AtomicUsize::new(0));
+            let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+            let app = {
+                let hits = hits.clone();
+                Router::new().route(
+                    "/status",
+                    axum::routing::get(move || {
+                        let (hits, body, mut release) =
+                            (hits.clone(), body.clone(), release_rx.clone());
+                        async move {
+                            hits.fetch_add(1, Ordering::SeqCst);
+                            // Answers only once every caller is waiting.
+                            let _ = release.wait_for(|released| *released).await;
+                            ([("content-type", "application/json")], body)
+                        }
+                    }),
+                )
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+            let state = state_with_engine(EngineClient::for_tests(format!("http://{addr}")));
+            let callers: Vec<_> = (0..20)
+                .map(|_| {
+                    let engine = state.engine.clone();
+                    tokio::spawn(async move { get_status_cached(&engine).await })
+                })
+                .collect();
+            // The first fetch has reached the engine; the rest are queued
+            // behind it (or still on their way). Nothing is timed: the
+            // engine doesn't answer until released.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while hits.load(Ordering::SeqCst) == 0 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no fetch reached the engine"
+                );
+                tokio::task::yield_now().await;
+            }
+            release_tx.send(true).unwrap();
+            let answers: Vec<_> = futures_util::future::join_all(callers)
+                .await
+                .into_iter()
+                .map(|joined| joined.unwrap().expect("every caller gets the status"))
+                .collect();
+            assert_eq!(
+                hits.load(Ordering::SeqCst),
+                1,
+                "one engine request for all 20"
+            );
+            assert!(answers
+                .iter()
+                .all(|answer| answer.generated_at == answers[0].generated_at));
         }
 
         fn state_with_engine(engine_client: EngineClient) -> AppState {
