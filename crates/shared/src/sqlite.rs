@@ -77,7 +77,7 @@ pub fn tune(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// Runs `f` with `query_only` on, so a write inside it fails as it would on
-/// a pool's read-only connection. For [`Pool::Inline`] reads in tests, where
+/// a pool's read-only connection. For `Pool::Inline` reads in tests, where
 /// the one connection could otherwise write, and a read that (wrongly)
 /// writes would pass its tests and fail in production.
 pub fn read_only<T>(conn: &Connection, f: impl FnOnce() -> T) -> T {
@@ -142,6 +142,7 @@ const QUEUE_CAPACITY: usize = 256;
 
 /// Longest an inline job waits for the shared connection's lock: a caller
 /// that (wrongly) holds it gets an error instead of a deadlock.
+#[cfg(any(test, feature = "test-support"))]
 const INLINE_LOCK_WAIT: Duration = if cfg!(test) {
     Duration::from_millis(200)
 } else {
@@ -159,8 +160,10 @@ pub enum Pool<T> {
         jobs: tokio::sync::mpsc::Sender<Job<T>>,
     },
     /// Jobs run on the caller, on one shared `T`, locked for the job. For
-    /// in-memory databases, which can't be opened twice, and tests (a paused
-    /// test clock would jump ahead while a task waits on another thread).
+    /// tests only (their in-memory databases can't be opened twice, and a
+    /// paused test clock would jump ahead while a task waits on another
+    /// thread): the lock wait and the job both hold a runtime thread.
+    #[cfg(any(test, feature = "test-support"))]
     Inline(Arc<parking_lot::Mutex<T>>),
 }
 
@@ -171,6 +174,7 @@ impl<T> Clone for Pool<T> {
                 name,
                 jobs: jobs.clone(),
             },
+            #[cfg(any(test, feature = "test-support"))]
             Pool::Inline(shared) => Pool::Inline(shared.clone()),
         }
     }
@@ -190,6 +194,16 @@ impl<T: Send + 'static> Pool<T> {
         Ok(Pool::Threads { name, jobs })
     }
 
+    /// Whether jobs run on the caller, on one shared value (`Pool::Inline`):
+    /// one connection that could also write.
+    pub fn is_inline(&self) -> bool {
+        match self {
+            #[cfg(any(test, feature = "test-support"))]
+            Pool::Inline(_) => true,
+            Pool::Threads { .. } => false,
+        }
+    }
+
     /// Runs `f` on the pool and returns its result, waiting for room in the
     /// queue if it is full.
     pub async fn run<R, E>(
@@ -201,6 +215,7 @@ impl<T: Send + 'static> Pool<T> {
         E: From<PoolError> + Send + 'static,
     {
         let (name, jobs) = match self {
+            #[cfg(any(test, feature = "test-support"))]
             Pool::Inline(shared) => {
                 let guard = shared
                     .try_lock_for(INLINE_LOCK_WAIT)

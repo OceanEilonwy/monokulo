@@ -97,6 +97,57 @@ pub enum ExchangeRateError {
     UnexpectedResponse(String),
 }
 
+/// The most of a rate provider's reply that is read: every real reply is a
+/// few kilobytes, and an operator may point a provider at a mirror.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// How much of a reply an error message quotes.
+const EXCERPT_BYTES: usize = 300;
+
+/// `response`'s body as JSON, read up to [`MAX_RESPONSE_BYTES`]: a longer
+/// one is refused before it is all held in memory.
+pub(crate) async fn read_json<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> Result<T, ExchangeRateError> {
+    let too_long = || {
+        ExchangeRateError::UnexpectedResponse(format!(
+            "response body is longer than {MAX_RESPONSE_BYTES} bytes"
+        ))
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(too_long());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(too_long());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|e| {
+        ExchangeRateError::UnexpectedResponse(format!(
+            "response body is not the JSON expected: {e}"
+        ))
+    })
+}
+
+/// `body` for an error message: its first few hundred bytes.
+pub(crate) fn excerpt(body: &serde_json::Value) -> String {
+    let mut text = body.to_string();
+    if text.len() > EXCERPT_BYTES {
+        let mut end = EXCERPT_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push('…');
+    }
+    text
+}
+
 /// Turns "price of 1 XMR in some currency" into "piconero per one unit of
 /// that currency" - the inversion every live provider shares. `None` (never
 /// an error, never a made-up value) when the price is non-finite, zero,
@@ -233,13 +284,14 @@ impl CoingeckoRateProvider {
             self.base_url
         );
         let response = self.client.get(&url).send().await?.error_for_status()?;
-        let body: serde_json::Value = response.json().await?;
+        let body: serde_json::Value = read_json(response).await?;
         let monero = body
             .get("monero")
             .and_then(serde_json::Value::as_object)
             .ok_or_else(|| {
                 ExchangeRateError::UnexpectedResponse(format!(
-                    "no \"monero\" object in response body: {body}"
+                    "no \"monero\" object in response body: {}",
+                    excerpt(&body)
                 ))
             })?;
 
@@ -321,7 +373,7 @@ impl CoingeckoRateProvider {
         if stale {
             let url = format!("{}/api/v3/simple/supported_vs_currencies", self.base_url);
             let response = self.client.get(&url).send().await?.error_for_status()?;
-            let list: Vec<String> = response.json().await?;
+            let list: Vec<String> = read_json(response).await?;
             let uppercased: Vec<String> = list.into_iter().map(|c| c.to_uppercase()).collect();
             cache.supported_currencies = Some((uppercased, std::time::Instant::now()));
         }
@@ -705,14 +757,50 @@ mod tests {
                 "got {err:?}"
             );
 
-            // Not even valid JSON - reqwest's own body decode fails.
+            // Not even valid JSON.
             let url = spawn_server(|_, _| json_body("not json at all")).await;
             let provider = CoingeckoRateProvider::new(url);
             let err = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
+            assert!(
+                matches!(err, ExchangeRateError::UnexpectedResponse(_)),
+                "got {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_reply_longer_than_the_limit_is_refused_and_quoted_only_in_part() {
+            // Too long: refused before it is held in memory.
+            let padding = " ".repeat(MAX_RESPONSE_BYTES);
+            let long = format!(r#"{{"monero":{{"usd":150.0}}}}{padding}"#);
+            let url = spawn_server(move |_, _| json_body(&long)).await;
+            let err = CoingeckoRateProvider::new(url)
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("longer than"), "got {err:?}");
+
+            // Within the limit but the wrong shape: the error quotes the
+            // start of the body, not all of it.
+            let wrong = format!(r#"{{"other":"{}"}}"#, "x".repeat(10_000));
+            let url = spawn_server(move |_, _| json_body(&wrong)).await;
+            let err = CoingeckoRateProvider::new(url)
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .unwrap_err();
+            let message = err.to_string();
+            assert!(message.contains(r#"{"other":"xxx"#), "{message}");
+            assert!(message.len() < 1_000, "{} bytes", message.len());
+        }
+
+        #[test]
+        fn an_excerpt_never_splits_a_character() {
+            let body = serde_json::Value::String("é".repeat(400));
+            let text = excerpt(&body);
+            assert!(text.ends_with('…'));
+            assert!(text.len() <= EXCERPT_BYTES + '…'.len_utf8());
         }
 
         #[tokio::test]

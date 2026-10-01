@@ -119,7 +119,7 @@ pub(super) async fn order_rows(
             // Missing metadata shows as "—"; the failure is logged rather
             // than hidden.
             let metadata = db
-                .list_order_currency_metadata_for_connection(&id)
+                .order_currency_metadata_for(&id, &ids)
                 .inspect_err(
                     |e| tracing::error!(error = %e, "could not read order currency metadata"),
                 )

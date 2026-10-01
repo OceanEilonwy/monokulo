@@ -129,28 +129,16 @@ pub async fn dashboard_home(
         });
 
         if let Ok(orders) = state.engine.client.list_orders(&sk).await {
-            // The engine has no concept of fiat any more (`docs/fx_refactor.md`
-            // Phase 3) - fiat display comes entirely from monokulo's own
-            // local `order_currency_metadata`.
-            let id = row.id.clone();
-            let fiat_metadata = state
-                .db
-                .read(move |db| db.list_order_currency_metadata_for_connection(&id))
-                .await
-                .unwrap_or_default();
             for o in orders {
                 total_received_piconero += o.amount_received_piconero as u128;
-                let (amount, currency) = match fiat_metadata.get(&o.order_id) {
-                    Some(m) => (m.amount.clone(), m.currency.clone()),
-                    None => ("—".to_string(), "".to_string()),
-                };
+                // Filled in below for the orders that make the list.
                 all_orders.push(DashboardOrderRow {
                     connection_id: row.id.clone(),
                     display_name: display_name.clone(),
                     order_id: o.order_id,
                     status: o.status.into(),
-                    amount,
-                    currency,
+                    amount: "—".to_string(),
+                    currency: String::new(),
                     created_at: o.created_at,
                 });
             }
@@ -159,6 +147,34 @@ pub async fn dashboard_home(
 
     all_orders.sort_by_key(|order| std::cmp::Reverse(order.created_at));
     all_orders.truncate(10);
+    // The engine has no concept of fiat any more (`docs/fx_refactor.md`
+    // Phase 3) - fiat display comes entirely from monokulo's own local
+    // `order_currency_metadata`, read for just the orders shown.
+    let shown: Vec<(crate::db::ConnectionId, crate::db::OrderId)> = all_orders
+        .iter()
+        .map(|order| (order.connection_id.clone(), order.order_id.clone()))
+        .collect();
+    let fiat_metadata = state
+        .db
+        .read(move |db| {
+            let mut found = std::collections::HashMap::new();
+            for (connection_id, order_id) in shown {
+                if let Some(metadata) = db.get_order_currency_metadata(&connection_id, &order_id)? {
+                    found.insert((connection_id, order_id), metadata);
+                }
+            }
+            Ok::<_, crate::db::DbError>(found)
+        })
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, "could not read order currency metadata"))
+        .unwrap_or_default();
+    for order in &mut all_orders {
+        let key = (order.connection_id.clone(), order.order_id.clone());
+        if let Some(metadata) = fiat_metadata.get(&key) {
+            order.amount = metadata.amount.clone();
+            order.currency = metadata.currency.clone();
+        }
+    }
 
     let chrome = super::page_chrome(&state, Some(&user), "/dashboard").await;
     let view_model = DashboardViewModel {
@@ -401,6 +417,30 @@ mod tests {
             .await;
             let (connection_id, public_key) = create_connection(&router, &session_token).await;
             let order_id = seed_real_order(&state, engine.addr, &public_key).await;
+            let (metadata_connection, metadata_order) = (
+                crate::db::ConnectionId::new(connection_id.clone()),
+                crate::db::OrderId::new(order_id.clone()),
+            );
+            state
+                .db
+                .write(move |db| {
+                    db.create_order_currency_metadata(
+                        &metadata_connection,
+                        &metadata_order,
+                        "EUR",
+                        "12.34",
+                        shared::xmr_amount::Piconero(1_000_000),
+                        "fixed",
+                        1000,
+                        "EUR",
+                        None,
+                        10,
+                        false,
+                        None,
+                    )
+                })
+                .await
+                .unwrap();
 
             let response = router
                 .oneshot(
@@ -427,6 +467,10 @@ mod tests {
             assert!(
                 html.contains(&order_id),
                 "expected the seeded order in the recent-orders feed, got: {html}"
+            );
+            assert!(
+                html.contains("12.34"),
+                "the order's fiat amount comes from monokulo's own metadata, got: {html}"
             );
             assert!(
                 html.contains("tag-ok"),

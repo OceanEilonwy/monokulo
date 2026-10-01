@@ -343,7 +343,11 @@ impl PrettyVisitor<'_> {
         if self.result.is_err() {
             return;
         }
-        let separator = if std::mem::take(&mut self.first) { "" } else { " " };
+        let separator = if std::mem::take(&mut self.first) {
+            ""
+        } else {
+            " "
+        };
         self.result = if field.name() == "message" {
             write!(self.writer, "{separator}{}", redact::text(raw))
         } else {

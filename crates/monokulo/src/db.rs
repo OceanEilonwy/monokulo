@@ -364,9 +364,10 @@ impl Database {
         })
     }
 
-    /// Every job on the caller, on `db`, locked for the job: for in-memory
-    /// databases (which can't be opened twice) and tests. Reads still can't
-    /// write (`Db::read_only`), so a read that writes fails its tests.
+    /// Every job on the caller, on `db`, locked for the job: for tests and
+    /// their in-memory databases (which can't be opened twice). Reads still
+    /// can't write (`Db::read_only`), so a read that writes fails its tests.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn inline(db: SharedDb) -> Self {
         Database {
             reads: Pool::Inline(db.clone()),
@@ -383,9 +384,10 @@ impl Database {
         T: Send + 'static,
         E: From<PoolError> + Send + 'static,
     {
-        match &self.reads {
-            Pool::Inline(_) => self.reads.run(move |db| db.read_only(|| f(db))).await,
-            Pool::Threads { .. } => self.reads.run(f).await,
+        if self.reads.is_inline() {
+            self.reads.run(move |db| db.read_only(|| f(db))).await
+        } else {
+            self.reads.run(f).await
         }
     }
 
@@ -1223,28 +1225,29 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// Looks up currency metadata for every order of one connection at once -
-    /// the orders-list/dashboard pages need this per-row, not one at a
-    /// time, to avoid an N+1 query pattern when rendering a whole list.
-    /// Returned as a map keyed by `order_id` (already scoped to
-    /// `connection_id` by the query) for callers to look up by, not a
-    /// `Vec` they'd have to re-index themselves.
-    pub fn list_order_currency_metadata_for_connection(
+    /// Currency metadata for each of `order_ids` (one page of a listing)
+    /// that has any, keyed by `order_id`: one primary-key lookup per order,
+    /// so a page costs the same however many orders the store has.
+    pub fn order_currency_metadata_for(
         &self,
         connection_id: &ConnectionId,
+        order_ids: &[OrderId],
     ) -> Result<std::collections::HashMap<OrderId, OrderCurrencyMetadataRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
                     store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key
-             FROM order_currency_metadata WHERE connection_id = ?1",
+             FROM order_currency_metadata WHERE connection_id = ?1 AND order_id = ?2",
         )?;
-        let rows = stmt
-            .query_map(params![connection_id], metadata_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows
-            .into_iter()
-            .map(|row| (row.order_id.clone(), row))
-            .collect())
+        let mut rows = std::collections::HashMap::new();
+        for order_id in order_ids {
+            if let Some(row) = stmt
+                .query_row(params![connection_id, order_id], metadata_row)
+                .optional()?
+            {
+                rows.insert(row.order_id.clone(), row);
+            }
+        }
+        Ok(rows)
     }
 
     /// Inserts a new single-use connect token (WBS 1.4.1) - `token_hash` is
@@ -3381,11 +3384,16 @@ mod tests {
         .unwrap();
 
         let map = db
-            .list_order_currency_metadata_for_connection(&shared::ids::ConnectionId::new(
-                connection_id.to_string(),
-            ))
+            .order_currency_metadata_for(
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &[
+                    shared::ids::OrderId::new("pay_a"),
+                    shared::ids::OrderId::new("pay_b"),
+                    shared::ids::OrderId::new("pay_unrecorded"),
+                ],
+            )
             .unwrap();
-        assert_eq!(map.len(), 2);
+        assert_eq!(map.len(), 2, "an order with nothing recorded is left out");
         assert_eq!(
             map.get(&shared::ids::OrderId::new("pay_a"))
                 .unwrap()
@@ -3405,9 +3413,10 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         assert!(db
-            .list_order_currency_metadata_for_connection(&shared::ids::ConnectionId::new(
-                connection_id.to_string()
-            ))
+            .order_currency_metadata_for(
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &[shared::ids::OrderId::new("pay_a")],
+            )
             .unwrap()
             .is_empty());
     }

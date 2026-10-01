@@ -135,9 +135,12 @@ impl HavenoRateProvider {
             self.base_url
         );
         let response = self.client.get(&url).send().await?.error_for_status()?;
-        let body: serde_json::Value = response.json().await?;
+        let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         let tickers = body.as_object().ok_or_else(|| {
-            ExchangeRateError::UnexpectedResponse(format!("tickers body is not an object: {body}"))
+            ExchangeRateError::UnexpectedResponse(format!(
+                "tickers body is not an object: {}",
+                crate::exchange_rate::excerpt(&body)
+            ))
         })?;
         // A body with a `status` and `message` (the API's error shape, e.g.
         // "Haveno network 'reto' not available") is not a ticker map.
@@ -147,7 +150,8 @@ impl HavenoRateProvider {
             && tickers.contains_key("message")
         {
             return Err(ExchangeRateError::UnexpectedResponse(format!(
-                "haveno.markets error: {body}"
+                "haveno.markets error: {}",
+                crate::exchange_rate::excerpt(&body)
             )));
         }
 
@@ -181,14 +185,15 @@ impl HavenoRateProvider {
             self.base_url
         );
         let response = self.client.get(&url).send().await?.error_for_status()?;
-        let body: serde_json::Value = response.json().await?;
+        let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         let side = |name: &str| -> Result<(u64, f64), ExchangeRateError> {
             let levels = body
                 .get(name)
                 .and_then(serde_json::Value::as_array)
                 .ok_or_else(|| {
                     ExchangeRateError::UnexpectedResponse(format!(
-                        "no \"{name}\" array in depth body: {body}"
+                        "no \"{name}\" array in depth body: {}",
+                        crate::exchange_rate::excerpt(&body)
                     ))
                 })?;
             let mut offers = 0u64;

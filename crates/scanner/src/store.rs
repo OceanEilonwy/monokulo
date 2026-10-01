@@ -176,7 +176,8 @@ impl ReadStorePool {
     }
 
     /// Reads on the caller, on `store`, with writes refused as on a pool
-    /// connection: for in-memory databases and tests.
+    /// connection: for tests and their in-memory databases.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn inline(store: SharedStore) -> Self {
         ReadStorePool(shared::sqlite::Pool::Inline(store))
     }
@@ -185,11 +186,10 @@ impl ReadStorePool {
         &self,
         f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        match &self.0 {
-            shared::sqlite::Pool::Inline(_) => {
-                self.0.run(move |store| store.read_only(|| f(store))).await
-            }
-            shared::sqlite::Pool::Threads { .. } => self.0.run(f).await,
+        if self.0.is_inline() {
+            self.0.run(move |store| store.read_only(|| f(store))).await
+        } else {
+            self.0.run(f).await
         }
     }
 }
@@ -221,8 +221,9 @@ impl Database {
         }
     }
 
-    /// Everything on the caller, on `store`: for in-memory databases and
-    /// tests. Reads still can't write.
+    /// Everything on the caller, on `store`: for tests and their in-memory
+    /// databases. Reads still can't write.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn inline(store: SharedStore) -> Self {
         let changes = store.lock().order_changes.clone();
         Database {

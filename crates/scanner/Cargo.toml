@@ -93,7 +93,10 @@ cli-wallet = { path = "../cli-wallet", optional = true }
 # transaction-construction dependencies (and the extra `monokulo` needed to
 # drive a whole hosted stack) out of the tree for a normal `cargo build`/
 # `cargo test --workspace` is the point.
-e2e = ["dep:monokulo", "dep:cli-wallet"]
+e2e = ["dep:monokulo", "dep:cli-wallet", "test-support", "monokulo/test-support"]
+# The in-thread database pools (`store::Database::inline`) for
+# `scanner-test-support` and the e2e harness. Never in production.
+test-support = ["shared/test-support"]
 
 [[test]]
 name = "e2e_stagenet"
