@@ -230,7 +230,9 @@ pub async fn create_order(
                         confirmations,
                         created_with_key,
                     );
-                    let _ = db.set_order_source(&id, &order_id, source);
+                    if let Err(e) = db.set_order_source(&id, &order_id, source) {
+                        tracing::warn!(error = %e, order.id = %order_id, "could not record where an order came from");
+                    }
                     recorded
                 })
                 .await;

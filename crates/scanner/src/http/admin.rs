@@ -366,58 +366,6 @@ async fn switch_key_custody_to_completion(
     Ok(Json(TenantView::from(refetched)))
 }
 
-#[derive(Serialize)]
-pub struct KeyCustodyBackendView {
-    name: &'static str,
-    description: &'static str,
-}
-
-#[derive(Serialize)]
-pub struct KeyCustodyView {
-    enabled: Vec<KeyCustodyBackendView>,
-    default: String,
-}
-
-fn backend_description(name: &str) -> &'static str {
-    match name {
-        "plain" => "In the engine's own memory. Simple; anyone who controls the engine's machine can read the keys.",
-        "socket" => "In a separate key-custody-server process, so the engine itself never holds the keys.",
-        _ => "",
-    }
-}
-
-/// `GET /api/v1/admin/key-custody` - the backends a store can choose from
-/// and the default (task 5.4). Not secret: any caller that reaches the
-/// private engine API may ask.
-pub async fn key_custody_options(
-    State(custody): State<Custody>,
-    State(settings): State<Arc<EngineSettings>>,
-) -> Json<KeyCustodyView> {
-    let mut enabled_names = custody.backends.enabled_backends();
-    if enabled_names.is_empty() {
-        enabled_names.push(custody.default_backend.clone());
-    }
-    let enabled = enabled_names
-        .iter()
-        .filter_map(|name| match name.as_str() {
-            "plain" => Some(KeyCustodyBackendView {
-                name: "plain",
-                description: backend_description("plain"),
-            }),
-            "socket" => Some(KeyCustodyBackendView {
-                name: "socket",
-                description: backend_description("socket"),
-            }),
-            _ => None,
-        })
-        .collect();
-    let default = match custody.backends.enabled_backends().is_empty() {
-        true => custody.default_backend.clone(),
-        false => settings.custody.load().default.as_str().to_string(),
-    };
-    Json(KeyCustodyView { enabled, default })
-}
-
 pub async fn get_own_tenant(AuthedTenant(tenant): AuthedTenant) -> Json<TenantView> {
     Json(TenantView::from(tenant))
 }

@@ -169,7 +169,6 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     let unauthenticated_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
         .route("/status", get(status_page::status_page))
-        .route("/api/v1/admin/key-custody", get(admin::key_custody_options))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_rate_limit_middleware,

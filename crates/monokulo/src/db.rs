@@ -1978,7 +1978,7 @@ impl Db {
             .query_row(
                 "SELECT r.id, r.email, r.message, r.created_at_utc, l.token_encrypted
                  FROM invite_requests r
-                 LEFT JOIN invite_links l ON l.request_id = r.id
+                 LEFT JOIN invite_links l ON l.request_id = r.id AND l.used_at_utc IS NULL
                  WHERE r.id = ?1",
                 params![id],
                 |row| {

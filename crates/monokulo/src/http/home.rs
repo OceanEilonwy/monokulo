@@ -109,7 +109,10 @@ pub async fn dashboard_home(
             // its own key is an internal-consistency problem, not this
             // store's fault - skip it from the listing rather than failing
             // the whole dashboard for every other store the user has.
-            Err(_) => continue,
+            Err(()) => {
+                tracing::error!(store.id = %row.id, "a store's secret key could not be decrypted; it is left off the dashboard");
+                continue;
+            }
         };
 
         let tenant_result = state.engine.client.get_tenant(&sk).await;

@@ -72,7 +72,14 @@ pub async fn check(state: &AppState, pk: &str, headers: &axum::http::HeaderMap) 
     let Some(value) = headers.get(header::AUTHORIZATION) else {
         return KeyCheck::Absent;
     };
-    let Some(presented) = value.to_str().ok().and_then(|v| v.strip_prefix("Bearer ")) else {
+    // The scheme is case-insensitive (RFC 9110 §11.1).
+    let Some(presented) = value
+        .to_str()
+        .ok()
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, token)| token)
+    else {
         return KeyCheck::Invalid;
     };
     let key = pk.to_string();

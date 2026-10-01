@@ -375,9 +375,11 @@ pub async fn logout_submit(
     headers: axum::http::HeaderMap,
     AuthedUser(_user, token_hash): AuthedUser,
 ) -> Response {
-    db.write(move |db| db.delete_session(&token_hash))
-        .await
-        .ok();
+    // The cookie goes either way; a session row that stays is logged, as
+    // it would still work for whoever has the token.
+    if let Err(e) = db.write(move |db| db.delete_session(&token_hash)).await {
+        tracing::error!(error = %e, "logging out failed to delete the session");
+    }
     let mut cookie = super::session_cookie(&headers, String::new());
     cookie.set_max_age(time::Duration::ZERO);
     let jar = CookieJar::new().add(cookie);
