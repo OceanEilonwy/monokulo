@@ -79,7 +79,7 @@ use shared::key_custody::{
     WalletMaterial,
 };
 use shared::network::{network_str, parse_network};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Failure converting a wire DTO *back* into a real engine type: malformed hex, a
 /// wrong byte length, an unrecognized network name, a string that doesn't parse as
@@ -213,8 +213,12 @@ impl TryFrom<&WalletMaterialWire> for WalletMaterial {
     type Error = WireConversionError;
 
     fn try_from(wire: &WalletMaterialWire) -> Result<Self, Self::Error> {
-        let bytes = hex::decode(&wire.raw_hex)
-            .map_err(|e| WireConversionError::InvalidHex(e.to_string()))?;
+        // The decoded bytes are the view key: scrubbed when this returns,
+        // on the error path too.
+        let bytes = Zeroizing::new(
+            hex::decode(&wire.raw_hex)
+                .map_err(|e| WireConversionError::InvalidHex(e.to_string()))?,
+        );
         WalletMaterial::from_raw_bytes(&bytes)
             .map_err(|e| WireConversionError::InvalidKeyMaterial(e.to_string()))
     }

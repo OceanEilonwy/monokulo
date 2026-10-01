@@ -87,22 +87,65 @@ impl Drop for CleanupSocket {
     }
 }
 
-/// Connect, retrying briefly. `KeyCustodyServer::listen` binds the socket
-/// before it starts accepting, but that bind happens inside the `tokio::spawn`ed
-/// task's future, which isn't guaranteed to have been polled even once by the
-/// time `tokio::spawn` returns control to the caller - a single immediate
-/// connect attempt would be a real, if usually-fast-enough-to-hide, race.
+/// Connect, retrying until `deadline` has passed. An in-process server
+/// binds its socket before anything here tries to connect (see
+/// `spawn_server` and `ServerProcess::start`), so the first attempt is
+/// expected to succeed; the retry is for the child-process test, where
+/// the binary has to start up first, and the client's own reconnection
+/// after a server restart. A deadline, not a count: how long a loaded
+/// machine takes is not something a count of sleeps knows.
 async fn connect_with_retry(path: &Path) -> SocketKeyCustody {
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + CONNECT_DEADLINE;
+    loop {
         match SocketKeyCustody::connect(path).await {
             Ok(client) => return client,
-            Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
+            Err(e) if std::time::Instant::now() < deadline => {
+                let _ = e;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(e) => panic!(
+                "key-custody-server never became reachable at {} within {CONNECT_DEADLINE:?}: {e}",
+                path.display()
+            ),
         }
     }
-    panic!(
-        "key-custody-server never became reachable at {}",
-        path.display()
-    );
+}
+
+/// How long anything in this file waits for a server to answer.
+const CONNECT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Keeps calling `attempt` until it answers `Some`, or `CONNECT_DEADLINE`
+/// has passed.
+async fn until_ready<T, F, Fut>(mut attempt: F) -> Option<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = std::time::Instant::now() + CONNECT_DEADLINE;
+    loop {
+        if let Some(value) = attempt().await {
+            return Some(value);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A real `KeyCustodyServer` as a background task of this test's runtime,
+/// its socket bound (and so connectable) before this returns.
+fn spawn_server(socket_path: &Path) -> Arc<KeyCustodyServer> {
+    let server = Arc::new(KeyCustodyServer::new(PlainKeyCustody::default()));
+    let listener = KeyCustodyServer::bind(socket_path).expect("bind the test socket");
+    let serving = Arc::clone(&server);
+    let listen_path = socket_path.to_path_buf();
+    tokio::spawn(async move {
+        if let Err(e) = serving.serve(listener).await {
+            eprintln!("test key-custody-server on {}: {e}", listen_path.display());
+        }
+    });
+    server
 }
 
 /// A real `KeyCustodyServer` (wrapping a fresh `PlainKeyCustody`) running as a
@@ -116,13 +159,7 @@ struct TestServer {
 
 async fn spawn_server_and_client(tag: &str) -> TestServer {
     let socket_path = temp_socket_path(tag);
-    let server = Arc::new(KeyCustodyServer::new(PlainKeyCustody::default()));
-    let listen_path = socket_path.clone();
-    tokio::spawn(async move {
-        if let Err(e) = server.listen(&listen_path).await {
-            eprintln!("test key-custody-server on {}: {e}", listen_path.display());
-        }
-    });
+    let _server = spawn_server(&socket_path);
     let client = connect_with_retry(&socket_path).await;
     TestServer {
         client,
@@ -948,30 +985,46 @@ async fn client_returns_a_clean_error_when_the_peer_sends_garbage_instead_of_a_v
     );
 }
 
+/// The socket file is this user's alone: `bind(2)` would give it the
+/// umask's permissions, and any other user able to connect could register
+/// or remove wallets in the process holding every store's view key.
+#[tokio::test]
+async fn the_socket_is_readable_and_writable_by_its_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let socket_path = temp_socket_path("perms");
+    let _cleanup = CleanupSocket(socket_path.clone());
+    let _server = spawn_server(&socket_path);
+    let mode = std::fs::metadata(&socket_path)
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "mode {mode:o}");
+}
+
+/// A frame whose payload isn't the JSON expected is reported by kind and
+/// position, never by content: the content may be a view key.
+#[tokio::test]
+async fn a_decode_error_never_quotes_the_payload() {
+    let mut bytes = Vec::new();
+    let payload = br#""deadbeefcafe0123""#;
+    bytes.extend((payload.len() as u32).to_be_bytes());
+    bytes.extend(payload);
+    let mut reader = std::io::Cursor::new(bytes);
+    let error = read_frame::<_, KeyCustodyRequest>(&mut reader)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(!error.contains("deadbeef"), "{error}");
+    assert!(error.contains("line 1"), "{error}");
+}
+
 #[tokio::test]
 async fn garbage_bytes_from_a_raw_connection_are_rejected_cleanly_without_taking_down_the_server() {
     use tokio::io::AsyncWriteExt;
 
     let socket_path = temp_socket_path("garbage-to-server");
     let _cleanup = CleanupSocket(socket_path.clone());
-    let server = Arc::new(KeyCustodyServer::new(PlainKeyCustody::default()));
-    {
-        let server = Arc::clone(&server);
-        let listen_path = socket_path.clone();
-        tokio::spawn(async move {
-            let _ = server.listen(&listen_path).await;
-        });
-    }
-    // Wait for the listener to actually be bound before dialing raw
-    // connections at it (there's no `SocketKeyCustody::connect` retry helper
-    // to lean on here, since these connections are deliberately not going
-    // through that type).
-    for _ in 0..200 {
-        if UnixStream::connect(&socket_path).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    let _server = spawn_server(&socket_path);
 
     // Case 1: a length prefix that claims a frame far larger than
     // `MAX_FRAME_BYTES` - proves the server refuses up front rather than
@@ -1038,9 +1091,12 @@ struct ServerProcess {
 }
 
 impl ServerProcess {
+    /// The socket is bound on the calling thread, so it exists (and a
+    /// connection to it queues) before this returns; nothing has to wait
+    /// for the server's own thread and runtime to come up.
     fn start(path: &Path) -> Self {
         let _ = std::fs::remove_file(path);
-        let path = path.to_path_buf();
+        let listener = KeyCustodyServer::bind(path).expect("bind the test socket");
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let thread = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1051,7 +1107,7 @@ impl ServerProcess {
             runtime.block_on(async move {
                 let server = KeyCustodyServer::new(PlainKeyCustody::default());
                 tokio::select! {
-                    _ = server.listen(&path) => {}
+                    _ = server.serve(listener) => {}
                     _ = stopped => {}
                 }
             });
@@ -1221,12 +1277,9 @@ async fn a_batch_scan_fails_while_the_server_is_down_and_works_once_it_is_back()
     ));
 
     let _server = ServerProcess::start(&socket_path);
-    let handle = loop {
-        match client.register_wallet(fixture_material()).await {
-            Ok(handle) => break handle,
-            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
-        }
-    };
+    let handle = until_ready(|| async { client.register_wallet(fixture_material()).await.ok() })
+        .await
+        .expect("the client reconnects once the server is back");
     assert_eq!(
         client
             .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &window)
@@ -1256,14 +1309,7 @@ async fn the_client_reconnects_to_a_restarted_server_and_notices_it_lost_its_wal
     ));
 
     let server = ServerProcess::start(&socket_path);
-    let mut state = None;
-    for _ in 0..200 {
-        if let Ok(epoch) = client.check_state().await {
-            state = Some(epoch);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let state = until_ready(|| async { client.check_state().await.ok() }).await;
     assert_eq!(
         state,
         Some(1),
@@ -1293,14 +1339,8 @@ async fn a_client_made_before_the_server_exists_starts_working_when_it_appears()
         Err(KeyCustodyError::BackendUnavailable(_))
     ));
     let server = ServerProcess::start(&socket_path);
-    let mut registered = None;
-    for _ in 0..200 {
-        if let Ok(handle) = client.register_wallet(fixture_material()).await {
-            registered = Some(handle);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let registered =
+        until_ready(|| async { client.register_wallet(fixture_material()).await.ok() }).await;
     assert!(registered.is_some());
     server.stop();
 }

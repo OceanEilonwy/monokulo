@@ -21,6 +21,7 @@ monero = "0.22.0"
 tokio = { version = "1.53.1", features = ["full"] }
 telemetry = { path = "../telemetry" }
 tracing = "0.1.44"
+zeroize = "1.9.0"
 
 [dev-dependencies]
 # `tests/socket_key_custody.rs` moved here alongside `server.rs` (it needs a real

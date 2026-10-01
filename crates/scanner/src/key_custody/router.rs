@@ -266,6 +266,7 @@ impl KeyCustody for CustodyRouter {
                     }
                 }
                 Err(e) => {
+                    tracing::warn!(backend = %name, error = %e, "key custody backend could not be checked");
                     first_error.get_or_insert(e);
                 }
             }

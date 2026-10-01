@@ -47,6 +47,7 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use zeroize::Zeroizing;
 
 use crate::{
     DeriveSubaddressRequest, DeriveSubaddressResponse, RegisterWalletRequest,
@@ -124,7 +125,10 @@ pub enum FramingError {
     TooLarge(usize),
     #[error("failed to encode payload as json: {0}")]
     Encode(serde_json::Error),
-    #[error("failed to decode payload as json: {0}")]
+    /// Described by kind and position only: serde's own message quotes the
+    /// offending value, which for a request carrying key material would put
+    /// the key in the log.
+    #[error("failed to decode payload as json: {:?} error at line {} column {}", .0.classify(), .0.line(), .0.column())]
     Decode(serde_json::Error),
 }
 
@@ -137,7 +141,8 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize,
 {
-    let payload = serde_json::to_vec(value).map_err(FramingError::Encode)?;
+    // Scrubbed when written: a request or `Seal` answer carries key material.
+    let payload = Zeroizing::new(serde_json::to_vec(value).map_err(FramingError::Encode)?);
     let len = u32::try_from(payload.len()).map_err(|_| FramingError::TooLarge(payload.len()))?;
     if len > MAX_FRAME_BYTES {
         return Err(FramingError::TooLarge(payload.len()));
@@ -183,9 +188,26 @@ where
     if len > MAX_FRAME_BYTES {
         return Err(FramingError::TooLarge(len as usize));
     }
-    let mut payload = vec![0u8; len as usize];
-    reader.read_exact(&mut payload).await?;
+    // Memory is committed as the bytes arrive, not at the declared length:
+    // a peer that announces a large frame and sends nothing holds no more
+    // than this. Scrubbed when read: the payload may carry key material.
+    let mut payload = Zeroizing::new(Vec::with_capacity(
+        (len as usize).min(INITIAL_PAYLOAD_BYTES),
+    ));
+    (&mut *reader)
+        .take(u64::from(len))
+        .read_to_end(&mut payload)
+        .await?;
+    if payload.len() != len as usize {
+        return Err(FramingError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "connection closed mid-payload",
+        )));
+    }
     serde_json::from_slice(&payload)
         .map_err(FramingError::Decode)
         .map(Some)
 }
+
+/// What a frame's buffer starts at; it grows as a larger payload arrives.
+const INITIAL_PAYLOAD_BYTES: usize = 64 * 1024;

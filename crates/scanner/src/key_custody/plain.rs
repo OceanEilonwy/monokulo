@@ -30,12 +30,14 @@ const MAX_SCAN_TABLE_ENTRIES: u64 = 1_000_000;
 /// it for every transaction wasteful.
 #[derive(Default)]
 struct KeyTable {
-    /// What the table covers, as a generation (`ScanIndices::generation`);
-    /// `None` while empty.
-    generation: Option<u64>,
+    /// The set the table covers whole; `None` while empty or being built.
+    /// Compared as a set, not by `ScanIndices::generation` (a 64-bit hash:
+    /// two windows colliding would keep a table for the wrong one, and
+    /// payments to the new indices would be missed with no error).
+    covers: Option<ScanIndices>,
     indices: std::collections::BTreeSet<u32>,
     table: HashMap<PublicKey, SubaddressIndex>,
-    building_generation: Option<u64>,
+    building: Option<ScanIndices>,
     pending_indices: Vec<u32>,
 }
 
@@ -44,18 +46,18 @@ impl KeyTable {
     /// didn't have and dropping ones no longer wanted (task 7.3: a store's
     /// scan window changes by an order or two at a time).
     fn update_batch_to(&mut self, view_pair: &ViewPair, indices: &ScanIndices) -> u64 {
-        if self.generation == Some(indices.generation()) {
+        if self.covers.as_ref() == Some(indices) {
             return 0;
         }
-        if self.building_generation != Some(indices.generation()) {
+        if self.building.as_ref() != Some(indices) {
             let wanted: std::collections::BTreeSet<u32> =
                 indices.minors().iter().copied().collect();
             self.table
                 .retain(|_, index| wanted.contains(&index.minor) && index.major == 0);
             self.indices.retain(|index| wanted.contains(index));
             self.pending_indices = wanted.difference(&self.indices).copied().collect();
-            self.building_generation = Some(indices.generation());
-            self.generation = None;
+            self.building = Some(indices.clone());
+            self.covers = None;
         }
         let mut derived = 0;
         for _ in 0..SCAN_TABLE_BUILD_BATCH {
@@ -71,8 +73,7 @@ impl KeyTable {
             derived += 1;
         }
         if self.pending_indices.is_empty() {
-            self.generation = Some(indices.generation());
-            self.building_generation = None;
+            self.covers = self.building.take();
         }
         derived
     }
@@ -181,14 +182,21 @@ static SCAN_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
 /// the remaining uptime of a long-running process, which is the difference between
 /// "compromise the box now" and "compromise the box any time later".
 ///
-/// The `compiler_fence` is the load-bearing part: without it this is a dead store
-/// into a value about to be dropped, exactly the kind LLVM is free to delete. This
-/// is `zeroize`'s own technique; `zeroize` itself can't be used directly because
-/// `PrivateKey` exposes no mutable view of its scalar's bytes.
+/// The volatile write is the load-bearing part: a plain store into a value
+/// about to be dropped is exactly the kind of dead store LLVM is free to
+/// delete, and a `compiler_fence` only orders memory operations, it doesn't
+/// keep one. This is `zeroize`'s own technique (`ptr::write_volatile` then a
+/// fence); `zeroize` itself can't be used directly because `PrivateKey`
+/// exposes no mutable view of its scalar's bytes, but it is `Copy`, so the
+/// whole value is written at once.
 impl Drop for WalletEntry {
     fn drop(&mut self) {
         if let Ok(zero) = PrivateKey::from_slice(&[0u8; 32]) {
-            self.view_pair.view = zero;
+            // SAFETY: `self.view_pair.view` is a valid, aligned, initialised
+            // `PrivateKey` owned by `self` for the whole of `drop`; a
+            // volatile write of another `PrivateKey` over it is the same
+            // write the assignment would do, only not elidable.
+            unsafe { std::ptr::write_volatile(&mut self.view_pair.view, zero) };
         }
         compiler_fence(Ordering::SeqCst);
     }
@@ -414,7 +422,7 @@ impl KeyCustody for PlainKeyCustody {
         // bounded batch and leaves the table, including partial progress, in
         // the wallet's cache before releasing the guard.
         let mut live = entry.live.clone().lock_owned().await;
-        while live.generation != Some(indices.generation()) {
+        while live.covers.as_ref() != Some(indices) {
             let view_pair = entry.view_pair;
             let wanted = indices.clone();
             let permit = SCAN_SLOTS.clone().acquire_owned().await;
@@ -434,13 +442,12 @@ impl KeyCustody for PlainKeyCustody {
                 .fetch_add(derived, std::sync::atomic::Ordering::Relaxed);
             #[cfg(not(test))]
             let _ = derived;
-            if live.generation != Some(indices.generation()) {
+            if live.covers.as_ref() != Some(indices) {
                 tokio::task::yield_now().await;
             }
         }
         let txs = txs.to_vec();
         let view_pair = entry.view_pair;
-        let generation = indices.generation();
         let permit = SCAN_SLOTS.clone().acquire_owned().await;
         // The whole batch in one blocking task: the hop to the blocking pool
         // and back costs more than finding that a transaction pays nothing.
@@ -455,7 +462,7 @@ impl KeyCustody for PlainKeyCustody {
                 // treat an emptied table as a completed generation.
                 let keys = std::mem::take(&mut live.table);
                 let cached_indices = std::mem::take(&mut live.indices);
-                live.generation = None;
+                let covers = live.covers.take();
                 let checker = SubKeyChecker {
                     table: keys,
                     keys: &view_pair,
@@ -463,7 +470,7 @@ impl KeyCustody for PlainKeyCustody {
                 let outputs = owned_outputs(&checker, input);
                 live.table = checker.table;
                 live.indices = cached_indices;
-                live.generation = Some(generation);
+                live.covers = covers;
                 if !outputs.is_empty() {
                     found.push(TxMatches { tx, outputs });
                 }
