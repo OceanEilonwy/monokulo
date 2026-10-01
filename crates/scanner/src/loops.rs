@@ -487,9 +487,11 @@ mod tests {
             .unwrap()
             .is_empty()
         {
+            // Sooner than the loop's own 5 s idle wait could have run it:
+            // only the wake explains it, however slow the machine.
             assert!(
-                woken_at.elapsed() < Duration::from_secs(2),
-                "not attempted within 2 s of being woken"
+                woken_at.elapsed() < Duration::from_millis(4500),
+                "not attempted before the idle wait ran out, so the wake did nothing"
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }

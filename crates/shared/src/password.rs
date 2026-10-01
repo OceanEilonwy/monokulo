@@ -112,7 +112,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_keeps_to_one_job_per_core() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let slots = SLOTS.available_permits();
+        // The pool's configured size, not the permits free right now: other
+        // tests in this binary hash passwords at the same time.
+        let slots = std::thread::available_parallelism().map_or(2, |n| n.get());
         let (running, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
         let jobs: Vec<_> = (0..slots * 3)
             .map(|_| {

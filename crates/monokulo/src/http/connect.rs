@@ -96,8 +96,15 @@ impl ConnectTarget {
             .ok_or("The shop's address isn't a valid web address.")?;
         let return_to = web_url(return_url)
             .ok_or("The plugin's return address isn't a valid https address.")?;
+        // Same host, and the same port when both use one scheme (the admin
+        // may be on https while the shop is on plain http, where the
+        // default ports differ for that reason alone).
         let same_host = match (site.host_str(), return_to.host_str()) {
-            (Some(site), Some(back)) => site.eq_ignore_ascii_case(back),
+            (Some(site_host), Some(back)) => {
+                site_host.eq_ignore_ascii_case(back)
+                    && (site.scheme() != return_to.scheme()
+                        || site.port_or_known_default() == return_to.port_or_known_default())
+            }
             _ => false,
         };
         if !same_host {
