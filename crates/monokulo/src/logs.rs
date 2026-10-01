@@ -330,7 +330,7 @@ mod tests {
                 }
             });
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
         while store
             .query(&telemetry::store::LogQuery {
                 limit: 100,

@@ -515,7 +515,11 @@ mod tests {
         });
         let base_url = format!("http://{addr}");
 
-        let client = build_client("test-agent", 3 * 1024);
+        // The same client `build_client` makes, with a handle on its cache
+        // so the test can run the cache's housekeeping itself.
+        let middleware = CacheMiddleware::new(3 * 1024);
+        let cache = middleware.cache.clone();
+        let client = client_builder("test-agent").with(middleware).build();
         for n in ["a", "b", "c"] {
             client
                 .get(format!("{base_url}/item/{n}"))
@@ -526,11 +530,9 @@ mod tests {
                 .await
                 .unwrap();
         }
-        // `moka`'s eviction is asynchronous - its housekeeping syncs on a fixed
-        // ~300ms interval (`LOG_SYNC_INTERVAL_MILLIS`), so this has to wait past
-        // that before asserting against a policy decision that may not yet have
-        // been applied to the cache's visible state.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // `moka`'s eviction is asynchronous: its housekeeping is run here,
+        // now, rather than waited for on its own interval.
+        cache.run_pending_tasks().await;
 
         let calls_before = calls.load(Ordering::SeqCst);
         assert_eq!(

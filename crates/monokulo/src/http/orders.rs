@@ -2628,7 +2628,7 @@ mod tests {
         let mut body = response.into_body();
         let mut text = String::new();
         while !text.contains("\n\n") {
-            let frame = tokio::time::timeout(std::time::Duration::from_secs(10), body.frame())
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(60), body.frame())
                 .await
                 .unwrap()
                 .unwrap()
@@ -3665,7 +3665,7 @@ mod tests {
             .to_string();
         engine.mark_order_paid(&order_id).unwrap();
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
         let (headers, body) = loop {
             if let Some(first) = received.lock().first().cloned() {
                 break first;

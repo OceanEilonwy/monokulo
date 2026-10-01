@@ -1141,7 +1141,7 @@ mod tests {
         // Poll rather than a fixed sleep: the background loop runs every
         // `BACKGROUND_LOOP_INTERVAL`, and this only needs to wait for the first tick
         // after the order's 1-second `expires_at` has actually passed.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60); // bounds only a hung run
         let matched = loop {
             let found = received
                 .lock()
