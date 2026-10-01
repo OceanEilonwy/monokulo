@@ -1110,3 +1110,22 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
     );
     assert!(fragment.contains("Show the whole session"), "{fragment}");
 }
+
+/// A custom range whose ends aren't dates is refused, not read as all
+/// time; an empty end is open.
+#[test]
+fn a_custom_range_that_does_not_parse_is_refused() {
+    let zone = jiff::tz::TimeZone::UTC;
+    let custom = |from: &str, to: &str| super::LogsParams {
+        range: "custom".into(),
+        from: from.into(),
+        to: to.into(),
+        ..Default::default()
+    };
+    let problem = super::time_range(&custom("2026-13-40T99:00", ""), &zone, 0).unwrap_err();
+    assert!(problem.contains("isn't a date and time"), "{problem}");
+    assert!(super::time_range(&custom("", "yesterday"), &zone, 0).is_err());
+    let (from, to) = super::time_range(&custom("2026-01-01T00:00", ""), &zone, 0).unwrap();
+    assert_eq!(from, Some(1_767_225_600 * 1_000_000_000));
+    assert_eq!(to, None);
+}

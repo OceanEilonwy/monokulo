@@ -133,8 +133,8 @@ fn traced(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 /// This instance's engine connection, read synchronously with the lock
 /// held - the two owned `String`s are then free to travel across an
 /// `.await` on their own.
-/// The engine's URL and admin token, empty if they can't be read.
-async fn engine_connection(state: &AppState) -> (String, String) {
+/// The engine's URL and admin token (empty when not set).
+async fn engine_connection(state: &AppState) -> Result<(String, String), crate::db::DbError> {
     state
         .db
         .read(|db| {
@@ -148,8 +148,15 @@ async fn engine_connection(state: &AppState) -> (String, String) {
             ))
         })
         .await
-        .unwrap_or_default()
+        .inspect_err(
+            |e| tracing::error!(error = %e, "could not read the engine connection settings"),
+        )
 }
+
+/// Shown when [`engine_connection`] fails: the settings exist but couldn't
+/// be read, which is not the same as there being none.
+const ENGINE_CONNECTION_UNREADABLE: &str =
+    "Could not read the engine connection settings from monokulo's database.";
 
 #[derive(Deserialize)]
 struct RemoteScalarSetting {
@@ -312,7 +319,6 @@ async fn build_view_model(
     } = result;
     let mut monokulo_fields = monokulo_fields(state);
     with_time_limits(&mut monokulo_fields);
-    let (engine_url, admin_token) = engine_connection(state).await;
     let mut view = AdminSettingsViewModel {
         tab,
         error,
@@ -321,7 +327,11 @@ async fn build_view_model(
         monokulo_fields,
         ..Default::default()
     };
-    match fetch_scanner_settings(&engine_url, &admin_token).await {
+    let fetched = match engine_connection(state).await {
+        Ok((engine_url, admin_token)) => fetch_scanner_settings(&engine_url, &admin_token).await,
+        Err(_) => Err(ENGINE_CONNECTION_UNREADABLE.to_string()),
+    };
+    match fetched {
         Ok(Some((mut fields, networks))) => {
             with_time_limits(&mut fields);
             view.scanner_configured = true;
@@ -652,6 +662,16 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
                     .join(" "),
             )
         },
+        // Stored, but applying them failed: retrying would fail the same way.
+        Err(live_settings::SaveError::Install(message)) => {
+            tracing::error!(error = %message, "monokulo settings were saved but applying them failed");
+            SaveOutcome {
+                notices: vec![Notice::Error(format!(
+                    "Saved, but applying the new values failed ({message}). Restart monokulo to apply them."
+                ))],
+                ..Default::default()
+            }
+        }
         Err(e) => {
             tracing::error!(error = %e, "saving monokulo settings failed");
             SaveOutcome::refused(
@@ -798,7 +818,9 @@ async fn save_engine(
     mut req: RemoteUpdateRequest,
     clears: &[String],
 ) -> SaveOutcome {
-    let (engine_url, admin_token) = engine_connection(state).await;
+    let Ok((engine_url, admin_token)) = engine_connection(state).await else {
+        return SaveOutcome::refused(ENGINE_CONNECTION_UNREADABLE.to_string());
+    };
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
         return SaveOutcome::refused("No engine connection is configured.".to_string());
     }
@@ -816,7 +838,21 @@ async fn save_engine(
         .await;
     match result {
         Ok(response) if response.status().is_success() => {
-            let saved: RemoteSaveResponse = response.json().await.unwrap_or_default();
+            let saved: RemoteSaveResponse = match response.json().await {
+                Ok(saved) => saved,
+                Err(e) => {
+                    // Saved, but what it said about the save is lost: say
+                    // so, and don't trust the cached node status either.
+                    tracing::warn!(error = %e, "the engine saved its settings but its reply could not be read");
+                    super::status_page::invalidate_status_cache(&state.engine);
+                    return SaveOutcome {
+                        notices: vec![Notice::Warning(
+                            "Saved, but the engine's reply could not be read, so any restart it needs or node it lost isn't shown here.".to_string(),
+                        )],
+                        ..Default::default()
+                    };
+                }
+            };
             // New nodes: the next page shows their status, not the cached
             // one of the nodes they replaced.
             if saved
@@ -2639,6 +2675,32 @@ mod tests {
                 .as_deref(),
             Some("x-monokulo=1"),
             "monokulo's own is untouched"
+        );
+    }
+
+    /// An engine that saves but answers with something unreadable: the save
+    /// says it went through and that what the engine said about it is lost,
+    /// rather than showing no banner at all.
+    #[tokio::test]
+    async fn an_unreadable_engine_save_reply_is_reported_not_dropped() {
+        use axum::routing::post;
+        let app = Router::new().route(
+            "/api/v1/admin/settings",
+            post(|| async { (StatusCode::OK, "not json") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let state = test_app_state_connected_to(addr).await;
+
+        let mut req = super::RemoteUpdateRequest::default();
+        req.scalars
+            .insert("scan.poll_interval_secs".into(), "5".into());
+        let outcome = super::save_engine(&state, req, &[]).await;
+        assert!(
+            matches!(outcome.notices.as_slice(), [super::Notice::Warning(text)] if text.contains("reply could not be read")),
+            "{:?}",
+            outcome.notices
         );
     }
 

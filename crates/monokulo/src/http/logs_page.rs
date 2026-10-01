@@ -49,6 +49,33 @@ const EXPORT_MAX: usize = 10_000;
 const MAX_SAVED: usize = 50;
 /// How often Live asks the engine for new lines (monokulo's own wake it).
 const ENGINE_POLL: Duration = Duration::from_secs(1);
+
+/// Most Live streams open at once. Each reads the engine once per
+/// [`ENGINE_POLL`] against the instance admin token's rate limit, so a few
+/// is all there is room for.
+const MAX_TAILS: usize = 4;
+static OPEN_TAILS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One open Live stream, counted against [`MAX_TAILS`] until dropped.
+struct TailSlot;
+
+impl TailSlot {
+    fn take() -> Option<TailSlot> {
+        use std::sync::atomic::Ordering;
+        OPEN_TAILS
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |open| {
+                (open < MAX_TAILS).then_some(open + 1)
+            })
+            .ok()
+            .map(|_| TailSlot)
+    }
+}
+
+impl Drop for TailSlot {
+    fn drop(&mut self) {
+        OPEN_TAILS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// The page's URL parameters. Empty values mean "not set".
@@ -171,24 +198,34 @@ fn parse_local(text: &str, zone: &jiff::tz::TimeZone) -> Option<i64> {
     zoned.timestamp().as_nanosecond().try_into().ok()
 }
 
-/// The time range in Unix nanoseconds, `[from, to)`.
+/// The time range in Unix nanoseconds, `[from, to)`. A custom range's
+/// empty end is open; one that isn't a date and time is refused, not read
+/// as "all time".
 fn time_range(
     params: &LogsParams,
     zone: &jiff::tz::TimeZone,
     now: i64,
-) -> (Option<i64>, Option<i64>) {
-    let back = |seconds: i64| (Some(now - seconds * NANOS_PER_SECOND), None);
+) -> Result<(Option<i64>, Option<i64>), String> {
+    let back = |seconds: i64| Ok((Some(now - seconds * NANOS_PER_SECOND), None));
+    let end = |text: &str, which: &str| {
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        parse_local(text, zone).map(Some).ok_or_else(|| {
+            format!(
+                "The range's {which} \"{}\" isn't a date and time.",
+                text.trim()
+            )
+        })
+    };
     match params.range() {
         "15m" => back(15 * 60),
         "1h" => back(3600),
         "6h" => back(6 * 3600),
         "7d" => back(7 * 86_400),
         "14d" => back(14 * 86_400),
-        "all" => (None, None),
-        "custom" => (
-            parse_local(&params.from, zone),
-            parse_local(&params.to, zone),
-        ),
+        "all" => Ok((None, None)),
+        "custom" => Ok((end(&params.from, "start")?, end(&params.to, "end")?)),
         _ => back(86_400),
     }
 }
@@ -523,7 +560,7 @@ async fn build(
 ) -> LogsViewModel {
     let (zone, _) = zone(tz, admin);
     let now = now_nanos();
-    let (from, to) = time_range(params, &zone, now);
+    let range = time_range(params, &zone, now);
     let search = params.search_only();
     let sources = Sources::from_state(state).await;
     let admin_id = admin.id.clone();
@@ -568,6 +605,14 @@ async fn build(
         attribute_names: Vec::new(),
     };
 
+    let (from, to) = match range {
+        Ok(range) => range,
+        Err(problem) => {
+            vm.problems.push(problem);
+            vm.attribute_names = attribute_names(&sources).await;
+            return vm;
+        }
+    };
     let (user, combined) = match filters(params) {
         Ok(filters) => filters,
         Err(e) => {
@@ -732,6 +777,13 @@ pub async fn tail(
             service: String::new(),
             id: 0,
         });
+    let Some(slot) = TailSlot::take() else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many Live views are open; close one and try again.",
+        )
+            .into_response();
+    };
     let sources = Sources::from_state(&state).await;
     let changed = sources
         .local
@@ -740,19 +792,42 @@ pub async fn tail(
     let (zone, _) = zone(&tz, &admin);
     let user = parse(&params.q).ok().flatten();
 
+    // Local lines are read on every wake; the engine's at most once per
+    // ENGINE_POLL however busy this server is, each from its own cursor so
+    // neither skips the other's lines.
     struct Tail {
-        sources: Sources,
+        local: Sources,
+        engine: Option<Sources>,
         combined: Option<Expr>,
         cursor: Cursor,
+        engine_cursor: Cursor,
+        last_engine_read: Option<tokio::time::Instant>,
+        engine_problem: Option<String>,
         changed: Option<tokio::sync::watch::Receiver<i64>>,
         first: bool,
+        _slot: TailSlot,
     }
+    let engine = match &sources.engine {
+        crate::logs::EngineSource::Api { .. } => Some(Sources {
+            local: None,
+            engine: sources.engine.clone(),
+        }),
+        crate::logs::EngineSource::Unavailable(_) => None,
+    };
     let state = Tail {
-        sources,
+        local: Sources {
+            local: sources.local.clone(),
+            engine: crate::logs::EngineSource::Unavailable(String::new()),
+        },
+        engine,
         combined,
+        engine_cursor: cursor.clone(),
         cursor,
+        last_engine_read: None,
+        engine_problem: None,
         changed,
         first: true,
+        _slot: slot,
     };
     let stream = futures_util::stream::unfold(state, move |mut tail| {
         let (params, user, zone) = (params.clone(), user.clone(), zone.clone());
@@ -769,33 +844,83 @@ pub async fn tail(
                     }
                 }
                 tail.first = false;
-                let request = request(
-                    tail.combined.as_ref(),
-                    None,
-                    None,
-                    "",
-                    &tail.cursor.encode(),
-                    200,
-                );
-                let Ok(page) = crate::logs::read(&tail.sources, &request).await else {
+                let mut rows = Vec::new();
+                if tail.local.local.is_some() {
+                    let request = request(
+                        tail.combined.as_ref(),
+                        None,
+                        None,
+                        "",
+                        &tail.cursor.encode(),
+                        200,
+                    );
+                    if let Ok(page) = crate::logs::read(&tail.local, &request).await {
+                        if let Some(newest) = page.rows.first() {
+                            tail.cursor = newest.cursor();
+                        }
+                        rows.extend(page.rows);
+                    }
+                }
+                let mut problem_event = None;
+                let engine_due = tail
+                    .last_engine_read
+                    .is_none_or(|at| at.elapsed() >= ENGINE_POLL);
+                if let (Some(engine), true) = (&tail.engine, engine_due) {
+                    tail.last_engine_read = Some(tokio::time::Instant::now());
+                    let request = request(
+                        tail.combined.as_ref(),
+                        None,
+                        None,
+                        "",
+                        &tail.engine_cursor.encode(),
+                        200,
+                    );
+                    if let Ok(page) = crate::logs::read(engine, &request).await {
+                        if let Some(newest) = page.rows.first() {
+                            tail.engine_cursor = newest.cursor();
+                        }
+                        rows.extend(page.rows);
+                        // Said once when the engine's lines stop (a 429
+                        // from its rate limit, say), and cleared when they
+                        // come back.
+                        if page.engine_problem != tail.engine_problem {
+                            tail.engine_problem = page.engine_problem;
+                            problem_event = Some(
+                                axum::response::sse::Event::default()
+                                    .event(r##"{"target":"#log-tail-problem","swap":"innerHTML"}"##)
+                                    .data(
+                                        view::tail_problem(tail.engine_problem.as_deref())
+                                            .into_string(),
+                                    ),
+                            );
+                        }
+                    }
+                }
+                rows.sort_by_key(|row| std::cmp::Reverse(row.cursor()));
+                let mut events = Vec::new();
+                events.extend(problem_event);
+                if !rows.is_empty() {
+                    let views: Vec<RowView> = rows
+                        .iter()
+                        .map(|row| row_view(row, &params, user.as_ref(), &zone, true))
+                        .collect();
+                    // The id resumes the local stream after a reconnect.
+                    events.push(
+                        axum::response::sse::Event::default()
+                            .event(r##"{"target":"#log-rows","swap":"afterbegin"}"##)
+                            .id(tail.cursor.clone().max(tail.engine_cursor.clone()).encode())
+                            .data(view::live_rows(&views).into_string()),
+                    );
+                }
+                if events.is_empty() {
                     continue;
-                };
-                let Some(newest) = page.rows.first() else {
-                    continue;
-                };
-                tail.cursor = newest.cursor();
-                let rows: Vec<RowView> = page
-                    .rows
-                    .iter()
-                    .map(|row| row_view(row, &params, user.as_ref(), &zone, true))
-                    .collect();
-                let event = axum::response::sse::Event::default()
-                    .event(r##"{"target":"#log-rows","swap":"afterbegin"}"##)
-                    .id(tail.cursor.encode())
-                    .data(view::live_rows(&rows).into_string());
-                return Some((Ok::<_, std::convert::Infallible>(event), tail));
+                }
+                return Some((events, tail));
             }
         }
+    })
+    .flat_map(|events| {
+        futures_util::stream::iter(events.into_iter().map(Ok::<_, std::convert::Infallible>))
     });
     // A comment first, so the stream is open (and Live shows it) at once,
     // before there's a line to send.
@@ -1210,17 +1335,23 @@ pub async fn pos_session_for_order(
     AuthedAdmin(admin, _): AuthedAdmin,
     Query(query): Query<PosSessionForOrder>,
 ) -> Response {
-    let order = query.order.replace('\\', "\\\\").replace('\'', "\\'");
-    let q = format!("order.id = '{order}' and pos.kind = 'order.created'");
+    // Built as an expression, not as query text: no quoting rules to keep
+    // in step with the query language's.
+    let compare = |field: &str, value: String| Expr::Compare {
+        field: field.into(),
+        op: Op::Eq,
+        value: QValue::Text(value),
+    };
+    let filter = Expr::And(
+        Box::new(compare("order.id", query.order)),
+        Box::new(compare("pos.kind", "order.created".to_string())),
+    );
     let sources = Sources {
         local: state.log_store.clone(),
         engine: crate::logs::EngineSource::Unavailable(String::new()),
     };
-    if let Ok(page) = crate::logs::read(
-        &sources,
-        &request(parse(&q).ok().flatten().as_ref(), None, None, "", "", 1),
-    )
-    .await
+    if let Ok(page) =
+        crate::logs::read(&sources, &request(Some(&filter), None, None, "", "", 1)).await
     {
         if let Some(session) = page
             .rows
@@ -1286,7 +1417,10 @@ pub async fn export(
     Query(params): Query<LogsParams>,
 ) -> Response {
     let (zone, _) = zone(&tz, &admin);
-    let (from, to) = time_range(&params, &zone, now_nanos());
+    let (from, to) = match time_range(&params, &zone, now_nanos()) {
+        Ok(range) => range,
+        Err(problem) => return (StatusCode::BAD_REQUEST, problem).into_response(),
+    };
     let (_, combined) = match filters(&params) {
         Ok(filters) => filters,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
