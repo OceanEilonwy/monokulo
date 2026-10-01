@@ -6,12 +6,92 @@
 //! Runs as a loop separate from the writer/scanner, exactly so a slow or hostile
 //! merchant endpoint can never stall order-state commits (§DESIGN.md §9).
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::store::{DueDelivery, SharedStore};
 use crate::webhook_sign::{is_disallowed_address, sign_payload};
+
+/// The one HTTP client webhooks are sent with. Its resolver is what makes
+/// the SSRF check hold: the addresses a name resolves to are checked
+/// (`is_disallowed_address`) by the lookup the connection is made from,
+/// not by a separate lookup an attacker's DNS could answer differently; a
+/// name with any private address among its answers isn't connected to at
+/// all. One client, not one per delivery: building a client loads and
+/// parses the system's CA store with blocking file I/O, and a new client
+/// has no connection to reuse.
+///
+/// `allow_private` is live (`webhooks.allow_private_urls`, read each tick):
+/// a self-hoster testing against their own LAN turns the check off.
+#[derive(Clone)]
+pub struct WebhookClient {
+    client: reqwest::Client,
+    allow_private: Arc<AtomicBool>,
+}
+
+impl WebhookClient {
+    /// A client with redirects off (a redirect to a private address must
+    /// not be followed blindly, `docs/DESIGN.md` §11) and the checking
+    /// resolver. Fails only if the TLS backend can't initialise.
+    pub fn build() -> reqwest::Result<Self> {
+        let allow_private = Arc::new(AtomicBool::new(false));
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(CheckingResolver {
+                allow_private: allow_private.clone(),
+            }))
+            .build()?;
+        Ok(WebhookClient {
+            client,
+            allow_private,
+        })
+    }
+
+    /// Whether private, loopback and link-local destinations are allowed.
+    pub fn set_allow_private(&self, allow: bool) {
+        self.allow_private.store(allow, Ordering::Relaxed);
+    }
+
+    fn allows_private(&self) -> bool {
+        self.allow_private.load(Ordering::Relaxed)
+    }
+}
+
+/// The system resolver, with every answer checked before it is connected
+/// to. An IP literal in a URL never reaches a resolver (the connector
+/// parses it first), so `attempt_delivery` checks those itself.
+struct CheckingResolver {
+    allow_private: Arc<AtomicBool>,
+}
+
+impl reqwest::dns::Resolve for CheckingResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let allow_private = self.allow_private.load(Ordering::Relaxed);
+        Box::pin(async move {
+            // Port 0: the connector sets the URL's port on each address.
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
+            if addrs.is_empty() {
+                return Err(
+                    Box::new(DeliveryError::UnresolvableHost(name.as_str().to_string()))
+                        as Box<dyn std::error::Error + Send + Sync>,
+                );
+            }
+            // Every answer has to pass, not just the one that gets used: a
+            // name resolving to both a public and a private address is the
+            // rebinding pattern this defends against, not a partly
+            // acceptable target.
+            if !allow_private && addrs.iter().any(|addr| is_disallowed_address(addr.ip())) {
+                return Err(Box::new(DeliveryError::SsrfBlocked)
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
 
 /// Fallback attempt ceiling, matching `WebhooksConfig::default()`. Only used by
 /// callers that have no configuration to consult (the tests below); `main` passes
@@ -36,72 +116,24 @@ pub enum DeliveryError {
     RequestFailed(String),
 }
 
-/// Resolves `url`'s host and rejects it if *any* resolved address is
-/// private/loopback/link-local, unless `allow_private` is set (a self-hoster
-/// testing against their own LAN - see `docs/DESIGN.md` §13's
-/// `webhooks.allow_private_urls`). Done immediately before dispatch, not only at
-/// webhook registration time, since DNS can change in between.
-///
-/// Returns the one address the request must actually be sent to. Validating and then
-/// handing the *hostname* back to `reqwest` - which resolves it again, independently -
-/// is not a check at all against an attacker who controls the DNS for that name: a
-/// zero-TTL record, or a round-robin alternating between a public and a private
-/// address, simply answers the validating lookup with the public one and the
-/// connecting lookup with `127.0.0.1`. The caller pins the connection to this exact
-/// address instead of re-resolving.
-async fn resolve_and_validate(
-    url: &url::Url,
-    allow_private: bool,
-) -> Result<Option<std::net::SocketAddr>, DeliveryError> {
+/// Refuses a URL whose host is an IP literal of a private, loopback or
+/// link-local address (unless `allow_private`). A literal never reaches
+/// the client's resolver, which checks every name; this is the other half
+/// of the same check, made just before the request.
+fn check_ip_literal(url: &url::Url, allow_private: bool) -> Result<(), DeliveryError> {
     if allow_private {
-        return Ok(None);
+        return Ok(());
     }
-    let host = url
-        .host_str()
-        .ok_or_else(|| DeliveryError::UnresolvableHost("no host".into()))?;
-    // `Url::host_str` hands back an IPv6 literal in its URL form, brackets and all
-    // (`[::1]`), which is not something a resolver accepts: it parses as neither an
-    // IP address nor a DNS name, so *every* IPv6-literal webhook URL failed with
-    // "unresolvable host" on every attempt until it hit the retry ceiling. Stripping
-    // the brackets puts the literal back through the same `lookup_host` (and
-    // therefore the same `is_disallowed_address`) path a hostname takes, rather than
-    // leaving a whole address family permanently undeliverable.
-    let lookup_host = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
-    let port = url.port_or_known_default().unwrap_or(443);
-    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((lookup_host, port))
-        .await
-        .map_err(|e| DeliveryError::UnresolvableHost(e.to_string()))?
-        .collect();
-    if addrs.is_empty() {
-        return Err(DeliveryError::UnresolvableHost(host.to_string()));
+    let ip = match url.host() {
+        None => return Err(DeliveryError::UnresolvableHost("no host".into())),
+        Some(url::Host::Ipv4(ip)) => std::net::IpAddr::V4(ip),
+        Some(url::Host::Ipv6(ip)) => std::net::IpAddr::V6(ip),
+        Some(url::Host::Domain(_)) => return Ok(()),
+    };
+    if is_disallowed_address(ip) {
+        return Err(DeliveryError::SsrfBlocked);
     }
-    // Every returned address has to pass, not just the one that gets used - a name
-    // resolving to both a public and a private address is exactly the rebinding
-    // pattern this is defending against, not a partially-acceptable target.
-    for addr in &addrs {
-        if is_disallowed_address(addr.ip()) {
-            return Err(DeliveryError::SsrfBlocked);
-        }
-    }
-    Ok(Some(addrs[0]))
-}
-
-/// A short-lived client that will only ever connect to `addr` for `host`, whatever
-/// DNS says by the time the request goes out. `reqwest`'s `resolve` override applies
-/// solely to the address selection: the request still carries the original `Host`
-/// header and, over TLS, the original SNI name, so the destination server sees an
-/// ordinary request for the hostname the merchant registered.
-fn pinned_client(host: &str, addr: std::net::SocketAddr) -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        // Matching the shared client's policy: a redirect to a private address must
-        // not be followed blindly (§DESIGN.md §11), and a per-request client that
-        // quietly reinstated the default policy would reopen exactly that hole.
-        .redirect(reqwest::redirect::Policy::none())
-        .resolve(host, addr)
-        .build()
+    Ok(())
 }
 
 /// The event id to advertise in `X-Monokulo-Event-Id`, read back out of the signed
@@ -119,6 +151,23 @@ fn event_id_of(delivery: &DueDelivery) -> String {
         .unwrap_or_else(|| delivery.delivery_id.to_string())
 }
 
+/// What a failed request is recorded as: the error and its causes (the
+/// resolver's refusal, a connection reset), without the URL. `reqwest`'s
+/// own message carries the URL whole, query string (a merchant's token,
+/// say) included, and this is stored and logged on every failed attempt;
+/// the webhook row names the URL for anyone who needs it.
+fn request_error_text(e: reqwest::Error) -> String {
+    let e = e.without_url();
+    let mut text = e.to_string();
+    let mut source = std::error::Error::source(&e);
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
 pub struct DeliveryOutcome {
     pub delivered: bool,
     pub response_status: Option<u16>,
@@ -129,20 +178,14 @@ pub struct DeliveryOutcome {
 /// payload, sends the request with redirects disabled (a redirect to a private
 /// address must not be followed blindly - §DESIGN.md §11) and a bounded timeout.
 pub async fn attempt_delivery(
-    client: &reqwest::Client,
+    client: &WebhookClient,
     delivery: &DueDelivery,
-    allow_private: bool,
     timeout: Duration,
 ) -> DeliveryOutcome {
     // This covers DNS validation as well as the HTTP exchange. A request-level
     // timeout alone starts too late: a stalled resolver could hold the worker
     // indefinitely before `send` was even called.
-    match tokio::time::timeout(
-        timeout,
-        attempt_delivery_inner(client, delivery, allow_private, timeout),
-    )
-    .await
-    {
+    match tokio::time::timeout(timeout, attempt_delivery_inner(client, delivery, timeout)).await {
         Ok(outcome) => outcome,
         Err(_) => DeliveryOutcome {
             delivered: false,
@@ -153,9 +196,8 @@ pub async fn attempt_delivery(
 }
 
 async fn attempt_delivery_inner(
-    client: &reqwest::Client,
+    client: &WebhookClient,
     delivery: &DueDelivery,
-    allow_private: bool,
     timeout: Duration,
 ) -> DeliveryOutcome {
     let parsed_url = match url::Url::parse(&delivery.url) {
@@ -169,40 +211,14 @@ async fn attempt_delivery_inner(
         }
     };
 
-    let validated_addr = match resolve_and_validate(&parsed_url, allow_private).await {
-        Ok(addr) => addr,
-        Err(e) => {
-            return DeliveryOutcome {
-                delivered: false,
-                response_status: None,
-                error: Some(e.to_string()),
-            }
-        }
-    };
-
-    // Pin the connection to the address that was just validated. Without this the
-    // validation above is advisory only, since `reqwest` would resolve the hostname
-    // a second time and could get a different answer.
-    let pinned;
-    let client = match validated_addr {
-        Some(addr) => {
-            let host = parsed_url.host_str().unwrap_or_default().to_string();
-            match pinned_client(&host, addr) {
-                Ok(c) => {
-                    pinned = c;
-                    &pinned
-                }
-                Err(e) => {
-                    return DeliveryOutcome {
-                        delivered: false,
-                        response_status: None,
-                        error: Some(format!("could not build a pinned HTTP client: {e}")),
-                    };
-                }
-            }
-        }
-        None => client,
-    };
+    if let Err(e) = check_ip_literal(&parsed_url, client.allows_private()) {
+        return DeliveryOutcome {
+            delivered: false,
+            response_status: None,
+            error: Some(e.to_string()),
+        };
+    }
+    let client = &client.client;
 
     let signature = sign_payload(
         delivery.signing_secret.expose(),
@@ -250,7 +266,7 @@ async fn attempt_delivery_inner(
         Err(e) => DeliveryOutcome {
             delivered: false,
             response_status: None,
-            error: Some(e.to_string()),
+            error: Some(request_error_text(e)),
         },
     }
 }
@@ -275,28 +291,6 @@ fn log_outcome(delivery: &DueDelivery, outcome: &DeliveryOutcome, max_attempts: 
     }
 }
 
-/// One pass: claims every currently-due delivery and attempts it once. A row that
-/// fails is rescheduled with backoff up to `max_attempts`, after which it's left
-/// alone (visible via the admin API for debugging, never silently retried forever
-/// or silently dropped). Returns the number of rows processed this tick.
-///
-/// `max_attempts` is a parameter rather than the module constant it used to be
-/// because `webhooks.max_attempts` is a real, range-validated configuration knob:
-/// `Config::validate_bounds` rejects `0` for it with a message explaining that no
-/// webhook would ever be delivered, which promises the operator it is load-bearing.
-/// It wasn't - the value was parsed, validated, and then never read by anything, so
-/// a self-hoster who set `max_attempts = 24` got 8. A setting that is checked but
-/// ignored is worse than one that doesn't exist.
-///
-/// Takes the *shared* store (`Arc<Mutex<Store>>`), not a bare `&Store`, and
-/// deliberately locks it only around the brief synchronous calls before and after
-/// each delivery attempt - never across `attempt_delivery`'s `.await`, which does
-/// real outbound network I/O and can take the full `timeout` to resolve. Holding the
-/// lock across that would block every other request touching the store (including
-/// unrelated HTTP handlers, since they share the same `Store`) for as long as a
-/// slow or hanging merchant endpoint takes to respond - exactly the kind of
-/// lock-across-await mistake caught once already in `http::admin::delete_own_tenant`
-/// during development.
 /// Most deliveries picked per tick, and most sent at once.
 pub const DELIVERY_BATCH: u32 = 50;
 const DELIVERY_CONCURRENCY: usize = 16;
@@ -306,28 +300,29 @@ const DELIVERY_PER_TENANT: u32 = 4;
 
 /// Sends one batch of due deliveries, concurrently, picked fairly across
 /// stores (`Store::due_webhook_deliveries_fair`), and records each outcome.
-/// Returns how many were attempted; a full batch means more may be due now.
+/// A delivery that fails is rescheduled with backoff up to `max_attempts`
+/// (`webhooks.max_attempts`), after which it is given up: visible through
+/// the admin API, never retried forever or dropped in silence. Returns how
+/// many were attempted; a full batch means more may be due now.
 ///
 /// `now` picks what is due. Each outcome is recorded at `now` plus the time
 /// elapsed since the tick began, so a retry after a slow batch is scheduled
 /// from when its attempt actually happened.
 pub async fn run_delivery_tick(
     store: &SharedStore,
-    client: &reqwest::Client,
-    allow_private: bool,
+    client: &WebhookClient,
     timeout: Duration,
     max_attempts: u32,
     now: i64,
 ) -> Result<usize, crate::store::StoreError> {
     let db = crate::store::Db::over_shared(store.clone());
-    run_delivery_tick_on(&db, client, allow_private, timeout, max_attempts, now).await
+    run_delivery_tick_on(&db, client, timeout, max_attempts, now).await
 }
 
 /// `run_delivery_tick` through the database worker: the production path.
 pub async fn run_delivery_tick_on(
     db: &crate::store::Db,
-    client: &reqwest::Client,
-    allow_private: bool,
+    client: &WebhookClient,
     timeout: Duration,
     max_attempts: u32,
     now: i64,
@@ -355,7 +350,7 @@ pub async fn run_delivery_tick_on(
             );
             tracing::Instrument::instrument(
                 async move {
-                    let outcome = attempt_delivery(client, &delivery, allow_private, timeout).await;
+                    let outcome = attempt_delivery(client, &delivery, timeout).await;
                     let attempted_at = now + started.elapsed().as_secs() as i64;
                     log_outcome(&delivery, &outcome, max_attempts);
                     (delivery, outcome, attempted_at)
@@ -420,11 +415,15 @@ mod tests {
     use axum::Router;
     use std::sync::Arc;
 
-    fn test_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap()
+    /// A client that may (or may not) reach the test servers on loopback.
+    fn test_client_allowing_private(allow: bool) -> WebhookClient {
+        let client = WebhookClient::build().unwrap();
+        client.set_allow_private(allow);
+        client
+    }
+
+    fn test_client() -> WebhookClient {
+        test_client_allowing_private(true)
     }
 
     /// Spins up a real local HTTP server (no mocking library needed) whose handler
@@ -488,8 +487,7 @@ mod tests {
         let delivery = due_delivery(&url, "whsec_test");
         let expected_signature = sign_payload("whsec_test", delivery.payload_json.as_bytes());
 
-        let outcome =
-            attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
+        let outcome = attempt_delivery(&test_client(), &delivery, Duration::from_secs(2)).await;
         assert!(outcome.delivered);
         assert_eq!(outcome.response_status, Some(200));
         assert_eq!(*captured_signature.lock(), Some(expected_signature));
@@ -515,8 +513,7 @@ mod tests {
             r#"{"order_id":"pay_1","status":"paid","event_id":"evt_abc123","event":"order.paid","created_at":1700000000}"#
                 .into();
 
-        let outcome =
-            attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
+        let outcome = attempt_delivery(&test_client(), &delivery, Duration::from_secs(2)).await;
         assert!(outcome.delivered);
         assert_eq!(
             *captured.lock(),
@@ -525,80 +522,56 @@ mod tests {
         );
     }
 
+    /// The check is the resolver's: the addresses a name resolves to are
+    /// what the connection is made to, and a name with a private address
+    /// among its answers is refused before anything connects. Validating
+    /// with one lookup and connecting with another would be no check
+    /// against whoever controls the name's DNS (a zero-TTL record, or a
+    /// round-robin between a public and a private address).
     #[tokio::test]
-    async fn a_pinned_client_connects_to_the_validated_address_and_still_sends_the_original_host() {
-        // The mechanism behind the DNS-rebinding fix. Validating a hostname's
-        // resolved addresses and then handing `reqwest` the *hostname* is no check at
-        // all against whoever controls that name's DNS: a zero-TTL record, or a
-        // round-robin between a public and a private address, answers the validating
-        // lookup and the connecting lookup differently. Pinning the connection to the
-        // address that was actually validated is what closes that, and it has to do
-        // so without disturbing the Host header (and, over TLS, the SNI name) the
-        // merchant's server expects to see.
-        use axum::http::StatusCode;
-        let captured_host: Arc<parking_lot::Mutex<Option<String>>> =
-            Arc::new(parking_lot::Mutex::new(None));
-        let captured_clone = captured_host.clone();
-        let url = spawn_test_server(move |headers| {
-            *captured_clone.lock() = headers
-                .get("host")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            StatusCode::OK.into_response()
-        })
-        .await;
-        let server_addr: std::net::SocketAddr = url
-            .trim_start_matches("http://")
-            .trim_end_matches("/hook")
-            .parse()
-            .unwrap();
+    async fn the_resolver_refuses_a_name_with_a_private_address_and_answers_otherwise() {
+        use reqwest::dns::Resolve;
+        let allow_private = Arc::new(AtomicBool::new(false));
+        let resolver = CheckingResolver {
+            allow_private: allow_private.clone(),
+        };
+        let name = |host: &str| host.parse::<reqwest::dns::Name>().unwrap();
+        let refused = match resolver.resolve(name("localhost")).await {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a loopback answer must be refused"),
+        };
+        assert!(refused.contains("disallowed"), "{refused}");
 
-        // A hostname that resolves to nothing at all, so the request can only
-        // possibly arrive if the pinning - not DNS - decided where it went.
-        let client = pinned_client("webhook.invalid", server_addr).unwrap();
-        let response = client
-            .post("http://webhook.invalid/hook")
-            .body("{}")
-            .send()
-            .await
-            .unwrap();
-
-        assert!(response.status().is_success());
-        assert_eq!(
-            *captured_host.lock(),
-            Some("webhook.invalid".to_string()),
-            "the destination must still see the hostname it was registered under, not the pinned IP"
+        allow_private.store(true, Ordering::Relaxed);
+        let addrs: Vec<_> = resolver.resolve(name("localhost")).await.unwrap().collect();
+        assert!(
+            addrs.iter().all(|addr| addr.ip().is_loopback()),
+            "{addrs:?}"
+        );
+        assert!(
+            addrs.iter().all(|addr| addr.port() == 0),
+            "the connector sets the URL's port: {addrs:?}"
         );
     }
 
-    #[tokio::test]
-    async fn an_ipv6_literal_url_is_classified_rather_than_dismissed_as_unresolvable() {
-        // `Url::host_str` returns an IPv6 literal in URL form - brackets included -
-        // and `[::1]` parses as neither an IP address nor a DNS name, so handing it
-        // straight to the resolver made *every* IPv6-literal webhook fail with
-        // "unresolvable host" on every attempt until it burned through the retry
-        // ceiling: an entire address family permanently undeliverable, and the
-        // loopback case not actually blocked so much as accidentally never reached.
-        let loopback = url::Url::parse("http://[::1]:9999/hook").unwrap();
-        assert!(
-            matches!(resolve_and_validate(&loopback, false).await, Err(DeliveryError::SsrfBlocked)),
-            "an IPv6 loopback literal must be blocked by the address classifier, not by failing to resolve"
-        );
-
-        let public = url::Url::parse("https://[2606:4700:4700::1111]/hook").unwrap();
-        let addr = resolve_and_validate(&public, false)
-            .await
-            .expect("a public IPv6 literal must validate")
-            .expect("and must be pinned to a concrete address");
-        assert_eq!(
-            addr.ip(),
-            "2606:4700:4700::1111".parse::<std::net::IpAddr>().unwrap()
-        );
-        assert_eq!(
-            addr.port(),
-            443,
-            "the scheme's default port, since the URL named none"
-        );
+    /// An IP literal never reaches the resolver, so it is classified on
+    /// its own: a loopback literal of either family is blocked, a public
+    /// one passes, and a name is left to the resolver.
+    #[test]
+    fn an_ip_literal_url_is_classified_before_the_request() {
+        let url = |u: &str| url::Url::parse(u).unwrap();
+        assert!(matches!(
+            check_ip_literal(&url("http://[::1]:9999/hook"), false),
+            Err(DeliveryError::SsrfBlocked)
+        ));
+        assert!(matches!(
+            check_ip_literal(&url("http://127.0.0.1/hook"), false),
+            Err(DeliveryError::SsrfBlocked)
+        ));
+        assert!(check_ip_literal(&url("https://[2606:4700:4700::1111]/hook"), false).is_ok());
+        assert!(check_ip_literal(&url("https://1.1.1.1/hook"), false).is_ok());
+        assert!(check_ip_literal(&url("https://shop.example/hook"), false).is_ok());
+        assert!(check_ip_literal(&url("http://[::1]/hook"), true).is_ok());
     }
 
     #[tokio::test]
@@ -645,7 +618,6 @@ mod tests {
         let processed = run_delivery_tick(
             &store,
             &test_client(),
-            true,
             Duration::from_secs(2),
             DEFAULT_MAX_ATTEMPTS,
             1000,
@@ -678,13 +650,23 @@ mod tests {
         let url = spawn_test_server(|_headers| StatusCode::OK.into_response()).await;
         let delivery = due_delivery(&url, "whsec_test");
 
-        let blocked =
-            attempt_delivery(&test_client(), &delivery, false, Duration::from_secs(2)).await;
+        // The test server's URL is an IP literal: checked before the request.
+        let client = test_client_allowing_private(false);
+        let blocked = attempt_delivery(&client, &delivery, Duration::from_secs(2)).await;
         assert!(!blocked.delivered);
         assert!(blocked.error.unwrap().contains("disallowed"));
 
-        let allowed =
-            attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
+        // The same server by name: the resolver refuses the address it
+        // answers with, and the request is never made.
+        let by_name = due_delivery(&url.replace("127.0.0.1", "localhost"), "whsec_test");
+        let blocked = attempt_delivery(&client, &by_name, Duration::from_secs(2)).await;
+        assert!(!blocked.delivered);
+        assert!(blocked.error.unwrap().contains("disallowed"));
+
+        client.set_allow_private(true);
+        let allowed = attempt_delivery(&client, &delivery, Duration::from_secs(2)).await;
+        assert!(allowed.delivered);
+        let allowed = attempt_delivery(&client, &by_name, Duration::from_secs(2)).await;
         assert!(allowed.delivered);
     }
 
@@ -734,7 +716,6 @@ mod tests {
             run_delivery_tick(
                 &store,
                 &test_client(),
-                true,
                 Duration::from_secs(2),
                 DEFAULT_MAX_ATTEMPTS,
                 now,
@@ -748,7 +729,6 @@ mod tests {
         let processed = run_delivery_tick(
             &store,
             &test_client(),
-            true,
             Duration::from_secs(2),
             DEFAULT_MAX_ATTEMPTS,
             now + 10_000_000,
@@ -822,7 +802,6 @@ mod tests {
             let processed = run_delivery_tick(
                 &store,
                 &test_client(),
-                true,
                 Duration::from_secs(2),
                 configured_ceiling,
                 now,
@@ -841,7 +820,6 @@ mod tests {
             run_delivery_tick(
                 &store,
                 &test_client(),
-                true,
                 Duration::from_secs(2),
                 configured_ceiling,
                 now
@@ -854,7 +832,6 @@ mod tests {
             run_delivery_tick(
                 &store,
                 &test_client(),
-                true,
                 Duration::from_secs(2),
                 configured_ceiling,
                 now + 10_000_000
@@ -1034,16 +1011,9 @@ mod tests {
         let store = store.into_shared();
 
         let started = std::time::Instant::now();
-        run_delivery_tick(
-            &store,
-            &test_client(),
-            true,
-            Duration::from_secs(5),
-            8,
-            1000,
-        )
-        .await
-        .unwrap();
+        run_delivery_tick(&store, &test_client(), Duration::from_secs(5), 8, 1000)
+            .await
+            .unwrap();
         assert!(
             started.elapsed() < Duration::from_secs(4),
             "sent concurrently, not one after another: {:?}",
@@ -1090,7 +1060,7 @@ mod tests {
         let store = store.into_shared();
         let client = test_client();
         {
-            let tick = run_delivery_tick(&store, &client, true, Duration::from_secs(60), 8, 1000);
+            let tick = run_delivery_tick(&store, &client, Duration::from_secs(60), 8, 1000);
             tokio::pin!(tick);
             tokio::select! {
                 result = &mut tick => panic!("batch unexpectedly completed: {result:?}"),
@@ -1118,30 +1088,16 @@ mod tests {
             .collect();
         let store = store.into_shared();
 
-        let first = run_delivery_tick(
-            &store,
-            &test_client(),
-            true,
-            Duration::from_secs(5),
-            8,
-            1000,
-        )
-        .await
-        .unwrap();
+        let first = run_delivery_tick(&store, &test_client(), Duration::from_secs(5), 8, 1000)
+            .await
+            .unwrap();
         assert_eq!(
             first, DELIVERY_BATCH as usize,
             "a full batch, so the loop goes again straight away"
         );
-        run_delivery_tick(
-            &store,
-            &test_client(),
-            true,
-            Duration::from_secs(5),
-            8,
-            1000,
-        )
-        .await
-        .unwrap();
+        run_delivery_tick(&store, &test_client(), Duration::from_secs(5), 8, 1000)
+            .await
+            .unwrap();
         for webhook in &webhooks {
             assert_eq!(
                 pending_for(&store, &shared::ids::WebhookId::new(webhook.to_string())),
@@ -1166,35 +1122,25 @@ mod tests {
             .unwrap();
         let store = store.into_shared();
 
-        run_delivery_tick(
-            &store,
-            &test_client(),
-            true,
-            Duration::from_secs(5),
-            8,
-            1000,
-        )
-        .await
-        .unwrap();
+        run_delivery_tick(&store, &test_client(), Duration::from_secs(5), 8, 1000)
+            .await
+            .unwrap();
         assert_eq!(
             hits.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "the older one first, alone"
         );
-        run_delivery_tick(
-            &store,
-            &test_client(),
-            true,
-            Duration::from_secs(5),
-            8,
-            1000,
-        )
-        .await
-        .unwrap();
+        run_delivery_tick(&store, &test_client(), Duration::from_secs(5), 8, 1000)
+            .await
+            .unwrap();
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(pending_for(&store, &webhook), 0);
     }
 
+    /// The endpoint takes over 2 s to answer (real time: the request is
+    /// real I/O, which a paused clock would run ahead of). The retry is
+    /// due 60 s after the attempt ended, so not at 61 s from the tick's
+    /// start; how much later depends on the machine, and is only bounded.
     #[tokio::test]
     async fn a_retry_is_scheduled_from_when_its_attempt_happened() {
         let (url, _) = spawn_endpoint(Duration::from_millis(2100), 500).await;
@@ -1202,16 +1148,9 @@ mod tests {
         let (webhook, _) = store_with_deliveries(&store, &url, 1, 100);
         let store = store.into_shared();
 
-        run_delivery_tick(
-            &store,
-            &test_client(),
-            true,
-            Duration::from_secs(5),
-            8,
-            1000,
-        )
-        .await
-        .unwrap();
+        run_delivery_tick(&store, &test_client(), Duration::from_secs(5), 8, 1000)
+            .await
+            .unwrap();
         // The attempt took over 2s; its first retry comes 60s after that.
         let due_at = |t: i64| {
             store
@@ -1227,6 +1166,10 @@ mod tests {
             0,
             "not 60s from the start of the tick"
         );
-        assert_eq!(due_at(1000 + 2 + 60), 1);
+        assert_eq!(
+            due_at(1000 + 60 + 30),
+            1,
+            "60s after an attempt that took a few seconds"
+        );
     }
 }

@@ -109,15 +109,12 @@ async fn a_webhook_attempt_is_logged_in_its_own_trace_and_the_merchant_gets_that
         .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 100)
         .unwrap();
     let store = store.into_shared();
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
+    let client = scanner::webhook_delivery::WebhookClient::build().unwrap();
+    client.set_allow_private(true);
 
     let sent = scanner::webhook_delivery::run_delivery_tick(
         &store,
         &client,
-        true,
         Duration::from_secs(5),
         8,
         1000,

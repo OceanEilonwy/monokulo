@@ -56,7 +56,11 @@ where
         let mut backoff = FIRST_BACKOFF;
         loop {
             let started = tokio::time::Instant::now();
-            match tokio::spawn(make_loop()).await {
+            let outcome = match make_future(name, &make_loop) {
+                Some(future) => tokio::spawn(future).await,
+                None => Ok(()),
+            };
+            match outcome {
                 Ok(()) => {
                     tracing::error!(task = name, restart_in = ?backoff, "BUG: loop returned; it is not supposed to terminate. Restarting")
                 }
@@ -76,6 +80,32 @@ where
             backoff = (backoff * 2).min(MAX_BACKOFF);
         }
     });
+}
+
+/// The loop's future from its factory. A panic in the factory itself (what
+/// the closure computes before returning the future) is caught and logged
+/// like a panic in the loop, so the supervisor restarts it rather than
+/// dying in silence with it: `None` means "treat as panicked".
+fn make_future<F, Fut>(name: &'static str, make_loop: &F) -> Option<Fut>
+where
+    F: Fn() -> Fut,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(make_loop)) {
+        Ok(future) => Some(future),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("(no message)");
+            tracing::error!(
+                task = name,
+                error = message,
+                "loop could not be started: its factory PANICKED. Restarting"
+            );
+            None
+        }
+    }
 }
 
 /// `supervise`, until `stop` becomes `true` (or its sender is dropped):
@@ -98,7 +128,13 @@ pub fn supervise_until<F, Fut>(
                 return;
             }
             let started = tokio::time::Instant::now();
-            let mut running = tokio::spawn(make_loop());
+            let Some(future) = make_future(name, &make_loop) else {
+                *RESTARTS.lock().entry(name).or_default() += 1;
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+                continue;
+            };
+            let mut running = tokio::spawn(future);
             tokio::select! {
                 outcome = &mut running => {
                     match outcome {

@@ -84,8 +84,8 @@ impl Format {
 }
 
 /// The logging settings, as the `logging` section of either process hands
-/// them over.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// them over. `Debug` redacts the collector headers: they carry its API key.
+#[derive(Clone, PartialEq, Eq)]
 pub struct LogConfig {
     /// A `tracing` filter: `info`, or `info,scanner::loops=debug`.
     pub level: String,
@@ -99,6 +99,26 @@ pub struct LogConfig {
     pub otlp_endpoint: String,
     /// Headers for it, as `name=value` pairs separated by commas.
     pub otlp_headers: String,
+}
+
+impl std::fmt::Debug for LogConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogConfig")
+            .field("level", &self.level)
+            .field("dev_mode_until", &self.dev_mode_until)
+            .field("retention_days", &self.retention_days)
+            .field("max_mb", &self.max_mb)
+            .field("otlp_endpoint", &self.otlp_endpoint)
+            .field(
+                "otlp_headers",
+                &if self.otlp_headers.is_empty() {
+                    "(none)"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .finish()
+    }
 }
 
 impl Default for LogConfig {

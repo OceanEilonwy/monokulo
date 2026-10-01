@@ -29,6 +29,23 @@ fn default_true() -> bool {
     true
 }
 
+/// The `check` for a node setting: a fallback's own `fallbacks` would be
+/// accepted by the shape and never tried (only the top-level list is), so a
+/// non-empty one is refused rather than saved and ignored. An empty one is
+/// what a form sends for "none".
+pub fn check_node(node: &Option<live_settings::Json<MoneroNodeSetting>>) -> Result<(), String> {
+    let Some(node) = node else { return Ok(()) };
+    for fallback in &node.0.fallbacks {
+        if !fallback.fallbacks.is_empty() {
+            return Err(format!(
+                "fallback node {}:{} has fallbacks of its own; only the main node's fallbacks are tried, so list every fallback there",
+                fallback.host, fallback.port
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Whether an address the engine is listening on can only be reached from
 /// this machine or a private network - loopback, RFC 1918 (`10/8`,
 /// `172.16/12`, `192.168/16`), IPv6 unique-local (`fc00::/7`) or link-local

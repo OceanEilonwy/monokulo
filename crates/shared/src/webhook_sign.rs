@@ -5,7 +5,7 @@
 //! right and testing in isolation first: how a delivery is authenticated, and how a
 //! merchant-supplied URL is checked before this server ever makes a request to it.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -96,8 +96,14 @@ pub fn is_disallowed_address(ip: IpAddr) -> bool {
     // ordinary global v6 address - one character away from the same bypass, in the
     // fix meant to close it. The two v6 addresses this additionally folds into v4,
     // `::` and `::1`, land on 0.0.0.0 and 0.0.0.1, both of which the v4 arm rejects.
+    // Likewise a v6 address that is a v4 one in a translation prefix: NAT64
+    // (64:ff9b::/96, RFC 6052, and the local-use 64:ff9b:1::/48 of RFC 8215,
+    // made for translating to private v4), 6to4 (2002::/16, the v4 address
+    // in bits 16-47) and Teredo (2001::/32, the server's v4 address in the
+    // last 32 bits, inverted). On a host with such a translator, a
+    // connection to one of these lands on the embedded v4 address.
     let ip = match ip {
-        IpAddr::V6(v6) => match v6.to_ipv4() {
+        IpAddr::V6(v6) => match v6.to_ipv4().or_else(|| embedded_ipv4(v6)) {
             Some(v4) => IpAddr::V4(v4),
             None => IpAddr::V6(v6),
         },
@@ -140,20 +146,42 @@ pub fn is_disallowed_address(ip: IpAddr) -> bool {
                 || o[0] >= 224
         }
         IpAddr::V6(v6) => {
-            let first = v6.segments()[0];
+            let [first, second, ..] = v6.segments();
             v6.is_loopback()
                 || v6.is_unspecified()
                 || (first & 0xfe00) == 0xfc00 // unique local (fc00::/7)
                 || (first & 0xffc0) == 0xfe80 // link-local (fe80::/10) - the v6 counterpart of 169.254.0.0/16
                 || (first & 0xff00) == 0xff00 // multicast (ff00::/8) - the v6 counterpart of 224.0.0.0/4
+                || (first == 0x0100 && second == 0) // discard-only (100::/64, RFC 6666)
         }
+    }
+}
+
+/// The IPv4 address a translation-prefix IPv6 address stands for, if it is
+/// one: NAT64 (`64:ff9b::/96` and `64:ff9b:1::/48`), 6to4 (`2002::/16`) or
+/// Teredo (`2001::/32`).
+fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = v6.segments();
+    let octets = v6.octets();
+    let last_four = |invert: bool| {
+        let mut bytes = [octets[12], octets[13], octets[14], octets[15]];
+        if invert {
+            bytes = bytes.map(|b| !b);
+        }
+        Ipv4Addr::from(bytes)
+    };
+    match segments {
+        [0x0064, 0xff9b, 0, 0, 0, 0, _, _] => Some(last_four(false)),
+        [0x0064, 0xff9b, 0x0001, ..] => Some(last_four(false)),
+        [0x2002, ..] => Some(Ipv4Addr::from([octets[2], octets[3], octets[4], octets[5]])),
+        [0x2001, 0x0000, ..] => Some(last_four(true)),
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
 
     #[test]
     fn signature_matches_a_fixed_test_vector() {
@@ -408,6 +436,30 @@ mod tests {
                 "{compat} must be rejected"
             );
         }
+    }
+
+    /// A v6 address that a translator turns into a private v4 one is that
+    /// v4 address: NAT64 (well-known and local-use prefixes), 6to4 and
+    /// Teredo embed it, and each is classified by what it embeds.
+    #[test]
+    fn translation_prefixes_are_classified_by_the_ipv4_address_they_embed() {
+        for (private, public) in [
+            ("64:ff9b::7f00:1", "64:ff9b::0808:0808"), // NAT64 well-known
+            ("64:ff9b:1::a00:1", "64:ff9b:1::0808:0808"), // NAT64 local-use
+            ("2002:7f00:1::", "2002:808:808::"),       // 6to4
+            ("2001::80ff:fffe", "2001::f7f7:f7f7"),    // Teredo (server inverted)
+        ] {
+            assert!(
+                is_disallowed_address(private.parse().unwrap()),
+                "{private} embeds a private address"
+            );
+            assert!(
+                !is_disallowed_address(public.parse().unwrap()),
+                "{public} embeds a public address"
+            );
+        }
+        // The discard prefix is no destination either.
+        assert!(is_disallowed_address("100::1".parse().unwrap()));
     }
 
     #[test]

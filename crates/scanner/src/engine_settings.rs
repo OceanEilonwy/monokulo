@@ -37,6 +37,7 @@ settings! {
         key: "monero_node.mainnet",
         env: "SCANNER_MONERO_NODE_MAINNET",
         default: None,
+        check: crate::settings::check_node,
         description: "The Monero node the engine reads the mainnet chain from, as JSON: host, port, ssl (default false), accept_self_signed_certs (default true), and fallbacks, a list of more nodes in the same shape tried in order when the one before fails (fallbacks can't have fallbacks). Leave empty to not use mainnet.",
         example: r#"{"host":"node.example.com","port":18089,"ssl":true,"fallbacks":[{"host":"node2.example.com","port":18089,"ssl":true}]}"#,
     },
@@ -44,6 +45,7 @@ settings! {
         key: "monero_node.stagenet",
         env: "SCANNER_MONERO_NODE_STAGENET",
         default: None,
+        check: crate::settings::check_node,
         description: "The Monero node for the stagenet test network, in the same JSON shape as mainnet's. Leave empty to not use stagenet.",
         example: NODE_EXAMPLE,
     },
@@ -51,6 +53,7 @@ settings! {
         key: "monero_node.testnet",
         env: "SCANNER_MONERO_NODE_TESTNET",
         default: None,
+        check: crate::settings::check_node,
         description: "The Monero node for testnet, in the same JSON shape as mainnet's. Leave empty to not use testnet.",
         example: r#"{"host":"127.0.0.1","port":28081}"#,
     },
@@ -625,56 +628,6 @@ impl live_settings::Reloadable for CustodyReloadable {
     }
 }
 
-/// Marks that `migrate_key_custody_setting` has run.
-const KEY_CUSTODY_MIGRATION_MARKER: &str = "migration.key_custody_per_store";
-
-/// Converts the old single `key_custody.backend` setting to per-store
-/// custody (task 5.1), once. The old value that was really in effect wins:
-/// its environment variable, else the saved row, else plain (an invalid
-/// value meant plain, as it always did). It becomes the only enabled
-/// backend and the default, unless those were already saved, and every
-/// tenant row is labelled with it: until now every tenant was registered in
-/// that one backend whatever its row said, and both backends seal keys the
-/// same way, so this moves no key material. A marker row keeps it from
-/// running again, so a still-set old environment variable can't undo stores
-/// switched since. Returns what it did, for the log.
-pub fn migrate_key_custody_setting(
-    store: &crate::store::Store,
-) -> Result<Option<String>, crate::store::StoreError> {
-    if store.get_setting(KEY_CUSTODY_MIGRATION_MARKER)?.is_some() {
-        if shared::settings::env_value("SCANNER_KEY_CUSTODY_BACKEND")
-            .is_some_and(|v| !v.trim().is_empty())
-        {
-            tracing::warn!(
-                "SCANNER_KEY_CUSTODY_BACKEND is set but no longer used; key custody is chosen per store now \
-                 (key_custody.enabled_backends and key_custody.default_backend)"
-            );
-        }
-        return Ok(None);
-    }
-    let old = shared::settings::env_value("SCANNER_KEY_CUSTODY_BACKEND")
-        .filter(|v| !v.trim().is_empty())
-        .or(store.get_setting("key_custody.backend")?);
-    let backend = match old.as_deref().map(str::trim) {
-        Some("socket") => "socket",
-        _ => "plain",
-    };
-    store.in_transaction(|s| -> Result<(), crate::store::StoreError> {
-        if s.get_setting(KEY_CUSTODY_ENABLED_BACKENDS.key)?.is_none() {
-            s.set_setting(KEY_CUSTODY_ENABLED_BACKENDS.key, backend)?;
-        }
-        if s.get_setting(KEY_CUSTODY_DEFAULT_BACKEND.key)?.is_none() {
-            s.set_setting(KEY_CUSTODY_DEFAULT_BACKEND.key, backend)?;
-        }
-        s.relabel_all_tenants_key_custody(backend)?;
-        s.delete_setting("key_custody.backend")?;
-        s.set_setting(KEY_CUSTODY_MIGRATION_MARKER, "done")
-    })?;
-    Ok(Some(format!(
-        "key custody is now per store; existing stores use {backend}"
-    )))
-}
-
 /// The engine's settings store, over its own `settings` table.
 pub struct StoreSettings(pub SharedStore);
 
@@ -1039,82 +992,6 @@ mod tests {
         assert!(SERVER_MAX_BODY_BYTES.parse("255").is_err());
         assert!(KEY_CUSTODY_DEFAULT_BACKEND.parse("enclave").is_err());
         assert!(KEY_CUSTODY_ENABLED_BACKENDS.parse("plain,enclave").is_err());
-    }
-
-    #[test]
-    fn the_old_backend_setting_becomes_the_enabled_default_and_labels_every_tenant_once() {
-        let store = crate::store::Store::open_in_memory().unwrap();
-        store.set_setting("key_custody.backend", "socket").unwrap();
-        let tenant = store
-            .create_tenant(
-                crate::store::NewTenant {
-                    key_custody_backend: "plain".into(),
-                    sealed_key_material: vec![],
-                    primary_address: "4x".into(),
-                    network: "mainnet".into(),
-                    confirmations_required: None,
-                    order_expiry_seconds: None,
-                },
-                1,
-            )
-            .unwrap()
-            .tenant;
-        assert!(migrate_key_custody_setting(&store).unwrap().is_some());
-        assert_eq!(
-            store
-                .get_setting("key_custody.enabled_backends")
-                .unwrap()
-                .as_deref(),
-            Some("socket")
-        );
-        assert_eq!(
-            store
-                .get_setting("key_custody.default_backend")
-                .unwrap()
-                .as_deref(),
-            Some("socket")
-        );
-        assert_eq!(store.get_setting("key_custody.backend").unwrap(), None);
-        assert_eq!(
-            store
-                .get_tenant_by_id(&tenant.id)
-                .unwrap()
-                .unwrap()
-                .key_custody_backend,
-            "socket"
-        );
-
-        // Once only: a store switched since keeps its backend.
-        store.relabel_all_tenants_key_custody("plain").unwrap();
-        assert!(migrate_key_custody_setting(&store).unwrap().is_none());
-        assert_eq!(
-            store
-                .get_tenant_by_id(&tenant.id)
-                .unwrap()
-                .unwrap()
-                .key_custody_backend,
-            "plain"
-        );
-    }
-
-    #[test]
-    fn with_nothing_saved_the_migration_enables_plain() {
-        let store = crate::store::Store::open_in_memory().unwrap();
-        migrate_key_custody_setting(&store).unwrap();
-        assert_eq!(
-            store
-                .get_setting("key_custody.enabled_backends")
-                .unwrap()
-                .as_deref(),
-            Some("plain")
-        );
-        assert_eq!(
-            store
-                .get_setting("key_custody.default_backend")
-                .unwrap()
-                .as_deref(),
-            Some("plain")
-        );
     }
 
     #[test]

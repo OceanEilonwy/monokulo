@@ -933,15 +933,14 @@ impl TestEngineConfig {
 
             let delivery_store = store.clone();
             background_tasks.push(tokio::spawn(async move {
-                let client = reqwest::Client::builder()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
+                let client = scanner::webhook_delivery::WebhookClient::build()
                     .expect("failed to build the test engine's webhook delivery HTTP client");
+                // allow_private_urls - see with_background_loops's doc comment
+                client.set_allow_private(true);
                 loop {
                     let _ = run_delivery_tick(
                         &delivery_store,
                         &client,
-                        true, // allow_private_urls - see with_background_loops's doc comment
                         Duration::from_secs(5),
                         DEFAULT_MAX_ATTEMPTS,
                         scanner::now_unix(),

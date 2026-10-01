@@ -30,10 +30,7 @@ pub async fn run_webhook_delivery_loop(
     // Building the client can only fail if the TLS backend can't initialise.
     // Retry rather than panic, so the supervisor isn't left in a crash loop.
     let client = loop {
-        match reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-        {
+        match crate::webhook_delivery::WebhookClient::build() {
             Ok(client) => break client,
             Err(e) => {
                 tracing::error!(error = %e, "failed to build the webhook HTTP client, retrying in 30s");
@@ -46,13 +43,10 @@ pub async fn run_webhook_delivery_loop(
         // Read every tick, so saved webhook settings apply to the next
         // attempt (task 2.4).
         let config = settings.webhooks.load();
-        // `run_delivery_tick` locks the store only around its own brief synchronous
-        // sections, never across the outbound HTTP `.await`s it performs per
-        // delivery - see its doc comment for why that matters.
+        client.set_allow_private(config.allow_private_urls);
         let sent = match run_delivery_tick_on(
             &db,
             &client,
-            config.allow_private_urls,
             config.delivery_timeout,
             config.max_attempts,
             now_unix(),
