@@ -198,24 +198,68 @@ impl WalletFile {
         &self.path
     }
 
-    /// Atomically replaces the file on disk with `self.data`. Callers
-    /// changing a file that already exists hold its [`Self::lock`].
+    /// Atomically and durably replaces the file on disk with `self.data`.
+    /// Callers changing a file that already exists hold its [`Self::lock`].
+    ///
+    /// The file holds spend keys and a mnemonic, so it is readable by its
+    /// owner alone (0600 on unix). It is synced before it replaces the old
+    /// one, and the directory after: without that, a crash just after a
+    /// send could leave an empty or truncated file on disk, losing every
+    /// output and spent flag, and the next send would double-spend.
     pub fn save(&self) -> Result<(), WalletError> {
+        use std::io::Write;
         let tmp_path = self.path.with_extension("json.tmp");
-        std::fs::write(
-            &tmp_path,
-            serde_json::to_string_pretty(&self.data).expect("WalletData always serializes") + "\n",
-        )
-        .map_err(|e| {
+        let failed = |e: std::io::Error| {
             WalletError::WalletFile(format!("failed to write {}: {e}", tmp_path.display()))
-        })?;
+        };
+        let body =
+            serde_json::to_string_pretty(&self.data).expect("WalletData always serializes") + "\n";
+        let written = (|| -> std::io::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&tmp_path)?;
+            // `mode` applies only to a file being created; one left over
+            // from an earlier run is tightened too.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            file.write_all(body.as_bytes())?;
+            file.sync_all()
+        })();
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(failed(e));
+        }
         std::fs::rename(&tmp_path, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
             WalletError::WalletFile(format!(
                 "failed to move {} into place over {}: {e}",
                 tmp_path.display(),
                 self.path.display()
             ))
-        })
+        })?;
+        // The rename itself is durable once the directory is synced.
+        #[cfg(unix)]
+        if let Some(dir) = self.path.parent() {
+            let dir = if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            };
+            std::fs::File::open(dir)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|e| {
+                    WalletError::WalletFile(format!("failed to sync {}: {e}", dir.display()))
+                })?;
+        }
+        Ok(())
     }
 
     /// Takes the exclusive lock on `path`'s sibling `<path>.lock`, with
@@ -321,7 +365,7 @@ impl WalletFileLock {
                     .into_owned()
             })
             .unwrap_or_default();
-        let args: Vec<String> = std::env::args().skip(1).collect();
+        let args = redacted_args(std::env::args().skip(1));
         let mut holder = format!("pid {} ({program} {})", std::process::id(), args.join(" "));
         holder.truncate(200);
         // Best effort: the lock itself is what matters, not the note.
@@ -330,6 +374,39 @@ impl WalletFileLock {
             .and_then(|()| file.write_all(holder.trim_end().as_bytes()));
         WalletFileLock { _file: file }
     }
+}
+
+/// The command line as the lock note records it: the value of any option
+/// that can carry a secret (a seed, a key, a password) is replaced, since
+/// the note is a plain file left on disk and shown to whoever next finds
+/// the wallet busy.
+fn redacted_args(args: impl Iterator<Item = String>) -> Vec<String> {
+    let secret = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        ["seed", "key", "password", "mnemonic", "secret"]
+            .iter()
+            .any(|word| name.contains(word))
+    };
+    let mut out = Vec::new();
+    let mut hide_next = false;
+    for arg in args {
+        if hide_next {
+            out.push("<redacted>".to_string());
+            hide_next = false;
+            continue;
+        }
+        match arg.split_once('=') {
+            Some((name, _)) if name.starts_with('-') && secret(name) => {
+                out.push(format!("{name}=<redacted>"));
+            }
+            _ if arg.starts_with('-') && secret(&arg) => {
+                out.push(arg);
+                hide_next = true;
+            }
+            _ => out.push(arg),
+        }
+    }
+    out
 }
 
 /// Who holds a wallet file's lock, as the holder recorded it.
@@ -475,7 +552,7 @@ pub fn migrate_legacy(
     let keys: Vec<crate::WalletKeys> = datas
         .iter()
         .map(|(_, data)| crate::WalletKeys::from_data(data, PathBuf::new()))
-        .collect();
+        .collect::<Result<_, _>>()?;
     let mut report = MigrationReport::default();
     for entry in ledger["entries"].as_array().cloned().unwrap_or_default() {
         let txid = entry["txid"].as_str().unwrap_or_default().to_string();
@@ -514,4 +591,53 @@ pub fn migrate_legacy(
         report.written.push((name, path, outputs, pending));
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lock note never carries a secret from the command line.
+    #[test]
+    fn secret_option_values_are_redacted_from_the_lock_note() {
+        let args = [
+            "--restore-deterministic-wallet",
+            "--electrum-seed",
+            "abbey abbey abbey",
+            "--spend-key=deadbeef",
+            "balance",
+        ]
+        .map(String::from);
+        let redacted = redacted_args(args.into_iter()).join(" ");
+        assert!(!redacted.contains("abbey"), "{redacted}");
+        assert!(!redacted.contains("deadbeef"), "{redacted}");
+        assert!(redacted.contains("balance"), "{redacted}");
+        assert!(
+            redacted.contains("--electrum-seed <redacted>"),
+            "{redacted}"
+        );
+    }
+
+    /// A saved wallet file is its owner's alone.
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_wallet_file_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("cli-wallet-perms-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.json");
+        let file = WalletFile {
+            path: path.clone(),
+            data: WalletData::new(crate::WalletCredentials {
+                address: "a".into(),
+                private_spend_key_hex: "00".repeat(32),
+                private_view_key_hex: "00".repeat(32),
+                mnemonic: None,
+            }),
+        };
+        file.save().unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

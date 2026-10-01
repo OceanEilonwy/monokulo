@@ -302,7 +302,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
             "platform": "custom",
             "site_url": "https://e2e-threshold.example.com",
             "view_key_hex": merchant.private_view_key_hex.clone(),
-            "spend_pubkey_hex": merchant.spend_public_key_hex(),
+            "spend_pubkey_hex": merchant.spend_public_key_hex().unwrap(),
             "network": "stagenet",
             "domains": [],
             "confirmations_required": TENANT_DEFAULT_CONFIRMATIONS_REQUIRED,

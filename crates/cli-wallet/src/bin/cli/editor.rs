@@ -225,7 +225,13 @@ fn short_unit(unit: Unit) -> &'static str {
 /// it.
 fn current_word(line: &str, pos: usize) -> (usize, Vec<&str>, &str) {
     let before = &line[..pos];
-    let start = before.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+    // Just past the whitespace character found, whatever its width: `+ 1`
+    // would land inside a multi-byte one (a no-break space) and panic.
+    let start = before
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(i, c)| i + c.len_utf8());
     let previous: Vec<&str> = before[..start].split_whitespace().collect();
     (start, previous, &before[start..])
 }
@@ -722,6 +728,16 @@ pub fn line_editor(data: Arc<Mutex<CompletionData>>) -> Reedline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A multi-byte space before the word is stepped over whole.
+    #[test]
+    fn the_current_word_after_a_multi_byte_space_is_found_without_panicking() {
+        let line = "transfer\u{a0}ab";
+        let (start, previous, word) = current_word(line, line.len());
+        assert_eq!(word, "ab");
+        assert_eq!(&line[start..], "ab");
+        assert_eq!(previous, vec!["transfer"]);
+    }
 
     fn data() -> CompletionData {
         CompletionData {

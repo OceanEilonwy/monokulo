@@ -111,8 +111,25 @@ pub enum WalletError {
     },
     #[error("failed to build/sign the transaction: {0}")]
     Send(#[from] SendError),
-    #[error("failed to broadcast the transaction: {0}")]
-    Broadcast(#[source] PublishTransactionError),
+    /// The node may have accepted the transaction even so (a timeout, a
+    /// reset connection): its id is kept, so it can be looked for.
+    #[error(
+        "failed to broadcast transaction {txid}: {source}\n\
+         It may still have reached the node: run rescan_spent, then add_output {txid} if it was mined."
+    )]
+    Broadcast {
+        txid: String,
+        #[source]
+        source: PublishTransactionError,
+    },
+    /// The transaction was broadcast, but the wallet file couldn't record
+    /// it. Never retried: the inputs still look unspent in the file, and a
+    /// retry would sign and send them again.
+    #[error(
+        "transaction {txid} was sent, but recording it in the wallet file failed: {reason}\n\
+         Run rescan_spent, then add_output {txid}, before sending again."
+    )]
+    RecordFailed { txid: String, reason: String },
     #[error("daemon RPC call failed: {0}")]
     Rpc(String),
     #[error("wallet file error: {0}")]
@@ -367,18 +384,18 @@ impl ResolvedWallet {
     /// only ever takes a view key + spend *public* key for a watch-only
     /// tenant) while this crate still holds full credentials for every
     /// wallet it knows about.
-    pub fn spend_public_key_hex(&self) -> String {
-        let spend_key = scalar_from_hex(&self.private_spend_key_hex);
+    pub fn spend_public_key_hex(&self) -> Result<String, WalletError> {
+        let spend_key = scalar_from_hex(&self.private_spend_key_hex)?;
         let spend_key_dalek: curve25519_dalek::Scalar = (*spend_key).into();
         let public_spend =
             Point::from(&spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
-        hex::encode(public_spend.compress().to_bytes())
+        Ok(hex::encode(public_spend.compress().to_bytes()))
     }
 
     /// Everything that works without a node. Derives keys from `self`'s own
-    /// hex-encoded private spend/view keys and asserts the derived address
-    /// matches `self.address`.
-    pub fn keys(&self) -> WalletKeys {
+    /// hex-encoded private spend/view keys, refusing them unless the
+    /// derived address is `self.address`.
+    pub fn keys(&self) -> Result<WalletKeys, WalletError> {
         let data = WalletData::new(WalletCredentials {
             address: self.address.clone(),
             private_spend_key_hex: self.private_spend_key_hex.clone(),
@@ -401,7 +418,7 @@ impl ResolvedWallet {
     /// accepts a connection but then fails the payment isn't tried first
     /// every time.
     pub async fn connect_starting_at(&self, start: usize) -> Result<Wallet, WalletError> {
-        let keys = self.keys();
+        let keys = self.keys()?;
 
         let http_client = reqwest::Client::builder()
             .danger_accept_invalid_certs(self.accept_invalid_certs)
@@ -638,11 +655,8 @@ pub fn credentials_from_seed(phrase: &str) -> Result<WalletCredentials, WalletEr
 /// The 25-word seed that restores `spend_key_hex`, in `language` - what
 /// `seed` prints for a wallet with no recorded mnemonic.
 pub fn legacy_seed_for(spend_key_hex: &str, language: &str) -> Result<String, WalletError> {
-    let seed = ElectrumSeed::from_entropy(
-        seed_language(language)?,
-        Zeroizing::new(hex32(spend_key_hex)),
-    )
-    .ok_or_else(|| WalletError::Invalid("spend key has no 25-word seed".to_string()))?;
+    let seed = ElectrumSeed::from_entropy(seed_language(language)?, hex32(spend_key_hex)?)
+        .ok_or_else(|| WalletError::Invalid("spend key has no 25-word seed".to_string()))?;
     Ok(seed.to_string().to_string())
 }
 
@@ -658,18 +672,25 @@ pub(crate) fn decode_output(txid: &str, hex_bytes: &str) -> Result<WalletOutput,
     })
 }
 
-fn hex32(hex_str: &str) -> [u8; 32] {
-    let bytes = hex::decode(hex_str).expect("invalid hex in wallet file key material");
-    bytes
-        .try_into()
-        .expect("key material must be exactly 32 bytes")
+/// 32 bytes of key material from a wallet file. A hand-edited or corrupt
+/// file is an error the CLI reports, never a panic.
+fn hex32(hex_str: &str) -> Result<Zeroizing<[u8; 32]>, WalletError> {
+    let bytes = Zeroizing::new(
+        hex::decode(hex_str)
+            .map_err(|e| WalletError::WalletFile(format!("key material isn't hex: {e}")))?,
+    );
+    let array: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+        WalletError::WalletFile(format!("key material is {} bytes, not 32", bytes.len()))
+    })?;
+    Ok(Zeroizing::new(array))
 }
 
-fn scalar_from_hex(hex_str: &str) -> Zeroizing<Scalar> {
-    Zeroizing::new(
-        Scalar::read(&mut &hex32(hex_str)[..])
-            .expect("wallet file private key isn't a canonical ed25519 scalar"),
-    )
+fn scalar_from_hex(hex_str: &str) -> Result<Zeroizing<Scalar>, WalletError> {
+    Scalar::read(&mut &hex32(hex_str)?[..])
+        .map(Zeroizing::new)
+        .map_err(|_| {
+            WalletError::WalletFile("a private key isn't a canonical ed25519 scalar".to_string())
+        })
 }
 
 /// Loads a committed output-distribution snapshot (a plain JSON array of
@@ -749,10 +770,11 @@ async fn locate_height(
 /// Connects, resolves anything pending, and sends `amount` piconero to
 /// `to`, retrying the *whole* connect-then-send sequence from scratch (up
 /// to `ATTEMPTS` times, `RETRY_DELAY` apart) on any error except
-/// [`WalletError::Broadcast`] - a broadcast was actually attempted and its
-/// outcome is genuinely unknown, so that one is never retried (a real
-/// double-send risk); every other variant fails strictly before anything is
-/// signed or broadcast, so retrying from scratch is safe.
+/// [`WalletError::Broadcast`] and [`WalletError::RecordFailed`] - a
+/// broadcast was actually attempted (its outcome unknown, or known and not
+/// recorded), so those are never retried (a real double-send risk); every
+/// other variant fails strictly before anything is signed or broadcast, so
+/// retrying from scratch is safe.
 ///
 /// This is the one canonical entry point real callers should reach for -
 /// every real e2e test in this repo talks to the same shared public
@@ -786,7 +808,9 @@ pub async fn send_payment(
         .await;
         match result {
             Ok(hash) => return Ok(hash),
-            Err(e @ WalletError::Broadcast(_)) => return Err(e),
+            Err(e @ (WalletError::Broadcast { .. } | WalletError::RecordFailed { .. })) => {
+                return Err(e)
+            }
             Err(e) if attempt < ATTEMPTS => {
                 eprintln!("cli-wallet: attempt {attempt}/{ATTEMPTS}: retrying after: {e}");
                 attempt += 1;
@@ -942,8 +966,8 @@ mod tests {
         let (_, _, outputs) = split_transaction();
         let (spender_path, spender) = temp_wallet("owns-spender", "spender");
         let (merchant_path, merchant) = temp_wallet("owns-merchant", "merchant");
-        let spender = WalletKeys::from_data(&spender, spender_path);
-        let merchant = WalletKeys::from_data(&merchant, merchant_path);
+        let spender = WalletKeys::from_data(&spender, spender_path).unwrap();
+        let merchant = WalletKeys::from_data(&merchant, merchant_path).unwrap();
         assert!(outputs.iter().all(|o| spender.owns(o)));
         assert!(outputs.iter().all(|o| !merchant.owns(o)));
     }
@@ -954,7 +978,7 @@ mod tests {
     fn key_images_are_stable_and_distinct() {
         let (_, _, outputs) = split_transaction();
         let (path, data) = temp_wallet("key-images", "spender");
-        let keys = WalletKeys::from_data(&data, path);
+        let keys = WalletKeys::from_data(&data, path).unwrap();
         let images: std::collections::BTreeSet<[u8; 32]> =
             outputs.iter().map(|o| keys.key_image(o)).collect();
         assert_eq!(images.len(), outputs.len());
@@ -965,7 +989,7 @@ mod tests {
     async fn freezing_and_marking_spent_change_exactly_one_output() {
         let (txid, height, outputs) = split_transaction();
         let (path, data) = temp_wallet("freeze", "spender");
-        let keys = WalletKeys::from_data(&data, path.clone());
+        let keys = WalletKeys::from_data(&data, path.clone()).unwrap();
         keys.update(|data| Ok(record_resolved(data, &txid, height, None, &outputs)))
             .await
             .unwrap();

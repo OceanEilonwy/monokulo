@@ -315,7 +315,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         &monokulo_base_url,
         ConnectFlowWallet {
             view_key_hex: merchant.private_view_key_hex.clone(),
-            spend_pubkey_hex: merchant.spend_public_key_hex(),
+            spend_pubkey_hex: merchant.spend_public_key_hex().unwrap(),
             network: "stagenet".to_string(),
             confirmations_required: Some(0),
             base_currency: "XMR".to_string(),
