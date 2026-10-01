@@ -197,7 +197,14 @@ async fn main() {
             .and_then(|i| args.get(i + 1))
             .and_then(|v| v.parse::<u64>().ok())
     };
-    let port = arg("--port").unwrap_or(0);
+    let port = match arg("--port").map(u16::try_from) {
+        None => 0,
+        Some(Ok(port)) => port,
+        Some(Err(_)) => {
+            eprintln!("fake-monerod: --port must be at most 65535");
+            std::process::exit(2);
+        }
+    };
     let height = arg("--height").unwrap_or(1000);
     let nettype = args
         .iter()
@@ -219,7 +226,7 @@ async fn main() {
         .route("/fake/offline", post(set_offline))
         .fallback(unsupported)
         .with_state(chain);
-    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port as u16)).await {
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(listener) => listener,
         Err(e) => {
             eprintln!("fake-monerod: can't listen on port {port}: {e}");

@@ -120,7 +120,12 @@ fn run_collector(component: &str, output: &Path) -> io::Result<Value> {
 }
 
 fn version(command: &str, args: &[&str]) -> io::Result<String> {
-    let output = Command::new(command).args(args).output()?;
+    // In the workspace, whatever directory xtask was started from: `git`
+    // answers about the repository it is run in.
+    let output = Command::new(command)
+        .args(args)
+        .current_dir(root())
+        .output()?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "{command} {} failed",
@@ -184,7 +189,7 @@ fn summarize_rust(output: &Path) -> io::Result<()> {
         "tools": {"rustc":version("rustc", &["+nightly", "--version"])?,
             "cargo":version("cargo", &["+nightly", "--version"])?,
             "collector":version("cargo", &["llvm-cov", "--version"])?},
-        "test":{"status":"passed", "command":"cargo +nightly llvm-cov --workspace --locked --branch --html --exclude xtask",
+        "test":{"status":"passed", "command":"cargo +nightly llvm-cov nextest --workspace --locked --branch --html --exclude xtask --profile ci",
             "exit_code":0,"log":"rust/test.log"},
         "lines":{"covered":lines.0,"total":lines.1},
         "branches":{"covered":branches.0,"total":branches.1},
@@ -315,13 +320,17 @@ fn metric(file: &Value, name: &str) -> io::Result<(u64, u64)> {
 }
 
 fn write_rust_crates(output: &Path, files: &[Value], workspace: &Value) -> io::Result<()> {
-    let metadata: Value = serde_json::from_slice(
-        &Command::new("cargo")
-            .args(["metadata", "--no-deps", "--format-version", "1", "--locked"])
-            .current_dir(root())
-            .output()?
-            .stdout,
-    )?;
+    let metadata_run = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1", "--locked"])
+        .current_dir(root())
+        .output()?;
+    if !metadata_run.status.success() {
+        return Err(io::Error::other(format!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&metadata_run.stderr)
+        )));
+    }
+    let metadata: Value = serde_json::from_slice(&metadata_run.stdout)?;
     let members: BTreeSet<&str> = metadata["workspace_members"]
         .as_array()
         .ok_or_else(|| io::Error::other("Cargo metadata has no workspace members"))?

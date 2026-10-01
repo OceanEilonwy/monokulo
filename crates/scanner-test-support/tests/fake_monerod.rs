@@ -29,22 +29,22 @@ fn start(height: u64) -> (Fake, u16) {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let stdout = BufReader::new(child.stdout.take().unwrap());
+    // Owned by the guard before anything can fail, so a missing or
+    // malformed readiness line kills the child instead of leaking it.
+    let mut fake = Fake {
+        child,
+        _stdout: stdout,
+    };
     let mut line = String::new();
-    stdout.read_line(&mut line).unwrap();
+    fake._stdout.read_line(&mut line).unwrap();
     let port = line
         .trim()
         .strip_prefix("FAKE_MONEROD_READY ")
         .and_then(|address| address.rsplit(':').next())
         .and_then(|port| port.parse().ok())
         .unwrap_or_else(|| panic!("no address from fake-monerod: {line:?}"));
-    (
-        Fake {
-            child,
-            _stdout: stdout,
-        },
-        port,
-    )
+    (fake, port)
 }
 
 #[tokio::test]

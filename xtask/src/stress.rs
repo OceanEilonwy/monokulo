@@ -331,7 +331,24 @@ fn run_fixture(
     cpu: Option<u64>,
     args: &[String],
 ) -> io::Result<(bool, Option<i32>, Value, String)> {
-    let binary = root().join("target/debug/stress_fixture");
+    // Where cargo builds it: `CARGO_TARGET_DIR` when set.
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .map(|dir| {
+            if dir.is_absolute() {
+                dir
+            } else {
+                root().join(dir)
+            }
+        })
+        .unwrap_or_else(|| root().join("target"));
+    let binary = target.join("debug/stress_fixture");
+    if !binary.exists() {
+        return Err(io::Error::other(format!(
+            "{} does not exist: build it first (cargo build -p scanner --bin stress_fixture)",
+            binary.display()
+        )));
+    }
     let mut cmd = if cfg!(target_os = "linux") {
         let mut cmd = Command::new("taskset");
         cmd.arg("-c").arg(cpu.unwrap_or(0).to_string()).arg(&binary);
