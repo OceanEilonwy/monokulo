@@ -49,6 +49,10 @@ pub enum VerifyError {
     ReportSignatureInvalid,
     #[error("VCEK's public key is not a valid P-384 EC point")]
     InvalidVcekKey,
+    #[error("the {which} certificate is outside its validity period")]
+    CertExpired { which: &'static str },
+    #[error("the guest's policy allows the hypervisor to debug it (policy bit 19): its memory is not protected, whatever the report says")]
+    DebugAllowed,
 }
 
 /// Outcome of a full verification run - every check this tool performed, so
@@ -125,6 +129,14 @@ pub async fn verify(
         .parse_x509()
         .map_err(|e| VerifyError::CertParse(e.to_string()))?;
 
+    // Each certificate must be in its validity period: a signature that
+    // checks out says nothing about a certificate that has expired.
+    for (which, cert) in [("ARK", &pinned_ark_cert), ("ASK", &ask_cert)] {
+        if !cert.validity().is_valid() {
+            return Err(VerifyError::CertExpired { which });
+        }
+    }
+
     // 2. ASK must be signed by our pinned ARK.
     ask_cert
         .verify_signature(Some(pinned_ark_cert.public_key()))
@@ -137,6 +149,9 @@ pub async fn verify(
     vcek_cert
         .verify_signature(Some(ask_cert.public_key()))
         .map_err(|_| VerifyError::VcekNotSignedByAsk)?;
+    if !vcek_cert.validity().is_valid() {
+        return Err(VerifyError::CertExpired { which: "VCEK" });
+    }
 
     // 4. Cross-check the VCEK's own embedded TCB extensions against the
     //    report's reported_tcb - a VCEK is issued bound to one specific TCB
@@ -150,6 +165,11 @@ pub async fn verify(
     // 5. The report's own ECDSA P-384 signature, verified against the VCEK's
     //    public key.
     verify_report_signature(report, &vcek_cert)?;
+
+    // 6. A guest the hypervisor may debug has no confidentiality to attest.
+    if report.debug_allowed() {
+        return Err(VerifyError::DebugAllowed);
+    }
 
     Ok(VerifiedReport {
         reported_tcb: report.reported_tcb,

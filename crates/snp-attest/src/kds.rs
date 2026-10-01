@@ -20,6 +20,38 @@ pub enum KdsError {
     Request(#[from] reqwest::Error),
     #[error("AMD KDS returned HTTP {0} for {1}")]
     BadStatus(reqwest::StatusCode, String),
+    #[error("AMD KDS sent more than {MAX_RESPONSE_BYTES} bytes for {0}")]
+    TooLarge(String),
+}
+
+/// Most bytes read from one KDS answer: a VCEK and the ASK+ARK chain are a
+/// few KB each.
+pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// A client for AMD's KDS that can't hang: bounded to connect and to answer.
+pub fn client() -> Result<reqwest::Client, KdsError> {
+    Ok(reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?)
+}
+
+/// The body of `resp`, read no further than [`MAX_RESPONSE_BYTES`].
+async fn bounded_body(mut resp: reqwest::Response, url: &str) -> Result<Vec<u8>, KdsError> {
+    if resp
+        .content_length()
+        .is_some_and(|len| len > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(KdsError::TooLarge(url.to_string()));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        body.extend_from_slice(&chunk);
+        if body.len() > MAX_RESPONSE_BYTES {
+            return Err(KdsError::TooLarge(url.to_string()));
+        }
+    }
+    Ok(body)
 }
 
 /// The VCEK certificate chain's request URL. `hw_id` is the report's
@@ -87,7 +119,7 @@ pub async fn fetch_vcek_der(
     if !resp.status().is_success() {
         return Err(KdsError::BadStatus(resp.status(), url));
     }
-    Ok(resp.bytes().await?.to_vec())
+    bounded_body(resp, &url).await
 }
 
 /// Fetches AMD's ASK+ARK certificate chain (concatenated PEM, ASK first then
@@ -103,7 +135,8 @@ pub async fn fetch_cert_chain_pem(
     if !resp.status().is_success() {
         return Err(KdsError::BadStatus(resp.status(), url));
     }
-    Ok(resp.text().await?)
+    let body = bounded_body(resp, &url).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 #[cfg(test)]
