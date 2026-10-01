@@ -54,6 +54,11 @@ struct Args {
     min_tee_spl: Option<u8>,
     min_snp_spl: Option<u8>,
     min_microcode_spl: Option<u8>,
+    /// The 64 bytes the guest was asked to put in the report (the file
+    /// `snpguest report` was given as request data): proves it is fresh.
+    report_data_path: Option<String>,
+    /// The launch measurement the guest must have (96 hex characters).
+    expected_measurement: Option<[u8; 48]>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -63,6 +68,8 @@ fn parse_args() -> Result<Args, String> {
     let mut min_tee_spl = None;
     let mut min_snp_spl = None;
     let mut min_microcode_spl = None;
+    let mut report_data_path = None;
+    let mut expected_measurement = None;
 
     let mut raw = std::env::args().skip(1);
     while let Some(flag) = raw.next() {
@@ -87,6 +94,14 @@ fn parse_args() -> Result<Args, String> {
             "--min-microcode-spl" => {
                 min_microcode_spl = Some(value()?.parse::<u8>().map_err(|e| e.to_string())?)
             }
+            "--report-data" => report_data_path = Some(value()?),
+            "--expected-measurement" => {
+                let v = value()?;
+                let bytes = hex::decode(v.trim()).map_err(|e| e.to_string())?;
+                expected_measurement = Some(bytes.try_into().map_err(|_| {
+                    "--expected-measurement must be 48 bytes (96 hex characters)".to_string()
+                })?);
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -98,6 +113,8 @@ fn parse_args() -> Result<Args, String> {
         min_tee_spl,
         min_snp_spl,
         min_microcode_spl,
+        report_data_path,
+        expected_measurement,
     })
 }
 
@@ -107,7 +124,7 @@ async fn main() -> ExitCode {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}");
-            eprintln!("usage: verify-snp-attestation --report <path> --product Milan|Genoa|Turin [--min-bootloader-spl N] [--min-tee-spl N] [--min-snp-spl N] [--min-microcode-spl N]");
+            eprintln!("usage: verify-snp-attestation --report <path> --product Milan|Genoa|Turin [--report-data <path>] [--expected-measurement <hex>] [--min-bootloader-spl N] [--min-tee-spl N] [--min-snp-spl N] [--min-microcode-spl N]");
             return ExitCode::FAILURE;
         }
     };
@@ -131,7 +148,13 @@ async fn main() -> ExitCode {
     println!(
         "==> verifying attestation report against AMD KDS (direct-to-AMD, root pinned in-binary)"
     );
-    let client = reqwest::Client::new();
+    let client = match snp_attest::kds::client() {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let outcome = match verify::verify(&client, args.product, &parsed).await {
         Ok(o) => o,
         Err(e) => {
@@ -191,6 +214,41 @@ async fn main() -> ExitCode {
                 ));
             }
         }
+    }
+
+    // Freshness and identity: without these, any old genuine report from
+    // any image passes.
+    match &args.report_data_path {
+        Some(path) => match std::fs::read(path) {
+            Ok(expected) if expected.as_slice() == parsed.report_data.as_slice() => {
+                println!("    report data matches {path}: the report is the one asked for.");
+            }
+            Ok(_) => {
+                eprintln!("error: the report's REPORT_DATA does not match {path} - it is not the report that was asked for (or is an old one)");
+                return ExitCode::FAILURE;
+            }
+            Err(e) => {
+                eprintln!("error: failed to read {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => println!("    NOTE: no --report-data was given, so nothing shows this report is fresh rather than replayed."),
+    }
+    match &args.expected_measurement {
+        Some(expected) if expected == &parsed.measurement => {
+            println!("    measurement matches the expected launch measurement.");
+        }
+        Some(_) => {
+            eprintln!(
+                "error: the guest's launch measurement {} is not the expected one",
+                hex::encode(parsed.measurement)
+            );
+            return ExitCode::FAILURE;
+        }
+        None => println!(
+            "    NOTE: no --expected-measurement was given; the guest's measurement is {}.",
+            hex::encode(parsed.measurement)
+        ),
     }
 
     if !any_threshold_checked {

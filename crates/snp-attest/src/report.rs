@@ -129,7 +129,26 @@ pub struct AttestationReport {
     /// meaningful on Turin+ (the rest zero) - see `crate::kds`'s hwID
     /// handling, which trims accordingly per AMD's own KDS behavior.
     pub chip_id: [u8; 64],
+    /// The guest policy the VM was launched with (0x08).
+    pub policy: u64,
+    /// What the guest asked to be signed with the report (0x50): the nonce
+    /// a verifier gave it, so an old report can't be passed off as fresh.
+    pub report_data: [u8; 64],
+    /// The launch measurement of the guest (0x90): which image is running.
+    pub measurement: [u8; 48],
     pub signature: RawSignature,
+}
+
+/// Guest policy bit 19: the hypervisor may debug the guest, reading and
+/// writing its memory. A report from such a guest proves nothing about
+/// what it keeps secret.
+pub const POLICY_DEBUG: u64 = 1 << 19;
+
+impl AttestationReport {
+    /// Whether the guest's policy lets the hypervisor debug it.
+    pub fn debug_allowed(&self) -> bool {
+        self.policy & POLICY_DEBUG != 0
+    }
 }
 
 pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, ReportParseError> {
@@ -149,6 +168,11 @@ pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, Report
     let reported_tcb_raw: [u8; 8] = raw[0x180..0x188].try_into().unwrap();
     let mut chip_id = [0u8; 64];
     chip_id.copy_from_slice(&raw[0x1A0..0x1E0]);
+    let policy = u64::from_le_bytes(raw[0x08..0x10].try_into().unwrap());
+    let mut report_data = [0u8; 64];
+    report_data.copy_from_slice(&raw[0x50..0x90]);
+    let mut measurement = [0u8; 48];
+    measurement.copy_from_slice(&raw[0x90..0xC0]);
 
     let mut r_le = [0u8; 72];
     let mut s_le = [0u8; 72];
@@ -162,6 +186,9 @@ pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, Report
         current_tcb: TcbVersion::decode(current_tcb_raw, product),
         reported_tcb: TcbVersion::decode(reported_tcb_raw, product),
         chip_id,
+        policy,
+        report_data,
+        measurement,
         signature: RawSignature { r_le, s_le },
     })
 }
@@ -189,6 +216,30 @@ mod tests {
         b[0x2A0] = 0xAB; // first byte of r
         b[0x2A0 + 72] = 0xCD; // first byte of s
         b
+    }
+
+    /// The policy, report data and measurement come from their offsets,
+    /// and the DEBUG bit is read from the policy.
+    #[test]
+    fn policy_report_data_and_measurement_are_read_from_their_offsets() {
+        let mut bytes = synthetic_report_bytes();
+        bytes[0x08..0x10].copy_from_slice(&(POLICY_DEBUG | 0x30000).to_le_bytes());
+        bytes[0x50] = 0x11;
+        bytes[0x8F] = 0x22;
+        bytes[0x90] = 0x33;
+        bytes[0xBF] = 0x44;
+        let report = parse(&bytes, Product::Milan).unwrap();
+        assert!(report.debug_allowed());
+        assert_eq!(
+            (report.report_data[0], report.report_data[63]),
+            (0x11, 0x22)
+        );
+        assert_eq!(
+            (report.measurement[0], report.measurement[47]),
+            (0x33, 0x44)
+        );
+        bytes[0x08..0x10].copy_from_slice(&0x30000u64.to_le_bytes());
+        assert!(!parse(&bytes, Product::Milan).unwrap().debug_allowed());
     }
 
     #[test]
