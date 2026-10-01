@@ -463,6 +463,11 @@ pub fn live_rows(rows: &[RowView]) -> Markup {
     html! { @for r in rows { (row(r)) } }
 }
 
+/// Why Live isn't showing the engine's lines, or nothing once it is again.
+pub fn tail_problem(problem: Option<&str>) -> Markup {
+    html! { @if let Some(problem) = problem { p class="error" role="status" { (problem) } } }
+}
+
 fn histogram(histogram: &HistogramView) -> Markup {
     html! {
         div class="log-histogram-box" {
@@ -490,6 +495,8 @@ pub fn results(vm: &LogsViewModel) -> Markup {
             @for problem in &vm.problems {
                 p class="error" role="status" { (problem) }
             }
+            // Live says here when the engine's lines stop arriving.
+            div id="log-tail-problem" {}
             // Shown above the search form (`.log-histogram-box`).
             @if let Some(h) = &vm.histogram { (histogram(h)) }
             @if let Some(newer) = &vm.newer_url {
