@@ -20,8 +20,9 @@ use crate::{WalletCredentials, WalletError};
 /// Bumped whenever [`WalletData`]'s on-disk shape changes incompatibly.
 pub const FORMAT_VERSION: u32 = 1;
 
-/// Everything one wallet file holds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Everything one wallet file holds. Its `Debug` leaves out the private
+/// keys and the mnemonic.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WalletData {
     pub version: u32,
     pub network: String,
@@ -54,6 +55,21 @@ pub struct WalletData {
     /// was funded from), kept as-is.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, Value>,
+}
+
+impl std::fmt::Debug for WalletData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletData")
+            .field("version", &self.version)
+            .field("network", &self.network)
+            .field("address", &self.address)
+            .field("private_spend_key", &"<redacted>")
+            .field("private_view_key", &"<redacted>")
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .field("outputs", &self.outputs.len())
+            .field("pending", &self.pending.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// One resolved output: the whole `WalletOutput`, serialized, so reading

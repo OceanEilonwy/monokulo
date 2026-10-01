@@ -16,8 +16,19 @@ use sha2::{Digest, Sha256};
 /// stored or logged: its `Debug` is redacted, [`RawToken::expose`] is the
 /// one way to read it (to hand it to its owner), and [`RawToken::hash`] the
 /// one way to what is stored and looked up.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct RawToken(String);
+
+/// Compared in constant time (for equal lengths; a token's length isn't
+/// secret), so `==` on two tokens can't leak how much of one matched.
+impl PartialEq for RawToken {
+    fn eq(&self, other: &Self) -> bool {
+        use subtle::ConstantTimeEq;
+        bool::from(self.0.as_bytes().ct_eq(other.0.as_bytes()))
+    }
+}
+
+impl Eq for RawToken {}
 
 impl RawToken {
     /// A token from outside this process: one a request carried, one a

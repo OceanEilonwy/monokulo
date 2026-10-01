@@ -54,6 +54,13 @@ pub enum CryptoError {
 #[derive(Clone)]
 pub struct AtRestKey([u8; 32]);
 
+/// Scrubbed from memory when dropped.
+impl Drop for AtRestKey {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
 impl AtRestKey {
     pub const fn new(bytes: [u8; 32]) -> Self {
         AtRestKey(bytes)

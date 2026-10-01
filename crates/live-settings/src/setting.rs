@@ -316,9 +316,23 @@ pub(crate) mod private {
 /// Normally the real process environment. Tests use [`Env::fixed`] instead
 /// of `std::env::set_var`, which would change the environment of every test
 /// running at the same time in the same binary.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Env {
     fixed: Option<Arc<HashMap<String, String>>>,
+}
+
+/// Names only: a variable's value may be a secret (an admin token).
+impl std::fmt::Debug for Env {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.fixed {
+            None => f.write_str("Env(process)"),
+            Some(vars) => {
+                let mut names: Vec<&String> = vars.keys().collect();
+                names.sort();
+                f.debug_tuple("Env").field(&names).finish()
+            }
+        }
+    }
 }
 
 impl Env {
@@ -359,10 +373,24 @@ impl Env {
 /// Reading a setting through it applies environment over stored over
 /// default. An invalid value falls back to that setting's default and
 /// nothing else, so one bad value doesn't take its neighbours with it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Snapshot {
     stored: HashMap<String, String>,
     env: Env,
+}
+
+/// Keys only: stored values include secrets (an admin token, collector
+/// headers), and a `{:?}` in a log line or an assertion must not print
+/// them.
+impl std::fmt::Debug for Snapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut keys: Vec<&String> = self.stored.keys().collect();
+        keys.sort();
+        f.debug_struct("Snapshot")
+            .field("stored_keys", &keys)
+            .field("env", &self.env)
+            .finish()
+    }
 }
 
 impl Snapshot {

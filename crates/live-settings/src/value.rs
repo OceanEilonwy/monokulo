@@ -226,6 +226,13 @@ impl fmt::Debug for Secret {
     }
 }
 
+/// The value is scrubbed from memory when the secret is dropped.
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
 /// What the admin page shows for a secret that is set. Always the same
 /// length, so it doesn't give away the real one.
 pub const MASK: &str = "********";
@@ -303,6 +310,12 @@ impl SettingValue for HttpUrl {
         let has_host = parsed.host_str().is_some_and(|host| !host.is_empty());
         if !matches!(parsed.scheme(), "http" | "https") || !has_host {
             return Err(problem());
+        }
+        // A URL setting is shown on the admin page and logged: a user name
+        // or password in it would be too. Credentials belong in a secret
+        // setting.
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err("Leave the user name and password out of the address; put credentials in their own setting.".to_string());
         }
         Ok(HttpUrl(parsed))
     }
