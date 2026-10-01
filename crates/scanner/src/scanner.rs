@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+use monero::blockdata::transaction::TxOutTarget;
 use monero::Transaction;
 
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
@@ -88,16 +89,46 @@ pub struct ScanResult {
     pub matches: Vec<MatchedOutput>,
     pub txid: String,
     pub key_images_json: String,
+    /// The one-time key (hex) of each matched output, by output index: what
+    /// a payment is recorded with so the same key is never credited twice
+    /// (see `Store::record_payment_match`). Read from the transaction here,
+    /// not reported by key custody: it is public chain data, and the
+    /// engine's own refusal to credit a key twice should not depend on a
+    /// backend reporting it right.
+    pub output_keys: HashMap<usize, String>,
 }
 
 impl ScanResult {
     /// What `tx`, named `txid`, pays. The id comes with the transaction: it
     /// may be pruned, and then can't be hashed to it.
-    fn of(txid: &str, tx: &Transaction, matches: Vec<MatchedOutput>) -> Self {
+    fn of(txid: &str, tx: &Transaction, mut matches: Vec<MatchedOutput>) -> Self {
+        // A locked output is no payment: until its unlock time (a height,
+        // or from 500,000,000 up a timestamp) nobody can spend it, and the
+        // merchant would be told they were paid with money they can't move.
+        // No wallet sends a locked payment by accident, so it is refused
+        // rather than held.
+        if !matches.is_empty() && tx.prefix.unlock_time.0 != 0 {
+            tracing::warn!(
+                tx.id = txid,
+                unlock_time = tx.prefix.unlock_time.0,
+                outputs = matches.len(),
+                "a transaction paying a store has a time lock on its outputs - not crediting them"
+            );
+            matches.clear();
+        }
+        let output_keys = matches
+            .iter()
+            .filter_map(|m| {
+                let (TxOutTarget::ToKey { key } | TxOutTarget::ToTaggedKey { key, .. }) =
+                    &tx.prefix.outputs.get(m.output_index)?.target;
+                Some((m.output_index, hex::encode(key)))
+            })
+            .collect();
         ScanResult {
             matches,
             txid: txid.to_string(),
             key_images_json: key_images_json_of(tx),
+            output_keys,
         }
     }
 }
@@ -257,8 +288,7 @@ pub fn record_scan_match(
         // An output whose amount couldn't be decrypted is skipped, not recorded as
         // zero. A present-but-zero row is strictly worse than no row: it contributes
         // nothing to the received total while still dragging `min_confirmations` and
-        // `all_zero_conf` around in the status derivation (see status.rs's
-        // `a_zeroed_but_present_row_is_not_a_safe_substitute_for_exclusion`), and it
+        // `all_zero_conf` around in the status derivation, and it
         // can never be cleaned up afterwards - voiding requires affirmative
         // double-spend proof, which will never arrive for a perfectly valid output.
         // Skipping leaves the tick free to record it properly once the amount is
@@ -280,6 +310,7 @@ pub fn record_scan_match(
             &scan.key_images_json,
             seen_at,
             block_height.map(crate::store::sql_height).transpose()?,
+            scan.output_keys.get(&m.output_index).map(String::as_str),
         )?;
         touched.insert(order.id);
     }
@@ -318,6 +349,7 @@ pub(crate) fn stage_block_match(
             amount,
             key_images_json: &scan.key_images_json,
             seen_at,
+            output_key: scan.output_keys.get(&m.output_index).map(String::as_str),
         })?;
     }
     Ok(())
@@ -525,10 +557,21 @@ pub(crate) async fn check_vanished_candidates(
         if mempool_txids.contains(&payment.txid) {
             continue; // still pending in the pool - nothing has been decided about it yet
         }
-        let location = match hints.locations.get(&payment.txid) {
+        let mut location = match hints.locations.get(&payment.txid) {
             Some(location) => *location,
             None => daemon.locate_transaction(&payment.txid).await?,
         };
+        // Nowhere according to one node is not nowhere: every node is asked
+        // before the key-image evidence can void it (see
+        // `MoneroDaemonClient::locate_transaction_corroborated`).
+        if location == TxLocation::NotFound {
+            if let Some(agreed) = daemon
+                .locate_transaction_corroborated(&payment.txid)
+                .await?
+            {
+                location = agreed;
+            }
+        }
         match location {
             // Mined after all: the pool snapshot was taken before the block arrived,
             // or the block scan stopped short of that height this tick. Recording the
@@ -790,6 +833,13 @@ pub(crate) fn void_and_notify_in_tx(
     current_height: u64,
     now: i64,
 ) -> Result<()> {
+    // A payment is voided on the evidence that its transaction is in no
+    // block, so its recorded height (from a discarded chain, if it has one)
+    // goes too: a void that is later reversed must come back unconfirmed,
+    // followed by the vanished-payment check, not counting confirmations
+    // from a block that is no longer on the chain. (Before the void: the
+    // height of a voided row is left alone.)
+    store.update_payment_block_height(order_id, txid, output_index, None)?;
     store.void_payment(order_id, txid, output_index, now)?;
     store.mark_double_spend_detected(order_id, now)?;
     recompute_and_notify_in_tx(store, order_id, current_height, now)?;
@@ -822,11 +872,15 @@ pub(crate) fn void_and_notify_in_tx(
 /// into whatever status the recompute lands on, so a merchant who was told "this was
 /// a double-spend" is also told, just as explicitly, "we were wrong about that" -
 /// the whole point of the correction is transparency, not a quiet undo.
+///
+/// `block_height` is where the transaction is now: in that block, or
+/// (`None`) in no block, so that the vanished-payment check follows it.
 fn unvoid_as_false_positive(
     store: &Store,
     order_id: &crate::store::OrderId,
     txid: &str,
     output_index: i64,
+    block_height: Option<u64>,
     current_height: u64,
     now: i64,
 ) -> Result<bool> {
@@ -834,6 +888,8 @@ fn unvoid_as_false_positive(
         if !store.unvoid_payment(order_id, txid, output_index)? {
             return Ok(false);
         }
+        let block_height = block_height.map(crate::store::sql_height).transpose()?;
+        store.update_payment_block_height(order_id, txid, output_index, block_height)?;
         if store
             .get_all_payments(order_id)?
             .iter()
@@ -878,25 +934,44 @@ pub(crate) async fn recheck_voided_payment(
     now: i64,
     statuses: Option<&[KeyImageStatus]>,
 ) -> Result<bool> {
-    let key_images = match parse_payment_key_images(&payment.key_images_json) {
-        Ok(images) => images,
-        Err(e) => {
-            tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: leaving the order voided because its stored evidence is invalid");
-            return Ok(false);
+    // The transaction itself, first: a void was a false accusation if the
+    // transaction it accused of being nowhere is in a block after all (the
+    // conflicting one was reorged out, or never existed). Its own inputs
+    // are then spent - by it - so the key-image test below could never
+    // clear it.
+    let location =
+        match crate::work::bounded(daemon.locate_transaction_corroborated(&payment.txid)).await? {
+            Some(agreed) => agreed,
+            None => crate::work::bounded(daemon.locate_transaction(&payment.txid)).await?,
+        };
+    let block_height = match location {
+        TxLocation::InBlock(height) => Some(height),
+        TxLocation::InPool | TxLocation::NotFound => {
+            let key_images = match parse_payment_key_images(&payment.key_images_json) {
+                Ok(images) => images,
+                Err(e) => {
+                    tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: leaving the order voided because its stored evidence is invalid");
+                    return Ok(false);
+                }
+            };
+            let statuses = match statuses {
+                Some(statuses) => statuses.to_vec(),
+                None => {
+                    crate::work::bounded(daemon.is_key_image_spent_corroborated(&key_images))
+                        .await?
+                }
+            };
+            if statuses.len() != key_images.len()
+                || !statuses
+                    .iter()
+                    .all(|status| *status == KeyImageStatus::Unspent)
+            {
+                tracing::info!(order.id = %payment.order_id, "double-spend revalidation: inconclusive key-image statuses; leaving the order voided");
+                return Ok(false);
+            }
+            None
         }
     };
-    let statuses = match statuses {
-        Some(statuses) => statuses.to_vec(),
-        None => crate::work::bounded(daemon.is_key_image_spent_corroborated(&key_images)).await?,
-    };
-    if statuses.len() != key_images.len()
-        || !statuses
-            .iter()
-            .all(|status| *status == KeyImageStatus::Unspent)
-    {
-        tracing::info!(order.id = %payment.order_id, "double-spend revalidation: inconclusive key-image statuses; leaving the order voided");
-        return Ok(false);
-    }
     let (order_id, txid, output) = (
         payment.order_id.clone(),
         payment.txid.clone(),
@@ -904,7 +979,15 @@ pub(crate) async fn recheck_voided_payment(
     );
     let restored = db
         .run(crate::store::db::Class::Scanner, move |s| {
-            unvoid_as_false_positive(s, &order_id, &txid, output, current_height, now)
+            unvoid_as_false_positive(
+                s,
+                &order_id,
+                &txid,
+                output,
+                block_height,
+                current_height,
+                now,
+            )
         })
         .await?;
     if restored {
@@ -3193,6 +3276,7 @@ pub(crate) mod tests {
             }],
             txid: "tx_with_an_undecryptable_output".into(),
             key_images_json: "[]".into(),
+            output_keys: Default::default(),
         };
 
         let touched = record_scan_match(
@@ -4621,11 +4705,12 @@ pub(crate) mod tests {
     // ---------------------------------------------------------------------
 
     /// A second, distinct transaction paying the *same* subaddress with the *same*
-    /// outputs and the *same* key images as `fixture_tx()`. Only `unlock_time`
-    /// differs, which changes the transaction hash (it is part of the prefix, and
-    /// the prefix is hashed) without touching the transaction public key, the
-    /// output keys, or the amount commitments that scanning and amount recovery
-    /// depend on.
+    /// outputs and the *same* key images as `fixture_tx()`. Only a nonce in
+    /// `extra` differs, which changes the transaction hash (`extra` is part of
+    /// the prefix, and the prefix is hashed) without touching the transaction
+    /// public key, the output keys, or the amount commitments that scanning
+    /// and amount recovery depend on. (Not `unlock_time`: a locked output is
+    /// not credited, see `a_time_locked_output_is_not_credited`.)
     ///
     /// This is what makes multi-transaction and double-spend scenarios testable
     /// against real crypto with a single fixture: two variants are two genuinely
@@ -4633,10 +4718,64 @@ pub(crate) mod tests {
     /// share their inputs - they are also a realistic *conflicting pair*, which is
     /// exactly the shape of a Monero double-spend (same key images, different
     /// transaction).
-    fn fixture_tx_variant(unlock_time: u64) -> Transaction {
+    fn fixture_tx_variant(nonce: u64) -> Transaction {
         let mut tx = fixture_tx();
-        tx.prefix.unlock_time = monero::VarInt(unlock_time);
+        let mut extra = tx.prefix.extra.try_parse();
+        extra
+            .0
+            .push(monero::blockdata::transaction::SubField::Nonce(
+                nonce.to_le_bytes().to_vec(),
+            ));
+        tx.prefix.extra = extra.into();
         tx
+    }
+
+    /// Only an output that can be spent is a payment. The fixture, locked
+    /// until a height (or, past the height threshold, a time) the sender
+    /// chose, pays the order nothing until then - and the engine doesn't
+    /// wait: it is not credited at all.
+    #[tokio::test]
+    async fn a_time_locked_output_is_not_credited() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tenant = shared::ids::TenantId::new(tenant_id.to_string());
+        let order = shared::ids::OrderId::new(order_id.to_string());
+        for lock in [1u64, 1_000_000, 1_700_000_000] {
+            let mut locked = fixture_tx();
+            locked.prefix.unlock_time = monero::VarInt(lock);
+            let scan = scan_transaction(&key_custody, handle, &locked, 0..3)
+                .await
+                .unwrap();
+            assert!(
+                scan.matches.is_empty(),
+                "unlock_time {lock}: the output pays the wallet, and is not credited"
+            );
+            scan_transaction_for_tenant(
+                &store,
+                &key_custody,
+                handle,
+                &tenant,
+                &locked,
+                0..3,
+                1500,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        assert!(store.get_all_payments(&order).unwrap().is_empty());
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &tenant,
+            &fixture_tx(),
+            0..3,
+            1500,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(store.get_all_payments(&order).unwrap().len(), 1);
     }
 
     /// Pushes `1..=height` onto a fresh fake chain, each block empty and hashed
@@ -4962,12 +5101,32 @@ pub(crate) mod tests {
         tx
     }
 
+    /// What `fixture_tx()` pays, and to which subaddress: checked by
+    /// `the_transaction_variants_these_tests_are_built_from_are_genuinely_distinct`.
+    pub(crate) const FIXTURE_AMOUNT_PICONERO: u64 = 7_000_000_000;
+    const FIXTURE_SUBADDRESS: SubaddressIndex = SubaddressIndex { major: 0, minor: 1 };
+
     /// A second payment to the same order that is *not* in conflict with the
-    /// fixture: same outputs (so it still matches, and still pays the order), but
-    /// different inputs, hence different key images. Two transactions paying one
-    /// order have to look like this - two transactions sharing key images could
-    /// never both be valid.
+    /// fixture: a sender of its own, so its own transaction key and its own
+    /// one-time output key (two outputs sharing one is the "burning bug", and
+    /// only one of them is ever credited - see
+    /// `an_output_reusing_a_credited_one_time_key_is_not_credited_twice`), and
+    /// different inputs, hence different key images. Pays the fixture's
+    /// amount to the fixture's subaddress, in the clear (no RingCT part).
     fn independent_payment_tx(seed: u8) -> Transaction {
+        use monero::blockdata::transaction::{ExtraField, SubField, TxOut, TxOutTarget};
+        use monero::cryptonote::onetime_key::KeyGenerator;
+        let view_pair = monero::ViewPair {
+            view: PrivateKey::from_slice(&fixture_view_key()).unwrap(),
+            spend: PublicKey::from_slice(&fixture_spend_pubkey()).unwrap(),
+        };
+        let (view, spend) =
+            monero::cryptonote::subaddress::get_public_keys(&view_pair, FIXTURE_SUBADDRESS);
+        // Deterministic per seed, not random: fixture data.
+        let mut r_bytes = [seed; 32];
+        r_bytes[31] &= 0x0f;
+        let r = PrivateKey::from_slice(&r_bytes).unwrap();
+        let sender = KeyGenerator::from_random(view, spend, r);
         let mut tx = fixture_tx_variant(0x1000 + seed as u64);
         for input in tx.prefix.inputs.iter_mut() {
             if let monero::blockdata::transaction::TxIn::ToKey { k_image, .. } = input {
@@ -4976,7 +5135,110 @@ pub(crate) mod tests {
                 k_image.image = monero::cryptonote::hash::Hash(bytes);
             }
         }
+        // A subaddress payment's transaction key is r*D, not r*G.
+        tx.prefix.extra = ExtraField(vec![SubField::TxPublicKey(r * &spend)]).into();
+        tx.prefix.outputs = vec![TxOut {
+            amount: monero::VarInt(FIXTURE_AMOUNT_PICONERO),
+            target: TxOutTarget::ToKey {
+                key: sender.one_time_key(0).to_bytes(),
+            },
+        }];
+        tx.rct_signatures = monero::util::ringct::RctSig { sig: None, p: None };
         tx
+    }
+
+    /// `fixture_tx()` under another id: the same outputs, so the same
+    /// one-time key, from other inputs. What a sender who reuses a
+    /// transaction key produces, by mistake or on purpose ("burning bug"):
+    /// only one of the two outputs can ever be spent.
+    fn key_reusing_tx(seed: u8) -> Transaction {
+        let mut tx = fixture_tx_variant(0x2000 + seed as u64);
+        for input in tx.prefix.inputs.iter_mut() {
+            if let monero::blockdata::transaction::TxIn::ToKey { k_image, .. } = input {
+                let mut bytes = k_image.image.to_bytes();
+                bytes[1] ^= seed;
+                k_image.image = monero::cryptonote::hash::Hash(bytes);
+            }
+        }
+        tx
+    }
+
+    #[tokio::test]
+    async fn an_output_reusing_a_credited_one_time_key_is_not_credited_twice() {
+        // Two outputs carrying one one-time key are one spendable output:
+        // crediting both pays an order with money the merchant cannot have.
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tenant = shared::ids::TenantId::new(tenant_id.to_string());
+        let order = shared::ids::OrderId::new(order_id.to_string());
+        let first = fixture_tx();
+        let reused = key_reusing_tx(1);
+        assert_ne!(tx_id_hex(&first), tx_id_hex(&reused));
+        for tx in [&first, &reused, &first] {
+            scan_transaction_for_tenant(
+                &store,
+                &key_custody,
+                handle,
+                &tenant,
+                tx,
+                0..3,
+                1500,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let payments = store.get_all_payments(&order).unwrap();
+        assert_eq!(
+            payments.len(),
+            1,
+            "the second output with the key is refused"
+        );
+        assert_eq!(payments[0].txid, tx_id_hex(&first));
+        let scan = scan_transaction(&key_custody, handle, &first, 0..3)
+            .await
+            .unwrap();
+        let (index, key) = scan.output_keys.iter().next().unwrap();
+        assert_eq!(payments[0].output_index, *index as i64);
+        assert_eq!(payments[0].output_key.as_deref(), Some(key.as_str()));
+
+        // A genuinely independent second payment is credited.
+        let independent = independent_payment_tx(2);
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &tenant,
+            &independent,
+            0..3,
+            1500,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(store.get_all_payments(&order).unwrap().len(), 2);
+
+        // Once the credited one is voided (its transaction lost a double
+        // spend), the other output with the key is the one that can be spent.
+        store
+            .void_payment(&order, &tx_id_hex(&first), *index as i64, 1600)
+            .unwrap();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &tenant,
+            &reused,
+            0..3,
+            1700,
+            None,
+        )
+        .await
+        .unwrap();
+        let payments = store.get_all_payments(&order).unwrap();
+        assert_eq!(payments.len(), 3);
+        assert!(payments
+            .iter()
+            .any(|p| p.txid == tx_id_hex(&reused) && p.voided_at.is_none()));
     }
 
     #[tokio::test]
@@ -4995,7 +5257,7 @@ pub(crate) mod tests {
         assert_ne!(
             tx_id_hex(&base),
             tx_id_hex(&variant),
-            "a different unlock_time must be a different txid"
+            "a different extra nonce must be a different txid"
         );
         assert_ne!(tx_id_hex(&base), tx_id_hex(&conflicting));
         assert_ne!(tx_id_hex(&base), tx_id_hex(&independent));
@@ -5016,10 +5278,31 @@ pub(crate) mod tests {
             "an independent payment spends other inputs"
         );
 
+        let fixture_scan = scan_transaction(&key_custody, handle, &base, 0..3)
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture_scan.matches[0].amount_piconero,
+            Some(FIXTURE_AMOUNT_PICONERO)
+        );
+        assert_eq!(fixture_scan.matches[0].subaddress_index, FIXTURE_SUBADDRESS);
+        let independent_scan = scan_transaction(&key_custody, handle, &independent, 0..3)
+            .await
+            .unwrap();
+        assert_eq!(
+            independent_scan.matches[0].amount_piconero,
+            Some(FIXTURE_AMOUNT_PICONERO),
+            "an independent payment pays the fixture's amount"
+        );
+        assert_ne!(
+            fixture_scan.output_keys, independent_scan.output_keys,
+            "an independent payment has its own one-time key"
+        );
+
         for (label, tx, expected) in [
             ("the fixture itself", &base, 1),
             (
-                "changing unlock_time must not break output matching",
+                "a nonce in extra must not break output matching",
                 &variant,
                 1,
             ),
@@ -7802,6 +8085,7 @@ pub(crate) mod tests {
             ],
             txid: "tx_paying_two_orders".into(),
             key_images_json: "[]".into(),
+            output_keys: Default::default(),
         };
 
         let touched = record_scan_match(
@@ -7966,6 +8250,7 @@ pub(crate) mod tests {
             }],
             txid: "tx_flaky_amount".into(),
             key_images_json: "[]".into(),
+            output_keys: Default::default(),
         };
         let decrypted = ScanResult {
             matches: vec![MatchedOutput {
@@ -7975,6 +8260,7 @@ pub(crate) mod tests {
             }],
             txid: "tx_flaky_amount".into(),
             key_images_json: "[]".into(),
+            output_keys: Default::default(),
         };
 
         record_scan_match(
@@ -8098,7 +8384,7 @@ pub(crate) mod tests {
                 expires_at: crate::now_unix() - 1,
             })
             .unwrap();
-        s.record_payment_match(&partial.id, "tx_partial", 0, 1, "[]", 1500, None)
+        s.record_payment_match(&partial.id, "tx_partial", 0, 1, "[]", 1500, None, None)
             .unwrap();
         let (_, status) = s
             .recompute_order_status(&partial.id, 1, crate::now_unix())
@@ -10065,6 +10351,7 @@ pub(crate) mod tests {
                 "[]",
                 now,
                 Some(1),
+                None,
             )
             .unwrap();
         recompute_and_notify(
@@ -11201,6 +11488,7 @@ pub(crate) mod tests {
             }],
             txid: "ab".repeat(32),
             key_images_json: "[]".into(),
+            output_keys: Default::default(),
         };
         assert!(record_scan_match(
             &store,
@@ -11405,6 +11693,112 @@ pub(crate) mod tests {
             .collect();
         assert!(
             !events.contains(&"order.double_spend_reversed".to_string()),
+            "{events:?}"
+        );
+    }
+
+    /// A void from reconciliation (the transaction was in a block that lost a
+    /// reorg) clears the height it was recorded at: a void that is later
+    /// reversed comes back unconfirmed, followed by the vanished-payment
+    /// check, not counting confirmations from a block that is on no chain.
+    #[tokio::test]
+    async fn a_voided_payment_keeps_no_height_from_the_block_it_lost() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tx = fixture_tx();
+        let txid = tx_id_hex(&tx);
+        let order = shared::ids::OrderId::new(order_id.to_string());
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &tx,
+            0..3,
+            1500,
+            Some(50),
+        )
+        .await
+        .unwrap();
+        let payment = store.get_all_payments(&order).unwrap()[0].clone();
+        assert_eq!(payment.block_height, Some(50));
+        store
+            .in_transaction(|s| {
+                void_and_notify_in_tx(s, &order, &txid, payment.output_index, 60, 1600)
+            })
+            .unwrap();
+        let voided = &store.get_all_payments(&order).unwrap()[0];
+        assert!(voided.voided_at.is_some());
+        assert_eq!(
+            voided.block_height, None,
+            "in no block: voided on that evidence"
+        );
+
+        // Reversed on fresh evidence (every key image unspent, the transaction
+        // nowhere): unconfirmed, so the vanished-payment check follows it.
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        let db = crate::store::Db::over_shared(store.into_shared());
+        let restored = recheck_voided_payment(
+            &db,
+            &daemon,
+            monero::Network::Mainnet,
+            voided,
+            60,
+            crate::now_unix(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(restored);
+        let payment = db
+            .run(crate::store::db::Class::Scanner, {
+                let order = order.clone();
+                move |s| Ok::<_, ScannerError>(s.get_all_payments(&order)?[0].clone())
+            })
+            .await
+            .unwrap();
+        assert_eq!((payment.voided_at, payment.block_height), (None, None));
+    }
+
+    /// A void was a false accusation and the accused transaction is mined
+    /// after all: its own inputs are now spent (by it), so only the
+    /// transaction's whereabouts can clear it. Restored, at its block.
+    #[tokio::test]
+    async fn a_void_whose_transaction_is_mined_after_all_is_restored_at_its_block() {
+        let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
+        let order = shared::ids::OrderId::new(order_id.to_string());
+        let payment = store.lock().get_all_payments(&order).unwrap()[0].clone();
+        let daemon = chain_replica();
+        daemon.push_block("h3", vec![fixture_tx()]);
+        // Spent, by the transaction itself: the key-image test alone would
+        // leave the payment voided forever.
+        for ki in &key_images_of(&fixture_tx()) {
+            daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
+        }
+        let db = crate::store::Db::over_shared(store.clone());
+        let restored = recheck_voided_payment(
+            &db,
+            &daemon,
+            monero::Network::Mainnet,
+            &payment,
+            10,
+            crate::now_unix(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(restored);
+        let payment = &store.lock().get_all_payments(&order).unwrap()[0];
+        assert_eq!((payment.voided_at, payment.block_height), (None, Some(3)));
+        let events: Vec<String> = store
+            .lock()
+            .due_webhook_deliveries(i64::MAX / 2, 10)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.event_type)
+            .collect();
+        assert!(
+            events.contains(&"order.double_spend_reversed".to_string()),
             "{events:?}"
         );
     }
@@ -11717,6 +12111,7 @@ pub(crate) mod tests {
             }],
             txid: "cd".repeat(32),
             key_images_json: "[]".into(),
+            output_keys: Default::default(),
         };
         stage_block_match(
             &store,

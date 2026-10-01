@@ -128,10 +128,22 @@ pub async fn run_fast_mempool_loop(
                 crate::work::fast_pass(&scan_state, &inputs),
             )
             .await;
-            if let Ok(Some(report)) = pass {
-                if report.paid_orders > 0 {
-                    tracing::debug!(network = ?network, orders = report.paid_orders, "payments seen in the mempool");
+            match pass {
+                Ok(Some(report)) => {
+                    if report.paid_orders > 0 {
+                        tracing::debug!(network = ?network, orders = report.paid_orders, "payments seen in the mempool");
+                    }
                 }
+                Ok(None) => {}
+                // The round loop is the safety net, so this is not an
+                // outage; but a pass that keeps hitting its deadline is a
+                // node that keeps hanging, which an operator should see.
+                Err(_) => shared::throttled!(
+                    format!("fast-mempool-deadline:{network:?}"),
+                    warn,
+                    network = ?network,
+                    "a fast mempool pass was abandoned at its deadline"
+                ),
             }
         }
         tokio::time::sleep(interval).await;

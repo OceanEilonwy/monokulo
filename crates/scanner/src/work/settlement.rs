@@ -118,18 +118,21 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
         )
         .await
     };
+    // Hints are an optimisation: without them (a slow node, or one that
+    // can't batch) each payment is asked about on its own below, within its
+    // own deadline, and the position still moves.
     let hints = match hints {
         Ok(Ok(hints)) => hints,
         Ok(Err(error)) => {
-            tracing::warn!(network = crate::network::network_str(network), error = %error, "checking a vanished mempool payment failed (retried)");
-            return Ok(());
+            tracing::warn!(network = crate::network::network_str(network), error = %error, "asking about a page of vanished mempool payments at once failed; asking one by one");
+            Default::default()
         }
         Err(_) => {
             tracing::warn!(
                 network = crate::network::network_str(network),
-                "checking a vanished mempool payment took too long (retried)"
+                "asking about a page of vanished mempool payments at once took too long; asking one by one"
             );
-            return Ok(());
+            Default::default()
         }
     };
     // Until the time runs out (at least one), or the node fails: a node that

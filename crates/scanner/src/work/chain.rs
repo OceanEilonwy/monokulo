@@ -253,14 +253,39 @@ impl<'a> Chain<'a> {
             {
                 Ok(()) => {}
                 Err(error) if candidate.attempts + 1 >= MAX_CANDIDATE_ATTEMPTS => {
+                    // A confirmed, unvoided candidate is moved out of its
+                    // block: its height is from the discarded chain, and
+                    // left there it would keep counting confirmations and
+                    // could settle the order. As an unconfirmed payment the
+                    // vanished-payment check follows it and records where
+                    // it is once a node answers. A voided one is left as it
+                    // is; nothing counts its height.
+                    let unconfirm = candidate.payment.voided_at.is_none()
+                        && candidate.payment.block_height.is_some();
                     tracing::error!(
                         network = crate::network::network_str(self.network), payment.id = candidate.payment.id, order.id = %candidate.payment.order_id,
-                        error = %error,
-                        "reorg: giving up re-examining a payment the node keeps failing to answer about - leaving it as recorded"
+                        error = %error, unconfirmed = unconfirm,
+                        "reorg: giving up re-examining a payment the node keeps failing to answer about"
                     );
-                    let id = candidate.payment.id;
-                    self.db(move |s, network| s.complete_reorg_candidate(network, id))
-                        .await?;
+                    let (id, order_id, txid, output) = (
+                        candidate.payment.id,
+                        candidate.payment.order_id.clone(),
+                        candidate.payment.txid.clone(),
+                        candidate.payment.output_index,
+                    );
+                    self.db(move |s, network| {
+                        s.in_transaction(|s| -> Result<(), ScannerError> {
+                            if unconfirm {
+                                s.update_payment_block_height(&order_id, &txid, output, None)?;
+                            }
+                            s.complete_reorg_candidate(network, id)?;
+                            Ok(())
+                        })
+                    })
+                    .await?;
+                    if unconfirm {
+                        done.dirty_orders.insert(candidate.payment.order_id.clone());
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(network = crate::network::network_str(self.network), payment.id = candidate.payment.id, error = %error, "reorg: re-examining a payment failed (retried)");
@@ -304,12 +329,23 @@ impl<'a> Chain<'a> {
             return Ok(());
         };
         let voided = payment.voided_at.is_some();
-        let location = match located.get(&payment.txid) {
+        let mut location = match located.get(&payment.txid) {
             Some(location) => *location,
             None => bounded(self.daemon.locate_transaction(&payment.txid)).await?,
         };
         // Only a transaction that is nowhere to be found needs the key-image
         // evidence: dropped, evicted and double-spent look the same otherwise.
+        // And only once every node agrees it is nowhere: one node's absence
+        // is what a real payment would be voided on, and its own inputs are
+        // spent on every node regardless (see
+        // `MoneroDaemonClient::locate_transaction_corroborated`).
+        if !voided && location == TxLocation::NotFound {
+            if let Some(agreed) =
+                bounded(self.daemon.locate_transaction_corroborated(&payment.txid)).await?
+            {
+                location = agreed;
+            }
+        }
         let proven = !voided
             && location == TxLocation::NotFound
             && self.double_spend_proven(&payment).await?;

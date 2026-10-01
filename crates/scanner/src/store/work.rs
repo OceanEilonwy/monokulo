@@ -561,6 +561,7 @@ pub struct StagedPayment {
     pub amount_piconero: u64,
     pub key_images_json: String,
     pub seen_at: i64,
+    pub output_key: Option<String>,
 }
 
 impl Store {
@@ -624,7 +625,7 @@ impl Store {
             .is_some_and(|c| c.hash == hash);
         let staged = if current {
             self.rows(
-                "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc
+                "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc, output_key
                  FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
                 params![shared::network::SqlNetwork(network), tenant_id],
                 |row| {
@@ -635,6 +636,7 @@ impl Store {
                         amount_piconero: unsigned(row, 3)?,
                         key_images_json: row.get(4)?,
                         seen_at: row.get(5)?,
+                        output_key: row.get(6)?,
                     })
                 },
             )?
@@ -889,6 +891,7 @@ mod tests {
                 "[\"ki\"]",
                 100,
                 height,
+                None,
             )
             .unwrap();
         store
@@ -1139,6 +1142,7 @@ mod tests {
             "[\"ki\"]",
             1_000,
             Some(50),
+            None,
         )
         .unwrap();
         s.recompute_order_status(&shared::ids::OrderId::new(expiring.to_string()), 52, 1_000)
@@ -1185,6 +1189,7 @@ mod tests {
             "[\"ki\"]",
             1_000,
             Some(50),
+            None,
         )
         .unwrap();
         s.open_reorg_job(monero::Network::Mainnet, 70, 1_000)
@@ -1390,6 +1395,7 @@ mod tests {
                 "[\"ki1\"]",
                 150,
                 Some(11),
+                None,
             )
             .unwrap();
         store
@@ -1400,6 +1406,7 @@ mod tests {
                 50,
                 "[\"ki2\"]",
                 150,
+                None,
                 None,
             )
             .unwrap();
@@ -1412,6 +1419,7 @@ mod tests {
                 "[\"ki3\"]",
                 150,
                 Some(10),
+                None,
             )
             .unwrap();
         store
@@ -1583,6 +1591,7 @@ mod tests {
                 amount: 70,
                 key_images_json: "[]",
                 seen_at: 170,
+                output_key: None,
             })
         });
         let replaced = BlockCheckpoint {
@@ -1663,6 +1672,7 @@ mod tests {
                 "[]",
                 100,
                 Some(7),
+                None,
             )
             .unwrap();
         store
@@ -1908,7 +1918,7 @@ mod tests {
         };
         let settle = |order: &str, txid: &str| {
             store
-                .record_payment_match(&order_id(order), txid, 0, 100, "[]", 1_500, Some(50))
+                .record_payment_match(&order_id(order), txid, 0, 100, "[]", 1_500, Some(50), None)
                 .unwrap();
             let (_, status) = store
                 .recompute_order_status(&order_id(order), 59, 1_600)

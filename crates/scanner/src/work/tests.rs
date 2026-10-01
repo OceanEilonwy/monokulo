@@ -264,6 +264,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
             "[\"ki\"]",
             1000,
             Some(30),
+            None,
         )
         .unwrap();
     // Plenty of other payments above the fork, more than one unit handles.
@@ -281,6 +282,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
                 "[\"ki\"]",
                 1000,
                 Some(55),
+                None,
             )
             .unwrap();
     }
@@ -712,6 +714,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
             "[\"ki\"]",
             now,
             Some(9),
+            None,
         )
         .unwrap();
     store
@@ -1265,6 +1268,7 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
                 "[]",
                 1000,
                 Some(9),
+                None,
             )
             .unwrap();
     }
@@ -2163,7 +2167,16 @@ async fn open_reorg_with(
     for (txid, height) in payments {
         let (_, _, order) = fixture_tenant(&store, &custody, now + 3600).await;
         store
-            .record_payment_match(&order, txid, 0, 1, "[\"ki\"]", now, Some(*height as i64))
+            .record_payment_match(
+                &order,
+                txid,
+                0,
+                1,
+                "[\"ki\"]",
+                now,
+                Some(*height as i64),
+                None,
+            )
             .unwrap();
         orders.push(order);
     }
@@ -2256,8 +2269,8 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
         .unwrap()[0];
     assert_eq!(
         (payment.block_height, payment.voided_at),
-        (Some(9), None),
-        "left as recorded"
+        (None, None),
+        "moved out of its block: its height was from the losing chain, and the vanished-payment check follows it from here"
     );
     assert!(store
         .lock()
@@ -3187,7 +3200,7 @@ async fn every_sql_failure_while_a_double_spend_is_found_is_recovered_from() {
 fn unconfirmed(store: &SharedStore, order: &crate::store::OrderId, txid: &str) {
     store
         .lock()
-        .record_payment_match(order, txid, 0, 1, "[\"ki\"]", crate::now_unix(), None)
+        .record_payment_match(order, txid, 0, 1, "[\"ki\"]", crate::now_unix(), None, None)
         .unwrap();
 }
 
@@ -3357,6 +3370,7 @@ fn voided_payments(store: &SharedStore, order: &crate::store::OrderId, count: u8
             &format!("[\"{image}\"]"),
             now,
             Some(15),
+            None,
         )
         .unwrap();
         s.void_payment(&shared::ids::OrderId::new(order.to_string()), &txid, 0, now)
@@ -3516,7 +3530,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
                     expires_at: now + 3600,
                 })
                 .unwrap();
-            s.record_payment_match(&order.id, &format!("{i:064x}"), 0, 1, "[]", now, None)
+            s.record_payment_match(&order.id, &format!("{i:064x}"), 0, 1, "[]", now, None, None)
                 .unwrap();
             orders.push(order.id);
         }
@@ -3827,8 +3841,17 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
                 })
                 .unwrap();
             if i < 10 {
-                s.record_payment_match(&order.id, &format!("{i:064x}"), 0, 1, "[]", now, None)
-                    .unwrap();
+                s.record_payment_match(
+                    &order.id,
+                    &format!("{i:064x}"),
+                    0,
+                    1,
+                    "[]",
+                    now,
+                    None,
+                    None,
+                )
+                .unwrap();
             }
         }
         s.execute_raw_for_test("UPDATE orders SET next_due_at_utc = 1")
@@ -4175,6 +4198,7 @@ fn unconfirmed_with_image(
             1,
             &format!("[\"{image}\"]"),
             crate::now_unix(),
+            None,
             None,
         )
         .unwrap();

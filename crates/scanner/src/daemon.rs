@@ -235,6 +235,25 @@ pub trait MoneroDaemonClient: Send + Sync {
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
 
+    /// A second opinion on a [`Self::locate_transaction`] answer of
+    /// `NotFound`, for the one question where a node's *absence* answer has
+    /// a permanent consequence: a payment whose transaction is nowhere, and
+    /// whose inputs are spent, is voided as double-spent. Its own inputs are
+    /// spent on every honest node too (its own transaction spent them), so
+    /// the key-image check corroborates nothing about the absence. A client
+    /// that knows more than one node (`daemon_fallback::FallbackDaemonClient`)
+    /// asks every node and answers `NotFound` only when all that answered
+    /// agree. The default, for a single node, has no second opinion to give
+    /// (`None`): asking the same node again would cost a round trip for the
+    /// same answer.
+    async fn locate_transaction_corroborated(
+        &self,
+        txid: &str,
+    ) -> Result<Option<TxLocation>, DaemonError> {
+        let _ = txid;
+        Ok(None)
+    }
+
     /// Where several transactions are, in one round trip, for a client that
     /// can: a hint. A transaction missing from the answer (the client can't
     /// batch, or the node's answer didn't settle that one) is asked about
