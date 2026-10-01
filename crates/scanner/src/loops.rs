@@ -449,6 +449,7 @@ mod tests {
         let index = store.allocate_minor_index(&tenant.id).unwrap();
         let order = store
             .create_order(crate::store::NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.id.clone(),
                 merchant_order_id: None,

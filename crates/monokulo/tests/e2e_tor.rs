@@ -329,6 +329,7 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
             shared::xmr_amount::Piconero(1_000_000),
             None,
             None,
+            None,
         )
         .await
         .expect("creating the test order");

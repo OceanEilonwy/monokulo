@@ -201,9 +201,14 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 		$sent_body = json_decode( $this->captured_request['args']['body'], true );
 		$this->assertIsArray( $sent_body, 'Request body should be valid JSON.' );
 		$this->assertSame(
-			array( 'amount', 'currency', 'merchant_order_id' ),
+			array( 'amount', 'currency', 'merchant_order_id', 'idempotency_key' ),
 			array_keys( $sent_body ),
 			'Exactly the shape of Monokulo\'s CreateOrderRequest.'
+		);
+		$this->assertSame(
+			'wc:' . $order->get_id() . ':42.50:USD',
+			$sent_body['idempotency_key'],
+			'One key per order and total, so a retried request gets the same Monokulo order.'
 		);
 		$this->assertSame(
 			'42.50',

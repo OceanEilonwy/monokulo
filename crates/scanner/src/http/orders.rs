@@ -35,6 +35,23 @@ pub struct CreateOrderRequest {
     /// setting (`http::admin::validate_tenant_settings`).
     #[serde(default)]
     confirmations_required: Option<u64>,
+    /// The caller's key for this one purchase. A request repeating a key
+    /// this store already used gets the order that was made with it (the
+    /// caller retrying after a timeout or a lost answer), never a second
+    /// order with a second address; the same key with a different amount,
+    /// reference or confirmation count is refused with `409`.
+    #[serde(default)]
+    idempotency_key: Option<String>,
+}
+
+/// Longest idempotency key accepted.
+pub const MAX_IDEMPOTENCY_KEY_CHARS: usize = 128;
+
+/// A key is 1..=128 visible ASCII characters (no spaces or controls).
+fn valid_idempotency_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= MAX_IDEMPOTENCY_KEY_CHARS
+        && key.bytes().all(|b| b.is_ascii_graphic())
 }
 
 /// Most an order can ask for: a million XMR. Far above any purchase, and
@@ -74,6 +91,15 @@ async fn create_order_for_tenant(
         )));
     }
     super::admin::validate_confirmations_required(req.confirmations_required)?;
+    if req
+        .idempotency_key
+        .as_deref()
+        .is_some_and(|key| !valid_idempotency_key(key))
+    {
+        return Err(ApiError::BadRequest(format!(
+            "idempotency_key must be 1 to {MAX_IDEMPOTENCY_KEY_CHARS} visible ASCII characters"
+        )));
+    }
 
     let mut handle = resolve_wallet_handle(&state, &tenant).await?;
     let mut retries = 0;
@@ -126,6 +152,7 @@ async fn create_order_for_tenant(
             }
         };
         let new_order = NewOrder {
+            idempotency_key: req.idempotency_key.clone(),
             confirmations_required_override: req.confirmations_required,
             tenant_id: tenant.id.clone(),
             merchant_order_id: req.merchant_order_id.clone(),
@@ -151,6 +178,17 @@ async fn create_order_for_tenant(
                 .into(),
         )
     })?;
+    // An order made earlier with this key must be the same purchase: the
+    // same key for a different one is the caller's mistake, refused rather
+    // than answered with an order that doesn't match what was asked.
+    if order.xmr_amount_piconero != req.xmr_amount_piconero
+        || order.merchant_order_id != req.merchant_order_id
+        || order.confirmations_required_override != req.confirmations_required
+    {
+        return Err(ApiError::Conflict(
+            "this idempotency_key was already used for a different order".into(),
+        ));
+    }
 
     Ok(Json(CreateOrderResponse {
         order_id: order.id,

@@ -111,6 +111,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         22,
         include_str!("../migrations/0022_webhook_delivery_gave_up.sql"),
     ),
+    (
+        23,
+        include_str!("../migrations/0023_order_idempotency_key.sql"),
+    ),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -432,6 +436,9 @@ pub struct NewOrder {
     /// thresholds feature ever sets this, having already resolved an
     /// amount-tiered override before calling here.
     pub confirmations_required_override: Option<u64>,
+    /// The caller's key for this purchase (migration 0023): a creation
+    /// repeating it gets the order already made with it.
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1370,6 +1377,24 @@ impl Store {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        // A key already used by this store: the order it made, and nothing
+        // claimed or written. Checked inside the write transaction, so two
+        // requests with one key can't both create.
+        if let Some(key) = new.idempotency_key.as_deref() {
+            let existing: Option<OrderId> = tx
+                .query_row(
+                    "SELECT id FROM orders WHERE tenant_id = ?1 AND idempotency_key = ?2",
+                    params![new.tenant_id, key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(id) = existing {
+                drop(tx);
+                return Ok(Some(
+                    self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)?,
+                ));
+            }
+        }
         let claimed = tx.execute(
             "UPDATE tenants SET next_minor_index = next_minor_index + 1
              WHERE id = ?1 AND next_minor_index = ?2",
@@ -1395,8 +1420,8 @@ impl Store {
         conn.execute(
             "INSERT INTO orders (id, tenant_id, merchant_order_id, minor_index, address,
                 xmr_amount_piconero, description, created_at_utc, expires_at_utc, updated_at_utc,
-                confirmations_required_override, next_due_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10, ?9)",
+                confirmations_required_override, next_due_at_utc, idempotency_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10, ?9, ?11)",
             params![
                 id,
                 new.tenant_id,
@@ -1407,7 +1432,9 @@ impl Store {
                 new.description,
                 new.created_at,
                 new.expires_at,
-                new.confirmations_required_override.map(|v| v as i64),
+                new.confirmations_required_override
+                    .map(shared::sqlite::Unsigned),
+                new.idempotency_key,
             ],
         )?;
         Ok(())
@@ -2787,6 +2814,7 @@ mod tests {
     fn new_order(store: &Store, tenant_id: &str, minor_index: u32) -> Order {
         store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(tenant_id.to_string()),
                 merchant_order_id: None,
@@ -2902,6 +2930,7 @@ mod tests {
             assert!(filled < 10_000, "the cap didn't take effect");
         }
         let err = store.create_order(NewOrder {
+            idempotency_key: None,
             confirmations_required_override: None,
             tenant_id: tenant.tenant.id.clone(),
             merchant_order_id: None,
@@ -3331,6 +3360,7 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: Some(2),
                 tenant_id: tenant.tenant.id.clone(),
                 merchant_order_id: None,
@@ -4273,6 +4303,7 @@ mod tests {
             .create_order_claiming_minor_index(
                 first,
                 NewOrder {
+                    idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant_id.clone(),
                     merchant_order_id: None,
@@ -4295,6 +4326,7 @@ mod tests {
             .create_order_claiming_minor_index(
                 first,
                 NewOrder {
+                    idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant_id.clone(),
                     merchant_order_id: None,
@@ -4320,6 +4352,7 @@ mod tests {
         let failed = store.create_order_claiming_minor_index(
             next,
             NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
@@ -4357,6 +4390,7 @@ mod tests {
         let reopened = Store::open_file(path_str).unwrap();
         let err = reopened
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: "tn_does_not_exist".into(),
                 merchant_order_id: None,

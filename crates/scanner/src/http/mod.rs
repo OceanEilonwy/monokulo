@@ -569,6 +569,9 @@ pub enum ApiError {
     NotFound,
     Forbidden(String),
     BadRequest(String),
+    /// The request clashes with one already made (an idempotency key
+    /// reused for a different order): `409`.
+    Conflict(String),
     Internal(String),
     /// Something this request needs is down for now (the database is full
     /// or locked, a key-custody backend is unreachable): `503`, so callers
@@ -642,6 +645,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
             // What went wrong is for the engine's own log, not the caller:
             // a database or custody message can carry SQL, file paths and
             // node addresses.

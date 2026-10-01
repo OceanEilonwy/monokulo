@@ -294,6 +294,9 @@ pub async fn create_order(
             shared::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id.clone(),
             Some(resolution.confirmations_required),
+            // The terminal's own key for this sale: a retry after a lost
+            // answer (or a failed local write below) gets the same order.
+            req.request_key.as_ref().map(|key| format!("pos:{key}")),
         )
         .await
     {

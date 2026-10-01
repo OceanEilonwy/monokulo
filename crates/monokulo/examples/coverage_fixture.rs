@@ -118,6 +118,7 @@ async fn create_order(
             shared::xmr_amount::Piconero(1_000_000_000),
             None,
             None,
+            None,
         )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -213,6 +214,7 @@ async fn main() {
             &tenant.secret_token,
             shared::xmr_amount::Piconero(1_000_000_000),
             Some("Fixture order".into()),
+            None,
             None,
         )
         .await

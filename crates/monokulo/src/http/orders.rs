@@ -1164,7 +1164,7 @@ pub async fn create_order_page(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_create_order_page(&state, row, &user, None).await
+    render_create_order_page(&state, row, &user, None, None).await
 }
 
 /// Shared by `create_order_page` and `create_order`'s own validation-error
@@ -1173,6 +1173,7 @@ async fn render_create_order_page(
     state: &AppState,
     row: super::OwnedStore,
     user: &UserRow,
+    submitted: Option<&CreateOrderForm>,
     order_creation_error: Option<String>,
 ) -> Response {
     let chrome = super::page_chrome(
@@ -1183,12 +1184,28 @@ async fn render_create_order_page(
     .await;
     let (order_currency_options, order_currency_is_locked_to_xmr) =
         order_currency_options_for(state, &row).await;
+    // A rejected submission keeps what was typed, and its request key: a
+    // retry after a lost answer then repeats the key, and gets the order
+    // the first attempt may already have made.
+    let request_key = submitted
+        .map(|form| form.request_key.trim())
+        .filter(|key| crate::engine_client::valid_idempotency_key(key))
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let data = views::create_order::CreateOrderData {
         connection_id: row.id.clone(),
         display_name: display_name_for(&row.site_url),
         order_creation_error,
         order_currency_options,
         order_currency_is_locked_to_xmr,
+        amount: submitted.map_or_else(|| "10.00".to_string(), |form| form.amount.clone()),
+        currency: submitted
+            .map(|form| form.currency.clone())
+            .unwrap_or_default(),
+        merchant_order_id: submitted
+            .map(|form| form.merchant_order_id.clone())
+            .unwrap_or_default(),
+        request_key,
     };
     views::create_order::page(&chrome, &data).into_response()
 }
@@ -1203,6 +1220,11 @@ pub struct CreateOrderForm {
     /// means unset" handling `amount`/`currency` above already get.
     #[serde(default)]
     pub merchant_order_id: String,
+    /// One per rendering of the form (a hidden field): the order's
+    /// idempotency key, so submitting twice (a retry after a timeout, a
+    /// double click) makes one order.
+    #[serde(default)]
+    pub request_key: String,
 }
 
 /// `POST /dashboard/stores/{id}/orders/new` - creates a real order
@@ -1239,6 +1261,7 @@ pub async fn create_order(
             &state,
             row,
             &user,
+            Some(&form),
             Some("Enter an amount and a currency.".to_string()),
         )
         .await;
@@ -1261,6 +1284,7 @@ pub async fn create_order(
                 &state,
                 row,
                 &user,
+                Some(&form),
                 Some(format!("unknown currency: {currency}")),
             )
             .await
@@ -1284,6 +1308,7 @@ pub async fn create_order(
                 &state,
                 row,
                 &user,
+                Some(&form),
                 Some(format!("unsupported currency: {currency}")),
             )
             .await
@@ -1296,6 +1321,7 @@ pub async fn create_order(
                 &state,
                 row,
                 &user,
+                Some(&form),
                 Some(format!("unsupported currency: {currency}")),
             )
             .await;
@@ -1306,6 +1332,7 @@ pub async fn create_order(
                 &state,
                 row,
                 &user,
+                Some(&form),
                 Some(
                     "Something went wrong looking up the exchange rate. Please try again."
                         .to_string(),
@@ -1318,7 +1345,14 @@ pub async fn create_order(
         match shared::exchange_rate::compute_order_amount(currency, amount, piconero_per_unit) {
             Ok(amount) => amount,
             Err(e) => {
-                return render_create_order_page(&state, row, &user, Some(e.to_string())).await
+                return render_create_order_page(
+                    &state,
+                    row,
+                    &user,
+                    Some(&form),
+                    Some(e.to_string()),
+                )
+                .await
             }
         };
     let merchant_order_id = {
@@ -1346,7 +1380,9 @@ pub async fn create_order(
     .await
     {
         Ok(resolution) => resolution,
-        Err(message) => return render_create_order_page(&state, row, &user, Some(message)).await,
+        Err(message) => {
+            return render_create_order_page(&state, row, &user, Some(&form), Some(message)).await
+        }
     };
 
     match state
@@ -1357,6 +1393,9 @@ pub async fn create_order(
             shared::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id,
             Some(resolution.confirmations_required),
+            Some(form.request_key.trim())
+                .filter(|key| crate::engine_client::valid_idempotency_key(key))
+                .map(|key| format!("dash:{key}")),
         )
         .await
     {
@@ -1411,13 +1450,14 @@ pub async fn create_order(
         Err(EngineClientError::EngineError { status, message })
             if status == reqwest::StatusCode::BAD_REQUEST =>
         {
-            render_create_order_page(&state, row, &user, Some(message)).await
+            render_create_order_page(&state, row, &user, Some(&form), Some(message)).await
         }
         Err(_) => {
             render_create_order_page(
                 &state,
                 row,
                 &user,
+                Some(&form),
                 Some("Something went wrong. Please try again.".to_string()),
             )
             .await

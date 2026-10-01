@@ -776,9 +776,10 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 		$request_url = $this->get_orders_endpoint_url();
 		$currency    = $order->get_currency();
+		$amount      = self::format_amount( $order->get_total(), $currency );
 
 		$body = array(
-			'amount'            => self::format_amount( $order->get_total(), $currency ),
+			'amount'            => $amount,
 			'currency'          => $currency,
 			// The order's own numeric id, not `get_order_number()` - the
 			// latter is filterable (some plugins prefix it, e.g. "WC-1042")
@@ -786,6 +787,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			// exists so a merchant can match a Monokulo order back to this
 			// store's order later, and shows on Monokulo's order page.
 			'merchant_order_id' => (string) $order->get_id(),
+			// One key per order and total: a retry after a timeout or a lost
+			// answer gets the Monokulo order the first attempt made, never a
+			// second one with a second address. A changed total is a new
+			// purchase, so it gets a new key.
+			'idempotency_key'   => self::idempotency_key( $order->get_id(), $amount, $currency ),
 		);
 
 		$response = wp_remote_post(
@@ -845,6 +851,19 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		}
 
 		return $decoded;
+	}
+
+	/**
+	 * The idempotency key for one WooCommerce order at one total: what
+	 * makes a retried order creation return the order already made.
+	 *
+	 * @param int|string $order_id The WooCommerce order id.
+	 * @param string     $amount   The amount sent, as formatted.
+	 * @param string     $currency The currency code.
+	 * @return string
+	 */
+	public static function idempotency_key( $order_id, $amount, $currency ) {
+		return sprintf( 'wc:%s:%s:%s', $order_id, $amount, $currency );
 	}
 
 	/**

@@ -885,6 +885,7 @@ mod tests {
             .unwrap();
         store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant_id.into(),
                 merchant_order_id: None,
