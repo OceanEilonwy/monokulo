@@ -68,7 +68,10 @@ pub(super) async fn authenticate(
     email: &str,
     password: &str,
 ) -> Result<(crate::db::UserRow, shared::auth::RawToken), LoginError> {
-    let email = email.to_string();
+    // Looked up as stored (`signup::normalize_email`); an address that
+    // can't be normalised matches no account, and still pays for the
+    // dummy hash below like any unknown one.
+    let email = super::signup::normalize_email(email).unwrap_or_default();
     let user = state
         .db
         .read(move |db| db.get_user_by_email(&email))

@@ -19,7 +19,6 @@
 use axum::extract::{Form, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum_extra::extract::cookie::{Cookie, SameSite};
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 
@@ -333,6 +332,22 @@ pub async fn signup_submit(
             "",
         )
         .await,
+        Err(CreateAccountError::WeakPassword) => {
+            render_signup(
+                &state,
+                Some(&format!(
+                    "The password must be at least {} characters.",
+                    signup::MIN_PASSWORD_LEN
+                )),
+                &form.invite,
+            )
+            .await
+        }
+        Err(CreateAccountError::InvalidEmail) => {
+            render_signup(&state, Some("That is not an email address."), &form.invite).await
+        }
+        // Not a path a non-admin signup takes.
+        Err(CreateAccountError::AlreadySetUp) => redirect_302("/dashboard/login"),
     }
 }
 
@@ -357,17 +372,14 @@ pub async fn login_form(
 /// for the JSON API, wrong for a browser form submission).
 pub async fn logout_submit(
     State(db): State<Database>,
+    headers: axum::http::HeaderMap,
     AuthedUser(_user, token_hash): AuthedUser,
 ) -> Response {
     db.write(move |db| db.delete_session(&token_hash))
         .await
         .ok();
-    let cookie = Cookie::build((super::SESSION_COOKIE_NAME, ""))
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .path("/")
-        .max_age(time::Duration::ZERO)
-        .build();
+    let mut cookie = super::session_cookie(&headers, String::new());
+    cookie.set_max_age(time::Duration::ZERO);
     let jar = CookieJar::new().add(cookie);
     (jar, redirect_302("/")).into_response()
 }
@@ -468,26 +480,15 @@ mod theme_selector_tests {
 /// majority of logins - anyone reaching `/dashboard/login` directly, not via
 /// the connect flow) or fails validation, behavior is *exactly* what it was
 /// before this task: the same inline confirmation, unchanged.
-pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginForm>) -> Response {
+pub async fn login_submit(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<LoginForm>,
+) -> Response {
     match login::authenticate(&state, &form.email, &form.password).await {
         Ok((_user, raw_token)) => {
-            // `HttpOnly` - never readable from page JS, so an XSS can't
-            // exfiltrate the session token. `SameSite=Lax` - sent on
-            // top-level navigation but not on cross-site subrequests/embeds,
-            // a reasonable default CSRF mitigation for a cookie-authenticated
-            // browser flow with no separate CSRF token yet. `Path=/` so it's
-            // sent back to every monokulo route `AuthedUser` might
-            // guard, not just `/dashboard/*`. Not marked `Secure`: this is a
-            // local/dev deployment with no TLS terminated in front of it yet
-            // (see `main.rs`'s own placeholder-config notes) - marking it
-            // `Secure` now would silently break the cookie over plain HTTP
-            // before real deployment wiring exists.
-            let cookie =
-                Cookie::build((super::SESSION_COOKIE_NAME, raw_token.expose().to_string()))
-                    .http_only(true)
-                    .same_site(SameSite::Lax)
-                    .path("/")
-                    .build();
+            // See `http::session_cookie` for the cookie's attributes.
+            let cookie = super::session_cookie(&headers, raw_token.expose().to_string());
             let jar = CookieJar::new().add(cookie);
 
             // A validated `next` wins over the default confirmation - see

@@ -120,8 +120,10 @@ fn engine_form_name(key: &str) -> String {
 }
 
 /// A request to the engine carrying this request's trace
-/// (structured_logging.md 2.3), like every `EngineClient` call.
+/// (structured_logging.md 2.3) and bounded in time, like every
+/// `EngineClient` call: a stalled engine must not hang the admin page.
 fn traced(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    let request = request.timeout(crate::engine_client::ENGINE_CALL_TIMEOUT);
     match telemetry::trace::current_traceparent() {
         Some(traceparent) => request.header(telemetry::trace::TRACEPARENT, traceparent),
         None => request,

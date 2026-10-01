@@ -51,6 +51,7 @@ mod admin_setup;
 mod checkout;
 mod connect;
 mod connections;
+pub mod csrf;
 mod dashboard;
 pub mod embed_domains;
 pub mod fx;
@@ -114,6 +115,48 @@ impl std::ops::Deref for OwnedStore {
 /// sets and [`AuthedUser`] reads back — a plain constant so the two sides
 /// can't drift apart on the name.
 pub(crate) const SESSION_COOKIE_NAME: &str = "session";
+
+pub(crate) use signup::MIN_PASSWORD_LEN;
+
+/// The session cookie as it is set and cleared: `HttpOnly` (never readable
+/// from page JS), `SameSite=Lax` (sent on top-level navigation, not on
+/// cross-site subrequests; `http::csrf` covers the rest), `Path=/` (every
+/// route `AuthedUser` guards), and `Secure` when the request arrived over
+/// HTTPS - directly or through a proxy that says so - so a session is never
+/// sent back over plain HTTP once it was made over TLS. Not `Secure` on a
+/// plain-HTTP (local, development) instance, where it would never be sent
+/// at all.
+pub(crate) fn session_cookie(
+    headers: &axum::http::HeaderMap,
+    value: String,
+) -> axum_extra::extract::cookie::Cookie<'static> {
+    use axum_extra::extract::cookie::{Cookie, SameSite};
+    Cookie::build((SESSION_COOKIE_NAME, value))
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(request_is_https(headers))
+        .path("/")
+        .build()
+}
+
+/// Whether the request came in over HTTPS: the proxy in front says so
+/// (`X-Forwarded-Proto`), or, with no proxy header, the browser's own
+/// `Origin`/`Referer` names an `https` page.
+fn request_is_https(headers: &axum::http::HeaderMap) -> bool {
+    let value = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+    };
+    if let Some(proto) = value("x-forwarded-proto") {
+        return proto.split(',').next().is_some_and(|p| p.trim() == "https");
+    }
+    value("origin")
+        .or_else(|| value("referer"))
+        .is_some_and(|url| url.starts_with("https://"))
+}
 
 /// The engine as monokulo talks to it.
 #[derive(Clone)]
@@ -514,11 +557,15 @@ pub fn build_router(state: AppState) -> Router {
 
     // Every other route (the dashboard, login, sign-up, the landing and
     // status pages) is counted too - see `http::abuse::site_middleware`.
-    // Static files are added below, outside it, and never counted.
-    let router = router.layer(middleware::from_fn_with_state(
-        state.clone(),
-        abuse::site_middleware,
-    ));
+    // Static files are added below, outside it, and never counted. A
+    // state-changing request to any of them that a browser says came from
+    // another site is refused first (`http::csrf`).
+    let router = router
+        .layer(middleware::from_fn(csrf::same_origin_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            abuse::site_middleware,
+        ));
 
     let router = router.merge(pay_router);
 
@@ -824,7 +871,7 @@ pub(crate) async fn resolve_authed_user(
     let mut user = state
         .db
         .read(move |db| {
-            let Some(session) = db.find_session(&hash)? else {
+            let Some(session) = db.find_session(&hash, crate::now_unix())? else {
                 return Ok(None);
             };
             db.get_user_by_id(&session.user_id)

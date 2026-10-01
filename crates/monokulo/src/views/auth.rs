@@ -65,7 +65,7 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
                 form method="post" action="/dashboard/signup" {
                     input type="hidden" name="invite" value=(data.invite_token);
                     label { "Email " input type="email" name="email" required; }
-                    label { "Password " input type="password" name="password" required; }
+                    label { "Password " input type="password" name="password" required minlength=(crate::http::MIN_PASSWORD_LEN) autocomplete="new-password"; }
                     button type="submit" class="btn-primary" { "Sign up" }
                 }
             }
