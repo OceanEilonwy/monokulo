@@ -821,7 +821,7 @@ pub async fn create_webhook(
             "only http/https URLs are allowed".into(),
         ));
     }
-    // Resolved-IP SSRF validation (see webhook_sign::validate_webhook_url) happens
+    // Resolved-IP SSRF validation (see webhook_sign::is_disallowed_address) happens
     // at delivery time in the not-yet-built delivery worker, not here - DNS can
     // change between registration and delivery, so a registration-time-only check
     // would be insufficient on its own regardless.

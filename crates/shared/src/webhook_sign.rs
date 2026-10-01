@@ -50,39 +50,11 @@ pub fn verify_signature(secret: &str, payload: &[u8], presented_signature_hex: &
     mac.verify_slice(&presented).is_ok()
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum WebhookUrlError {
-    #[error("only http/https URLs are allowed")]
-    UnsupportedScheme,
-    #[error("URL has no host")]
-    NoHost,
-    #[error("URL resolves to a private, loopback, or link-local address")]
-    PrivateAddress,
-    #[error("URL could not be parsed: {0}")]
-    Unparseable(String),
-}
-
-/// Checks a webhook URL isn't pointed at loopback/private/link-local address space,
-/// given a resolved IP for its host. This function deliberately takes the resolved
-/// IP as a parameter rather than doing DNS resolution itself: the real delivery
-/// worker must re-run this check *at connect time* against whatever the resolver
-/// currently returns (DNS can change between webhook registration and delivery), not
-/// just once at registration - see `docs/DESIGN.md` §11. This split also makes the
-/// check trivially testable without a real resolver.
-pub fn validate_webhook_url(url: &str, resolved_ip: IpAddr) -> Result<(), WebhookUrlError> {
-    let parsed = url::Url::parse(url).map_err(|e| WebhookUrlError::Unparseable(e.to_string()))?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(WebhookUrlError::UnsupportedScheme);
-    }
-    if parsed.host().is_none() {
-        return Err(WebhookUrlError::NoHost);
-    }
-    if is_disallowed_address(resolved_ip) {
-        return Err(WebhookUrlError::PrivateAddress);
-    }
-    Ok(())
-}
-
+/// Whether `ip` is loopback, private, link-local or otherwise no place to
+/// send a webhook. Checked by the delivery client's resolver for every
+/// address a webhook's host resolves to, at connect time (DNS can change
+/// between registration and delivery), and for an IP literal before the
+/// request - see `docs/DESIGN.md` §11.
 pub fn is_disallowed_address(ip: IpAddr) -> bool {
     // An IPv4-mapped IPv6 address (`::ffff:127.0.0.1`) is a completely ordinary way
     // to reach 127.0.0.1, but none of the `Ipv6Addr` predicates below recognize it -
@@ -183,6 +155,20 @@ fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
 mod tests {
     use super::*;
 
+    /// What the delivery path does with a resolved address.
+    #[derive(Debug, PartialEq)]
+    enum Refused {
+        PrivateAddress,
+    }
+
+    fn check(ip: IpAddr) -> Result<(), Refused> {
+        if is_disallowed_address(ip) {
+            Err(Refused::PrivateAddress)
+        } else {
+            Ok(())
+        }
+    }
+
     #[test]
     fn signature_matches_a_fixed_test_vector() {
         // A regression/drift guard: if `sign_payload` ever changes its output for
@@ -275,21 +261,13 @@ mod tests {
 
     #[test]
     fn public_https_url_with_a_public_ip_is_allowed() {
-        assert!(validate_webhook_url(
-            "https://merchant.example/hook",
-            IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))
-        )
-        .is_ok());
+        assert!(check(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))).is_ok());
     }
 
     #[test]
     fn loopback_resolved_address_is_rejected() {
-        let err = validate_webhook_url(
-            "http://looks-public.example/hook",
-            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-        )
-        .unwrap_err();
-        assert_eq!(err, WebhookUrlError::PrivateAddress);
+        let err = check(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))).unwrap_err();
+        assert_eq!(err, Refused::PrivateAddress);
     }
 
     #[test]
@@ -299,19 +277,15 @@ mod tests {
             Ipv4Addr::new(192, 168, 1, 1),
             Ipv4Addr::new(172, 16, 0, 1),
         ] {
-            let err = validate_webhook_url("http://example.test/hook", IpAddr::V4(ip)).unwrap_err();
-            assert_eq!(err, WebhookUrlError::PrivateAddress);
+            let err = check(IpAddr::V4(ip)).unwrap_err();
+            assert_eq!(err, Refused::PrivateAddress);
         }
     }
 
     #[test]
     fn cloud_metadata_address_is_rejected() {
-        let err = validate_webhook_url(
-            "http://example.test/hook",
-            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
-        )
-        .unwrap_err();
-        assert_eq!(err, WebhookUrlError::PrivateAddress);
+        let err = check(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))).unwrap_err();
+        assert_eq!(err, Refused::PrivateAddress);
     }
 
     #[test]
@@ -326,14 +300,8 @@ mod tests {
             "::ffff:10.0.0.1",        // RFC 1918
             "::ffff:169.254.169.254", // cloud metadata
         ] {
-            let err =
-                validate_webhook_url("http://looks-public.example/hook", mapped.parse().unwrap())
-                    .unwrap_err();
-            assert_eq!(
-                err,
-                WebhookUrlError::PrivateAddress,
-                "{mapped} must be rejected"
-            );
+            let err = check(mapped.parse().unwrap()).unwrap_err();
+            assert_eq!(err, Refused::PrivateAddress, "{mapped} must be rejected");
         }
     }
 
@@ -342,19 +310,12 @@ mod tests {
         // fe80::/10 - the v6 counterpart of 169.254.0.0/16, and the same
         // neighbouring-host reachability concern.
         for ip in ["fe80::1", "febf:ffff::1"] {
-            let err =
-                validate_webhook_url("http://example.test/hook", ip.parse().unwrap()).unwrap_err();
-            assert_eq!(
-                err,
-                WebhookUrlError::PrivateAddress,
-                "{ip} must be rejected"
-            );
+            let err = check(ip.parse().unwrap()).unwrap_err();
+            assert_eq!(err, Refused::PrivateAddress, "{ip} must be rejected");
         }
         // The neighbouring prefix is genuinely global and must still be allowed -
         // this is a /10, not a /16.
-        assert!(
-            validate_webhook_url("http://example.test/hook", "fec0::1".parse().unwrap()).is_ok()
-        );
+        assert!(check("fec0::1".parse().unwrap()).is_ok());
     }
 
     #[test]
@@ -367,12 +328,8 @@ mod tests {
             Ipv4Addr::new(100, 64, 0, 1),
             Ipv4Addr::new(100, 127, 255, 254),
         ] {
-            let err = validate_webhook_url("http://example.test/hook", IpAddr::V4(ip)).unwrap_err();
-            assert_eq!(
-                err,
-                WebhookUrlError::PrivateAddress,
-                "{ip} must be rejected"
-            );
+            let err = check(IpAddr::V4(ip)).unwrap_err();
+            assert_eq!(err, Refused::PrivateAddress, "{ip} must be rejected");
         }
         // Immediately either side of the /10 is ordinary public space.
         for ip in [
@@ -380,7 +337,7 @@ mod tests {
             Ipv4Addr::new(100, 128, 0, 1),
         ] {
             assert!(
-                validate_webhook_url("http://example.test/hook", IpAddr::V4(ip)).is_ok(),
+                check(IpAddr::V4(ip)).is_ok(),
                 "{ip} is outside 100.64.0.0/10 and must still be allowed"
             );
         }
@@ -397,20 +354,11 @@ mod tests {
             Ipv4Addr::new(0, 0, 0, 1),
             Ipv4Addr::new(0, 255, 255, 254),
         ] {
-            let err = validate_webhook_url("http://looks-public.example/hook", IpAddr::V4(ip))
-                .unwrap_err();
-            assert_eq!(
-                err,
-                WebhookUrlError::PrivateAddress,
-                "{ip} must be rejected"
-            );
+            let err = check(IpAddr::V4(ip)).unwrap_err();
+            assert_eq!(err, Refused::PrivateAddress, "{ip} must be rejected");
         }
         // 1.0.0.0 is the first address outside the /8 and is genuinely routable.
-        assert!(validate_webhook_url(
-            "http://example.test/hook",
-            IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1))
-        )
-        .is_ok());
+        assert!(check(IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1))).is_ok());
     }
 
     #[test]
@@ -427,14 +375,8 @@ mod tests {
             "::169.254.169.254",
             "::0.0.0.1",
         ] {
-            let err =
-                validate_webhook_url("http://looks-public.example/hook", compat.parse().unwrap())
-                    .unwrap_err();
-            assert_eq!(
-                err,
-                WebhookUrlError::PrivateAddress,
-                "{compat} must be rejected"
-            );
+            let err = check(compat.parse().unwrap()).unwrap_err();
+            assert_eq!(err, Refused::PrivateAddress, "{compat} must be rejected");
         }
     }
 
@@ -475,31 +417,16 @@ mod tests {
             "198.19.255.255",  // ...and its far end
             "ff02::1",         // v6 multicast, ff00::/8
         ] {
-            let err =
-                validate_webhook_url("http://example.test/hook", ip.parse().unwrap()).unwrap_err();
-            assert_eq!(
-                err,
-                WebhookUrlError::PrivateAddress,
-                "{ip} must be rejected"
-            );
+            let err = check(ip.parse().unwrap()).unwrap_err();
+            assert_eq!(err, Refused::PrivateAddress, "{ip} must be rejected");
         }
         // Immediately either side of 198.18.0.0/15 is ordinary public space.
         for ip in ["198.17.255.255", "198.20.0.1", "223.255.255.255"] {
             assert!(
-                validate_webhook_url("http://example.test/hook", ip.parse().unwrap()).is_ok(),
+                check(ip.parse().unwrap()).is_ok(),
                 "{ip} is outside every blocked range and must still be allowed"
             );
         }
-    }
-
-    #[test]
-    fn non_http_scheme_is_rejected_even_with_a_public_ip() {
-        let err = validate_webhook_url(
-            "file:///etc/passwd",
-            IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
-        )
-        .unwrap_err();
-        assert_eq!(err, WebhookUrlError::UnsupportedScheme);
     }
 
     // --- Cross-language known-vector (WBS 0.3 / 1.5.4) -----------------------------

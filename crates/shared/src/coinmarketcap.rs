@@ -54,7 +54,7 @@ impl CoinMarketCapRateProvider {
         CoinMarketCapRateProvider {
             base_url: base_url.into(),
             client: crate::http_cache::build_client(
-                concat!("scanner/", env!("CARGO_PKG_VERSION")),
+                concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
                 crate::http_cache::max_cache_bytes_from_env(),
             ),
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),

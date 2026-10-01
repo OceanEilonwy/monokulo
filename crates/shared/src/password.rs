@@ -1,7 +1,7 @@
 //! Human-chosen account password hashing for the control plane.
 //!
 //! This is deliberately a *different* algorithm choice from
-//! `shared::auth::hash_secret_token`: that module hashes a machine-generated,
+//! `shared::auth::RawToken::hash`: that module hashes a machine-generated,
 //! high-entropy `sk_...` token with plain SHA-256, because a slow/memory-hard
 //! hash buys no brute-force resistance for a token an attacker can't
 //! meaningfully guess - it only adds cost. Human-chosen passwords are the

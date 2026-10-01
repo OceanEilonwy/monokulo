@@ -211,7 +211,7 @@ impl CoingeckoRateProvider {
             // `403` from the real API without a "descriptive User-Agent" (its own
             // error message's wording).
             client: crate::http_cache::build_client(
-                concat!("scanner/", env!("CARGO_PKG_VERSION")),
+                concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
                 crate::http_cache::max_cache_bytes_from_env(),
             ),
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(CoingeckoCache::default())),
@@ -996,7 +996,7 @@ mod tests {
 
         #[tokio::test]
         #[ignore = "hits the real Coingecko API over the network - run manually \
-                    (`cargo test -p scanner --lib \
+                    (`cargo test -p shared --lib \
                     exchange_rate::tests::coingecko::manual_smoke_test_against_the_real_coingecko_api \
                     -- --ignored --nocapture`), never as part of the default `cargo test` suite, per \
                     WBS 1.7.1's own \"no live network call in CI\" requirement"]

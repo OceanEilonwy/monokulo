@@ -54,9 +54,9 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 pub fn max_cache_bytes_from_env() -> u64 {
     const VAR: &str = "MONOKULO_HTTP_CACHE_MAX_MB";
     const DEFAULT_MB: u64 = 16;
-    let mb = match std::env::var(VAR) {
-        Err(_) => DEFAULT_MB,
-        Ok(raw) => match raw.trim().parse::<u64>() {
+    let mb = match crate::settings::env_value(VAR) {
+        None => DEFAULT_MB,
+        Some(raw) => match raw.trim().parse::<u64>() {
             Ok(mb) if mb > 0 => mb,
             _ => {
                 tracing::warn!(
@@ -266,6 +266,11 @@ impl Middleware for CacheMiddleware {
         }
 
         let response = next.run(req, extensions).await?;
+        // Only a success is kept: an error (a 5xx with max-age, say) would
+        // otherwise be served from the cache after the upstream recovered.
+        if !response.status().is_success() {
+            return Ok(response);
+        }
         let Some(max_age) = parse_max_age(response.headers()) else {
             return Ok(response); // never marked cacheable - never cached, passed through untouched
         };
