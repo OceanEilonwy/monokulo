@@ -190,15 +190,23 @@ pub async fn pay_middleware(
 /// See the module doc comment.
 pub async fn site_middleware(
     State(state): State<AppState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let class = site_route_class(request.method(), request.uri().path());
     if class == RouteClass::Exempt {
         return next.run(request).await;
     }
-    let client = match signed_in_identity(&state, request.headers()).await {
-        Some(client) => Some(client),
+    let client = match signed_in_session(&state, request.headers()).await {
+        Some((user, hash)) => {
+            let client = ClientIdentity::User(user.id.as_str().to_string());
+            // The handler's `AuthedUser` takes it from here rather than
+            // looking the session up again.
+            request
+                .extensions_mut()
+                .insert(super::ResolvedSession(user, hash));
+            Some(client)
+        }
         None => anonymous_identity(
             request.extensions(),
             request.headers(),
@@ -211,12 +219,21 @@ pub async fn site_middleware(
 /// A signed-in merchant's identity, when the request carries a valid
 /// session (cookie or bearer token).
 async fn signed_in_identity(state: &AppState, headers: &HeaderMap) -> Option<ClientIdentity> {
+    signed_in_session(state, headers)
+        .await
+        .map(|(user, _)| ClientIdentity::User(user.id.into_string()))
+}
+
+/// A signed-in merchant and their session, when the request carries a
+/// valid one (cookie or bearer token).
+async fn signed_in_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<(crate::db::UserRow, shared::auth::TokenHash)> {
     if headers.get(header::AUTHORIZATION).is_none() && headers.get(header::COOKIE).is_none() {
         return None;
     }
-    super::resolve_authed_user(state, headers)
-        .await
-        .map(|(user, _)| ClientIdentity::User(user.id.into_string()))
+    super::resolve_authed_user(state, headers).await
 }
 
 async fn guard(

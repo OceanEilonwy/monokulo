@@ -549,7 +549,6 @@ mod tests {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
         use axum::Router;
-        use http_body_util::BodyExt;
         use tower::ServiceExt;
 
         use crate::engine_client::EngineClient;
@@ -605,15 +604,9 @@ mod tests {
             }
         }
 
-        async fn body_text(response: axum::response::Response) -> String {
-            let bytes = response.into_body().collect().await.unwrap().to_bytes();
-            String::from_utf8(bytes.to_vec()).unwrap()
-        }
+        use crate::http::test_support::body_text;
 
-        async fn body_json(response: axum::response::Response) -> serde_json::Value {
-            let bytes = response.into_body().collect().await.unwrap().to_bytes();
-            serde_json::from_slice(&bytes).unwrap()
-        }
+        use crate::http::test_support::body_json;
 
         /// Real engine, no daemons configured (`scanner_test_support`'s harness
         /// never populates them - see `get_status_round_trips_against_a_real_engine`'s

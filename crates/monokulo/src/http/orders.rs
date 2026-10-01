@@ -2192,28 +2192,6 @@ mod tests {
         (state, engine)
     }
 
-    fn signup_request(email: &str, password: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/signup")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({ "email": email, "password": password }).to_string(),
-            ))
-            .unwrap()
-    }
-
-    fn login_request(email: &str, password: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/login")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({ "email": email, "password": password }).to_string(),
-            ))
-            .unwrap()
-    }
-
     fn create_connection_request(bearer: &str) -> Request<Body> {
         let body = serde_json::json!({
             "platform": "woocommerce",
@@ -2233,46 +2211,11 @@ mod tests {
             .unwrap()
     }
 
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        serde_json::from_slice(&bytes).unwrap()
-    }
+    use crate::http::test_support::body_json;
 
-    async fn body_text(response: axum::response::Response) -> String {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
+    use crate::http::test_support::body_text;
 
-    /// Signs up and logs in a fresh user against `router`, returning their
-    /// session (bearer) token.
-    async fn signed_up_and_logged_in_session_token(
-        router: &Router,
-        email: &str,
-        password: &str,
-    ) -> String {
-        let signup = router
-            .clone()
-            .oneshot(signup_request(email, password))
-            .await
-            .unwrap();
-        assert_eq!(signup.status(), StatusCode::CREATED);
-
-        let login = router
-            .clone()
-            .oneshot(login_request(email, password))
-            .await
-            .unwrap();
-        assert_eq!(login.status(), StatusCode::OK);
-        body_json(login)
-            .await
-            .as_object()
-            .unwrap()
-            .get("session_token")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string()
-    }
+    use crate::http::test_support::signed_up_and_logged_in_session_token;
 
     /// Creates a real `store_connections` row for the given session token via
     /// the JSON `/connections` API, returning `(connection_id, public_key)`.
@@ -2824,22 +2767,7 @@ mod tests {
         }
     }
 
-    /// Minimal `application/x-www-form-urlencoded` percent-encoding for test
-    /// fixtures - same approach `http/connect.rs`'s own test module already
-    /// uses for its form-based tests.
-    fn urlencoding_encode(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for b in s.bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    out.push(b as char)
-                }
-                b' ' => out.push('+'),
-                _ => out.push_str(&format!("%{b:02X}")),
-            }
-        }
-        out
-    }
+    use crate::http::test_support::urlencoding_encode;
 
     /// A state whose only rate provider is Haveno (never contacted by these
     /// tests - nothing here asks for a quote).

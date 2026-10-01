@@ -282,13 +282,17 @@ async fn fetch_scanner_settings(
 /// registry, the engine's fetched over HTTP.
 /// Settings that hold a Unix time until which something stays on get the
 /// "off / on for N hours" control instead of a number box.
-fn with_time_limits(fields: &mut [AdminScalarFieldView]) {
+fn with_time_limits(fields: &mut [AdminScalarFieldView], clock: &views::time::Clock) {
     let now = u64::try_from(crate::now_unix()).unwrap_or(0);
     for field in fields
         .iter_mut()
         .filter(|f| f.key == "logging.dev_mode_until")
     {
-        field.kind = SettingKindView::TimeLimit { now };
+        let until = field.value.trim().parse().unwrap_or(0);
+        field.kind = SettingKindView::TimeLimit {
+            now,
+            until_label: clock.text(until),
+        };
     }
 }
 
@@ -307,6 +311,7 @@ struct SaveResult {
 
 async fn build_view_model(
     state: &AppState,
+    admin: &UserRow,
     tab: SettingsTab,
     result: SaveResult,
 ) -> AdminSettingsViewModel {
@@ -317,8 +322,9 @@ async fn build_view_model(
         nodes,
         field_errors,
     } = result;
+    let clock = views::time::Clock::for_user(admin);
     let mut monokulo_fields = monokulo_fields(state);
-    with_time_limits(&mut monokulo_fields);
+    with_time_limits(&mut monokulo_fields, &clock);
     let mut view = AdminSettingsViewModel {
         tab,
         error,
@@ -333,7 +339,7 @@ async fn build_view_model(
     };
     match fetched {
         Ok(Some((mut fields, networks))) => {
-            with_time_limits(&mut fields);
+            with_time_limits(&mut fields, &clock);
             view.scanner_configured = true;
             view.scanner_reachable = true;
             view.scanner_fields = fields;
@@ -478,11 +484,11 @@ pub async fn page(
                 notices: flash.notices,
                 ..Default::default()
             };
-            let mut view = build_view_model(&state, tab, result).await;
+            let mut view = build_view_model(&state, &admin_user, tab, result).await;
             view.saved_tab = Some(flash.tab);
             view
         }
-        None => build_view_model(&state, tab, SaveResult::default()).await,
+        None => build_view_model(&state, &admin_user, tab, SaveResult::default()).await,
     };
     if fx.0 {
         return axum::response::Html(views::admin::settings_fragment(&view, true).into_string())
@@ -1062,7 +1068,7 @@ pub async fn save(
         nodes: outcome.nodes,
         field_errors: outcome.field_errors,
     };
-    let mut view = build_view_model(&state, tab, result).await;
+    let mut view = build_view_model(&state, &admin_user, tab, result).await;
     view.saved_tab = Some(tab);
     if !fx.0 {
         return render(&state, &admin_user, view).await;
@@ -1080,7 +1086,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::Router;
-    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use crate::db::{Db, TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD};
@@ -1155,14 +1160,9 @@ mod tests {
         }
     }
 
-    async fn body_text(response: axum::response::Response) -> String {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
+    use crate::http::test_support::body_text;
 
-    fn urlencoding_encode(s: &str) -> String {
-        url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-    }
+    use crate::http::test_support::urlencoding_encode;
 
     fn form_request(method: &str, uri: &str, fields: &[(&str, &str)]) -> Request<Body> {
         let body = fields
@@ -2675,6 +2675,25 @@ mod tests {
                 .as_deref(),
             Some("x-monokulo=1"),
             "monokulo's own is untouched"
+        );
+    }
+
+    /// Development logging's end is shown in the admin's own zone, like
+    /// every other time on the page.
+    #[test]
+    fn development_logging_ends_in_the_admins_own_zone() {
+        use crate::views::admin::{AdminScalarFieldView, SettingKindView};
+        let clock = crate::views::time::Clock::new(Some("Australia/Perth"), None, 1_790_000_000);
+        let mut fields = [AdminScalarFieldView {
+            key: "logging.dev_mode_until".into(),
+            value: "1790000600".into(),
+            ..Default::default()
+        }];
+        super::with_time_limits(&mut fields, &clock);
+        assert!(
+            matches!(&fields[0].kind, SettingKindView::TimeLimit { until_label, .. } if until_label == "21 Sep, 22:23"),
+            "{:?}",
+            fields[0].kind
         );
     }
 

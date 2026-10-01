@@ -262,8 +262,6 @@ pub async fn create_connection(
 mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::Router;
-    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use crate::crypto;
@@ -291,28 +289,6 @@ mod tests {
         (state, engine)
     }
 
-    fn signup_request(email: &str, password: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/signup")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({ "email": email, "password": password }).to_string(),
-            ))
-            .unwrap()
-    }
-
-    fn login_request(email: &str, password: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/login")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({ "email": email, "password": password }).to_string(),
-            ))
-            .unwrap()
-    }
-
     fn create_connection_request(bearer: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
             .method("POST")
@@ -333,41 +309,9 @@ mod tests {
         builder.body(Body::from(body.to_string())).unwrap()
     }
 
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        serde_json::from_slice(&bytes).unwrap()
-    }
+    use crate::http::test_support::body_json;
 
-    /// Signs up and logs in a fresh user against `router`, returning their
-    /// session token.
-    async fn signed_up_and_logged_in_session_token(
-        router: &Router,
-        email: &str,
-        password: &str,
-    ) -> String {
-        let signup = router
-            .clone()
-            .oneshot(signup_request(email, password))
-            .await
-            .unwrap();
-        assert_eq!(signup.status(), StatusCode::CREATED);
-
-        let login = router
-            .clone()
-            .oneshot(login_request(email, password))
-            .await
-            .unwrap();
-        assert_eq!(login.status(), StatusCode::OK);
-        body_json(login)
-            .await
-            .as_object()
-            .unwrap()
-            .get("session_token")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string()
-    }
+    use crate::http::test_support::signed_up_and_logged_in_session_token;
 
     #[tokio::test]
     async fn a_logged_in_user_posting_valid_wallet_fields_creates_a_real_tenant_and_a_store_connections_row(

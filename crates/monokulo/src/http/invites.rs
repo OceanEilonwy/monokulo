@@ -480,7 +480,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::Router;
-    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use crate::db::{TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD};
@@ -490,14 +489,9 @@ mod tests {
         AppState::for_tests()
     }
 
-    async fn body_text(response: axum::response::Response) -> String {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
+    use crate::http::test_support::body_text;
 
-    fn urlencoding_encode(s: &str) -> String {
-        url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-    }
+    use crate::http::test_support::urlencoding_encode;
 
     fn form_request(method: &str, uri: &str, fields: &[(&str, &str)]) -> Request<Body> {
         let body = fields

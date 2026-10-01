@@ -69,6 +69,8 @@ pub mod status_page;
 pub mod store_key;
 mod telemetry_client;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
@@ -667,6 +669,11 @@ pub fn build_router(state: AppState) -> Router {
 /// time outside this extractor.
 pub struct AuthedUser(pub UserRow, pub TokenHash);
 
+/// The session `abuse::site_middleware` already resolved for this request,
+/// so [`AuthedUser`] doesn't look it up a second time.
+#[derive(Clone)]
+pub(crate) struct ResolvedSession(pub UserRow, pub TokenHash);
+
 impl FromRequestParts<AppState> for AuthedUser {
     type Rejection = ApiError;
 
@@ -674,6 +681,9 @@ impl FromRequestParts<AppState> for AuthedUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(ResolvedSession(user, hash)) = parts.extensions.get::<ResolvedSession>() {
+            return Ok(AuthedUser(user.clone(), hash.clone()));
+        }
         resolve_authed_user(state, &parts.headers)
             .await
             .map(|(user, hash)| AuthedUser(user, hash))

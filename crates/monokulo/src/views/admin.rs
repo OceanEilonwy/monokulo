@@ -232,6 +232,9 @@ pub enum SettingKindView {
     #[serde(skip)]
     TimeLimit {
         now: u64,
+        /// When it ends, in the admin's own zone like every other time on
+        /// the page.
+        until_label: String,
     },
 }
 
@@ -584,13 +587,13 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
         SettingKindView::Json => {
             html! { textarea name=(name) rows="4" id=(id) aria-describedby=[help] { (field.value) } }
         }
-        SettingKindView::TimeLimit { now } => {
+        SettingKindView::TimeLimit { now, until_label } => {
             let until: u64 = field.value.trim().parse().unwrap_or(0);
             let on = until > *now;
             html! {
                 select name=(name) id=(id) aria-describedby=[help] {
                     @if on {
-                        option value=(until) selected { "On until " (telemetry::format_unix_utc(until)) }
+                        option value=(until) selected { "On until " (until_label) }
                     }
                     option value="0" selected[!on] { "Off" }
                     @for (hours, label) in [(1, "On for 1 hour"), (4, "On for 4 hours"), (24, "On for 24 hours")] {
@@ -2223,7 +2226,10 @@ mod tests {
             key: "logging.dev_mode_until".to_string(),
             label: "logging dev mode until".to_string(),
             value: value.to_string(),
-            kind: SettingKindView::TimeLimit { now },
+            kind: SettingKindView::TimeLimit {
+                now,
+                until_label: "21 Sep, 22:23".into(),
+            },
             ..Default::default()
         };
         let off = scalar_field(&field("0")).into_string();
@@ -2250,7 +2256,7 @@ mod tests {
         let on = scalar_field(&field(&(now + 600).to_string())).into_string();
         assert!(
             on.contains(&format!(
-                r#"<option value="{}" selected>On until 2026-09-21 14:23 UTC</option>"#,
+                r#"<option value="{}" selected>On until 21 Sep, 22:23</option>"#,
                 now + 600
             )),
             "{on}"

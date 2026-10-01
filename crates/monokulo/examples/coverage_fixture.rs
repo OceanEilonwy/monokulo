@@ -54,8 +54,9 @@ async fn mark_expired(State(control): State<Controls>, Path(id): Path<String>) -
 
 #[derive(serde::Deserialize)]
 struct PaymentQuery {
-    /// Share of the order's amount paid, e.g. 0.5 for an underpayment.
-    fraction: f64,
+    /// Share of the order's amount paid, as a decimal: 0.5 for an
+    /// underpayment, 1.5 for an overpayment.
+    fraction: String,
     /// Confirmations the payment has; absent: seen in the mempool only.
     confirmations: Option<u64>,
 }
@@ -83,7 +84,9 @@ async fn record_payment(
     else {
         return StatusCode::NOT_FOUND;
     };
-    let piconero = (order.xmr_amount_piconero as f64 * query.fraction) as u64;
+    let Some(piconero) = share(order.xmr_amount_piconero, &query.fraction) else {
+        return StatusCode::BAD_REQUEST;
+    };
     match control.engine.record_order_payment(
         &id,
         shared::xmr_amount::Piconero(piconero),
@@ -92,6 +95,21 @@ async fn record_payment(
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::NOT_FOUND,
     }
+}
+
+/// `fraction` of `amount`, exactly: a positive decimal with at most nine
+/// places. Anything else (negative, zero, not a number, too large) is
+/// `None`, so a mistyped call fails instead of recording some other payment.
+fn share(amount: u64, fraction: &str) -> Option<u64> {
+    let (whole, places) = fraction.split_once('.').unwrap_or((fraction, ""));
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || !digits(whole) || !digits(places) || places.len() > 9 {
+        return None;
+    }
+    let scale = 10u128.pow(u32::try_from(places.len()).ok()?);
+    let numerator = whole.parse::<u128>().ok()? * scale + places.parse::<u128>().unwrap_or(0);
+    let paid = u128::from(amount).checked_mul(numerator)? / scale;
+    u64::try_from(paid).ok().filter(|paid| *paid > 0)
 }
 
 async fn confirm_payments(State(control): State<Controls>, Path(id): Path<String>) -> StatusCode {
@@ -338,4 +356,18 @@ async fn main() {
     )
     .await
     .expect("serve fixture");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_payment_share_is_exact_and_a_bad_one_is_refused() {
+        let amount = 12_345_678_901_234_567;
+        assert_eq!(super::share(amount, "1"), Some(amount));
+        assert_eq!(super::share(amount, "0.5"), Some(amount / 2));
+        assert_eq!(super::share(1_000, "1.25"), Some(1_250));
+        for bad in ["", "-0.5", "0", "NaN", "inf", ".5", "1e3", "0.0000000001"] {
+            assert_eq!(super::share(amount, bad), None, "{bad}");
+        }
+    }
 }
