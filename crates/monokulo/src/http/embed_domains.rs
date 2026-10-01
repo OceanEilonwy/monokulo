@@ -44,22 +44,16 @@ pub(super) fn public_key_of_pay_path(path: &str) -> Option<&str> {
 ///   `Origin` and no key, which could otherwise come from any script
 ///   anywhere.
 ///
-/// An unrestricted store's requests pass through untouched.
+/// An unrestricted store's requests pass through untouched. While the
+/// policy can't be read (the database didn't answer), nothing is taken as
+/// unrestricted: an order creation without the store's key is `503` and a
+/// page is framed by monokulo alone, since a store that restricted itself
+/// may be the one asking.
 pub async fn embed_policy_middleware(
     State(db): State<Database>,
     request: Request,
     next: Next,
 ) -> Response {
-    let policy = match public_key_of_pay_path(request.uri().path()) {
-        Some(public_key) => embed_domains::policy_for_public_key(&db, public_key).await,
-        None => None,
-    }
-    .filter(|policy| policy.restricted);
-    let Some(policy) = policy else {
-        return next.run(request).await;
-    };
-    let now = crate::now_unix();
-
     let creates_order = request.method() == Method::POST
         && request.uri().path().ends_with("/orders")
         && request.uri().path().matches('/').count() == 3;
@@ -67,6 +61,35 @@ pub async fn embed_policy_middleware(
         .extensions()
         .get::<super::store_key::StoreKeyAuthenticated>()
         .is_some();
+    let policy = match public_key_of_pay_path(request.uri().path()) {
+        Some(public_key) => embed_domains::policy_for_public_key(&db, public_key).await,
+        None => Ok(None),
+    };
+    let policy = match policy {
+        Ok(policy) => policy.filter(|policy| policy.restricted),
+        Err(_) if creates_order && !has_key => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({
+                    "error": "This store's settings can't be read right now. Please try again shortly."
+                })),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            let mut response = next.run(request).await;
+            response.headers_mut().insert(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static("frame-ancestors 'self'"),
+            );
+            return response;
+        }
+    };
+    let Some(policy) = policy else {
+        return next.run(request).await;
+    };
+    let now = crate::now_unix();
+
     if creates_order && !has_key {
         let error = match request.headers().get(header::ORIGIN) {
             Some(origin) if origin.to_str().is_ok_and(|origin| policy.allows_origin(origin, now)) => None,

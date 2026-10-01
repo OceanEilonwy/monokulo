@@ -169,7 +169,7 @@ pub(super) async fn create_connection_for_user(
     let (connection_id, user_id, public_key) =
         (id.clone(), user.id.clone(), created.public_key.clone());
     let engine_url = state.engine.client.base_url();
-    state
+    let saved = state
         .db
         .write(move |db| {
             db.create_store_connection(
@@ -198,8 +198,22 @@ pub(super) async fn create_connection_for_user(
             let _ = db.mark_store_domains_imported(&connection_id);
             Ok::<_, crate::db::DbError>(())
         })
-        .await
-        .map_err(|_| CreateConnectionError::Internal)?;
+        .await;
+    if let Err(e) = saved {
+        // The tenant exists but nothing owns it: its secret would be lost
+        // with this request, and the engine would scan for it forever. Give
+        // it back; if that fails too, name it for an operator to clean up.
+        tracing::error!(error = %e, public_key = %created.public_key, "could not save the store connection; removing its engine tenant");
+        if let Err(e) = state
+            .engine
+            .client
+            .delete_tenant(&created.secret_token)
+            .await
+        {
+            tracing::error!(error = %e, public_key = %created.public_key, "the engine tenant could not be removed either; it is orphaned");
+        }
+        return Err(CreateConnectionError::Internal);
+    }
 
     Ok(CreateConnectionOutcome {
         connection_id: id,

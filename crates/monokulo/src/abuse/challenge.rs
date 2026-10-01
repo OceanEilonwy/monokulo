@@ -76,7 +76,7 @@ impl RedeemError {
 
 pub struct Challenges {
     key: [u8; 32],
-    redeemed: Mutex<HashMap<String, i64>>,
+    redeemed: Mutex<Redeemed>,
     max_redeemed: usize,
 }
 
@@ -96,11 +96,42 @@ pub struct IssuedChallenge {
     pub expires_in: i64,
 }
 
+/// The tokens redeemed so far, each until it expires. Kept as a 16-byte
+/// digest (a token is ~220 bytes, and only "seen before" is asked of it),
+/// with expiries in order, so forgetting the expired ones means popping
+/// the buckets that are due, not walking every entry under the lock on
+/// every redemption.
+#[derive(Default)]
+struct Redeemed {
+    by_key: HashMap<[u8; 16], i64>,
+    by_expiry: std::collections::BTreeMap<i64, Vec<[u8; 16]>>,
+}
+
+impl Redeemed {
+    fn key_of(token: &str) -> [u8; 16] {
+        let digest = Sha256::digest(token.as_bytes());
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&digest[..16]);
+        key
+    }
+
+    fn forget_expired(&mut self, now: i64) {
+        while let Some(entry) = self.by_expiry.first_entry() {
+            if *entry.key() > now {
+                break;
+            }
+            for key in entry.remove() {
+                self.by_key.remove(&key);
+            }
+        }
+    }
+}
+
 impl Challenges {
     pub fn with_key(key: [u8; 32], max_redeemed: usize) -> Self {
         Challenges {
             key,
-            redeemed: Mutex::new(HashMap::new()),
+            redeemed: Mutex::new(Redeemed::default()),
             max_redeemed,
         }
     }
@@ -164,16 +195,16 @@ impl Challenges {
 
     fn remember(&self, token: &str, expires: i64, now: i64) -> Result<(), RedeemError> {
         let mut redeemed = self.redeemed.lock();
-        if redeemed.contains_key(token) {
+        redeemed.forget_expired(now);
+        let key = Redeemed::key_of(token);
+        if redeemed.by_key.contains_key(&key) {
             return Err(RedeemError::Replayed);
         }
-        if redeemed.len() >= self.max_redeemed {
-            redeemed.retain(|_, until| *until > now);
-            if redeemed.len() >= self.max_redeemed {
-                return Err(RedeemError::Full);
-            }
+        if redeemed.by_key.len() >= self.max_redeemed {
+            return Err(RedeemError::Full);
         }
-        redeemed.insert(token.to_string(), expires);
+        redeemed.by_key.insert(key, expires);
+        redeemed.by_expiry.entry(expires).or_default().push(key);
         Ok(())
     }
 
@@ -380,6 +411,42 @@ mod tests {
             challenges.redeem_proof(&format!("{late}.1"), &client(1), 1011),
             Err(RedeemError::Malformed)
         );
+    }
+
+    /// Forgetting expired tokens is by expiry order, so a full memory of
+    /// mostly-expired tokens frees as soon as they are due and a redeemed
+    /// token is still refused a second time meanwhile.
+    #[test]
+    fn expired_tokens_are_forgotten_in_order_and_live_ones_still_refuse_replay() {
+        let challenges = Challenges::with_key([1; 32], 3);
+        let early = challenges.issue_wait(&client(1), 0);
+        challenges
+            .redeem_wait(&early, &client(1), WAIT_SECS)
+            .unwrap();
+        let late = challenges.issue_wait(&client(2), 100);
+        challenges
+            .redeem_wait(&late, &client(2), 100 + WAIT_SECS)
+            .unwrap();
+        assert_eq!(
+            challenges.redeem_wait(&late, &client(2), 100 + WAIT_SECS + 1),
+            Err(RedeemError::Replayed)
+        );
+        let redeemed = challenges.redeemed.lock();
+        assert_eq!(redeemed.by_key.len(), 2);
+        drop(redeemed);
+        // Past `early`'s expiry (but not `late`'s): one forgotten, one kept.
+        let after_early = WAIT_SECS + WAIT_TTL_SECS + 1;
+        let third = challenges.issue_wait(&client(3), after_early - WAIT_SECS);
+        challenges
+            .redeem_wait(&third, &client(3), after_early)
+            .unwrap();
+        let redeemed = challenges.redeemed.lock();
+        assert_eq!(
+            redeemed.by_key.len(),
+            2,
+            "early forgotten, late and third kept"
+        );
+        assert_eq!(redeemed.by_expiry.len(), 2);
     }
 
     #[test]

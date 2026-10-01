@@ -712,8 +712,10 @@ fn embed_cors_layer(state: &AppState) -> tower_http::cors::CorsLayer {
                 return false;
             };
             match crate::embed_domains::policy_for_public_key(&db, &public_key).await {
-                Some(policy) => policy.allows_origin(origin, crate::now_unix()),
-                None => true,
+                Ok(Some(policy)) => policy.allows_origin(origin, crate::now_unix()),
+                Ok(None) => true,
+                // Not knowing is not permission.
+                Err(_) => false,
             }
         }
     }))

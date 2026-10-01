@@ -92,9 +92,18 @@ pub fn anonymous_identity(
         return Some(peer.identity());
     }
     let ConnectInfo(peer) = extensions.get::<ConnectInfo<SocketAddr>>()?;
-    let forwarded_for = headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok());
+    // Every `X-Forwarded-For` line, in order, as one list: a proxy that
+    // adds a line of its own instead of appending to the client's leaves
+    // the client's own line first, and reading only that would let the
+    // client name any address it likes. A line that isn't text ends the
+    // walk at the peer rather than being skipped.
+    let lines: Vec<&str> = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .map(|value| value.to_str().unwrap_or("?"))
+        .collect();
+    let joined = lines.join(",");
+    let forwarded_for = (!joined.is_empty()).then_some(joined.as_str());
     let address = identity::client_address(peer.ip(), forwarded_for, trusted);
     // The request span recorded the connecting peer; behind a trusted proxy
     // this is the real client (truncated to its network when written out).
@@ -475,8 +484,17 @@ mod tests {
         peer: &str,
         forwarded_for: Option<&str>,
     ) -> StatusCode {
+        status_from_lines(router, peer, forwarded_for.into_iter().collect()).await
+    }
+
+    /// `status_from` with one `X-Forwarded-For` header line per entry.
+    async fn status_from_lines(
+        router: &axum::Router,
+        peer: &str,
+        forwarded_for: Vec<&str>,
+    ) -> StatusCode {
         let mut builder = Request::builder().uri("/pay/pk_unknown/orders/o1/status");
-        if let Some(value) = forwarded_for {
+        for value in forwarded_for {
             builder = builder.header("x-forwarded-for", value);
         }
         let mut request = builder.body(Body::empty()).unwrap();
@@ -527,6 +545,19 @@ mod tests {
         );
         assert_eq!(
             status_from(&router, "[2001:db8:1:2::ffff]:1", None).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+
+        // A proxy that adds its own header line (rather than appending to
+        // the client's) still identifies the client by the line it added:
+        // the client's own first line names whatever it likes, to no
+        // effect. Two such requests from one client are one budget.
+        assert_eq!(
+            status_from_lines(&router, "127.0.0.1:2000", vec!["9.9.9.9", "198.51.100.7"]).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_from_lines(&router, "127.0.0.1:2001", vec!["8.8.8.8", "198.51.100.7"]).await,
             StatusCode::TOO_MANY_REQUESTS
         );
     }

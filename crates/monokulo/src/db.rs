@@ -134,6 +134,11 @@ pub struct Db {
 /// cookie, for as long as the row existed.
 pub const SESSION_LIFETIME_SECONDS: i64 = 30 * 24 * 60 * 60;
 
+/// How long an invite link can be redeemed after it was made: 14 days. A
+/// link that never expired would stay good for an account for as long as
+/// the row existed, in an inbox or an unactioned request's row.
+pub const INVITE_LIFETIME_SECONDS: i64 = 14 * 24 * 60 * 60;
+
 #[derive(Debug, Clone)]
 pub struct PosOrderRow {
     pub order_id: OrderId,
@@ -1881,6 +1886,17 @@ impl Db {
     /// with no separate "generate" step - but they're two separate calls,
     /// not one, since a standalone invite link (the admin invites page's
     /// own "create invite link" button) has no request to attach to at all.
+    /// Whether `email` has an invite request the admin hasn't actioned.
+    pub fn has_pending_invite_request(&self, email: &str) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM invite_requests WHERE email = ?1 AND actioned = 0)",
+                params![email],
+                |row| row.get(0),
+            )
+            .map_err(DbError::from)
+    }
+
     pub fn create_invite_request(
         &self,
         id: &str,
@@ -2029,7 +2045,8 @@ impl Db {
     /// Redeems a presented invite token and creates the account it grants,
     /// in one transaction: the token is claimed (a single `UPDATE ... WHERE
     /// used_at_utc IS NULL`, checked by its affected-row count, so an
-    /// invalid or already-used token can never result in a free account),
+    /// invalid, already-used or expired ([`INVITE_LIFETIME_SECONDS`]) token
+    /// can never result in a free account),
     /// the account is created, and the originating request is cleared, or
     /// none of it is. An account that can't be created (the email is
     /// taken) leaves the invite unclaimed, for the person to try again
@@ -2047,8 +2064,8 @@ impl Db {
         // `REFERENCES users (id)` this connection enforces - that column is
         // filled in once `user_id` exists as a row).
         let claimed = tx.execute(
-            "UPDATE invite_links SET used_at_utc = ?2 WHERE token_hash = ?1 AND used_at_utc IS NULL",
-            params![token_hash, now],
+            "UPDATE invite_links SET used_at_utc = ?2 WHERE token_hash = ?1 AND used_at_utc IS NULL AND created_at_utc >= ?3",
+            params![token_hash, now, now.saturating_sub(INVITE_LIFETIME_SECONDS)],
         )?;
         if claimed == 0 {
             return Ok(RedeemInviteResult::InvalidOrAlreadyUsed);
@@ -4153,6 +4170,34 @@ mod tests {
             db.find_session(&th("old"), 1000).unwrap().is_none(),
             "the expired row is gone, whatever clock asks"
         );
+    }
+
+    /// An invite link is good for `INVITE_LIFETIME_SECONDS` and no longer.
+    #[test]
+    fn an_invite_link_expires() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_invite_link("link-1", &th("hash-1"), None, None, 1000)
+            .unwrap();
+        let late = db
+            .redeem_invite_and_create_user(
+                &th("hash-1"),
+                &shared::ids::UserId::new("user-1"),
+                "a@example.com",
+                "hash",
+                1000 + INVITE_LIFETIME_SECONDS + 1,
+            )
+            .unwrap();
+        assert_eq!(late, RedeemInviteResult::InvalidOrAlreadyUsed);
+        let in_time = db
+            .redeem_invite_and_create_user(
+                &th("hash-1"),
+                &shared::ids::UserId::new("user-1"),
+                "a@example.com",
+                "hash",
+                1000 + INVITE_LIFETIME_SECONDS,
+            )
+            .unwrap();
+        assert_eq!(in_time, RedeemInviteResult::Created);
     }
 
     /// First-run setup makes one admin, once: a second submission (a race,
