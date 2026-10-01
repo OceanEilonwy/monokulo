@@ -319,6 +319,14 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     ) -> Result<HashMap<String, TxLocation>, DaemonError> {
         self.one(|c| c.locate_transactions(txids)).await
     }
+    /// Deliberately every node, not just the pinned one: see
+    /// `FallbackDaemonClient::locate_transaction_corroborated`.
+    async fn locate_transaction_corroborated(
+        &self,
+        txid: &str,
+    ) -> Result<Option<TxLocation>, DaemonError> {
+        self.inner.locate_transaction_corroborated(txid).await
+    }
     async fn find_transaction(
         &self,
         txid: &str,
@@ -419,6 +427,53 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         txid: &str,
     ) -> Result<Option<(FetchedTx, TxLocation)>, DaemonError> {
         self.failover(|c| c.find_transaction(txid)).await
+    }
+
+    /// Every node at once, like `is_key_image_spent_corroborated`, and for
+    /// the same reason: `NotFound` is what a real payment gets voided on. A
+    /// node that places the transaction wins over any number that don't
+    /// (a block over the pool): a node can lag, be on a losing fork, or
+    /// lie, but a transaction it can show is one that exists. `NotFound`
+    /// only when every node that answered says so; an error when none did.
+    /// With one node there is no second opinion (`None`), as for any
+    /// single-node client.
+    async fn locate_transaction_corroborated(
+        &self,
+        txid: &str,
+    ) -> Result<Option<TxLocation>, DaemonError> {
+        if self.nodes.len() < 2 {
+            return Ok(None);
+        }
+        let answers = futures_util::future::join_all(
+            self.nodes
+                .iter()
+                .map(|node| node.client.locate_transaction(txid)),
+        )
+        .await;
+        let mut best: Option<TxLocation> = None;
+        for (node, answer) in self.nodes.iter().zip(answers) {
+            match answer {
+                Ok(location) => {
+                    let rank = |location: &TxLocation| match location {
+                        TxLocation::InBlock(_) => 2,
+                        TxLocation::InPool => 1,
+                        TxLocation::NotFound => 0,
+                    };
+                    if best.is_none_or(|current| rank(&location) > rank(&current)) {
+                        best = Some(location);
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    node = %node.label,
+                    error = %e,
+                    "monero daemon fallback: node unreachable while locating a transaction, excluded from \
+                     corroboration"
+                ),
+            }
+        }
+        best.map(Some).ok_or_else(|| {
+            DaemonError::Request("no nodes reachable to locate a transaction".to_string())
+        })
     }
 
     async fn is_key_image_spent(
@@ -691,6 +746,8 @@ mod tests {
     struct KeyImageDaemonClient {
         statuses: Vec<KeyImageStatus>,
         unreachable: bool,
+        /// Where it places any transaction (`locate_transaction`).
+        location: TxLocation,
     }
 
     impl KeyImageDaemonClient {
@@ -698,6 +755,7 @@ mod tests {
             Self {
                 statuses,
                 unreachable: false,
+                location: TxLocation::NotFound,
             }
         }
 
@@ -705,6 +763,15 @@ mod tests {
             Self {
                 statuses: vec![],
                 unreachable: true,
+                location: TxLocation::NotFound,
+            }
+        }
+
+        fn placing(location: TxLocation) -> Self {
+            Self {
+                statuses: vec![],
+                unreachable: false,
+                location,
             }
         }
     }
@@ -736,7 +803,12 @@ mod tests {
         }
 
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
-            unimplemented!("not exercised by these tests")
+            if self.unreachable {
+                return Err(DaemonError::Request(
+                    "key image daemon is unreachable".to_string(),
+                ));
+            }
+            Ok(self.location)
         }
         async fn is_key_image_spent(
             &self,
@@ -761,6 +833,62 @@ mod tests {
             label: label.to_string(),
             client: Arc::new(client),
         }
+    }
+
+    #[tokio::test]
+    async fn a_transaction_is_nowhere_only_when_every_reachable_node_says_so() {
+        // One node's "not found" voids a real payment on its own otherwise:
+        // its own inputs are spent on every node (by it), so nothing else
+        // corroborates the absence.
+        let one_places_it = FallbackDaemonClient::new(vec![
+            ki_node("a", KeyImageDaemonClient::placing(TxLocation::NotFound)),
+            ki_node("b", KeyImageDaemonClient::placing(TxLocation::InBlock(7))),
+            ki_node("c", KeyImageDaemonClient::placing(TxLocation::InPool)),
+        ]);
+        assert_eq!(
+            one_places_it
+                .locate_transaction_corroborated("tx")
+                .await
+                .unwrap(),
+            Some(TxLocation::InBlock(7)),
+            "a block over the pool, over nowhere"
+        );
+        let all_nowhere = FallbackDaemonClient::new(vec![
+            ki_node("a", KeyImageDaemonClient::placing(TxLocation::NotFound)),
+            ki_node("b", KeyImageDaemonClient::unreachable()),
+            ki_node("c", KeyImageDaemonClient::placing(TxLocation::NotFound)),
+        ]);
+        assert_eq!(
+            all_nowhere
+                .locate_transaction_corroborated("tx")
+                .await
+                .unwrap(),
+            Some(TxLocation::NotFound),
+            "an unreachable node has no say"
+        );
+        let none_reachable = FallbackDaemonClient::new(vec![
+            ki_node("a", KeyImageDaemonClient::unreachable()),
+            ki_node("b", KeyImageDaemonClient::unreachable()),
+        ]);
+        assert!(none_reachable
+            .locate_transaction_corroborated("tx")
+            .await
+            .is_err());
+        let single = FallbackDaemonClient::new(vec![ki_node(
+            "only",
+            KeyImageDaemonClient::placing(TxLocation::NotFound),
+        )]);
+        assert_eq!(
+            single.locate_transaction_corroborated("tx").await.unwrap(),
+            None,
+            "one node has no second opinion to give"
+        );
+        // The pinned handle asks every node too.
+        let pinned = one_places_it.pin();
+        assert_eq!(
+            pinned.locate_transaction_corroborated("tx").await.unwrap(),
+            Some(TxLocation::InBlock(7))
+        );
     }
 
     #[tokio::test]

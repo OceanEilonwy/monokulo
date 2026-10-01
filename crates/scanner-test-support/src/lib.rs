@@ -380,6 +380,7 @@ impl TestEngineHandle {
                 &payment.key_images_json,
                 payment.first_seen_at,
                 Some(PAYMENT_HEIGHT),
+                None,
             )?;
         }
         scanner::scanner::recompute_and_notify(
@@ -422,6 +423,7 @@ impl TestEngineHandle {
             "[]",
             now,
             confirmations.map(|_| PAYMENT_HEIGHT),
+            None,
         )?;
         let tip = PAYMENT_HEIGHT as u64 + confirmations.unwrap_or(1).max(1) - 1;
         scanner::scanner::recompute_and_notify(

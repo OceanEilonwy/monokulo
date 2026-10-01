@@ -875,6 +875,7 @@ fn commit(
                     &staged.key_images_json,
                     staged.seen_at,
                     Some(crate::store::sql_height(height)?),
+                    staged.output_key.as_deref(),
                 )?;
             }
             for scan in &scanned.scans {

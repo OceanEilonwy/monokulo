@@ -103,6 +103,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (19, include_str!("../migrations/0019_scanner_work.sql")),
     (20, include_str!("../migrations/0020_scanner_indexes.sql")),
+    (
+        21,
+        include_str!("../migrations/0021_payment_output_keys.sql"),
+    ),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -417,6 +421,8 @@ pub struct OrderPaymentRow {
     pub first_seen_at: i64,
     pub block_height: Option<i64>,
     pub voided_at: Option<i64>,
+    /// The output's one-time key (hex); `None` for a row recorded without it.
+    pub output_key: Option<String>,
 }
 
 pub struct StagedMatch<'a> {
@@ -428,6 +434,8 @@ pub struct StagedMatch<'a> {
     pub amount: u64,
     pub key_images_json: &'a str,
     pub seen_at: i64,
+    /// The output's one-time key (hex), for `record_payment_match`.
+    pub output_key: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -491,7 +499,10 @@ struct StatusPlan {
 /// and when the order can next change without a payment changing.
 fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     let order = facts.order;
-    let amount_received: u64 = facts.views.iter().map(|v| v.amount_piconero).sum();
+    let amount_received = facts
+        .views
+        .iter()
+        .fold(0u64, |sum, v| sum.saturating_add(v.amount_piconero));
     let confirmations = facts
         .views
         .iter()
@@ -951,8 +962,12 @@ impl Store {
             sealed_key_material: row.get("sealed_key_material")?,
             primary_address: row.get("primary_address")?,
             network: row.get("network")?,
-            next_minor_index: row.get::<_, i64>("next_minor_index")? as u32,
-            confirmations_required: row.get::<_, i64>("confirmations_required")? as u64,
+            next_minor_index: row
+                .get::<_, shared::sqlite::Unsigned<u32>>("next_minor_index")?
+                .0,
+            confirmations_required: row
+                .get::<_, shared::sqlite::Unsigned<u64>>("confirmations_required")?
+                .0,
             order_expiry_seconds: row.get("order_expiry_seconds")?,
             created_at: row.get("created_at_utc")?,
             disabled_at: row.get("disabled_at_utc")?,
@@ -1001,7 +1016,10 @@ impl Store {
         )?;
         let rows = stmt
             .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -1043,7 +1061,10 @@ impl Store {
         )?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
+                ))
             })?
             .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
         Ok(rows)
@@ -1389,12 +1410,20 @@ impl Store {
             id: row.get("id")?,
             tenant_id: row.get("tenant_id")?,
             merchant_order_id: row.get("merchant_order_id")?,
-            minor_index: row.get::<_, i64>("minor_index")? as u32,
+            minor_index: row
+                .get::<_, shared::sqlite::Unsigned<u32>>("minor_index")?
+                .0,
             address: row.get("address")?,
-            xmr_amount_piconero: row.get::<_, i64>("xmr_amount_piconero")? as u64,
-            amount_received_piconero: row.get::<_, i64>("amount_received_piconero")? as u64,
+            xmr_amount_piconero: row
+                .get::<_, shared::sqlite::Unsigned<u64>>("xmr_amount_piconero")?
+                .0,
+            amount_received_piconero: row
+                .get::<_, shared::sqlite::Unsigned<u64>>("amount_received_piconero")?
+                .0,
             status: status_from_str(&status_str)?,
-            confirmations: row.get::<_, i64>("confirmations")? as u64,
+            confirmations: row
+                .get::<_, shared::sqlite::Unsigned<u64>>("confirmations")?
+                .0,
             double_spend_detected_at: row.get("double_spend_detected_at_utc")?,
             refund_address: row.get("refund_address")?,
             description: row.get("description")?,
@@ -1487,6 +1516,15 @@ impl Store {
     /// already-mined transaction can never null out a height that is already known -
     /// and the `WHERE` guard stops a duplicate insert from resurrecting a payment
     /// that reorg reconciliation has already voided.
+    ///
+    /// `output_key` is the output's one-time key (hex). Only one output is
+    /// ever credited per key: a second output (another transaction, or
+    /// another index) carrying a key already credited to an unvoided payment
+    /// (the "burning bug": the sender reused a transaction key, and only one
+    /// of the two can be spent) is refused and returns `false`. The same
+    /// output credited to two orders (see migration 0004) is not that: it is
+    /// one output, spendable once, that both orders see. `None` records the
+    /// payment without the check.
     #[allow(clippy::too_many_arguments)]
     pub fn record_payment_match(
         &self,
@@ -1497,7 +1535,29 @@ impl Store {
         key_images_json: &str,
         first_seen_at: i64,
         block_height: Option<i64>,
+        output_key: Option<&str>,
     ) -> Result<bool> {
+        if let Some(output_key) = output_key {
+            let burned: Option<(OrderId, String, i64)> = self
+                .conn
+                .query_row(
+                    "SELECT order_id, txid, output_index FROM order_payments
+                     WHERE output_key = ?1 AND voided_at_utc IS NULL
+                       AND NOT (txid = ?2 AND output_index = ?3)
+                     LIMIT 1",
+                    params![output_key, txid, output_index],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            if let Some((credited_order, credited_txid, credited_output)) = burned {
+                tracing::warn!(
+                    order.id = %order_id, tx.id = txid, output_index,
+                    credited.order.id = %credited_order, credited.tx.id = credited_txid, credited.output_index = credited_output,
+                    "an output carries a one-time key already credited to a payment; only one of the two can be spent, so it is not credited"
+                );
+                return Ok(false);
+            }
+        }
         // Whether this is a genuinely new row has to be established before the
         // upsert: with `DO UPDATE`, `execute`'s changed-row count is 1 for both
         // paths and can't distinguish them. Two connections write (the database
@@ -1517,19 +1577,21 @@ impl Store {
         let already_present = existing_height.is_some();
         self.conn.execute(
             "INSERT INTO order_payments (order_id, txid, output_index, amount_piconero,
-                key_images_json, first_seen_at_utc, block_height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                key_images_json, first_seen_at_utc, block_height, output_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(order_id, txid, output_index) DO UPDATE SET
-                 block_height = COALESCE(excluded.block_height, order_payments.block_height)
+                 block_height = COALESCE(excluded.block_height, order_payments.block_height),
+                 output_key = COALESCE(order_payments.output_key, excluded.output_key)
              WHERE order_payments.voided_at_utc IS NULL",
             params![
                 order_id,
                 txid,
                 output_index,
-                amount_piconero as i64,
+                shared::sqlite::Unsigned(amount_piconero),
                 key_images_json,
                 first_seen_at,
-                block_height
+                block_height,
+                output_key
             ],
         )?;
         // The mempool poll re-reports every unconfirmed payment about once a
@@ -1637,11 +1699,14 @@ impl Store {
             order_id: row.get("order_id")?,
             txid: row.get("txid")?,
             output_index: row.get("output_index")?,
-            amount_piconero: row.get::<_, i64>("amount_piconero")? as u64,
+            amount_piconero: row
+                .get::<_, shared::sqlite::Unsigned<u64>>("amount_piconero")?
+                .0,
             key_images_json: row.get("key_images_json")?,
             first_seen_at: row.get("first_seen_at_utc")?,
             block_height: row.get("block_height")?,
             voided_at: row.get("voided_at_utc")?,
+            output_key: row.get("output_key")?,
         })
     }
 
@@ -1903,10 +1968,10 @@ impl Store {
     pub fn stage_partial_match(&self, matched: StagedMatch<'_>) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO partial_block_matches
-             (network, tenant_id, order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (network, tenant_id, order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc, output_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![shared::network::SqlNetwork(matched.network), matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
-                matched.amount as i64, matched.key_images_json, matched.seen_at],
+                shared::sqlite::Unsigned(matched.amount), matched.key_images_json, matched.seen_at, matched.output_key],
         )?;
         Ok(())
     }
@@ -2019,7 +2084,10 @@ impl Store {
         )?;
         let rows = stmt
             .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                Ok((row.get::<_, TenantId>(0)?, row.get::<_, i64>(1)? as u64))
+                Ok((
+                    row.get::<_, TenantId>(0)?,
+                    row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -2270,7 +2338,7 @@ impl Store {
                     order_id: row.get(2)?,
                     event_type: row.get(3)?,
                     payload_json: row.get(4)?,
-                    attempt_count: row.get::<_, i64>(5)? as u32,
+                    attempt_count: row.get::<_, shared::sqlite::Unsigned<u32>>(5)?.0,
                     url: row.get(6)?,
                     extra_headers_json: row.get(7)?,
                     signing_secret: live_settings::Secret::new(row.get::<_, String>(8)?),
@@ -2288,7 +2356,12 @@ impl Store {
                 "SELECT COUNT(*), MIN(next_attempt_at_utc) FROM webhook_deliveries
                  WHERE delivered_at_utc IS NULL AND next_attempt_at_utc <= ?1",
                 params![now],
-                |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, Option<i64>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, shared::sqlite::Unsigned<u64>>(0)?.0,
+                        row.get::<_, Option<i64>>(1)?,
+                    ))
+                },
             )
             .map_err(Into::into)
     }
@@ -2311,7 +2384,7 @@ impl Store {
                     order_id: row.get(2)?,
                     event_type: row.get(3)?,
                     payload_json: row.get(4)?,
-                    attempt_count: row.get::<_, i64>(5)? as u32,
+                    attempt_count: row.get::<_, shared::sqlite::Unsigned<u32>>(5)?.0,
                     url: row.get(6)?,
                     extra_headers_json: row.get(7)?,
                     signing_secret: live_settings::Secret::new(row.get::<_, String>(8)?),
@@ -2923,7 +2996,7 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         store
-            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1000, Some(1))
+            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1000, Some(1), None)
             .unwrap();
         drop(store);
         let store = Store::open_file(path.to_str().unwrap()).unwrap();
@@ -2939,7 +3012,7 @@ mod tests {
             .is_empty());
         store.clear_pending_payment_recompute(&order.id).unwrap();
         store
-            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1001, Some(1))
+            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1001, Some(1), None)
             .unwrap();
         assert!(
             store
@@ -3172,10 +3245,10 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         let first = store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None)
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None, None)
             .unwrap();
         let second = store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None)
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None, None)
             .unwrap();
 
         assert!(first);
@@ -3194,7 +3267,7 @@ mod tests {
         assert_eq!(order.status, OrderStatus::Pending);
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50), None)
             .unwrap();
         let (old, new) = store.recompute_order_status(&order.id, 59, 1600).unwrap(); // 10 confirmations
         assert_eq!(old, OrderStatus::Pending);
@@ -3233,7 +3306,7 @@ mod tests {
         assert_eq!(order.confirmations_required_override, Some(2));
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50), None)
             .unwrap();
         // current_height 51, payment mined at 50 -> 2 confirmations.
         let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
@@ -3252,7 +3325,7 @@ mod tests {
         assert_eq!(order.confirmations_required_override, None);
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50), None)
             .unwrap();
         // Same 2-confirmation depth as the override test above, but with no
         // override this must still be short of the tenant's default of 10.
@@ -3275,10 +3348,10 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         store
-            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50))
+            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50), None)
             .unwrap();
         store
-            .record_payment_match(&order.id, "tx_b", 0, 40, "[\"ki_b\"]", 1500, Some(50))
+            .record_payment_match(&order.id, "tx_b", 0, 40, "[\"ki_b\"]", 1500, Some(50), None)
             .unwrap();
         let (_, paid) = store.recompute_order_status(&order.id, 59, 1600).unwrap();
         assert_eq!(paid, OrderStatus::Paid);
@@ -3307,10 +3380,19 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         store
-            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50))
+            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50), None)
             .unwrap();
         store
-            .record_payment_match(&order.id, "tx_c", 0, 100, "[\"ki_c\"]", 1500, Some(50))
+            .record_payment_match(
+                &order.id,
+                "tx_c",
+                0,
+                100,
+                "[\"ki_c\"]",
+                1500,
+                Some(50),
+                None,
+            )
             .unwrap();
         let (_, before_void) = store.recompute_order_status(&order.id, 59, 1600).unwrap();
         assert_eq!(before_void, OrderStatus::Overpaid); // 160 total against an expected 100
@@ -3358,16 +3440,25 @@ mod tests {
 
         // First sighting in the mempool, then the same sighting again (the ~1s mempool poll).
         store
-            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None)
+            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None, None)
             .unwrap();
         assert_eq!(drain_changes(&mut changes), expected);
         store
-            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None)
+            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None, None)
             .unwrap();
         assert!(drain_changes(&mut changes).is_empty());
         // Mined: the height is new information.
         store
-            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, Some(90))
+            .record_payment_match(
+                &order.id,
+                "tx1",
+                0,
+                1,
+                "[]",
+                order.created_at,
+                Some(90),
+                None,
+            )
             .unwrap();
         assert_eq!(drain_changes(&mut changes), expected);
 
@@ -3785,13 +3876,31 @@ mod tests {
         let mined_order = new_order(&store, tenant.tenant.id.as_str(), 2);
         let voided_order = new_order(&store, tenant.tenant.id.as_str(), 3);
         store
-            .record_payment_match(&mempool_order.id, "tx_pool", 0, 100, "[]", 1500, None)
+            .record_payment_match(&mempool_order.id, "tx_pool", 0, 100, "[]", 1500, None, None)
             .unwrap();
         store
-            .record_payment_match(&mined_order.id, "tx_mined", 0, 100, "[]", 1500, Some(50))
+            .record_payment_match(
+                &mined_order.id,
+                "tx_mined",
+                0,
+                100,
+                "[]",
+                1500,
+                Some(50),
+                None,
+            )
             .unwrap();
         store
-            .record_payment_match(&voided_order.id, "tx_voided", 0, 100, "[]", 1500, None)
+            .record_payment_match(
+                &voided_order.id,
+                "tx_voided",
+                0,
+                100,
+                "[]",
+                1500,
+                None,
+                None,
+            )
             .unwrap();
         store
             .void_payment(&voided_order.id, "tx_voided", 0, 1600)
@@ -3819,6 +3928,7 @@ mod tests {
                 100,
                 "[]",
                 1500,
+                None,
                 None,
             )
             .unwrap();
@@ -3851,7 +3961,16 @@ mod tests {
         for index in 1..=3 {
             let order = new_order(&store, tenant.tenant.id.as_str(), index);
             store
-                .record_payment_match(&order.id, &format!("tx_{index}"), 0, 100, "[]", 1500, None)
+                .record_payment_match(
+                    &order.id,
+                    &format!("tx_{index}"),
+                    0,
+                    100,
+                    "[]",
+                    1500,
+                    None,
+                    None,
+                )
                 .unwrap();
         }
         let first = store
@@ -3895,7 +4014,7 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         assert!(store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None)
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None, None)
             .unwrap());
         assert_eq!(
             store.get_all_payments(&order.id).unwrap()[0].block_height,
@@ -3904,7 +4023,7 @@ mod tests {
 
         // Same output, now seen inside a block - the row must learn its height.
         assert!(!store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, Some(50))
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, Some(50), None)
             .unwrap());
         let payments = store.get_all_payments(&order.id).unwrap();
         assert_eq!(
@@ -3934,10 +4053,10 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50))
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50), None)
             .unwrap();
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None)
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None, None)
             .unwrap();
 
         assert_eq!(
@@ -3957,12 +4076,12 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None)
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None, None)
             .unwrap();
         assert!(store.void_payment(&order.id, "txabc", 0, 1600).unwrap());
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1700, Some(50))
+            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1700, Some(50), None)
             .unwrap();
         let payments = store.get_all_payments(&order.id).unwrap();
         assert_eq!(payments.len(), 1);
@@ -3988,10 +4107,10 @@ mod tests {
         let order_b = new_order(&store, tenant_b.tenant.id.as_str(), 1);
 
         assert!(store
-            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1500, Some(50))
+            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1500, Some(50), None)
             .unwrap());
         assert!(store
-            .record_payment_match(&order_b.id, "shared_tx", 0, 100, "[]", 1500, Some(50))
+            .record_payment_match(&order_b.id, "shared_tx", 0, 100, "[]", 1500, Some(50), None)
             .unwrap());
 
         assert_eq!(store.get_all_payments(&order_a.id).unwrap().len(), 1);
@@ -3999,7 +4118,7 @@ mod tests {
 
         // Within one order it is still an idempotent no-op, exactly as before.
         assert!(!store
-            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1600, Some(50))
+            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1600, Some(50), None)
             .unwrap());
         assert_eq!(store.get_all_payments(&order_a.id).unwrap().len(), 1);
     }
@@ -4010,7 +4129,7 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         store
-            .record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+            .record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50), None)
             .unwrap();
         store.void_payment(&order.id, "tx_a", 0, 1600).unwrap();
         store.mark_double_spend_detected(&order.id, 1600).unwrap();
@@ -4251,7 +4370,8 @@ mod tests {
                 100,
                 "[]",
                 1700,
-                Some(77)
+                Some(77),
+                None
             )
             .unwrap());
 
@@ -4279,6 +4399,7 @@ mod tests {
             vec![
                 "order_payments_confirmed_height_idx".to_string(),
                 "order_payments_order_idx".to_string(),
+                "order_payments_output_key_idx".to_string(),
                 "order_payments_unconfirmed_idx".to_string(),
                 "order_payments_voided_idx".to_string(),
             ],
@@ -4408,7 +4529,7 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         let result: Result<()> = store.in_transaction(|s| {
-            s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))?;
+            s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50), None)?;
             s.mark_double_spend_detected(&order.id, 1600)?;
             Err(StoreError::NotFound)
         });
@@ -4427,7 +4548,7 @@ mod tests {
         // And the successful case commits normally.
         store
             .in_transaction(|s| {
-                s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50))
+                s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50), None)
             })
             .unwrap();
         assert_eq!(store.get_all_payments(&order.id).unwrap().len(), 1);

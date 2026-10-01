@@ -2424,6 +2424,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
                 "[]",
                 crate::now_unix(),
                 Some(10),
+                None,
             )
             .unwrap();
         crate::scanner::recompute_and_notify(

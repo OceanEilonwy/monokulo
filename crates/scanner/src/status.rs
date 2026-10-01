@@ -44,11 +44,34 @@ pub struct StatusInputs {
 /// (if any) the order belonged to; a tier's own `confirmations_required` sitting *on*
 /// the ladder doesn't have that problem.
 pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderStatus {
-    let total: u64 = payments.iter().map(|p| p.amount_piconero).sum();
-    let min_confirmations = payments.iter().map(|p| p.confirmations).min().unwrap_or(0);
-    let all_zero_conf = !payments.is_empty() && payments.iter().all(|p| p.is_zero_conf);
+    // Saturating: amounts are decrypted from the chain, and a sum that wraps
+    // could turn an overpayment into a partial one.
+    let total = payments
+        .iter()
+        .fold(0u64, |sum, p| sum.saturating_add(p.amount_piconero));
 
     if total >= inputs.xmr_amount_piconero {
+        // The order is judged by the payments that cover its amount, deepest
+        // first: a later payment to the same address (dust, or a second
+        // overpayment still in the pool) never walks a paid order back to
+        // `confirming`, and no `order.confirming` follows an `order.paid`.
+        let mut by_depth: Vec<&PaymentView> = payments.iter().collect();
+        by_depth.sort_by(|a, b| {
+            b.confirmations
+                .cmp(&a.confirmations)
+                .then(a.is_zero_conf.cmp(&b.is_zero_conf))
+        });
+        let mut covered = 0u64;
+        let mut covering = Vec::with_capacity(by_depth.len());
+        for payment in by_depth {
+            covering.push(payment);
+            covered = covered.saturating_add(payment.amount_piconero);
+            if covered >= inputs.xmr_amount_piconero {
+                break;
+            }
+        }
+        let min_confirmations = covering.iter().map(|p| p.confirmations).min().unwrap_or(0);
+        let all_zero_conf = !covering.is_empty() && covering.iter().all(|p| p.is_zero_conf);
         let sufficiently_confirmed = min_confirmations >= inputs.confirmations_required;
 
         if sufficiently_confirmed {
@@ -310,14 +333,22 @@ mod tests {
     }
 
     #[test]
-    fn a_zeroed_but_present_row_is_not_a_safe_substitute_for_exclusion() {
-        // This function has no concept of "voided" - it trusts the caller to fully
-        // remove voided rows from the slice, not merely zero out their amount.
-        // Demonstrating the divergence here documents *why* that contract matters:
-        // a lingering zero-amount row still participates in `min_confirmations` and
-        // `all_zero_conf`, silently downgrading a `Paid` order to `Confirming` even
-        // though it contributes nothing financially.
-        let zeroed_but_present = [
+    fn a_later_payment_to_a_paid_order_never_walks_it_back_to_confirming() {
+        // Anyone can send more to the order's address after it is paid: dust,
+        // or a customer paying twice. The order is judged by the payments
+        // that cover it, so the newcomer - still in the pool, or a block deep
+        // - changes nothing but the total.
+        let paid = [confirmed(100, 10)];
+        assert_eq!(
+            derive_status(&paid, inputs(100, 10, 500, 1000)),
+            OrderStatus::Paid
+        );
+        let with_dust = [confirmed(100, 10), zero_conf(1)];
+        assert_eq!(
+            derive_status(&with_dust, inputs(100, 10, 500, 1000)),
+            OrderStatus::Overpaid
+        );
+        let with_zero = [
             confirmed(100, 10),
             PaymentView {
                 amount_piconero: 0,
@@ -325,14 +356,47 @@ mod tests {
                 is_zero_conf: true,
             },
         ];
-        let properly_excluded = [confirmed(100, 10)];
         assert_eq!(
-            derive_status(&properly_excluded, inputs(100, 10, 500, 1000)),
+            derive_status(&with_zero, inputs(100, 10, 500, 1000)),
             OrderStatus::Paid
         );
+        let second_overpayment = [confirmed(100, 10), confirmed(100, 1)];
         assert_eq!(
-            derive_status(&zeroed_but_present, inputs(100, 10, 500, 1000)),
+            derive_status(&second_overpayment, inputs(100, 10, 500, 1000)),
+            OrderStatus::Overpaid
+        );
+    }
+
+    #[test]
+    fn the_covering_set_is_the_deepest_payments_that_reach_the_amount() {
+        // Two halves: the order is only as confirmed as the shallower half,
+        // because both are needed to cover it.
+        let halves = [confirmed(50, 10), confirmed(50, 3)];
+        assert_eq!(
+            derive_status(&halves, inputs(100, 10, 500, 1000)),
             OrderStatus::Confirming
+        );
+        // A deep full payment plus a shallow half: the half is not needed.
+        let full_and_half = [confirmed(50, 3), confirmed(100, 10)];
+        assert_eq!(
+            derive_status(&full_and_half, inputs(100, 10, 500, 1000)),
+            OrderStatus::Overpaid
+        );
+        // Covered only by pool sightings plus one mined payment: not all
+        // zero-conf, so confirming rather than unconfirmed.
+        let mixed = [zero_conf(60), confirmed(40, 1)];
+        assert_eq!(
+            derive_status(&mixed, inputs(100, 10, 500, 1000)),
+            OrderStatus::Confirming
+        );
+    }
+
+    #[test]
+    fn amounts_that_would_overflow_saturate_instead_of_wrapping() {
+        let huge = [confirmed(u64::MAX, 10), confirmed(10, 10)];
+        assert_eq!(
+            derive_status(&huge, inputs(100, 10, 500, 1000)),
+            OrderStatus::Overpaid
         );
     }
 }
