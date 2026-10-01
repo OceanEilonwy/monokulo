@@ -311,7 +311,7 @@ struct Store {
 }
 
 async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store) {
-    let engine_client = EngineClient::new(format!("http://{engine_addr}"));
+    let engine_client = EngineClient::for_tests(format!("http://{engine_addr}"));
     let tenant = engine_client
         .create_tenant(CreateTenantRequest {
             view_key_hex: TEST_VIEW_KEY_HEX.to_string(),

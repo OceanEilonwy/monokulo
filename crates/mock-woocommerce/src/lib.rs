@@ -972,7 +972,9 @@ mod tests {
         db.set_setting("public_url", &format!("http://{addr}"))
             .expect("failed to set public_url for test monokulo db");
         let state = AppState {
-            engine: monokulo::http::Engine::new(EngineClient::new(format!("http://{engine_addr}"))),
+            engine: monokulo::http::Engine::new(EngineClient::for_tests(format!(
+                "http://{engine_addr}"
+            ))),
             ..AppState::for_tests_with_db(db.into_shared())
         };
         let router = build_router(state);
@@ -1025,7 +1027,7 @@ mod tests {
         // the real spawned engine - same pattern used throughout this
         // workspace's other connect-flow/connection tests.
         let engine_client =
-            monokulo::engine_client::EngineClient::new(format!("http://{}", engine.addr));
+            monokulo::engine_client::EngineClient::for_tests(format!("http://{}", engine.addr));
         let tenant_view = engine_client
             .get_tenant(&shared::auth::RawToken::presented(&credentials.secret_token))
             .await
@@ -1070,7 +1072,7 @@ mod tests {
             .await
             .unwrap();
         let engine_client =
-            monokulo::engine_client::EngineClient::new(format!("http://{}", engine.addr));
+            monokulo::engine_client::EngineClient::for_tests(format!("http://{}", engine.addr));
         let webhooks = engine_client
             .list_webhooks(&shared::auth::RawToken::presented(
                 &credentials.secret_token,

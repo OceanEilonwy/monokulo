@@ -216,7 +216,7 @@ async fn main() {
             .spawn()
             .await,
     );
-    let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+    let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
     let tenant = engine_client
         .create_tenant(CreateTenantRequest {
             view_key_hex: VIEW_KEY_HEX.to_string(),

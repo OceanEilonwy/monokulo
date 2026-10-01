@@ -22,7 +22,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use live_settings::{
-    choice_value, settings, AnySetting, FieldError, HttpUrl, Registry, Secret, Section, Setting,
+    choice_value, settings, AnySetting, FieldError, HttpUrl, Registry, Section, Setting,
     SettingValue, Snapshot, Warning,
 };
 
@@ -61,19 +61,6 @@ settings! {
         default: SignupMode::InviteOnly,
         description: "Who can create an account: public (anyone) or invite_only (only people with an invite link from the admin).",
         example: "invite_only",
-    },
-    ENGINE_URL: HttpUrl {
-        key: "engine.url",
-        env: "MONOKULO_ENGINE_URL",
-        default: live_settings::parsed_default("http://127.0.0.1:8443"),
-        description: "The engine's address, as monokulo reaches it. It must match the engine's server.bind (for example http://127.0.0.1:8443 for 127.0.0.1:8443). Saved even if the engine doesn't answer, with a warning.",
-        example: "http://127.0.0.1:8443",
-    },
-    SCANNER_ADMIN_TOKEN: Secret {
-        key: "engine.admin_token",
-        env: "MONOKULO_SCANNER_ADMIN_TOKEN",
-        default: Secret::default(),
-        description: "The engine's instance admin token, printed by the engine the first time it starts (or its SCANNER_ADMIN_TOKEN). Lets this page show and save the engine's settings.",
     },
     EXCHANGE_RATE_COINGECKO_ENABLED: bool {
         key: "exchange_rate.coingecko_enabled",
@@ -379,21 +366,54 @@ pub fn signup_mode(db: &Db) -> SignupMode {
     get(db, &SIGNUP_MODE)
 }
 
-/// The engine connection (task 3.2).
+/// The environment variable naming the engine's address.
+pub const ENGINE_URL_ENV: &str = "MONOKULO_ENGINE_URL";
+/// The engine's address when [`ENGINE_URL_ENV`] isn't set: an engine on the
+/// same machine with its default `server.bind`.
+pub const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:8443";
+/// The environment variable holding the engine's admin token (the engine's
+/// `SCANNER_ADMIN_TOKEN`).
+pub const ENGINE_TOKEN_ENV: &str = "MONOKULO_SCANNER_ADMIN_TOKEN";
+
+/// How monokulo reaches the engine: its address and admin token, read from
+/// the environment once at start and never from the admin page, which
+/// shows both locked. The token is required, since the engine refuses
+/// every request without it.
+#[derive(Debug, Clone)]
+pub struct EngineEnv {
+    pub url: String,
+    pub token: shared::auth::RawToken,
+}
+
+impl EngineEnv {
+    pub fn from_env(env: &live_settings::Env) -> Result<Self, String> {
+        let url = match env.get(ENGINE_URL_ENV) {
+            Some(raw) => <live_settings::HttpUrl as live_settings::SettingValue>::parse(&raw)
+                .map_err(|e| format!("{ENGINE_URL_ENV} is not usable: {e}"))?
+                .as_str()
+                .to_string(),
+            None => DEFAULT_ENGINE_URL.to_string(),
+        };
+        let token =
+            shared::auth::engine_token_from_env(ENGINE_TOKEN_ENV, env.get(ENGINE_TOKEN_ENV))?;
+        Ok(EngineEnv { url, token })
+    }
+}
+
+/// The engine connection's one setting: the size of the cache of its
+/// responses (task 3.2).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EngineConnection {
-    pub url: String,
     pub http_cache_bytes: u64,
 }
 
 impl Section for EngineConnection {
     const NAME: &'static str = "engine connection";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&ENGINE_URL, &HTTP_CACHE_MAX_MB]
+        &[&HTTP_CACHE_MAX_MB]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(EngineConnection {
-            url: snapshot.get(&ENGINE_URL).as_str().to_string(),
             http_cache_bytes: snapshot.get(&HTTP_CACHE_MAX_MB) * 1024 * 1024,
         })
     }
@@ -405,7 +425,6 @@ impl Section for EngineConnection {
 pub struct PerRequest {
     pub signup_mode: SignupMode,
     pub public_url: String,
-    pub admin_token: Secret,
 }
 
 /// Read once at start: how many read connections the database opens
@@ -430,13 +449,12 @@ impl Section for DatabaseConfig {
 impl Section for PerRequest {
     const NAME: &'static str = "per request";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&SIGNUP_MODE, &PUBLIC_URL, &SCANNER_ADMIN_TOKEN]
+        &[&SIGNUP_MODE, &PUBLIC_URL]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(PerRequest {
             signup_mode: snapshot.get(&SIGNUP_MODE),
             public_url: snapshot.get(&PUBLIC_URL),
-            admin_token: snapshot.get(&SCANNER_ADMIN_TOKEN),
         })
     }
 }
@@ -561,9 +579,7 @@ impl live_settings::SettingsStore for DbSettings {
     }
 }
 
-/// Points the engine client at a saved engine URL and cache size (task 3.2).
-/// If the new URL doesn't answer, the save still goes ahead, with a warning
-/// (decision D4).
+/// Gives the engine client a saved cache size (task 3.2).
 pub struct EngineConnectionReloadable {
     pub engine_client: EngineClient,
 }
@@ -576,32 +592,14 @@ impl live_settings::Reloadable for EngineConnectionReloadable {
     async fn prepare(
         &self,
         new: &EngineConnection,
-        old: &EngineConnection,
+        _old: &EngineConnection,
     ) -> Result<(EngineConnection, Vec<Warning>), FieldError> {
-        let mut warnings = Vec::new();
-        if new.url != old.url {
-            let probe = EngineClient::with_cache_limit(new.url.clone(), 1024 * 1024);
-            match tokio::time::timeout(Duration::from_secs(3), probe.get_status()).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => warnings.push(Warning::for_key(
-                    ENGINE_URL.key,
-                    format!("Saved, but the engine at {} didn't answer: {e}", new.url),
-                )),
-                Err(_) => warnings.push(Warning::for_key(
-                    ENGINE_URL.key,
-                    format!(
-                        "Saved, but the engine at {} didn't answer within 3 seconds.",
-                        new.url
-                    ),
-                )),
-            }
-        }
-        Ok((new.clone(), warnings))
+        Ok((new.clone(), Vec::new()))
     }
 
     async fn install(&self, connection: EngineConnection) {
         self.engine_client
-            .retarget(connection.url, connection.http_cache_bytes);
+            .set_cache_limit(connection.http_cache_bytes);
     }
 
     fn boot_policy(&self) -> live_settings::BootPolicy {
@@ -956,6 +954,50 @@ mod tests {
     }
 
     #[test]
+    fn the_engine_connection_comes_from_the_environment_and_needs_a_token() {
+        let env = |pairs: &[(&str, &str)]| {
+            live_settings::Env::fixed(
+                pairs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let token = "t".repeat(shared::auth::MIN_ENGINE_TOKEN_LEN);
+
+        let defaults = EngineEnv::from_env(&env(&[(ENGINE_TOKEN_ENV, &token)])).unwrap();
+        assert_eq!(defaults.url, DEFAULT_ENGINE_URL);
+        assert_eq!(defaults.token.expose(), token);
+
+        let set = EngineEnv::from_env(&env(&[
+            (ENGINE_URL_ENV, "http://engine:8443/"),
+            (ENGINE_TOKEN_ENV, &token),
+        ]))
+        .unwrap();
+        assert_eq!(
+            set.url, "http://engine:8443",
+            "no trailing slash to double up"
+        );
+
+        let missing = EngineEnv::from_env(&env(&[])).unwrap_err();
+        assert!(
+            missing.starts_with("MONOKULO_SCANNER_ADMIN_TOKEN is not set"),
+            "{missing}"
+        );
+        let short = EngineEnv::from_env(&env(&[(ENGINE_TOKEN_ENV, "short")])).unwrap_err();
+        assert!(short.contains("shorter than"), "{short}");
+        let bad_url = EngineEnv::from_env(&env(&[
+            (ENGINE_URL_ENV, "engine:8443"),
+            (ENGINE_TOKEN_ENV, &token),
+        ]))
+        .unwrap_err();
+        assert!(
+            bad_url.starts_with("MONOKULO_ENGINE_URL is not usable"),
+            "{bad_url}"
+        );
+    }
+
+    #[test]
     fn every_section_builds_from_the_defaults_and_every_setting_is_in_one() {
         let snapshot = Snapshot::defaults();
         assert!(EngineConnection::from_snapshot(&snapshot).is_ok());
@@ -988,7 +1030,7 @@ mod tests {
         Arc<AbuseProtection>,
     ) {
         let db = Database::inline(Db::open_in_memory().unwrap().into_shared());
-        let engine = EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
+        let engine = EngineClient::for_tests("http://127.0.0.1:1");
         let rates = Arc::new(ExchangeRateProviders::xmr_only());
         let abuse: Arc<AbuseProtection> = Default::default();
         let settings = MonokuloSettings::load(
@@ -1013,7 +1055,6 @@ mod tests {
         let (settings, engine, rates, abuse) = loaded(None).await;
         let registry = settings.registry.as_ref().unwrap();
         // Loading applied the saved (here: default) settings.
-        assert_eq!(engine.base_url(), "http://127.0.0.1:8443");
         assert_eq!(
             rates.available_providers(),
             vec!["coingecko", "coinmarketcap"],
@@ -1028,20 +1069,14 @@ mod tests {
             vec!["coingecko", "coinmarketcap", "haveno"]
         );
 
-        let report = registry
-            .save(change("engine.url", "http://127.0.0.1:2"))
-            .await
-            .unwrap();
-        assert_eq!(
-            engine.base_url(),
-            "http://127.0.0.1:2",
-            "the next engine call goes to the new address"
+        assert!(
+            registry
+                .save(change("engine.url", "http://127.0.0.1:2"))
+                .await
+                .is_err(),
+            "the engine's address comes from the environment, not a save"
         );
-        assert_eq!(
-            report.warnings.len(),
-            1,
-            "nothing answers there, and the save says so (D4)"
-        );
+        assert_eq!(engine.base_url(), "http://127.0.0.1:1");
 
         registry
             .save(change("exchange_rate.coingecko_enabled", "false"))

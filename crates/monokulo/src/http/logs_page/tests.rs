@@ -196,7 +196,11 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
             < html.find("payment seen for the page test").unwrap(),
         "newest first"
     );
-    assert!(html.contains("set the engine admin token"), "{html}");
+    assert!(
+        html.contains("The engine&#39;s lines aren&#39;t shown")
+            || html.contains("The engine's lines aren't shown"),
+        "{html}"
+    );
     assert!(html.contains(r#"class="log-histogram""#), "{html}");
     // The title bar: Refresh submits the search as it stands (a plain GET
     // without script), Live streams after the newest line shown.
@@ -733,15 +737,27 @@ async fn live_streams_new_lines_to_the_top_of_the_list() {
         opened.data_ref().map(|d| std::str::from_utf8(d).unwrap()),
         Some(": live\n\n")
     );
-    let first = tokio::time::timeout(std::time::Duration::from_millis(300), body.frame()).await;
-    assert!(first.is_err(), "nothing newer than the newest line yet");
+    // Nothing newer than the newest line yet: at most the engine's problem
+    // (nothing listens at the test state's engine address).
+    if let Ok(Some(Ok(frame))) =
+        tokio::time::timeout(std::time::Duration::from_millis(300), body.frame()).await
+    {
+        let data = frame
+            .data_ref()
+            .map(|d| std::str::from_utf8(d).unwrap().to_string());
+        assert!(
+            data.as_deref()
+                .is_some_and(|d| d.contains("log-tail-problem")),
+            "nothing newer than the newest line yet: {data:?}"
+        );
+    }
 
     tracing::dispatcher::with_default(&s.dispatch, || {
         tracing::warn!(order.id = "o_live", "a live line for the page test")
     });
     let mut text = String::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !text.contains("\n\n") {
+    while !text.contains("a live line for the page test") || !text.ends_with("\n\n") {
         assert!(
             std::time::Instant::now() < deadline,
             "no event came: {text}"

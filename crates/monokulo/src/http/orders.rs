@@ -2165,7 +2165,7 @@ mod tests {
             .with_networks(&[monero::Network::Mainnet])
             .spawn()
             .await;
-        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
@@ -2184,7 +2184,7 @@ mod tests {
             .with_admin_lookup_daemon()
             .spawn()
             .await;
-        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
@@ -2261,7 +2261,7 @@ mod tests {
             &row.tenant_secret_token_encrypted,
         )
         .unwrap();
-        let response = reqwest::Client::new()
+        let response = scanner_test_support::engine_http_client()
             .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
             .bearer_auth(sk)
             .json(&serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }))
@@ -3373,7 +3373,10 @@ mod tests {
             .spawn()
             .await;
         let state = AppState {
-            engine: crate::http::Engine::new(EngineClient::new(format!("http://{}", engine.addr))),
+            engine: crate::http::Engine::new(EngineClient::for_tests(format!(
+                "http://{}",
+                engine.addr
+            ))),
             ..AppState::for_tests()
         };
         let router = build_router(state);
@@ -3905,7 +3908,10 @@ mod tests {
             .spawn()
             .await;
         let state = AppState {
-            engine: crate::http::Engine::new(EngineClient::new(format!("http://{}", engine.addr))),
+            engine: crate::http::Engine::new(EngineClient::for_tests(format!(
+                "http://{}",
+                engine.addr
+            ))),
             ..AppState::for_tests()
         };
         crate::http::status_page::get_status_cached(&state.engine)
@@ -4668,7 +4674,7 @@ mod tests {
             )
             .unwrap();
         // A custom-tier save must not depend on engine availability.
-        state.engine.client = EngineClient::new("http://127.0.0.1:0");
+        state.engine.client = EngineClient::for_tests("http://127.0.0.1:0");
         let response = build_router(state.clone())
             .oneshot(form_post_request(
                 &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),

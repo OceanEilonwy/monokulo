@@ -184,6 +184,9 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         db: scanner::store::Database::inline(store.clone()),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         log_store: None,
+        engine_token: std::sync::Arc::new(
+            shared::auth::RawToken::presented(shared::auth::TEST_ENGINE_TOKEN).hash(),
+        ),
         settings: scanner::engine_settings::EngineSettings::defaults(),
         custody: scanner::http::Custody {
             backends: key_custody.clone(),
@@ -236,7 +239,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         )),
         log_store: None,
         settings: monokulo::settings::MonokuloSettings::defaults(),
-        engine: monokulo::http::Engine::new(EngineClient::new(engine_base_url.clone())),
+        engine: monokulo::http::Engine::new(EngineClient::for_tests(engine_base_url.clone())),
     };
     let cp_router = build_monokulo_router(cp_state);
 

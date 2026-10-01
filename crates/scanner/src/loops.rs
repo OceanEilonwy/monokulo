@@ -502,7 +502,6 @@ mod tests {
     #[tokio::test]
     async fn saving_a_node_starts_its_networks_loops_and_clearing_it_stops_them() {
         let store = Store::open_in_memory().unwrap().into_shared();
-        crate::http::instance_admin::seed_admin_token_for_tests(&store.lock(), "admin_test_token");
         let daemons = Daemons::default();
         let rate_limiter = Arc::new(RateLimiter::new(10_000));
         let settings = EngineSettings::load_with(
@@ -524,6 +523,9 @@ mod tests {
             db: crate::store::Database::inline(store.clone()),
             admin_rate_limiter: rate_limiter,
             log_store: None,
+            engine_token: Arc::new(
+                shared::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash(),
+            ),
             settings: settings.clone(),
             custody: crate::http::Custody {
                 backends: key_custody.clone(),
@@ -553,7 +555,10 @@ mod tests {
                     .method("POST")
                     .uri("/api/v1/admin/settings")
                     .header("content-type", "application/json")
-                    .header("authorization", "Bearer admin_test_token")
+                    .header(
+                        shared::auth::ENGINE_TOKEN_HEADER,
+                        crate::http::TEST_ENGINE_TOKEN,
+                    )
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )

@@ -128,15 +128,37 @@ pub fn generate_connect_token() -> RawToken {
     RawToken(format!("conn_{}", random_hex(32)))
 }
 
-/// An instance-wide scanner admin token - authenticates the settings
-/// HTTP API (`scanner::http::instance_admin`), distinct from any tenant's own
-/// `sk_` (that authenticates one tenant's own admin API, never server-level
-/// settings) and from monokulo's own session tokens. Same generation
-/// primitive as every other credential here, with its own `admin_` prefix so
-/// the two credential types stay visibly distinct rather than sharing `sk_`
-/// for something that isn't a tenant secret.
-pub fn generate_admin_token() -> RawToken {
-    RawToken(format!("admin_{}", random_hex(32)))
+/// The header every request to the engine carries the engine's admin token
+/// in. The engine refuses a request without it, whatever the route: only
+/// monokulo, which is given the token, may talk to the engine.
+pub const ENGINE_TOKEN_HEADER: &str = "x-engine-token";
+
+/// The engine admin token every test engine and test client uses.
+#[cfg(any(test, feature = "test-support"))]
+pub const TEST_ENGINE_TOKEN: &str = "engine_test_token_0123456789abcdef0123456789abcdef";
+
+/// The shortest engine admin token accepted. `openssl rand -hex 32` gives 64
+/// characters.
+pub const MIN_ENGINE_TOKEN_LEN: usize = 32;
+
+/// The engine admin token from the environment variable `name` (its value
+/// `value`): refused when unset, blank, or shorter than
+/// [`MIN_ENGINE_TOKEN_LEN`], with a message saying how to make one. The
+/// engine (`SCANNER_ADMIN_TOKEN`) and monokulo
+/// (`MONOKULO_SCANNER_ADMIN_TOKEN`) both start only with one.
+pub fn engine_token_from_env(name: &str, value: Option<String>) -> Result<RawToken, String> {
+    let how = "generate one with `openssl rand -hex 32` and give the same value to the engine \
+               (SCANNER_ADMIN_TOKEN) and monokulo (MONOKULO_SCANNER_ADMIN_TOKEN)";
+    let value = value.map(|v| v.trim().to_string()).unwrap_or_default();
+    if value.is_empty() {
+        return Err(format!("{name} is not set: {how}"));
+    }
+    if value.chars().count() < MIN_ENGINE_TOKEN_LEN {
+        return Err(format!(
+            "{name} is shorter than {MIN_ENGINE_TOKEN_LEN} characters: {how}"
+        ));
+    }
+    Ok(RawToken(value))
 }
 
 /// A single-use account-signup invite token (monokulo's `signup.mode ==
@@ -180,11 +202,23 @@ mod tests {
     }
 
     #[test]
-    fn generated_admin_tokens_have_the_expected_prefix_and_are_unique() {
-        let t1 = generate_admin_token();
-        let t2 = generate_admin_token();
-        assert!(t1.expose().starts_with("admin_"));
-        assert_ne!(t1, t2);
+    fn an_engine_token_must_be_set_and_long_enough() {
+        let long = "a".repeat(MIN_ENGINE_TOKEN_LEN);
+        assert_eq!(
+            engine_token_from_env("T", Some(format!("  {long}\n")))
+                .unwrap()
+                .expose(),
+            long,
+            "surrounding whitespace (a trailing newline from a file) is not part of it"
+        );
+        for refused in [None, Some(String::new()), Some("   ".into())] {
+            let err = engine_token_from_env("T", refused).unwrap_err();
+            assert!(err.starts_with("T is not set"), "{err}");
+            assert!(err.contains("openssl rand -hex 32"), "{err}");
+        }
+        let err =
+            engine_token_from_env("T", Some("a".repeat(MIN_ENGINE_TOKEN_LEN - 1))).unwrap_err();
+        assert!(err.contains("shorter than 32"), "{err}");
     }
 
     #[test]

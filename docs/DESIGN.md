@@ -129,8 +129,14 @@ Two processes, one public:
 - **The engine** (`crates/scanner`, private) watches the chain, stores orders and
   payments, and sends webhooks out to shops. It listens on loopback by default, has
   no public routes, no CORS and no origin lists, and is reached only by monokulo:
-  through its `sk_`-authenticated admin API (§10.2) plus `GET /status`. Monokulo's
-  engine client is guarded by a test that every URL it builds is one of those.
+  through its admin API (§10.2) plus `GET /status`. Every request must carry the
+  engine admin token (`SCANNER_ADMIN_TOKEN`, sent as `X-Engine-Token`), whatever
+  the route; anything without it is refused with `401` before it reaches a route,
+  a limit or the database. A store's routes also need that store's `sk_`. The
+  token is required at start by both processes (monokulo's copy is
+  `MONOKULO_SCANNER_ADMIN_TOKEN`, read with `MONOKULO_ENGINE_URL` from the
+  environment only, and shown locked on its admin page). Monokulo's engine client
+  is guarded by a test that every URL it builds is one of those.
 - **Monokulo** (`crates/monokulo`, public) is everything people and plugins touch:
   pricing (fiat → XMR), the checkout and share pages, the POS, the dashboard, the
   embed library, verified embed domains, embed policy and CORS, rate limits and
@@ -917,9 +923,12 @@ every handler an already-scoped tenant context, not re-implemented per handler.
 
 ### 10.2 Admin API (`/api/v1/admin/...`)
 
+Every route below, and `GET /status`, also requires the engine admin token in
+`X-Engine-Token` (§4.2); the Auth column is what a route needs beyond it.
+
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `POST` | `/api/v1/admin/tenants` | none at the application layer; reachable only by monokulo (§4: the engine is private) | `{view_key_hex, spend_pubkey_hex, network, confirmations_required?, order_expiry_seconds?}` → `{tenant_id, public_key, secret_token}` (secret shown once) |
+| `POST` | `/api/v1/admin/tenants` | engine token only (the store has no `sk_` yet) | `{view_key_hex, spend_pubkey_hex, network, confirmations_required?, order_expiry_seconds?}` → `{tenant_id, public_key, secret_token}` (secret shown once) |
 | `GET` | `/api/v1/admin/tenant` | `sk_` | Own config; never returns `sealed_key_material` or the token hash |
 | `PATCH` | `/api/v1/admin/tenant` | `sk_` | Mutable fields only: `confirmations_required`, `order_expiry_seconds`. Key material and `public_key` are immutable — rotate by creating a new tenant |
 | `POST` | `/api/v1/admin/tenant/rotate-secret` | `sk_` | Invalidates the old secret, returns a new one once |
@@ -940,10 +949,10 @@ The engine used to serve `pk_`-addressed public routes (`/api/v1/t/{pk}/orders`,
 order status and refund address) with a CORS layer and a per-tenant `allowed_origins`
 check. They are gone: the engine is private (§4), and everything a browser, merchant
 or plugin touches is served by monokulo, which reaches the engine only through §10.2
-(plus `GET /status`, the unauthenticated JSON health report monokulo's status page
-reads). `POST /api/v1/admin/tenants` stays unauthenticated at the application layer
-(monokulo provisions a store before it has any `sk_`) but, like everything else here,
-is reachable only by monokulo.
+(plus `GET /status`, the JSON health report monokulo's status page reads). Both,
+like everything else here, need the engine admin token; `POST
+/api/v1/admin/tenants` needs nothing more (monokulo provisions a store before it has
+any `sk_`).
 
 ### 10.4 Checkout page and client library — moved off the engine
 
@@ -1015,7 +1024,8 @@ in front of customers.
 ## 12. DDoS Protections
 
 The engine has no public surface to protect: it listens on loopback by default (§4),
-serves only the `sk_` admin API and `/status`, and is reached only by monokulo. Its own
+refuses any request without the engine admin token before doing any other work,
+serves only the admin API and `/status`, and is reached only by monokulo. Its own
 remaining layers are:
 
 1. **Per-token rate limiting** on every route (`http::rate_limit`), keyed on the

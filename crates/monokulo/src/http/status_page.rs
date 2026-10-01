@@ -65,9 +65,6 @@ pub struct StatusCacheState {
     /// A background refresh started by [`known_health`] is in flight, so a
     /// burst of page loads starts one, not one each.
     refreshing: bool,
-    /// The engine address `cached` came from: a status cached before the
-    /// engine URL was changed is never shown as the new engine's.
-    base_url: String,
 }
 
 pub type StatusCache = Arc<Mutex<StatusCacheState>>;
@@ -76,16 +73,9 @@ pub(crate) fn new_status_cache() -> StatusCache {
     Arc::new(Mutex::new(StatusCacheState::default()))
 }
 
-/// The status cache, emptied first if the engine URL changed since it was
-/// filled.
+/// The status cache.
 pub(crate) fn status_cache(engine: &Engine) -> parking_lot::MutexGuard<'_, StatusCacheState> {
-    let base_url = engine.client.base_url();
-    let mut cache = engine.status_cache.lock();
-    if cache.base_url != base_url {
-        cache.cached = None;
-        cache.base_url = base_url;
-    }
-    cache
+    engine.status_cache.lock()
 }
 
 /// How old a cached status may be and still be rendered into a page as the
@@ -263,20 +253,15 @@ pub(crate) async fn get_status_cached(engine: &Engine) -> Result<EngineStatusRes
             return cached.result.clone();
         }
     }
-    let asked = engine.client.base_url();
     let result = engine
         .client
         .get_status()
         .await
         .map_err(|e| describe_engine_error(&e));
-    let mut cache = status_cache(engine);
-    // Not cached if the engine URL changed while this was being fetched.
-    if cache.base_url == asked {
-        cache.cached = Some(CachedStatus {
-            fetched_at: Instant::now(),
-            result: result.clone(),
-        });
-    }
+    status_cache(engine).cached = Some(CachedStatus {
+        fetched_at: Instant::now(),
+        result: result.clone(),
+    });
     result
 }
 
@@ -567,7 +552,8 @@ mod tests {
             let engine =
                 scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                     .await;
-            let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
+            let state =
+                state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
 
             let first = get_status_cached(&state.engine)
                 .await
@@ -616,7 +602,8 @@ mod tests {
         async fn status_page_is_reachable_with_no_authentication_and_shows_no_configured_networks()
         {
             let engine = scanner_test_support::spawn_test_engine().await;
-            let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
+            let state =
+                state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
             let router: Router = build_router(state);
 
             let response = router
@@ -646,7 +633,8 @@ mod tests {
             let engine =
                 scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                     .await;
-            let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
+            let state =
+                state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
             let router: Router = build_router(state);
 
             let response = router
@@ -675,7 +663,7 @@ mod tests {
         /// banner, not a 500 or a fabricated healthy page.
         #[tokio::test]
         async fn status_page_shows_a_plain_error_banner_when_the_engine_is_unreachable() {
-            let state = state_with_engine(EngineClient::new("http://127.0.0.1:1"));
+            let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
             let router: Router = build_router(state);
 
             let response = router
@@ -710,7 +698,7 @@ mod tests {
                 .with_admin_lookup_daemon()
                 .spawn()
                 .await;
-            let router: Router = build_router(state_with_engine(EngineClient::new(format!(
+            let router: Router = build_router(state_with_engine(EngineClient::for_tests(format!(
                 "http://{}",
                 engine.addr
             ))));
@@ -852,7 +840,7 @@ mod tests {
 
         #[tokio::test]
         async fn status_summary_reports_unhealthy_when_the_engine_is_unreachable() {
-            let state = state_with_engine(EngineClient::new("http://127.0.0.1:1"));
+            let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
             let router: Router = build_router(state);
 
             let response = router

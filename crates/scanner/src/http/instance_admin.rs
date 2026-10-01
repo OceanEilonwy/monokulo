@@ -6,154 +6,23 @@
 //! (`env > database > default`, `shared::settings`) and editable here at
 //! runtime.
 //!
-//! Authenticated by a single instance-wide admin token
-//! ([`shared::auth::generate_admin_token`]), generated once on first boot if
-//! neither an existing stored hash nor the `SCANNER_ADMIN_TOKEN` environment
-//! variable already provides one (see [`ensure_admin_token_seeded`]) - a
-//! distinct credential type from any tenant's own `sk_`, since a tenant
-//! having its own admin secret has no business also being able to change
-//! this instance's node endpoints, rate limits, or webhook SSRF policy.
+//! Like every engine route, reachable only with the engine's admin token
+//! (`SCANNER_ADMIN_TOKEN`), which the router checks on every request
+//! (`http::engine_token_middleware`); nothing here checks a credential of
+//! its own.
 
-use axum::extract::{FromRequestParts, State};
-use axum::http::{header, request::Parts, StatusCode};
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use subtle::ConstantTimeEq;
 
 use crate::engine_settings::{EngineSettings, NETWORKS};
-use crate::store::{Database, Store};
+use crate::store::Database;
 
-use super::{ApiError, AppState, Networks};
-
-/// The `settings` table key an instance admin token's SHA-256 hash is stored
-/// under, once generated - see [`ensure_admin_token_seeded`].
-const ADMIN_TOKEN_HASH_KEY: &str = "instance_admin_token_hash";
-
-/// The environment variable that, if set, is this instance's admin token
-/// outright - same `env > database` precedence every other setting uses,
-/// applied to the credential itself rather than a value it gates.
-const ADMIN_TOKEN_ENV_VAR: &str = "SCANNER_ADMIN_TOKEN";
-
-/// The admin token's *currently effective* hash - `SCANNER_ADMIN_TOKEN`
-/// (hashed fresh on every check, never persisted just for being present) if
-/// set in `env`, otherwise whatever is stored. `None` only if neither exists
-/// yet, which should never actually happen against a store that has been
-/// through [`ensure_admin_token_seeded`] - callers still treat that as
-/// "reject every request" (a missing credential can never mean "open
-/// access"), not a panic.
-///
-/// `env` is the same `live_settings::Env` every other setting is read
-/// through (`EngineSettings::env`): the process environment in the binary,
-/// a fixed one in tests, so a `SCANNER_ADMIN_TOKEN` exported in the shell
-/// running the tests changes nothing.
-fn effective_admin_token_hash(
-    store: &Store,
-    env: &live_settings::Env,
-) -> Result<Option<String>, StatusCode> {
-    if let Some(raw) = env.get(ADMIN_TOKEN_ENV_VAR) {
-        return Ok(Some(
-            shared::auth::RawToken::presented(&raw)
-                .hash()
-                .as_str()
-                .to_string(),
-        ));
-    }
-    store
-        .get_setting(ADMIN_TOKEN_HASH_KEY)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-/// Called once at boot (`main.rs`), before the HTTP server starts accepting
-/// requests. If `SCANNER_ADMIN_TOKEN` is set, or a token was already
-/// generated on a previous boot, this does nothing (`None`) - a fresh token
-/// is only ever minted when *neither* exists yet, the same "first boot"
-/// condition `docs/DESIGN.md`'s own tenant-secret story already treats as the
-/// one time a credential is shown in the clear at all. Returns the raw token
-/// only on that first-boot path, for the caller to print - this function
-/// itself never prints anything, so a test can seed a database directly with
-/// this instead of scraping stdout for a token it needs to authenticate with.
-#[allow(
-    clippy::expect_used,
-    reason = "boot-time only: without a stored token the admin API is unusable, so failing loudly is right"
-)]
-pub fn ensure_admin_token_seeded(
-    store: &Store,
-    env: &live_settings::Env,
-) -> Option<shared::auth::RawToken> {
-    if env.get(ADMIN_TOKEN_ENV_VAR).is_some() {
-        return None;
-    }
-    if store
-        .get_setting(ADMIN_TOKEN_HASH_KEY)
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return None;
-    }
-    let token = shared::auth::generate_admin_token();
-    store
-        .set_setting(ADMIN_TOKEN_HASH_KEY, token.hash().as_str())
-        .expect("failed to persist a freshly generated instance admin token");
-    Some(token)
-}
-
-/// Seeds a known instance admin token directly - the settings-API analogue of
-/// `scanner_test_support`'s own fixed test credentials, for a test that needs
-/// to authenticate against this API without depending on (or scraping stdout
-/// for) whatever `ensure_admin_token_seeded` would otherwise generate.
-#[cfg(test)]
-pub fn seed_admin_token_for_tests(store: &Store, raw_token: &str) {
-    store
-        .set_setting(
-            ADMIN_TOKEN_HASH_KEY,
-            shared::auth::RawToken::presented(raw_token).hash().as_str(),
-        )
-        .unwrap();
-}
-
-/// Resolves to this only once a presented `Authorization: Bearer <token>`
-/// hashes to the instance's own effective admin token - see
-/// [`effective_admin_token_hash`]. Structurally separate from `AuthedTenant`
-/// (`http::mod`) on purpose: no tenant's own `sk_` can ever satisfy this,
-/// and this can never satisfy a route expecting a specific tenant.
-pub struct AuthedInstanceAdmin;
-
-impl FromRequestParts<AppState> for AuthedInstanceAdmin {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let header_value = parts
-            .headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or(ApiError::Unauthorized)?;
-        let token = header_value
-            .strip_prefix("Bearer ")
-            .ok_or(ApiError::Unauthorized)?;
-        let presented_hash = shared::auth::RawToken::presented(token).hash();
-        let env = state.settings.env.clone();
-        let effective_hash = state
-            .db
-            .read(move |store| Ok(effective_admin_token_hash(store, &env)))
-            .await?
-            .map_err(|_| ApiError::Internal("settings lookup failed".into()))?;
-        // Compared in constant time, like every other secret in this
-        // workspace, although both sides are already hashes.
-        match effective_hash {
-            Some(hash) if bool::from(hash.as_bytes().ct_eq(presented_hash.as_str().as_bytes())) => {
-                Ok(AuthedInstanceAdmin)
-            }
-            _ => Err(ApiError::Unauthorized),
-        }
-    }
-}
+use super::{ApiError, Networks};
 
 /// One setting as the admin page shows it (tasks 4.1, 4.2): its effective
 /// value and where that came from, plus what it's for, what it takes and
@@ -211,7 +80,6 @@ fn is_node_key(key: &str) -> Option<&'static str> {
 /// where it came from, and what it is, in one response, so the admin page
 /// can render the whole form from a single call.
 pub async fn get_settings(
-    AuthedInstanceAdmin: AuthedInstanceAdmin,
     State(db): State<Database>,
     State(settings): State<Arc<EngineSettings>>,
 ) -> Result<Json<SettingsView>, ApiError> {
@@ -389,7 +257,6 @@ pub struct UnservedNetwork {
 /// what needs a restart, warnings, settings still overridden by the
 /// environment, and networks left without a node that stores use.
 pub async fn update_settings(
-    AuthedInstanceAdmin: AuthedInstanceAdmin,
     State(db): State<Database>,
     State(networks): State<Networks>,
     State(settings): State<Arc<EngineSettings>>,

@@ -253,7 +253,7 @@ impl AppState {
             )),
             settings: crate::settings::MonokuloSettings::defaults(),
             log_store: None,
-            engine: crate::http::Engine::new(EngineClient::new("http://127.0.0.1:1")),
+            engine: crate::http::Engine::new(EngineClient::for_tests("http://127.0.0.1:1")),
         }
     }
 }

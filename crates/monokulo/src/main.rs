@@ -41,6 +41,16 @@ async fn main() {
     // to run a test instance on a temporary database and a free port).
     let db_path = std::env::var("MONOKULO_DB_PATH").unwrap_or_else(|_| "monokulo.db".to_string());
     let bind = std::env::var("MONOKULO_BIND").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
+    // The engine's address and admin token: boot-only too, and shown locked
+    // on the admin page. The engine answers nothing without the token, so
+    // monokulo doesn't start without it.
+    let engine_env = match settings::EngineEnv::from_env(&live_settings::Env::process()) {
+        Ok(engine_env) => engine_env,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
     // How many readers to open is itself a setting, read on a connection
     // of its own before the pool exists; opening it also brings the schema
     // up to date.
@@ -76,7 +86,8 @@ async fn main() {
     // are built here with placeholders and then configured from the saved
     // settings by the registry, which reconfigures them in place whenever
     // the admin page saves.
-    let engine_client = EngineClient::with_cache_limit("http://127.0.0.1:8443", 16 * 1024 * 1024);
+    let engine_client =
+        EngineClient::with_cache_limit(engine_env.url, engine_env.token, 16 * 1024 * 1024);
     let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only());
     let abuse = Arc::new(monokulo::abuse::AbuseProtection::default());
     let onion = settings::OnionReloadable::default();

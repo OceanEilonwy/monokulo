@@ -48,6 +48,24 @@ use scanner::scanner::run_scan_tick;
 use scanner::store::Store;
 use scanner::webhook_delivery::{run_delivery_tick, DEFAULT_MAX_ATTEMPTS};
 
+/// The engine admin token every engine this crate spawns accepts: what a
+/// test gives monokulo's `EngineClient` (or sends in
+/// `shared::auth::ENGINE_TOKEN_HEADER`) to reach it.
+pub use scanner::http::TEST_ENGINE_TOKEN;
+
+/// A plain HTTP client for calling a test engine directly, as monokulo
+/// does: it sends [`TEST_ENGINE_TOKEN`] on every request.
+pub fn engine_http_client() -> reqwest::Client {
+    let headers = reqwest::header::HeaderMap::from_iter([(
+        reqwest::header::HeaderName::from_static(shared::auth::ENGINE_TOKEN_HEADER),
+        reqwest::header::HeaderValue::from_static(TEST_ENGINE_TOKEN),
+    )]);
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .expect("a client with one static header builds")
+}
+
 /// How often the background loops (see [`TestEngineConfig::with_background_loops`])
 /// re-run, when enabled. Real deployments poll on the order of seconds (see
 /// `main.rs`'s `mempool_poll_interval_ms`/webhook delivery's own 5s sleep) - a test
@@ -834,6 +852,7 @@ impl TestEngineConfig {
             db: scanner::store::Database::inline(store.clone()),
             admin_rate_limiter: admin_rate_limiter.clone(),
             log_store: self.log_store.clone(),
+            engine_token: Arc::new(shared::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash()),
             settings: engine_settings,
             custody: scanner::http::Custody {
                 backends: key_custody.clone(),
@@ -1016,7 +1035,7 @@ mod tests {
         // A real socket, not an in-process `tower::Service` call: the address
         // came back from a bound `TcpListener`, and this is an independent
         // `reqwest::Client` making an actual TCP connection to it.
-        let response = reqwest::Client::new()
+        let response = engine_http_client()
             .get(format!("http://{}/status", engine.addr))
             .send()
             .await
@@ -1097,7 +1116,7 @@ mod tests {
             .spawn()
             .await;
         let base_url = format!("http://{}", engine.addr);
-        let client = reqwest::Client::new();
+        let client = engine_http_client();
 
         let created: serde_json::Value = client
             .post(format!("{base_url}/api/v1/admin/tenants"))
@@ -1342,7 +1361,7 @@ mod tests {
             .spawn()
             .await;
         let base_url = format!("http://{}", engine.addr);
-        let client = reqwest::Client::new();
+        let client = engine_http_client();
 
         let created: serde_json::Value = client
             .post(format!("{base_url}/api/v1/admin/tenants"))
@@ -1422,7 +1441,7 @@ mod tests {
     }
 
     async fn order_status(base_url: &str, secret_token: &str, order_id: &str) -> String {
-        let status: serde_json::Value = reqwest::Client::new()
+        let status: serde_json::Value = engine_http_client()
             .get(format!("{base_url}/api/v1/admin/tenant/orders/{order_id}"))
             .bearer_auth(secret_token)
             .send()
@@ -1450,7 +1469,7 @@ mod tests {
             .spawn()
             .await;
         let base_url = format!("http://{}", engine.addr);
-        let client = reqwest::Client::new();
+        let client = engine_http_client();
 
         let created: serde_json::Value = client
             .post(format!("{base_url}/api/v1/admin/tenants"))

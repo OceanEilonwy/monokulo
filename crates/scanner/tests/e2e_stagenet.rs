@@ -76,6 +76,10 @@ async fn oneshot_json(
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
+        .header(
+            shared::auth::ENGINE_TOKEN_HEADER,
+            shared::auth::TEST_ENGINE_TOKEN,
+        )
         .header("authorization", format!("Bearer {sk}"));
     let body = match body {
         Some(v) => {
@@ -163,6 +167,9 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         settings: scanner::engine_settings::EngineSettings::defaults(),
         log_store: None,
+        engine_token: std::sync::Arc::new(
+            shared::auth::RawToken::presented(shared::auth::TEST_ENGINE_TOKEN).hash(),
+        ),
         custody: scanner::http::Custody {
             backends: key_custody.clone(),
             default_backend: "plain".to_string(),
