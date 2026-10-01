@@ -36,8 +36,10 @@
 //! account, and this session's `work_notes.md` entry for the reasoning trail.
 
 use std::io;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use key_custody_service::protocol::{
     read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse,
@@ -50,6 +52,18 @@ use scanner::key_custody::{
     KeyCustody, Network, PlainKeyCustody, ScanInput, SubaddressIndex, WalletHandle, WalletMaterial,
 };
 use tokio::net::{UnixListener, UnixStream};
+use zeroize::Zeroizing;
+
+/// Most connections served at once. The engine keeps a small pool per
+/// backend; anything beyond this is not the engine, and waits.
+pub const MAX_CONNECTIONS: usize = 64;
+
+/// Longest a connection may sit without sending a whole request before it
+/// is closed. Well above the client's own per-call timeout, so a slow
+/// call is never cut, but a peer that opened a connection and stalled
+/// (or sent a length prefix and nothing after it) does not hold a task and
+/// a buffer for good.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Wraps a real `PlainKeyCustody` behind a Unix socket. Owns nothing about
 /// *where* that socket lives - `listen` takes the path each time it's called,
@@ -87,15 +101,81 @@ impl KeyCustodyServer {
     /// explicitly first; `bin/key-custody-server.rs` does not do this either,
     /// on the same reasoning - see its own doc comment.
     pub async fn listen(&self, socket_path: impl AsRef<Path>) -> io::Result<()> {
-        let listener = UnixListener::bind(socket_path)?;
+        self.serve(Self::bind(socket_path)?).await
+    }
+
+    /// Binds `socket_path` for [`Self::serve`], readable and writable by
+    /// this user alone: `bind(2)` creates the file with the umask's
+    /// permissions, which on a shared machine can let another user connect
+    /// to the process that holds every store's view key. Synchronous, so a
+    /// caller can hand the bound listener to a runtime (or a thread) and
+    /// know the socket exists before anything tries to connect to it.
+    pub fn bind(socket_path: impl AsRef<Path>) -> io::Result<std::os::unix::net::UnixListener> {
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+        listener.set_nonblocking(true)?;
+        Ok(listener)
+    }
+
+    /// Serves connections on a listener from [`Self::bind`] until an
+    /// unrecoverable accept error occurs (this never returns `Ok` in normal
+    /// operation). A transient accept failure (file descriptors run out, a
+    /// connection aborted before it was accepted) is logged and retried: it
+    /// must not take down the process that holds every registered wallet.
+    /// Only a peer running as the user that owns the socket is served, and
+    /// at most [`MAX_CONNECTIONS`] at once.
+    pub async fn serve(&self, listener: std::os::unix::net::UnixListener) -> io::Result<()> {
+        let owner = listener
+            .local_addr()?
+            .as_pathname()
+            .map(std::fs::metadata)
+            .transpose()?
+            .map(|metadata| metadata.uid());
+        let listener = UnixListener::from_std(listener)?;
+        let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
         loop {
-            let (stream, _addr) = listener.accept().await?;
+            // The semaphore is never closed, so this can't fail.
+            let Ok(permit) = Arc::clone(&connections).acquire_owned().await else {
+                return Ok(());
+            };
+            let (stream, _addr) = match listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(e) if accept_error_is_transient(&e) => {
+                    tracing::warn!(error = %e, "accept failed; retrying shortly");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            match stream.peer_cred() {
+                Ok(peer) if owner.is_none_or(|owner| owner == peer.uid()) => {}
+                Ok(peer) => {
+                    tracing::warn!(uid = peer.uid(), "refusing a connection from another user");
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "refusing a connection whose peer can't be identified");
+                    continue;
+                }
+            }
             let custody = Arc::clone(&self.custody);
             tokio::spawn(async move {
+                let _permit = permit;
                 handle_connection(stream, custody).await;
             });
         }
     }
+}
+
+/// Whether an `accept(2)` failure is about this one connection or the
+/// moment (descriptors or buffers run out, the peer hung up first,
+/// interrupted) rather than the listener itself.
+fn accept_error_is_transient(e: &io::Error) -> bool {
+    use io::ErrorKind::*;
+    matches!(
+        e.kind(),
+        ConnectionAborted | ConnectionReset | Interrupted | WouldBlock | OutOfMemory
+    ) || matches!(e.raw_os_error(), Some(24 | 23 | 105)) // EMFILE, ENFILE, ENOBUFS
 }
 
 /// Serve requests on one already-accepted connection until it closes or a
@@ -105,14 +185,19 @@ impl KeyCustodyServer {
 /// Neither case panics; both simply drop `stream`, which closes the socket.
 async fn handle_connection(mut stream: UnixStream, custody: Arc<PlainKeyCustody>) {
     loop {
-        let request: KeyCustodyRequest = match read_frame(&mut stream).await {
-            Ok(Some(request)) => request,
-            Ok(None) => return, // peer closed cleanly between requests
-            Err(e) => {
-                tracing::warn!(error = %e, "closing connection after a framing error");
-                return;
-            }
-        };
+        let request: KeyCustodyRequest =
+            match tokio::time::timeout(IDLE_TIMEOUT, read_frame(&mut stream)).await {
+                Ok(Ok(Some(request))) => request,
+                Ok(Ok(None)) => return, // peer closed cleanly between requests
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "closing connection after a framing error");
+                    return;
+                }
+                Err(_) => {
+                    tracing::info!("closing a connection idle for {IDLE_TIMEOUT:?}");
+                    return;
+                }
+            };
 
         let response = match dispatch(&custody, request).await {
             Ok(response) => response,
@@ -178,15 +263,17 @@ pub async fn dispatch(
         }
         KeyCustodyRequest::Seal(req) => {
             let material = WalletMaterial::try_from(&req.material)?;
+            // The sealed bytes are the key itself for this backend: scrubbed
+            // once encoded for the wire.
             let result = custody
                 .seal(&material)
                 .await
-                .map(|bytes| SealedMaterialWire::from(bytes.as_slice()))
+                .map(|bytes| SealedMaterialWire::from(Zeroizing::new(bytes).as_slice()))
                 .map_err(KeyCustodyErrorWire::from);
             KeyCustodyResponse::Seal(result)
         }
         KeyCustodyRequest::UnsealAndRegister(req) => {
-            let sealed = req.sealed.to_bytes()?;
+            let sealed = Zeroizing::new(req.sealed.to_bytes()?);
             let result = match req.registration_id.as_deref() {
                 Some(id) => custody.unseal_and_register_idempotent(&sealed, id).await,
                 None => custody.unseal_and_register(&sealed).await,

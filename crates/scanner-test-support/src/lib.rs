@@ -1312,28 +1312,6 @@ mod tests {
         path
     }
 
-    /// Waits until something is listening at `path` - `KeyCustodyServer::listen`
-    /// binds the socket before it starts accepting, but that bind happens inside
-    /// the `tokio::spawn`ed task's future, which isn't guaranteed to have been
-    /// polled even once by the time `tokio::spawn` returns control to the caller.
-    /// Unlike `main.rs`'s own `connect_socket_key_custody` (a bounded *production*
-    /// retry), this is pure test scaffolding: a real client connection is made
-    /// afterwards, fresh, by `TestEngineConfig::with_socket_key_custody`'s own
-    /// (non-retrying, by design - see its doc comment) `SocketKeyCustody::connect`
-    /// inside `spawn()`.
-    async fn wait_for_unix_socket(path: &std::path::Path) {
-        for _ in 0..200 {
-            if tokio::net::UnixStream::connect(path).await.is_ok() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        panic!(
-            "key-custody-server never became reachable at {}",
-            path.display()
-        );
-    }
-
     /// Runs the real order-creation-plus-chain-scan scenario against a freshly
     /// spawned engine built from `engine_config`, entirely through the engine's
     /// own public/admin HTTP API plus one real `run_scan_tick_now` call - exactly
@@ -1423,15 +1401,18 @@ mod tests {
 
     /// A key-custody-server on its own runtime, so shutting that runtime down
     /// is a real outage: its listener and every open connection go at once.
+    /// The socket is bound before this returns, so nothing waits for it.
     fn start_key_custody_server(socket_path: &std::path::Path) -> tokio::runtime::Runtime {
         let _ = std::fs::remove_file(socket_path);
+        let listener = key_custody_server::server::KeyCustodyServer::bind(socket_path)
+            .expect("bind the test key-custody socket");
         let runtime = tokio::runtime::Runtime::new().expect("key-custody-server runtime");
         let path = socket_path.to_path_buf();
         runtime.spawn(async move {
             let server = key_custody_server::server::KeyCustodyServer::new(
                 scanner::key_custody::PlainKeyCustody::default(),
             );
-            if let Err(e) = server.listen(&path).await {
+            if let Err(e) = server.serve(listener).await {
                 eprintln!("test key-custody-server on {}: {e}", path.display());
             }
         });
@@ -1461,7 +1442,6 @@ mod tests {
     async fn a_payment_is_matched_after_a_store_moves_backends_and_after_a_key_custody_outage() {
         let socket_path = temp_socket_path();
         let server = start_key_custody_server(&socket_path);
-        wait_for_unix_socket(&socket_path).await;
         let engine = TestEngineConfig::new()
             .with_networks(&[Network::Mainnet])
             .with_plain_and_socket_backends(socket_path.to_string_lossy().to_string())
@@ -1541,7 +1521,6 @@ mod tests {
         // unknown, the next registration puts it back, and the payment is
         // matched - all as the scan loop would do on its own.
         let server = start_key_custody_server(&socket_path);
-        wait_for_unix_socket(&socket_path).await;
         let mut matched = false;
         for _ in 0..3 {
             engine.register_missing_wallets_now("mainnet").await;
@@ -1594,13 +1573,14 @@ mod tests {
         let server = std::sync::Arc::new(key_custody_server::server::KeyCustodyServer::new(
             scanner::key_custody::PlainKeyCustody::default(),
         ));
+        let listener = key_custody_server::server::KeyCustodyServer::bind(&socket_path)
+            .expect("bind the test key-custody socket");
         let listen_path = socket_path.clone();
         tokio::spawn(async move {
-            if let Err(e) = server.listen(&listen_path).await {
+            if let Err(e) = server.serve(listener).await {
                 eprintln!("test key-custody-server on {}: {e}", listen_path.display());
             }
         });
-        wait_for_unix_socket(&socket_path).await;
 
         let socket_result = run_order_creation_and_scan_scenario(
             TestEngineConfig::new()

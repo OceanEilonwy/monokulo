@@ -463,6 +463,9 @@ pub trait KeyCustody: Send + Sync {
     /// The default scans the transactions one by one, covering the set with
     /// one contiguous range (`min..=max`), which is correct but builds a
     /// bigger table than needed; backends that can do better override it.
+    /// A `Range<u32>` can't name `u32::MAX`, so the default never matches
+    /// that one index; no store reaches it (indices are claimed from 0, one
+    /// per order).
     async fn scan_txs_for_indices(
         &self,
         handle: WalletHandle,
