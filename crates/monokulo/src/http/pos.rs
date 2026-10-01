@@ -212,7 +212,9 @@ pub async fn create_order(
                     ),
                     amount: metadata.amount,
                     currency: metadata.currency,
-                    confirmations_required: metadata.confirmations_required_applied.unwrap_or(10),
+                    confirmations_required: metadata
+                        .confirmations_required_applied
+                        .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS),
                     expires_at: detail.order.expires_at,
                     merchant_order_id: detail.order.merchant_order_id,
                 })
@@ -334,7 +336,7 @@ pub async fn create_order(
             let recorded = state
                 .db
                 .write(move |db| {
-                    let recorded = db.create_order_currency_metadata(
+                    db.create_order_currency_metadata(
                         &store_id,
                         &order_id,
                         &order_currency,
@@ -348,9 +350,8 @@ pub async fn create_order(
                         // The merchant's own signed-in session: as trusted as
                         // the key.
                         true,
-                    );
-                    let _ = db.set_order_source(&store_id, &order_id, "pos");
-                    recorded
+                        Some("pos"),
+                    )
                 })
                 .await;
             if let Err(e) = recorded {
@@ -494,7 +495,7 @@ fn pos_order_view(
     let confirmations_required = metadata
         .as_ref()
         .and_then(|m| m.confirmations_required_applied)
-        .unwrap_or(10);
+        .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS);
     PosOrderData {
         order_id: row.order_id,
         merchant_order_id: order.merchant_order_id.clone(),
@@ -823,7 +824,7 @@ pub(super) async fn resolve_confirmations_required(
         .get_tenant(sk)
         .await
         .map(|t| t.confirmations_required)
-        .unwrap_or(10)
+        .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS)
 }
 
 /// Flags exactly the payment outcomes a merchant needs to personally

@@ -315,14 +315,16 @@ impl Section for LoggingConfig {
 /// A setting's effective value for a per-request read: environment, else
 /// saved, else default. A value that doesn't parse (possible only from an
 /// environment variable or a hand-edited row; the admin page refuses them)
-/// falls through to the next source.
+/// gives the default, as the registry resolves it, so the admin page shows
+/// the value requests use.
 pub fn get<T: SettingValue>(db: &Db, setting: &Setting<T>) -> T {
     if let Some(raw) = shared::settings::env_value(setting.env_var) {
         if !raw.trim().is_empty() {
             match setting.parse(&raw) {
                 Ok(value) => return value,
                 Err(e) => {
-                    tracing::warn!(setting = setting.key, env = setting.env_var, error = %e, "settings: the environment variable's value is invalid; ignoring it")
+                    tracing::warn!(setting = setting.key, env = setting.env_var, error = %e, "settings: the environment variable's value is invalid; using the default");
+                    return setting.default_value();
                 }
             }
         }
@@ -911,6 +913,23 @@ mod tests {
         assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 3);
         let _env = shared::settings::test_env::set(EXCHANGE_RATE_CACHE_SECONDS.env_var, Some("9"));
         assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 9);
+    }
+
+    /// An environment value that doesn't parse gives the default, as the
+    /// registry (and so the admin page) resolves it, not the saved value.
+    #[test]
+    fn an_invalid_env_var_gives_the_default_as_the_registry_does() {
+        let db = Db::open_in_memory().unwrap();
+        db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3")
+            .unwrap();
+        let _env =
+            shared::settings::test_env::set(EXCHANGE_RATE_CACHE_SECONDS.env_var, Some("lots"));
+        assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 30);
+        let resolved = live_settings::read_sync_with_env::<ExchangeRateConfig>(
+            db.list_settings().map_err(live_settings::StoreError::new),
+            &live_settings::Env::fixed([(EXCHANGE_RATE_CACHE_SECONDS.env_var, "lots")]),
+        );
+        assert_eq!(resolved.cache_seconds, 30);
     }
 
     /// With nothing saved and nothing in the environment: Coingecko and

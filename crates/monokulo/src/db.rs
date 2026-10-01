@@ -263,20 +263,6 @@ impl Db {
         Ok(rows)
     }
 
-    /// Records where an order was created (see migration 0023).
-    pub fn set_order_source(
-        &self,
-        connection_id: &ConnectionId,
-        order_id: &OrderId,
-        source: &str,
-    ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE order_currency_metadata SET source = ?3 WHERE connection_id = ?1 AND order_id = ?2",
-            params![connection_id, order_id, source],
-        )?;
-        Ok(())
-    }
-
     /// Source and POS cancellation for each of `order_ids` monokulo knows
     /// anything about; orders it knows nothing about are left out.
     pub fn order_listing_details(
@@ -1186,14 +1172,16 @@ impl Db {
         base_currency_piconero_per_unit: Option<Piconero>,
         confirmations_required_applied: u64,
         created_with_key: bool,
+        source: Option<&str>,
     ) -> Result<()> {
         // An amount too large for SQLite is refused (a conversion error), not
         // wrapped or panicked on.
         self.conn.execute(
             "INSERT INTO order_currency_metadata
                 (connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
-                 store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key,
+                 source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT (connection_id, order_id) DO NOTHING",
             params![
                 connection_id,
@@ -1207,6 +1195,7 @@ impl Db {
                 base_currency_piconero_per_unit,
                 Unsigned(confirmations_required_applied),
                 created_with_key,
+                source,
             ],
         )?;
         Ok(())
@@ -3213,6 +3202,7 @@ mod tests {
             None,
             10,
             false,
+            None,
         );
         assert!(matches!(stored, Err(DbError::Sqlite(_))), "{stored:?}");
     }
@@ -3233,6 +3223,7 @@ mod tests {
             None,
             10,
             false,
+            None,
         )
         .unwrap();
 
@@ -3314,6 +3305,7 @@ mod tests {
             None,
             10,
             false,
+            None,
         )
         .unwrap();
         db.create_order_currency_metadata(
@@ -3328,6 +3320,7 @@ mod tests {
             None,
             10,
             false,
+            None,
         )
         .unwrap();
 
@@ -3367,6 +3360,7 @@ mod tests {
             None,
             10,
             false,
+            None,
         )
         .unwrap();
         db.create_order_currency_metadata(
@@ -3381,6 +3375,7 @@ mod tests {
             None,
             10,
             false,
+            None,
         )
         .unwrap();
 

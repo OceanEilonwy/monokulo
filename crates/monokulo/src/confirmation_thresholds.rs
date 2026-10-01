@@ -142,6 +142,11 @@ impl ThresholdAmount {
     }
 }
 
+/// The confirmations shown for an order when neither its own snapshot nor
+/// the store's current default can be read: the engine's own default, and
+/// the safe side for a merchant deciding whether to hand goods over.
+pub const FALLBACK_CONFIRMATIONS: u64 = 10;
+
 /// Selects the largest qualifying tier using exact integer arithmetic.
 /// Invalid or duplicate stored amounts fail closed instead of falling back.
 pub fn resolve_confirmations_required(

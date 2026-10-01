@@ -235,7 +235,7 @@ pub async fn create_order(
             let recorded = state
                 .db
                 .write(move |db| {
-                    let recorded = db.create_order_currency_metadata(
+                    db.create_order_currency_metadata(
                         &id,
                         &order_id,
                         &currency,
@@ -247,11 +247,8 @@ pub async fn create_order(
                         base_rate,
                         confirmations,
                         created_with_key,
-                    );
-                    if let Err(e) = db.set_order_source(&id, &order_id, source) {
-                        tracing::warn!(error = %e, order.id = %order_id, "could not record where an order came from");
-                    }
-                    recorded
+                        Some(source),
+                    )
                 })
                 .await;
             if let Err(e) = recorded {
@@ -297,6 +294,44 @@ pub async fn create_order(
     }
 }
 
+/// Scripts and styles: kept, but checked with the server on every use, so
+/// a new release's pages never run an old script. A check costs one round
+/// trip and no body (`304`), which is what matters over Tor.
+const REVALIDATE: &str = "no-cache";
+/// Fonts and images change rarely: a week before they are checked again.
+const LONG_LIVED: &str = "public, max-age=604800";
+
+/// A file baked into the binary, with `Cache-Control` and an `ETag` of its
+/// content: a browser that already has it is answered `304 Not Modified`
+/// with no body.
+fn static_asset(
+    headers: &axum::http::HeaderMap,
+    content_type: &'static str,
+    cache_control: &'static str,
+    body: &'static [u8],
+) -> Response {
+    use axum::http::header;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    body.hash(&mut hasher);
+    let etag = format!("\"{:016x}\"", hasher.finish());
+    let fresh = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|tags| {
+            tags.split(',')
+                .any(|tag| tag.trim() == etag || tag.trim() == "*")
+        });
+    let cache = [
+        (header::CACHE_CONTROL, cache_control.to_string()),
+        (header::ETAG, etag),
+    ];
+    if fresh {
+        return (axum::http::StatusCode::NOT_MODIFIED, cache).into_response();
+    }
+    (cache, [(header::CONTENT_TYPE, content_type)], body).into_response()
+}
+
 const CLIENT_LIBRARY_JS: &str = include_str!("../../static/monokulo-client.js");
 
 /// `GET /static/monokulo-client.js` - the thin embed library a merchant's
@@ -307,52 +342,50 @@ const CLIENT_LIBRARY_JS: &str = include_str!("../../static/monokulo-client.js");
 /// `/pay/{pk}/orders/{order_id}` instead. Served from this binary rather
 /// than a CDN so a self-hoster's static site has no third-party dependency
 /// in its payment path, same reasoning the engine's original had.
-pub async fn client_library() -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
-        CLIENT_LIBRARY_JS,
+pub async fn client_library(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        CLIENT_LIBRARY_JS.as_bytes(),
     )
 }
 
-pub async fn checkout_script() -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
-        include_str!("../../static/checkout.js"),
+pub async fn checkout_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!("../../static/checkout.js").as_bytes(),
     )
 }
 
-pub async fn pos_script() -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
-        include_str!(concat!(env!("OUT_DIR"), "/pos-ui/pos-app.js")),
+pub async fn pos_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!(concat!(env!("OUT_DIR"), "/pos-ui/pos-app.js")).as_bytes(),
     )
 }
 
-pub async fn pos_style() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!(concat!(env!("OUT_DIR"), "/pos-ui/pos-app.css")),
+pub async fn pos_style(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/css; charset=utf-8",
+        REVALIDATE,
+        include_str!(concat!(env!("OUT_DIR"), "/pos-ui/pos-app.css")).as_bytes(),
     )
 }
 
 /// `GET /static/challenge.js` - solves the abuse-protection challenge on
 /// the "Checking your connection" page (`views::challenge`).
-pub async fn challenge_script() -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
-        include_str!("../../static/challenge.js"),
+pub async fn challenge_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!("../../static/challenge.js").as_bytes(),
     )
 }
 
@@ -361,54 +394,49 @@ pub async fn challenge_script() -> impl IntoResponse {
 /// pages (`http::fx`). fixi and ssexi are vendored, pinned copies (see
 /// their `.SOURCE` files), served from here like `jsQR.js`: no CDN, so the
 /// pages work offline and over Tor.
-pub async fn fixi_script() -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
-        include_str!("../../static/fixi.js"),
+pub async fn fixi_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!("../../static/fixi.js").as_bytes(),
     )
 }
 
-pub async fn ssexi_script() -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
-        include_str!("../../static/ssexi.js"),
+pub async fn ssexi_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!("../../static/ssexi.js").as_bytes(),
     )
 }
 
-pub async fn fx_glue_script() -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
-        include_str!("../../static/fx-glue.js"),
+pub async fn fx_glue_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!("../../static/fx-glue.js").as_bytes(),
     )
 }
 
 /// `GET /static/telemetry.js` - browser problem reports (`http::telemetry_client`).
-pub async fn telemetry_script() -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
-        include_str!("../../static/telemetry.js"),
+pub async fn telemetry_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!("../../static/telemetry.js").as_bytes(),
     )
 }
 
-pub async fn qr_decoder_script() -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
-        include_str!("../../static/jsQR.js"),
+pub async fn qr_decoder_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!("../../static/jsQR.js").as_bytes(),
     )
 }
 
@@ -421,21 +449,20 @@ const FAVICON_SVG: &str = include_str!("../../static/favicon.svg");
 /// Served the same way as [`client_library`] (a plain, unauthenticated
 /// static asset baked into the binary) for the same reason: no third-party
 /// CDN dependency in a page real customers may end up on.
-pub async fn logo_svg() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
-        LOGO_SVG,
-    )
+pub async fn logo_svg(headers: axum::http::HeaderMap) -> Response {
+    static_asset(&headers, "image/svg+xml", LONG_LIVED, LOGO_SVG.as_bytes())
 }
 
 /// `GET /static/favicon.svg` - the simplified, small-size version of the
 /// same mark, linked from `_styles.html.hbs` (`<link rel="icon">`) so every
 /// page that includes the `styles` partial gets a browser-tab icon for
 /// free.
-pub async fn favicon_svg() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
-        FAVICON_SVG,
+pub async fn favicon_svg(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "image/svg+xml",
+        LONG_LIVED,
+        FAVICON_SVG.as_bytes(),
     )
 }
 
@@ -452,23 +479,14 @@ const MANROPE_800_WOFF2: &[u8] = include_bytes!("../../static/manrope-800.woff2"
 /// privacy-focused payment tool. Latin subset only (this UI has no other
 /// script), matching what a Google Fonts request for this weight range
 /// would itself have served.
-pub async fn manrope_500_woff2() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "font/woff2")],
-        MANROPE_500_WOFF2,
-    )
+pub async fn manrope_500_woff2(headers: axum::http::HeaderMap) -> Response {
+    static_asset(&headers, "font/woff2", LONG_LIVED, MANROPE_500_WOFF2)
 }
-pub async fn manrope_700_woff2() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "font/woff2")],
-        MANROPE_700_WOFF2,
-    )
+pub async fn manrope_700_woff2(headers: axum::http::HeaderMap) -> Response {
+    static_asset(&headers, "font/woff2", LONG_LIVED, MANROPE_700_WOFF2)
 }
-pub async fn manrope_800_woff2() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "font/woff2")],
-        MANROPE_800_WOFF2,
-    )
+pub async fn manrope_800_woff2(headers: axum::http::HeaderMap) -> Response {
+    static_asset(&headers, "font/woff2", LONG_LIVED, MANROPE_800_WOFF2)
 }
 
 #[cfg(test)]
@@ -797,6 +815,31 @@ mod tests {
                 content_type.contains(expected),
                 "/static/{name} served as {content_type}"
             );
+            // Cacheable, and a browser that has it gets no body back.
+            let etag = response.headers()["etag"].clone();
+            assert!(
+                response.headers().contains_key("cache-control"),
+                "/static/{name}"
+            );
+            let again = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/static/{name}"))
+                        .header("if-none-match", etag)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(again.status(), StatusCode::NOT_MODIFIED, "/static/{name}");
+            assert!(again
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .is_empty());
             assert!(
                 !response
                     .into_body()
