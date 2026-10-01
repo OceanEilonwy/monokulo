@@ -247,6 +247,12 @@ impl ProvidesUnvalidatedDecoys for DecoyCache {
 /// A wallet's key material: what a new wallet file starts from, and how
 /// the old shared `stagenet-wallets.json` recorded each wallet (hence the
 /// serde names).
+///
+/// The keys and seed are plain `String`s and are not zeroised on drop, nor
+/// are their copies in [`WalletData`], `ResolvedWallet` or the JSON
+/// buffers. These are stagenet test wallets whose files hold the same keys
+/// in plaintext, so clearing memory would protect nothing. The
+/// `Zeroizing` scalars in the signing code clear only those working copies.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WalletCredentials {
     pub address: String,
@@ -891,24 +897,26 @@ mod tests {
         )
     }
 
-    fn committed_wallet(name: &str) -> WalletData {
-        WalletFile::load(WalletCtx::default().wallet_path(name))
-            .unwrap()
-            .data
+    /// The stagenet keys of the e2e `spender` and `merchant` wallets (which
+    /// `testdata/split_transaction_outputs.json` pays), fixed here rather
+    /// than read from `e2e/wallets`, which the e2e suites lock and rewrite.
+    fn fixture_wallet(name: &str) -> WalletCredentials {
+        let spend_key = match name {
+            "spender" => "df97ded57234e9cfb41c2a1e338721162109db0326239e056fe7ea8228c4f30e",
+            "merchant" => "c1062227347db87da4fdeee556fd5ed3e4c3e5857f295489d8a267b69d758d09",
+            other => panic!("no fixture wallet named {other}"),
+        };
+        WalletCredentials {
+            mnemonic: None,
+            ..credentials_from_spend_key_hex(spend_key).unwrap()
+        }
     }
 
-    /// A fresh copy of a committed wallet's keys, with no outputs, in its
-    /// own temp file.
+    /// A fixture wallet's keys, with no outputs, in its own temp file.
     fn temp_wallet(test: &str, name: &str) -> (PathBuf, WalletData) {
         let dir = std::env::temp_dir().join(format!("cli-wallet-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let committed = committed_wallet(name);
-        let data = WalletData::new(WalletCredentials {
-            address: committed.address,
-            private_spend_key_hex: committed.private_spend_key,
-            private_view_key_hex: committed.private_view_key,
-            mnemonic: None,
-        });
+        let data = WalletData::new(fixture_wallet(name));
         let path = dir.join(format!("{name}.json"));
         WalletFile::create(&path, data.clone()).unwrap();
         (path, data)
@@ -1129,8 +1137,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let credentials = |name: &str| {
-            let data = committed_wallet(name);
-            serde_json::json!({ "address": data.address, "private_spend_key": data.private_spend_key, "private_view_key": data.private_view_key, "role": name })
+            let keys = fixture_wallet(name);
+            serde_json::json!({ "address": keys.address, "private_spend_key": keys.private_spend_key_hex, "private_view_key": keys.private_view_key_hex, "role": name })
         };
         let wallets = serde_json::json!({
             "_comment": "stagenet only",

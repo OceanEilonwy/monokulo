@@ -184,11 +184,19 @@ fn prompt(question: &str) -> Result<String, CliError> {
     print!("{question}");
     std::io::stdout().flush().ok();
     let mut line = String::new();
-    std::io::stdin()
-        .lock()
-        .read_line(&mut line)
-        .map_err(|e| format!("failed to read input: {e}"))?;
+    read_stdin_line(&mut line).map_err(|e| format!("failed to read input: {e}"))?;
     Ok(line.trim().to_string())
+}
+
+/// Waits for the user without holding up the runtime: while this worker
+/// thread blocks, its other tasks move to another worker.
+fn blocking<T>(wait: impl FnOnce() -> T) -> T {
+    tokio::task::block_in_place(wait)
+}
+
+/// One line of standard input, appended to `line`; see [`blocking`].
+fn read_stdin_line(line: &mut String) -> std::io::Result<usize> {
+    blocking(|| std::io::stdin().lock().read_line(line))
 }
 
 /// `--generate-new-wallet`/`--generate-from-spend-key`: writes the new
@@ -301,7 +309,7 @@ async fn repl(session: &mut Session) {
             data: data.clone(),
         };
         loop {
-            match line_editor.read_line(&prompt) {
+            match blocking(|| line_editor.read_line(&prompt)) {
                 Ok(Signal::Success(line)) => {
                     if run_line(session, &line).await.is_break() {
                         break;
@@ -322,12 +330,11 @@ async fn repl(session: &mut Session) {
         }
     } else {
         println!("Type \"help\" for the list of commands, \"exit\" to leave.");
-        let stdin = std::io::stdin();
         loop {
             print!("{prompt_left}: ");
             std::io::stdout().flush().ok();
             let mut line = String::new();
-            match stdin.lock().read_line(&mut line) {
+            match read_stdin_line(&mut line) {
                 Ok(0) => {
                     println!();
                     break;

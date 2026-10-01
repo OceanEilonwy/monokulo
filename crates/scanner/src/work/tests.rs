@@ -12,7 +12,8 @@ use super::*;
 use crate::daemon::fake::FakeDaemonClient;
 use crate::daemon::{DaemonError, KeyImageStatus, TxLocation};
 use crate::scanner::tests::{
-    cursor_of, fixture_tenant, fixture_tx, order_status, unrelated_tx, FlakyKeyCustody,
+    cursor_of, fixture_tenant, fixture_tenant_shared, fixture_tx, order_status, unrelated_tx,
+    FlakyKeyCustody,
 };
 use crate::status::OrderStatus;
 use crate::store::{Db, SharedStore, Store};
@@ -4078,7 +4079,6 @@ async fn a_network_with_nothing_to_watch_costs_one_small_request_a_round() {
 /// transactions fetched and scanned, and the next block is fetched whole and
 /// scanned, for that store.
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // the fixture writes to the store it is given
 async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_round() {
     let store = Store::open_in_memory().unwrap().into_shared();
     let custody = FlakyKeyCustody::default();
@@ -4098,10 +4098,8 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     assert_eq!(node.take().last(), Some(&"get_tip"));
 
     // The store and its order arrive; its payment is in the pool.
-    let (tenant, handle, order) = {
-        let guard = store.lock();
-        fixture_tenant(&guard, &custody, crate::now_unix() + 3600).await
-    };
+    let (tenant, handle, order) =
+        fixture_tenant_shared(&store, &custody, crate::now_unix() + 3600).await;
     let tenants = [(tenant.clone(), handle)];
     fake.set_mempool(vec![fixture_tx()]);
     run_round(
