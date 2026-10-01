@@ -15,6 +15,11 @@
 //! shares its proxy or its onion service. Over the cap a stream is refused
 //! with `429` and the page still works - `checkout.js` backs off and tries
 //! again.
+//!
+//! A client is cheap to multiply (a new Tor circuit is one), so there are
+//! two ceilings above it: streams to one store from everyone together, and
+//! streams in all. Each open stream costs a connection and a task (its
+//! engine reads are shared per order, `crate::live::SharedDetail`).
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -28,9 +33,25 @@ use super::ClientIdentity;
 /// a handful.
 pub const MAX_STREAMS_PER_SOURCE: usize = 16;
 
+/// Most streams open to one store at once, from every client together:
+/// far more customers than a store has paying at one moment.
+pub const MAX_STREAMS_PER_STORE: usize = 2_000;
+
+/// Most streams open at once, to every store.
+pub const MAX_STREAMS_TOTAL: usize = 20_000;
+
 pub struct StreamLimiter {
     max: AtomicUsize,
-    open: Mutex<HashMap<(ClientIdentity, String), usize>>,
+    per_store: usize,
+    total: usize,
+    open: Mutex<Open>,
+}
+
+#[derive(Default)]
+struct Open {
+    by_client: HashMap<(ClientIdentity, String), usize>,
+    by_store: HashMap<String, usize>,
+    total: usize,
 }
 
 impl Default for StreamLimiter {
@@ -41,9 +62,16 @@ impl Default for StreamLimiter {
 
 impl StreamLimiter {
     pub fn new(max: usize) -> Self {
+        StreamLimiter::with_ceilings(max, MAX_STREAMS_PER_STORE, MAX_STREAMS_TOTAL)
+    }
+
+    /// With the per-store and overall ceilings given, for tests.
+    fn with_ceilings(max: usize, per_store: usize, total: usize) -> Self {
         StreamLimiter {
             max: AtomicUsize::new(max),
-            open: Mutex::new(HashMap::new()),
+            per_store,
+            total,
+            open: Mutex::new(Open::default()),
         }
     }
 
@@ -54,7 +82,7 @@ impl StreamLimiter {
 
     /// A permit to hold for as long as the stream is open, or `None` when
     /// this client already has the maximum number of streams open to this
-    /// store.
+    /// store, the store has its ceiling open, or the process has.
     pub fn try_acquire(
         self: &Arc<Self>,
         client: &ClientIdentity,
@@ -62,11 +90,17 @@ impl StreamLimiter {
     ) -> Option<StreamPermit> {
         let key = (client.clone(), pk.to_string());
         let mut open = self.open.lock();
-        let count = open.entry(key.clone()).or_insert(0);
-        if *count >= self.max.load(Ordering::Relaxed) {
+        let by_client = open.by_client.get(&key).copied().unwrap_or(0);
+        let by_store = open.by_store.get(pk).copied().unwrap_or(0);
+        if by_client >= self.max.load(Ordering::Relaxed)
+            || by_store >= self.per_store
+            || open.total >= self.total
+        {
             return None;
         }
-        *count += 1;
+        *open.by_client.entry(key.clone()).or_insert(0) += 1;
+        *open.by_store.entry(pk.to_string()).or_insert(0) += 1;
+        open.total += 1;
         Some(StreamPermit {
             limiter: Arc::clone(self),
             key,
@@ -77,6 +111,7 @@ impl StreamLimiter {
     fn open_count(&self, client: &ClientIdentity, pk: &str) -> usize {
         self.open
             .lock()
+            .by_client
             .get(&(client.clone(), pk.to_string()))
             .copied()
             .unwrap_or(0)
@@ -93,12 +128,19 @@ pub struct StreamPermit {
 impl Drop for StreamPermit {
     fn drop(&mut self) {
         let mut open = self.limiter.open.lock();
-        if let Some(count) = open.get_mut(&self.key) {
+        if let Some(count) = open.by_client.get_mut(&self.key) {
             *count -= 1;
             if *count == 0 {
-                open.remove(&self.key);
+                open.by_client.remove(&self.key);
             }
         }
+        if let Some(count) = open.by_store.get_mut(&self.key.1) {
+            *count -= 1;
+            if *count == 0 {
+                open.by_store.remove(&self.key.1);
+            }
+        }
+        open.total = open.total.saturating_sub(1);
     }
 }
 
@@ -152,6 +194,47 @@ mod tests {
         let limiter = Arc::new(StreamLimiter::new(1));
         let client = ClientIdentity::Address("192.0.2.1".parse().unwrap());
         drop(limiter.try_acquire(&client, "pk_one").unwrap());
-        assert!(limiter.open.lock().is_empty());
+        let open = limiter.open.lock();
+        assert!(open.by_client.is_empty() && open.by_store.is_empty());
+        assert_eq!(open.total, 0);
+    }
+
+    /// New circuits are free to make, so one store's streams, and all
+    /// streams, have ceilings of their own; a closed stream frees its place
+    /// under each.
+    #[test]
+    fn a_store_and_the_process_have_ceilings_however_many_clients_there_are() {
+        let limiter = Arc::new(StreamLimiter::with_ceilings(16, 3, 5));
+        let held: Vec<_> = (0..3)
+            .map(|n| {
+                limiter
+                    .try_acquire(&ClientIdentity::Circuit(n), "pk_one")
+                    .unwrap()
+            })
+            .collect();
+        assert!(
+            limiter
+                .try_acquire(&ClientIdentity::Circuit(99), "pk_one")
+                .is_none(),
+            "a fourth client to one store is over its ceiling"
+        );
+        let other: Vec<_> = (0..2)
+            .map(|n| {
+                limiter
+                    .try_acquire(&ClientIdentity::Circuit(n), "pk_two")
+                    .unwrap()
+            })
+            .collect();
+        assert!(
+            limiter
+                .try_acquire(&ClientIdentity::Circuit(7), "pk_three")
+                .is_none(),
+            "five open in all is the ceiling"
+        );
+        drop(held);
+        assert!(limiter
+            .try_acquire(&ClientIdentity::Circuit(99), "pk_one")
+            .is_some());
+        drop(other);
     }
 }

@@ -776,7 +776,7 @@ pub struct TenantView {
 /// root) field-for-field. No fiat fields (`docs/fx_refactor.md` Phase 3) -
 /// any fiat display comes from monokulo's own local
 /// `order_fiat_metadata` table (`db::Db::get_order_fiat_metadata`) instead.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct OrderView {
     pub order_id: shared::ids::OrderId,
     pub merchant_order_id: Option<String>,
@@ -798,7 +798,7 @@ pub struct OrderView {
 }
 
 /// Mirrors the engine's own `PaymentView`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PaymentView {
     pub txid: String,
     pub output_index: i64,
@@ -827,7 +827,7 @@ pub enum PaymentLookupView {
 /// Mirrors the engine's own `OrderDetailResponse` — a flattened `OrderView`
 /// plus its `payments` list, matching the engine's own
 /// `#[serde(flatten)] order: OrderView` wire shape exactly.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct OrderDetailResponse {
     #[serde(flatten)]
     pub order: OrderView,

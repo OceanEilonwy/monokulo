@@ -127,6 +127,24 @@ async fn load_order(
     ),
     LoadError,
 > {
+    load_order_with(state, pk, order_id, None).await
+}
+
+/// [`load_order`], reading the order through `shared` when given: a live
+/// stream's re-read, which every other stream on the same order reuses.
+async fn load_order_with(
+    state: &AppState,
+    pk: &str,
+    order_id: &crate::db::OrderId,
+    shared: Option<&crate::live::SharedDetail>,
+) -> Result<
+    (
+        StoreConnectionRow,
+        shared::auth::RawToken,
+        OrderDetailResponse,
+    ),
+    LoadError,
+> {
     let key = pk.to_string();
     let row = match state
         .db
@@ -141,7 +159,12 @@ async fn load_order(
         Ok(sk) => sk,
         Err(_) => return Err(LoadError::Internal),
     };
-    match state.engine.client.get_order_detail(&sk, order_id).await {
+    let read = state.engine.client.get_order_detail(&sk, order_id);
+    let detail = match shared {
+        Some(shared) => shared.get(read).await,
+        None => read.await,
+    };
+    match detail {
         Ok(detail) => Ok((row, sk, detail)),
         Err(EngineClientError::EngineError { status, .. })
             if status == reqwest::StatusCode::NOT_FOUND =>
@@ -709,6 +732,9 @@ pub async fn checkout_events(
         None => None,
     };
     let subscription = state.engine.client.subscribe_order(&row.id, &sk, &order_id);
+    // One engine read per change for this order, however many streams
+    // watch it.
+    let shared = subscription.shared_detail();
     let fragments = options.fragments == Some(true);
     let routed = options.routed == Some(true);
     // What each routed part last looked like on this stream, so only
@@ -722,25 +748,31 @@ pub async fn checkout_events(
             let sent = sent.clone();
             // Held by the stream, so the slot frees when the stream ends.
             let _permit = &permit;
-            let (state, pk, order_id, options) =
-                (state.clone(), pk.clone(), order_id.clone(), options.clone());
+            let (state, pk, order_id, options, shared) = (
+                state.clone(),
+                pk.clone(),
+                order_id.clone(),
+                options.clone(),
+                shared.clone(),
+            );
             async move {
-                let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
-                    Ok(loaded) => loaded,
-                    // The order is gone (or never was this store's): one
-                    // last event and the stream ends, rather than staying
-                    // open for good. An unreachable engine waits instead.
-                    Err(LoadError::NotFound) => {
-                        return Some(crate::live::LiveSnapshot {
-                            events: vec![axum::response::sse::Event::default()
-                                .event("done")
-                                .data("not_found")],
-                            fingerprint: "not_found".to_string(),
-                            terminal: true,
-                        })
-                    }
-                    Err(LoadError::Internal) => return None,
-                };
+                let (row, sk, detail) =
+                    match load_order_with(&state, &pk, &order_id, Some(&shared)).await {
+                        Ok(loaded) => loaded,
+                        // The order is gone (or never was this store's): one
+                        // last event and the stream ends, rather than staying
+                        // open for good. An unreachable engine waits instead.
+                        Err(LoadError::NotFound) => {
+                            return Some(crate::live::LiveSnapshot {
+                                events: vec![axum::response::sse::Event::default()
+                                    .event("done")
+                                    .data("not_found")],
+                                fingerprint: "not_found".to_string(),
+                                terminal: true,
+                            })
+                        }
+                        Err(LoadError::Internal) => return None,
+                    };
                 let view =
                     build_checkout_view(&state, &pk, &row, &sk, detail, None, &options).await;
                 let status = CheckoutStatusResponse {
