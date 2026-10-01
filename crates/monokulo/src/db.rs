@@ -328,6 +328,20 @@ impl Db {
     ) -> Result<bool> {
         Ok(self.conn.execute("UPDATE pos_orders SET cancelled_at_utc = ?3, backgrounded = 1 WHERE connection_id = ?1 AND order_id = ?2 AND cancelled_at_utc IS NULL", params![connection_id, order_id, cancelled_at])? > 0)
     }
+
+    /// Takes a cancellation back, leaving the order backgrounded (for
+    /// review): for an order a payment reached between the check that it
+    /// had none and the cancellation.
+    pub fn uncancel_pos_order(
+        &self,
+        connection_id: &ConnectionId,
+        order_id: &OrderId,
+    ) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE pos_orders SET cancelled_at_utc = NULL WHERE connection_id = ?1 AND order_id = ?2 AND cancelled_at_utc IS NOT NULL",
+            params![connection_id, order_id],
+        )? > 0)
+    }
 }
 
 /// One connection behind a lock: the settings store's own connection, and

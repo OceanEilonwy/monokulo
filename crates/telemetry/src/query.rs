@@ -159,10 +159,27 @@ impl fmt::Display for ParseError {
     }
 }
 
+/// Longest query accepted, in characters.
+pub const MAX_QUERY_CHARS: usize = 4096;
+
+/// Deepest nesting of brackets and `not`s accepted. The parser, and the
+/// expression it builds (its display, SQL and drop), recurse once per
+/// level: a query of a few thousand `(` would otherwise overflow the stack
+/// and abort the process.
+pub const MAX_DEPTH: usize = 64;
+
 /// Parses a query. Empty text is `None` (everything matches).
 pub fn parse(text: &str) -> Result<Option<Expr>, ParseError> {
     if text.trim().is_empty() {
         return Ok(None);
+    }
+    let len = text.chars().count();
+    if len > MAX_QUERY_CHARS {
+        return Err(ParseError {
+            message: format!("a query can be at most {MAX_QUERY_CHARS} characters"),
+            start: MAX_QUERY_CHARS,
+            end: len,
+        });
     }
     match Parser::new(text).and_then(|mut p| p.query()) {
         Ok(expr) => Ok(Some(expr)),
@@ -339,6 +356,8 @@ struct Parser {
     tokens: Vec<Spanned>,
     at: usize,
     len: usize,
+    /// Brackets and `not`s open around the current position.
+    depth: usize,
 }
 
 fn is_keyword(word: &str, keyword: &str) -> bool {
@@ -355,6 +374,7 @@ impl Parser {
             tokens: tokenize(text)?,
             at: 0,
             len: text.chars().count(),
+            depth: 0,
         })
     }
 
@@ -413,10 +433,24 @@ impl Parser {
         Ok(left)
     }
 
+    /// One more level of nesting, refused past [`MAX_DEPTH`].
+    fn descend(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(self.error_here(&format!(
+                "a query can nest brackets and nots at most {MAX_DEPTH} deep"
+            )));
+        }
+        Ok(())
+    }
+
     fn not(&mut self) -> Result<Expr, ParseError> {
         if self.peek_keyword("not") {
             self.next();
-            return Ok(Expr::Not(Box::new(self.not()?)));
+            self.descend()?;
+            let inner = self.not()?;
+            self.depth -= 1;
+            return Ok(Expr::Not(Box::new(inner)));
         }
         self.atom()
     }
@@ -427,7 +461,9 @@ impl Parser {
         };
         match first.token {
             Token::Open => {
+                self.descend()?;
                 let inner = self.or()?;
+                self.depth -= 1;
                 match self.next() {
                     Some(Spanned {
                         token: Token::Close,
@@ -754,6 +790,22 @@ mod tests {
 
     fn p(text: &str) -> Expr {
         parse(text).unwrap().unwrap()
+    }
+
+    /// Deep nesting is refused, not recursed into until the stack runs out.
+    #[test]
+    fn nesting_past_the_limit_is_an_error_not_a_stack_overflow() {
+        let deep = format!("{}level = warn{}", "(".repeat(5000), ")".repeat(5000));
+        assert!(parse(&deep).is_err());
+        let nots = format!("{}level = warn", "not ".repeat(5000));
+        assert!(parse(&nots).is_err());
+        let fine = format!(
+            "{}level = warn{}",
+            "(".repeat(MAX_DEPTH),
+            ")".repeat(MAX_DEPTH)
+        );
+        assert!(parse(&fine).is_ok());
+        assert!(parse(&"a".repeat(MAX_QUERY_CHARS + 1)).is_err());
     }
 
     #[test]

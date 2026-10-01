@@ -164,8 +164,11 @@ pub(super) async fn create_connection_for_user(
         })?;
 
     let id = crate::db::ConnectionId::new(Uuid::new_v4().to_string());
-    let encrypted_secret_token =
-        crypto::encrypt(&state.encryption_key, created.secret_token.expose());
+    let encrypted_secret_token = crypto::encrypt(
+        &state.encryption_key,
+        crypto::Binding::StoreSecret(id.as_str()),
+        created.secret_token.expose(),
+    );
     let (connection_id, user_id, public_key) =
         (id.clone(), user.id.clone(), created.public_key.clone());
     let engine_url = state.engine.client.base_url();
@@ -438,8 +441,12 @@ mod tests {
         // corrupted decryption would either fail to decrypt at all, or fail
         // the engine's own authentication, or resolve to a different
         // (or no) tenant.
-        let decrypted = crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
-            .expect("decrypting the stored value with the correct key must succeed");
+        let decrypted = crypto::decrypt(
+            &state.encryption_key,
+            crypto::Binding::StoreSecret(row.id.as_str()),
+            &row.tenant_secret_token_encrypted,
+        )
+        .expect("decrypting the stored value with the correct key must succeed");
         assert!(
             decrypted.starts_with("sk_"),
             "decrypted value should be a real sk_ token, got: {decrypted}"

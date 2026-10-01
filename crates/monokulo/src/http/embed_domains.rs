@@ -844,7 +844,12 @@ mod tests {
             .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .unwrap();
-        crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap()
+        crate::crypto::decrypt(
+            &state.encryption_key,
+            crate::crypto::Binding::StoreSecret(row.id.as_str()),
+            &row.tenant_secret_token_encrypted,
+        )
+        .unwrap()
     }
 
     fn recorded_with_key(state: &AppState, id: &str, order: &serde_json::Value) -> bool {

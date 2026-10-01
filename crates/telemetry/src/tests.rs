@@ -548,6 +548,9 @@ mod otlp_export {
         assert!(otlp::check_endpoint(&"".to_string()).is_ok());
         assert!(otlp::check_endpoint(&"http://127.0.0.1:4318".to_string()).is_ok());
         assert!(otlp::check_endpoint(&"127.0.0.1:4318".to_string()).is_err());
+        // Credentials belong in the (secret) headers, never the address.
+        assert!(otlp::check_endpoint(&"https://user:key@collector.example".to_string()).is_err());
+        assert!(otlp::check_endpoint(&"https://collector.example/v1?x=a@b".to_string()).is_ok());
         let headers = |raw: &str| otlp::check_headers(&live_settings::Secret::new(raw));
         for fine in [
             "",

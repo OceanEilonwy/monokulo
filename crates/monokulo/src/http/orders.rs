@@ -68,9 +68,13 @@ pub(super) fn decrypt_sk(
     encryption_key: &crate::crypto::AtRestKey,
     row: &StoreConnectionRow,
 ) -> Result<shared::auth::RawToken, ()> {
-    crypto::decrypt(encryption_key, &row.tenant_secret_token_encrypted)
-        .map(|sk| shared::auth::RawToken::presented(&sk))
-        .map_err(|_| ())
+    crypto::decrypt(
+        encryption_key,
+        crypto::Binding::StoreSecret(row.id.as_str()),
+        &row.tenant_secret_token_encrypted,
+    )
+    .map(|sk| shared::auth::RawToken::presented(&sk))
+    .map_err(|_| ())
 }
 
 /// Shared by `orders_list` - the "real orders, real fiat metadata" view
@@ -2461,8 +2465,12 @@ mod tests {
             .get_store_connection_by_public_key(public_key)
             .unwrap()
             .expect("connection exists");
-        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
-            .unwrap();
+        let sk = crate::crypto::decrypt(
+            &state.encryption_key,
+            crate::crypto::Binding::StoreSecret(row.id.as_str()),
+            &row.tenant_secret_token_encrypted,
+        )
+        .unwrap();
         let response = reqwest::Client::new()
             .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
             .bearer_auth(sk)
@@ -4154,8 +4162,12 @@ mod tests {
             .get_store_connection_by_public_key(public_key)
             .unwrap()
             .unwrap();
-        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
-            .unwrap();
+        let sk = crate::crypto::decrypt(
+            &state.encryption_key,
+            crate::crypto::Binding::StoreSecret(row.id.as_str()),
+            &row.tenant_secret_token_encrypted,
+        )
+        .unwrap();
         state
             .engine
             .client
@@ -4937,8 +4949,12 @@ mod tests {
             .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
-        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
-            .unwrap();
+        let sk = crate::crypto::decrypt(
+            &state.encryption_key,
+            crate::crypto::Binding::StoreSecret(row.id.as_str()),
+            &row.tenant_secret_token_encrypted,
+        )
+        .unwrap();
         assert_eq!(
             state
                 .engine
@@ -4988,8 +5004,12 @@ mod tests {
             .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
-        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
-            .unwrap();
+        let sk = crate::crypto::decrypt(
+            &state.encryption_key,
+            crate::crypto::Binding::StoreSecret(row.id.as_str()),
+            &row.tenant_secret_token_encrypted,
+        )
+        .unwrap();
         assert_eq!(
             state
                 .engine
@@ -5047,8 +5067,12 @@ mod tests {
             .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
-        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
-            .unwrap();
+        let sk = crate::crypto::decrypt(
+            &state.encryption_key,
+            crate::crypto::Binding::StoreSecret(row.id.as_str()),
+            &row.tenant_secret_token_encrypted,
+        )
+        .unwrap();
         assert_eq!(
             state
                 .engine
@@ -6053,9 +6077,12 @@ mod tests {
             .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .unwrap();
-        let secret =
-            crate::crypto::decrypt(&TEST_ENCRYPTION_KEY, &row.tenant_secret_token_encrypted)
-                .unwrap();
+        let secret = crate::crypto::decrypt(
+            &TEST_ENCRYPTION_KEY,
+            crate::crypto::Binding::StoreSecret(row.id.as_str()),
+            &row.tenant_secret_token_encrypted,
+        )
+        .unwrap();
         let plugin = created_id(router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), Some(format!("Bearer {secret}")),
             serde_json::json!({ "amount": "2.00", "currency": "XMR", "merchant_order_id": "wc-1042" }))).await.unwrap()).await;
         let website = created_id(

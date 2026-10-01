@@ -552,21 +552,29 @@ impl LogStore {
             if used_bytes(conn)? <= max_bytes {
                 break;
             }
-            let count: i64 = conn.query_row("SELECT count(*) FROM logs", [], |r| r.get(0))?;
-            if count == 0 {
-                conn.execute("DELETE FROM spans", [])?;
+            // The oldest tenth of the lines and the oldest tenth of the
+            // spans, each by its own count: spans are stored whatever the
+            // log level, so a store can be mostly spans, and trimming them
+            // only to the oldest line left would never bring it under the
+            // limit.
+            let lines: i64 = conn.query_row("SELECT count(*) FROM logs", [], |r| r.get(0))?;
+            let spans: i64 = conn.query_row("SELECT count(*) FROM spans", [], |r| r.get(0))?;
+            if lines == 0 && spans == 0 {
                 break;
             }
-            // The oldest tenth of the lines, and the spans that started
-            // before the oldest line left.
-            conn.execute(
-                "DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY ts LIMIT ?1)",
-                [(count / 10).max(1)],
-            )?;
-            conn.execute(
-                "DELETE FROM spans WHERE start_ts < (SELECT coalesce(min(ts), 0) FROM logs)",
-                [],
-            )?;
+            if lines > 0 {
+                conn.execute(
+                    "DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY ts LIMIT ?1)",
+                    [(lines / 10).max(1)],
+                )?;
+            }
+            if spans > 0 {
+                conn.execute(
+                    "DELETE FROM spans WHERE (trace_id, span_id) IN
+                       (SELECT trace_id, span_id FROM spans ORDER BY start_ts LIMIT ?1)",
+                    [(spans / 10).max(1)],
+                )?;
+            }
         }
         conn.execute_batch("PRAGMA incremental_vacuum;")?;
         Ok(())

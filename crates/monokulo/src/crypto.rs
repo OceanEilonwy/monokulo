@@ -66,14 +66,39 @@ impl std::fmt::Debug for AtRestKey {
     }
 }
 
-/// Encrypts `plaintext` under `key`, returning a single hex-encoded string
-/// (nonce || ciphertext-with-tag) safe to store in a plain `TEXT` column.
+/// What a ciphertext is bound to: the row it belongs in. Authenticated
+/// with the ciphertext (GCM's associated data) but not stored in it, so a
+/// value copied from one row into another - a store's engine secret into
+/// another store's row, an invite token into another request's - fails to
+/// decrypt there. Anyone able to write the database file could otherwise
+/// make one store act with another's secret without knowing the key.
+pub enum Binding<'a> {
+    /// `store_connections.tenant_secret_token_encrypted` of this connection.
+    StoreSecret(&'a str),
+    /// `invite_links.token_encrypted` of the request it was made for.
+    InviteToken(&'a str),
+}
+
+impl Binding<'_> {
+    fn bytes(&self) -> Vec<u8> {
+        match self {
+            Binding::StoreSecret(id) => format!("store_connections.tenant_secret_token:{id}"),
+            Binding::InviteToken(id) => format!("invite_links.token:{id}"),
+        }
+        .into_bytes()
+    }
+}
+
+/// Encrypts `plaintext` under `key`, bound to `binding`, returning a single
+/// hex-encoded string (nonce || ciphertext-with-tag) safe to store in a
+/// plain `TEXT` column.
 ///
 /// A fresh random nonce is generated on every call — encrypting the same
 /// plaintext twice yields two different encoded strings (see this module's
 /// own test), which is required for GCM's security (nonce reuse under the
 /// same key breaks the authentication guarantee).
-pub fn encrypt(key: &AtRestKey, plaintext: &str) -> String {
+pub fn encrypt(key: &AtRestKey, binding: Binding<'_>, plaintext: &str) -> String {
+    use aes_gcm::aead::Payload;
     let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key.0));
     // A fresh, cryptographically random nonce every call - see this
     // module's doc comment on why that matters for GCM.
@@ -81,8 +106,15 @@ pub fn encrypt(key: &AtRestKey, plaintext: &str) -> String {
     // Only fails for absurdly large plaintexts (far beyond GCM's ~64GiB
     // limit) - never for anything this module is actually used for (a
     // ~70-byte `sk_...` token).
+    let aad = binding.bytes();
     let ciphertext = cipher
-        .encrypt(&nonce, plaintext.as_bytes())
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext.as_bytes(),
+                aad: &aad,
+            },
+        )
         .expect("AES-256-GCM encryption failed");
 
     let mut combined = Vec::with_capacity(NONCE_LEN + ciphertext.len());
@@ -93,8 +125,14 @@ pub fn encrypt(key: &AtRestKey, plaintext: &str) -> String {
 
 /// Inverse of [`encrypt`]. Fails (never panics) on a malformed encoded
 /// string, a truncated nonce/ciphertext, or an authentication-tag mismatch
-/// (tampered or corrupted data, or the wrong key).
-pub fn decrypt(key: &AtRestKey, encoded: &str) -> Result<String, CryptoError> {
+/// (tampered or corrupted data, the wrong key, or a value from another
+/// row's binding).
+pub fn decrypt(
+    key: &AtRestKey,
+    binding: Binding<'_>,
+    encoded: &str,
+) -> Result<String, CryptoError> {
+    use aes_gcm::aead::Payload;
     let combined = hex::decode(encoded).map_err(|_| CryptoError::InvalidEncoding)?;
     if combined.len() < NONCE_LEN {
         return Err(CryptoError::Truncated);
@@ -106,8 +144,15 @@ pub fn decrypt(key: &AtRestKey, encoded: &str) -> Result<String, CryptoError> {
     let nonce = CipherNonce::try_from(nonce_bytes).map_err(|_| CryptoError::Truncated)?;
 
     let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key.0));
+    let aad = binding.bytes();
     let plaintext_bytes = cipher
-        .decrypt(&nonce, ciphertext)
+        .decrypt(
+            &nonce,
+            Payload {
+                msg: ciphertext,
+                aad: &aad,
+            },
+        )
         .map_err(|_| CryptoError::AuthenticationFailed)?;
     String::from_utf8(plaintext_bytes).map_err(|_| CryptoError::InvalidUtf8)
 }
@@ -118,33 +163,58 @@ mod tests {
 
     const TEST_KEY: AtRestKey = AtRestKey::new([7u8; 32]);
 
+    /// A value is bound to its row: moved to another row (or another kind
+    /// of row) it no longer decrypts.
+    #[test]
+    fn a_value_bound_to_one_row_does_not_decrypt_in_another() {
+        let encoded = encrypt(&TEST_KEY, Binding::StoreSecret("c1"), "sk_one");
+        assert_eq!(
+            decrypt(&TEST_KEY, Binding::StoreSecret("c1"), &encoded).unwrap(),
+            "sk_one"
+        );
+        assert!(matches!(
+            decrypt(&TEST_KEY, Binding::StoreSecret("c2"), &encoded),
+            Err(CryptoError::AuthenticationFailed)
+        ));
+        assert!(matches!(
+            decrypt(&TEST_KEY, Binding::InviteToken("c1"), &encoded),
+            Err(CryptoError::AuthenticationFailed)
+        ));
+    }
+
     #[test]
     fn encrypt_then_decrypt_round_trips_to_the_exact_original_plaintext() {
         let plaintext = "sk_abcdefghijklmnopqrstuvwxyz0123456789";
-        let encoded = encrypt(&TEST_KEY, plaintext);
-        let decrypted = decrypt(&TEST_KEY, &encoded).unwrap();
+        let encoded = encrypt(&TEST_KEY, Binding::StoreSecret("c1"), plaintext);
+        let decrypted = decrypt(&TEST_KEY, Binding::StoreSecret("c1"), &encoded).unwrap();
         assert_eq!(decrypted, plaintext);
     }
 
     #[test]
     fn encrypting_the_same_plaintext_twice_produces_two_different_encoded_strings() {
         let plaintext = "sk_same_token_every_time";
-        let first = encrypt(&TEST_KEY, plaintext);
-        let second = encrypt(&TEST_KEY, plaintext);
+        let first = encrypt(&TEST_KEY, Binding::StoreSecret("c1"), plaintext);
+        let second = encrypt(&TEST_KEY, Binding::StoreSecret("c1"), plaintext);
         assert_ne!(
             first, second,
             "fresh nonce per call should make the two encodings differ"
         );
 
         // Both must still independently decrypt back to the same plaintext.
-        assert_eq!(decrypt(&TEST_KEY, &first).unwrap(), plaintext);
-        assert_eq!(decrypt(&TEST_KEY, &second).unwrap(), plaintext);
+        assert_eq!(
+            decrypt(&TEST_KEY, Binding::StoreSecret("c1"), &first).unwrap(),
+            plaintext
+        );
+        assert_eq!(
+            decrypt(&TEST_KEY, Binding::StoreSecret("c1"), &second).unwrap(),
+            plaintext
+        );
     }
 
     #[test]
     fn decrypting_a_tampered_ciphertext_returns_an_error_not_a_panic_or_wrong_plaintext() {
         let plaintext = "sk_do_not_trust_a_tampered_value";
-        let encoded = encrypt(&TEST_KEY, plaintext);
+        let encoded = encrypt(&TEST_KEY, Binding::StoreSecret("c1"), plaintext);
 
         let mut bytes = hex::decode(&encoded).unwrap();
         // Flip a byte well past the nonce, inside the ciphertext/tag.
@@ -152,7 +222,7 @@ mod tests {
         bytes[last] ^= 0xFF;
         let tampered = hex::encode(bytes);
 
-        let result = decrypt(&TEST_KEY, &tampered);
+        let result = decrypt(&TEST_KEY, Binding::StoreSecret("c1"), &tampered);
         assert!(
             matches!(result, Err(CryptoError::AuthenticationFailed)),
             "expected an auth failure, got: {result:?}"
@@ -162,10 +232,10 @@ mod tests {
     #[test]
     fn decrypting_a_truncated_string_returns_an_error_not_a_panic() {
         let plaintext = "sk_truncate_me";
-        let encoded = encrypt(&TEST_KEY, plaintext);
+        let encoded = encrypt(&TEST_KEY, Binding::StoreSecret("c1"), plaintext);
         // Cut it down to fewer bytes than even the nonce alone.
         let truncated = &encoded[..NONCE_LEN]; // hex chars, well short of a full nonce's worth of bytes
-        let result = decrypt(&TEST_KEY, truncated);
+        let result = decrypt(&TEST_KEY, Binding::StoreSecret("c1"), truncated);
         assert!(
             matches!(result, Err(CryptoError::Truncated)),
             "expected Truncated, got: {result:?}"
@@ -174,7 +244,11 @@ mod tests {
 
     #[test]
     fn decrypting_a_non_hex_string_returns_an_error_not_a_panic() {
-        let result = decrypt(&TEST_KEY, "not valid hex at all!!");
+        let result = decrypt(
+            &TEST_KEY,
+            Binding::StoreSecret("c1"),
+            "not valid hex at all!!",
+        );
         assert!(
             matches!(result, Err(CryptoError::InvalidEncoding)),
             "expected InvalidEncoding, got: {result:?}"
@@ -184,9 +258,9 @@ mod tests {
     #[test]
     fn decrypting_with_the_wrong_key_returns_an_error() {
         let plaintext = "sk_wrong_key_test";
-        let encoded = encrypt(&TEST_KEY, plaintext);
+        let encoded = encrypt(&TEST_KEY, Binding::StoreSecret("c1"), plaintext);
         let wrong_key = AtRestKey::new([9u8; 32]);
-        let result = decrypt(&wrong_key, &encoded);
+        let result = decrypt(&wrong_key, Binding::StoreSecret("c1"), &encoded);
         assert!(
             matches!(result, Err(CryptoError::AuthenticationFailed)),
             "expected an auth failure, got: {result:?}"

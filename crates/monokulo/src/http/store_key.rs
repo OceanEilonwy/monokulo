@@ -46,8 +46,17 @@ pub enum KeyCheck {
 /// Compares `presented` with the store's stored key in constant time (for
 /// equal lengths; the length of a key isn't secret). A key that can't be
 /// decrypted never matches.
-pub fn key_matches(state: &AppState, stored_encrypted: &str, presented: &str) -> bool {
-    match crate::crypto::decrypt(&state.encryption_key, stored_encrypted) {
+pub fn key_matches(
+    state: &AppState,
+    connection_id: &str,
+    stored_encrypted: &str,
+    presented: &str,
+) -> bool {
+    match crate::crypto::decrypt(
+        &state.encryption_key,
+        crate::crypto::Binding::StoreSecret(connection_id),
+        stored_encrypted,
+    ) {
         Ok(stored) => bool::from(stored.as_bytes().ct_eq(presented.as_bytes())),
         Err(e) => {
             tracing::error!(error = %e, "could not decrypt a store's secret key to check a presented one");
@@ -75,7 +84,12 @@ pub async fn check(state: &AppState, pk: &str, headers: &axum::http::HeaderMap) 
         Ok(Some(row)) => row,
         _ => return KeyCheck::Invalid,
     };
-    if key_matches(state, &row.tenant_secret_token_encrypted, presented.trim()) {
+    if key_matches(
+        state,
+        row.id.as_str(),
+        &row.tenant_secret_token_encrypted,
+        presented.trim(),
+    ) {
         KeyCheck::Valid
     } else {
         KeyCheck::Invalid
