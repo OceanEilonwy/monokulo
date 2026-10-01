@@ -243,10 +243,12 @@ fn spans_are_stored_redacted_with_their_parents_and_a_trace_reads_back_whole() {
     });
     drop(outer);
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Spans and lines can reach the writer in different batches: wait for
+    // both. The deadline bounds only a hung writer.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let trace = loop {
         let trace = s.store.trace(&trace_id).unwrap();
-        if trace.spans.len() == 2 || Instant::now() > deadline {
+        if (trace.spans.len() == 2 && trace.logs.len() == 1) || Instant::now() > deadline {
             break trace;
         }
         std::thread::sleep(Duration::from_millis(20));

@@ -224,7 +224,6 @@ pub async fn signup(
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

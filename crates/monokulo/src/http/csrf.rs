@@ -84,7 +84,6 @@ fn same_origin(host: Option<&str>, sec_fetch_site: Option<&str>, origin: Option<
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -62,12 +62,19 @@ struct TailSlot;
 impl TailSlot {
     fn take() -> Option<TailSlot> {
         use std::sync::atomic::Ordering;
-        OPEN_TAILS
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |open| {
-                (open < MAX_TAILS).then_some(open + 1)
-            })
-            .ok()
-            .map(|_| TailSlot)
+        let mut open = OPEN_TAILS.load(Ordering::SeqCst);
+        while open < MAX_TAILS {
+            match OPEN_TAILS.compare_exchange_weak(
+                open,
+                open + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Some(TailSlot),
+                Err(now) => open = now,
+            }
+        }
+        None
     }
 }
 
