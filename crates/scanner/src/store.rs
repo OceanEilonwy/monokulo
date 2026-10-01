@@ -1,12 +1,12 @@
 //! The persistence layer. A `Store` wraps one `rusqlite::Connection` and is not
-//! `Sync` on its own — SQLite allows exactly one writer at a time regardless, so the
-//! production async layer is expected to guard a `Store` behind a single owner (a
-//! dedicated thread receiving commands over a channel, or, as used for the
-//! concurrency test in this module, an `Arc<Mutex<Store>>`) rather than opening many
-//! writable connections. Read-only access can use as many separate connections as
-//! needed (SQLite's WAL mode allows concurrent readers alongside the one writer) —
-//! that pool is not implemented here, since every method below is exercised directly
-//! against a single connection for correctness testing.
+//! `Sync` on its own. The engine writes through two of them: the database
+//! worker's own connection (`db::Db`, a thread serving queued jobs) and the
+//! shared store (`SharedStore`, an `Arc<Mutex<Store>>`) that tests, tools and
+//! a few startup paths use; SQLite's busy timeout and `BEGIN IMMEDIATE`
+//! transactions (`Store::in_transaction`) keep the two from deadlocking on
+//! each other. Reads can also go through [`ReadStorePool`]: separate
+//! read-only connections, as many as needed, alongside the writers in WAL
+//! mode.
 //!
 //! This module intentionally has no `KeyCustody` dependency: deriving a subaddress
 //! for a new order happens *before* `create_order` is called, by whatever orchestrates
@@ -106,6 +106,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         21,
         include_str!("../migrations/0021_payment_output_keys.sql"),
+    ),
+    (
+        22,
+        include_str!("../migrations/0022_webhook_delivery_gave_up.sql"),
     ),
 ];
 
@@ -1147,49 +1151,55 @@ impl Store {
     /// key material in place). Each field is `Option<Option<T>>`-free by design:
     /// `None` means "leave unchanged", so a partial PATCH body only touches the
     /// fields it actually included.
+    /// One statement, so a patch with both fields applies both or neither.
+    /// Returns `false` if there is no such tenant.
     pub fn update_tenant_config(
         &self,
         tenant_id: &TenantId,
         patch: TenantConfigPatch,
-    ) -> Result<()> {
-        if let Some(v) = patch.confirmations_required {
-            self.conn.execute(
-                "UPDATE tenants SET confirmations_required = ?2 WHERE id = ?1",
-                params![tenant_id, v as i64],
-            )?;
-        }
-        if let Some(v) = patch.order_expiry_seconds {
-            self.conn.execute(
-                "UPDATE tenants SET order_expiry_seconds = ?2 WHERE id = ?1",
-                params![tenant_id, v],
-            )?;
-        }
-        Ok(())
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE tenants
+             SET confirmations_required = COALESCE(?2, confirmations_required),
+                 order_expiry_seconds = COALESCE(?3, order_expiry_seconds)
+             WHERE id = ?1",
+            params![
+                tenant_id,
+                patch.confirmations_required.map(shared::sqlite::Unsigned),
+                patch.order_expiry_seconds
+            ],
+        )?;
+        Ok(changed > 0)
     }
 
     /// Paginated, newest first, optionally filtered by status. `cursor` is the
-    /// `created_at` of the last row from a previous page (exclusive) - simple and
-    /// sufficient at v1 scale; see docs/DESIGN.md for why a cleverer keyset scheme
-    /// isn't warranted yet.
+    /// `(created_at, id)` of the last row of the previous page, exclusive: a
+    /// keyset, because `created_at` is whole seconds and a burst of orders
+    /// (a point of sale) shares one. Without the id, a page boundary inside
+    /// such a second would skip the rest of it.
     pub fn list_orders(
         &self,
         tenant_id: &TenantId,
         status_filter: Option<OrderStatus>,
         limit: u32,
-        cursor: Option<i64>,
+        cursor: Option<(i64, &str)>,
     ) -> Result<Vec<Order>> {
         let status_str = status_filter.map(status_to_str);
+        let (cursor_at, cursor_id) = match cursor {
+            Some((at, id)) => (Some(at), Some(id)),
+            None => (None, None),
+        };
         let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM orders
              WHERE tenant_id = ?1
                AND (?2 IS NULL OR status = ?2)
-               AND (?3 IS NULL OR created_at_utc < ?3)
-             ORDER BY created_at_utc DESC
-             LIMIT ?4",
+               AND (?3 IS NULL OR created_at_utc < ?3 OR (created_at_utc = ?3 AND id < ?4))
+             ORDER BY created_at_utc DESC, id DESC
+             LIMIT ?5",
         )?;
         let rows = stmt
             .query_map(
-                params![tenant_id, status_str, cursor, limit],
+                params![tenant_id, status_str, cursor_at, cursor_id, limit],
                 Self::row_to_order,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1235,21 +1245,9 @@ impl Store {
         Ok(rows)
     }
 
-    /// Payment changes whose status/webhook transaction has not committed yet.
-    /// Unlike the live scan window this includes old, closed orders.
-    pub fn pending_payment_recomputes(&self, network: monero::Network) -> Result<Vec<OrderId>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT p.order_id FROM pending_payment_recomputes p
-             JOIN orders o ON o.id = p.order_id
-             JOIN tenants t ON t.id = o.tenant_id WHERE t.network = ?1",
-        )?;
-        let rows = stmt
-            .query_map([shared::network::SqlNetwork(network)], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// A bounded, stable page for background status work. Keyset pagination
+    /// Payment changes whose status/webhook transaction has not committed yet
+    /// (unlike the live scan window this includes old, closed orders): a
+    /// bounded, stable page for background status work. Keyset pagination
     /// avoids an OFFSET walk over a large backlog on every tick.
     pub fn pending_payment_recomputes_page(
         &self,
@@ -2252,9 +2250,9 @@ impl Store {
     }
 
     pub fn list_webhooks(&self, tenant_id: &TenantId) -> Result<Vec<Webhook>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT * FROM webhooks WHERE tenant_id = ?1")?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT * FROM webhooks WHERE tenant_id = ?1 ORDER BY created_at_utc, id",
+        )?;
         let rows = stmt
             .query_map(params![tenant_id], |row| {
                 Ok(Webhook {
@@ -2305,10 +2303,15 @@ impl Store {
     /// never has to look up the owning webhook separately per row.
     /// Due deliveries, oldest first, picked fairly for concurrent sending
     /// (`webhook_delivery::run_delivery_tick`):
-    /// - at most one per (webhook, order), the oldest, so two events for the
-    ///   same order are never in flight at once and can't overtake each other;
-    /// - at most `per_tenant` per store, so one store with a big backlog (or a
-    ///   slow endpoint) can't fill the batch and hold up every other store.
+    /// - at most one per (webhook, order), the oldest *enqueued* among every
+    ///   undelivered one (due or waiting out a retry), so two events for the
+    ///   same order are never in flight at once and a later event never
+    ///   overtakes an earlier one that is between attempts; a given-up
+    ///   delivery holds nothing back;
+    /// - at most `per_tenant` per store, counted after that, so one store
+    ///   with a big backlog (or a slow endpoint) can't fill the batch and
+    ///   hold up every other store, and one order's backlog doesn't use up
+    ///   the store's share.
     pub fn due_webhook_deliveries_fair(
         &self,
         now: i64,
@@ -2318,15 +2321,18 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, webhook_id, order_id, event_type, payload_json, attempt_count, url, extra_headers, signing_secret
              FROM (
-                SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
-                       w.url, w.extra_headers, w.signing_secret, d.next_attempt_at_utc AS due_at,
-                       ROW_NUMBER() OVER (PARTITION BY d.webhook_id, d.order_id ORDER BY d.next_attempt_at_utc, d.id) AS per_order,
-                       ROW_NUMBER() OVER (PARTITION BY w.tenant_id ORDER BY d.next_attempt_at_utc, d.id) AS per_tenant_rank
-                FROM webhook_deliveries d
-                JOIN webhooks w ON w.id = d.webhook_id
-                WHERE d.delivered_at_utc IS NULL AND w.enabled = 1 AND d.next_attempt_at_utc <= ?1
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY tenant_id ORDER BY due_at, id) AS per_tenant_rank
+                FROM (
+                    SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
+                           w.url, w.extra_headers, w.signing_secret, w.tenant_id, d.next_attempt_at_utc AS due_at,
+                           ROW_NUMBER() OVER (PARTITION BY d.webhook_id, d.order_id ORDER BY d.id) AS per_order
+                    FROM webhook_deliveries d
+                    JOIN webhooks w ON w.id = d.webhook_id
+                    WHERE d.delivered_at_utc IS NULL AND d.gave_up_at_utc IS NULL AND w.enabled = 1
+                )
+                WHERE per_order = 1 AND due_at <= ?1
              )
-             WHERE per_order = 1 AND per_tenant_rank <= ?2
+             WHERE per_tenant_rank <= ?2
              ORDER BY due_at, id
              LIMIT ?3",
         )?;
@@ -2354,7 +2360,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT COUNT(*), MIN(next_attempt_at_utc) FROM webhook_deliveries
-                 WHERE delivered_at_utc IS NULL AND next_attempt_at_utc <= ?1",
+                 WHERE delivered_at_utc IS NULL AND gave_up_at_utc IS NULL AND next_attempt_at_utc <= ?1",
                 params![now],
                 |row| {
                     Ok((
@@ -2366,14 +2372,22 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub fn due_webhook_deliveries(&self, now: i64, limit: u32) -> Result<Vec<DueDelivery>> {
+    /// Every undelivered, not given-up delivery due by `now`, oldest first,
+    /// for tests that assert on what was enqueued. The engine picks what to
+    /// send with [`Self::due_webhook_deliveries_fair`].
+    #[cfg(test)]
+    pub fn due_webhook_deliveries_for_test(
+        &self,
+        now: i64,
+        limit: u32,
+    ) -> Result<Vec<DueDelivery>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
                     w.url, w.extra_headers, w.signing_secret
              FROM webhook_deliveries d
              JOIN webhooks w ON w.id = d.webhook_id
-             WHERE d.delivered_at_utc IS NULL AND d.next_attempt_at_utc <= ?1 AND w.enabled = 1
-             ORDER BY d.next_attempt_at_utc
+             WHERE d.delivered_at_utc IS NULL AND d.gave_up_at_utc IS NULL AND d.next_attempt_at_utc <= ?1 AND w.enabled = 1
+             ORDER BY d.next_attempt_at_utc, d.id
              LIMIT ?2",
         )?;
         let rows = stmt
@@ -2401,9 +2415,34 @@ impl Store {
         at: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "UPDATE webhook_deliveries SET delivered_at_utc = ?2, last_attempted_at_utc = ?2, last_response_status = ?3
+            "UPDATE webhook_deliveries
+             SET attempt_count = attempt_count + 1, delivered_at_utc = ?2, last_attempted_at_utc = ?2,
+                 last_response_status = ?3
              WHERE id = ?1",
             params![delivery_id, at, response_status as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Records a final failed attempt: the delivery is never retried, holds
+    /// no later event for its order back, and stays in the table for
+    /// inspection.
+    pub fn give_up_webhook_delivery(
+        &self,
+        delivery_id: i64,
+        response_status: Option<u16>,
+        error: Option<&str>,
+        at: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE webhook_deliveries
+             SET attempt_count = attempt_count + 1,
+                 gave_up_at_utc = ?2,
+                 last_attempted_at_utc = ?2,
+                 last_response_status = ?3,
+                 last_error = ?4
+             WHERE id = ?1",
+            params![delivery_id, at, response_status.map(|s| s as i64), error],
         )?;
         Ok(())
     }
@@ -3002,12 +3041,12 @@ mod tests {
         let store = Store::open_file(path.to_str().unwrap()).unwrap();
         assert_eq!(
             store
-                .pending_payment_recomputes(monero::Network::Mainnet)
+                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
                 .unwrap(),
             vec![order.id.clone()]
         );
         assert!(store
-            .pending_payment_recomputes(monero::Network::Stagenet)
+            .pending_payment_recomputes_page(monero::Network::Stagenet, "", 10_000)
             .unwrap()
             .is_empty());
         store.clear_pending_payment_recompute(&order.id).unwrap();
@@ -3016,7 +3055,7 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .pending_payment_recomputes(monero::Network::Mainnet)
+                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
                 .unwrap()
                 .is_empty(),
             "duplicate sightings aren't new work"
@@ -3026,7 +3065,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .pending_payment_recomputes(monero::Network::Mainnet)
+                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
                 .unwrap(),
             vec![order.id.clone()]
         );
@@ -3034,7 +3073,7 @@ mod tests {
         store.void_payment(&order.id, "tx", 0, 1002).unwrap();
         assert_eq!(
             store
-                .pending_payment_recomputes(monero::Network::Mainnet)
+                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
                 .unwrap(),
             vec![order.id.clone()]
         );
@@ -3042,7 +3081,7 @@ mod tests {
         store.unvoid_payment(&order.id, "tx", 0).unwrap();
         assert_eq!(
             store
-                .pending_payment_recomputes(monero::Network::Mainnet)
+                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
                 .unwrap(),
             vec![order.id.clone()]
         );
@@ -3063,7 +3102,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .pending_payment_recomputes(monero::Network::Mainnet)
+                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
                 .unwrap(),
             vec![order.id]
         );
@@ -3604,6 +3643,59 @@ mod tests {
 
         let page = store.list_orders(&tenant.tenant.id, None, 2, None).unwrap();
         assert_eq!(page.len(), 2);
+
+        // All three share a `created_at` second: paging on by the last
+        // row's (created_at, id) reaches the third, where created_at alone
+        // would have skipped it.
+        let last = page.last().unwrap();
+        let rest = store
+            .list_orders(
+                &tenant.tenant.id,
+                None,
+                2,
+                Some((last.created_at, last.id.as_str())),
+            )
+            .unwrap();
+        assert_eq!(rest.len(), 1, "the one order left after the page boundary");
+        assert!(!page.iter().any(|o| o.id == rest[0].id));
+        let ids: std::collections::HashSet<_> = page
+            .iter()
+            .chain(rest.iter())
+            .map(|o| o.id.clone())
+            .collect();
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn a_tenant_config_patch_applies_whole_and_knows_an_unknown_tenant() {
+        let store = Store::open_in_memory().unwrap();
+        let created = new_tenant(&store);
+        assert!(store
+            .update_tenant_config(
+                &created.tenant.id,
+                TenantConfigPatch {
+                    confirmations_required: Some(3),
+                    order_expiry_seconds: Some(900),
+                },
+            )
+            .unwrap());
+        let tenant = store.get_tenant_by_id(&created.tenant.id).unwrap().unwrap();
+        assert_eq!(
+            (tenant.confirmations_required, tenant.order_expiry_seconds),
+            (3, 900)
+        );
+        assert!(
+            !store
+                .update_tenant_config(
+                    &shared::ids::TenantId::new("nobody".to_string()),
+                    TenantConfigPatch {
+                        confirmations_required: Some(3),
+                        order_expiry_seconds: None,
+                    },
+                )
+                .unwrap(),
+            "no such tenant"
+        );
     }
 
     #[test]
@@ -3662,8 +3754,11 @@ mod tests {
             .unwrap();
 
         // Not due yet if next_attempt_at is in the future.
-        assert!(store.due_webhook_deliveries(999, 10).unwrap().is_empty());
-        let due = store.due_webhook_deliveries(1000, 10).unwrap();
+        assert!(store
+            .due_webhook_deliveries_for_test(999, 10)
+            .unwrap()
+            .is_empty());
+        let due = store.due_webhook_deliveries_for_test(1000, 10).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].delivery_id, id);
         assert_eq!(due[0].url, "https://merchant.example/hook");
@@ -3675,15 +3770,18 @@ mod tests {
         store
             .schedule_webhook_retry(id, 2000, Some(500), Some("server error"), 1000)
             .unwrap();
-        assert!(store.due_webhook_deliveries(1500, 10).unwrap().is_empty());
-        let due = store.due_webhook_deliveries(2000, 10).unwrap();
+        assert!(store
+            .due_webhook_deliveries_for_test(1500, 10)
+            .unwrap()
+            .is_empty());
+        let due = store.due_webhook_deliveries_for_test(2000, 10).unwrap();
         assert_eq!(due[0].attempt_count, 1);
 
         // A successful delivery removes it from the due set permanently, even if
         // asked about at a much later time.
         store.mark_webhook_delivered(id, 200, 2000).unwrap();
         assert!(store
-            .due_webhook_deliveries(999_999, 10)
+            .due_webhook_deliveries_for_test(999_999, 10)
             .unwrap()
             .is_empty());
     }
@@ -3713,7 +3811,10 @@ mod tests {
                 params![webhook.id],
             )
             .unwrap();
-        assert!(store.due_webhook_deliveries(1000, 10).unwrap().is_empty());
+        assert!(store
+            .due_webhook_deliveries_for_test(1000, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

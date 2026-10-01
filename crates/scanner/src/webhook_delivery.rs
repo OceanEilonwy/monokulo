@@ -379,12 +379,10 @@ pub async fn run_delivery_tick_on(
                         at,
                     )
                 } else if delivery.attempt_count + 1 >= max_attempts {
-                    // Give up: record the final failure but stop scheduling retries by
-                    // pushing next_attempt_at far into the future rather than leaving it
-                    // due forever. The row itself is never deleted - see docs/DESIGN.md §11.
-                    store.schedule_webhook_retry(
+                    // Give up: the row stays for inspection, never retried -
+                    // see docs/DESIGN.md §11.
+                    store.give_up_webhook_delivery(
                         delivery.delivery_id,
-                        at + 100 * 365 * 24 * 60 * 60, // effectively "never again"
                         outcome.response_status,
                         outcome.error.as_deref(),
                         at,
@@ -656,13 +654,19 @@ mod tests {
         .unwrap();
         assert_eq!(processed, 1);
 
-        let due_immediately = store.lock().due_webhook_deliveries(1001, 10).unwrap();
+        let due_immediately = store
+            .lock()
+            .due_webhook_deliveries_for_test(1001, 10)
+            .unwrap();
         assert!(
             due_immediately.is_empty(),
             "must not be immediately due again - backoff must push it out"
         );
 
-        let due_after_backoff = store.lock().due_webhook_deliveries(1000 + 61, 10).unwrap();
+        let due_after_backoff = store
+            .lock()
+            .due_webhook_deliveries_for_test(1000 + 61, 10)
+            .unwrap();
         assert_eq!(due_after_backoff.len(), 1);
         assert_eq!(due_after_backoff[0].attempt_count, 1);
         assert_eq!(due_after_backoff[0].delivery_id, delivery_id);
@@ -943,11 +947,79 @@ mod tests {
     fn pending_for(store: &SharedStore, webhook_id: &crate::store::WebhookId) -> usize {
         store
             .lock()
-            .due_webhook_deliveries(i64::MAX / 2, 10_000)
+            .due_webhook_deliveries_for_test(i64::MAX / 2, 10_000)
             .unwrap()
             .iter()
             .filter(|d| &d.webhook_id == webhook_id)
             .count()
+    }
+
+    /// The fair picker's rules, at the store: one delivery per order at a
+    /// time (the oldest enqueued, due or not), a store's share counted
+    /// after that, and a given-up delivery holding nothing back.
+    #[test]
+    fn deliveries_are_picked_one_per_order_oldest_first_within_a_stores_share() {
+        let store = Store::open_in_memory().unwrap();
+        let (webhook, orders) = store_with_deliveries(&store, "https://a.example/hook", 4, 100);
+        // Order 0 has four more events queued behind its first.
+        for n in 1..=4 {
+            store
+                .enqueue_webhook_delivery(&webhook, &orders[0], "order.confirming", "{}", 100 + n)
+                .unwrap();
+        }
+        let picked = store
+            .due_webhook_deliveries_fair(1000, DELIVERY_PER_TENANT, DELIVERY_BATCH)
+            .unwrap();
+        let picked_orders: Vec<_> = picked.iter().map(|d| d.order_id.clone()).collect();
+        assert_eq!(
+            picked_orders, orders,
+            "one per order, and order 0's backlog does not use up the store's share"
+        );
+
+        // Order 0's first event fails and waits out its backoff; a later
+        // event for it is enqueued meanwhile and is due before the retry.
+        let first = picked[0].delivery_id;
+        store
+            .schedule_webhook_retry(first, 5_000, Some(500), Some("boom"), 1000)
+            .unwrap();
+        store
+            .enqueue_webhook_delivery(&webhook, &orders[0], "order.paid", "{}", 1001)
+            .unwrap();
+        let picked = store
+            .due_webhook_deliveries_fair(2000, DELIVERY_PER_TENANT, DELIVERY_BATCH)
+            .unwrap();
+        assert!(
+            !picked.iter().any(|d| d.order_id == orders[0]),
+            "nothing for order 0 until its first event is delivered or abandoned: {picked:?}"
+        );
+        let picked = store
+            .due_webhook_deliveries_fair(5_000, DELIVERY_PER_TENANT, DELIVERY_BATCH)
+            .unwrap();
+        assert_eq!(
+            picked
+                .iter()
+                .find(|d| d.order_id == orders[0])
+                .map(|d| d.delivery_id),
+            Some(first),
+            "the retry goes first, when due"
+        );
+
+        // Given up on: out of the way, and out of the backlog count.
+        store
+            .give_up_webhook_delivery(first, Some(500), Some("boom"), 5_000)
+            .unwrap();
+        let picked = store
+            .due_webhook_deliveries_fair(5_000, DELIVERY_PER_TENANT, DELIVERY_BATCH)
+            .unwrap();
+        let next = picked.iter().find(|d| d.order_id == orders[0]).unwrap();
+        assert_eq!(next.event_type, "order.confirming");
+        assert_ne!(next.delivery_id, first);
+        let (backlog, _) = store.webhook_backlog(10_000).unwrap();
+        assert_eq!(
+            backlog,
+            4 + 4,
+            "eight undelivered, the given-up one not counted"
+        );
     }
 
     #[tokio::test]
@@ -1028,7 +1100,7 @@ mod tests {
         server.abort();
         let deliveries = store
             .lock()
-            .due_webhook_deliveries(i64::MAX / 2, 100)
+            .due_webhook_deliveries_for_test(i64::MAX / 2, 100)
             .unwrap();
         let completed = deliveries.iter().find(|d| d.webhook_id == fast).unwrap();
         assert_eq!(
@@ -1144,7 +1216,7 @@ mod tests {
         let due_at = |t: i64| {
             store
                 .lock()
-                .due_webhook_deliveries(t, 10)
+                .due_webhook_deliveries_for_test(t, 10)
                 .unwrap()
                 .iter()
                 .filter(|d| d.webhook_id == webhook)

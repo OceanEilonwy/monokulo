@@ -516,7 +516,12 @@ fn build_order_view(
 #[derive(Deserialize)]
 pub struct ListOrdersQuery {
     status: Option<String>,
+    /// `created_at` of the last order of the previous page, with its id in
+    /// `cursor_id`: the next page starts after that order. Several orders
+    /// can share a `created_at` second, so a cursor without the id skips the
+    /// rest of that second.
     cursor: Option<i64>,
+    cursor_id: Option<String>,
     limit: Option<u32>,
     /// Comma-separated order ids: returns exactly those orders (this
     /// tenant's only, in the order asked, unknown ids left out) instead of a
@@ -577,7 +582,8 @@ pub async fn list_orders(
     let (open, offset, cursor, tenant_id) = (
         q.open.unwrap_or(false),
         q.offset.unwrap_or(0),
-        q.cursor,
+        q.cursor
+            .map(|at| (at, q.cursor_id.clone().unwrap_or_default())),
         tenant.id.clone(),
     );
     let grace = settings.scan.load().expired_order_grace_period_seconds;
@@ -596,7 +602,12 @@ pub async fn list_orders(
                 None if paged => {
                     store.list_orders_page(&tenant_id, open, search.as_deref(), limit, offset)?
                 }
-                None => store.list_orders(&tenant_id, status_filter, limit, cursor)?,
+                None => store.list_orders(
+                    &tenant_id,
+                    status_filter,
+                    limit,
+                    cursor.as_ref().map(|(at, id)| (*at, id.as_str())),
+                )?,
             };
             orders
                 .into_iter()

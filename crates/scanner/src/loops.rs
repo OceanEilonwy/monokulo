@@ -477,7 +477,7 @@ mod tests {
         wake.notify_one();
         while !store
             .lock()
-            .due_webhook_deliveries(now + 1, 10)
+            .due_webhook_deliveries_for_test(now + 1, 10)
             .unwrap()
             .is_empty()
         {
