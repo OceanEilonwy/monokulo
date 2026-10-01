@@ -102,10 +102,21 @@ async fn replay() -> (RpcDaemonClient, String, tokio::task::JoinHandle<()>) {
         .with_state(table);
     let (port, task) = serve(router).await;
     (
-        RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap(),
+        replay_client(port),
         format!("http://127.0.0.1:{port}"),
         task,
     )
+}
+
+/// The client under test, with pool timings no test run can outlast: what
+/// is asked, and when, is decided by the test, never by the clock.
+fn replay_client(port: u16) -> RpcDaemonClient {
+    RpcDaemonClient::new("127.0.0.1", port, false, false)
+        .unwrap()
+        .with_pool_timing(
+            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_secs(3600),
+        )
 }
 
 fn key_images(tx: &monero::Transaction) -> Vec<String> {
@@ -283,9 +294,9 @@ async fn exercise(client: &RpcDaemonClient, node: &str) {
     // The tip and the pool's changes in one request: the chain still ends
     // at the block the client last saw, the node says so with the changes,
     // and it isn't asked for its height. (When recording, a block arriving
-    // within this fraction of a second fails this: record again.)
+    // between the two requests fails this: record again.)
     let tip = client.get_tip().await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    client.forget_pool_answer_time().await;
     let heights_asked = requests("/get_height");
     let (same_tip, pool_again) = client.get_tip_and_mempool().await;
     assert_eq!(same_tip.unwrap(), tip);
@@ -364,11 +375,7 @@ async fn record_stagenet_node() {
         )
         .with_state((recorded.clone(), http));
     let (port, _server) = serve(router).await;
-    exercise(
-        &RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap(),
-        &format!("http://127.0.0.1:{port}"),
-    )
-    .await;
+    exercise(&replay_client(port), &format!("http://127.0.0.1:{port}")).await;
     let exchanges = recorded.lock().clone();
     std::fs::write(FIXTURE, serde_json::to_string_pretty(&exchanges).unwrap()).unwrap();
 }
