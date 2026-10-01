@@ -3772,8 +3772,6 @@ dependencies = [
  "p384",
  "rand 0.10.2",
  "reqwest",
- "sha2 0.11.0",
- "signature",
  "thiserror 2.0.20",
  "tokio",
  "x509-parser",

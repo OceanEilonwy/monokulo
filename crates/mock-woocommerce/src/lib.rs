@@ -216,6 +216,12 @@ async fn webhook_handler(
         .unwrap_or_default()
         .to_string();
 
+    // An envelope without its event or id is malformed: refused, rather than
+    // deduped against every other envelope missing an id.
+    if event.is_empty() || event_id.is_empty() {
+        return StatusCode::BAD_REQUEST;
+    }
+
     // Webhook delivery is at-least-once (`docs/DESIGN.md` §11) - a real retry of an
     // already-recorded delivery is expected, not a bug, and dedupes on `event_id`
     // exactly as the design doc says a receiver should.

@@ -137,6 +137,10 @@ pub async fn verify(
         }
     }
 
+    // AMD signs the ASK and every VCEK with RSASSA-PSS: anything else is
+    // not AMD's chain, whatever else checks out.
+    require_pss("ASK", &ask_cert)?;
+
     // 2. ASK must be signed by our pinned ARK.
     ask_cert
         .verify_signature(Some(pinned_ark_cert.public_key()))
@@ -152,6 +156,7 @@ pub async fn verify(
     if !vcek_cert.validity().is_valid() {
         return Err(VerifyError::CertExpired { which: "VCEK" });
     }
+    require_pss("VCEK", &vcek_cert)?;
 
     // 4. Cross-check the VCEK's own embedded TCB extensions against the
     //    report's reported_tcb - a VCEK is issued bound to one specific TCB
@@ -176,6 +181,17 @@ pub async fn verify(
         current_tcb: report.current_tcb,
         chain_verified: true,
     })
+}
+
+/// Refuses a certificate not signed with RSASSA-PSS.
+fn require_pss(which: &str, cert: &X509Certificate<'_>) -> Result<(), VerifyError> {
+    if cert.signature_algorithm.algorithm == x509_parser::oid_registry::OID_PKCS1_RSASSAPSS {
+        Ok(())
+    } else {
+        Err(VerifyError::CertParse(format!(
+            "the {which} certificate is not signed with RSASSA-PSS"
+        )))
+    }
 }
 
 /// OIDs confirmed against `google/go-sev-guest`'s KDS extension parsing
@@ -268,11 +284,26 @@ fn verify_report_signature_with_key(
     // form a standard ECDSA signature needs. See `report::RawSignature`'s
     // doc comment; confirmed directly against `virtee/sev`'s own P-384
     // conversion code, not assumed.
+    // Bytes 48..72 are padding and must be zero: a report with anything
+    // there is not one the firmware produced.
+    if report.signature.r_le[48..].iter().any(|b| *b != 0)
+        || report.signature.s_le[48..].iter().any(|b| *b != 0)
+    {
+        return Err(VerifyError::ReportSignatureInvalid);
+    }
     let mut r_be = [0u8; 48];
     let mut s_be = [0u8; 48];
-    for i in 0..48 {
-        r_be[i] = report.signature.r_le[47 - i];
-        s_be[i] = report.signature.s_le[47 - i];
+    for (be, le) in r_be
+        .iter_mut()
+        .zip(report.signature.r_le[..48].iter().rev())
+    {
+        *be = *le;
+    }
+    for (be, le) in s_be
+        .iter_mut()
+        .zip(report.signature.s_le[..48].iter().rev())
+    {
+        *be = *le;
     }
     let signature =
         P384Signature::from_scalars(r_be, s_be).map_err(|_| VerifyError::ReportSignatureInvalid)?;
@@ -371,7 +402,6 @@ mod tests {
         #[allow(deprecated)]
         let signing_key = SigningKey::random(&mut rand::rng());
         let mut raw = [0u8; crate::report::REPORT_LEN];
-        raw[0x34..0x38].copy_from_slice(&1u32.to_le_bytes());
         // Fill the signed region with distinguishable, non-zero content so a
         // signature-over-wrong-bytes bug would actually be caught.
         for (i, b) in raw[..crate::report::SIGNED_LEN].iter_mut().enumerate() {

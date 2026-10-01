@@ -1039,7 +1039,9 @@ mod tests {
     /// crate sits *below* it in the dependency graph, and `with_background_loops`
     /// needs to be provably useful entirely on its own).
     /// Each webhook the receiver got: its signature header and JSON body.
-    type Received = Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value)>>>;
+    /// Each delivery's signature header, parsed body, and the body's exact
+    /// bytes (what the signature covers).
+    type Received = Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value, Vec<u8>)>>>;
 
     async fn spawn_recording_receiver() -> (SocketAddr, Received, tokio::task::JoinHandle<()>) {
         use axum::extract::State as AxumState;
@@ -1058,7 +1060,7 @@ mod tests {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
             if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
-                received.lock().push((signature, parsed));
+                received.lock().push((signature, parsed, body.to_vec()));
             }
             axum::http::StatusCode::OK
         }
@@ -1146,7 +1148,7 @@ mod tests {
             let found = received
                 .lock()
                 .iter()
-                .find(|(_, body)| {
+                .find(|(_, body, _)| {
                     body.get("order_id").and_then(|v| v.as_str()) == Some(order_id.as_str())
                 })
                 .cloned();
@@ -1159,7 +1161,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
 
-        let (signature, payload) =
+        let (signature, payload, raw_payload) =
             matched.expect("expected a real order.expired webhook delivery within the deadline");
         assert_eq!(payload["event"], serde_json::json!("order.expired"));
         assert_eq!(payload["status"], serde_json::json!("expired"));
@@ -1168,18 +1170,14 @@ mod tests {
             .is_some_and(|id| id.starts_with("evt_")));
 
         // Strong proof this is a genuine, correctly-signed delivery, not just a
-        // request that happened to arrive: recompute the HMAC over the exact payload
-        // string this test received and require it to match what was sent, using
+        // request that happened to arrive: the HMAC over the exact bytes this
+        // test received (not a re-serialisation of them, which a key order
+        // or spacing change would break) must match what was sent, using
         // *this tenant's real* `signing_secret` handed back by `create_webhook`
         // above - a signature computed with any other secret must not verify.
         let signature = signature.expect("a real delivery must carry X-Monokulo-Signature");
-        let raw_payload = payload.to_string();
         assert!(
-            scanner::webhook_sign::verify_signature(
-                &signing_secret,
-                raw_payload.as_bytes(),
-                &signature
-            ),
+            scanner::webhook_sign::verify_signature(&signing_secret, &raw_payload, &signature),
             "the delivered signature must verify against this tenant's real signing_secret"
         );
 
