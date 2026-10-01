@@ -54,10 +54,7 @@ fn logout_request(bearer: Option<&str>) -> Request<Body> {
     builder.body(Body::empty()).unwrap()
 }
 
-async fn body_json(response: axum::response::Response) -> serde_json::Value {
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
-}
+use crate::http::test_support::body_json;
 
 #[tokio::test]
 async fn a_valid_signup_succeeds_and_does_not_return_the_password_or_hash() {
@@ -424,27 +421,9 @@ fn form_request(uri: &str, fields: &[(&str, &str)]) -> Request<Body> {
         .unwrap()
 }
 
-/// Minimal `application/x-www-form-urlencoded` percent-encoding for test
-/// fixtures only - real clients (browsers) do this themselves; there's no
-/// reason to pull in a whole crate just to build a test request body.
-fn urlencoding_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
+use crate::http::test_support::urlencoding_encode;
 
-async fn body_text(response: axum::response::Response) -> String {
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    String::from_utf8(bytes.to_vec()).unwrap()
-}
+use crate::http::test_support::body_text;
 
 #[tokio::test]
 async fn get_dashboard_signup_returns_html() {

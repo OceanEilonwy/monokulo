@@ -563,62 +563,11 @@ mod tests {
         (state, engine)
     }
 
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        serde_json::from_slice(&bytes).unwrap()
-    }
+    use crate::http::test_support::body_json;
 
-    async fn body_text(response: axum::response::Response) -> String {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
+    use crate::http::test_support::body_text;
 
-    async fn signed_up_and_logged_in_session_token(
-        router: &Router,
-        email: &str,
-        password: &str,
-    ) -> String {
-        let signup = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/signup")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "email": email, "password": password }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(signup.status(), StatusCode::CREATED);
-
-        let login = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "email": email, "password": password }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(login.status(), StatusCode::OK);
-        body_json(login)
-            .await
-            .as_object()
-            .unwrap()
-            .get("session_token")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string()
-    }
+    use crate::http::test_support::signed_up_and_logged_in_session_token;
 
     /// Creates a real `store_connections` row (and a real tenant on the
     /// real spawned engine) for the given session, returning its public

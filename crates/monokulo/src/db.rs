@@ -451,6 +451,7 @@ impl DbError {
 
 type Result<T> = std::result::Result<T, DbError>;
 
+#[derive(Clone)]
 pub struct UserRow {
     pub id: UserId,
     pub email: String,

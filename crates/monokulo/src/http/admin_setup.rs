@@ -164,7 +164,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::Router;
-    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use crate::db::Db;
@@ -180,10 +179,7 @@ mod tests {
         build_router(state)
     }
 
-    async fn body_text(response: axum::response::Response) -> String {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
+    use crate::http::test_support::body_text;
 
     fn setup_form_request(email: &str, password: &str, confirm_password: &str) -> Request<Body> {
         let body = format!(
@@ -200,9 +196,7 @@ mod tests {
             .unwrap()
     }
 
-    fn urlencoding_encode(s: &str) -> String {
-        url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-    }
+    use crate::http::test_support::urlencoding_encode;
 
     /// The real point of this whole feature: a fresh install's front door
     /// (`GET /`) must not show the landing page at all - it redirects

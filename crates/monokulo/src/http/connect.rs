@@ -737,7 +737,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::Router;
-    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use crate::engine_client::EngineClient;
@@ -779,23 +778,7 @@ mod tests {
             .join("&")
     }
 
-    /// Minimal `application/x-www-form-urlencoded` percent-encoding for test
-    /// fixtures only - same helper `http/tests.rs` already defines for its
-    /// own form-based tests, duplicated here rather than made `pub(crate)`
-    /// purely for a test helper (real clients do this themselves).
-    fn urlencoding_encode(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for b in s.bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    out.push(b as char)
-                }
-                b' ' => out.push('+'),
-                _ => out.push_str(&format!("%{b:02X}")),
-            }
-        }
-        out
-    }
+    use crate::http::test_support::urlencoding_encode;
 
     fn form_request(uri: &str, cookie: Option<&str>, fields: &[(&str, &str)]) -> Request<Body> {
         let mut builder = Request::builder()
@@ -808,15 +791,9 @@ mod tests {
         builder.body(Body::from(form_body(fields))).unwrap()
     }
 
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        serde_json::from_slice(&bytes).unwrap()
-    }
+    use crate::http::test_support::body_json;
 
-    async fn body_text(response: axum::response::Response) -> String {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
+    use crate::http::test_support::body_text;
 
     /// Signs up and logs in a fresh user through the browser form flow,
     /// returning the `session=<value>` pair a browser would send back as a

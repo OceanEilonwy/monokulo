@@ -279,8 +279,10 @@ pub fn leading_zero_bits(hash: &[u8]) -> u32 {
     bits
 }
 
-/// Finds a nonce for `challenge` at `difficulty` (tests, and the Tor e2e
-/// test's stand-in for a browser).
+/// Finds a nonce for `challenge` at `difficulty`: the browser's work
+/// (`static/challenge.js`), done here for tests standing in for one. Not in
+/// the shipped binary.
+#[cfg(any(test, feature = "test-support"))]
 pub fn solve(challenge: &str, difficulty: u32) -> String {
     (0u64..)
         .map(|n| n.to_string())

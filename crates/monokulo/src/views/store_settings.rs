@@ -200,6 +200,7 @@ fn key_storage_section(
     store: &StoreSettingsData,
     key_storage: &KeyStorageView,
     in_place: bool,
+    oob: bool,
 ) -> Markup {
     let connection_id = &store.connection_id;
     let (action, target) = fx(
@@ -207,7 +208,7 @@ fn key_storage_section(
         StoreSection::KeyStorage,
     );
     html! {
-      section id=(StoreSection::KeyStorage.id()) {
+      section id=(StoreSection::KeyStorage.id()) data-fx-oob[oob] {
         h2 { "Key storage" }
         (section_error(store, StoreSection::KeyStorage, in_place))
         p { strong { "Kept: " } (key_storage.current) }
@@ -247,9 +248,9 @@ pub struct StoreSettingsViewModel {
 }
 
 /// "Base currency".
-fn base_currency_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+fn base_currency_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Markup {
     html! {
-        section id=(StoreSection::BaseCurrency.id()) {
+        section id=(StoreSection::BaseCurrency.id()) data-fx-oob[oob] {
                 h2 { "Base currency" }
                 (section_error(store, StoreSection::BaseCurrency, in_place))
                 form method="post" action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) fx-method="POST" fx-target="#base-currency" {
@@ -272,9 +273,9 @@ fn base_currency_section(store: &StoreSettingsData, in_place: bool) -> Markup {
 }
 
 /// "Confirmation thresholds": the default and the custom ones.
-fn confirmations_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+fn confirmations_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Markup {
     html! {
-        section id=(StoreSection::Confirmations.id()) {
+        section id=(StoreSection::Confirmations.id()) data-fx-oob[oob] {
                 h2 { "Confirmation thresholds" }
                 (section_error(store, StoreSection::Confirmations, in_place))
                 p class="hint" {
@@ -345,13 +346,13 @@ fn confirmations_section(store: &StoreSettingsData, in_place: bool) -> Markup {
 /// "Exchange rate providers": which providers this store uses, and in what
 /// order. Plain form fields (a checkbox and a position number per provider),
 /// so it works with no JavaScript.
-fn fx_provider_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+fn fx_provider_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Markup {
     let action = format!(
         "/dashboard/stores/{}/settings/fx-provider",
         store.connection_id
     );
     html! {
-        section id=(StoreSection::FxProvider.id()) {
+        section id=(StoreSection::FxProvider.id()) data-fx-oob[oob] {
                 h2 { "Exchange rate providers" }
                 (section_error(store, StoreSection::FxProvider, in_place))
                 @if store.fx_provider_options.is_empty() {
@@ -419,9 +420,9 @@ fn fx_provider_section(store: &StoreSettingsData, in_place: bool) -> Markup {
 }
 
 /// "Webhooks", with a new webhook's signing secret right after it is made.
-fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+fn webhooks_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Markup {
     html! {
-        section id=(StoreSection::Webhooks.id()) {
+        section id=(StoreSection::Webhooks.id()) data-fx-oob[oob] {
                 h2 { "Webhooks" }
                 (section_error(store, StoreSection::Webhooks, in_place))
                 @if let Some(secret) = &store.created_webhook_signing_secret {
@@ -495,7 +496,7 @@ fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
 
 /// "Diagnostics": whether this store's browsers, POS and plugin may send
 /// logs to this instance. Off by default.
-fn diagnostics_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+fn diagnostics_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Markup {
     let (action, target) = fx(
         &format!(
             "/dashboard/stores/{}/settings/diagnostics",
@@ -504,7 +505,7 @@ fn diagnostics_section(store: &StoreSettingsData, in_place: bool) -> Markup {
         StoreSection::Diagnostics,
     );
     html! {
-        section id=(StoreSection::Diagnostics.id()) {
+        section id=(StoreSection::Diagnostics.id()) data-fx-oob[oob] {
             h2 { "Diagnostics" }
             (section_error(store, StoreSection::Diagnostics, in_place))
             form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target=(target) {
@@ -539,25 +540,18 @@ fn diagnostics_section(store: &StoreSettingsData, in_place: bool) -> Markup {
 /// `oob` marks it to replace the page's copy wherever that is (a section
 /// another save changed too).
 pub fn section(store: &StoreSettingsData, which: StoreSection, oob: bool) -> Markup {
-    let markup = match which {
-        StoreSection::BaseCurrency => base_currency_section(store, true),
-        StoreSection::Confirmations => confirmations_section(store, true),
-        StoreSection::FxProvider => fx_provider_section(store, true),
+    match which {
+        StoreSection::BaseCurrency => base_currency_section(store, true, oob),
+        StoreSection::Confirmations => confirmations_section(store, true, oob),
+        StoreSection::FxProvider => fx_provider_section(store, true, oob),
         StoreSection::KeyStorage => match &store.key_storage {
-            Some(key_storage) => key_storage_section(store, key_storage, true),
-            None => html! { section id=(StoreSection::KeyStorage.id()) {} },
+            Some(key_storage) => key_storage_section(store, key_storage, true, oob),
+            None => html! { section id=(StoreSection::KeyStorage.id()) data-fx-oob[oob] {} },
         },
-        StoreSection::Domains => verified_domains(store, true),
-        StoreSection::Webhooks => webhooks_section(store, true),
-        StoreSection::Diagnostics => diagnostics_section(store, true),
-    };
-    if !oob {
-        return markup;
+        StoreSection::Domains => verified_domains(store, true, oob),
+        StoreSection::Webhooks => webhooks_section(store, true, oob),
+        StoreSection::Diagnostics => diagnostics_section(store, true, oob),
     }
-    // Only the opening tag changes.
-    let text = markup.into_string();
-    let opening = format!("<section id=\"{}\"", which.id());
-    maud::PreEscaped(text.replacen(&opening, &format!("{opening} data-fx-oob"), 1))
 }
 
 pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
@@ -575,15 +569,15 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         }
                     }
                 }
-                (base_currency_section(store, false))
-                (confirmations_section(store, false))
-                (fx_provider_section(store, false))
+                (base_currency_section(store, false, false))
+                (confirmations_section(store, false, false))
+                (fx_provider_section(store, false, false))
                 @if let Some(key_storage) = &store.key_storage {
-                    (key_storage_section(store, key_storage, false))
+                    (key_storage_section(store, key_storage, false, false))
                 }
-                (verified_domains(store, false))
-                (webhooks_section(store, false))
-                (diagnostics_section(store, false))
+                (verified_domains(store, false, false))
+                (webhooks_section(store, false, false))
+                (diagnostics_section(store, false, false))
             } @else {
                 h1 { "Store not found" }
                 p { "This store doesn't exist, or isn't connected to your account." }
@@ -599,9 +593,9 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
 
 /// Adding, checking and removing the domains this store has proved it owns
 /// (`crate::embed_domains`).
-fn verified_domains(store: &StoreSettingsData, in_place: bool) -> Markup {
+fn verified_domains(store: &StoreSettingsData, in_place: bool, oob: bool) -> Markup {
     html! {
-      section id=(StoreSection::Domains.id()) {
+      section id=(StoreSection::Domains.id()) data-fx-oob[oob] {
         h2 { "Verified domains" }
         (section_error(store, StoreSection::Domains, in_place))
         p class="hint" {
