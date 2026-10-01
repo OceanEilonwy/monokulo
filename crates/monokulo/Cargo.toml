@@ -8,7 +8,7 @@ edition = "2021"
 # crates' tests and this crate's own integration tests and examples.
 # Enabled only from [dev-dependencies] (resolver 2 keeps it out of every
 # normal build), never in production.
-test-support = []
+test-support = ["shared/test-support"]
 
 [dependencies]
 zeroize = "1.9.0"

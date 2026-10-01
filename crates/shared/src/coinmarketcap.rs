@@ -75,7 +75,7 @@ impl CoinMarketCapRateProvider {
             self.base_url
         );
         let response = self.client.get(&url).send().await?.error_for_status()?;
-        let body: serde_json::Value = response.json().await?;
+        let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
 
         if let Some(code) = body.pointer("/status/error_code") {
             let ok = match code {
@@ -100,7 +100,8 @@ impl CoinMarketCapRateProvider {
             .and_then(serde_json::Value::as_object)
             .ok_or_else(|| {
                 ExchangeRateError::UnexpectedResponse(format!(
-                    "no data.quote object in response body: {body}"
+                    "no data.quote object in response body: {}",
+                    crate::exchange_rate::excerpt(&body)
                 ))
             })?;
         let Some(price) = quote
