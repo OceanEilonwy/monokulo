@@ -461,6 +461,13 @@ impl ExchangeRateProviders {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A local address nothing listens on: a port this process bound and
+    /// let go, rather than one assumed closed on every machine.
+    fn unused_local_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    }
     use crate::fx_provider_settings::{FxProviderSettings, HavenoSettings};
 
     fn test_store(fx_providers: &[&str]) -> StoreConnectionRow {
@@ -707,8 +714,7 @@ mod tests {
             200,
         )
         .await;
-        let providers =
-            ExchangeRateProviders::coingecko_and_coinmarketcap(cg, "http://127.0.0.1:1");
+        let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(cg, unused_local_url());
         let known = vec!["XMR".to_string(), "USD".to_string(), "JPY".to_string()];
         let both = providers
             .supported_currencies_for(&test_store(&[COINGECKO, COINMARKETCAP]), &known)
@@ -748,7 +754,7 @@ mod tests {
 
         // EUR: haveno has no ask, so the next preferred provider prices it.
         let cg = spawn_json(CG_PATH, r#"{"monero":{"eur":2.0}}"#, 200).await;
-        let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", hv);
+        let providers = ExchangeRateProviders::all(cg, unused_local_url(), hv);
         let (_, name) = providers
             .piconero_per_unit_for(&test_store(&[HAVENO, COINGECKO]), "EUR")
             .await
@@ -766,7 +772,7 @@ mod tests {
     #[tokio::test]
     async fn haveno_lists_the_stores_currencies_or_every_known_one_without_asking_haveno() {
         // Nothing is listening: the list must not depend on a live book.
-        let providers = ExchangeRateProviders::haveno_only("http://127.0.0.1:1");
+        let providers = ExchangeRateProviders::haveno_only(unused_local_url());
         let known = vec![
             "XMR".to_string(),
             "USD".to_string(),
@@ -808,7 +814,7 @@ mod tests {
     async fn a_currency_off_the_stores_haveno_list_skips_haveno_without_any_request() {
         // Haveno is unreachable: were it asked, the lookup would be an error.
         let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
-        let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", "http://127.0.0.1:1");
+        let providers = ExchangeRateProviders::all(cg, unused_local_url(), unused_local_url());
         let store = store_with_haveno(
             HavenoSettings {
                 currencies: vec!["EUR".to_string()],
@@ -846,7 +852,7 @@ mod tests {
         // USD: bid 99, ask 101 -> a 2% spread.
         let hv = spawn_json(HAVENO_PATH, HAVENO_TICKERS, 200).await;
         let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
-        let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", hv);
+        let providers = ExchangeRateProviders::all(cg, unused_local_url(), hv);
 
         let loose = store_with_haveno(
             HavenoSettings {
@@ -910,7 +916,7 @@ mod tests {
         )
         .await;
         let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
-        let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", hv);
+        let providers = ExchangeRateProviders::all(cg, unused_local_url(), hv);
         let deep = store_with_haveno(
             HavenoSettings {
                 min_depth_xmr_per_side: 5.0,

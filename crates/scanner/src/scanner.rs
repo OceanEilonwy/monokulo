@@ -9953,9 +9953,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         // 20 tenants x 1s each: about 1s at once (plus the mempool pass),
-        // not 20s in a row.
+        // not 20s in a row. The bound is half the serial time, so a loaded
+        // machine's slowness can't fail it, only scanning one by one can.
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(10),
             "took {:?}",
             started.elapsed()
         );

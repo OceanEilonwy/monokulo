@@ -532,9 +532,13 @@ mod tests {
         // The test engine is unreachable, which is a known problem.
         assert_eq!(known_health(&state.engine), Some(false));
 
-        // Too old to show as known.
+        // Too old to show as known. (On a host up for less than that, an
+        // `Instant` that old can't exist; there is nothing to check.)
+        let Some(too_old) = Instant::now().checked_sub(KNOWN_STATUS_MAX_AGE) else {
+            return;
+        };
         status_cache(&state.engine).cached = Some(CachedStatus {
-            fetched_at: Instant::now() - KNOWN_STATUS_MAX_AGE,
+            fetched_at: too_old,
             result: Err("stale".to_string()),
         });
         status_cache(&state.engine).refreshing = true;

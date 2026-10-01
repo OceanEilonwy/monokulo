@@ -235,7 +235,6 @@ fn serve<T>(value: &T, receiver: &tokio::sync::Mutex<tokio::sync::mpsc::Receiver
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Instant;
 
     fn temp_db() -> String {
         std::env::temp_dir()
@@ -296,25 +295,31 @@ mod tests {
             (0..2).map(|_| open_reader(&path).unwrap()).collect(),
         )
         .unwrap();
+        // The slow job holds its connection until the fast one has run: if
+        // the pool ran them one after the other, the fast one would never
+        // start and the timeout below would fire. Nothing is timed.
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let slow = {
             let reads = reads.clone();
             tokio::spawn(async move {
                 reads
-                    .run(|_| {
-                        std::thread::sleep(Duration::from_millis(500));
+                    .run(move |_| {
+                        let _ = started_tx.send(());
+                        let _ = release_rx.recv_timeout(Duration::from_secs(30));
                         Ok::<_, Error>(())
                     })
                     .await
             })
         };
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let started = Instant::now();
-        reads.run(|_| Ok::<_, Error>(())).await.unwrap();
-        assert!(
-            started.elapsed() < Duration::from_millis(300),
-            "waited {:?}",
-            started.elapsed()
-        );
+        tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), reads.run(|_| Ok::<_, Error>(())))
+            .await
+            .expect("the fast job ran while the slow one held its connection")
+            .unwrap();
+        release_tx.send(()).unwrap();
         slow.await.unwrap().unwrap();
     }
 
