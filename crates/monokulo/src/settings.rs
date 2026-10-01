@@ -27,7 +27,7 @@ use live_settings::{
 };
 
 use crate::abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
-use crate::db::{Db, SharedDb};
+use crate::db::{Database, Db};
 use crate::engine_client::EngineClient;
 use crate::exchange_rate_config::{ExchangeRateConfig, ExchangeRateProviders};
 
@@ -531,26 +531,30 @@ impl Section for OnionListenerConfig {
     }
 }
 
-/// monokulo's settings store, over its own `settings` table.
-pub struct DbSettings(pub SharedDb);
+/// monokulo's settings store, over its own `settings` table, through the
+/// same reading and writing connections as everything else (so a save
+/// queues behind other writes on the writer's thread, never on a Tokio
+/// worker).
+pub struct DbSettings(pub Database);
 
+#[live_settings::async_trait]
 impl live_settings::SettingsStore for DbSettings {
-    fn read_all(
+    async fn read_all(
         &self,
     ) -> Result<std::collections::HashMap<String, String>, live_settings::StoreError> {
         self.0
-            .lock()
-            .list_settings()
+            .read(|db| db.list_settings())
+            .await
             .map_err(live_settings::StoreError::new)
     }
 
-    fn write_all(
+    async fn write_all(
         &self,
-        changes: &[(&str, Option<String>)],
+        changes: Vec<(&'static str, Option<String>)>,
     ) -> Result<(), live_settings::StoreError> {
         self.0
-            .lock()
-            .write_settings(changes)
+            .write(move |db| db.write_settings(&changes))
+            .await
             .map_err(live_settings::StoreError::new)
     }
 }
@@ -801,14 +805,14 @@ impl MonokuloSettings {
     /// Loads every setting and applies it to the given runtime pieces;
     /// later saves through the registry apply the same way.
     pub async fn load(
-        db: SharedDb,
+        db: Database,
         engine_client: EngineClient,
         exchange_rates: Arc<ExchangeRateProviders>,
         abuse: Arc<AbuseProtection>,
         onion: Option<OnionReloadable>,
         env: live_settings::Env,
     ) -> Result<Arc<Self>, String> {
-        let mut builder = Registry::builder_with_env(Arc::new(DbSettings(db)), ALL, env);
+        let mut builder = Registry::builder_with_env(Arc::new(DbSettings(db)), ALL, env).await;
         builder.reloadable(EngineConnectionReloadable { engine_client });
         builder.reloadable(ExchangeRatesReloadable {
             providers: exchange_rates,
@@ -964,7 +968,7 @@ mod tests {
         Arc<ExchangeRateProviders>,
         Arc<AbuseProtection>,
     ) {
-        let db = Db::open_in_memory().unwrap().into_shared();
+        let db = Database::inline(Db::open_in_memory().unwrap().into_shared());
         let engine = EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
         let rates = Arc::new(ExchangeRateProviders::xmr_only());
         let abuse: Arc<AbuseProtection> = Default::default();

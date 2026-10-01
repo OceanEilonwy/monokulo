@@ -1101,7 +1101,7 @@ mod tests {
         let exchange_rate = test_exchange_rate_provider();
         let abuse: std::sync::Arc<crate::abuse::AbuseProtection> = Default::default();
         let settings = crate::settings::MonokuloSettings::load(
-            db.clone(),
+            crate::db::Database::inline(db.clone()),
             engine_client.clone(),
             exchange_rate.clone(),
             abuse.clone(),

@@ -41,15 +41,16 @@ async fn main() {
     // to run a test instance on a temporary database and a free port).
     let db_path = std::env::var("MONOKULO_DB_PATH").unwrap_or_else(|_| "monokulo.db".to_string());
     let bind = std::env::var("MONOKULO_BIND").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
-    // The settings store's own connection (it is synchronous); opening it
-    // also brings the schema up to date.
-    let settings_db = Db::open_file(&db_path)
-        .expect("failed to open monokulo database")
-        .into_shared();
-    let read_connections = live_settings::read_sync::<settings::DatabaseConfig>(
-        &settings::DbSettings(settings_db.clone()),
-    )
-    .read_connections;
+    // How many readers to open is itself a setting, read on a connection
+    // of its own before the pool exists; opening it also brings the schema
+    // up to date.
+    let read_connections = {
+        let db = Db::open_file(&db_path).expect("failed to open monokulo database");
+        live_settings::read_sync::<settings::DatabaseConfig>(
+            db.list_settings().map_err(live_settings::StoreError::new),
+        )
+        .read_connections
+    };
     // Everything else: read-only connections and one writer, each on its
     // own thread (`db::Database`).
     let db = Database::open(&db_path, read_connections).expect("failed to open monokulo database");
@@ -80,7 +81,7 @@ async fn main() {
     let abuse = Arc::new(monokulo::abuse::AbuseProtection::default());
     let onion = settings::OnionReloadable::default();
     let monokulo_settings = match settings::MonokuloSettings::load(
-        settings_db,
+        db.clone(),
         engine_client.clone(),
         exchange_rate.clone(),
         abuse.clone(),

@@ -446,21 +446,21 @@ impl Registry {
     ///
     /// The store is read once here, so each section's `Live` value exists
     /// as soon as it is registered.
-    pub fn builder(
+    pub async fn builder(
         store: Arc<dyn SettingsStore>,
         declared: &[&'static dyn AnySetting],
     ) -> RegistryBuilder {
-        Registry::builder_with_env(store, declared, Env::process())
+        Registry::builder_with_env(store, declared, Env::process()).await
     }
 
     /// As [`Registry::builder`], resolving against `env` instead of the
     /// process environment.
-    pub fn builder_with_env(
+    pub async fn builder_with_env(
         store: Arc<dyn SettingsStore>,
         declared: &[&'static dyn AnySetting],
         env: Env,
     ) -> RegistryBuilder {
-        let (stored, read_error) = match store.read_all() {
+        let (stored, read_error) = match store.read_all().await {
             Ok(stored) => (stored, None),
             Err(e) => (HashMap::new(), Some(e)),
         };
@@ -581,7 +581,7 @@ impl Registry {
             return Err(SaveError::Invalid(errors));
         }
 
-        let old = inner.store.read_all()?;
+        let old = inner.store.read_all().await?;
         let mut new = old.clone();
         let mut writes: Vec<(&'static str, Option<String>)> = Vec::new();
         let mut changed: Vec<&'static dyn AnySetting> = Vec::new();
@@ -641,7 +641,7 @@ impl Registry {
         }
 
         // 4. Persist.
-        inner.store.write_all(&writes)?;
+        inner.store.write_all(writes).await?;
         *inner.stored.write() = snapshot.stored().clone();
         {
             let mut problems = inner.section_problems.write();
@@ -742,20 +742,23 @@ impl Registry {
     }
 }
 
-/// Reads one section straight from the store, resolving against the process
-/// environment: for settings needed before an async runtime exists, such
-/// as the runtime's own worker count. Returns the same value a registry
-/// built from the same store would.
+/// One section from stored values the caller read itself, resolving
+/// against the process environment: for settings needed before an async
+/// runtime exists, such as the runtime's own worker count. Returns the same
+/// value a registry built over the same values would.
 ///
-/// An unreadable store, or stored values the section rejects, give the
-/// section's defaults (logged), as boot would.
-pub fn read_sync<S: Section>(store: &dyn SettingsStore) -> S {
-    read_sync_with_env(store, &Env::process())
+/// An unreadable store (`stored` is the error), or stored values the
+/// section rejects, give the section's defaults (logged), as boot would.
+pub fn read_sync<S: Section>(stored: Result<HashMap<String, String>, StoreError>) -> S {
+    read_sync_with_env(stored, &Env::process())
 }
 
 /// As [`read_sync`], resolving against `env`.
-pub fn read_sync_with_env<S: Section>(store: &dyn SettingsStore, env: &Env) -> S {
-    let stored = store.read_all().unwrap_or_else(|e| {
+pub fn read_sync_with_env<S: Section>(
+    stored: Result<HashMap<String, String>, StoreError>,
+    env: &Env,
+) -> S {
+    let stored = stored.unwrap_or_else(|e| {
         tracing::warn!(section = S::NAME, error = %e, "settings: couldn't read the settings store, so this section uses its defaults");
         HashMap::new()
     });
