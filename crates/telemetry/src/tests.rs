@@ -319,7 +319,8 @@ mod through_settings {
             store,
             ALL,
             live_settings::Env::fixed::<&str, &str>([]),
-        );
+        )
+        .await;
         builder.reloadable(LogReloadable::<Logging>::default());
         let registry = builder.build().unwrap();
         let telemetry = init("telemetry-test", "TELEMETRY_TEST");

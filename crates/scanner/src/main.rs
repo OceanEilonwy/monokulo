@@ -69,7 +69,8 @@ fn main() {
     let worker_threads = match action {
         Action::RunServer { .. } => {
             let store = open_store().into_shared();
-            live_settings::read_sync::<RuntimeConfig>(&StoreSettings(store)).worker_threads
+            live_settings::read_sync::<RuntimeConfig>(StoreSettings(store).read_now())
+                .worker_threads
         }
         _ => 2,
     };
@@ -141,7 +142,8 @@ async fn run(action: Action) {
                 }
             };
             let store = open_store().into_shared();
-            let custody = live_settings::read_sync::<CustodyConfig>(&StoreSettings(store.clone()));
+            let custody =
+                live_settings::read_sync::<CustodyConfig>(StoreSettings(store.clone()).read_now());
             let backend = custody.default.as_str().to_string();
             let router = Arc::new(CustodyRouter::default());
             if let Err(e) = apply_custody(&router, &custody).await {
@@ -253,7 +255,8 @@ async fn run(action: Action) {
 
     let read_pool = scanner::store::ReadStorePool::open(
         &cli::database_path().to_string_lossy(),
-        live_settings::read_sync::<RuntimeConfig>(&StoreSettings(store.clone())).read_connections,
+        live_settings::read_sync::<RuntimeConfig>(StoreSettings(store.clone()).read_now())
+            .read_connections,
     )
     .unwrap_or_else(|e| {
         eprintln!("failed to open database read pool: {e}");

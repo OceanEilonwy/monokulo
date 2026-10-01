@@ -329,20 +329,24 @@ impl TestStore {
     }
 }
 
+#[async_trait::async_trait]
 impl SettingsStore for TestStore {
-    fn read_all(&self) -> Result<HashMap<String, String>, StoreError> {
+    async fn read_all(&self) -> Result<HashMap<String, String>, StoreError> {
         if self.fail_reads.load(Ordering::SeqCst) {
             return Err(StoreError::new("database is locked"));
         }
-        self.inner.read_all()
+        self.inner.read_all().await
     }
 
-    fn write_all(&self, changes: &[(&str, Option<String>)]) -> Result<(), StoreError> {
+    async fn write_all(
+        &self,
+        changes: Vec<(&'static str, Option<String>)>,
+    ) -> Result<(), StoreError> {
         if self.fail_writes.load(Ordering::SeqCst) {
             return Err(StoreError::new("disk full"));
         }
         self.writes.fetch_add(1, Ordering::SeqCst);
-        self.inner.write_all(changes)
+        self.inner.write_all(changes).await
     }
 }
 
@@ -359,12 +363,12 @@ struct Harness {
     rt: Arc<Counters>,
 }
 
-fn build(store: &Arc<TestStore>, env: Env, a: Probe<NodeA>, b: Probe<NodeB>) -> Harness {
+async fn build(store: &Arc<TestStore>, env: Env, a: Probe<NodeA>, b: Probe<NodeB>) -> Harness {
     let (a_counters, b_counters) = (Arc::clone(&a.counters), Arc::clone(&b.counters));
     let rt_probe = Probe::<Runtime>::new();
     let rt_counters = Arc::clone(&rt_probe.counters);
     let mut builder =
-        Registry::builder_with_env(Arc::clone(store) as Arc<dyn SettingsStore>, ALL, env);
+        Registry::builder_with_env(Arc::clone(store) as Arc<dyn SettingsStore>, ALL, env).await;
     let scan = builder.section::<Scan>();
     let limits = builder.section::<Limits>();
     let node_a = builder.reloadable(a);
@@ -396,7 +400,7 @@ async fn booted_with(
     a: Probe<NodeA>,
     b: Probe<NodeB>,
 ) -> Harness {
-    let h = build(store, env, a, b);
+    let h = build(store, env, a, b).await;
     h.registry.boot().await.unwrap();
     h
 }
@@ -447,7 +451,7 @@ async fn a_value_resolves_env_over_stored_over_default_and_reports_its_source() 
     assert_eq!(view(&views, "limits.soft").value, "60");
 
     let snapshot = Snapshot::new(
-        store.inner.read_all().unwrap(),
+        store.inner.read_all().await.unwrap(),
         Env::fixed([("TEST_SCAN_POLL_MS", "250")]),
     );
     assert_eq!(snapshot.source(&POLL_MS), SettingSource::Env);
@@ -1060,24 +1064,24 @@ async fn read_sync_returns_the_same_section_value_the_registry_would() {
         ("server.workers", "8"),
     ]);
     let env = Env::fixed([("TEST_BIND", "0.0.0.0:9000")]);
-    let h = build(&store, env.clone(), Probe::new(), Probe::new());
+    let h = build(&store, env.clone(), Probe::new(), Probe::new()).await;
 
     assert_eq!(
-        read_sync_with_env::<Scan>(store.as_ref(), &env),
+        read_sync_with_env::<Scan>(store.read_all().await, &env),
         *h.scan.load()
     );
     assert_eq!(
-        read_sync_with_env::<Limits>(store.as_ref(), &env),
+        read_sync_with_env::<Limits>(store.read_all().await, &env),
         *h.limits.load()
     );
-    let runtime = read_sync_with_env::<Runtime>(store.as_ref(), &env);
+    let runtime = read_sync_with_env::<Runtime>(store.read_all().await, &env);
     assert_eq!(runtime, *h.runtime.load());
     assert_eq!(runtime.workers, 8);
     assert_eq!(runtime.bind.render(), "0.0.0.0:9000");
 
     store.fail_reads.store(true, Ordering::SeqCst);
     assert_eq!(
-        read_sync_with_env::<Scan>(store.as_ref(), &env),
+        read_sync_with_env::<Scan>(store.read_all().await, &env),
         Scan {
             depth: 20,
             poll_ms: 1000
@@ -1085,10 +1089,10 @@ async fn read_sync_returns_the_same_section_value_the_registry_would() {
     );
 }
 
-#[test]
-fn build_fails_if_a_declared_setting_is_in_no_section() {
+#[tokio::test]
+async fn build_fails_if_a_declared_setting_is_in_no_section() {
     let store: Arc<dyn SettingsStore> = Arc::new(MemoryStore::new());
-    let mut builder = Registry::builder_with_env(store, ALL, no_env());
+    let mut builder = Registry::builder_with_env(store, ALL, no_env()).await;
     builder.section::<Scan>();
     builder.section::<Limits>();
     match builder.build() {
@@ -1108,12 +1112,12 @@ fn build_fails_if_a_declared_setting_is_in_no_section() {
     }
 }
 
-#[test]
-fn build_fails_on_mistakes_in_the_declarations() {
+#[tokio::test]
+async fn build_fails_on_mistakes_in_the_declarations() {
     let store: Arc<dyn SettingsStore> = Arc::new(MemoryStore::new());
 
     // A section reading a setting that isn't declared.
-    let mut builder = Registry::builder_with_env(Arc::clone(&store), &[&DEPTH], no_env());
+    let mut builder = Registry::builder_with_env(Arc::clone(&store), &[&DEPTH], no_env()).await;
     builder.section::<Scan>();
     assert!(matches!(
         builder.build(),
@@ -1124,7 +1128,8 @@ fn build_fails_on_mistakes_in_the_declarations() {
     ));
 
     // The same section twice.
-    let mut builder = Registry::builder_with_env(Arc::clone(&store), &[&DEPTH, &POLL_MS], no_env());
+    let mut builder =
+        Registry::builder_with_env(Arc::clone(&store), &[&DEPTH, &POLL_MS], no_env()).await;
     builder.section::<Scan>();
     builder.section::<Scan>();
     assert!(matches!(
@@ -1134,7 +1139,7 @@ fn build_fails_on_mistakes_in_the_declarations() {
 
     // A setting declared twice.
     let mut builder =
-        Registry::builder_with_env(Arc::clone(&store), &[&DEPTH, &POLL_MS, &DEPTH], no_env());
+        Registry::builder_with_env(Arc::clone(&store), &[&DEPTH, &POLL_MS, &DEPTH], no_env()).await;
     builder.section::<Scan>();
     assert!(matches!(
         builder.build(),
@@ -1153,7 +1158,8 @@ fn build_fails_on_mistakes_in_the_declarations() {
             Ok(Mixed)
         }
     }
-    let mut builder = Registry::builder_with_env(Arc::clone(&store), &[&DEPTH, &WORKERS], no_env());
+    let mut builder =
+        Registry::builder_with_env(Arc::clone(&store), &[&DEPTH, &WORKERS], no_env()).await;
     builder.section::<Mixed>();
     assert!(matches!(
         builder.build(),
@@ -1200,7 +1206,7 @@ fn build_fails_on_mistakes_in_the_declarations() {
             "the example \"ten\" is invalid",
         ),
     ] {
-        let mut builder = Registry::builder_with_env(Arc::clone(&store), &declared, no_env());
+        let mut builder = Registry::builder_with_env(Arc::clone(&store), &declared, no_env()).await;
         builder.section::<Bad>();
         match builder.build() {
             Err(BuildError::BadDeclaration { key: k, message }) => {
@@ -1212,15 +1218,16 @@ fn build_fails_on_mistakes_in_the_declarations() {
     }
 }
 
-#[test]
-fn build_fails_if_the_store_cannot_be_read() {
+#[tokio::test]
+async fn build_fails_if_the_store_cannot_be_read() {
     let store = TestStore::with(&[]);
     store.fail_reads.store(true, Ordering::SeqCst);
     let mut builder = Registry::builder_with_env(
         store as Arc<dyn SettingsStore>,
         &[&DEPTH, &POLL_MS],
         no_env(),
-    );
+    )
+    .await;
     builder.section::<Scan>();
     assert!(matches!(builder.build(), Err(BuildError::Store(_))));
 }
@@ -1231,7 +1238,7 @@ async fn boot_follows_each_reloadables_boot_policy() {
     let store = TestStore::with(&[("node.a", "http://unreachable.example")]);
     let mut a = Probe::<NodeA>::new();
     a.fail = |c| c.url.as_str().contains("unreachable");
-    let h = build(&store, no_env(), a, Probe::new());
+    let h = build(&store, no_env(), a, Probe::new()).await;
     let err = h.registry.boot().await.unwrap_err();
     assert!(
         matches!(
@@ -1255,7 +1262,7 @@ async fn boot_follows_each_reloadables_boot_policy() {
     let mut a = Probe::<NodeA>::new();
     a.fail = |c| c.url.as_str().contains("unreachable");
     a.policy = BootPolicy::StartDegraded;
-    let h = build(&store, no_env(), a, Probe::new());
+    let h = build(&store, no_env(), a, Probe::new()).await;
     let report = h.registry.boot().await.unwrap();
     assert_eq!(report.degraded.len(), 1);
     assert_eq!(report.degraded[0].0, "node_a");
@@ -1279,7 +1286,7 @@ async fn boot_follows_each_reloadables_boot_policy() {
 #[tokio::test]
 async fn a_save_before_boot_is_refused() {
     let store = TestStore::with(&[]);
-    let h = build(&store, no_env(), Probe::new(), Probe::new());
+    let h = build(&store, no_env(), Probe::new(), Probe::new()).await;
     assert!(matches!(
         h.registry.save(vec![change("scan.depth", "5")]).await,
         Err(SaveError::NotBooted)

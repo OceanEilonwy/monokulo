@@ -346,8 +346,8 @@ impl Db {
     }
 }
 
-/// One connection behind a lock: the settings store's own connection, and
-/// the one in-memory connection a test's [`Database`] runs on.
+/// One connection behind a lock: the one in-memory connection a test's
+/// [`Database`] runs on.
 pub type SharedDb = Arc<Mutex<Db>>;
 
 /// How monokulo reaches its database: a pool of read-only connections and

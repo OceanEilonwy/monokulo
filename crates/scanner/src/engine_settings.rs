@@ -628,33 +628,53 @@ impl live_settings::Reloadable for CustodyReloadable {
     }
 }
 
-/// The engine's settings store, over its own `settings` table.
+/// The engine's settings store, over its own `settings` table. Its reads
+/// and writes take the store's lock and run SQLite, so the async ones run
+/// on the blocking pool.
+#[derive(Clone)]
 pub struct StoreSettings(pub SharedStore);
 
-impl live_settings::SettingsStore for StoreSettings {
-    fn read_all(&self) -> Result<HashMap<String, String>, live_settings::StoreError> {
+impl StoreSettings {
+    /// Every stored setting, read on the calling thread: for start-up,
+    /// before the async runtime exists (`live_settings::read_sync`).
+    pub fn read_now(&self) -> Result<HashMap<String, String>, live_settings::StoreError> {
         self.0
             .lock()
             .list_settings()
             .map_err(live_settings::StoreError::new)
     }
+}
 
-    fn write_all(
+#[live_settings::async_trait]
+impl live_settings::SettingsStore for StoreSettings {
+    async fn read_all(&self) -> Result<HashMap<String, String>, live_settings::StoreError> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.read_now())
+            .await
+            .map_err(live_settings::StoreError::new)?
+    }
+
+    async fn write_all(
         &self,
-        changes: &[(&str, Option<String>)],
+        changes: Vec<(&'static str, Option<String>)>,
     ) -> Result<(), live_settings::StoreError> {
-        let store = self.0.lock();
-        store
-            .in_transaction(|s| -> Result<(), crate::store::StoreError> {
-                for (key, value) in changes {
-                    match value {
-                        Some(value) => s.set_setting(key, value)?,
-                        None => s.delete_setting(key)?,
+        let store = Arc::clone(&self.0);
+        tokio::task::spawn_blocking(move || {
+            store
+                .lock()
+                .in_transaction(|s| -> Result<(), crate::store::StoreError> {
+                    for (key, value) in &changes {
+                        match value {
+                            Some(value) => s.set_setting(key, value)?,
+                            None => s.delete_setting(key)?,
+                        }
                     }
-                }
-                Ok(())
-            })
-            .map_err(live_settings::StoreError::new)
+                    Ok(())
+                })
+                .map_err(live_settings::StoreError::new)
+        })
+        .await
+        .map_err(live_settings::StoreError::new)?
     }
 }
 
@@ -917,7 +937,7 @@ impl EngineSettings {
         env: live_settings::Env,
     ) -> Result<Arc<Self>, String> {
         let mut builder =
-            Registry::builder_with_env(Arc::new(StoreSettings(store)), ALL, env.clone());
+            Registry::builder_with_env(Arc::new(StoreSettings(store)), ALL, env.clone()).await;
         let nodes = match nodes {
             Some(reloadable) => builder.reloadable(reloadable),
             None => builder.section::<NodeConfig>(),

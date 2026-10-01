@@ -17,14 +17,22 @@ impl StoreError {
 }
 
 /// Where stored values live: each process's own `settings` table.
+///
+/// Async so an implementation over a database does its I/O off the async
+/// worker threads (on its database threads, or `spawn_blocking`): a save
+/// that waits behind a long write must not stall a worker.
+#[async_trait::async_trait]
 pub trait SettingsStore: Send + Sync {
     /// Every stored key and its raw value.
-    fn read_all(&self) -> Result<HashMap<String, String>, StoreError>;
+    async fn read_all(&self) -> Result<HashMap<String, String>, StoreError>;
 
     /// Applies every change in one transaction: all of them or none.
     /// `Some` sets a key, `None` deletes it (so the setting goes back to
     /// its default).
-    fn write_all(&self, changes: &[(&str, Option<String>)]) -> Result<(), StoreError>;
+    async fn write_all(
+        &self,
+        changes: Vec<(&'static str, Option<String>)>,
+    ) -> Result<(), StoreError>;
 }
 
 /// A store in memory, for tests and tools.
@@ -58,17 +66,21 @@ impl MemoryStore {
     }
 }
 
+#[async_trait::async_trait]
 impl SettingsStore for MemoryStore {
-    fn read_all(&self) -> Result<HashMap<String, String>, StoreError> {
+    async fn read_all(&self) -> Result<HashMap<String, String>, StoreError> {
         Ok(self.values.lock().clone())
     }
 
-    fn write_all(&self, changes: &[(&str, Option<String>)]) -> Result<(), StoreError> {
+    async fn write_all(
+        &self,
+        changes: Vec<(&'static str, Option<String>)>,
+    ) -> Result<(), StoreError> {
         let mut values = self.values.lock();
         for (key, value) in changes {
             match value {
-                Some(value) => values.insert((*key).to_string(), value.clone()),
-                None => values.remove(*key),
+                Some(value) => values.insert(key.to_string(), value),
+                None => values.remove(key),
             };
         }
         Ok(())
