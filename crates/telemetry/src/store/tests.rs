@@ -309,6 +309,20 @@ fn a_histogram_counts_lines_per_slice_and_attribute_names_are_listed() {
     assert_eq!(warnings.iter().sum::<u64>(), 2);
     assert_eq!(warnings.len(), 4);
     assert_eq!(s.store.attribute_names().unwrap(), ["network", "order.id"]);
+    // Bounds are the caller's: a backwards range is empty, and the widest
+    // possible one is counted, not overflowed.
+    assert_eq!(s.store.histogram(None, to, from, 3).unwrap(), [0, 0, 0]);
+    assert_eq!(
+        s.store
+            .histogram(None, 0, i64::MAX, 2)
+            .unwrap()
+            .iter()
+            .sum::<u64>(),
+        3
+    );
+    // ...and the widest range there is doesn't panic (SQLite answers it in
+    // its own way).
+    let _ = s.store.histogram(None, i64::MIN, i64::MAX, 2);
 }
 
 #[test]

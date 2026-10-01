@@ -37,6 +37,11 @@ pub struct CreateOrderRequest {
     confirmations_required: Option<u64>,
 }
 
+/// Most an order can ask for: a million XMR. Far above any purchase, and
+/// well under what SQLite's signed 64-bit integer holds (an amount above
+/// `i64::MAX` would be stored negative and compared as such).
+pub const MAX_ORDER_PICONERO: u64 = 1_000_000 * 1_000_000_000_000;
+
 #[derive(Serialize)]
 pub struct CreateOrderResponse {
     order_id: crate::store::OrderId,
@@ -62,6 +67,11 @@ async fn create_order_for_tenant(
         return Err(ApiError::BadRequest(
             "xmr_amount_piconero must be greater than zero".into(),
         ));
+    }
+    if req.xmr_amount_piconero > MAX_ORDER_PICONERO {
+        return Err(ApiError::BadRequest(format!(
+            "xmr_amount_piconero must be at most {MAX_ORDER_PICONERO}"
+        )));
     }
     super::admin::validate_confirmations_required(req.confirmations_required)?;
 

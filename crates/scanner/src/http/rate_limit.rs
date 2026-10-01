@@ -44,10 +44,15 @@ pub use shared::rate_limit::RateLimiter;
 /// IP so it's still capped by *something* rather than exempted entirely; a real `sk_...` is opaque and
 /// server-minted, not guessable, so this isn't meaningfully weaker than IP-keying
 /// would be for that case. Does not itself validate the token - an invalid one
-/// still consumes its own budget bucket (keyed on its literal bytes) and is
-/// rejected downstream by `AuthedTenant`, same as a valid one would be rejected
-/// downstream for an unrelated reason; this middleware only ever answers "is this
-/// key over budget," never "is this key valid."
+/// still consumes its own budget bucket and is rejected downstream by
+/// `AuthedTenant`, same as a valid one would be rejected downstream for an
+/// unrelated reason; this middleware only ever answers "is this key over
+/// budget," never "is this key valid."
+///
+/// The bucket is keyed on the token's hash, not the token: a fixed-size key,
+/// so a caller sending junk tokens as long as a header allows can't hold
+/// gigabytes in the limiter, and no secret sits in memory for a minute
+/// after its request ended.
 pub async fn admin_rate_limit_middleware(
     State(admin_rate_limiter): State<Arc<RateLimiter<String>>>,
     req: Request,
@@ -59,7 +64,10 @@ pub async fn admin_rate_limit_middleware(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
     let key = match token {
-        Some(token) => token.to_string(),
+        Some(token) => shared::auth::RawToken::presented(token)
+            .hash()
+            .as_str()
+            .to_string(),
         None => match req.extensions().get::<ConnectInfo<SocketAddr>>() {
             Some(ci) => ci.0.ip().to_string(),
             // Only absent when a test drives the router directly with no

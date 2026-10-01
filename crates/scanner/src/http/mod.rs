@@ -47,6 +47,7 @@ use axum::Router;
 use serde_json::json;
 use tower_http::limit::RequestBodyLimitLayer;
 
+use crate::daemon::DaemonError;
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
 use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
@@ -283,7 +284,8 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
 /// `server.max_body_bytes`, read on every request so a saved change applies
 /// to the next one (task 2.6). A declared length over the limit is refused
 /// before anything is read. A body of unknown length (chunked) is read here
-/// up to the limit and refused with `413` if it goes over, or can't be read.
+/// up to the limit and refused with `413` if it goes over (`400` if it can't
+/// be read at all).
 async fn body_limit_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
     request: axum::extract::Request,
@@ -316,9 +318,21 @@ async fn body_limit_middleware(
             ))
             .await
         }
+        // Over the limit is `413`; a connection that dropped or a body that
+        // couldn't be read is the client's `400`, not an oversized request.
+        Err(e)
+            if std::error::Error::source(&e)
+                .is_some_and(|source| source.is::<http_body_util::LengthLimitError>()) =>
+        {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(serde_json::json!({ "error": "request body too large" })),
+            )
+                .into_response()
+        }
         Err(_) => (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(serde_json::json!({ "error": "request body too large" })),
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "request body could not be read" })),
         )
             .into_response(),
     }
@@ -492,10 +506,16 @@ pub async fn resolve_wallet_handle(
         None => {}
     }
     // The row as it is now, not as it was when the request was
-    // authenticated: the store may have just moved to another backend.
+    // authenticated: the store may have just moved to another backend, or
+    // been deleted. A deleted store's keys are never registered again: the
+    // request that authenticated just before the deletion would otherwise
+    // put them back in custody with nothing left to ever remove them.
     let id = tenant.id.clone();
     let current = state.db.write(move |s| s.get_tenant_by_id(&id)).await?;
-    let tenant = current.as_ref().unwrap_or(tenant);
+    let tenant = match current.as_ref() {
+        Some(current) if current.disabled_at.is_none() => current,
+        _ => return Err(ApiError::Unauthorized),
+    };
     // The registration can't happen under the lock (it's `async`, and holding a
     // std `RwLock` across an `.await` would be a deadlock waiting to happen), so two
     // concurrent first-uses of the same tenant can both reach here. Re-check under
@@ -594,6 +614,28 @@ impl From<KeyCustodyError> for ApiError {
     }
 }
 
+/// A scan done on a caller's behalf (`admin::lookup_payment`): the node and
+/// the database are the engine's to retry (`503`), the rest is its own
+/// bug (`500`).
+impl From<crate::scanner::ScannerError> for ApiError {
+    fn from(e: crate::scanner::ScannerError) -> Self {
+        use crate::scanner::ScannerError;
+        match e {
+            ScannerError::Daemon(e) => e.into(),
+            ScannerError::Store(e) => e.into(),
+            ScannerError::KeyCustody(e) => e.into(),
+            other => ApiError::Internal(other.to_string()),
+        }
+    }
+}
+
+/// A Monero node that didn't answer is down for now, not a bug: `503`.
+impl From<DaemonError> for ApiError {
+    fn from(e: DaemonError) -> Self {
+        ApiError::Unavailable(format!("the Monero node did not answer: {e}"))
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
@@ -601,7 +643,16 @@ impl IntoResponse for ApiError {
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-            ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            // What went wrong is for the engine's own log, not the caller:
+            // a database or custody message can carry SQL, file paths and
+            // node addresses.
+            ApiError::Internal(m) => {
+                tracing::error!(error = %m, "request failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
+            }
             ApiError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
         };
         (status, Json(json!({ "error": message }))).into_response()

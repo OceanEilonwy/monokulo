@@ -28,8 +28,58 @@ pub enum Action {
     /// Provisions the one tenant a self-hosted deployment needs, replacing what
     /// used to be the `[wallet]` section of the (now-removed) TOML config file -
     /// see `local_admin::bootstrap_wallet`.
-    BootstrapWallet(BootstrapWalletArgs),
+    BootstrapWallet(BootstrapWalletCommand),
     Help,
+}
+
+/// `--bootstrap-wallet` as parsed: everything `local_admin::bootstrap_wallet`
+/// needs except the private view key itself, which is read from a file (or
+/// standard input) by [`BootstrapWalletCommand::read_view_key`] - never
+/// taken from the argument list, where every user on the machine can read
+/// it (`ps`, `/proc/*/cmdline`) and the shell's history keeps it.
+#[derive(Debug, PartialEq)]
+pub struct BootstrapWalletCommand {
+    pub primary_address: String,
+    /// Where the hex-encoded private view key is read from; `-` is standard
+    /// input.
+    pub view_key_file: String,
+    pub spend_pubkey_hex: String,
+    pub network: String,
+    pub key_custody_backend: Option<String>,
+}
+
+impl BootstrapWalletCommand {
+    /// Reads the view key from where `--view-key-file` points, trimming
+    /// the newline an editor or `echo` leaves.
+    pub fn read_view_key(self) -> Result<BootstrapWalletArgs, String> {
+        let raw = if self.view_key_file == "-" {
+            let mut raw = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)
+                .map_err(|e| format!("could not read the view key from standard input: {e}"))?;
+            raw
+        } else {
+            std::fs::read_to_string(&self.view_key_file).map_err(|e| {
+                format!(
+                    "could not read the view key from {:?}: {e}",
+                    self.view_key_file
+                )
+            })?
+        };
+        let view_key_hex = raw.trim().to_string();
+        if view_key_hex.is_empty() {
+            return Err(format!(
+                "the view key file {:?} is empty",
+                self.view_key_file
+            ));
+        }
+        Ok(BootstrapWalletArgs {
+            primary_address: self.primary_address,
+            view_key_hex,
+            spend_pubkey_hex: self.spend_pubkey_hex,
+            network: self.network,
+            key_custody_backend: self.key_custody_backend,
+        })
+    }
 }
 
 pub const HELP_TEXT: &str = "\
@@ -37,7 +87,7 @@ scanner - a self-hosted Monero payment gateway
 
 USAGE:
     scanner [--strict-tls]
-    scanner --bootstrap-wallet --primary-address <ADDR> --view-key <HEX> \
+    scanner --bootstrap-wallet --primary-address <ADDR> --view-key-file <PATH> \
 --spend-pubkey <HEX> [--network mainnet|stagenet|testnet] \
 [--key-custody-backend plain|socket]
     scanner --rotate-secret [--pk <PK>]
@@ -69,8 +119,12 @@ OPTIONS:
                           instance creates tenants at runtime via the admin
                           HTTP API instead and never uses this at all).
     --primary-address      The wallet's own primary address (bootstrap only).
-    --view-key             The wallet's private view key, hex-encoded
-                          (bootstrap only) - never a spend key.
+    --view-key-file        A file holding the wallet's private view key,
+                          hex-encoded (bootstrap only) - never a spend key.
+                          `-` reads it from standard input. Never an
+                          argument: the argument list is readable by every
+                          user on the machine and kept by the shell's
+                          history.
     --spend-pubkey         The wallet's public spend key, hex-encoded
                           (bootstrap only) - the public half only, never the
                           private spend key.
@@ -96,8 +150,10 @@ OPTIONS:
 EXAMPLES:
     scanner                        Start the server.
     scanner --strict-tls           Start the server, rejecting self-signed node certs.
-    scanner --bootstrap-wallet --primary-address 4... --view-key <hex> --spend-pubkey <hex>
+    scanner --bootstrap-wallet --primary-address 4... --view-key-file view.key --spend-pubkey <hex>
                                    Provision the one self-hosted tenant.
+    printf '%s' <hex> | scanner --bootstrap-wallet ... --view-key-file -
+                                   The same, with the key on standard input.
     scanner --rotate-secret        Mint a fresh admin secret for the sole tenant.
 ";
 
@@ -163,9 +219,9 @@ fn parse_pk_arg(args: &[String]) -> Result<Option<String>, String> {
     Ok(pk)
 }
 
-fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, String> {
+fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletCommand, String> {
     let mut primary_address = None;
-    let mut view_key_hex = None;
+    let mut view_key_file = None;
     let mut spend_pubkey_hex = None;
     let mut network = "mainnet".to_string();
     let mut key_custody_backend = None;
@@ -179,8 +235,13 @@ fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, S
                         .clone(),
                 )
             }
+            "--view-key-file" => {
+                view_key_file = Some(iter.next().ok_or("--view-key-file needs a value")?.clone())
+            }
             "--view-key" => {
-                view_key_hex = Some(iter.next().ok_or("--view-key needs a value")?.clone())
+                return Err(
+                    "--view-key is not accepted: a key in the argument list is readable by every user on the machine - put it in a file and pass --view-key-file <PATH> (or - for standard input)".to_string(),
+                )
             }
             "--spend-pubkey" => {
                 spend_pubkey_hex = Some(iter.next().ok_or("--spend-pubkey needs a value")?.clone())
@@ -201,9 +262,9 @@ fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, S
             }
         }
     }
-    Ok(BootstrapWalletArgs {
+    Ok(BootstrapWalletCommand {
         primary_address: primary_address.ok_or("--bootstrap-wallet requires --primary-address")?,
-        view_key_hex: view_key_hex.ok_or("--bootstrap-wallet requires --view-key")?,
+        view_key_file: view_key_file.ok_or("--bootstrap-wallet requires --view-key-file")?,
         spend_pubkey_hex: spend_pubkey_hex.ok_or("--bootstrap-wallet requires --spend-pubkey")?,
         network,
         key_custody_backend,
@@ -270,7 +331,7 @@ mod tests {
             "--strict-tls",
             "--bootstrap-wallet",
             "--primary-address",
-            "--view-key",
+            "--view-key-file",
             "--spend-pubkey",
             "--network",
             "--rotate-secret",
@@ -306,12 +367,75 @@ mod tests {
             "--bootstrap-wallet",
             "--primary-address",
             "4abc",
+            "--view-key-file",
+            "view.key",
+            "--spend-pubkey",
+            "bb",
+        ]))
+        .is_ok());
+    }
+
+    /// The private view key is never an argument: the old flag is refused
+    /// with the fix named, and the file (or standard input) is read, with
+    /// the newline an editor leaves trimmed.
+    #[test]
+    fn the_view_key_comes_from_a_file_never_from_the_argument_list() {
+        let refused = parse_args(&args(&[
+            "--bootstrap-wallet",
+            "--primary-address",
+            "4abc",
             "--view-key",
             "aa",
             "--spend-pubkey",
             "bb",
         ]))
-        .is_ok());
+        .unwrap_err();
+        assert!(refused.contains("--view-key-file"), "{refused}");
+
+        let dir = std::env::temp_dir().join(format!("scanner-view-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("view.key");
+        std::fs::write(&path, "aabb\n").unwrap();
+        let command = match parse_args(&args(&[
+            "--bootstrap-wallet",
+            "--primary-address",
+            "4abc",
+            "--view-key-file",
+            path.to_str().unwrap(),
+            "--spend-pubkey",
+            "bb",
+        ]))
+        .unwrap()
+        {
+            Action::BootstrapWallet(command) => command,
+            other => panic!("expected BootstrapWallet, got {other:?}"),
+        };
+        let read = command.read_view_key().unwrap();
+        assert_eq!(read.view_key_hex, "aabb");
+        assert_eq!(read.spend_pubkey_hex, "bb");
+
+        std::fs::write(&path, " \n").unwrap();
+        let empty = BootstrapWalletCommand {
+            view_key_file: path.to_str().unwrap().to_string(),
+            ..bootstrap_command()
+        };
+        assert!(empty.read_view_key().unwrap_err().contains("empty"));
+        let missing = BootstrapWalletCommand {
+            view_key_file: dir.join("nowhere").to_str().unwrap().to_string(),
+            ..bootstrap_command()
+        };
+        assert!(missing.read_view_key().is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn bootstrap_command() -> BootstrapWalletCommand {
+        BootstrapWalletCommand {
+            primary_address: "4abc".to_string(),
+            view_key_file: "-".to_string(),
+            spend_pubkey_hex: "bb".to_string(),
+            network: "mainnet".to_string(),
+            key_custody_backend: None,
+        }
     }
 
     #[test]
@@ -320,8 +444,8 @@ mod tests {
             "--bootstrap-wallet",
             "--primary-address",
             "4abc",
-            "--view-key",
-            "aa",
+            "--view-key-file",
+            "view.key",
             "--spend-pubkey",
             "bb",
         ]))
@@ -340,8 +464,8 @@ mod tests {
             "--bootstrap-wallet",
             "--primary-address",
             "4abc",
-            "--view-key",
-            "aa",
+            "--view-key-file",
+            "view.key",
             "--spend-pubkey",
             "bb",
             "--network",
@@ -358,8 +482,8 @@ mod tests {
             "--bootstrap-wallet",
             "--primary-address",
             "4abc",
-            "--view-key",
-            "aa",
+            "--view-key-file",
+            "view.key",
             "--spend-pubkey",
             "bb",
             "--allowed-origins",

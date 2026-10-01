@@ -133,7 +133,14 @@ async fn run(action: Action) {
                 }
             }
         }
-        Action::BootstrapWallet(args) => {
+        Action::BootstrapWallet(command) => {
+            let args = match command.read_view_key() {
+                Ok(args) => args,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
             let store = open_store().into_shared();
             if let Err(e) = migrate_key_custody_setting(&store.lock()) {
                 eprintln!("failed to move key custody settings to per-store custody: {e}");
@@ -171,7 +178,7 @@ async fn run(action: Action) {
     // Beside the main database; lines logged since start-up go in too.
     let log_store = telemetry::global().and_then(|t| t.open_store_beside(&cli::database_path()));
 
-    if let Some(token) = ensure_admin_token_seeded(&store.lock()) {
+    if let Some(token) = ensure_admin_token_seeded(&store.lock(), &live_settings::Env::process()) {
         println!(
             "==> generated a new instance admin token (shown once - it is stored only as a hash from here on):\n    {}\n\
              Set the SCANNER_ADMIN_TOKEN environment variable to this value on future boots if you'd rather manage it \

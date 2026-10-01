@@ -23,6 +23,11 @@
 //! tenant, the same way a service's own `/healthz` typically sits outside
 //! its versioned API.
 //!
+//! A database that can't be read makes this `503`, not a page of zeros: the
+//! counts here (stores lagging, webhooks due, stores unserved) are what an
+//! operator looks at during an outage, and "nothing is wrong" from a store
+//! that didn't answer would be the one wrong thing to say then.
+//!
 //! `is_stale`/`last_tick_ok` are computed here (the engine knows its own
 //! `scan_poll_interval_secs`, which "stale" is defined relative to) but
 //! human-readable formatting (relative "3s ago" style timestamps, an
@@ -33,13 +38,13 @@
 use std::time::Duration;
 
 use axum::extract::State;
-use axum::response::{IntoResponse, Json, Response};
+use axum::response::Json;
 use monero::Network;
 use serde::Serialize;
 
 use crate::network::network_str;
 
-use super::AppState;
+use super::{ApiError, AppState};
 
 const NODE_HEIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -199,7 +204,9 @@ fn is_stale(now: i64, last_tick_finished_at: i64, poll_interval_secs: u64) -> bo
     now.saturating_sub(last_tick_finished_at) > staleness_threshold
 }
 
-pub async fn status_page(State(state): State<AppState>) -> Response {
+pub async fn status_page(
+    State(state): State<AppState>,
+) -> Result<Json<EngineStatusResponse>, ApiError> {
     let now = crate::now_unix();
 
     let mut networks: Vec<(Network, _)> = state
@@ -279,8 +286,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
                     .unwrap_or(0);
                 Ok((lagging.len(), behind))
             })
-            .await
-            .unwrap_or((0, 0));
+            .await?;
         network_views.push(NetworkStatus {
             network: network_str(network).to_string(),
             nodes,
@@ -297,8 +303,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
     let (due, oldest) = state
         .db
         .read(move |store| store.webhook_backlog(now))
-        .await
-        .unwrap_or((0, None));
+        .await?;
     let key_custody: Vec<CustodyBackendStatus> = state
         .custody
         .backends
@@ -310,18 +315,16 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
     let networks_for_read = network_views.clone();
     let mut unserved_tenants = state
         .db
-        .read(move |store| Ok(unserved_tenants(store, &networks_for_read)))
-        .await
-        .unwrap_or_default();
+        .read(move |store| unserved_tenants(store, &networks_for_read))
+        .await?;
     let key_custody_for_read = key_custody.clone();
     unserved_tenants.extend(
         state
             .db
-            .read(move |store| Ok(custody_unserved_tenants(store, &key_custody_for_read)))
-            .await
-            .unwrap_or_default(),
+            .read(move |store| custody_unserved_tenants(store, &key_custody_for_read))
+            .await?,
     );
-    Json(EngineStatusResponse {
+    Ok(Json(EngineStatusResponse {
         networks: network_views,
         poll_interval_secs,
         generated_at: now,
@@ -334,8 +337,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         key_custody_default: (!key_custody.is_empty())
             .then(|| state.settings.custody.load().default.as_str().to_string()),
         key_custody,
-    })
-    .into_response()
+    }))
 }
 
 /// Stores whose keys are in a backend that is turned off or not answering
@@ -343,12 +345,12 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
 fn custody_unserved_tenants(
     store: &crate::store::Store,
     health: &[CustodyBackendStatus],
-) -> Vec<UnservedTenant> {
+) -> std::result::Result<Vec<UnservedTenant>, crate::store::StoreError> {
     if health.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let tenants = store.tenant_custody_backends().unwrap_or_default();
-    tenants
+    let tenants = store.tenant_custody_backends()?;
+    Ok(tenants
         .into_iter()
         .filter_map(|(public_key, network, backend)| {
             let reason = match health.iter().find(|h| h.backend == backend) {
@@ -363,7 +365,7 @@ fn custody_unserved_tenants(
                 blocks_behind: None,
             })
         })
-        .collect()
+        .collect())
 }
 
 /// How far behind a store must be before it's reported as catching up: a
@@ -388,9 +390,9 @@ fn network_unreachable(status: Option<&NetworkStatus>) -> bool {
 fn unserved_tenants(
     store: &crate::store::Store,
     networks: &[NetworkStatus],
-) -> Vec<UnservedTenant> {
+) -> std::result::Result<Vec<UnservedTenant>, crate::store::StoreError> {
     let mut unserved = Vec::new();
-    let with_tenants = store.count_tenants_by_network().unwrap_or_default();
+    let with_tenants = store.count_tenants_by_network()?;
     for (network, count) in with_tenants {
         // A name no network has is a corrupted row: nothing to report on.
         let Ok(parsed) = crate::network::parse_network(&network) else {
@@ -400,10 +402,7 @@ fn unserved_tenants(
             continue;
         }
         if network_unreachable(networks.iter().find(|n| n.network == network)) {
-            for public_key in store
-                .tenant_public_keys_on_network(parsed)
-                .unwrap_or_default()
-            {
+            for public_key in store.tenant_public_keys_on_network(parsed)? {
                 unserved.push(UnservedTenant {
                     public_key,
                     network: network.clone(),
@@ -413,8 +412,8 @@ fn unserved_tenants(
             }
             continue;
         }
-        let high_water = store.max_scanned_height(parsed).ok().flatten().unwrap_or(0);
-        for (public_key, cursor) in store.lagging_tenant_keys(parsed).unwrap_or_default() {
+        let high_water = store.max_scanned_height(parsed)?.unwrap_or(0);
+        for (public_key, cursor) in store.lagging_tenant_keys(parsed)? {
             if high_water.saturating_sub(cursor) < CATCHING_UP_REPORT_BLOCKS {
                 continue;
             }
@@ -426,7 +425,7 @@ fn unserved_tenants(
             });
         }
     }
-    unserved
+    Ok(unserved)
 }
 
 #[cfg(test)]

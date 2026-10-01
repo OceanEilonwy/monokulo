@@ -395,6 +395,26 @@ pub struct Order {
     /// `recompute_order_status`'s own doc comment on how this interacts with
     /// `tenants.confirmations_required`.
     pub confirmations_required_override: Option<u64>,
+    /// When the order first became terminal (migration 0016), kept while it
+    /// stays so; `None` while it is open.
+    pub closed_at: Option<i64>,
+}
+
+impl Order {
+    /// Whether the live scanner still examines this order at `now`: open,
+    /// or closed within the last `grace_period_seconds`. The same window
+    /// `scan_window_orders` selects, on a row already read.
+    pub fn in_scan_window(&self, now: i64, grace_period_seconds: i64) -> bool {
+        matches!(
+            self.status,
+            OrderStatus::Pending
+                | OrderStatus::Unconfirmed
+                | OrderStatus::Confirming
+                | OrderStatus::Partial
+        ) || self
+            .closed_at
+            .is_some_and(|closed_at| closed_at >= now - grace_period_seconds)
+    }
 }
 
 pub struct NewOrder {
@@ -579,18 +599,11 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     }
 }
 
-/// The scan window (task 7.3, decision D10) as an SQL condition on an
-/// `orders` row aliased `o`: open (not terminal), or closed no earlier than
-/// `?since` minus the grace period. Parameters: `:since_minus_grace`.
-///
-/// For one order (by primary key) only. Across a tenant's orders the OR
-/// defeats every index, so those queries use its two halves instead, each
-/// with its own index: [`OPEN_ORDERS`] and [`recently_closed_orders`].
-const IN_SCAN_WINDOW: &str = "(o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')
-     OR (o.closed_at_utc IS NOT NULL AND o.closed_at_utc >= :since_minus_grace))";
-
-/// The open half of the scan window, for orders aliased `o` of one tenant
-/// (`orders_tenant_status_idx`).
+/// The open half of the scan window (task 7.3, decision D10: open, or
+/// closed no earlier than `now` minus the grace period - [`Order::
+/// in_scan_window`] on a row already read), for orders aliased `o` of one
+/// tenant (`orders_tenant_status_idx`). The two halves are queried apart,
+/// each from its own index: an OR would defeat both.
 const OPEN_ORDERS: &str = "o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')";
 
 /// Whether the tenant whose id is the SQL expression `tenant` has an order
@@ -1399,7 +1412,7 @@ impl Store {
                 new.merchant_order_id,
                 new.minor_index,
                 new.address,
-                new.xmr_amount_piconero as i64,
+                shared::sqlite::Unsigned(new.xmr_amount_piconero),
                 new.description,
                 new.created_at,
                 new.expires_at,
@@ -1444,8 +1457,9 @@ impl Store {
             first_scanned_height: row.get("first_scanned_height")?,
             last_scanned_height: row.get("last_scanned_height")?,
             confirmations_required_override: row
-                .get::<_, Option<i64>>("confirmations_required_override")?
-                .map(|v| v as u64),
+                .get::<_, Option<shared::sqlite::Unsigned<u64>>>("confirmations_required_override")?
+                .map(|v| v.0),
+            closed_at: row.get("closed_at_utc")?,
         })
     }
 
@@ -2216,25 +2230,6 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// `true` if this order is presently in the live scanner's own in-scope set
-    /// (the same widened predicate `bump_scanned_heights_for_tenant` uses) - the
-    /// only way an order can be "currently scanning" now that the manual rescan
-    /// feature is gone (`docs/txid_lookup_and_scan_chunking_wbs.md` Part C.2).
-    pub fn is_order_currently_scanning(
-        &self,
-        order_id: &OrderId,
-        now: i64,
-        grace_period_seconds: i64,
-    ) -> Result<bool> {
-        self.conn
-            .query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM orders o WHERE o.id = :order AND {IN_SCAN_WINDOW})"),
-                rusqlite::named_params! { ":order": order_id, ":since_minus_grace": now - grace_period_seconds },
-                |row| row.get(0),
-            )
-            .map_err(Into::into)
-    }
-
     // -- Webhooks -------------------------------------------------------
 
     pub fn create_webhook(
@@ -2527,6 +2522,7 @@ mod tests {
             first_scanned_height: None,
             last_scanned_height: None,
             confirmations_required_override: None,
+            closed_at: None,
         }
     }
 
@@ -3711,40 +3707,42 @@ mod tests {
         );
     }
 
+    /// `Order::in_scan_window` on rows as the store writes them agrees with
+    /// the SQL the scan loop selects its window with (`scan_window_orders`):
+    /// non-terminal, or closed within the grace period.
     #[test]
-    fn is_order_currently_scanning_covers_every_real_lifecycle_point() {
-        // `docs/txid_lookup_and_scan_chunking_wbs.md` Part C.2 - now that the
-        // manual rescan feature is gone, `currently_scanning` reflects exactly
-        // one thing: the live scanner's own in-scope set (non-terminal, or
-        // `Expired` within grace).
+    fn an_order_read_back_knows_whether_the_scanner_still_examines_it() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
+        let read = |id: &OrderId| store.get_order_by_id(id).unwrap().unwrap();
+        let selected = |id: &OrderId, now: i64, grace: i64| {
+            store
+                .conn
+                .query_row(
+                    &format!(
+                        "SELECT EXISTS(SELECT 1 FROM ({}) WHERE id = :order)",
+                        scan_window_orders("o.tenant_id = o.tenant_id")
+                    ),
+                    rusqlite::named_params! { ":order": id, ":since_minus_grace": now - grace },
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        };
 
         let pending_order = new_order(&store, tenant.tenant.id.as_str(), 1); // expires_at = 2000, status defaults to pending
-        assert!(
-            store
-                .is_order_currently_scanning(&pending_order.id, 2000, 0)
-                .unwrap(),
-            "a non-terminal order must be currently scanning regardless of grace"
-        );
+        assert!(read(&pending_order.id).in_scan_window(2000, 0));
+        assert!(selected(&pending_order.id, 2000, 0));
 
         let expired_in_grace = new_order(&store, tenant.tenant.id.as_str(), 2);
         store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![expired_in_grace.id]).unwrap();
-        assert!(
-            store
-                .is_order_currently_scanning(&expired_in_grace.id, 2500, 600)
-                .unwrap(),
-            "an expired order still inside its grace window must be currently scanning"
-        );
+        assert_eq!(read(&expired_in_grace.id).closed_at, Some(2000));
+        assert!(read(&expired_in_grace.id).in_scan_window(2500, 600));
+        assert!(selected(&expired_in_grace.id, 2500, 600));
 
         let expired_past_grace = new_order(&store, tenant.tenant.id.as_str(), 3);
         store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![expired_past_grace.id]).unwrap();
-        assert!(
-            !store
-                .is_order_currently_scanning(&expired_past_grace.id, 2601, 600)
-                .unwrap(),
-            "an expired order past its grace window must not be currently scanning"
-        );
+        assert!(!read(&expired_past_grace.id).in_scan_window(2601, 600));
+        assert!(!selected(&expired_past_grace.id, 2601, 600));
     }
 
     #[test]
