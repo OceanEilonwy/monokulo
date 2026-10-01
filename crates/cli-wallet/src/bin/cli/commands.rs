@@ -1046,10 +1046,7 @@ fn confirm(data: &WalletData, summary: &str) -> Result<bool, CliError> {
     print!("{summary}\nIs this okay?  (Y/Yes/N/No): ");
     std::io::stdout().flush().ok();
     let mut answer = String::new();
-    std::io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .map_err(|e| format!("failed to read the answer: {e}"))?;
+    crate::read_stdin_line(&mut answer).map_err(|e| format!("failed to read the answer: {e}"))?;
     Ok(matches!(
         answer.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"

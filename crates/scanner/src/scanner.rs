@@ -8891,13 +8891,38 @@ pub(crate) mod tests {
         key_custody: &dyn KeyCustody,
         expires_at: i64,
     ) -> (crate::store::TenantId, WalletHandle, crate::store::OrderId) {
-        let handle = key_custody
+        let handle = register_fixture_wallet(key_custody).await;
+        let (tenant, order) = fixture_tenant_rows(store, expires_at);
+        (tenant, handle, order)
+    }
+
+    /// [`fixture_tenant`] on a shared store, locked only for the
+    /// synchronous writes: the custody call is awaited first, with no lock
+    /// held.
+    pub(crate) async fn fixture_tenant_shared(
+        store: &crate::store::SharedStore,
+        key_custody: &dyn KeyCustody,
+        expires_at: i64,
+    ) -> (crate::store::TenantId, WalletHandle, crate::store::OrderId) {
+        let handle = register_fixture_wallet(key_custody).await;
+        let (tenant, order) = fixture_tenant_rows(&store.lock(), expires_at);
+        (tenant, handle, order)
+    }
+
+    async fn register_fixture_wallet(key_custody: &dyn KeyCustody) -> WalletHandle {
+        key_custody
             .register_wallet(WalletMaterial::new(
                 fixture_view_key(),
                 fixture_spend_pubkey(),
             ))
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    fn fixture_tenant_rows(
+        store: &Store,
+        expires_at: i64,
+    ) -> (crate::store::TenantId, crate::store::OrderId) {
         let tenant = store
             .create_tenant(
                 NewTenant {
@@ -8929,7 +8954,6 @@ pub(crate) mod tests {
             .unwrap();
         (
             shared::ids::TenantId::new(tenant.tenant.id.into_string()),
-            handle,
             shared::ids::OrderId::new(order.id.into_string()),
         )
     }
