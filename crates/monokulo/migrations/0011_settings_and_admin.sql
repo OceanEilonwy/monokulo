@@ -1,6 +1,6 @@
 -- Runtime-configurable settings, the same key/value shape (and the same
 -- env > database > default resolution, shared/src/settings.rs) the engine's
--- own equivalent table already uses (crates/scanner/migrations/
+-- own equivalent table already uses (crates/engine/migrations/
 -- 0010_settings.sql) - see that migration's own comment for why a plain
 -- key/value table, not one column per setting, is the right shape here too.
 CREATE TABLE settings (

@@ -19,7 +19,7 @@ pub fn env_value(env_var: &str) -> Option<String> {
 ///
 /// `std::env::set_var` changes the real process environment, which every
 /// test running in parallel in the same binary shares. A test setting
-/// `SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED` would make another test that
+/// `ENGINE_PAYMENT_CONFIRMATIONS_REQUIRED` would make another test that
 /// happens to read that setting at the same moment see the wrong value,
 /// and fail only now and then. An override here is visible only on the
 /// thread that set it - under `#[tokio::test]`'s default single-threaded

@@ -17,7 +17,7 @@
 //!    once a real block gives it its first confirmation - proving
 //!    `confirmations_required_override` isn't just recorded but genuinely
 //!    enforced by the real engine's own status computation
-//!    (`scanner::store::recompute_order_status`).
+//!    (`engine::store::recompute_order_status`).
 //! 3. The order detail dashboard page shows the real, snapshotted threshold
 //!    info (`http/orders.rs::render_order_detail_page`, WBS task #83) - "1"
 //!    confirmation required, "XMR" as the store's own base currency.
@@ -55,8 +55,8 @@ use std::time::Duration;
 use monero::Network;
 use serde_json::{json, Value};
 
-use scanner::daemon::MoneroDaemonClient;
-use scanner::daemon_rpc::RpcDaemonClient;
+use engine::daemon::MoneroDaemonClient;
+use engine::daemon_rpc::RpcDaemonClient;
 
 /// Same fixed public stagenet node `e2e_stagenet_connect_flow.rs` uses -
 /// duplicated rather than shared, same reasoning as that file's own
@@ -252,7 +252,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // `without_background_scan_loop` reasoning as
     // `e2e_stagenet_connect_flow.rs`'s own module doc comment), no
     // background webhook loop either (this test doesn't need one).
-    let engine = scanner_test_support::TestEngineConfig::new()
+    let engine = engine_test_support::TestEngineConfig::new()
         .with_networks(&[Network::Stagenet])
         .without_background_scan_loop()
         .spawn()

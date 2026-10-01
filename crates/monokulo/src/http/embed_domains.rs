@@ -512,8 +512,8 @@ mod tests {
     const TEST_SPEND_PUBKEY_HEX: &str =
         "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
-    async fn test_state(dns: Arc<FakeDns>) -> (AppState, scanner_test_support::TestEngineHandle) {
-        let engine = scanner_test_support::TestEngineConfig::new()
+    async fn test_state(dns: Arc<FakeDns>) -> (AppState, engine_test_support::TestEngineHandle) {
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .spawn()
             .await;

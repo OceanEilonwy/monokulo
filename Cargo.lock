@@ -1003,6 +1003,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "cli-wallet",
+ "futures-util",
+ "hex",
+ "hmac 0.13.0",
+ "http-body",
+ "http-body-util",
+ "key-custody-service",
+ "live-settings",
+ "monero",
+ "monero-epee",
+ "monokulo",
+ "parking_lot",
+ "rand 0.10.2",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "shared",
+ "subtle",
+ "telemetry",
+ "thiserror 2.0.20",
+ "tokio",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "engine-test-support"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "engine",
+ "hex",
+ "key-custody-server",
+ "key-custody-service",
+ "live-settings",
+ "monero",
+ "parking_lot",
+ "reqwest",
+ "serde_json",
+ "shared",
+ "telemetry",
+ "tokio",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1865,10 +1923,10 @@ dependencies = [
 name = "key-custody-server"
 version = "0.1.0"
 dependencies = [
+ "engine",
  "hex",
  "key-custody-service",
  "monero",
- "scanner",
  "shared",
  "telemetry",
  "tokio",
@@ -2052,13 +2110,13 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "cli-wallet",
+ "engine",
+ "engine-test-support",
  "hex",
  "monero",
  "monokulo",
  "parking_lot",
  "reqwest",
- "scanner",
- "scanner-test-support",
  "serde",
  "serde_json",
  "shared",
@@ -2332,6 +2390,8 @@ dependencies = [
  "aes-gcm",
  "axum",
  "axum-extra",
+ "engine",
+ "engine-test-support",
  "futures-util",
  "hex",
  "hickory-resolver",
@@ -2348,8 +2408,6 @@ dependencies = [
  "reqwest",
  "reqwest-middleware",
  "rusqlite",
- "scanner",
- "scanner-test-support",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -3237,64 +3295,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "scanner"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "cli-wallet",
- "futures-util",
- "hex",
- "hmac 0.13.0",
- "http-body",
- "http-body-util",
- "key-custody-service",
- "live-settings",
- "monero",
- "monero-epee",
- "monokulo",
- "parking_lot",
- "rand 0.10.2",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "shared",
- "subtle",
- "telemetry",
- "thiserror 2.0.20",
- "tokio",
- "tower",
- "tower-http 0.7.1",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "scanner-test-support"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "hex",
- "key-custody-server",
- "key-custody-service",
- "live-settings",
- "monero",
- "parking_lot",
- "reqwest",
- "scanner",
- "serde_json",
- "shared",
- "telemetry",
- "tokio",
 ]
 
 [[package]]

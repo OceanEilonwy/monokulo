@@ -1,4 +1,4 @@
-//! An order's status, as the engine decides it (`scanner::status`) and
+//! An order's status, as the engine decides it (`engine::status`) and
 //! monokulo shows it. One type on both sides of the admin API, so a status
 //! is matched exhaustively everywhere instead of compared as a string.
 

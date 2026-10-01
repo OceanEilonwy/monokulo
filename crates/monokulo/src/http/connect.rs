@@ -753,10 +753,9 @@ mod tests {
     /// must hand plugins as `endpoint`.
     const TEST_PUBLIC_URL: &str = "https://pay.example.test";
 
-    async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
+    async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),

@@ -1,6 +1,6 @@
 # Real stagenet end-to-end test
 
-The actual test lives in Rust: [`../crates/scanner/tests/e2e_stagenet.rs`](../crates/scanner/tests/e2e_stagenet.rs),
+The actual test lives in Rust: [`../crates/engine/tests/e2e_stagenet.rs`](../crates/engine/tests/e2e_stagenet.rs),
 run via `cargo test` like any other test in this crate. It drives the real
 `scanner` library - config, store, key custody, scanner, router; the same
 pieces `main.rs` wires together - against a real public Monero **stagenet** node,
@@ -40,7 +40,7 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
 
 - **Node**: `node.monerodevs.org:38089` (public stagenet node) - configured in
   `moneropay-stagenet.toml`'s `[monero_node.stagenet]` and in
-  `crates/scanner/tests/support/mod.rs`'s `e2e_fixture` constants.
+  `crates/engine/tests/support/mod.rs`'s `e2e_fixture` constants.
 - **Faucet**: https://stagenet-faucet.xmr-tw.org/ - funded the spender wallet
   below.
 - **`wallets/<name>.json`**: one file per wallet, holding *everything* about
@@ -149,7 +149,7 @@ embedded widget, start the server and demo shop separately:
 
 ```bash
 # from e2e/, in one terminal:
-../target/debug/scanner moneropay-stagenet.toml
+../target/debug/monokulo-engine moneropay-stagenet.toml
 # prints a pk_... on first boot - note it
 
 # in another terminal:

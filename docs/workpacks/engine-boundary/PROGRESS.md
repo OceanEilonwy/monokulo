@@ -35,7 +35,7 @@ Commit SHAs: each step's commit records its own SHA in the *next* PROGRESS updat
 
 ## Known issues
 
-- Pre-existing flake (not from this work): `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` can fail when another test sets `SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED` concurrently (`crates/scanner/src/http/tests.rs:1363`). Seen once; passes on rerun.
+- Pre-existing flake (not from this work): `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` can fail when another test sets `ENGINE_PAYMENT_CONFIRMATIONS_REQUIRED` concurrently (`crates/engine/src/http/tests.rs:1363`). Seen once; passes on rerun.
 - POS-owned clippy warning (`match_single_binding`) at `crates/monokulo/src/http/pos.rs:344`, from the POS redesign; not touched per the shared-worktree rule.
 - `wp-env start` can't mount this plugin (its directory is named `woocommerce`, colliding with WooCommerce); decision 13 describes the workaround used.
 
@@ -43,7 +43,7 @@ Commit SHAs: each step's commit records its own SHA in the *next* PROGRESS updat
 
 After step 10 (final):
 - `cargo test --workspace`: 890 passed, 0 failed, 19 ignored.
-- Stagenet/e2e targets compile: `cargo test -p scanner --features e2e --no-run`, `cargo test -p mock-woocommerce --no-run`.
+- Stagenet/e2e targets compile: `cargo test -p engine --features e2e --no-run`, `cargo test -p mock-woocommerce --no-run`.
 - Real Tor test (`cargo test -p monokulo --test e2e_tor -- --ignored`): passed once in 315.9 s (step 9g).
 - clippy: per-file warning counts unchanged from baseline in every file this work pack touched; one new warning in POS-owned `http/pos.rs:344` (not ours).
 - Playwright surface: 23 passed.
@@ -57,19 +57,19 @@ Baseline (before step 1), at `e4d83da`:
 ## Notes per step
 
 ### Step 1: engine private by default
-- `crates/scanner/src/settings.rs`: `SERVER_BIND` default is now `127.0.0.1:8443`. New `is_private_bind_address(IpAddr)` (loopback, RFC 1918, `fc00::/7`, link-local; unspecified and public are not private). Unit tests: `the_default_bind_address_is_loopback_only`, `bind_addresses_are_classified_as_private_or_public`.
-- `crates/scanner/src/main.rs`: after binding, prints a `WARNING` to stderr if the listener's local address is not private.
-- `crates/scanner/src/http/instance_admin.rs`: example in the `server.bind` validation error now says `127.0.0.1:8443`.
+- `crates/engine/src/settings.rs`: `SERVER_BIND` default is now `127.0.0.1:8443`. New `is_private_bind_address(IpAddr)` (loopback, RFC 1918, `fc00::/7`, link-local; unspecified and public are not private). Unit tests: `the_default_bind_address_is_loopback_only`, `bind_addresses_are_classified_as_private_or_public`.
+- `crates/engine/src/main.rs`: after binding, prints a `WARNING` to stderr if the listener's local address is not private.
+- `crates/engine/src/http/instance_admin.rs`: example in the `server.bind` validation error now says `127.0.0.1:8443`.
 - `deploy/sev-snp/moneropay-engine.service` sets no bind (keeps the default); `scripts/dev-run.sh` already pins `127.0.0.1:8080`. `deploy/sev-snp/README.md` and `docs/DESIGN.md` §4 and §13 now say the engine is private.
 - Verified: unit tests above; workspace tests green. Weakness: the warning is only a log line (decision 1).
 
 ### Step 2: monokulo off the engine's public routes
-- Engine: new `POST /api/v1/admin/tenant/orders/{order_id}/refund-address` (`admin::set_order_refund_address` in `crates/scanner/src/http/admin.rs`, routed in `http/mod.rs`'s admin group). Tenant from `sk_`, stores verbatim like the public route did (the public route had no validation; monokulo's checkout validates the address network before calling). Test: `the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secret_key` (no key 401, other tenant 404, owner 200 and value visible in the order detail).
+- Engine: new `POST /api/v1/admin/tenant/orders/{order_id}/refund-address` (`admin::set_order_refund_address` in `crates/engine/src/http/admin.rs`, routed in `http/mod.rs`'s admin group). Tenant from `sk_`, stores verbatim like the public route did (the public route had no validation; monokulo's checkout validates the address network before calling). Test: `the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secret_key` (no key 401, other tenant 404, owner 200 and value visible in the order detail).
 - Monokulo: `EngineClient::set_refund_address(sk, order_id, addr)` uses the admin route; `checkout::set_refund_address` passes the decrypted `sk`. Stale doc comments at the top of `http/checkout.rs` and on the handler fixed.
 - Monokulo tests' `seed_real_order` helpers (`http/home.rs`, `http/orders.rs`) now seed through the engine's admin API with the decrypted `sk_` (they take `&AppState`; the tests clone `state` before `build_router`).
 - Guard: `engine_client::tests::every_engine_call_uses_the_admin_api_or_status` scans `engine_client.rs`'s own source: every `format!("{}/...` URL must start with `/api/v1/admin/` or be `/status`, and the string `/api/v1/t/` must not appear.
 - `docs/DESIGN.md` §10.2 lists the new route.
-- Not yet moved (later steps): `scanner-test-support`, the stagenet tests and `mock-woocommerce` tests still call `/api/v1/t/...` (steps 6 and 8).
+- Not yet moved (later steps): `engine-test-support`, the stagenet tests and `mock-woocommerce` tests still call `/api/v1/t/...` (steps 6 and 8).
 
 ### Step 3: monokulo no longer touches the engine's allowed origins
 - `crates/monokulo/src/http/connections.rs`: `CreateConnectionRequest.allowed_origins` renamed `domains` (optional; `allowed_origins` accepted as alias, decision 2). `create_connection_for_user` always sends `allowed_origins: []` to the engine (decision 4) and puts `domains` into `store_domains` via the new `embed_domains::suggest_domain` (bare domain or URL).
@@ -99,8 +99,8 @@ PHP half (committed first):
 - `plugins/woocommerce/monokulo.php`: `admin_notices` hook for the reconnect notice.
 - Tests: `ProcessPaymentTest.php` (new request shape and header, redirect, 401/403/429 messages, amount formatting, old-install reconnect + notice, never-connected), `ConnectFlowTest.php` (`connection_version` saved, 503 notice), `LiveEngineIntegrationTest.php` renamed `LiveMonokuloIntegrationTest.php` (`@group live-monokulo`, config `tests/live-monokulo.local.json`, checks monokulo's status route and checkout page); `phpunit.xml.dist` and `.gitignore` follow the rename.
 Rust half:
-- `crates/scanner/src/scanner.rs`: `recompute_and_notify` is now `pub` (documented) so test support can settle an order like a scan does.
-- `crates/scanner-test-support/src/lib.rs`: `TestEngineHandle::mark_order_paid(order_id)` records a synthetic confirmed full payment and runs `recompute_and_notify`, queueing `order.paid`.
+- `crates/engine/src/scanner.rs`: `recompute_and_notify` is now `pub` (documented) so test support can settle an order like a scan does.
+- `crates/engine-test-support/src/lib.rs`: `TestEngineHandle::mark_order_paid(order_id)` records a synthetic confirmed full payment and runs `recompute_and_notify`, queueing `order.paid`.
 - `crates/mock-woocommerce/src/lib.rs`: `create_order` takes the secret key and sends `Authorization: Bearer`; `CreatedOrder` carries `address` and `xmr_amount_piconero` from monokulo's response. New default-run test `a_full_woocommerce_checkout_is_created_with_the_key_opened_and_paid`: connect (endpoint = monokulo), keyed order, wrong key 401, checkout page shows the address, `mark_order_paid`, signed `order.paid` webhook delivered by the engine's background delivery loop and verified, monokulo's `/status` says paid.
 - Stagenet tests (`crates/mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`, `e2e_stagenet_confirmation_threshold.rs`) now create orders with the key and read status from monokulo's `/pay/{pk}/orders/{id}/status`, and take address/amount from monokulo's create response. Compile-checked only (need stagenet).
 - Acceptance ("a WooCommerce checkout reaches a payment page and gets paid, end to end, in a test that runs by default"): the new mock-woocommerce test. The PHP plugin itself is covered by its mocked unit tests; nothing runs real PHP against a real monokulo by default (the live PHP test is opt-in).
@@ -112,11 +112,11 @@ Rust half:
 - Weakness: the rule trusts the browser's `Sec-Fetch-Dest` and lets header-less requests through (by design, per the plan); old orders from before migration 0021 count as keyed (decision 7).
 
 ### Step 8: engine public surface removed
-- `crates/scanner/src/http/mod.rs`: router has an unauthenticated group (tenant creation, `/status`), the `sk_` admin group and the instance-settings group; no `/api/v1/t/...` routes, no CORS layer, no `public_orders_route_pk`. `AppState::rate_limiter` removed.
-- `crates/scanner/src/http/public.rs` renamed `orders.rs`: only `create_order_for_admin` and its request/response types remain.
-- `crates/scanner/src/http/rate_limit.rs`: only the admin (per-token, address fallback) middleware (decision 17). `server.rate_limit_per_ip_per_min` removed from `settings.rs`, `instance_admin.rs`, `main.rs`.
-- `allowed_origins` gone from `Tenant`/`NewTenant`/`TenantConfigPatch`/SQL (`store.rs`), admin create/patch/view (`admin.rs`), `local_admin.rs`, `cli.rs` (flag removed), `main.rs --show-tenant`; migration `crates/scanner/migrations/0014_drop_tenant_allowed_origins.sql` + test `migration_0014_drops_the_tenant_allowed_origins_column_and_keeps_the_tenant` (decision 18).
-- Monokulo `EngineClient::CreateTenantRequest` has no `allowed_origins`. `scanner-test-support`, `e2e_harness`, `crates/scanner/tests/e2e_stagenet.rs` (+ `tests/support/mod.rs`), `scripts/dev-run.sh`, `e2e/moneropay-stagenet.toml`, `tower-http` `cors` feature dropped from the scanner crate.
+- `crates/engine/src/http/mod.rs`: router has an unauthenticated group (tenant creation, `/status`), the `sk_` admin group and the instance-settings group; no `/api/v1/t/...` routes, no CORS layer, no `public_orders_route_pk`. `AppState::rate_limiter` removed.
+- `crates/engine/src/http/public.rs` renamed `orders.rs`: only `create_order_for_admin` and its request/response types remain.
+- `crates/engine/src/http/rate_limit.rs`: only the admin (per-token, address fallback) middleware (decision 17). `server.rate_limit_per_ip_per_min` removed from `settings.rs`, `instance_admin.rs`, `main.rs`.
+- `allowed_origins` gone from `Tenant`/`NewTenant`/`TenantConfigPatch`/SQL (`store.rs`), admin create/patch/view (`admin.rs`), `local_admin.rs`, `cli.rs` (flag removed), `main.rs --show-tenant`; migration `crates/engine/migrations/0014_drop_tenant_allowed_origins.sql` + test `migration_0014_drops_the_tenant_allowed_origins_column_and_keeps_the_tenant` (decision 18).
+- Monokulo `EngineClient::CreateTenantRequest` has no `allowed_origins`. `engine-test-support`, `e2e_harness`, `crates/engine/tests/e2e_stagenet.rs` (+ `tests/support/mod.rs`), `scripts/dev-run.sh`, `e2e/moneropay-stagenet.toml`, `tower-http` `cors` feature dropped from the scanner crate.
 - Tests: engine HTTP tests now create/read orders through the admin API; new `the_engine_serves_no_public_order_routes_and_no_cors` and `unauthenticated_routes_are_limited_per_address_by_the_admin_limiter`; removed public-only tests (public confirmation override, disallowed origin, two CORS tests). Monokulo's scanner-settings admin test no longer lists the removed setting and now counts against `ALL_SCALAR`.
 - Docs: `docs/DESIGN.md` (§5 table, §8 schema note, §10.1, §10.2 table, §10.3 "No public API", §10.4 note, §12 rewritten, §13 `[ddos]`, §14 wording), `docs/TESTING.md` (rows for the engine's absent public surface, monokulo's engine-call guard, the per-token limiter, and the §11 origin row now pointing at monokulo's embed policy).
 - Shared instance token: not added (decision 16).

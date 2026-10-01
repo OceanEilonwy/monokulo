@@ -194,7 +194,7 @@ against the engine's current public API.
     `compute_xmr_amount`
   - what: `AppState.exchange_rate: Arc<dyn ExchangeRateProvider>` is
     removed entirely — every construction site (`main.rs`,
-    `scanner-test-support`, `src/http/tests.rs`, both e2e tests) loses this
+    `engine-test-support`, `src/http/tests.rs`, both e2e tests) loses this
     field, same mechanical-but-wide blast radius the rate-limiter field
     addition had this session, just in reverse
   - test: existing `create_order`-family tests in `src/http/tests.rs`

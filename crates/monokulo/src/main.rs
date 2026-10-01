@@ -41,7 +41,7 @@ async fn main() {
     // to run a test instance on a temporary database and a free port).
     let db_path = std::env::var("MONOKULO_DB_PATH").unwrap_or_else(|_| "monokulo.db".to_string());
     let bind = std::env::var("MONOKULO_BIND").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
-    // The engine's address and admin token: boot-only too, and shown locked
+    // The engine's address and the engine token: boot-only too, and shown locked
     // on the admin page. The engine answers nothing without the token, so
     // monokulo doesn't start without it.
     let engine_env = match settings::EngineEnv::from_env(&live_settings::Env::process()) {

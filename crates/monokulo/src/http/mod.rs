@@ -1,6 +1,6 @@
 //! The monokulo's HTTP API surface.
 //!
-//! Mirrors the engine's own `scanner::http` module (see its doc
+//! Mirrors the engine's own `engine::http` module (see its doc
 //! comment) in shape, not content: a `Clone`-able `AppState` carrying
 //! shared, lock-guarded storage, and a `build_router(state) -> Router`
 //! function so any caller — the real binary in `src/main.rs`, or this
@@ -8,7 +8,7 @@
 //! through `tower::ServiceExt::oneshot` with no bound socket, the same
 //! pattern as the engine's `src/http/tests.rs`; that's the right pattern
 //! here specifically because these tests only ever need to exercise the
-//! monokulo's own router in-process, unlike `scanner-test-support`,
+//! monokulo's own router in-process, unlike `engine-test-support`,
 //! which exists because *other* crates need a real socket to reach a
 //! separately-deployed *engine* instance.
 //!

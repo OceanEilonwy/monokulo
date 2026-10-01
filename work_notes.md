@@ -433,7 +433,7 @@ Key architectural facts an agent should not have to rediscover:
   Agreed: `from` and `earliest_allowed` were both bare `i64`, so a
   day-granular value and a precise instant could be compared with a plain
   `<` that compiled regardless of which side actually meant what - exactly
-  why the mismatch shipped silently. Added `UtcDate` (`crates/scanner/src/
+  why the mismatch shipped silently. Added `UtcDate` (`crates/engine/src/
   http/admin.rs`) as a small newtype wrapping a UTC-midnight unix timestamp,
   with no `PartialOrd<i64>` impl - pulling it back into instant-space for a
   comparison now requires an explicit `.unix()` call, so a future edit
@@ -465,7 +465,7 @@ Key architectural facts an agent should not have to rediscover:
   height) didn't regress from the UTC-labeling work, and (2) give every
   date/datetime column in both databases an explicit `_utc` suffix, with
   comparisons done in UTC.
-  - **The rename** (`crates/scanner/migrations/0009_utc_suffix_date_columns.sql`,
+  - **The rename** (`crates/engine/migrations/0009_utc_suffix_date_columns.sql`,
     `crates/monokulo/migrations/0010_utc_suffix_date_columns.sql`, plus every
     SQL string/`row.get` call in `store.rs`/`db.rs` that referenced the old
     names): storage-layer only. Every value was already a unix-second
@@ -490,7 +490,7 @@ Key architectural facts an agent should not have to rediscover:
     code alone. Flagged to the user before fixing it, since it changes a
     previously-decided validation boundary ("WBS 2.1 decision 4") - approved,
     with a request for real test coverage.
-  - **The fix** (`crates/scanner/src/http/admin.rs::resolve_rescan_window`):
+  - **The fix** (`crates/engine/src/http/admin.rs::resolve_rescan_window`):
     floors the earliest-allowed ceiling to its own UTC day start
     (`utc_day_start`, plain `ts.div_euclid(86_400) * 86_400` - no
     civil-calendar math needed for a day *boundary*, unlike rendering a
@@ -512,7 +512,7 @@ Key architectural facts an agent should not have to rediscover:
     engine's own gap-prevention guardrail (Phase 5.2) - not a synthetic
     `i64` built directly against the engine's test layer the way the
     existing 4 guardrail tests do. Writing that third test surfaced a
-    second, smaller gap: `scanner_test_support::TestEngineConfig` never
+    second, smaller gap: `engine_test_support::TestEngineConfig` never
     wired a real daemon into the spawned engine's `AppState::daemons` (an
     explicit, previously-correct design decision - nothing needed it before
     now), so `admin::trigger_rescan` always failed with an unconditional
@@ -548,9 +548,9 @@ Key architectural facts an agent should not have to rediscover:
     pure virtual workspace (`[workspace]` only, `resolver = "2"` set
     explicitly since a virtual manifest doesn't infer it the way an
     edition-2021 package manifest does) listing all 8 `crates/*` members.
-    The former root package became `crates/scanner/`.
+    The former root package became `crates/engine/`.
   - **`moneropay-core` -> `scanner`, `control-plane` -> `monokulo`,
-    `engine-test-support` -> `scanner-test-support`**: package names, every
+    `engine-test-support` -> `engine-test-support`**: package names, every
     consuming crate's path dependency, every `use moneropay_core::`/
     `use control_plane::`/`use engine_test_support::` across the whole
     tree, every hyphenated string literal that named the crate (CLI help

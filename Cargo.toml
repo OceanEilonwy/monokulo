@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/scanner",
+    "crates/engine",
     "crates/shared",
     "crates/live-settings",
     "crates/telemetry",
     "crates/monokulo",
     "crates/mock-woocommerce",
-    "crates/scanner-test-support",
+    "crates/engine-test-support",
     "crates/cli-wallet",
     "crates/key-custody-service",
     "crates/key-custody-server",

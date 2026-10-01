@@ -9,7 +9,7 @@
 //! cached-decoys wallet `tests/e2e_stagenet.rs` at the repo root already
 //! proves, reused here as a library dependency, not reimplemented), drives a
 //! real chain scan against the real node
-//! (`scanner_test_support::TestEngineHandle::run_scan_tick_now` - see its own
+//! (`engine_test_support::TestEngineHandle::run_scan_tick_now` - see its own
 //! doc comment for why this test drives scanning itself rather than through
 //! `with_background_loops`'s automatic interval), and asserts the mock's real
 //! webhook receiver got a real, correctly-signed delivery for it.
@@ -62,17 +62,17 @@ use std::time::Duration;
 use monero::Network;
 use serde_json::Value;
 
-use scanner::daemon::MoneroDaemonClient;
-use scanner::daemon_rpc::RpcDaemonClient;
+use engine::daemon::MoneroDaemonClient;
+use engine::daemon_rpc::RpcDaemonClient;
 
 use mock_woocommerce::{create_order, run_connect_flow_with_wallet, ConnectFlowWallet};
 
 /// The real end-to-end test's fixed stagenet node - the same values
-/// `crates/scanner/tests/support/mod.rs::e2e_fixture` uses (duplicated rather
+/// `crates/engine/tests/support/mod.rs::e2e_fixture` uses (duplicated rather
 /// than shared cross-crate for a handful of literals only ever read by two
 /// `#[ignore]`d, manually-run tests). Replaces what used to be
 /// `e2e/moneropay-stagenet.toml`, parsed via the now-removed
-/// `scanner::config::Config` - see that module's own doc comment for why a
+/// `engine::config::Config` - see that module's own doc comment for why a
 /// config file's not needed here any more.
 mod node_fixture {
     pub const HOST: &str = "node.monerodevs.org";
@@ -301,7 +301,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // actually behind this test's reliable, node-independent, multi-minute-plus
     // stalls on its first `run_scan_tick_now` call - not a bad node, not a mutex
     // deadlock. See `TestEngineConfig::without_background_scan_loop`'s doc comment.
-    let engine = scanner_test_support::TestEngineConfig::new()
+    let engine = engine_test_support::TestEngineConfig::new()
         .with_networks(&[Network::Stagenet])
         .with_background_loops()
         .without_background_scan_loop()

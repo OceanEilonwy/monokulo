@@ -5,12 +5,12 @@
 # Put the two secrets in a .env file beside this one (never commit it):
 #
 #   MONOKULO_ENCRYPTION_KEY=<openssl rand -hex 32>   # encrypts monokulo's data at rest; keep it
-#   SCANNER_ADMIN_TOKEN=<openssl rand -hex 32>       # the engine admin token
+#   ENGINE_TOKEN=<openssl rand -hex 32>              # the engine token
 #
-# The engine admin token is required: the engine answers no request without
+# The engine token is required: the engine answers no request without
 # it, and neither container starts without it (at least 32 characters). The
-# engine gets it as SCANNER_ADMIN_TOKEN and monokulo, which sends it with every
-# request to the engine, as MONOKULO_SCANNER_ADMIN_TOKEN. Monokulo's engine
+# engine gets it as ENGINE_TOKEN and monokulo, which sends it with every
+# request to the engine, as MONOKULO_ENGINE_TOKEN. Monokulo's engine
 # address and token come only from here: its admin page shows them locked. To
 # change the token, edit .env and recreate both containers.
 #
@@ -21,9 +21,9 @@ services:
   engine:
     build: .
     image: monokulo
-    command: ["scanner"]
+    command: ["monokulo-engine"]
     environment:
-      SCANNER_ADMIN_TOKEN: ${SCANNER_ADMIN_TOKEN:?set SCANNER_ADMIN_TOKEN in .env}
+      ENGINE_TOKEN: ${ENGINE_TOKEN:?set ENGINE_TOKEN in .env}
     volumes:
       - engine-data:/var/lib/monokulo
     restart: unless-stopped
@@ -34,7 +34,7 @@ services:
     environment:
       MONOKULO_ENCRYPTION_KEY: ${MONOKULO_ENCRYPTION_KEY:?set MONOKULO_ENCRYPTION_KEY in .env}
       MONOKULO_ENGINE_URL: http://engine:8443
-      MONOKULO_SCANNER_ADMIN_TOKEN: ${SCANNER_ADMIN_TOKEN:?set SCANNER_ADMIN_TOKEN in .env}
+      MONOKULO_ENGINE_TOKEN: ${ENGINE_TOKEN:?set ENGINE_TOKEN in .env}
     ports:
       - "8081:8081"
     volumes:

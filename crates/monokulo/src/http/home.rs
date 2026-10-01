@@ -187,7 +187,7 @@ pub async fn dashboard_home(
 }
 
 /// 1 XMR = 10^12 piconero (the same fixed-point convention every other
-/// piconero value in this codebase uses - see `scanner::status`'s own
+/// piconero value in this codebase uses - see `engine::status`'s own
 /// doc comments at the repo root). Formats with the full 12 fractional
 /// digits, trailing zeros trimmed, so a whole-XMR total reads as `"1"` not
 /// `"1.000000000000"`, while still showing genuine sub-piconero-rounded
@@ -241,9 +241,9 @@ mod tests {
             "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
         const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
-        async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle)
+        async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle)
         {
-            let engine = scanner_test_support::TestEngineConfig::new()
+            let engine = engine_test_support::TestEngineConfig::new()
                 .with_networks(&[monero::Network::Mainnet])
                 .spawn()
                 .await;
@@ -315,7 +315,7 @@ mod tests {
                 .unwrap()
                 .expect("connection exists");
             let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
-            let response = scanner_test_support::engine_http_client()
+            let response = engine_test_support::engine_http_client()
                 .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
                 .bearer_auth(sk.expose())
                 .json(

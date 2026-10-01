@@ -24,10 +24,10 @@ Your work will be reviewed independently, step by step, against this document. C
   - Never use bare `git stash` / `git stash pop`. The stash stack is shared with other sessions.
 - **Shell:** fish is the login shell. Use `bash -c` if you need bash syntax, or write plain commands.
 - **Crates:**
-  - `crates/scanner` is **the engine** (binary `moneropay-core`, a.k.a. "scanner"/"engine").
+  - `crates/engine` is **the engine** (binary `moneropay-core`, a.k.a. "scanner"/"engine").
   - `crates/monokulo` is the public web app (dashboard, checkout, POS, embed library).
   - `crates/shared` holds shared code (rate limiter, migrations runner, money formatting).
-  - `crates/scanner-test-support` spawns a real engine for tests.
+  - `crates/engine-test-support` spawns a real engine for tests.
   - `crates/mock-woocommerce` contains e2e tests driving the WooCommerce connect flow.
   - `plugins/woocommerce` is the PHP WooCommerce gateway plugin.
   - `e2e/pos-playwright` holds the Playwright tests. `surface.spec.js` is the fast mocked suite; `pos.spec.js` needs stagenet funds and must not be run.
@@ -90,10 +90,10 @@ Recent commits (read them for context; `git show --stat <sha>`):
 
 Facts established during planning (verify each as you go; line numbers may have drifted):
 
-- **The engine listens publicly by default:** `crates/scanner/src/settings.rs`, `SERVER_BIND` default `"0.0.0.0:8443"`. `scripts/dev-run.sh` pins it to `127.0.0.1:8080`. Also check `deploy/sev-snp/*.service` and its README.
+- **The engine listens publicly by default:** `crates/engine/src/settings.rs`, `SERVER_BIND` default `"0.0.0.0:8443"`. `scripts/dev-run.sh` pins it to `127.0.0.1:8080`. Also check `deploy/sev-snp/*.service` and its README.
 - **Unauthenticated engine routes:**
   - `POST /api/v1/admin/tenants` (tenant creation; "none (DDoS layer only)" per `docs/DESIGN.md`).
-  - Public order routes: `POST /api/v1/t/{pk}/orders`, `GET /api/v1/t/{pk}/orders/{order_id}` and `POST /api/v1/t/{pk}/orders/{order_id}/refund-address`. The engine applies CORS and an `allowed_origins` check to these (`crates/scanner/src/http/mod.rs` `build_cors_layer`, `crates/scanner/src/http/public.rs` `resolve_public_tenant`).
+  - Public order routes: `POST /api/v1/t/{pk}/orders`, `GET /api/v1/t/{pk}/orders/{order_id}` and `POST /api/v1/t/{pk}/orders/{order_id}/refund-address`. The engine applies CORS and an `allowed_origins` check to these (`crates/engine/src/http/mod.rs` `build_cors_layer`, `crates/engine/src/http/public.rs` `resolve_public_tenant`).
 - **Monokulo still calls an engine public route:** `EngineClient::set_refund_address` posts to `/api/v1/t/{pk}/orders/{order_id}/refund-address` (`crates/monokulo/src/engine_client.rs`). The doc comment at the top of `crates/monokulo/src/http/checkout.rs` wrongly says it reads the public status API.
 - **Monokulo still touches the engine's allowed origins:**
   - `connections::create_connection_for_user` forwards `allowed_origins` (the JSON `/connections` field) to `create_tenant`.
@@ -112,7 +112,7 @@ Facts established during planning (verify each as you go; line numbers may have 
   - `shared::rate_limit::RateLimiter<IpAddr>`, 20/min per IP by default (`RATE_LIMIT_PER_IP_PER_MIN`), layered on the whole `/pay/...` sub-router in `http/mod.rs`.
   - Peer IP comes from `ConnectInfo`, failing open when absent (tests).
   - Monokulo binds `127.0.0.1:8081` (hard-coded in `crates/monokulo/src/main.rs`).
-- **Several places construct monokulo's `AppState` directly:** the `http/*.rs` test modules, `crates/mock-woocommerce/src/lib.rs`, `crates/mock-woocommerce/tests/*.rs` and `crates/scanner/src/bin/e2e_harness.rs`. When you add fields, update all of them. `cargo test --workspace` catches it; `-p monokulo` alone does not.
+- **Several places construct monokulo's `AppState` directly:** the `http/*.rs` test modules, `crates/mock-woocommerce/src/lib.rs`, `crates/mock-woocommerce/tests/*.rs` and `crates/engine/src/bin/e2e_harness.rs`. When you add fields, update all of them. `cargo test --workspace` catches it; `-p monokulo` alone does not.
 - **Toolchain:** `tor` 0.4.9.12 is installed at `/usr/bin/tor`, built with the proof-of-work module (`tor --list-modules` shows `pow: yes`). `php` 8.5 and `composer` are installed, and so is `docker`.
 
 ---
@@ -205,7 +205,7 @@ Facts established during planning (verify each as you go; line numbers may have 
 
 ### Step 8: Remove the engine's public surface
 - Delete the engine's `/api/v1/t/{pk}/...` routes and handlers, its CORS layer, its origin checks, and the rate limiter that only served public routes. Keep the admin limiter if it's still used.
-- Drop `allowed_origins` from tenant create, patch and view in the engine API. Add an engine migration dropping the column (follow the scanner's migration conventions in `crates/scanner/migrations`, including how columns are dropped in SQLite there). Update monokulo's `EngineClient` request/response types, `scanner-test-support`, `e2e_harness`, the stagenet configs and all tests.
+- Drop `allowed_origins` from tenant create, patch and view in the engine API. Add an engine migration dropping the column (follow the scanner's migration conventions in `crates/engine/migrations`, including how columns are dropped in SQLite there). Update monokulo's `EngineClient` request/response types, `engine-test-support`, `e2e_harness`, the stagenet configs and all tests.
 - `POST /api/v1/admin/tenants` stays unauthenticated at the application layer but is reachable only by monokulo now. Decide whether to add a shared instance token as defence in depth; if you add one, wire it through monokulo's existing scanner admin token setting. Record the decision.
 - Update `docs/DESIGN.md` (API tables, §12 origin enforcement, CORS mentions) and `docs/TESTING.md` rows that describe the removed public API and origin checks.
 - **Done when:** the engine's router has only admin, status and internal routes, and the whole workspace (including stagenet tests, compile-only) builds and passes.

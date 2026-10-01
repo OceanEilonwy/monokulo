@@ -4,7 +4,7 @@
 //! ```text
 //! level >= warn and store.id = 's_1'
 //! order.id = 'o_9' or message contains 'timeout'
-//! not (service = 'scanner') and has error
+//! not (service = 'engine') and has error
 //! 'payment'                         -- a quoted string alone: message contains it
 //! payment not seen                  -- words that don't parse: the same, for the whole text
 //! ```
@@ -825,7 +825,7 @@ mod tests {
             ("x != null", "x != null"),
             ("x <> -3", "x != -3"),
             ("'payment'", "'payment'"),
-            ("target like 'scanner::%'", "target like 'scanner::%'"),
+            ("target like 'engine::%'", "target like 'engine::%'"),
         ] {
             let expr = parse(input)
                 .unwrap_or_else(|e| panic!("{input}: {e}"))

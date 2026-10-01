@@ -162,7 +162,7 @@ impl WebhookReceiver {
 }
 
 impl Drop for WebhookReceiver {
-    /// Same reasoning as `scanner_test_support::TestEngineHandle`/[`CallbackServer`]:
+    /// Same reasoning as `engine_test_support::TestEngineHandle`/[`CallbackServer`]:
     /// a hard `abort()` is simple and sufficient - each test gets its own ephemeral
     /// port and task, and there is nothing worth gracefully draining.
     fn drop(&mut self) {
@@ -251,7 +251,7 @@ async fn webhook_handler(
 
 /// Binds this receiver's own real `127.0.0.1:0` socket and serves
 /// `POST /moneropay/webhook` in a background task - same low-level pattern
-/// [`spawn_callback_server`]/`scanner_test_support::TestEngineConfig::spawn` already
+/// [`spawn_callback_server`]/`engine_test_support::TestEngineConfig::spawn` already
 /// use. Its `signing_secret` isn't known yet at this point (the receiver's URL has
 /// to exist *before* `/finish` is called, since it's an input to that call, while
 /// the secret is part of that call's response) - [`webhook_handler`] simply rejects
@@ -470,7 +470,7 @@ pub async fn run_connect_flow_without_webhook(
 /// a builder-style config parameter here would be overkill for two independent
 /// optional knobs, so this just takes both directly, following the same "generalize
 /// rather than add a near-duplicate function" judgment
-/// `scanner_test_support::TestEngineConfig` already applied to a similar situation.
+/// `engine_test_support::TestEngineConfig` already applied to a similar situation.
 async fn run_connect_flow_with(
     monokulo_base_url: &str,
     order_expiry_seconds: Option<i64>,
@@ -846,7 +846,7 @@ async fn callback_handler(
 
 /// A running, real (network-bound) callback server, standing in for a real
 /// plugin's settings-page callback route - same low-level shape as
-/// `scanner_test_support::TestEngineHandle`, just serving one callback route
+/// `engine_test_support::TestEngineHandle`, just serving one callback route
 /// instead of a whole engine.
 struct CallbackServer {
     addr: SocketAddr,
@@ -872,7 +872,7 @@ impl CallbackServer {
 
 /// Binds a real `127.0.0.1:0` socket and serves the callback route in a
 /// background task - same low-level pattern
-/// `scanner_test_support::TestEngineConfig::spawn` already uses for the
+/// `engine_test_support::TestEngineConfig::spawn` already uses for the
 /// engine itself, just for one callback route rather than a whole app.
 /// `webhook` (WBS 1.4.4) is threaded straight into [`CallbackState`] - see
 /// that type's own doc comment.
@@ -921,10 +921,10 @@ mod tests {
 
     /// A running, real (network-bound) monokulo instance for this
     /// crate's own tests - no shared `monokulo-test-support` crate
-    /// exists yet (only `scanner-test-support`, for the engine), so this is a
+    /// exists yet (only `engine-test-support`, for the engine), so this is a
     /// small, private helper local to this crate, built directly on
     /// `monokulo::http::{AppState, build_router}` the same way
-    /// `scanner_test_support::TestEngineConfig::spawn` is built on the
+    /// `engine_test_support::TestEngineConfig::spawn` is built on the
     /// engine's own `AppState`/`build_router`. See this task's report for
     /// whether a shared crate is worth it yet.
     struct TestControlPlaneHandle {
@@ -998,8 +998,7 @@ mod tests {
     async fn run_connect_flow_against_a_real_engine_and_monokulo_yields_genuine_working_credentials(
     ) {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let monokulo = spawn_test_monokulo(engine.addr).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
@@ -1063,8 +1062,7 @@ mod tests {
     #[tokio::test]
     async fn the_flow_without_a_webhook_registers_none() {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let monokulo = spawn_test_monokulo(engine.addr).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
@@ -1105,8 +1103,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_against_a_real_engine_yields_a_working_checkout_redirect() {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let monokulo = spawn_test_monokulo(engine.addr).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
@@ -1161,8 +1158,7 @@ mod tests {
     #[tokio::test]
     async fn a_callback_with_a_mismatched_nonce_is_rejected_and_never_consumes_the_token() {
         let engine =
-            scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
-                .await;
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let monokulo = spawn_test_monokulo(engine.addr).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
@@ -1480,7 +1476,7 @@ mod tests {
     /// provisions the tenant with `order_expiry_seconds: 1` (confirmed against the
     /// real code, not assumed - see `docs/DESIGN.md` §7.6 and
     /// `src/scanner.rs::an_unpaid_order_past_its_deadline_becomes_expired_on_a_tick_that_matches_nothing`,
-    /// and `scanner_test_support::TestEngineConfig::with_background_loops`'s own doc
+    /// and `engine_test_support::TestEngineConfig::with_background_loops`'s own doc
     /// comment for why the recompute sweep that reaches `expired` needs neither a
     /// real payment nor a non-trivial `MoneroDaemonClient`). An order is then created
     /// against that tenant with no payment ever made; once more than a second of
@@ -1495,12 +1491,12 @@ mod tests {
     /// itself, or calls any scanner/delivery function by hand - every step is a real
     /// HTTP call (`run_connect_flow_with_order_expiry_seconds`, `create_order`) or a
     /// real background loop (`with_background_loops`) already proven to work on its
-    /// own in `scanner_test_support`'s own test suite. The only thing this test does
+    /// own in `engine_test_support`'s own test suite. The only thing this test does
     /// that production code doesn't is poll for the effect rather than wait
     /// indefinitely for it.
     #[tokio::test]
     async fn a_genuinely_forced_order_expired_webhook_is_delivered_and_verified() {
-        let engine = scanner_test_support::TestEngineConfig::new()
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .with_background_loops()
             .spawn()
@@ -1525,7 +1521,7 @@ mod tests {
         .expect("order creation should succeed against a real monokulo with a configured rate");
 
         // Poll rather than a fixed sleep: the background loops tick every ~150ms
-        // (`scanner_test_support::BACKGROUND_LOOP_INTERVAL`), and this only needs to
+        // (`engine_test_support::BACKGROUND_LOOP_INTERVAL`), and this only needs to
         // wait for the first tick after this order's 1-second `expires_at` has
         // actually passed and the delivery worker has had one more tick to send it.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
@@ -1586,7 +1582,7 @@ mod tests {
     /// webhook straight from the engine. Also checks a wrong key is refused.
     #[tokio::test]
     async fn a_full_woocommerce_checkout_is_created_with_the_key_opened_and_paid() {
-        let engine = scanner_test_support::TestEngineConfig::new()
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .with_background_loops()
             .without_background_scan_loop()

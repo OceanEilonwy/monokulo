@@ -503,10 +503,10 @@ pub struct AdminSettingsViewModel {
     pub monokulo_fields: Vec<AdminScalarFieldView>,
     /// `true` only after a real, successful fetch of the scanner's own
     /// settings.
-    pub scanner_reachable: bool,
-    pub scanner_error: Option<String>,
-    pub scanner_fields: Vec<AdminScalarFieldView>,
-    pub scanner_networks: Vec<AdminNetworkFieldView>,
+    pub engine_reachable: bool,
+    pub engine_error: Option<String>,
+    pub engine_fields: Vec<AdminScalarFieldView>,
+    pub engine_networks: Vec<AdminNetworkFieldView>,
     /// Networks stores use that no node answers for, as far as monokulo
     /// knows (the engine's `/status`): the Monero nodes tab is marked.
     pub unreachable_networks: Vec<String>,
@@ -889,7 +889,7 @@ pub fn banners(data: &AdminSettingsViewModel, oob: bool) -> Markup {
 
 /// The engine answered, so its settings are on hand.
 fn engine_available(data: &AdminSettingsViewModel) -> bool {
-    data.scanner_reachable
+    data.engine_reachable
 }
 
 /// Where the engine's settings would be, while it can't be reached
@@ -898,7 +898,7 @@ fn engine_unavailable(data: &AdminSettingsViewModel) -> Markup {
     html! {
         p class="error engine-unavailable" role="alert" {
             "Could not reach the configured engine: "
-            @if let Some(scanner_error) = &data.scanner_error { (scanner_error) }
+            @if let Some(engine_error) = &data.engine_error { (engine_error) }
         }
     }
 }
@@ -915,7 +915,7 @@ fn group_fields<'a>(
 ) -> Vec<&'a AdminScalarFieldView> {
     let fields = match owner {
         SettingOwner::Monokulo => &data.monokulo_fields,
-        SettingOwner::Engine => &data.scanner_fields,
+        SettingOwner::Engine => &data.engine_fields,
     };
     let mut own: Vec<&AdminScalarFieldView> = fields
         .iter()
@@ -949,7 +949,7 @@ fn needs_attention(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
     let unserved = tab == SettingsTab::Nodes
         && (!data.unreachable_networks.is_empty()
             || data
-                .scanner_networks
+                .engine_networks
                 .iter()
                 .any(|n| n.tenant_count > 0 && n.rows.is_empty()));
     let restart = tab.groups().iter().any(|(heading, owner)| {
@@ -1148,7 +1148,7 @@ fn node_fields(data: &AdminSettingsViewModel) -> Markup {
             "The Monero nodes the engine reads each network's chain from: a primary, and fallbacks tried when it fails. "
             "A network with no nodes isn't used. A node that doesn't answer is still saved; one on another network is refused."
         }
-        @for network in &data.scanner_networks { (network_block(network)) }
+        @for network in &data.engine_networks { (network_block(network)) }
     }
 }
 
@@ -1156,7 +1156,7 @@ fn node_fields(data: &AdminSettingsViewModel) -> Markup {
 /// engine's settings would be while it can't be reached, its message
 /// stands in, once.
 fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
-    let backends = custody_backends(&data.scanner_fields);
+    let backends = custody_backends(&data.engine_fields);
     let engine_down = !engine_available(data);
     let first_engine_group = tab
         .groups()
@@ -1178,7 +1178,7 @@ fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
                     @for field in fields.iter().filter(|f| custody_backend_of(f, &backends).is_none()) {
                         (scalar_field(field))
                     }
-                    @if tab == SettingsTab::Custody { (custody_backend_sections(&data.scanner_fields, &backends)) }
+                    @if tab == SettingsTab::Custody { (custody_backend_sections(&data.engine_fields, &backends)) }
                 }
             }
         }
@@ -1411,7 +1411,7 @@ mod tests {
             "every monokulo setting has a tab"
         );
 
-        let mut engine: Vec<&str> = scanner::engine_settings::ALL
+        let mut engine: Vec<&str> = engine::engine_settings::ALL
             .iter()
             .map(|s| s.key())
             .collect();
@@ -1602,9 +1602,9 @@ mod tests {
         AdminSettingsViewModel {
             tab,
             monokulo_fields: fields(SettingOwner::Monokulo),
-            scanner_reachable: true,
-            scanner_fields: fields(SettingOwner::Engine),
-            scanner_networks: ["mainnet", "stagenet", "testnet"]
+            engine_reachable: true,
+            engine_fields: fields(SettingOwner::Engine),
+            engine_networks: ["mainnet", "stagenet", "testnet"]
                 .into_iter()
                 .map(|network| AdminNetworkFieldView {
                     network: network.to_string(),
@@ -1769,7 +1769,7 @@ mod tests {
         let html = page(&full_view(SettingsTab::General));
         assert!(!html.contains("tab=other"), "{html}");
         let mut data = full_view(SettingsTab::Other);
-        data.scanner_fields
+        data.engine_fields
             .push(field_for("telemetry.sample_rate", SettingOwner::Engine));
         let html = page(&data);
         assert!(html.contains(&tab_link(SettingsTab::Other, true)), "{html}");
@@ -1824,13 +1824,13 @@ mod tests {
 
         // A network stores use with no node at all.
         let mut data = full_view(SettingsTab::General);
-        data.scanner_networks[1].rows.clear();
-        data.scanner_networks[1].tenant_count = 2;
+        data.engine_networks[1].rows.clear();
+        data.engine_networks[1].tenant_count = 2;
         assert!(marked(&page(&data), SettingsTab::Nodes));
 
         // A saved setting waiting for a restart, whichever process owns it.
         let mut data = full_view(SettingsTab::General);
-        data.scanner_fields
+        data.engine_fields
             .iter_mut()
             .find(|f| f.key == "server.worker_threads")
             .unwrap()
@@ -1855,9 +1855,9 @@ mod tests {
     #[test]
     fn every_tab_copes_with_an_engine_it_cannot_reach() {
         let unreachable = |tab| AdminSettingsViewModel {
-            scanner_reachable: false,
-            scanner_error: Some("connection refused".into()),
-            scanner_fields: vec![],
+            engine_reachable: false,
+            engine_error: Some("connection refused".into()),
+            engine_fields: vec![],
             ..full_view(tab)
         };
         for tab in SettingsTab::ALL
@@ -1935,8 +1935,8 @@ mod tests {
     #[test]
     fn a_network_is_closed_until_it_has_nodes_or_stores() {
         let mut data = full_view(SettingsTab::Nodes);
-        data.scanner_networks[0].tenant_count = 2;
-        data.scanner_networks[2].rows.clear();
+        data.engine_networks[0].tenant_count = 2;
+        data.engine_networks[2].rows.clear();
         let html = page(&data);
         assert!(
             html.contains(r#"<section class="node-network" data-network="mainnet" data-tenant-count="2" aria-labelledby="node-network-mainnet"><h3 id="node-network-mainnet">Mainnet</h3><p class="setting-source">Used by 2 stores.</p>"#),
@@ -1950,7 +1950,7 @@ mod tests {
         );
 
         // With stores but no node, it's open, so the admin sees the gap.
-        data.scanner_networks[2].tenant_count = 1;
+        data.engine_networks[2].tenant_count = 1;
         let html = page(&data);
         assert!(html.contains(r#"<h3 id="node-network-testnet">Testnet</h3><p class="setting-source">Used by 1 store.</p>"#), "{html}");
     }
@@ -1958,13 +1958,13 @@ mod tests {
     #[test]
     fn node_rows_are_named_in_order_with_their_buttons_and_a_blank_row_to_add_one() {
         let mut data = full_view(SettingsTab::Nodes);
-        data.scanner_networks[1].rows = vec![
+        data.engine_networks[1].rows = vec![
             node_row_view("a.example:1"),
             node_row_view("b.example:2"),
             node_row_view("c.example:3"),
         ];
-        data.scanner_networks[1].rows[1].row.ssl = true;
-        data.scanner_networks[1].rows[1].row.self_signed = false;
+        data.engine_networks[1].rows[1].row.ssl = true;
+        data.engine_networks[1].rows[1].row.self_signed = false;
         let html = page(&data);
         let block = &html[html.find(r#"data-network="stagenet""#).unwrap()
             ..html.find(r#"data-network="testnet""#).unwrap()];
@@ -2036,7 +2036,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        data.scanner_networks[1].rows = statuses
+        data.engine_networks[1].rows = statuses
             .iter()
             .enumerate()
             .map(|(i, status)| NodeRowView {
@@ -2044,7 +2044,7 @@ mod tests {
                 ..node_row_view(&format!("n{i}.example:1"))
             })
             .collect();
-        data.scanner_networks[1]
+        data.engine_networks[1]
             .rows
             .push(node_row_view("new.example:1"));
         let html = page(&data);
@@ -2072,10 +2072,10 @@ mod tests {
     #[test]
     fn what_is_wrong_shows_where_it_is() {
         let mut data = full_view(SettingsTab::Nodes);
-        data.scanner_networks[1].rows[0].row.address = "node.example.com".into();
-        data.scanner_networks[1].rows[0].row.error =
+        data.engine_networks[1].rows[0].row.address = "node.example.com".into();
+        data.engine_networks[1].rows[0].row.error =
             Some("Add the port, like node.example.com:18081.".into());
-        data.scanner_networks[2].error =
+        data.engine_networks[2].error =
             Some("node.example.com:18081 is on mainnet, not testnet.".into());
         let html = page(&data);
         assert!(
@@ -2102,8 +2102,8 @@ mod tests {
         let page = |enabled: &str| {
             let data = AdminSettingsViewModel {
                 tab: SettingsTab::Custody,
-                scanner_reachable: true,
-                scanner_fields: vec![
+                engine_reachable: true,
+                engine_fields: vec![
                     field(
                         "key_custody.default_backend",
                         "plain",
@@ -2276,8 +2276,8 @@ mod tests {
                 Notice::Info("Saved, but set by an environment variable.".into()),
             ],
             tab: SettingsTab::Server,
-            scanner_reachable: true,
-            scanner_fields: vec![AdminScalarFieldView {
+            engine_reachable: true,
+            engine_fields: vec![AdminScalarFieldView {
                 key: "server.worker_threads".into(),
                 label: "server worker threads".into(),
                 value: "4".into(),

@@ -74,7 +74,7 @@ a merchant-facing rescan action. Same `scalar_settings!` macro entry every
 other knob uses (`settings.rs:95-121`'s pattern), e.g.:
 
 ```rust
-PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB => { key: "payment.scan_chunk_memory_budget_mb", env: "SCANNER_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB", default: "8" },
+PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB => { key: "payment.scan_chunk_memory_budget_mb", env: "ENGINE_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB", default: "8" },
 ```
 
 Appearing in the admin settings page needs almost no monokulo UI code:
@@ -148,7 +148,7 @@ convenience).
   is already fully proven in this codebase.
 - `FallbackDaemonClient`: same per-node failover loop every other method
   already has (`daemon_fallback.rs`'s established pattern).
-- Every test double (`daemon.rs`'s `fake` module, `scanner-test-support`'s
+- Every test double (`daemon.rs`'s `fake` module, `engine-test-support`'s
   `FakeDaemonClient`, `NoopDaemonClient`) gets a real implementation - scripted
   from the same fixture data `locate_transaction`'s fake already tracks, so a
   test can script "this txid exists, here's its `Transaction`" directly.
@@ -365,7 +365,7 @@ is not part of what's being replaced here. Add
 - `views/dashboard.rs`: remove `DashboardRescanRow`,
   `DashboardViewModel.active_rescans`/`.active_rescans_count_label`, the
   syncing-banner template block, and its own test.
-- `scanner-test-support/src/lib.rs`: remove `TestEngineConfig.
+- `engine-test-support/src/lib.rs`: remove `TestEngineConfig.
   admin_rescan_daemon`/`with_admin_rescan_daemon`; the `spawn()` `AppState`
   literal's `rescan_daemons` field goes with `AppState` itself losing that
   field (C.6); `default_rescan_lookback_days`/`max_rescan_lookback_days`

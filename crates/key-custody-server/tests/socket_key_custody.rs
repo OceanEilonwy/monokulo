@@ -45,6 +45,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use engine::key_custody::{
+    KeyCustody, KeyCustodyError, Network, PlainKeyCustody, ScanInput, SubaddressIndex, TxMatches,
+    WalletHandle, WalletMaterial,
+};
 use key_custody_server::server::KeyCustodyServer;
 use key_custody_service::client::SocketKeyCustody;
 use key_custody_service::protocol::{
@@ -53,10 +57,6 @@ use key_custody_service::protocol::{
 use key_custody_service::WalletHandleWire;
 use monero::consensus::encode::deserialize;
 use monero::{PrivateKey, PublicKey, Transaction};
-use scanner::key_custody::{
-    KeyCustody, KeyCustodyError, Network, PlainKeyCustody, ScanInput, SubaddressIndex, TxMatches,
-    WalletHandle, WalletMaterial,
-};
 use tokio::net::{UnixListener, UnixStream};
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ fn random_scalar_bytes(seed: u8) -> [u8; 32] {
 
 fn fixture_tx() -> Transaction {
     let raw = hex::decode(include_str!(
-        "../../scanner/tests/fixtures/subaddress_tx.hex"
+        "../../engine/tests/fixtures/subaddress_tx.hex"
     ))
     .expect("fixture is valid hex");
     deserialize(&raw).expect("fixture is a valid monero transaction")
@@ -329,7 +329,7 @@ async fn a_pruned_transaction_scans_to_the_same_match_as_the_whole_one() {
 ///    `src/key_custody/mod.rs`, its own parent module, under Rust's privacy
 ///    rules. And `rebuild_count` itself is `#[cfg(test)]`-gated on
 ///    `WalletEntry`, so it isn't even *compiled into* `WalletEntry` when
-///    `scanner` is built as an ordinary path dependency the way this
+///    `engine` is built as an ordinary path dependency the way this
 ///    crate builds it - "same process" is necessary but nowhere near
 ///    sufficient for "same field access."
 ///
@@ -1141,7 +1141,7 @@ fn fixture_material() -> WalletMaterial {
 async fn an_index_set_scan_over_the_socket_finds_the_payment() {
     let ts = spawn_server_and_client("indices").await;
     let handle = ts.client.register_wallet(fixture_material()).await.unwrap();
-    let with_1 = scanner::key_custody::ScanIndices::new([1, 40, 900]);
+    let with_1 = engine::key_custody::ScanIndices::new([1, 40, 900]);
     assert_eq!(
         ts.client
             .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &with_1)
@@ -1150,7 +1150,7 @@ async fn an_index_set_scan_over_the_socket_finds_the_payment() {
             .len(),
         1
     );
-    let without = scanner::key_custody::ScanIndices::new([40, 900]);
+    let without = engine::key_custody::ScanIndices::new([40, 900]);
     assert!(ts
         .client
         .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &without)
@@ -1172,7 +1172,7 @@ fn unrelated_tx() -> Transaction {
 async fn a_batch_scanned_over_the_socket_says_which_of_its_transactions_pay() {
     let ts = spawn_server_and_client("batch").await;
     let handle = ts.client.register_wallet(fixture_material()).await.unwrap();
-    let window = scanner::key_custody::ScanIndices::new([1, 40]);
+    let window = engine::key_custody::ScanIndices::new([1, 40]);
     // Transactions with and without RingCT data, and with and without outputs.
     let batch = [
         ScanInput::of(&unrelated_tx()),
@@ -1235,7 +1235,7 @@ async fn a_match_for_a_transaction_that_was_not_in_the_batch_is_an_error_not_a_p
         }
     });
     let client = connect_with_retry(&socket_path).await;
-    let window = scanner::key_custody::ScanIndices::new([1]);
+    let window = engine::key_custody::ScanIndices::new([1]);
 
     let result = client
         .scan_txs_for_indices(
@@ -1258,7 +1258,7 @@ async fn a_batch_scan_fails_while_the_server_is_down_and_works_once_it_is_back()
     let server = ServerProcess::start(&socket_path);
     let client = connect_with_retry(&socket_path).await;
     let handle = client.register_wallet(fixture_material()).await.unwrap();
-    let window = scanner::key_custody::ScanIndices::new([1, 5]);
+    let window = engine::key_custody::ScanIndices::new([1, 5]);
     assert_eq!(
         client
             .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &window)
@@ -1350,7 +1350,7 @@ async fn concurrent_calls_use_several_connections_and_all_succeed() {
     let ts = spawn_server_and_client("pool").await;
     let client = Arc::new(ts.client);
     let handle = client.register_wallet(fixture_material()).await.unwrap();
-    let window = scanner::key_custody::ScanIndices::range(0..50);
+    let window = engine::key_custody::ScanIndices::range(0..50);
     let calls = (0..16).map(|_| {
         let client = client.clone();
         let window = window.clone();

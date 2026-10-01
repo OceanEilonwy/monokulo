@@ -22,7 +22,7 @@
 # engine's own real SQLite database (settings, tenant, everything - there
 # is no config file any more, see below), the monokulo's own real SQLite
 # database, and two locally-generated secrets (MONOKULO_ENCRYPTION_KEY and
-# the engine admin token). Nothing here is checked in, and
+# the engine token). Nothing here is checked in, and
 # nothing here is a real credential worth protecting beyond your own
 # machine - this is a local dev stack against a real *stagenet* wallet
 # (worthless XMR only), the same wallet e2e/moneropay-stagenet.toml
@@ -36,15 +36,15 @@
 # file. This script provisions the same dev-friendly values the old TOML
 # had (the same stagenet node, the same fast-iteration payment thresholds)
 # by POSTing them to that API right after the engine's first boot - see
-# ensure_engine_settings() below - and mints/reuses the engine admin token
-# (ENGINE_ADMIN_TOKEN_FILE), the same "generate once, persist, reuse"
+# ensure_engine_settings() below - and mints/reuses the engine token
+# (ENGINE_TOKEN_FILE), the same "generate once, persist, reuse"
 # treatment this script already gives MONOKULO_ENCRYPTION_KEY. The engine
 # answers no request without it (sent as X-Engine-Token), and neither
-# process starts without it: the engine gets it as SCANNER_ADMIN_TOKEN and
-# monokulo as MONOKULO_SCANNER_ADMIN_TOKEN.
+# process starts without it: the engine gets it as ENGINE_TOKEN and
+# monokulo as MONOKULO_ENGINE_TOKEN.
 #
 # ENGINE_URL is fixed at 127.0.0.1:8080 here, set on both sides: the engine's
-# SCANNER_SERVER_BIND and monokulo's MONOKULO_ENGINE_URL below. (Left to
+# ENGINE_SERVER_BIND and monokulo's MONOKULO_ENGINE_URL below. (Left to
 # their defaults, both sides agree on 127.0.0.1:8443 instead; both are
 # real, database-backed settings.) Pinning both keeps this script's pairing
 # correct out of the box without configuring anything in the browser.
@@ -61,11 +61,11 @@ RUN_DIR="$REPO_ROOT/.dev-run"
 ENGINE_DIR="$RUN_DIR/engine"
 CP_DIR="$RUN_DIR/monokulo"
 
-ENGINE_BIN="$REPO_ROOT/target/debug/scanner"
+ENGINE_BIN="$REPO_ROOT/target/debug/monokulo-engine"
 CP_BIN="$REPO_ROOT/target/debug/monokulo"
 
-ENGINE_DB="$ENGINE_DIR/scanner.db"
-ENGINE_ADMIN_TOKEN_FILE="$ENGINE_DIR/admin_token.txt"
+ENGINE_DB="$ENGINE_DIR/engine.db"
+ENGINE_TOKEN_FILE="$ENGINE_DIR/engine_token.txt"
 CP_KEY_FILE="$CP_DIR/encryption_key.txt"
 
 ENGINE_PID_FILE="$RUN_DIR/engine.pid"
@@ -79,7 +79,7 @@ CONTROL_PLANE_URL="http://127.0.0.1:8081"
 # The same real stagenet node + dev-friendly payment thresholds
 # e2e/moneropay-stagenet.toml used to provide via its own TOML sections -
 # see that file (still present, used by the real end-to-end tests) and
-# crates/scanner/tests/support/mod.rs's own e2e_fixture module, which
+# crates/engine/tests/support/mod.rs's own e2e_fixture module, which
 # extracted these exact same values into Rust constants for the same
 # reason (the TOML file is no longer parsed by the engine itself, only
 # read by humans/tests as a reference).
@@ -130,17 +130,17 @@ ensure_dirs() {
     mkdir -p "$ENGINE_DIR" "$CP_DIR"
 }
 
-ensure_engine_admin_token() {
-    if [[ -f "$ENGINE_ADMIN_TOKEN_FILE" ]]; then
+ensure_engine_token() {
+    if [[ -f "$ENGINE_TOKEN_FILE" ]]; then
         return
     fi
     if ! command -v openssl >/dev/null 2>&1; then
-        echo "error: openssl not found - needed once, to generate a dev engine admin token" >&2
+        echo "error: openssl not found - needed once, to generate a dev engine token" >&2
         exit 1
     fi
-    echo "==> generating a dev engine admin token (persisted at $ENGINE_ADMIN_TOKEN_FILE, reused on every future start)"
-    openssl rand -hex 32 > "$ENGINE_ADMIN_TOKEN_FILE"
-    chmod 600 "$ENGINE_ADMIN_TOKEN_FILE"
+    echo "==> generating a dev engine token (persisted at $ENGINE_TOKEN_FILE, reused on every future start)"
+    openssl rand -hex 32 > "$ENGINE_TOKEN_FILE"
+    chmod 600 "$ENGINE_TOKEN_FILE"
 }
 
 ensure_cp_key() {
@@ -157,8 +157,8 @@ ensure_cp_key() {
 }
 
 build() {
-    echo "==> building scanner and monokulo (debug)"
-    (cd "$REPO_ROOT" && cargo build -p scanner --bin scanner -p monokulo --bin monokulo)
+    echo "==> building the engine and monokulo (debug)"
+    (cd "$REPO_ROOT" && cargo build -p engine --bin monokulo-engine -p monokulo --bin monokulo)
 }
 
 # Provisions the same dev-friendly stagenet node + payment thresholds the
@@ -174,7 +174,7 @@ build() {
 # the process exists, not that it's finished binding yet.
 ensure_engine_settings() {
     local token url attempt
-    token="$(cat "$ENGINE_ADMIN_TOKEN_FILE")"
+    token="$(cat "$ENGINE_TOKEN_FILE")"
     url="$ENGINE_URL/api/v1/admin/settings"
     local body
     body=$(cat <<EOF
@@ -232,7 +232,7 @@ ensure_wallet_bootstrapped() {
     # The view key goes in on standard input (printf is a shell builtin, so
     # it never shows in the process list), never as an argument.
     if out=$(printf '%s' "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e" \
-        | SCANNER_DB_PATH="$ENGINE_DB" "$ENGINE_BIN" --bootstrap-wallet \
+        | ENGINE_DB_PATH="$ENGINE_DB" "$ENGINE_BIN" --bootstrap-wallet \
         --primary-address "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg" \
         --view-key-file - \
         --spend-pubkey "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335" \
@@ -254,15 +254,15 @@ start_engine() {
         echo "==> engine (pid $(cat "$ENGINE_PID_FILE")) is running an older build than $ENGINE_BIN - restarting it"
         stop_one "engine" "$ENGINE_PID_FILE"
     fi
-    ensure_engine_admin_token
+    ensure_engine_token
     if [[ ! -x "$ENGINE_BIN" ]]; then
         echo "error: $ENGINE_BIN not found - run without --no-build at least once" >&2
         exit 1
     fi
     echo "==> starting engine -> $ENGINE_LOG"
-    SCANNER_DB_PATH="$ENGINE_DB" \
-    SCANNER_SERVER_BIND="127.0.0.1:8080" \
-    SCANNER_ADMIN_TOKEN="$(cat "$ENGINE_ADMIN_TOKEN_FILE")" \
+    ENGINE_DB_PATH="$ENGINE_DB" \
+    ENGINE_SERVER_BIND="127.0.0.1:8080" \
+    ENGINE_TOKEN="$(cat "$ENGINE_TOKEN_FILE")" \
         nohup "$ENGINE_BIN" > "$ENGINE_LOG" 2>&1 &
     echo $! > "$ENGINE_PID_FILE"
     sleep 1
@@ -298,14 +298,14 @@ start_control_plane() {
     # across restarts) under .dev-run/monokulo/ rather than
     # wherever this script happened to be invoked from.
     #
-    # MONOKULO_SCANNER_ADMIN_TOKEN/MONOKULO_ENGINE_URL are how monokulo
+    # MONOKULO_ENGINE_TOKEN/MONOKULO_ENGINE_URL are how monokulo
     # reaches the engine, read once at start - see this script's own header
     # comment.
     (
         cd "$CP_DIR"
         MONOKULO_ENCRYPTION_KEY="$(cat "$CP_KEY_FILE")" \
         MONOKULO_ENGINE_URL="$ENGINE_URL" \
-        MONOKULO_SCANNER_ADMIN_TOKEN="$(cat "$ENGINE_ADMIN_TOKEN_FILE")" \
+        MONOKULO_ENGINE_TOKEN="$(cat "$ENGINE_TOKEN_FILE")" \
             nohup "$CP_BIN" > "$CP_LOG" 2>&1 &
         echo $! > "$CP_PID_FILE"
     )
@@ -366,7 +366,7 @@ case "$cmd" in
         echo "First time only: opening $CONTROL_PLANE_URL now redirects to its own"
         echo "first-run admin setup wizard - create the one admin account there."
         echo "You'll land on its admin settings page (/dashboard/admin/settings),"
-        echo "which already has the engine connection pre-wired - the scanner half"
+        echo "which already has the engine connection pre-wired - the engine half"
         echo "of it (/dashboard/admin/invites, /dashboard/admin/settings) should"
         echo "work immediately with no further setup."
         echo

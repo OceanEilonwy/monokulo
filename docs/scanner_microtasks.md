@@ -286,16 +286,16 @@ No SQLite call runs on a Tokio worker thread in production:
 
 | Path | What |
 | --- | --- |
-| `crates/scanner/src/work/mod.rs` | tiers, budget, progress floor, backoff, `run_round` |
-| `crates/scanner/src/work/chain.rs` | reorg detection and the reorg job |
-| `crates/scanner/src/work/blocks.rs` | block scanning, `ScannedBlock`, checkpoints |
-| `crates/scanner/src/work/mempool.rs` | mempool rotation and the fast path |
-| `crates/scanner/src/work/settlement.rs` | vanished payments, recompute |
-| `crates/scanner/src/work/upkeep.rs` | pruning, scanned ranges, void recheck |
-| `crates/scanner/src/work/tests.rs` | the scheduler's guarantees |
-| `crates/scanner/src/store/work.rs` | the durable state (migrations 0019, 0020) |
-| `crates/scanner/src/store/db.rs` | the database worker |
-| `crates/scanner/src/loops.rs` | the per-network round loop and fast mempool loop |
+| `crates/engine/src/work/mod.rs` | tiers, budget, progress floor, backoff, `run_round` |
+| `crates/engine/src/work/chain.rs` | reorg detection and the reorg job |
+| `crates/engine/src/work/blocks.rs` | block scanning, `ScannedBlock`, checkpoints |
+| `crates/engine/src/work/mempool.rs` | mempool rotation and the fast path |
+| `crates/engine/src/work/settlement.rs` | vanished payments, recompute |
+| `crates/engine/src/work/upkeep.rs` | pruning, scanned ranges, void recheck |
+| `crates/engine/src/work/tests.rs` | the scheduler's guarantees |
+| `crates/engine/src/store/work.rs` | the durable state (migrations 0019, 0020) |
+| `crates/engine/src/store/db.rs` | the database worker |
+| `crates/engine/src/loops.rs` | the per-network round loop and fast mempool loop |
 
 `scanner::run_scan_tick*` and `check_for_reorg_and_reconcile` remain as
 entry points that run a round, or the reorg job to completion, on a shared
@@ -332,7 +332,7 @@ A pool that can't be read is reported as unreadable, never as empty.
   sweep fails every statement of every scheduler operation and requires the
   database to be exactly as before each failure. The sweeps found a block
   tier spinning on a fork the chain tier hadn't opened yet.
-- **Coverage.** `cargo +nightly llvm-cov -p scanner --lib --branch` covers
+- **Coverage.** `cargo +nightly llvm-cov -p engine --lib --branch` covers
   every branch of `work/*`, `store/work.rs`, `store/db.rs` and `scanner.rs`,
   and llvm's per-line view has no unexecuted line in them. Test modules are
   left out of the report (`coverage_nightly`). A few error closures on lines

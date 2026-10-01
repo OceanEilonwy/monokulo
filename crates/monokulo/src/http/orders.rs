@@ -2160,8 +2160,8 @@ mod tests {
     const TEST_CURRENCY: &str = "XMR";
     const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
-    async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
-        let engine = scanner_test_support::TestEngineConfig::new()
+    async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .spawn()
             .await;
@@ -2178,8 +2178,8 @@ mod tests {
     /// caller that drives `admin::lookup_payment` through a genuine HTTP
     /// round trip, which reads that map unconditionally.
     async fn test_state_with_real_engine_and_admin_lookup_daemon(
-    ) -> (AppState, scanner_test_support::TestEngineHandle) {
-        let engine = scanner_test_support::TestEngineConfig::new()
+    ) -> (AppState, engine_test_support::TestEngineHandle) {
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .with_admin_lookup_daemon()
             .spawn()
@@ -2261,7 +2261,7 @@ mod tests {
             &row.tenant_secret_token_encrypted,
         )
         .unwrap();
-        let response = scanner_test_support::engine_http_client()
+        let response = engine_test_support::engine_http_client()
             .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
             .bearer_auth(sk)
             .json(&serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }))
@@ -2771,7 +2771,7 @@ mod tests {
 
     /// A state whose only rate provider is Haveno (never contacted by these
     /// tests - nothing here asks for a quote).
-    async fn haveno_state() -> (AppState, scanner_test_support::TestEngineHandle) {
+    async fn haveno_state() -> (AppState, engine_test_support::TestEngineHandle) {
         let (mut state, engine) = test_state_with_real_engine().await;
         state.exchange_rate = std::sync::Arc::new(
             crate::exchange_rate_config::ExchangeRateProviders::haveno_only("http://127.0.0.1:1"),
@@ -3366,7 +3366,7 @@ mod tests {
         let hook = format!("http://{}/hook", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let engine = scanner_test_support::TestEngineConfig::new()
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .with_background_loops()
             .without_background_scan_loop()
@@ -3901,8 +3901,8 @@ mod tests {
     /// status cache already holding its status (as it would after any page
     /// load), so forms know the choices.
     async fn test_state_with_two_custody_backends(
-    ) -> (AppState, scanner_test_support::TestEngineHandle) {
-        let engine = scanner_test_support::TestEngineConfig::new()
+    ) -> (AppState, engine_test_support::TestEngineHandle) {
+        let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .with_two_custody_backends()
             .spawn()
@@ -5585,7 +5585,7 @@ mod tests {
     /// exists, but the order's own amount never reaches it, so the store's
     /// plain default (fallback) confirmations_required - the real tenant
     /// value on the engine, 10 by the engine's own `create_tenant` default
-    /// (`scanner::store::Db::create_tenant`) - is what's actually applied.
+    /// (`engine::store::Db::create_tenant`) - is what's actually applied.
     #[tokio::test]
     async fn an_order_priced_below_every_custom_threshold_uses_the_stores_default_confirmations_required(
     ) {
@@ -6125,7 +6125,7 @@ mod tests {
         let order_page = response.headers()["location"].to_str().unwrap().to_string();
 
         let tx: monero::Transaction = monero::consensus::deserialize(
-            &hex::decode(include_str!("../../../scanner/tests/fixtures/subaddress_tx.hex").trim())
+            &hex::decode(include_str!("../../../engine/tests/fixtures/subaddress_tx.hex").trim())
                 .unwrap(),
         )
         .unwrap();

@@ -51,7 +51,7 @@ const MAX_SAVED: usize = 50;
 const ENGINE_POLL: Duration = Duration::from_secs(1);
 
 /// Most Live streams open at once. Each reads the engine once per
-/// [`ENGINE_POLL`] against the instance admin token's rate limit, so a few
+/// [`ENGINE_POLL`] against the engine's rate limit, so a few
 /// is all there is room for.
 const MAX_TAILS: usize = 4;
 static OPEN_TAILS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

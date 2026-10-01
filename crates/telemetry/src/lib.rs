@@ -86,7 +86,7 @@ impl Format {
 /// them over. `Debug` redacts the collector headers: they carry its API key.
 #[derive(Clone, PartialEq, Eq)]
 pub struct LogConfig {
-    /// A `tracing` filter: `info`, or `info,scanner::loops=debug`.
+    /// A `tracing` filter: `info`, or `info,engine::loops=debug`.
     pub level: String,
     /// Unix time until which development mode is on; 0 when off.
     pub dev_mode_until: u64,
@@ -144,7 +144,7 @@ pub fn check_level(level: &String) -> Result<(), String> {
         return Err("Enter a level such as info, or leave the default.".to_string());
     }
     EnvFilter::builder().parse(level.trim()).map(|_| ()).map_err(|e| {
-        format!("Not a log filter ({e}). Use a level (error, warn, info, debug, trace), optionally followed by target=level pairs, such as info,scanner::loops=debug.")
+        format!("Not a log filter ({e}). Use a level (error, warn, info, debug, trace), optionally followed by target=level pairs, such as info,engine::loops=debug.")
     })
 }
 
@@ -214,7 +214,7 @@ pub struct Telemetry {
 static GLOBAL: OnceLock<Arc<Telemetry>> = OnceLock::new();
 
 /// Installs the process-wide subscriber and returns its controls. `service`
-/// names the process in every line (`scanner`, `monokulo`,
+/// names the process in every line (`engine`, `monokulo`,
 /// `key-custody-server`). `env_prefix` names its environment variables:
 /// `<PREFIX>_LOG` sets the starting level (it is also the level setting's
 /// variable, so it keeps winning after the settings load) and

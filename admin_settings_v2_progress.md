@@ -116,7 +116,7 @@ reported at the end.)
   state and were updated; test-support gives configured networks an inert
   client.
 - 1.2: monero_node.<network> gained environment variables
-  (SCANNER_MONERO_NODE_<NETWORK>), because the library requires every
+  (ENGINE_MONERO_NODE_<NETWORK>), because the library requires every
   setting to have one. Harmless and occasionally useful.
 - 1.2: the body limit is checked on declared/exact length each request;
   a fixed 16MiB outer ceiling still applies to bodies of unknown length.
@@ -245,7 +245,7 @@ reported at the end.)
 - 6.0: the real-binaries harness is a separate Playwright config
   (`e2e/pos-playwright/real-binaries.config.js`) so the stagenet and
   coverage suites are untouched. The fake node is a new small binary,
-  `fake-monerod` in scanner-test-support (the WBS's "fake daemon from 2.1"
+  `fake-monerod` in engine-test-support (the WBS's "fake daemon from 2.1"
   didn't exist as an HTTP server; the in-process FakeDaemonClient can't be
   reached by a real engine). It serves a fixed chain of empty blocks,
   answers get_blocks.bin with 404 (the engine copes), and can be taken
@@ -259,7 +259,7 @@ reported at the end.)
   moving it with its keys, orders before and after, the service going down
   and coming back (alert shown then gone, orders work again), and the
   socket backend being turned off (alert, and the settings page offering
-  the move back). The Rust half in scanner-test-support proves a payment
+  the move back). The Rust half in engine-test-support proves a payment
   to an order made before a move is matched after it, and a payment that
   arrives during a key-custody outage is matched once the (restarted,
   empty) server is back.

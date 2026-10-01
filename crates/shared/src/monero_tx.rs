@@ -96,7 +96,7 @@ mod tests {
 
     fn fixture_tx() -> Transaction {
         let raw = hex::decode(include_str!(
-            "../../scanner/tests/fixtures/subaddress_tx.hex"
+            "../../engine/tests/fixtures/subaddress_tx.hex"
         ))
         .expect("fixture is valid hex");
         deserialize(&raw).expect("fixture is a valid monero transaction")

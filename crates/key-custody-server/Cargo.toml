@@ -13,10 +13,10 @@ path = "src/bin/key-custody-server.rs"
 # workspace that needs *both* a real `scanner::key_custody::PlainKeyCustody`
 # (the thing this server actually wraps) and `key-custody-service`'s wire
 # protocol/DTO types (what it decodes requests from and encodes responses as) -
-# `scanner` itself must never depend on this crate (only the other way
+# `engine` itself must never depend on this crate (only the other way
 # around), or the cycle this split exists to avoid comes right back.
 key-custody-service = { path = "../key-custody-service" }
-scanner = { path = "../scanner" }
+engine = { path = "../engine" }
 monero = "0.22.0"
 tokio = { version = "1.53.1", features = ["full"] }
 telemetry = { path = "../telemetry" }

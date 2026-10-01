@@ -19,7 +19,7 @@ The different coverage engines do not define a branch identically.
 
 | Product area | Measured source | Test run | Collector |
 | --- | --- | --- | --- |
-| Engine | `crates/scanner`, `shared`, key custody crates | `cargo test --workspace` | `cargo-llvm-cov` |
+| Engine | `crates/engine`, `shared`, key custody crates | `cargo test --workspace` | `cargo-llvm-cov` |
 | Monokulo API | `crates/monokulo` Rust | `cargo test --workspace` | `cargo-llvm-cov` |
 | Payment embed UI | `static/checkout.js`, `challenge.js` | deterministic `surface.spec.js` browser suite | Istanbul instrumentation and Playwright |
 | POS UI | `pos-ui/src/*.tsx` | deterministic `surface.spec.js` browser suite | Istanbul instrumentation in a Vite transform, then Playwright |
@@ -160,7 +160,7 @@ later finishes. They **do not** exercise most failure and unusual UI states.
 Moreover, they are intentionally excluded from default runs because they need
 public stagenet access and real transactions. A deterministic browser test using
 Monokulo's *actual rendered UI* and a controlled test engine is the way to get
-repeatable coverage of those states. The existing `scanner-test-support` crate
+repeatable coverage of those states. The existing `engine-test-support` crate
 already starts a real network-bound test engine and offers `mark_order_paid`;
 extend that test support only for state transitions that the browser suite
 cannot otherwise drive. Mock network responses, clock, or camera permission at

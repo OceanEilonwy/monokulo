@@ -20,7 +20,7 @@
 //! supervisor manages the rest of the split (systemd unit, container
 //! entrypoint, etc.) - that supervisor is what should own restart policy,
 //! logging destination, and stale-socket cleanup between crashes, not this
-//! binary guessing at them. `scanner`'s own `main.rs`, dialing this
+//! binary guessing at them. `engine`'s own `main.rs`, dialing this
 //! process as a *client* via `key_custody_service::client::SocketKeyCustody`,
 //! makes a different, complementary choice for the ordinary "both processes are
 //! starting up around the same time" race - see `main.rs`'s
@@ -30,8 +30,8 @@
 
 use std::process::ExitCode;
 
+use engine::key_custody::PlainKeyCustody;
 use key_custody_server::server::KeyCustodyServer;
-use scanner::key_custody::PlainKeyCustody;
 
 #[tokio::main]
 async fn main() -> ExitCode {

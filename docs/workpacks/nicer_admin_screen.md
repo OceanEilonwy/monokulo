@@ -28,8 +28,8 @@ Your work will be reviewed step by step against this document. Commits that mix 
 - **Shell:** the login shell is fish. Use `bash -c '...'` when you need bash syntax.
 - **Crates you'll touch:**
   - `crates/monokulo`: the public web app. The admin settings page lives here.
-  - `crates/scanner`: **the engine** (also called "scanner"). It is private; only monokulo talks to it.
-  - `crates/scanner-test-support`: test doubles, including the `fake-monerod` binary the Playwright suite runs against.
+  - `crates/engine`: **the engine** (also called "scanner"). It is private; only monokulo talks to it.
+  - `crates/engine-test-support`: test doubles, including the `fake-monerod` binary the Playwright suite runs against.
   - `crates/live-settings`: the shared, typed settings library both processes use.
   - `e2e/pos-playwright`: the Playwright tests. The `real-*.spec.js` files run against the real binaries and cover the admin page.
 - **Tests you must run and keep green before every commit:**
@@ -78,19 +78,19 @@ Your work will be reviewed step by step against this document. Commits that mix 
 Monokulo's (from its registry, `monokulo_fields`):
 `signup.mode`, `engine.url`, `engine.admin_token`, `exchange_rate.coingecko_enabled`, `exchange_rate.coingecko_base_url`, `exchange_rate.cache_seconds`, `http_cache.max_mb`, `abuse.soft_per_min`, `abuse.hard_per_min`, `abuse.signed_in_per_min`, `abuse.client_logs_per_min`, `abuse.challenge_bits`, `abuse.under_attack`, `abuse.trusted_proxies`, `abuse.onion_listener`, `abuse.stream_cap`, `rate_limit.per_store_key_per_min`, `logging.level`, `logging.dev_mode_until`, `logging.retention_days`, `logging.max_mb`, `logging.otlp_endpoint`, `logging.otlp_headers`.
 
-The engine's (fetched from `GET /api/v1/admin/settings`, `crates/scanner/src/http/instance_admin.rs` `get_settings`):
+The engine's (fetched from `GET /api/v1/admin/settings`, `crates/engine/src/http/instance_admin.rs` `get_settings`):
 `monero_node.mainnet|stagenet|testnet` (JSON, `engine_settings::NETWORKS`), `key_custody.enabled_backends`, `key_custody.default_backend`, `key_custody.socket_path` (and any other `key_custody.<backend>_*`), `payment.confirmations_required`, `payment.order_expiry_minutes`, `payment.reorg_check_depth`, `payment.mempool_poll_interval_ms`, `payment.expired_order_grace_period_minutes`, `payment.scan_chunk_memory_budget_mb`, `server.bind`, `server.worker_threads`, `server.rate_limit_per_token_per_min`, `server.max_body_bytes`, `webhooks.allow_private_urls`, `webhooks.delivery_timeout_ms`, `webhooks.max_attempts`, `logging.level`, `logging.dev_mode_until`, `logging.retention_days`, `logging.max_mb`, `logging.otlp_endpoint`, `logging.otlp_headers`.
 
 Re-check both lists against the code when you start; the registries are the source of truth. The HTTP tests in `admin_settings.rs` (around lines 720–830) post every one of them and are a good cross-check.
 
 ### Monero nodes today
 
-- **Shape:** `crates/scanner/src/settings.rs`, `MoneroNodeSetting { host, port, ssl (default false), accept_self_signed_certs (default true), fallbacks: Vec<MoneroNodeSetting> }`. Fallbacks never nest deeper than one level. The primary plus its fallbacks is simply an ordered list.
+- **Shape:** `crates/engine/src/settings.rs`, `MoneroNodeSetting { host, port, ssl (default false), accept_self_signed_certs (default true), fallbacks: Vec<MoneroNodeSetting> }`. Fallbacks never nest deeper than one level. The primary plus its fallbacks is simply an ordered list.
 - **Save path:** monokulo's `save_scanner` parses each `monero_node_<network>` textarea as JSON (empty means clear) and forwards `{ scalars, monero_node }` to the engine's `POST /api/v1/admin/settings` (`update_settings`). The engine saves, rebuilds its node clients live, then probes the saved networks' nodes with `get_height` (3s timeout each). It warns (`unserved_networks`) when a network stores use has no reachable node. That warning becomes the red banner.
 - **Node labels:** the engine labels each node `"{host}:{port}"` (`engine_settings.rs` around line 665).
-- **Live status:** the engine's unauthenticated `GET /status` (`crates/scanner/src/http/status_page.rs`) probes every node live (5s timeout) and returns `networks[].nodes[]` as `NodeStatus { label, is_active, in_cooldown, height, error }`. Monokulo reads it through `http::status_page::get_status_cached` (10s cache).
-- **The engine never asks a node which network it is on.** It only calls `get_height`. Monerod's `get_info` (JSON-RPC method, and plain `/get_info`) returns `nettype` (`"mainnet"`, `"stagenet"`, `"testnet"`, `"fakechain"`). Nothing in the engine calls it yet. `DaemonClient` has many implementations, including test doubles in `crates/scanner-test-support/src/lib.rs` and `daemon_fallback.rs` tests.
-- **`fake-monerod`** (`crates/scanner-test-support/src/bin/fake-monerod.rs`) serves `/get_height`, `/json_rpc` (`get_block`, and not much else), the pool endpoints, and `/fake/online|offline`. It has no `get_info`.
+- **Live status:** the engine's unauthenticated `GET /status` (`crates/engine/src/http/status_page.rs`) probes every node live (5s timeout) and returns `networks[].nodes[]` as `NodeStatus { label, is_active, in_cooldown, height, error }`. Monokulo reads it through `http::status_page::get_status_cached` (10s cache).
+- **The engine never asks a node which network it is on.** It only calls `get_height`. Monerod's `get_info` (JSON-RPC method, and plain `/get_info`) returns `nettype` (`"mainnet"`, `"stagenet"`, `"testnet"`, `"fakechain"`). Nothing in the engine calls it yet. `DaemonClient` has many implementations, including test doubles in `crates/engine-test-support/src/lib.rs` and `daemon_fallback.rs` tests.
+- **`fake-monerod`** (`crates/engine-test-support/src/bin/fake-monerod.rs`) serves `/get_height`, `/json_rpc` (`get_block`, and not much else), the pool endpoints, and `/fake/online|offline`. It has no `get_info`.
 
 ### Playwright coverage of this page
 

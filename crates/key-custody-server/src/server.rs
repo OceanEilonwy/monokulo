@@ -2,7 +2,7 @@
 //!
 //! This is the "separate OS process" half of the split described in
 //! `shared::key_custody`'s module docs (`shared/src/key_custody.rs` - moved there
-//! from `scanner`'s own `src/key_custody/mod.rs` as of WBS 2.1.3, see that
+//! from `engine`'s own `src/key_custody/mod.rs` as of WBS 2.1.3, see that
 //! module's doc comment for why): a [`KeyCustodyServer`] holds a real
 //! [`PlainKeyCustody`] and answers every `KeyCustody` call over a Unix socket
 //! instead of in-process function calls, so that whatever process embeds this
@@ -23,13 +23,13 @@
 //! **This module lives in its own crate (`key-custody-server`), separate from
 //! `key-custody-service`'s `client.rs`/`protocol.rs`, as of WBS 2.1.3.** It was
 //! originally part of `key-custody-service` itself (WBS 2.1.2's "extend, don't
-//! fork" framing), and moved out once `scanner`'s own `main.rs` needed to
+//! fork" framing), and moved out once `engine`'s own `main.rs` needed to
 //! depend on `key-custody-service` for `SocketKeyCustody`: this module needs a
-//! real `PlainKeyCustody`, which only exists in `scanner`, so as long as it
-//! lived in the same crate as `client.rs`, that crate depending on `scanner`
-//! while `scanner` depended on it back was a real, hard Cargo dependency
+//! real `PlainKeyCustody`, which only exists in `engine`, so as long as it
+//! lived in the same crate as `client.rs`, that crate depending on `engine`
+//! while `engine` depended on it back was a real, hard Cargo dependency
 //! cycle (`error: cyclic package dependency`, confirmed directly, not just
-//! reasoned about). `key-custody-server` depends on both `scanner` (for
+//! reasoned about). `key-custody-server` depends on both `engine` (for
 //! `PlainKeyCustody`) and `key-custody-service` (for the protocol/DTO types this
 //! module still needs); nothing depends on `key-custody-server` back, so the graph
 //! stays a DAG. See `shared/src/key_custody.rs`'s module doc comment for the full
@@ -41,15 +41,15 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use engine::key_custody::{
+    KeyCustody, Network, PlainKeyCustody, ScanInput, SubaddressIndex, WalletHandle, WalletMaterial,
+};
 use key_custody_service::protocol::{
     read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse,
 };
 use key_custody_service::{
     AddressWire, KeyCustodyErrorWire, MatchedOutputWire, SealedMaterialWire, TxMatchesWire,
     WalletHandleWire, WireConversionError,
-};
-use scanner::key_custody::{
-    KeyCustody, Network, PlainKeyCustody, ScanInput, SubaddressIndex, WalletHandle, WalletMaterial,
 };
 use tokio::net::{UnixListener, UnixStream};
 use zeroize::Zeroizing;
@@ -312,7 +312,7 @@ pub async fn dispatch(
                 .iter()
                 .map(ScanInput::try_from)
                 .collect::<Result<Vec<_>, _>>()?;
-            let indices = scanner::key_custody::ScanIndices::new(req.minors);
+            let indices = engine::key_custody::ScanIndices::new(req.minors);
             let result = custody
                 .scan_txs_for_indices(handle, &txs, &indices)
                 .await

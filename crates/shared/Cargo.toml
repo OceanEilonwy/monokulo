@@ -15,9 +15,9 @@ parking_lot = "0.12.5"
 argon2 = "0.5"
 # WBS 2.1.3: `key_custody`'s `KeyCustody` trait and its domain types (`WalletHandle`,
 # `WalletMaterial`, `KeyCustodyError`, `MatchedOutput`) moved here from
-# `scanner` so that `key-custody-service` (the socket client `main.rs` needs
+# `engine` so that `key-custody-service` (the socket client `main.rs` needs
 # to talk to an out-of-process backend) can depend on them without depending on
-# `scanner` itself - see `key_custody.rs`'s own module doc comment for the
+# `engine` itself - see `key_custody.rs`'s own module doc comment for the
 # full reasoning (a real `cyclic package dependency` Cargo error, not a style
 # preference). `async-trait` is `KeyCustody`'s own trait-object-safety requirement;
 # `uuid`/`zeroize` are `WalletHandle`/`WalletMaterial`'s.
@@ -62,7 +62,7 @@ tokio = { version = "1.53.1", features = ["full", "test-util"] }
 # `exchange_rate`'s own `coingecko` test module spins up a real local HTTP
 # server standing in for Coingecko (`spawn_price_server`) - needs a real
 # router, test-only (the runtime itself is now a real dependency above).
-# Defaults less `tower-log` (see crates/scanner/Cargo.toml).
+# Defaults less `tower-log` (see crates/engine/Cargo.toml).
 axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing"] }
 
 [lints]

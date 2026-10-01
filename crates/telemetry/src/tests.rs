@@ -43,7 +43,7 @@ pub(crate) fn subscriber(
 ) -> (Arc<Telemetry>, Capture, tracing::subscriber::DefaultGuard) {
     let capture = Capture::default();
     let writer = capture.clone();
-    let (telemetry, subscriber) = build("scanner", format, false, level, move || writer.clone());
+    let (telemetry, subscriber) = build("engine", format, false, level, move || writer.clone());
     let guard = tracing::subscriber::set_default(subscriber);
     (Arc::new(telemetry), capture, guard)
 }
@@ -80,7 +80,7 @@ fn a_json_line_carries_the_event_and_every_enclosing_spans_fields_redacted() {
     assert_eq!(lines.len(), 1, "{}", capture.text());
     let line = &lines[0];
     assert_eq!(line["level"], "WARN");
-    assert_eq!(line["service"], "scanner");
+    assert_eq!(line["service"], "engine");
     assert_eq!(line["target"], module_path!());
     assert_eq!(line["message"], "payment to 44AFFq…EP3A not seen");
     assert!(line["timestamp"].as_str().unwrap().ends_with('Z'));
@@ -260,15 +260,15 @@ fn a_development_time_already_past_is_off() {
 #[test]
 fn development_mode_keeps_the_targets_the_level_names() {
     assert_eq!(
-        dev_filter("warn,scanner::loops=trace"),
-        format!("debug,{DEV_MODE_QUIET},scanner::loops=trace")
+        dev_filter("warn,engine::loops=trace"),
+        format!("debug,{DEV_MODE_QUIET},engine::loops=trace")
     );
     assert_eq!(dev_filter("info"), format!("debug,{DEV_MODE_QUIET}"));
 }
 
 #[test]
 fn check_level_accepts_filters_and_refuses_the_rest() {
-    for ok in ["info", "debug", "warn,scanner::loops=debug", " info "] {
+    for ok in ["info", "debug", "warn,engine::loops=debug", " info "] {
         assert!(check_level(&ok.to_string()).is_ok(), "{ok}");
     }
     for bad in ["", "  ", "info,===", "scanner=loud"] {
@@ -514,7 +514,7 @@ mod otlp_export {
         let service = &resource.resource.as_ref().unwrap().attributes[0];
         assert_eq!(
             (service.key.as_str(), string(&service.value)),
-            ("service.name", "scanner".to_string())
+            ("service.name", "engine".to_string())
         );
         let record = resource.scope_logs[0]
             .log_records

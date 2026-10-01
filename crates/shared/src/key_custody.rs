@@ -9,11 +9,11 @@
 //! touching the scanner, the tenant model, or the API layer at all.
 //!
 //! Custody is chosen per store: the engine runs several backends at once
-//! behind a router (`scanner`'s `key_custody::CustodyRouter`), which is itself
+//! behind a router (`engine`'s `key_custody::CustodyRouter`), which is itself
 //! a `KeyCustody`. The `*_in` methods below name the backend for a new
 //! registration; everything else follows the handle.
 //!
-//! `PlainKeyCustody` (`scanner`'s `src/key_custody/plain.rs`) is the only
+//! `PlainKeyCustody` (`engine`'s `src/key_custody/plain.rs`) is the only
 //! in-process implementation. It keeps view pairs in ordinary process memory with
 //! no encryption and no isolation from the host process — appropriate for a
 //! self-hosted, single-tenant deployment, where a host-level attacker already owns
@@ -25,47 +25,47 @@
 //! (secret-scalar EC multiplication is exactly what its published side-channel
 //! attacks target) and why VM-based isolation is preferred.
 //!
-//! ## Why this trait lives in `shared`, not `scanner`, as of WBS 2.1.3
+//! ## Why this trait lives in `shared`, not `engine`, as of WBS 2.1.3
 //!
-//! Every other engine type lives in `scanner` (`src/key_custody/mod.rs` used
+//! Every other engine type lives in `engine` (`src/key_custody/mod.rs` used
 //! to define all of this directly) — `shared` only ever held logic genuinely common
 //! to the engine and the monokulo (secret-token hashing, HMAC signing,
 //! password hashing, the migration runner), none of which is domain-specific the
 //! way `KeyCustody` is. This module is the one exception, and it exists here for a
-//! structural reason, not a style one: `scanner`'s own `main.rs` needs to be
+//! structural reason, not a style one: `engine`'s own `main.rs` needs to be
 //! able to construct either `key_custody::PlainKeyCustody` (in-process) or
 //! `key_custody_service::client::SocketKeyCustody` (talks to a separate
 //! `key-custody-server` process over a Unix socket - WBS 2.1.2) behind one config
 //! flag. `key-custody-service`'s wire DTOs (`WalletMaterialWire`,
 //! `KeyCustodyErrorWire`, ...) convert to and from these exact types - `WalletHandle`,
 //! `WalletMaterial`, `KeyCustodyError`, `MatchedOutput`, and the `KeyCustody` trait
-//! itself - so as long as those types were defined inside `scanner`,
-//! `key-custody-service` had to depend on `scanner` to reach them (true since
-//! WBS 2.1.1). Once `main.rs` (part of the `scanner` package) also needs to
+//! itself - so as long as those types were defined inside `engine`,
+//! `key-custody-service` had to depend on `engine` to reach them (true since
+//! WBS 2.1.1). Once `main.rs` (part of the `engine` package) also needs to
 //! depend on `key-custody-service` for `SocketKeyCustody`, that becomes
-//! `scanner -> key-custody-service -> scanner` - a real, hard cycle
+//! `engine -> key-custody-service -> engine` - a real, hard cycle
 //! Cargo refuses outright (`error: cyclic package dependency`, confirmed by actually
 //! attempting it, not just reasoned about) - not a lint or a style complaint, a
 //! build that cannot succeed. Moving the trait and its domain types to `shared`
-//! (which nothing in this cycle needs to depend on `scanner` to reach) breaks
+//! (which nothing in this cycle needs to depend on `engine` to reach) breaks
 //! it: `key-custody-service` now depends on `shared` for these types instead of
-//! `scanner`, `scanner` re-exports them from `shared` so every existing
-//! `scanner::key_custody::{KeyCustody, WalletHandle, ...}` import in the
+//! `engine`, `engine` re-exports them from `shared` so every existing
+//! `engine::key_custody::{KeyCustody, WalletHandle, ...}` import in the
 //! engine keeps compiling completely unchanged (a `pub use` re-export is the same
-//! type, not a wrapper - nothing downstream of `scanner::key_custody` needed
+//! type, not a wrapper - nothing downstream of `engine::key_custody` needed
 //! to change), and `main.rs` can finally depend on `key-custody-service` directly.
 //! `PlainKeyCustody` itself, and its real registry/caching logic, stays exactly
-//! where it was (`scanner`'s own `src/key_custody/plain.rs`) - only the
+//! where it was (`engine`'s own `src/key_custody/plain.rs`) - only the
 //! *boundary* (trait + wire-crossing types) needed to move; the one in-process
 //! implementation the WBS explicitly never asked to touch did not.
 //!
 //! The socket *server* side (`key-custody-server`'s own `server.rs`, wrapping a
-//! real `PlainKeyCustody`) still needs `scanner` - there is no way around
+//! real `PlainKeyCustody`) still needs `engine` - there is no way around
 //! that, since `PlainKeyCustody` only exists there - which is exactly why the
 //! server binary and the client/protocol code that `main.rs` needs were split into
-//! two separate crates (`key-custody-server` depends on both `scanner` and
+//! two separate crates (`key-custody-server` depends on both `engine` and
 //! `key-custody-service`; `key-custody-service` itself depends on neither
-//! `scanner` nor `key-custody-server`). See `docs/WOOCOMMERCE_WBS.md`'s
+//! `engine` nor `key-custody-server`). See `docs/WOOCOMMERCE_WBS.md`'s
 //! 2.1.3 entry and this session's `work_notes.md` entry for the full account of why
 //! this split was necessary, not just tidier.
 
@@ -93,7 +93,7 @@ impl WalletHandle {
     /// Mints a new, random handle (so deliberately no `Default`).
     ///
     /// Not `pub(crate)`: real `KeyCustody` implementations live in their own crates
-    /// now (`scanner`'s `PlainKeyCustody`, `key-custody-service`'s
+    /// now (`engine`'s `PlainKeyCustody`, `key-custody-service`'s
     /// `SocketKeyCustody`), exactly the situation this type's own doc comment above
     /// already anticipated for `to_view_pair`/`to_raw_bytes` on `WalletMaterial`
     /// below - `pub(crate)` would only have granted access within whichever crate
@@ -502,7 +502,7 @@ pub trait KeyCustody: Send + Sync {
     // An engine can hold several backends at once, each store's keys in the
     // backend its row names. These take the backend by name. A single
     // backend ignores the name (it is the only one there is); a router over
-    // several (`scanner::key_custody::CustodyRouter`) uses it to pick one,
+    // several (`engine::key_custody::CustodyRouter`) uses it to pick one,
     // and routes every other call by the handle, which it remembers.
 
     /// `register_wallet`, in the backend called `backend`.
@@ -630,7 +630,7 @@ mod tests {
 
     fn fixture_tx() -> Transaction {
         let raw = hex::decode(include_str!(
-            "../../scanner/tests/fixtures/subaddress_tx.hex"
+            "../../engine/tests/fixtures/subaddress_tx.hex"
         ))
         .unwrap();
         monero::consensus::encode::deserialize(&raw).unwrap()

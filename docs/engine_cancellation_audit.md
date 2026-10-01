@@ -110,7 +110,7 @@ unresponsive-backend test advances virtual time to exercise deadlines.
 The affected test suites are run with one CPU and four concurrent test threads:
 
 ```sh
-taskset -c 0 cargo test -p scanner -p key-custody-service \
+taskset -c 0 cargo test -p engine -p key-custody-service \
   -p key-custody-server --tests --locked -- --test-threads=4
 ```
 

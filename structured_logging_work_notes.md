@@ -14,7 +14,7 @@ because it builds on the `live-settings` crate from that work).
 2. Read "Where things stand" below, then the plan section it points at.
 3. Checks before every commit:
    `cargo test -p telemetry -p shared -p live-settings`,
-   `cargo test -p scanner -p monokulo` (slow),
+   `cargo test -p engine -p monokulo` (slow),
    `cargo clippy --workspace --all-targets`.
 
 ## Where things stand
@@ -119,7 +119,7 @@ Decisions:
   once at start: `<PREFIX>_LOG_FORMAT=json|pretty`, else pretty at a
   terminal and JSON otherwise. Span open/close events are not emitted; part
   2's HTTP spans will carry durations as fields instead.
-- **Env variable names.** Level: `SCANNER_LOG`, `MONOKULO_LOG`,
+- **Env variable names.** Level: `ENGINE_LOG`, `MONOKULO_LOG`,
   `KEY_CUSTODY_LOG` (the key-custody server has no settings, only the env
   variable). These are also the `logging.level` settings' env variables, so
   the variable is in effect from the first line and keeps winning after the
@@ -291,8 +291,8 @@ Decisions:
   commands (`--rotate-secret`, `--show-tenant`, `--bootstrap-wallet`, the
   usage error) and the "generated a new instance admin token" line, which
   shows a secret once and must never go to a log.
-- Test tools and harnesses: `crates/scanner/src/bin/e2e_harness.rs`,
-  `crates/scanner-test-support` (including `fake-monerod`, whose
+- Test tools and harnesses: `crates/engine/src/bin/e2e_harness.rs`,
+  `crates/engine-test-support` (including `fake-monerod`, whose
   `FAKE_MONEROD_READY` stdout line the Playwright setup waits for),
   `crates/cli-wallet`, `crates/snp-attest`, `crates/mock-woocommerce`,
   `xtask`, and `println!` inside tests.
@@ -300,7 +300,7 @@ Decisions:
 ## Things to know
 
 - **Tests that assert on log lines need their own test binary with one
-  global subscriber** (see `crates/scanner/tests/tracing.rs`). A
+  global subscriber** (see `crates/engine/tests/tracing.rs`). A
   thread-local `set_default` subscriber in the lib test binary loses lines
   at random: other tests on other threads hit the same callsites with no
   subscriber, and tracing's callsite interest cache races with them

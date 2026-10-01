@@ -101,7 +101,7 @@ masking because the wallet fixture data is public in this repository.
 - **Aim:** Give fast browser tests production HTML, CSS, and JavaScript without
   live stagenet payments.
 - **Done when:** A local Playwright fixture starts Monokulo and the existing
-  `scanner-test-support` engine, serves a real checkout and POS page, creates a
+  `engine-test-support` engine, serves a real checkout and POS page, creates a
   deterministic order, and stops cleanly. Browser assertions identify real
   checkout and POS landmarks, including the compact checkout iframe. The test
   runs without public network access or wallet spending.

@@ -6,10 +6,10 @@ On a fresh start, `scripts/dev-run.sh` starts the engine with an empty
 database, then saves the stagenet node through `POST /api/v1/admin/settings`.
 The admin page shows that node, because it reads the saved value back. But
 the engine built its node clients once at boot
-(`crates/scanner/src/main.rs`, `build_daemon_clients`), so
+(`crates/engine/src/main.rs`, `build_daemon_clients`), so
 `AppState.daemons` and `AppState.configured_networks` stay empty until the
 next restart. The status page says no nodes are configured, and connecting a
-stagenet store is refused (`crates/scanner/src/http/admin.rs`,
+stagenet store is refused (`crates/engine/src/http/admin.rs`,
 `configured_networks.contains`).
 
 Node settings are not the only case. Most engine settings, and several
@@ -69,7 +69,7 @@ These came from review of the first draft and are settled.
 Where each value is read today. "Boot" means it is read once and never
 again; those are the ones this work changes.
 
-### Engine (`crates/scanner/src/settings.rs`)
+### Engine (`crates/engine/src/settings.rs`)
 
 | Setting | Read today | After this work |
 |---|---|---|
@@ -258,7 +258,7 @@ test read:
 live_settings::settings! {
     REORG_CHECK_DEPTH: u64 {
         key: "payment.reorg_check_depth",
-        env: "SCANNER_PAYMENT_REORG_CHECK_DEPTH",
+        env: "ENGINE_PAYMENT_REORG_CHECK_DEPTH",
         default: 20,
         check: range(1, 10_000),   // keep today's bounds exactly
         description: "How many recent blocks are checked again on every scan for a chain reorganisation.",
@@ -375,9 +375,9 @@ differs from it.
   - Unit test: `Registry::build()` succeeds with the engine's real
     sections, so no setting is orphaned.
   - `GET` and `POST /api/v1/admin/settings` tests in
-    `crates/scanner/src/http/tests.rs` pass unchanged, apart from the new
+    `crates/engine/src/http/tests.rs` pass unchanged, apart from the new
     fields added in 4.2.
-  - `grep -rn "settings::get" crates/scanner/src` finds nothing outside
+  - `grep -rn "settings::get" crates/engine/src` finds nothing outside
     the library.
 - **Approach:** Sections: `NodeConfig` (every `monero_node.<network>`),
   `CustodyConfig` (part 5), `ScanConfig`, `WebhookConfig`,
@@ -413,10 +413,10 @@ differs from it.
   empty databases.
 - **Approach:** Move `build_daemon_clients`, `build_key_custody`,
   `register_all_tenants` and the loop setup out of
-  `crates/scanner/src/main.rs` into `Reloadable` implementations in the
+  `crates/engine/src/main.rs` into `Reloadable` implementations in the
   library crate of each process. Several other places build an
   engine `AppState` by hand and copy the boot wiring:
-  `crates/scanner/src/bin/e2e_harness.rs`, `crates/scanner-test-support/src/lib.rs`,
+  `crates/engine/src/bin/e2e_harness.rs`, `crates/engine-test-support/src/lib.rs`,
   and the stagenet end-to-end tests (`e2e_stagenet.rs`,
   `e2e_dashboard_stagenet.rs`). Switch them all to the registry, so none
   can drift from the real boot.
@@ -440,7 +440,7 @@ differs from it.
     `rescan.max_lookback_days` in monokulo's `validate_monokulo_scalar`,
     and `payment.default_rescan_lookback_days` and
     `payment.max_rescan_lookback_days` in the engine's `validate_scalar`
-    (`crates/scanner/src/http/instance_admin.rs`). The rescan feature was
+    (`crates/engine/src/http/instance_admin.rs`). The rescan feature was
     dropped (`migrations/0012_drop_order_rescans.sql`).
   - With the library, only declared settings can be saved, which closes
     the unknown-key hole.
@@ -459,7 +459,7 @@ differs from it.
   the scanner starts scanning it. Clearing a network stops scanning it and
   removes it from the status page's node list.
 - **Verify:**
-  - Integration test in `crates/scanner/src/http/tests.rs`: build the app
+  - Integration test in `crates/engine/src/http/tests.rs`: build the app
     with no nodes, then `POST /api/v1/admin/settings` a stagenet node
     pointing at a local HTTP fake daemon (see the approach). Creating a stagenet tenant now
     succeeds, where before the save it was refused, and `GET /status`
@@ -473,7 +473,7 @@ differs from it.
     and the old one is not used on the next tick.
 - **Approach:**
   - Replace `configured_networks: Arc<HashSet<Network>>` and
-    `daemons: Arc<HashMap<..>>` in `AppState` (`crates/scanner/src/http/mod.rs`)
+    `daemons: Arc<HashMap<..>>` in `AppState` (`crates/engine/src/http/mod.rs`)
     with one shared `DaemonSet` handle. Derive the configured networks
     from its keys, so there is one source.
   - Keep `strict_tls` in `AppState` so rebuilt clients honour it.
@@ -487,8 +487,8 @@ differs from it.
   - Test support: a saved `monero_node` is a host and port, so the engine
     builds a real `RpcDaemonClient` over HTTP. The in-process
     `FakeDaemonClient` used by `http/tests.rs` can't answer that. Move the
-    small HTTP replay server from `crates/scanner/tests/daemon_rpc_replay.rs`
-    into `crates/scanner-test-support` as a reusable fake daemon that
+    small HTTP replay server from `crates/engine/tests/daemon_rpc_replay.rs`
+    into `crates/engine-test-support` as a reusable fake daemon that
     serves canned heights, blocks and mempool on a local port. Tests for
     2.1, 2.2 and part 6 use it.
   - When a network is removed, drop its `scanner_status` entry so the
@@ -604,7 +604,7 @@ differs from it.
   - Integration test: saving `server.worker_threads` returns it in
     `warnings.restart_required`, and `GET /api/v1/admin/settings` marks it
     `pending_restart: true` until the process restarts with that value.
-- **Approach:** Replace `#[tokio::main]` in `crates/scanner/src/main.rs`
+- **Approach:** Replace `#[tokio::main]` in `crates/engine/src/main.rs`
   with a hand-built multi-thread runtime whose worker count comes from the
   setting. It has to be read before the runtime exists, so open the store
   synchronously first (the store is SQLite, no async needed). Record the
@@ -617,7 +617,7 @@ differs from it.
   `payment.order_expiry_minutes` are the defaults for any new tenant that
   doesn't give its own values, whether created by the bootstrap CLI or by
   `POST /api/v1/admin/tenants`. Today the API path ignores them and uses
-  hardcoded values (`crates/scanner/src/store.rs`, `unwrap_or(10)` and
+  hardcoded values (`crates/engine/src/store.rs`, `unwrap_or(10)` and
   `unwrap_or(1800)`).
 - **Verify:**
   - Integration test: save `payment.confirmations_required = 3`, create a
@@ -811,7 +811,7 @@ differs from it.
   what the engine reports, so a newer engine's settings are described
   correctly without a monokulo change.
 - **Verify:**
-  - Test in `crates/scanner/src/http/tests.rs`: `GET /api/v1/admin/settings`
+  - Test in `crates/engine/src/http/tests.rs`: `GET /api/v1/admin/settings`
     returns `description`, `kind` (with range or choices), `example`,
     `applies` and `pending_restart` for every scalar, and a description,
     example and `tenant_count` for each `monero_node` network.
@@ -948,7 +948,7 @@ differs from it.
 
 **Model.** Each tenant already records the backend that sealed its keys:
 `tenants.key_custody_backend` next to `tenants.sealed_key_material`
-(`crates/scanner/migrations/0001_init.sql`). Today every tenant gets the
+(`crates/engine/migrations/0001_init.sql`). Today every tenant gets the
 one instance-wide backend. After this work:
 
 - The engine keeps a **custody registry**: one live `KeyCustody` instance
@@ -1026,7 +1026,7 @@ Two things in today's scanner break that requirement, and both have to be
 fixed before per-store custody ships (task 5.0):
 
 1. **One store's failure stalls the whole network.** The block scan in
-   `run_scan_tick` (`crates/scanner/src/scanner.rs`) keeps one scanned
+   `run_scan_tick` (`crates/engine/src/scanner.rs`) keeps one scanned
    height per network. When `scan_transaction` fails for any tenant it
    does `break 'heights` and leaves the block unscanned for everyone.
    That is right for a one-tick blip. But a backend that stays down, for
@@ -1138,7 +1138,7 @@ store by switching backends.
 - **Aim:** The scanner meets the scanning-safety requirement above: a
   store that can't be scanned for a while never loses a payment, never
   holds up other stores, and always catches up by itself.
-- **Verify:** Unit tests in `crates/scanner/src/scanner.rs` with the
+- **Verify:** Unit tests in `crates/engine/src/scanner.rs` with the
   existing fake daemon and a key-custody wrapper that fails on demand for
   one tenant:
   - Tenant A's custody fails for 3 ticks while blocks arrive with
@@ -1208,7 +1208,7 @@ store by switching backends.
   - Migration tests. The old setting is converted from the value that was
     actually in effect (environment variable, then stored value, then
     default), because an operator may have set only
-    `SCANNER_KEY_CUSTODY_BACKEND`:
+    `ENGINE_KEY_CUSTODY_BACKEND`:
     - Env `socket`, nothing stored: `enabled_backends = "socket"`,
       `default_backend = "socket"`.
     - Stored `socket`: the same.
@@ -1224,7 +1224,7 @@ store by switching backends.
     - An invalid old value converts to `plain`, as `build_key_custody`
       treats it today.
     - The migration runs once. It records a marker (a settings row), so
-      with `SCANNER_KEY_CUSTODY_BACKEND` still set, a later boot doesn't
+      with `ENGINE_KEY_CUSTODY_BACKEND` still set, a later boot doesn't
       relabel tenant rows again and undo stores that were switched since.
   - Test: `create_order` racing a switch retries with the new handle and
     succeeds (drive it with a custody wrapper that removes the wallet
@@ -1244,7 +1244,7 @@ store by switching backends.
   - Add a one-time migration, run at boot before the registry is built,
     converting `key_custody.backend` as above and rewriting the tenant
     rows. Remove `key_custody.backend` from the settings declarations in
-    the same change. If `SCANNER_KEY_CUSTODY_BACKEND` is still set after
+    the same change. If `ENGINE_KEY_CUSTODY_BACKEND` is still set after
     the migration has run, log a warning naming the settings that
     replaced it.
   - The bootstrap CLI (`--bootstrap-wallet`) gets
@@ -1435,7 +1435,7 @@ store by switching backends.
   binaries, with their real `main` and boot wiring, against empty
   databases and a local fake Monero daemon. Today nothing does:
   `coverage-real.config.js` runs `examples/coverage_fixture.rs`, which
-  uses the in-process `scanner-test-support` engine, and `global-setup.js`
+  uses the in-process `engine-test-support` engine, and `global-setup.js`
   builds `e2e-harness`, which builds its own `AppState` and scan loop. The
   original bug lived in `main.rs`, so a test that skips `main` couldn't
   have caught it.
@@ -1444,9 +1444,9 @@ store by switching backends.
   it fails against today's `main.rs`, which should be checked once when
   the harness is first written.
 - **Approach:** A Playwright global setup that builds and spawns
-  `target/debug/scanner` and `target/debug/monokulo` with temporary
+  `target/debug/monokulo-engine` and `target/debug/monokulo` with temporary
   database paths and free ports, plus the fake daemon from 2.1 (moved into
-  `scanner-test-support`) as a small binary. Tear everything down after
+  `engine-test-support`) as a small binary. Tear everything down after
   the run. It needs `MONOKULO_ENCRYPTION_KEY` and an engine admin token,
   both generated per run as `dev-run.sh` does.
   - Monokulo hardcodes its database path (`monokulo.db`) and port (8081)
@@ -1480,9 +1480,9 @@ store by switching backends.
 - **Verify:** Read through. `grep -rni "restart" docs/ README.md` shows no
   stale advice about settings. `docs/DESIGN.md` §8.1's note on
   `tenants.key_custody_backend` describes the per-store model.
-- **Approach:** Reword the warning in `crates/scanner/src/main.rs`. Update
+- **Approach:** Reword the warning in `crates/engine/src/main.rs`. Update
   `docs/DESIGN.md`, `README.md` and the `KeyCustody` module docs
-  (`crates/shared/src/key_custody.rs`, `crates/scanner/src/key_custody/mod.rs`),
+  (`crates/shared/src/key_custody.rs`, `crates/engine/src/key_custody/mod.rs`),
   which describe one backend per process.
 
 #### 6.3 End-to-end: fresh instance, configure from the page, use it
@@ -1566,7 +1566,7 @@ Done in commit 97817e1 (see the progress notes).
   - Unit test: a test that panics while holding the store lock, after
     which the scan tick, the webhook tick and an HTTP handler all still
     work.
-  - `cargo clippy -p scanner -- -D clippy::unwrap_used -D clippy::expect_used`
+  - `cargo clippy -p engine -- -D clippy::unwrap_used -D clippy::expect_used`
     passes for non-test code (allowed only on documented invariants with
     `#[allow]` and a comment).
 - **Approach:** Switch shared locks to `parking_lot` (no poisoning), or a
@@ -1901,7 +1901,7 @@ Done in commit 97817e1 (see the progress notes).
 - **Approach:** Build on 5.0's property test and the existing
   `FakeDaemonClient`. It needs a generator for real payment transactions
   to many stores' subaddresses; reuse the transaction fixtures the scanner
-  tests already build, and put the generator in `scanner-test-support`.
+  tests already build, and put the generator in `engine-test-support`.
   Keep the thresholds in the test so regressions fail CI.
 
 #### 7.13 Seeing what's wrong
