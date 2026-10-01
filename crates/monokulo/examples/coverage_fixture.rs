@@ -229,7 +229,8 @@ async fn main() {
     db.create_session(
         &shared::auth::RawToken::presented(SESSION).hash(),
         &shared::ids::UserId::new("coverage-merchant"),
-        0,
+        // Now, not 0: a session expires (`Db::SESSION_LIFETIME_SECONDS`).
+        monokulo::now_unix(),
     )
     .expect("create fixture session");
     db.create_store_connection(
@@ -238,7 +239,11 @@ async fn main() {
         "custom",
         "http://shop.localhost",
         &tenant.public_key,
-        &crypto::encrypt(&ENCRYPTION_KEY, tenant.secret_token.expose()),
+        &crypto::encrypt(
+            &ENCRYPTION_KEY,
+            crypto::Binding::StoreSecret("coverage-store"),
+            tenant.secret_token.expose(),
+        ),
         &format!("http://{}", engine.addr),
         0,
         "XMR",

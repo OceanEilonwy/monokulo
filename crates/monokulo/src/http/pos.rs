@@ -765,13 +765,28 @@ pub async fn cancel_order(
     if detail.order.amount_received_piconero > 0 || detail.order.status != OrderStatus::Pending {
         return ApiError::BadRequest("This order has payment activity and cannot be cancelled. Background it for review instead.".to_string()).into_response();
     }
+    let (store_id, order) = (id.clone(), order_id.clone());
     match db
-        .write(move |db| db.cancel_pos_order(&id, &order_id, crate::now_unix()))
+        .write(move |db| db.cancel_pos_order(&store_id, &order, crate::now_unix()))
         .await
     {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => ApiError::NotFound.into_response(),
-        Err(_) => ApiError::Internal.into_response(),
+        Ok(true) => {}
+        Ok(false) => return ApiError::NotFound.into_response(),
+        Err(_) => return ApiError::Internal.into_response(),
+    }
+    // A payment the scanner recorded between the check above and the
+    // cancellation would be hidden from the terminal for good: look
+    // again, and take the cancellation back (the order stays backgrounded,
+    // for review) if money reached it after all.
+    match engine.client.get_order_detail(&sk, &order_id).await {
+        Ok(after) if after.order.amount_received_piconero > 0 => {
+            let (store_id, order) = (id.clone(), order_id.clone());
+            let _ = db
+                .write(move |db| db.uncancel_pos_order(&store_id, &order))
+                .await;
+            ApiError::BadRequest("A payment reached this order as it was being cancelled. It was backgrounded for review instead.".to_string()).into_response()
+        }
+        _ => StatusCode::NO_CONTENT.into_response(),
     }
 }
 

@@ -1885,7 +1885,11 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
             1,
         )
         .unwrap();
-        let encrypted = crate::crypto::encrypt(&state.encryption_key, "sk_shop");
+        let encrypted = crate::crypto::encrypt(
+            &state.encryption_key,
+            crate::crypto::Binding::StoreSecret("c1"),
+            "sk_shop",
+        );
         db.create_store_connection(
             &shared::ids::ConnectionId::new("c1"),
             &shared::ids::UserId::new("u_owner"),

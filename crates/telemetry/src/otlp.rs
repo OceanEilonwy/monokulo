@@ -101,11 +101,23 @@ pub fn check_headers(headers: &live_settings::Secret) -> Result<(), String> {
 )]
 pub fn check_endpoint(endpoint: &String) -> Result<(), String> {
     let endpoint = endpoint.trim();
-    if endpoint.is_empty() || endpoint.starts_with("http://") || endpoint.starts_with("https://") {
-        Ok(())
-    } else {
-        Err("Enter the collector's http:// or https:// address, such as http://127.0.0.1:4318, or leave it empty.".into())
+    if endpoint.is_empty() {
+        return Ok(());
     }
+    let Some(rest) = endpoint
+        .strip_prefix("http://")
+        .or_else(|| endpoint.strip_prefix("https://"))
+    else {
+        return Err("Enter the collector's http:// or https:// address, such as http://127.0.0.1:4318, or leave it empty.".into());
+    };
+    // A user name or password in the address would be logged with it (and
+    // sent to the collector in our own lines): credentials go in
+    // `logging.otlp_headers`, which is kept secret.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err("Put the collector's credentials in logging.otlp_headers (for example authorization=Bearer abc), not in its address.".into());
+    }
+    Ok(())
 }
 
 fn text(value: impl Into<String>) -> Option<AnyValue> {
@@ -349,7 +361,12 @@ async fn post(
     for (name, value) in &config.headers {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|e| e.to_string())?;
+    // Without the URL: what fails is logged, and the address is logged
+    // once, when export starts.
+    let response = request
+        .send()
+        .await
+        .map_err(|e| e.without_url().to_string())?;
     if response.status().is_success() {
         Ok(())
     } else {

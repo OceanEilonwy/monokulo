@@ -94,7 +94,11 @@ pub async fn request_invite_submit(
     let now = now_unix();
     let raw_token = shared::auth::generate_invite_token();
     let token_hash = raw_token.hash();
-    let token_encrypted = crate::crypto::encrypt(&state.encryption_key, raw_token.expose());
+    let token_encrypted = crate::crypto::encrypt(
+        &state.encryption_key,
+        crate::crypto::Binding::InviteToken(&request_id),
+        raw_token.expose(),
+    );
     let link_id = uuid::Uuid::new_v4().to_string();
     let (email, message) = (email.to_string(), message.to_string());
     let created = state
@@ -204,7 +208,14 @@ fn to_row_view(
     let mailto_href = row
         .invite_token_encrypted
         .as_deref()
-        .and_then(|enc| crate::crypto::decrypt(encryption_key, enc).ok())
+        .and_then(|enc| {
+            crate::crypto::decrypt(
+                encryption_key,
+                crate::crypto::Binding::InviteToken(&row.id),
+                enc,
+            )
+            .ok()
+        })
         .map(|raw_token| build_mailto_href(&row.email, &invite_signup_url(base_url, &raw_token)));
     AdminInviteRequestRow {
         id: row.id,
