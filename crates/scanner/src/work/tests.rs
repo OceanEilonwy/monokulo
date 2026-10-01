@@ -3526,6 +3526,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
                 .unwrap();
             let order = s
                 .create_order(crate::store::NewOrder {
+                    idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant.clone(),
                     merchant_order_id: None,
@@ -3843,6 +3844,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
                 .unwrap();
             let order = s
                 .create_order(crate::store::NewOrder {
+                    idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant.clone(),
                     merchant_order_id: None,

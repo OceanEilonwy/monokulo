@@ -616,6 +616,71 @@ async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// A creation repeating an idempotency key gets the order that key made
+/// (same id, same address, no second subaddress claimed); the key reused
+/// for a different purchase is refused; a bad key is refused up front.
+#[tokio::test]
+async fn an_idempotency_key_makes_a_retried_order_creation_return_the_first_order() {
+    let router = test_router();
+    let tenant = create_tenant(&router, 11).await;
+    let create = |body: serde_json::Value| {
+        let router = router.clone();
+        let token = tenant.secret_token.clone();
+        async move {
+            let response = router
+                .oneshot(json_request(
+                    "POST",
+                    "/api/v1/admin/tenant/orders",
+                    Some(&token),
+                    body,
+                ))
+                .await
+                .unwrap();
+            (response.status(), body_json(response).await)
+        }
+    };
+    let body = serde_json::json!({
+        "xmr_amount_piconero": 5_000_000_000u64,
+        "merchant_order_id": "wc-77",
+        "idempotency_key": "pay:wc-77:1",
+    });
+    let (status, first) = create(body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (status, again) = create(body).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["order_id"], first["order_id"]);
+    assert_eq!(again["address"], first["address"]);
+
+    // A different purchase under the same key: refused, nothing made.
+    let (status, clash) = create(serde_json::json!({
+        "xmr_amount_piconero": 6_000_000_000u64,
+        "merchant_order_id": "wc-77",
+        "idempotency_key": "pay:wc-77:1",
+    }))
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{clash}");
+
+    // Without a key, or with another, a new order (and the next address).
+    let (status, other) = create(serde_json::json!({
+        "xmr_amount_piconero": 5_000_000_000u64,
+        "merchant_order_id": "wc-77",
+        "idempotency_key": "pay:wc-77:2",
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(other["order_id"], first["order_id"]);
+    assert_ne!(other["address"], first["address"]);
+
+    for bad in ["", "has space", &"k".repeat(129)] {
+        let (status, _) = create(serde_json::json!({
+            "xmr_amount_piconero": 5_000_000_000u64,
+            "idempotency_key": bad,
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}");
+    }
+}
+
 /// An order above what SQLite's signed integer holds would be stored
 /// negative; it is refused with the limit named.
 #[tokio::test]

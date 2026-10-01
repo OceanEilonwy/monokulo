@@ -167,7 +167,9 @@ impl Db {
         created_at: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO pos_orders (connection_id, order_id, request_key, reference, created_at_utc) VALUES (?1, ?2, ?3, ?4, ?5)",
+            // A retry of the same sale writes nothing new.
+            "INSERT INTO pos_orders (connection_id, order_id, request_key, reference, created_at_utc) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (connection_id, order_id) DO NOTHING",
             params![connection_id, order_id, request_key, reference, created_at],
         )?;
         Ok(())
@@ -1191,7 +1193,8 @@ impl Db {
             "INSERT INTO order_currency_metadata
                 (connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
                  store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT (connection_id, order_id) DO NOTHING",
             params![
                 connection_id,
                 order_id,

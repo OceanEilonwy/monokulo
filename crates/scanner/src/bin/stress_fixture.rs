@@ -471,6 +471,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
                 )
                 .await?;
             let created_order = store.create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: id.clone(),
                 merchant_order_id: None,

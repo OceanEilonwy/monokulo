@@ -546,6 +546,7 @@ impl EngineClient {
         xmr_amount_piconero: shared::xmr_amount::Piconero,
         merchant_order_id: Option<String>,
         confirmations_required: Option<u64>,
+        idempotency_key: Option<String>,
     ) -> Result<CreateOrderResponse, EngineClientError> {
         let target = self.target();
         let response = target
@@ -556,6 +557,7 @@ impl EngineClient {
                 xmr_amount_piconero: xmr_amount_piconero.get(),
                 merchant_order_id,
                 confirmations_required,
+                idempotency_key,
             })
             .timeout(ENGINE_CALL_TIMEOUT)
             .send()
@@ -867,6 +869,23 @@ struct CreateOrderRequest {
     /// right value itself before ever calling here.
     #[serde(skip_serializing_if = "Option::is_none")]
     confirmations_required: Option<u64>,
+    /// The engine's own `idempotency_key`: a retry with the same key gets
+    /// the order the first attempt made. Namespaced by where the request
+    /// came from (`pay:`, `dash:`, `pos:`), so keys from different callers
+    /// of one store never collide.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    idempotency_key: Option<String>,
+}
+
+/// Longest key a caller may pass through monokulo: the engine's limit (128)
+/// less room for monokulo's own prefix.
+pub const MAX_CALLER_IDEMPOTENCY_KEY_CHARS: usize = 100;
+
+/// Whether `key` is a usable caller key: 1..=100 visible ASCII characters.
+pub fn valid_idempotency_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= MAX_CALLER_IDEMPOTENCY_KEY_CHARS
+        && key.bytes().all(|b| b.is_ascii_graphic())
 }
 
 /// Mirrors the engine's own `public::CreateOrderResponse`.
@@ -1210,6 +1229,7 @@ mod tests {
                 shared::xmr_amount::Piconero(100_000_000_000),
                 None,
                 Some(3),
+                None,
             )
             .await
             .unwrap();
@@ -1246,6 +1266,7 @@ mod tests {
             .create_order(
                 &created.secret_token,
                 shared::xmr_amount::Piconero(100_000_000_000),
+                None,
                 None,
                 None,
             )

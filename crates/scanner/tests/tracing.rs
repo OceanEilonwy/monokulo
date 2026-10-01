@@ -94,6 +94,7 @@ async fn a_webhook_attempt_is_logged_in_its_own_trace_and_the_merchant_gets_that
     let index = store.allocate_minor_index(&tenant.id).unwrap();
     let order = store
         .create_order(NewOrder {
+            idempotency_key: None,
             confirmations_required_override: None,
             tenant_id: tenant.id.clone(),
             merchant_order_id: None,

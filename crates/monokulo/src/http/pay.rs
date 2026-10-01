@@ -40,6 +40,12 @@ pub struct CreateOrderRequest {
     /// convention this whole codebase already uses for an optional field.
     #[serde(default)]
     pub merchant_order_id: Option<String>,
+    /// The caller's key for this one purchase (up to 100 visible ASCII
+    /// characters): a retry with the same key gets the order the first
+    /// attempt made, never a second one. The WooCommerce plugin sends one
+    /// per order and total.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 /// Mirrors the engine's own `public::CreateOrderResponse` field-for-field -
@@ -88,6 +94,17 @@ pub async fn create_order(
     {
         return ApiError::BadRequest(format!(
             "merchant_order_id must be at most {MAX_MERCHANT_ORDER_ID_CHARS} characters"
+        ))
+        .into_response();
+    }
+    if req
+        .idempotency_key
+        .as_deref()
+        .is_some_and(|key| !crate::engine_client::valid_idempotency_key(key))
+    {
+        return ApiError::BadRequest(format!(
+            "idempotency_key must be 1 to {} visible ASCII characters",
+            crate::engine_client::MAX_CALLER_IDEMPOTENCY_KEY_CHARS
         ))
         .into_response();
     }
@@ -190,6 +207,7 @@ pub async fn create_order(
             shared::xmr_amount::Piconero(xmr_amount_piconero),
             req.merchant_order_id.clone(),
             Some(resolution.confirmations_required),
+            req.idempotency_key.as_ref().map(|key| format!("pay:{key}")),
         )
         .await
     {
@@ -264,6 +282,16 @@ pub async fn create_order(
             if status == reqwest::StatusCode::BAD_REQUEST =>
         {
             ApiError::BadRequest(message).into_response()
+        }
+        // The key was already used for a different purchase.
+        Err(EngineClientError::EngineError { status, message })
+            if status == reqwest::StatusCode::CONFLICT =>
+        {
+            (
+                axum::http::StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({ "error": message })),
+            )
+                .into_response()
         }
         Err(_) => ApiError::Internal.into_response(),
     }
@@ -621,6 +649,64 @@ mod tests {
                 serde_json::json!({ "amount": amount, "currency": currency }).to_string(),
             ))
             .unwrap()
+    }
+
+    /// A storefront retrying `POST /pay/{pk}/orders` with the same
+    /// idempotency key (its first answer was lost) gets the same order and
+    /// address; another key, another order; the key reused for a different
+    /// total is a 409; a malformed key is a 400.
+    #[tokio::test]
+    async fn a_retried_order_creation_with_one_key_makes_one_order() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "idempotent@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &session_token).await;
+        let post = |body: serde_json::Value| {
+            let (router, pk) = (router.clone(), pk.clone());
+            async move {
+                let response = router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(format!("/pay/{pk}/orders"))
+                            .header("content-type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                (response.status(), body_json(response).await)
+            }
+        };
+        let order = |key: &str, amount: &str| {
+            serde_json::json!({
+                "amount": amount,
+                "currency": TEST_CURRENCY,
+                "merchant_order_id": "wc-9",
+                "idempotency_key": key,
+            })
+        };
+        let (status, first) = post(order("wc:9:25.00", "25.00")).await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        let (status, retry) = post(order("wc:9:25.00", "25.00")).await;
+        assert_eq!(status, StatusCode::OK, "{retry}");
+        assert_eq!(retry["order_id"], first["order_id"]);
+        assert_eq!(retry["address"], first["address"]);
+
+        let (status, other) = post(order("wc:9:30.00", "30.00")).await;
+        assert_eq!(status, StatusCode::OK, "{other}");
+        assert_ne!(other["order_id"], first["order_id"]);
+
+        let (status, clash) = post(order("wc:9:25.00", "26.00")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{clash}");
+
+        let (status, _) = post(order("has space", "25.00")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     /// Every static file a real page asks for is served, with the type its

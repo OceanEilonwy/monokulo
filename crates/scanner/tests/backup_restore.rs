@@ -58,6 +58,7 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
     for i in 0..n {
         store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: created.tenant.id.clone(),
                 merchant_order_id: None,
@@ -114,6 +115,7 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
         let mut inserted = 0u32;
         while !writer_stop.load(Ordering::Relaxed) {
             let created = writer_store.create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(writer_tenant_id.clone()),
                 merchant_order_id: None,

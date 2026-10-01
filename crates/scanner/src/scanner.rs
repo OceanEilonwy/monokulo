@@ -1924,6 +1924,7 @@ pub(crate) mod tests {
 
         let order = store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
@@ -1999,6 +2000,7 @@ pub(crate) mod tests {
 
         let order = store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
@@ -2875,6 +2877,7 @@ pub(crate) mod tests {
             .unwrap();
         let order = store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
                 merchant_order_id: None,
@@ -3012,6 +3015,7 @@ pub(crate) mod tests {
         // work, this tenant would be scanned too.
         store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: stagenet_tenant.tenant.id.clone(),
                 merchant_order_id: None,
@@ -3508,6 +3512,7 @@ pub(crate) mod tests {
         // A second order on the same tenant, already past its deadline and never paid.
         let stale = store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
@@ -8066,6 +8071,7 @@ pub(crate) mod tests {
         assert_eq!(second_index, 2);
         let second_order = store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
@@ -8386,6 +8392,7 @@ pub(crate) mod tests {
         // "fix" for either from quietly inverting the other.
         let partial = s
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
@@ -8906,6 +8913,7 @@ pub(crate) mod tests {
         assert_eq!(index, 1);
         let order = store
             .create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
                 merchant_order_id: None,
@@ -9097,6 +9105,7 @@ pub(crate) mod tests {
             let index = s.allocate_minor_index(&tenant.tenant.id).unwrap();
             let order = s
                 .create_order(NewOrder {
+                    idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant.tenant.id.clone(),
                     merchant_order_id: None,
@@ -10119,6 +10128,7 @@ pub(crate) mod tests {
                 let index = store.allocate_minor_index(&id).unwrap();
                 store
                     .create_order(NewOrder {
+                        idempotency_key: None,
                         confirmations_required_override: None,
                         tenant_id: id.clone(),
                         merchant_order_id: None,
@@ -10618,6 +10628,7 @@ pub(crate) mod tests {
                 .unwrap();
             store
                 .create_order(NewOrder {
+                    idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: a.clone(),
                     merchant_order_id: None,
@@ -10971,6 +10982,7 @@ pub(crate) mod tests {
                 .allocate_minor_index(&shared::ids::TenantId::new(a.to_string()))
                 .unwrap();
             s.create_order(NewOrder {
+                idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: a.clone(),
                 merchant_order_id: None,
