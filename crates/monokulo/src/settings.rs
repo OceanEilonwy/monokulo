@@ -1061,7 +1061,8 @@ mod tests {
             .save(change("abuse.onion_listener", &free.to_string()))
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The save binds before it returns (`prepare`): a connection is
+        // queued by the kernel whether or not it has been accepted yet.
         assert!(
             tokio::net::TcpStream::connect(free).await.is_ok(),
             "listening straight away"
@@ -1081,7 +1082,6 @@ mod tests {
             .save(change("abuse.onion_listener", &free.to_string()))
             .await
             .expect("moving back to the first address");
-        tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
             tokio::net::TcpStream::connect(free).await.is_ok(),
             "listening on the first address again"
@@ -1091,8 +1091,11 @@ mod tests {
             .save(change("abuse.onion_listener", ""))
             .await
             .unwrap();
+        // The old listener goes as its task is stopped: waited for, with a
+        // deadline that bounds only a hung stop.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut closed = false;
-        for _ in 0..50 {
+        while std::time::Instant::now() < deadline {
             if tokio::net::TcpStream::connect(free).await.is_err() {
                 closed = true;
                 break;
