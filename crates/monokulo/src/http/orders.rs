@@ -1,13 +1,9 @@
-//! Order list/detail pages (read-only, WBS 1.3.3) plus webhook management
-//! (create/delete - user-directed follow-up, since the engine's own admin
-//! API already supported both and nothing in this crate exposed them): a
-//! logged-in user views their tenant's real orders and manages its real
-//! webhooks, proxied from the engine's own admin API using the connection's
-//! decrypted `sk_...` token ([`crate::crypto::decrypt`]'s first real
-//! consumer outside a test).
-//!
-//! Orders stay read-only, per WBS 1.3.3's own "what" bullet for that part of
-//! this module (only `GET` engine routes): no order mutation here, ever.
+//! A store's pages on the dashboard: its orders (list and detail), creating
+//! an order, looking a payment up by txid, its webhooks, and its settings
+//! (confirmations, thresholds, exchange-rate providers, key custody). All
+//! of it goes through the engine's admin API with the connection's
+//! decrypted `sk_...` token; the engine owns order state, and nothing here
+//! changes an order the engine created except through that API.
 //!
 //! A user can have more than one `store_connections` row, so every route
 //! here is scoped by `{id}` in the path - and ownership-checked:

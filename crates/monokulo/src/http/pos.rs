@@ -1904,8 +1904,9 @@ mod tests {
         order_ids
     }
 
-    /// Regression: the engine rate-limits each store (120 requests a minute
-    /// by default), and the terminal used to spend one engine request per
+    /// Regression: the engine rate-limits each store (per token, as
+    /// configured by `server.rate_limit_per_token_per_min`), and the
+    /// terminal used to spend one engine request per
     /// order on its list and again per order on its live stream, so a store
     /// with a few dozen open orders ran out after a reload or two and every
     /// screen showed "internal error". Both now cost one read per batch.

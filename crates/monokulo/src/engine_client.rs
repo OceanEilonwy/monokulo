@@ -446,9 +446,7 @@ impl EngineClient {
 
     /// `POST {base_url}/api/v1/admin/tenant/webhooks` — registers a webhook for
     /// `sk`'s tenant (WBS 1.4.4), authenticated the same way `get_tenant` is.
-    /// `extra_headers` is never sent — no caller of this method needs it yet, and the
-    /// engine's own `CreateWebhookRequest` treats it as optional. Returns
-    /// `(webhook_id, signing_secret)` rather than a named struct since that's the
+    /// Returns `(webhook_id, signing_secret)` rather than a named struct since that's the
     /// entirety of what `http/connect.rs::finish` needs back.
     /// `extra_headers`, when non-empty, is sent as a flat JSON object of
     /// header name -> value strings - the exact shape the engine's own
