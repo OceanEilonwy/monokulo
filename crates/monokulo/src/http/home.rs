@@ -123,7 +123,6 @@ pub async fn dashboard_home(
             connection_id: row.id.clone(),
             display_name: display_name.clone(),
             platform: row.platform.clone(),
-            site_url: row.site_url.clone(),
             public_key: row.tenant_public_key.clone(),
             health,
             health_label,

@@ -406,9 +406,9 @@ pub async fn status_summary(State(engine): State<Engine>) -> Response {
 
 fn describe_engine_error(err: &EngineClientError) -> String {
     match err {
-        EngineClientError::Request(_) | EngineClientError::Middleware(_) => {
-            "the engine could not be reached".to_string()
-        }
+        EngineClientError::Request(_)
+        | EngineClientError::Middleware(_)
+        | EngineClientError::InvalidUrl(_) => "the engine could not be reached".to_string(),
         EngineClientError::EngineError { status, .. } => {
             format!("the engine responded with an error ({status})")
         }

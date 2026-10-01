@@ -200,7 +200,7 @@ const MAX_ORDER_EXPIRY_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// the exact same bound rather than a duplicated magic number. `0` is a legal
 /// lower bound - native 0-conf, see `status::derive_status`'s own doc comment for
 /// why a `confirmations_required = 0` tier needs no special handling to be safe.
-pub(crate) const MAX_CONFIRMATIONS_REQUIRED: u64 = 720;
+pub(crate) const MAX_CONFIRMATIONS_REQUIRED: u64 = shared::order_status::MAX_CONFIRMATIONS_REQUIRED;
 
 /// Shared by the tenant-level default (here) and `http::public::create_order_for_admin`'s
 /// per-order override - the exact same bound, so it's enforced in exactly one place

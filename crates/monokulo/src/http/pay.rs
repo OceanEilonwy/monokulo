@@ -1049,7 +1049,8 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold(
+            .create_confirmation_threshold_with_limit(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
                 "corrupt",
                 &row.id,
                 "not-an-amount",

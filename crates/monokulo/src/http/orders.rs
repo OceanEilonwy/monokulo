@@ -1908,226 +1908,6 @@ pub async fn update_base_currency(
     }
 }
 
-#[derive(Deserialize)]
-pub struct CreateConfirmationThresholdForm {
-    pub unit_amount: String,
-    pub confirmations_required: String,
-}
-
-/// `POST /dashboard/stores/{id}/settings/confirmation-thresholds` - adds
-/// one custom, amount-tiered confirmation threshold, one at a time (the same
-/// "add form, real POST, redirect back" shape webhooks already use). Three
-/// validated properties, in order: `confirmations_required` is a whole
-/// number; `unit_amount` is a real, non-negative decimal amount; this store
-/// doesn't already have 5 custom thresholds. A duplicate amount is rejected
-/// too, backstopped by `confirmation_thresholds`'s own `UNIQUE` constraint
-/// (`Db::create_confirmation_threshold`'s own doc comment) - the message
-/// here is just the friendlier surfaced form of that same rejection.
-pub async fn create_confirmation_threshold(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-    fx: FxRequest,
-    Path(id): Path<crate::db::ConnectionId>,
-    Form(form): Form<CreateConfirmationThresholdForm>,
-) -> Response {
-    const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state.db, &user, &id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
-        Ok(n) if n <= 720 => n,
-        Ok(_) => {
-            return render_store_settings_page(
-                &state,
-                row,
-                &user,
-                Some("Enter a whole number of confirmations from 0 to 720.".to_string()),
-                None,
-                Some((SECTION, fx)),
-            )
-            .await;
-        }
-        Err(_) => {
-            return render_store_settings_page(
-                &state,
-                row,
-                &user,
-                Some("Enter a whole number of confirmations.".to_string()),
-                None,
-                Some((SECTION, fx)),
-            )
-            .await
-        }
-    };
-
-    let unit_amount =
-        match crate::confirmation_thresholds::ThresholdAmount::parse(&form.unit_amount) {
-            Ok(amount) => amount,
-            Err(_) => {
-                return render_store_settings_page(
-                    &state,
-                    row,
-                    &user,
-                    Some("Enter a non-negative amount.".to_string()),
-                    None,
-                    Some((SECTION, fx)),
-                )
-                .await;
-            }
-        };
-    let canonical_amount = unit_amount.canonical();
-
-    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
-    let store_id = row.id.clone();
-    let existing = match state
-        .db
-        .read(move |db| db.list_confirmation_thresholds(&store_id))
-        .await
-    {
-        Ok(rows) => rows,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    if existing.iter().any(|threshold| {
-        crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount).is_err()
-    }) {
-        return render_store_settings_page(
-            &state,
-            row,
-            &user,
-            Some(
-                "An existing threshold amount is invalid. Delete it before adding another."
-                    .to_string(),
-            ),
-            None,
-            Some((SECTION, fx)),
-        )
-        .await;
-    }
-    if existing.iter().any(|threshold| {
-        crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount)
-            .is_ok_and(|amount| amount == unit_amount)
-    }) {
-        return render_store_settings_page(
-            &state,
-            row,
-            &user,
-            Some(format!(
-                "A threshold for {canonical_amount} already exists."
-            )),
-            None,
-            Some((SECTION, fx)),
-        )
-        .await;
-    }
-    let threshold_id = uuid::Uuid::new_v4().to_string();
-    let (store_id, amount, proof) = (row.id.clone(), canonical_amount.clone(), policy.proof());
-    let create_result = state
-        .db
-        .write(move |db| {
-            db.create_confirmation_threshold_with_limit(
-                proof,
-                &threshold_id,
-                &store_id,
-                &amount,
-                confirmations_required,
-                crate::now_unix(),
-            )
-        })
-        .await;
-    match create_result {
-        Ok(true) => {
-            saved(
-                &state,
-                row,
-                &user,
-                SECTION,
-                fx,
-                &format!("/dashboard/stores/{id}/settings"),
-            )
-            .await
-        }
-        Ok(false) => {
-            render_store_settings_page(
-                &state,
-                row,
-                &user,
-                Some(
-                    "You can define at most 5 custom thresholds. Delete one to add another."
-                        .to_string(),
-                ),
-                None,
-                Some((SECTION, fx)),
-            )
-            .await
-        }
-        Err(e) if e.is_unique_violation() => {
-            render_store_settings_page(
-                &state,
-                row,
-                &user,
-                Some(format!(
-                    "A threshold for {canonical_amount} already exists."
-                )),
-                None,
-                Some((SECTION, fx)),
-            )
-            .await
-        }
-        Err(_) => {
-            render_store_settings_page(
-                &state,
-                row,
-                &user,
-                Some("Something went wrong. Please try again.".to_string()),
-                None,
-                Some((SECTION, fx)),
-            )
-            .await
-        }
-    }
-}
-
-/// `POST /dashboard/stores/{id}/settings/confirmation-thresholds/{threshold_id}/delete` -
-/// the default/fallback threshold isn't one of these rows at all (it's
-/// `tenants.confirmations_required`, edited via `update_confirmations_required`
-/// instead), so there is no way to reach this handler for it - "cannot be
-/// deleted" is true by construction, not an extra check here.
-pub async fn delete_confirmation_threshold(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-    fx: FxRequest,
-    Path((id, threshold_id)): Path<(crate::db::ConnectionId, String)>,
-) -> Response {
-    const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state.db, &user, &id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
-    let (store_id, proof) = (row.id.clone(), policy.proof());
-    if state
-        .db
-        .write(move |db| db.delete_confirmation_threshold(proof, &store_id, &threshold_id))
-        .await
-        .is_err()
-    {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    saved(
-        &state,
-        row,
-        &user,
-        SECTION,
-        fx,
-        &format!("/dashboard/stores/{id}/settings"),
-    )
-    .await
-}
-
 /// Saves custom threshold additions and deletions in one SQLite transaction.
 /// The default has its own form and engine update, so neither save needs to
 /// coordinate writes across the control-plane and engine databases.
@@ -4894,7 +4674,8 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold(
+            .create_confirmation_threshold_with_limit(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
                 "old",
                 &shared::ids::ConnectionId::new(connection_id.to_string()),
                 "50",
@@ -4943,7 +4724,8 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold(
+            .create_confirmation_threshold_with_limit(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
                 "keep",
                 &shared::ids::ConnectionId::new(connection_id.to_string()),
                 "50",
@@ -5058,7 +4840,8 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold(
+            .create_confirmation_threshold_with_limit(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
                 existing_id,
                 &shared::ids::ConnectionId::new(connection_id.to_string()),
                 "50",
@@ -5201,9 +4984,12 @@ mod tests {
         router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[("unit_amount", "50.00"), ("confirmations_required", "20")],
+                &[
+                    ("new_unit_amount", "50.00"),
+                    ("new_confirmations_required", "20"),
+                ],
             ))
             .await
             .unwrap();
@@ -5256,9 +5042,12 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[("unit_amount", "50.00"), ("confirmations_required", "20")],
+                &[
+                    ("new_unit_amount", "50.00"),
+                    ("new_confirmations_required", "20"),
+                ],
             ))
             .await
             .unwrap();
@@ -5356,13 +5145,16 @@ mod tests {
         .await;
         let (connection_id, _) = create_connection(&router, &session_token).await;
         let direct_path =
-            format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds");
+            format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save");
         let response = router
             .clone()
             .oneshot(form_post_request(
                 &direct_path,
                 &session_token,
-                &[("unit_amount", "50"), ("confirmations_required", "20")],
+                &[
+                    ("new_unit_amount", "50"),
+                    ("new_confirmations_required", "20"),
+                ],
             ))
             .await
             .unwrap();
@@ -5372,7 +5164,10 @@ mod tests {
             .oneshot(form_post_request(
                 &direct_path,
                 &session_token,
-                &[("unit_amount", "50.0"), ("confirmations_required", "0")],
+                &[
+                    ("new_unit_amount", "50.0"),
+                    ("new_confirmations_required", "0"),
+                ],
             ))
             .await
             .unwrap();
@@ -5383,7 +5178,10 @@ mod tests {
             .oneshot(form_post_request(
                 &direct_path,
                 &session_token,
-                &[("unit_amount", "5e1"), ("confirmations_required", "0")],
+                &[
+                    ("new_unit_amount", "5e1"),
+                    ("new_confirmations_required", "0"),
+                ],
             ))
             .await
             .unwrap();
@@ -5430,9 +5228,14 @@ mod tests {
             router
                 .clone()
                 .oneshot(form_post_request(
-                    &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
+                    &format!(
+                        "/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"
+                    ),
                     &session_token,
-                    &[("unit_amount", amount), ("confirmations_required", "15")],
+                    &[
+                        ("new_unit_amount", amount),
+                        ("new_confirmations_required", "15"),
+                    ],
                 ))
                 .await
                 .unwrap();
@@ -5572,18 +5375,24 @@ mod tests {
         router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[("unit_amount", "50.00"), ("confirmations_required", "20")],
+                &[
+                    ("new_unit_amount", "50.00"),
+                    ("new_confirmations_required", "20"),
+                ],
             ))
             .await
             .unwrap();
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[("unit_amount", "50.00"), ("confirmations_required", "5")],
+                &[
+                    ("new_unit_amount", "50.00"),
+                    ("new_confirmations_required", "5"),
+                ],
             ))
             .await
             .unwrap();
@@ -5679,9 +5488,12 @@ mod tests {
         router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[("unit_amount", "5.00"), ("confirmations_required", "20")],
+                &[
+                    ("new_unit_amount", "5.00"),
+                    ("new_confirmations_required", "20"),
+                ],
             ))
             .await
             .unwrap();
@@ -5801,9 +5613,12 @@ mod tests {
         router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[("unit_amount", "50.00"), ("confirmations_required", "99")],
+                &[
+                    ("new_unit_amount", "50.00"),
+                    ("new_confirmations_required", "99"),
+                ],
             ))
             .await
             .unwrap();
