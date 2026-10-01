@@ -10529,11 +10529,17 @@ pub(crate) mod tests {
                     );
                 }
                 let polls = 1 + next(60) as usize;
-                let _ = run_until_killed(
+                // Only a tick that was cut off (`None`) is tolerated: one
+                // that ran to the end must have succeeded, or a failure on
+                // the interrupted path would go unseen.
+                if let Some(result) = run_until_killed(
                     run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0),
                     polls,
                 )
-                .await;
+                .await
+                {
+                    result.unwrap_or_else(|e| panic!("seed {seed} step {step}: {e}"));
+                }
             }
             for _ in 0..5 {
                 run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)

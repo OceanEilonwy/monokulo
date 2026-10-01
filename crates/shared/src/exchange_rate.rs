@@ -298,7 +298,9 @@ impl CoingeckoRateProvider {
                     .insert(key.clone(), (rate, std::time::Instant::now()));
             }
         }
-        Ok(cache.rates.get(&key).map(|(rate, _)| *rate))
+        Ok(cache.rates.get(&key).and_then(|(rate, fetched_at)| {
+            still_usable(*rate, *fetched_at, max_age, "coingecko", &key)
+        }))
     }
 
     /// The list of currency tickers Coingecko itself reports supporting
@@ -355,10 +357,39 @@ pub use crate::xmr_amount::{format_piconero_as_xmr, parse_xmr_to_piconero, Amoun
 /// only ever ask for a hair more than the price, which the status ladder already
 /// handles as an overpayment. Erring against the party who chose the amount is the
 /// safe direction.
+/// A cached rate kept through misses (a provider that stops quoting a
+/// currency for a while) is served at most this many `max_age`s after it
+/// was fetched, and never less than [`MIN_STALE_CEILING`]; older, the
+/// currency has no rate rather than a price the market has moved away
+/// from.
+pub const MAX_STALE_FACTOR: u32 = 4;
+pub const MIN_STALE_CEILING: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// `rate`, unless it was fetched longer ago than the stale ceiling
+/// ([`MAX_STALE_FACTOR`] `max_age`s, at least [`MIN_STALE_CEILING`]).
+pub fn still_usable(
+    rate: u64,
+    fetched_at: std::time::Instant,
+    max_age: std::time::Duration,
+    provider: &str,
+    currency: &str,
+) -> Option<u64> {
+    if fetched_at.elapsed() > (max_age * MAX_STALE_FACTOR).max(MIN_STALE_CEILING) {
+        tracing::warn!(
+            provider,
+            currency,
+            "the last rate is too old to use and no fresh one came"
+        );
+        None
+    } else {
+        Some(rate)
+    }
+}
+
 pub fn compute_xmr_amount(fiat_amount: &str, piconero_per_unit: u64) -> Result<u64, AmountError> {
     let (whole, fraction) = split_decimal(fiat_amount)?;
     if fraction.len() > 2 {
-        return Err(AmountError::TooManyDecimalPlaces);
+        return Err(AmountError::TooManyDecimalPlaces { max: 2 });
     }
     let whole: u128 = if whole.is_empty() {
         0
@@ -455,7 +486,7 @@ mod tests {
         // More than 2 decimal places is rejected for a fiat currency, unlike XMR.
         assert_eq!(
             compute_order_amount("USD", "25.001", 6_700_000_000),
-            Err(AmountError::TooManyDecimalPlaces)
+            Err(AmountError::TooManyDecimalPlaces { max: 2 })
         );
     }
 
@@ -481,7 +512,7 @@ mod tests {
     fn more_than_two_decimal_places_is_rejected_not_truncated() {
         assert_eq!(
             compute_xmr_amount("5.123", 1_000_000),
-            Err(AmountError::TooManyDecimalPlaces)
+            Err(AmountError::TooManyDecimalPlaces { max: 2 })
         );
     }
 
@@ -989,5 +1020,22 @@ mod tests {
             assert!(usd > 0);
             assert!(supported.contains(&"USD".to_string()));
         }
+    }
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::*;
+
+    /// A rate kept through misses is served until the ceiling, never after.
+    #[test]
+    fn a_rate_older_than_the_stale_ceiling_is_not_served() {
+        let max_age = std::time::Duration::from_secs(60);
+        let now = std::time::Instant::now();
+        assert_eq!(still_usable(5, now, max_age, "test", "USD"), Some(5));
+        let old = now
+            .checked_sub(MIN_STALE_CEILING + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(still_usable(5, old, max_age, "test", "USD"), None);
     }
 }

@@ -164,14 +164,30 @@ async fn run_upstream(
 ) {
     let mut delay = Duration::from_secs(1);
     loop {
-        if let Ok(mut response) = engine.open_order_events(&sk).await {
+        let opened = engine.open_order_events(&sk).await;
+        if let Err(e) = &opened {
+            tracing::warn!(store.id = %connection_id, error = %e, retry_in = ?delay, "could not open the engine's order event stream");
+        }
+        if let Ok(mut response) = opened {
             let mut parser = SseParser::default();
             loop {
-                let chunk =
-                    match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, response.chunk()).await {
-                        Ok(Ok(Some(chunk))) => chunk,
-                        _ => break,
-                    };
+                let chunk = match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, response.chunk())
+                    .await
+                {
+                    Ok(Ok(Some(chunk))) => chunk,
+                    Ok(Ok(None)) => {
+                        tracing::debug!(store.id = %connection_id, "the engine closed the order event stream");
+                        break;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(store.id = %connection_id, error = %e, "reading the engine's order event stream failed");
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::warn!(store.id = %connection_id, "the engine's order event stream went quiet; reconnecting");
+                        break;
+                    }
+                };
                 for (event, data) in parser.push(&chunk) {
                     let Some(hub) = hub.upgrade() else { return };
                     match event.as_str() {

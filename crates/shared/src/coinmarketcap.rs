@@ -138,7 +138,9 @@ impl CoinMarketCapRateProvider {
                 cache.insert(key.clone(), (rate, std::time::Instant::now()));
             }
         }
-        Ok(cache.get(&key).map(|(rate, _)| *rate))
+        Ok(cache.get(&key).and_then(|(rate, fetched_at)| {
+            crate::exchange_rate::still_usable(*rate, *fetched_at, max_age, "coinmarketcap", &key)
+        }))
     }
 }
 
