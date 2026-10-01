@@ -80,7 +80,8 @@ pub struct StoreSettingsData {
     pub clock: super::time::Clock,
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
-    /// The tenant's current confirmation threshold - `10` when the engine is
+    /// The tenant's current confirmation threshold -
+    /// `confirmation_thresholds::FALLBACK_CONFIRMATIONS` when the engine is
     /// currently unreachable.
     pub confirmations_required: u64,
     /// Every provider this instance offers: the store's enabled ones first,
@@ -102,6 +103,9 @@ pub struct StoreSettingsData {
     /// above whatever amount they don't want 0-conf applied to.
     pub zero_conf_enabled: bool,
     pub webhooks: Vec<WebhookRowViewModel>,
+    /// The engine couldn't be asked for the webhooks: the section says so
+    /// rather than showing none, and the rest of the page still works.
+    pub webhooks_unavailable: bool,
     /// Set only immediately after a successful webhook creation - the
     /// engine hands back a real signing secret exactly once, at creation
     /// time, with no way to ever fetch it again after this moment. `None`
@@ -457,7 +461,9 @@ fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
                         }
                     }
                 }
-                @if store.webhooks.is_empty() {
+                @if store.webhooks_unavailable {
+                    div class="error" role="alert" { "Couldn't reach the engine to list this store's webhooks. Reload the page to try again." }
+                } @else if store.webhooks.is_empty() {
                     p class="muted" { "No webhooks yet." }
                 }
                 div class="box" {
@@ -704,6 +710,7 @@ mod tests {
             webhooks: vec![],
             created_webhook_signing_secret: None,
             settings_error: None,
+            webhooks_unavailable: false,
             embed_domains: vec![],
             embed_restricted: false,
             embed_can_restrict: false,
@@ -1045,6 +1052,18 @@ mod tests {
             "existing thresholds need a Save button, got: {html}"
         );
         assert!(!html.contains(r#"<button type="submit" class="btn-primary">Add</button>"#));
+    }
+
+    #[test]
+    fn says_when_the_webhooks_could_not_be_listed() {
+        let store = StoreSettingsData {
+            webhooks_unavailable: true,
+            ..base_store()
+        };
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
+        assert!(html.contains("list this store's webhooks"), "{html}");
+        assert!(!html.contains("No webhooks yet."));
+        assert!(html.contains("Add a webhook"), "the form still works");
     }
 
     #[test]

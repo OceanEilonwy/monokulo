@@ -1003,7 +1003,7 @@ pub(super) async fn render_store_settings_page(
     let confirmations_required = tenant_result
         .as_ref()
         .map(|t| t.confirmations_required)
-        .unwrap_or(10);
+        .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS);
     // Native 0-conf: the Default row's own checkbox is checked exactly when the
     // tenant's default confirmations count already is 0 - no separate engine
     // field to read.
@@ -1049,17 +1049,25 @@ pub(super) async fn render_store_settings_page(
         .any(|domain| crate::embed_domains::DomainState::of(domain, now).counts());
     let embed_domains = super::embed_domains::domain_views(embed_domain_rows, now);
 
-    let webhooks = match state.engine.client.list_webhooks(&sk).await {
-        Ok(webhooks) => webhooks
-            .into_iter()
-            .map(|w| views::store_settings::WebhookRowViewModel {
-                webhook_id: w.webhook_id,
-                url: w.url,
-                enabled: w.enabled,
-                created_at: w.created_at,
-            })
-            .collect(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    // An engine that can't list them leaves the rest of the page usable:
+    // the webhooks section says so instead.
+    let (webhooks, webhooks_unavailable) = match state.engine.client.list_webhooks(&sk).await {
+        Ok(webhooks) => (
+            webhooks
+                .into_iter()
+                .map(|w| views::store_settings::WebhookRowViewModel {
+                    webhook_id: w.webhook_id,
+                    url: w.url,
+                    enabled: w.enabled,
+                    created_at: w.created_at,
+                })
+                .collect(),
+            false,
+        ),
+        Err(e) => {
+            tracing::warn!(store.id = %row.id, error = %e, "could not list the store's webhooks");
+            (Vec::new(), true)
+        }
     };
 
     let row = row.into_row();
@@ -1077,6 +1085,7 @@ pub(super) async fn render_store_settings_page(
             confirmation_thresholds_at_max,
             zero_conf_enabled,
             webhooks,
+            webhooks_unavailable,
             created_webhook_signing_secret,
             settings_error,
             embed_domains,
@@ -1415,7 +1424,7 @@ pub async fn create_order(
             let recorded = state
                 .db
                 .write(move |db| {
-                    let recorded = db.create_order_currency_metadata(
+                    db.create_order_currency_metadata(
                         &store_id,
                         &order_id,
                         &currency,
@@ -1429,11 +1438,8 @@ pub async fn create_order(
                         // The merchant's own signed-in session: as trusted as
                         // the key.
                         true,
-                    );
-                    if let Err(e) = db.set_order_source(&store_id, &order_id, "dashboard") {
-                        tracing::warn!(error = %e, order.id = %order_id, "could not record where an order came from");
-                    }
-                    recorded
+                        Some("dashboard"),
+                    )
                 })
                 .await;
             if let Err(e) = recorded {

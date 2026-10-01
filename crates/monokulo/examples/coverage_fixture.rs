@@ -183,6 +183,7 @@ async fn mark_browser_created(
         None,
         1,
         false,
+        None,
     ) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,

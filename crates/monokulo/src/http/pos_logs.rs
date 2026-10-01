@@ -86,7 +86,9 @@ fn order_id(text: &str) -> Option<String> {
 
 /// `key=value key=value`, keys in alphabetical order, clipped to `MAX_DETAIL`
 /// characters. Keys are reduced to `[a-z0-9_]`, values have their control
-/// characters replaced, and a value with a space is quoted.
+/// characters replaced, and a value with a space is quoted: in `"`, with
+/// only `\` and `"` escaped, so [`detail_pairs`] reads back exactly what
+/// was written.
 pub fn detail_text(detail: &Map<String, Value>) -> String {
     let mut out = String::new();
     for (key, value) in detail {
@@ -116,7 +118,7 @@ pub fn detail_text(detail: &Map<String, Value>) -> String {
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
         let value = if value.contains(' ') || value.is_empty() {
-            format!("{value:?}")
+            format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
         } else {
             value
         };
@@ -201,21 +203,25 @@ pub fn detail_pairs(text: &str) -> Vec<(String, String)> {
         let key = rest[..eq].to_string();
         rest = &rest[eq + 1..];
         let value = if let Some(quoted) = rest.strip_prefix('"') {
-            // A Rust debug string: ends at the first unescaped quote.
-            let mut end = None;
-            let mut escaped = false;
-            for (i, c) in quoted.char_indices() {
+            // Ends at the first unescaped quote; a backslash keeps the
+            // character after it as it is.
+            let mut value = String::new();
+            let mut end = quoted.len();
+            let mut chars = quoted.char_indices();
+            while let Some((i, c)) = chars.next() {
                 match c {
-                    '\\' if !escaped => escaped = true,
-                    '"' if !escaped => {
-                        end = Some(i);
+                    '\\' => {
+                        if let Some((_, next)) = chars.next() {
+                            value.push(next);
+                        }
+                    }
+                    '"' => {
+                        end = i;
                         break;
                     }
-                    _ => escaped = false,
+                    c => value.push(c),
                 }
             }
-            let end = end.unwrap_or(quoted.len());
-            let value = quoted[..end].replace("\\\"", "\"").replace("\\\\", "\\");
             rest = quoted.get(end + 1..).unwrap_or("");
             value
         } else {
@@ -233,6 +239,27 @@ pub fn detail_pairs(text: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Quoted values read back exactly, whatever they hold: quotes,
+    /// backslashes, and characters `{:?}` would have escaped (a zero-width
+    /// space, a line separator).
+    #[test]
+    fn detail_text_and_detail_pairs_are_inverses() {
+        let value = "say \"hi\" \\ to\u{200b}them\u{2028}now";
+        let mut detail = Map::new();
+        detail.insert("note".into(), Value::String(value.into()));
+        detail.insert("empty".into(), Value::String(String::new()));
+        detail.insert("plain".into(), Value::String("ok".into()));
+        let text = detail_text(&detail);
+        assert_eq!(
+            detail_pairs(&text),
+            [
+                ("empty".to_string(), String::new()),
+                ("note".to_string(), value.to_string()),
+                ("plain".to_string(), "ok".to_string()),
+            ]
+        );
+    }
 
     #[test]
     fn session_ids_kinds_and_order_ids_are_checked() {
