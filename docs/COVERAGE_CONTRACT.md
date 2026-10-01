@@ -32,7 +32,7 @@ branch; counts from different languages must not be summed.
 The Rust collector refreshes the newest available nightly compiler and
 `cargo-llvm-cov` release on each run with `rustup update nightly`,
 `rustup component add llvm-tools-preview --toolchain nightly`, and
-`cargo +stable install cargo-llvm-cov --locked`. These commands need network
+`cargo install cargo-llvm-cov --locked`. These commands need network
 access. Exact `rustc`, Cargo, and collector versions go into each manifest.
 
 ## Commands

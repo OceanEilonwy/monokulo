@@ -9,8 +9,8 @@ set -euo pipefail
 if test "${COVERAGE_TOOLS_PREINSTALLED:-}" != 1; then
   rustup update nightly
   rustup component add llvm-tools-preview --toolchain nightly
-  cargo +stable install cargo-llvm-cov --locked
-  cargo +stable install cargo-nextest --locked
+  cargo install cargo-llvm-cov --locked
+  cargo install cargo-nextest --locked
 fi
 
 rustc +nightly --version
