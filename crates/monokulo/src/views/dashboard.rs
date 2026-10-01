@@ -60,7 +60,9 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
             @if data.has_stores {
                 div class="box" {
                     strong { "Total received (detected):" }
-                    " " (data.total_received_xmr) " XMR across all connected stores"
+                    // The engine lists a store's latest orders, not all
+                    // of them: the figure says so rather than claim a total.
+                    " " (data.total_received_xmr) " XMR across each connected store's latest 50 orders"
                 }
 
                 h2 { "Your stores" }

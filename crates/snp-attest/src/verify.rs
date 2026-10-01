@@ -254,7 +254,15 @@ fn verify_report_signature(
     let spki_bytes = vcek_cert.public_key().subject_public_key.as_ref();
     let verifying_key =
         P384VerifyingKey::from_sec1_bytes(spki_bytes).map_err(|_| VerifyError::InvalidVcekKey)?;
+    verify_report_signature_with_key(report, &verifying_key)
+}
 
+/// The report's own signature against a VCEK's key: the decoding the
+/// tests exercise directly with a key of their own.
+fn verify_report_signature_with_key(
+    report: &AttestationReport,
+    verifying_key: &P384VerifyingKey,
+) -> Result<(), VerifyError> {
     // The report stores r/s little-endian, 72 bytes each with only the low
     // 48 meaningful (P-384 scalars are 48 bytes) - reverse to the big-endian
     // form a standard ECDSA signature needs. See `report::RawSignature`'s
@@ -362,8 +370,6 @@ mod tests {
     fn report_signature_round_trips_through_the_little_endian_encoding() {
         #[allow(deprecated)]
         let signing_key = SigningKey::random(&mut rand::rng());
-        let mut report_bytes = crate::report::REPORT_LEN;
-        let _ = &mut report_bytes; // silence unused in case of future refactor
         let mut raw = [0u8; crate::report::REPORT_LEN];
         raw[0x34..0x38].copy_from_slice(&1u32.to_le_bytes());
         // Fill the signed region with distinguishable, non-zero content so a
@@ -383,21 +389,9 @@ mod tests {
             raw[0x2A0 + 72 + i] = s[47 - i];
         }
 
-        let verifying_key = signing_key.verifying_key();
-        let spki_point = verifying_key.to_sec1_point(false);
-
-        // Re-decode exactly as verify_report_signature does, and confirm it
-        // verifies against the same key.
-        let mut r_be = [0u8; 48];
-        let mut s_be = [0u8; 48];
-        for i in 0..48 {
-            r_be[i] = raw[0x2A0..0x2A0 + 72][47 - i];
-            s_be[i] = raw[0x2A0 + 72..0x2A0 + 144][47 - i];
-        }
-        let recovered_sig = P384Signature::from_scalars(r_be, s_be).unwrap();
-        let recovered_key = P384VerifyingKey::from_sec1_bytes(spki_point.as_bytes()).unwrap();
-        recovered_key
-            .verify(&raw[..crate::report::SIGNED_LEN], &recovered_sig)
+        // Through the real parser and the real decoder.
+        let report = crate::report::parse(&raw, Product::Milan).unwrap();
+        verify_report_signature_with_key(&report, signing_key.verifying_key())
             .expect("round-tripped signature must verify");
     }
 
@@ -409,6 +403,7 @@ mod tests {
         for (i, b) in raw[..crate::report::SIGNED_LEN].iter_mut().enumerate() {
             *b = (i % 251) as u8;
         }
+        raw[0x34..0x38].copy_from_slice(&1u32.to_le_bytes()); // sig_algo, for the parser
         let sig: SigT =
             ecdsa::signature::Signer::sign(&signing_key, &raw[..crate::report::SIGNED_LEN]);
         let (r, s) = (sig.r().to_bytes(), sig.s().to_bytes());
@@ -418,20 +413,12 @@ mod tests {
         }
 
         // Tamper with one byte inside the signed region after signing.
-        raw[10] ^= 0xFF;
+        raw[0x10] ^= 0xFF;
 
-        let verifying_key = signing_key.verifying_key();
-        let spki_point = verifying_key.to_sec1_point(false);
-        let mut r_be = [0u8; 48];
-        let mut s_be = [0u8; 48];
-        for i in 0..48 {
-            r_be[i] = raw[0x2A0..0x2A0 + 72][47 - i];
-            s_be[i] = raw[0x2A0 + 72..0x2A0 + 144][47 - i];
-        }
-        let sig2 = P384Signature::from_scalars(r_be, s_be).unwrap();
-        let key2 = P384VerifyingKey::from_sec1_bytes(spki_point.as_bytes()).unwrap();
-        assert!(key2
-            .verify(&raw[..crate::report::SIGNED_LEN], &sig2)
-            .is_err());
+        let report = crate::report::parse(&raw, Product::Milan).unwrap();
+        assert!(matches!(
+            verify_report_signature_with_key(&report, signing_key.verifying_key()),
+            Err(VerifyError::ReportSignatureInvalid)
+        ));
     }
 }
