@@ -725,7 +725,22 @@ pub async fn checkout_events(
             let (state, pk, order_id, options) =
                 (state.clone(), pk.clone(), order_id.clone(), options.clone());
             async move {
-                let (row, sk, detail) = load_order(&state, &pk, &order_id).await.ok()?;
+                let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
+                    Ok(loaded) => loaded,
+                    // The order is gone (or never was this store's): one
+                    // last event and the stream ends, rather than staying
+                    // open for good. An unreachable engine waits instead.
+                    Err(LoadError::NotFound) => {
+                        return Some(crate::live::LiveSnapshot {
+                            events: vec![axum::response::sse::Event::default()
+                                .event("done")
+                                .data("not_found")],
+                            fingerprint: "not_found".to_string(),
+                            terminal: true,
+                        })
+                    }
+                    Err(LoadError::Internal) => return None,
+                };
                 let view =
                     build_checkout_view(&state, &pk, &row, &sk, detail, None, &options).await;
                 let status = CheckoutStatusResponse {

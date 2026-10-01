@@ -172,9 +172,12 @@ pub async fn trace(sources: &Sources, trace_id: &str) -> (Trace, Option<String>)
 
 /// Line counts per slice of `[from, to)` across both stores.
 pub async fn histogram(sources: &Sources, request: &HistogramRequest) -> Vec<u64> {
-    let filter = telemetry::query::parse(request.q.as_deref().unwrap_or(""))
-        .ok()
-        .flatten();
+    // A query that doesn't parse matches nothing: an empty histogram, not
+    // one of every line (the page reports the query's problem).
+    let filter = match telemetry::query::parse(request.q.as_deref().unwrap_or("")) {
+        Ok(filter) => filter,
+        Err(_) => return vec![0; request.buckets.clamp(1, 500) as usize],
+    };
     let (from, to, buckets) = (request.from, request.to, request.buckets);
     let (local_counts, engine_counts) = tokio::join!(
         local(&sources.local, move |s| s.histogram(

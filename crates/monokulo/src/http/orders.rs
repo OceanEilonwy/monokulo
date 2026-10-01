@@ -2861,7 +2861,13 @@ mod tests {
         );
         drop(guard);
         let response = task.await.unwrap();
-        assert!(response.status().is_redirection() || response.status() == StatusCode::OK);
+        // Saved: a plain form post is redirected; a rejected one would be
+        // re-rendered with 200, so 200 is not accepted here.
+        assert!(
+            response.status().is_redirection(),
+            "got {}",
+            response.status()
+        );
     }
 
     #[tokio::test]
@@ -3922,8 +3928,10 @@ mod tests {
             .with_two_custody_backends()
             .spawn()
             .await;
-        let (mut state, _unused_engine) = test_state_with_real_engine().await;
-        state.engine.client = EngineClient::new(format!("http://{}", engine.addr));
+        let state = AppState {
+            engine: crate::http::Engine::new(EngineClient::new(format!("http://{}", engine.addr))),
+            ..AppState::for_tests()
+        };
         crate::http::status_page::get_status_cached(&state.engine)
             .await
             .expect("engine status");
