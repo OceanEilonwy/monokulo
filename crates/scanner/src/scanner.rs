@@ -2835,7 +2835,9 @@ pub(crate) mod tests {
         assert_eq!(order.status, crate::status::OrderStatus::Unconfirmed);
         assert!(order.amount_received_piconero > 0);
 
-        let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
+        let due = s
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+            .unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].webhook_id, webhook.id);
         assert_eq!(due[0].event_type, "order.unconfirmed");
@@ -3482,7 +3484,7 @@ pub(crate) mod tests {
 
         // And the transition the merchant is actually waiting on was announced.
         let events: Vec<String> = s
-            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
             .unwrap()
             .into_iter()
             .inspect(|d| assert_eq!(d.webhook_id, webhook.id))
@@ -3558,7 +3560,7 @@ pub(crate) mod tests {
             crate::status::OrderStatus::Expired
         );
         let expired_events = s
-            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
             .unwrap()
             .into_iter()
             .filter(|d| d.order_id == stale.id)
@@ -3645,7 +3647,9 @@ pub(crate) mod tests {
             .status,
             crate::status::OrderStatus::Confirming
         );
-        let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
+        let due = s
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+            .unwrap();
         assert_eq!(
             due.len(),
             1,
@@ -3937,7 +3941,9 @@ pub(crate) mod tests {
 
         let first_payload: serde_json::Value = {
             let s = store.lock();
-            let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
+            let due = s
+                .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+                .unwrap();
             assert_eq!(due.len(), 1);
             serde_json::from_str(&due[0].payload_json).unwrap()
         };
@@ -3962,7 +3968,9 @@ pub(crate) mod tests {
         // body - the id must identify the *event*, not the attempt.
         {
             let s = store.lock();
-            let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
+            let due = s
+                .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+                .unwrap();
             s.schedule_webhook_retry(
                 due[0].delivery_id,
                 0,
@@ -3971,7 +3979,9 @@ pub(crate) mod tests {
                 crate::now_unix(),
             )
             .unwrap();
-            let retried = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
+            let retried = s
+                .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+                .unwrap();
             let retried_payload: serde_json::Value =
                 serde_json::from_str(&retried[0].payload_json).unwrap();
             assert_eq!(retried_payload["event_id"], first_payload["event_id"]);
@@ -3994,7 +4004,7 @@ pub(crate) mod tests {
         .unwrap();
         let s = store.lock();
         let paid = s
-            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
             .unwrap()
             .into_iter()
             .find(|d| d.event_type == "order.overpaid")
@@ -4293,7 +4303,9 @@ pub(crate) mod tests {
                 crate::status::OrderStatus::Pending,
                 "the mempool match's status recompute must not have been discarded"
             );
-            let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
+            let due = s
+                .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+                .unwrap();
             assert!(
                 due.iter()
                     .any(|d| d.webhook_id == webhook.id && d.event_type.starts_with("order.")),
@@ -4496,7 +4508,7 @@ pub(crate) mod tests {
         assert!(order.double_spend_detected_at.is_some());
 
         let events: Vec<String> = s
-            .due_webhook_deliveries(crate::now_unix() + 1, 20)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 20)
             .unwrap()
             .into_iter()
             .map(|d| d.event_type)
@@ -4657,7 +4669,7 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .pending_payment_recomputes(monero::Network::Mainnet)
+                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
                 .unwrap(),
             vec![order_id.clone()]
         );
@@ -4690,11 +4702,13 @@ pub(crate) mod tests {
             .status,
             crate::status::OrderStatus::Confirming
         );
-        let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
+        let due = s
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+            .unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].event_type, "order.confirming");
         assert!(s
-            .pending_payment_recomputes(monero::Network::Mainnet)
+            .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
             .unwrap()
             .is_empty());
     }
@@ -5004,7 +5018,7 @@ pub(crate) mod tests {
         assert_eq!(order.status, crate::status::OrderStatus::Pending);
         assert!(order.double_spend_detected_at.is_some());
         let events: Vec<String> = s
-            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
             .unwrap()
             .into_iter()
             .map(|d| d.event_type)
@@ -5765,7 +5779,7 @@ pub(crate) mod tests {
         assert_eq!(order.status, crate::status::OrderStatus::Pending);
         assert!(order.double_spend_detected_at.is_some());
         let events: Vec<String> = s
-            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
             .unwrap()
             .into_iter()
             .map(|d| d.event_type)
@@ -5921,7 +5935,7 @@ pub(crate) mod tests {
             "the only voided payment on the order was cleared - the sticky flag should clear too"
         );
         let events: Vec<String> = s
-            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
             .unwrap()
             .into_iter()
             .map(|d| d.event_type)
@@ -6411,7 +6425,7 @@ pub(crate) mod tests {
             "no incident occurred - nothing should be stamped"
         );
         let events: Vec<String> = s
-            .due_webhook_deliveries(crate::now_unix() + 1, 10)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
             .unwrap()
             .into_iter()
             .map(|d| d.event_type)
@@ -8698,7 +8712,7 @@ pub(crate) mod tests {
         );
         assert!(order.double_spend_detected_at.is_some());
         let events: Vec<String> = s
-            .due_webhook_deliveries(crate::now_unix() + 1, 20)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 20)
             .unwrap()
             .into_iter()
             .map(|d| d.event_type)
@@ -9129,7 +9143,7 @@ pub(crate) mod tests {
         );
         let expired_events = store
             .lock()
-            .due_webhook_deliveries(crate::now_unix() + 1, 100)
+            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 100)
             .unwrap()
             .into_iter()
             .filter(|d| d.order_id == c_order && d.event_type == "order.expired")
@@ -10439,7 +10453,7 @@ pub(crate) mod tests {
         );
         let events = store
             .lock()
-            .due_webhook_deliveries(i64::MAX / 2, 100)
+            .due_webhook_deliveries_for_test(i64::MAX / 2, 100)
             .unwrap();
         assert_eq!(
             events
@@ -10521,7 +10535,7 @@ pub(crate) mod tests {
                 .unwrap();
             let events = store
                 .lock()
-                .due_webhook_deliveries(i64::MAX / 2, 10_000)
+                .due_webhook_deliveries_for_test(i64::MAX / 2, 10_000)
                 .unwrap();
             for ((tenant_id, _), order_id) in tenants.iter().zip(&orders) {
                 assert_eq!(
@@ -11686,7 +11700,7 @@ pub(crate) mod tests {
         assert!(!restored, "already restored by the time it was applied");
         let events: Vec<String> = store
             .lock()
-            .due_webhook_deliveries(i64::MAX / 2, 10)
+            .due_webhook_deliveries_for_test(i64::MAX / 2, 10)
             .unwrap()
             .into_iter()
             .map(|d| d.event_type)
@@ -11792,7 +11806,7 @@ pub(crate) mod tests {
         assert_eq!((payment.voided_at, payment.block_height), (None, Some(3)));
         let events: Vec<String> = store
             .lock()
-            .due_webhook_deliveries(i64::MAX / 2, 10)
+            .due_webhook_deliveries_for_test(i64::MAX / 2, 10)
             .unwrap()
             .into_iter()
             .map(|d| d.event_type)

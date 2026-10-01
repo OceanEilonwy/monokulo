@@ -432,7 +432,11 @@ impl Store {
 
     /// Up to `limit` orders on `network` whose status may have changed with
     /// time (`next_due_at_utc <= now`) or height (`next_due_height <= tip`),
-    /// earliest due first.
+    /// earliest due first. Each kind gets half the page before either takes
+    /// what the other left: an order held back (its expiry while its store
+    /// lags, its settlement during a reorg) is due again at once every
+    /// round, and enough of them would otherwise fill the page and leave
+    /// confirming orders without their per-block recompute.
     pub fn due_order_ids(
         &self,
         network: monero::Network,
@@ -440,9 +444,8 @@ impl Store {
         tip: u64,
         limit: usize,
     ) -> Result<Vec<OrderId>> {
-        let mut ids: Vec<OrderId> = Vec::new();
         let tip = i64::try_from(tip).unwrap_or(i64::MAX);
-        for (sql, due) in [
+        let queries = [
             (
                 "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.tenant_id
                  WHERE o.next_due_at_utc IS NOT NULL AND o.next_due_at_utc <= ?2 AND t.network = ?1
@@ -455,16 +458,32 @@ impl Store {
                  ORDER BY o.next_due_height, o.id LIMIT ?3",
                 tip,
             ),
-        ] {
-            for id in self.rows(
+        ];
+        let mut found: Vec<Vec<OrderId>> = Vec::with_capacity(queries.len());
+        for (sql, due) in queries {
+            found.push(self.rows(
                 sql,
                 params![shared::network::SqlNetwork(network), due, Unsigned(limit)],
                 |row| row.get::<_, OrderId>(0),
-            )? {
-                if ids.len() < limit && !ids.contains(&id) {
+            )?);
+        }
+        let mut ids: Vec<OrderId> = Vec::with_capacity(limit);
+        let mut take = |from: &mut Vec<OrderId>, up_to: usize| {
+            let mut taken = 0;
+            while taken < up_to && !from.is_empty() && ids.len() < limit {
+                let id = from.remove(0);
+                taken += 1;
+                if !ids.contains(&id) {
                     ids.push(id);
                 }
             }
+        };
+        let share = limit.div_ceil(2);
+        for list in found.iter_mut() {
+            take(list, share);
+        }
+        for list in found.iter_mut() {
+            take(list, limit);
         }
         Ok(ids)
     }
@@ -1199,7 +1218,7 @@ mod tests {
             .unwrap();
         assert_eq!(frozen, crate::status::OrderStatus::Confirming);
         assert_eq!(
-            s.pending_payment_recomputes(monero::Network::Mainnet)
+            s.pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
                 .unwrap(),
             vec![o.clone()]
         );
@@ -1222,7 +1241,7 @@ mod tests {
             .unwrap();
         assert_eq!(settled, crate::status::OrderStatus::Paid);
         assert!(s
-            .pending_payment_recomputes(monero::Network::Mainnet)
+            .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
             .unwrap()
             .is_empty());
         drop(store);
@@ -1757,6 +1776,48 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    /// More time-due orders than a page: the height-due ones still get
+    /// their half of it, so confirming orders are recomputed every block
+    /// however many orders are held back by time.
+    #[test]
+    fn height_due_orders_get_half_the_page_whatever_the_time_due_backlog() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant_id = tenant(&store, "mainnet");
+        let by_time: Vec<String> = (0..8).map(|_| order(&store, &tenant_id, 10_000)).collect();
+        let by_height: Vec<String> = (0..3).map(|_| order(&store, &tenant_id, 10_000)).collect();
+        for id in &by_time {
+            store
+                .execute_raw_for_test(&format!(
+                    "UPDATE orders SET next_due_at_utc = 50 WHERE id = '{id}'"
+                ))
+                .unwrap();
+        }
+        for id in &by_height {
+            store
+                .execute_raw_for_test(&format!(
+                    "UPDATE orders SET next_due_height = 7 WHERE id = '{id}'"
+                ))
+                .unwrap();
+        }
+        let due = store
+            .due_order_ids(monero::Network::Mainnet, 100, 10, 6)
+            .unwrap();
+        assert_eq!(due.len(), 6);
+        let heights = due
+            .iter()
+            .filter(|id| by_height.contains(&id.to_string()))
+            .count();
+        assert_eq!(
+            heights, 3,
+            "every height-due order, within its half: {due:?}"
+        );
+        // With room to spare, the time-due ones take what the others left.
+        let due = store
+            .due_order_ids(monero::Network::Mainnet, 100, 10, 20)
+            .unwrap();
+        assert_eq!(due.len(), 11);
     }
 
     /// A reorg is only finished once it is processing and has nothing

@@ -319,7 +319,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     let paid_events = |store: &SharedStore| {
         store
             .lock()
-            .due_webhook_deliveries(i64::MAX, 100)
+            .due_webhook_deliveries_for_test(i64::MAX, 100)
             .unwrap()
             .iter()
             .filter(|d| d.event_type == "order.paid")
@@ -1547,7 +1547,7 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     );
     assert!(store
         .lock()
-        .due_webhook_deliveries(i64::MAX / 2, 10)
+        .due_webhook_deliveries_for_test(i64::MAX / 2, 10)
         .unwrap()
         .iter()
         .any(|d| d.event_type == "order.unconfirmed"));
@@ -3491,7 +3491,7 @@ async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
         assert_eq!(payment.voided_at, None, "fault {fault}");
         let reversed = store
             .lock()
-            .due_webhook_deliveries(i64::MAX / 2, 100)
+            .due_webhook_deliveries_for_test(i64::MAX / 2, 100)
             .unwrap()
             .into_iter()
             .filter(|d| d.event_type == "order.double_spend_reversed")

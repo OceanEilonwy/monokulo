@@ -158,7 +158,11 @@ impl Db {
                 while let Err(panic) =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&store, &mut receivers, &woken, &mut faults)))
                 {
-                    tracing::error!(panic = ?panic.downcast_ref::<&str>(), "the database worker's loop panicked; restarting it");
+                    let message = panic
+                        .downcast_ref::<&str>()
+                        .map(|m| m.to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned());
+                    tracing::error!(panic = ?message, "the database worker's loop panicked; restarting it");
                 }
             })
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
@@ -217,6 +221,19 @@ impl Db {
                 "the database worker dropped a job".into(),
             ))
         })?
+    }
+
+    /// How many jobs of `class` are queued and not yet taken by the worker
+    /// (always 0 for an inline handle).
+    #[cfg(test)]
+    pub fn queued(&self, class: Class) -> usize {
+        match &self.inner {
+            Inner::Worker { senders, .. } => {
+                let sender = &senders[class.index()];
+                sender.max_capacity() - sender.capacity()
+            }
+            Inner::Inline { .. } => 0,
+        }
     }
 
     pub fn metrics(&self) -> DbMetrics {
@@ -401,22 +418,30 @@ mod tests {
         let (store, path) = file_store();
         let db = Db::open(&path, &store).unwrap();
         let stalled = db.clone();
+        // Stalled until released, not for a fixed time: the test proves the
+        // runtime ran meanwhile, not how fast it did.
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        let (running, started) = std::sync::mpsc::channel::<()>();
         let job = tokio::spawn(async move {
             stalled
-                .run(Class::Scanner, |_| -> Result<()> {
-                    std::thread::sleep(Duration::from_millis(300));
+                .run(Class::Scanner, move |_| -> Result<()> {
+                    running.send(()).unwrap();
+                    let _ = hold.recv();
                     Ok(())
                 })
                 .await
         });
-        let started = Instant::now();
+        tokio::task::spawn_blocking(move || started.recv().unwrap())
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(
-            started.elapsed() < Duration::from_millis(200),
-            "the timer fired while the job was stalled"
+            !job.is_finished(),
+            "the timer fired, on this one thread, while the job was stalled on the worker's"
         );
+        release.send(()).unwrap();
         job.await.unwrap().unwrap();
-        assert!(db.metrics().max_run_us >= 300_000);
+        assert!(db.metrics().max_run_us > 0);
         drop(db);
         cleanup(&path);
     }
@@ -440,7 +465,22 @@ mod tests {
                 .await
             })
         };
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Each step waits for the queues to show the jobs, not for time to
+        // pass: the blocker is taken by the worker (its queue empties), the
+        // scanner backlog is queued behind it, then the admin job.
+        let queued = |class: Class, count: usize| {
+            let db = db.clone();
+            async move {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    while db.queued(class) != count {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("{count} jobs never queued for {class:?}"));
+            }
+        };
+        queued(Class::Scanner, 0).await;
         let mut jobs = Vec::new();
         for i in 0..20 {
             let (db, order) = (db.clone(), order.clone());
@@ -452,7 +492,7 @@ mod tests {
                 .await
             }));
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        queued(Class::Scanner, 20).await;
         let admin = {
             let (db, order) = (db.clone(), order.clone());
             tokio::spawn(async move {
@@ -463,7 +503,7 @@ mod tests {
                 .await
             })
         };
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        queued(Class::Admin, 1).await;
         release.send(()).unwrap();
         blocker.await.unwrap().unwrap();
         admin.await.unwrap().unwrap();
