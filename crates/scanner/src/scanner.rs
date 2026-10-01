@@ -3554,11 +3554,14 @@ pub(crate) mod tests {
             .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
             .unwrap()
             .into_iter()
-            .filter(|d| d.order_id == stale.id)
+            .filter(|d| d.order_id == stale.id && d.webhook_id == webhook.id)
             .map(|d| d.event_type)
             .collect::<Vec<_>>();
-        assert_eq!(expired_events, vec!["order.expired".to_string()]);
-        let _ = webhook;
+        assert_eq!(
+            expired_events,
+            vec!["order.expired".to_string()],
+            "queued for the store's own webhook"
+        );
     }
 
     #[tokio::test]
@@ -5539,14 +5542,13 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        let total_before = store
-            .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
-            )
+        // What the two payments are worth together, before either is voided.
+        let total_before: u64 = store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap()
-            .unwrap();
-        let _ = total_before;
+            .iter()
+            .map(|p| p.amount_piconero)
+            .sum();
 
         // Only the first transaction is double-spent; the second is remined at 51.
         for ki in &key_images_of(&first) {
@@ -5588,6 +5590,11 @@ pub(crate) mod tests {
         assert_eq!(
             order.amount_received_piconero, kept[0].amount_piconero,
             "only the survivor's amount counts"
+        );
+        assert_eq!(
+            total_before - order.amount_received_piconero,
+            voided[0].amount_piconero,
+            "the total falls by exactly the voided amount"
         );
         assert!(
             order.double_spend_detected_at.is_some(),
@@ -6146,8 +6153,11 @@ pub(crate) mod tests {
         let recheck_daemon = chain_replica();
         recheck_daemon.set_online(false); // every call, including get_height, now fails
 
-        // A node that is down is waited out, not reported as a round failure.
-        let _ = round_with_void_recheck_due(&store, &recheck_daemon).await;
+        // A node that is down fails the round (it is retried next round);
+        // nothing is decided about the void meanwhile.
+        assert!(round_with_void_recheck_due(&store, &recheck_daemon)
+            .await
+            .is_err());
         assert_eq!(
             voided(&store, &order_id),
             vec![true],
@@ -7257,9 +7267,9 @@ pub(crate) mod tests {
             assert_eq!(
                 s.max_scanned_height(monero::Network::Mainnet).unwrap(),
                 Some(48),
-                "the divergence is found and rewound, exactly as for a reorg - at 49 rather than the true fork at \
-                 48 because 48 is a height this scanner never recorded a hash for, and detection can only ever be \
-                 as fine-grained as the window it kept"
+                "the divergence is found and rewound, exactly as for a reorg: the first recorded height that \
+                 differs is 49, so the scan restarts from 48, one below it - detection can only ever be as \
+                 fine-grained as the window of hashes it kept"
             );
             let payment = &s
                 .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))

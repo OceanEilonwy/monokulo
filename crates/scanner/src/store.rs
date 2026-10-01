@@ -586,7 +586,8 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
             .any(|v| !v.is_zero_conf && v.confirmations < facts.confirmations_required);
         (
             short_of_amount.then_some(order.expires_at.saturating_add(1).max(facts.now)),
-            confirming.then_some(facts.current_height.saturating_add(1) as i64),
+            confirming
+                .then(|| i64::try_from(facts.current_height.saturating_add(1)).unwrap_or(i64::MAX)),
         )
     };
     StatusPlan {
