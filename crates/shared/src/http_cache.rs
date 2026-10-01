@@ -105,9 +105,18 @@ pub fn build_traced_client(user_agent: &str, max_cache_bytes: u64) -> ClientWith
         .build()
 }
 
+/// How long a connection may take to open, and how long a response may
+/// go without a byte arriving. The second bounds a peer that accepted the
+/// connection and then stalled; an event stream is kept alive well within
+/// it (the engine sends a comment every 15 s).
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn client_builder(user_agent: &str) -> ClientBuilder {
     let inner = reqwest::Client::builder()
         .user_agent(user_agent.to_string())
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
         .build()
         .expect("a validated user agent string can't fail to build a client");
     ClientBuilder::new(inner)

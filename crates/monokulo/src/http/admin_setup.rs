@@ -21,7 +21,6 @@
 
 use axum::extract::{Form, State};
 use axum::response::{IntoResponse, Response};
-use axum_extra::extract::cookie::{Cookie, SameSite};
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 
@@ -84,7 +83,11 @@ pub async fn setup_form(State(state): State<AppState>) -> Response {
 /// since two concurrent submissions (or a replayed form post after setup
 /// already completed elsewhere) must never be able to create a second admin
 /// account.
-pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupForm>) -> Response {
+pub async fn setup_submit(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<SetupForm>,
+) -> Response {
     if setup_complete(&state).await {
         return redirect_302("/");
     }
@@ -103,27 +106,15 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
         .await;
     }
 
+    // The account row and the `setup_complete` flag are written in one
+    // transaction (`Db::create_admin_and_complete_setup`), and only when
+    // setup isn't complete yet: a second submission racing this one, or a
+    // replayed form, makes no second admin.
     match signup::create_account(&state, &form.email, &form.password, true, None).await {
         Ok(_user_id) => {
-            // The account row and the `setup_complete` flag are two separate
-            // writes (`Db` has no cross-statement transaction API today) -
-            // if marking complete somehow failed, the account still exists,
-            // so this genuinely is the fallback the module doc comment on
-            // `is_setup_complete` describes: `settings` explicitly (a
-            // dedicated flag), not "any admin user exists" - `.ok()` here
-            // means the very next request just re-runs the (idempotent for
-            // this purpose) `mark_setup_complete` if this instance ever hits
-            // that path.
-            state.db.write(|db| db.mark_setup_complete()).await.ok();
-
             match login::authenticate(&state, &form.email, &form.password).await {
                 Ok((_user, raw_token)) => {
-                    let cookie =
-                        Cookie::build((super::SESSION_COOKIE_NAME, raw_token.expose().to_string()))
-                            .http_only(true)
-                            .same_site(SameSite::Lax)
-                            .path("/")
-                            .build();
+                    let cookie = super::session_cookie(&headers, raw_token.expose().to_string());
                     let jar = CookieJar::new().add(cookie);
                     (jar, redirect_302("/dashboard/admin/settings")).into_response()
                 }
@@ -142,14 +133,21 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
             )
             .await
         }
+        // Another submission completed setup first: nothing more to do here.
+        Err(CreateAccountError::AlreadySetUp) => redirect_302("/"),
+        Err(CreateAccountError::InvalidEmail) => {
+            render_setup_form(&state, Some("That is not an email address."), &form.email).await
+        }
         // `is_admin: true` above skips the invite check outright
-        // (`signup::create_account`'s own doc comment) - these two variants
-        // are genuinely unreachable from this call site, kept as a plain
+        // (`signup::create_account`'s own doc comment), and the password
+        // was checked above against the longer admin minimum - these
+        // variants are unreachable from this call site, kept as a plain
         // fallback rather than `unreachable!()` since "something went wrong,
         // try again" is still a perfectly safe response if that ever
         // somehow changed.
         Err(CreateAccountError::Internal)
         | Err(CreateAccountError::InviteRequired)
+        | Err(CreateAccountError::WeakPassword)
         | Err(CreateAccountError::InvalidOrUsedInvite) => {
             render_setup_form(
                 &state,

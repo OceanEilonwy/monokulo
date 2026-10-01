@@ -129,6 +129,11 @@ pub struct Db {
     conn: Connection,
 }
 
+/// How long a session is good for after it was made: 30 days. A session
+/// that never expired would stay usable from a lost device, or a leaked
+/// cookie, for as long as the row existed.
+pub const SESSION_LIFETIME_SECONDS: i64 = 30 * 24 * 60 * 60;
+
 #[derive(Debug, Clone)]
 pub struct PosOrderRow {
     pub order_id: OrderId,
@@ -887,13 +892,10 @@ impl Db {
     /// account - a dedicated `settings` row (`"setup_complete" = "true"`),
     /// per the user's own explicit "based upon a flag in database" request,
     /// rather than derived from `SELECT COUNT(*) FROM users WHERE is_admin`.
-    /// Set exactly once, by `http::admin_setup`'s own successful submission.
+    /// Set exactly once, with the account, by
+    /// [`Db::create_admin_and_complete_setup`].
     pub fn is_setup_complete(&self) -> Result<bool> {
         Ok(self.get_setting("setup_complete")?.as_deref() == Some("true"))
-    }
-
-    pub fn mark_setup_complete(&self) -> Result<()> {
-        self.set_setting("setup_complete", "true")
     }
 
     /// Test-only convenience seeding a known admin account, marking setup
@@ -922,7 +924,7 @@ impl Db {
             0,
         )
         .expect("seeding the test admin account");
-        self.mark_setup_complete()
+        self.set_setting("setup_complete", "true")
             .expect("marking setup complete for the seeded test admin");
         self.set_setting("signup.mode", "public")
             .expect("defaulting the test admin's signup.mode to public");
@@ -937,6 +939,12 @@ impl Db {
         user_id: &UserId,
         created_at: i64,
     ) -> Result<()> {
+        // Sessions that expired are dropped as new ones are made, so the
+        // table doesn't hold every session ever made.
+        self.conn.execute(
+            "DELETE FROM sessions WHERE created_at_utc < ?1",
+            params![created_at.saturating_sub(SESSION_LIFETIME_SECONDS)],
+        )?;
         self.conn.execute(
             "INSERT INTO sessions (token, user_id, created_at_utc) VALUES (?1, ?2, ?3)",
             params![token_hash, user_id, created_at],
@@ -944,15 +952,22 @@ impl Db {
         Ok(())
     }
 
-    /// Looks up a session by its hashed token. `None` for an unknown or
-    /// already-deleted session - callers (the `AuthedUser` extractor) map
-    /// that to 401, same as an unknown tenant secret in the engine's own
-    /// `AuthedTenant`.
-    pub fn find_session(&self, token_hash: &shared::auth::TokenHash) -> Result<Option<SessionRow>> {
+    /// Looks up a session by its hashed token. `None` for an unknown,
+    /// already-deleted or expired session (one made more than
+    /// [`SESSION_LIFETIME_SECONDS`] before `now`) - callers (the
+    /// `AuthedUser` extractor) map that to 401, same as an unknown tenant
+    /// secret in the engine's own `AuthedTenant`. A read: expired rows are
+    /// removed by [`Db::create_session`], a write.
+    pub fn find_session(
+        &self,
+        token_hash: &shared::auth::TokenHash,
+        now: i64,
+    ) -> Result<Option<SessionRow>> {
+        let oldest_live = now.saturating_sub(SESSION_LIFETIME_SECONDS);
         self.conn
             .query_row(
-                "SELECT token, user_id, created_at_utc FROM sessions WHERE token = ?1",
-                params![token_hash],
+                "SELECT token, user_id, created_at_utc FROM sessions WHERE token = ?1 AND created_at_utc >= ?2",
+                params![token_hash, oldest_live],
                 |row| {
                     Ok(SessionRow {
                         token_hash: row.get(0)?,
@@ -1959,14 +1974,16 @@ impl Db {
     /// have been auto-actioned by [`Db::redeem_invite_and_create_user`], so
     /// this path shouldn't normally even be reached for one).
     pub fn delete_invite_request(&self, id: &str, now: i64) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?2 WHERE id = ?1",
             params![id, now],
         )?;
-        self.conn.execute(
+        tx.execute(
             "DELETE FROM invite_links WHERE request_id = ?1 AND used_at_utc IS NULL",
             params![id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1977,14 +1994,16 @@ impl Db {
     /// many requests were actually cleared, for the page's own confirmation
     /// banner.
     pub fn delete_all_unactioned_invite_requests(&self, now: i64) -> Result<usize> {
-        let cleared = self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        let cleared = tx.execute(
             "UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?1 WHERE actioned = 0",
             params![now],
         )?;
-        self.conn.execute(
+        tx.execute(
             "DELETE FROM invite_links WHERE used_at_utc IS NULL AND request_id IN (SELECT id FROM invite_requests WHERE actioned = 1)",
             [],
         )?;
+        tx.commit()?;
         Ok(cleared)
     }
 
@@ -2007,23 +2026,14 @@ impl Db {
         Ok(())
     }
 
-    /// Redeems a presented invite token and creates the account it grants in
-    /// one call - claims the token *before* creating the user (a single,
-    /// atomic `UPDATE ... WHERE used_at_utc IS NULL`, checked via its own
-    /// affected-row count), never the other way around, so an invalid or
-    /// already-used token can never result in a free account. This crate has
-    /// no cross-statement transaction API today (same accepted trade-off
-    /// `http::admin_setup`'s own doc comment already documents for its
-    /// account-creation-then-mark-setup-complete sequence) - the one edge
-    /// case that trade-off leaves here is a token claimed by a request whose
-    /// account creation then fails (a duplicate email): the token stays
-    /// burned with no account behind it, rather than being un-claimed. Given
-    /// every call in this crate already runs behind one process-wide
-    /// `Mutex<Db>` (see this module's own doc comment - there is no
-    /// concurrent writer to race against within a single call), this only
-    /// matters for a genuine mid-sequence crash, not for two simultaneous
-    /// signup attempts against the same token - see this module's own tests
-    /// for that exact scenario.
+    /// Redeems a presented invite token and creates the account it grants,
+    /// in one transaction: the token is claimed (a single `UPDATE ... WHERE
+    /// used_at_utc IS NULL`, checked by its affected-row count, so an
+    /// invalid or already-used token can never result in a free account),
+    /// the account is created, and the originating request is cleared, or
+    /// none of it is. An account that can't be created (the email is
+    /// taken) leaves the invite unclaimed, for the person to try again
+    /// with the right email.
     pub fn redeem_invite_and_create_user(
         &self,
         token_hash: &shared::auth::TokenHash,
@@ -2032,37 +2042,79 @@ impl Db {
         password_hash: &str,
         now: i64,
     ) -> Result<RedeemInviteResult> {
-        // The atomic single-use claim itself: `used_at_utc` (not yet
-        // `used_by_user_id`, which has a real `REFERENCES users (id)` this
-        // crate's SQLite connection enforces - that column is only filled
-        // in below, once `user_id` actually exists as a row).
-        let claimed = self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        // `used_at_utc` first (not yet `used_by_user_id`, which has a real
+        // `REFERENCES users (id)` this connection enforces - that column is
+        // filled in once `user_id` exists as a row).
+        let claimed = tx.execute(
             "UPDATE invite_links SET used_at_utc = ?2 WHERE token_hash = ?1 AND used_at_utc IS NULL",
             params![token_hash, now],
         )?;
         if claimed == 0 {
             return Ok(RedeemInviteResult::InvalidOrAlreadyUsed);
         }
-
-        match self.create_user(user_id, email, password_hash, false, now) {
-            Ok(()) => {
-                self.conn.execute(
-                    "UPDATE invite_links SET used_by_user_id = ?2 WHERE token_hash = ?1",
-                    params![token_hash, user_id],
-                )?;
-                // Auto-clears the originating request (if any) from the
-                // admin's pending list - the person it was about just
-                // joined, there's nothing left to action.
-                self.conn.execute(
-                    "UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?2
-                     WHERE actioned = 0 AND id = (SELECT request_id FROM invite_links WHERE token_hash = ?1)",
-                    params![token_hash, now],
-                )?;
-                Ok(RedeemInviteResult::Created)
+        let created = tx.execute(
+            "INSERT INTO users (id, email, password_hash, is_admin, created_at_utc) VALUES (?1, ?2, ?3, 0, ?4)",
+            params![user_id, email, password_hash, now],
+        );
+        if let Err(e) = created {
+            let e = DbError::from(e);
+            if e.is_unique_violation() {
+                // Dropped without a commit: the claim is rolled back.
+                return Ok(RedeemInviteResult::DuplicateEmail);
             }
-            Err(e) if e.is_unique_violation() => Ok(RedeemInviteResult::DuplicateEmail),
-            Err(e) => Err(e),
+            return Err(e);
         }
+        tx.execute(
+            "UPDATE invite_links SET used_by_user_id = ?2 WHERE token_hash = ?1",
+            params![token_hash, user_id],
+        )?;
+        // Auto-clears the originating request (if any) from the admin's
+        // pending list - the person it was about just joined, there's
+        // nothing left to action.
+        tx.execute(
+            "UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?2
+             WHERE actioned = 0 AND id = (SELECT request_id FROM invite_links WHERE token_hash = ?1)",
+            params![token_hash, now],
+        )?;
+        tx.commit()?;
+        Ok(RedeemInviteResult::Created)
+    }
+
+    /// First-run setup: creates the one admin account and marks setup
+    /// complete in one transaction, or does nothing when setup is already
+    /// complete (`Ok(false)`): two submissions racing each other, or a
+    /// replayed form, can't make two admins, and a crash between the two
+    /// writes can't leave the wizard open with an admin already made.
+    pub fn create_admin_and_complete_setup(
+        &self,
+        id: &UserId,
+        email: &str,
+        password_hash: &str,
+        now: i64,
+    ) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let complete: Option<String> = tx
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'setup_complete'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if complete.as_deref() == Some("true") {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO users (id, email, password_hash, is_admin, created_at_utc) VALUES (?1, ?2, ?3, 1, ?4)",
+            params![id, email, password_hash, now],
+        )?;
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES ('setup_complete', 'true')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 }
 
@@ -2393,7 +2445,7 @@ mod tests {
             !db.is_setup_complete().unwrap(),
             "a fresh database must start unsetup"
         );
-        db.mark_setup_complete().unwrap();
+        db.set_setting("setup_complete", "true").unwrap();
         assert!(db.is_setup_complete().unwrap());
     }
 
@@ -2451,7 +2503,7 @@ mod tests {
         )
         .unwrap();
 
-        let session = db.find_session(&th("hashed-token")).unwrap().unwrap();
+        let session = db.find_session(&th("hashed-token"), 1000).unwrap().unwrap();
         assert_eq!(session.token_hash, th("hashed-token"));
         assert_eq!(session.user_id, shared::ids::UserId::new("user-1"));
         assert_eq!(session.created_at, 2000);
@@ -2463,7 +2515,7 @@ mod tests {
     #[test]
     fn looking_up_an_unknown_session_token_returns_none_rather_than_an_error() {
         let db = Db::open_in_memory().unwrap();
-        assert!(db.find_session(&th("nonexistent")).unwrap().is_none());
+        assert!(db.find_session(&th("nonexistent"), 1000).unwrap().is_none());
     }
 
     #[test]
@@ -2485,7 +2537,10 @@ mod tests {
         .unwrap();
 
         assert!(db.delete_session(&th("hashed-token")).unwrap());
-        assert!(db.find_session(&th("hashed-token")).unwrap().is_none());
+        assert!(db
+            .find_session(&th("hashed-token"), 1000)
+            .unwrap()
+            .is_none());
         assert!(!db.delete_session(&th("hashed-token")).unwrap());
     }
 
@@ -4022,8 +4077,11 @@ mod tests {
         assert!(db.get_user_by_email("a@example.com").unwrap().is_none());
     }
 
+    /// A sign-up with an email that is taken creates nothing and leaves the
+    /// invite unclaimed: the whole redemption is one transaction, so the
+    /// person can try again with the right email.
     #[test]
-    fn a_duplicate_email_still_burns_the_token_a_documented_accepted_trade_off() {
+    fn a_duplicate_email_leaves_the_invite_unclaimed_for_another_try() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
             &shared::ids::UserId::new("existing"),
@@ -4046,10 +4104,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result, RedeemInviteResult::DuplicateEmail);
+        assert!(db.get_user_by_email("retry@example.com").unwrap().is_none());
 
-        // The token is now burned even though no new account exists - the
-        // documented trade-off in `redeem_invite_and_create_user`'s own doc
-        // comment, not a bug: a second attempt must still be rejected.
         let retry = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
@@ -4059,7 +4115,69 @@ mod tests {
                 3000,
             )
             .unwrap();
-        assert_eq!(retry, RedeemInviteResult::InvalidOrAlreadyUsed);
+        assert_eq!(retry, RedeemInviteResult::Created);
+        assert!(db.get_user_by_email("retry@example.com").unwrap().is_some());
+    }
+
+    /// A session is good for `SESSION_LIFETIME_SECONDS` and no longer; the
+    /// rows of expired ones go when a new session is made.
+    #[test]
+    fn a_session_expires_and_its_row_is_dropped_by_the_next_login() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("user-1"),
+            "a@example.com",
+            "hash",
+            false,
+            1000,
+        )
+        .unwrap();
+        db.create_session(&th("old"), &shared::ids::UserId::new("user-1"), 1000)
+            .unwrap();
+        assert!(db.find_session(&th("old"), 1000).unwrap().is_some());
+        assert!(db
+            .find_session(&th("old"), 1000 + SESSION_LIFETIME_SECONDS - 1)
+            .unwrap()
+            .is_some());
+        assert!(db
+            .find_session(&th("old"), 1000 + SESSION_LIFETIME_SECONDS + 1)
+            .unwrap()
+            .is_none());
+        db.create_session(
+            &th("new"),
+            &shared::ids::UserId::new("user-1"),
+            1000 + SESSION_LIFETIME_SECONDS + 1,
+        )
+        .unwrap();
+        assert!(
+            db.find_session(&th("old"), 1000).unwrap().is_none(),
+            "the expired row is gone, whatever clock asks"
+        );
+    }
+
+    /// First-run setup makes one admin, once: a second submission (a race,
+    /// or a replay) finds setup complete and makes nothing.
+    #[test]
+    fn first_run_setup_creates_one_admin_and_completes_setup_atomically() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db
+            .create_admin_and_complete_setup(
+                &shared::ids::UserId::new("admin-1"),
+                "admin@example.com",
+                "hash",
+                1000
+            )
+            .unwrap());
+        assert!(db.is_setup_complete().unwrap());
+        assert!(!db
+            .create_admin_and_complete_setup(
+                &shared::ids::UserId::new("admin-2"),
+                "other@example.com",
+                "hash",
+                1001
+            )
+            .unwrap());
+        assert!(db.get_user_by_email("other@example.com").unwrap().is_none());
     }
 
     #[test]

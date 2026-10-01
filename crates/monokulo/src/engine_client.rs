@@ -28,6 +28,34 @@
 use serde::{Deserialize, Serialize};
 use shared::auth::RawToken;
 
+/// Longest one engine call may take, the order-event stream excepted. The
+/// engine refuses a request of its own after 30 s; a few seconds more
+/// covers the hop. Without it a hung engine hangs every handler that asks
+/// it something, and with them every browser waiting on those handlers.
+pub const ENGINE_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
+
+/// An id that goes into an engine URL's path. Ids are the engine's own
+/// (`order_…`, `wh_…`) or hex (a trace id): letters, digits, `_` and `-`.
+/// Anything else, spliced into the path, would name another route: `..`
+/// walks up to `DELETE /api/v1/admin/tenant` or to the never-ending event
+/// stream. Refused as "not found", which is what the engine would say of an
+/// id it never minted.
+fn path_id(id: &str) -> Result<&str, EngineClientError> {
+    let valid = !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if valid {
+        Ok(id)
+    } else {
+        Err(EngineClientError::EngineError {
+            status: reqwest::StatusCode::NOT_FOUND,
+            message: "not a valid id".to_string(),
+        })
+    }
+}
+
 /// A client for one engine instance's admin API, reached at `base_url`
 /// (e.g. `http://127.0.0.1:PORT` in tests, a real domain in production).
 /// `base_url` is always given explicitly by the caller — this type never
@@ -181,6 +209,7 @@ impl EngineClient {
             .http
             .post(format!("{}/api/v1/admin/tenants", target.base_url))
             .json(&req)
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -193,6 +222,7 @@ impl EngineClient {
         let response = target
             .http
             .get(format!("{}/api/v1/admin/key-custody", target.base_url))
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -221,6 +251,7 @@ impl EngineClient {
                 view_key_hex,
                 spend_pubkey_hex,
             })
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -234,6 +265,7 @@ impl EngineClient {
             .http
             .get(format!("{}/api/v1/admin/tenant", target.base_url))
             .bearer_auth(sk.expose())
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -250,6 +282,7 @@ impl EngineClient {
             .http
             .get(format!("{}/api/v1/admin/tenant/orders", target.base_url))
             .bearer_auth(sk.expose())
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -283,7 +316,13 @@ impl EngineClient {
             status: reqwest::StatusCode::BAD_REQUEST,
             message: e.to_string(),
         })?;
-        let response = target.http.get(url).bearer_auth(sk.expose()).send().await?;
+        let response = target
+            .http
+            .get(url)
+            .bearer_auth(sk.expose())
+            .timeout(ENGINE_CALL_TIMEOUT)
+            .send()
+            .await?;
         parse_response(response).await
     }
 
@@ -317,7 +356,13 @@ impl EngineClient {
             status: reqwest::StatusCode::BAD_REQUEST,
             message: e.to_string(),
         })?;
-        let response = target.http.get(url).bearer_auth(sk.expose()).send().await?;
+        let response = target
+            .http
+            .get(url)
+            .bearer_auth(sk.expose())
+            .timeout(ENGINE_CALL_TIMEOUT)
+            .send()
+            .await?;
         parse_response(response).await
     }
 
@@ -334,6 +379,7 @@ impl EngineClient {
         order_id: &shared::ids::OrderId,
     ) -> Result<OrderDetailResponse, EngineClientError> {
         let target = self.target();
+        let order_id = path_id(order_id.as_str())?;
         let response = target
             .http
             .get(format!(
@@ -341,6 +387,7 @@ impl EngineClient {
                 target.base_url
             ))
             .bearer_auth(sk.expose())
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -369,6 +416,7 @@ impl EngineClient {
             .json(&LookupPaymentRequest {
                 txid: txid.to_string(),
             })
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -386,6 +434,7 @@ impl EngineClient {
             .http
             .get(format!("{}/api/v1/admin/tenant/webhooks", target.base_url))
             .bearer_auth(sk.expose())
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -426,6 +475,7 @@ impl EngineClient {
                 url: url.to_string(),
                 extra_headers,
             })
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         let parsed: CreateWebhookResponse = parse_response(response).await?;
@@ -444,6 +494,7 @@ impl EngineClient {
         webhook_id: &str,
     ) -> Result<(), EngineClientError> {
         let target = self.target();
+        let webhook_id = path_id(webhook_id)?;
         let response = target
             .http
             .delete(format!(
@@ -451,6 +502,7 @@ impl EngineClient {
                 target.base_url
             ))
             .bearer_auth(sk.expose())
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         if response.status().is_success() {
@@ -489,6 +541,7 @@ impl EngineClient {
             .json(&PatchTenantRequest {
                 confirmations_required: Some(confirmations_required),
             })
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -518,6 +571,7 @@ impl EngineClient {
                 merchant_order_id,
                 confirmations_required,
             })
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -546,6 +600,7 @@ impl EngineClient {
             .json(&SetRefundAddressRequest {
                 refund_address: refund_address.to_string(),
             })
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         check_status(response).await?;
@@ -562,6 +617,7 @@ impl EngineClient {
         let response = target
             .http
             .get(format!("{}/status", target.base_url))
+            .timeout(ENGINE_CALL_TIMEOUT)
             .send()
             .await?;
         parse_response(response).await
@@ -585,7 +641,13 @@ impl EngineClient {
         let target = self.target();
         let query = serde_urlencoded::to_string(query).unwrap_or_default();
         let url = format!("{}/api/v1/admin/logs{path}?{query}", target.base_url);
-        let response = target.http.get(url).bearer_auth(admin_token).send().await?;
+        let response = target
+            .http
+            .get(url)
+            .bearer_auth(admin_token)
+            .timeout(ENGINE_CALL_TIMEOUT)
+            .send()
+            .await?;
         parse_response(response).await
     }
 
@@ -604,6 +666,7 @@ impl EngineClient {
         admin_token: &str,
         trace_id: &str,
     ) -> Result<telemetry::store::Trace, EngineClientError> {
+        let trace_id = path_id(trace_id)?;
         self.get_logs_api(admin_token, &format!("/trace/{trace_id}"), &())
             .await
     }
@@ -949,6 +1012,33 @@ pub struct UnservedTenant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An id from a URL goes into an engine URL's path: anything that
+    /// isn't an id the engine mints is refused before it can name another
+    /// route.
+    #[test]
+    fn an_id_that_could_name_another_engine_route_is_refused() {
+        for id in [
+            "..",
+            "../../tenant",
+            "o%2F..%2Fevents",
+            "a/b",
+            "a?x=1",
+            "a#f",
+            "",
+            "order 1",
+        ] {
+            assert!(
+                matches!(
+                    path_id(id),
+                    Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND
+                ),
+                "{id:?}"
+            );
+        }
+        assert_eq!(path_id("order_01HZX-abc").unwrap(), "order_01HZX-abc");
+        assert_eq!(path_id("wh_0123abcd").unwrap(), "wh_0123abcd");
+    }
 
     #[test]
     fn retargeting_to_the_same_engine_changes_nothing_and_to_another_one_does() {

@@ -1412,6 +1412,97 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
 /// An embed works on any site - clearnet or `.onion` - so the public
 /// `/pay/...` routes of a store that hasn't restricted embedding answer
 /// CORS for any origin (echoing it back), preflight included, and never
+/// A state-changing request that a browser says came from another site is
+/// refused on every route of the site's own, login included (login CSRF
+/// would sign the victim into the attacker's account); the site's own
+/// forms and bearer-token API calls are untouched.
+#[tokio::test]
+async fn cross_site_posts_to_the_sites_own_routes_are_refused() {
+    let state = AppState::for_tests();
+    let router = build_router(state);
+    let post = |uri: &str, headers: &[(&str, &str)]| {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("host", "pay.example")
+            .header("content-type", "application/x-www-form-urlencoded");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        builder
+            .body(Body::from("email=a%40b.example&password=x"))
+            .unwrap()
+    };
+    for uri in [
+        "/dashboard/login",
+        "/dashboard/logout",
+        "/dashboard/theme",
+        "/dashboard/admin/settings",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(post(uri, &[("origin", "https://evil.example")]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri} by Origin");
+        let response = router
+            .clone()
+            .oneshot(post(uri, &[("sec-fetch-site", "cross-site")]))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{uri} by Sec-Fetch-Site"
+        );
+    }
+    // The site's own form reaches the handler (which answers for itself).
+    let response = router
+        .clone()
+        .oneshot(post(
+            "/dashboard/logout",
+            &[
+                ("origin", "https://pay.example"),
+                ("sec-fetch-site", "same-origin"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    // An API call with a bearer token is not a browser form: let through
+    // to the handler whatever its origin (the token is what authenticates).
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/logout")
+                .header("host", "pay.example")
+                .header("origin", "https://evil.example")
+                .header("authorization", "Bearer nope")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    // The public payment routes are for other sites by design.
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/pay/pk_test/orders")
+                .header("host", "pay.example")
+                .header("origin", "https://shop.example")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+}
+
 /// allow credentials. The dashboard stays same-origin only.
 #[tokio::test]
 async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
