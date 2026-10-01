@@ -194,6 +194,21 @@ fn pages_follow_the_cursor_both_ways_and_time_ranges_apply() {
     assert_eq!(Cursor::parse("x.2.a"), None);
 }
 
+/// A process's last lines, logged just before `main` returns, are stored
+/// once `flush` returns: nothing is left in the channel or the writer's
+/// batch to die with the process.
+#[tokio::test]
+async fn flush_returns_once_every_line_logged_so_far_is_stored() {
+    let s = setup("info");
+    for i in 0..300 {
+        tracing::info!(i, "shutting down");
+    }
+    assert!(s.telemetry.flush(Duration::from_secs(30)).await);
+    assert_eq!(all(&s.store).len(), 300);
+    // Nothing new: returns straight away.
+    assert!(s.telemetry.flush(Duration::ZERO).await);
+}
+
 #[test]
 fn lines_logged_before_the_store_opens_are_kept() {
     let dir = TempDir::new();

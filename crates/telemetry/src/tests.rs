@@ -487,14 +487,12 @@ mod otlp_export {
         });
         drop(request);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while received.logs.lock().is_empty() || received.traces.lock().is_empty() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "nothing reached the collector"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        // `flush` returns once every record offered so far has been posted.
+        assert!(
+            telemetry.flush(Duration::from_secs(10)).await,
+            "the export didn't finish"
+        );
+        assert!(!received.logs.lock().is_empty() && !received.traces.lock().is_empty());
         let logs = received.logs.lock().clone();
         let resource = &logs[0].resource_logs[0];
         let service = &resource.resource.as_ref().unwrap().attributes[0];
