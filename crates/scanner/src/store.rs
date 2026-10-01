@@ -1055,16 +1055,6 @@ impl Store {
         Ok(rows)
     }
 
-    /// Sets every tenant's `key_custody_backend` (the one-time move to
-    /// per-store custody, `engine_settings::migrate_key_custody_setting`).
-    pub fn relabel_all_tenants_key_custody(&self, backend: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE tenants SET key_custody_backend = ?1",
-            params![backend],
-        )?;
-        Ok(())
-    }
-
     /// Moves one tenant to another key custody backend with its newly sealed
     /// keys, in one statement (task 5.3).
     pub fn update_tenant_key_custody(

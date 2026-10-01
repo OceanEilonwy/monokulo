@@ -165,9 +165,17 @@ EXAMPLES:
 /// is that same idea with the "next to a config file" half removed, since
 /// there is no config file to be next to).
 pub fn database_path() -> std::path::PathBuf {
-    std::env::var("SCANNER_DB_PATH")
+    database_path_from(std::env::var("SCANNER_DB_PATH").ok().as_deref())
+}
+
+/// [`database_path`] for a given `SCANNER_DB_PATH` value (`None` when
+/// unset). Pure, so it is tested without touching the process environment,
+/// which other tests in the same binary read at the same time.
+fn database_path_from(configured: Option<&str>) -> std::path::PathBuf {
+    configured
+        .filter(|path| !path.is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("scanner.db"))
+        .unwrap_or_else(|| std::path::PathBuf::from("scanner.db"))
 }
 
 /// Parses the full process argv (excluding argv[0]). `--help`/`-h` short-circuits
@@ -181,12 +189,12 @@ pub fn parse_args(args: &[String]) -> Result<Action, String> {
     }
     if args.iter().any(|a| a == "--rotate-secret") {
         return Ok(Action::RotateSecret {
-            pk: parse_pk_arg(args)?,
+            pk: parse_pk_arg("--rotate-secret", args)?,
         });
     }
     if args.iter().any(|a| a == "--show-tenant") {
         return Ok(Action::ShowTenant {
-            pk: parse_pk_arg(args)?,
+            pk: parse_pk_arg("--show-tenant", args)?,
         });
     }
     let mut strict_tls = false;
@@ -203,17 +211,23 @@ pub fn parse_args(args: &[String]) -> Result<Action, String> {
     Ok(Action::RunServer { strict_tls })
 }
 
-/// Shared `--pk` parsing for `--rotate-secret` and `--show-tenant`.
-fn parse_pk_arg(args: &[String]) -> Result<Option<String>, String> {
+/// Shared `--pk` parsing for `--rotate-secret` and `--show-tenant`. Any
+/// other argument is an error, as in every other mode: a mistyped flag must
+/// not act on the default tenant as if nothing had been asked.
+fn parse_pk_arg(mode: &str, args: &[String]) -> Result<Option<String>, String> {
     let mut pk = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
-        if arg == "--pk" {
-            pk = Some(
-                iter.next()
-                    .ok_or_else(|| "--pk needs a value".to_string())?
-                    .clone(),
-            );
+        match arg.as_str() {
+            "--pk" => {
+                pk = Some(
+                    iter.next()
+                        .ok_or_else(|| "--pk needs a value".to_string())?
+                        .clone(),
+                );
+            }
+            flag if flag == mode => {}
+            other => return Err(format!("unrecognized argument {other:?} for {mode}")),
         }
     }
     Ok(pk)
@@ -359,6 +373,19 @@ mod tests {
         }
     }
 
+    /// A mistyped flag with `--rotate-secret`/`--show-tenant` is refused,
+    /// not ignored: ignored, it would act on the default tenant.
+    #[test]
+    fn the_local_admin_modes_refuse_unknown_arguments() {
+        for argv in [
+            &["--rotate-secret", "--pks", "pk_x"][..],
+            &["--show-tenant", "--network", "stagenet"][..],
+            &["--rotate-secret", "--pk"][..],
+        ] {
+            assert!(parse_args(&args(argv)).is_err(), "{argv:?}");
+        }
+    }
+
     #[test]
     fn bootstrap_wallet_requires_the_three_key_material_flags() {
         assert!(parse_args(&args(&["--bootstrap-wallet"])).is_err());
@@ -494,14 +521,18 @@ mod tests {
 
     #[test]
     fn database_path_defaults_to_a_fixed_relative_path_and_the_env_var_overrides_it() {
-        std::env::remove_var("SCANNER_DB_PATH");
-        assert_eq!(database_path(), std::path::PathBuf::from("scanner.db"));
-
-        std::env::set_var("SCANNER_DB_PATH", "/tmp/somewhere/custom.db");
         assert_eq!(
-            database_path(),
+            database_path_from(None),
+            std::path::PathBuf::from("scanner.db")
+        );
+        assert_eq!(
+            database_path_from(Some("")),
+            std::path::PathBuf::from("scanner.db"),
+            "blank is unset"
+        );
+        assert_eq!(
+            database_path_from(Some("/tmp/somewhere/custom.db")),
             std::path::PathBuf::from("/tmp/somewhere/custom.db")
         );
-        std::env::remove_var("SCANNER_DB_PATH");
     }
 }

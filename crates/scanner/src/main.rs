@@ -23,8 +23,7 @@ use std::time::Duration;
 
 use scanner::cli::{self, Action};
 use scanner::engine_settings::{
-    migrate_key_custody_setting, CustodyConfig, CustodyReloadable, Daemons, EngineSettings,
-    RuntimeConfig, StoreSettings,
+    CustodyConfig, CustodyReloadable, Daemons, EngineSettings, RuntimeConfig, StoreSettings,
 };
 use scanner::http::instance_admin::ensure_admin_token_seeded;
 use scanner::http::rate_limit::RateLimiter;
@@ -142,10 +141,6 @@ async fn run(action: Action) {
                 }
             };
             let store = open_store().into_shared();
-            if let Err(e) = migrate_key_custody_setting(&store.lock()) {
-                eprintln!("failed to move key custody settings to per-store custody: {e}");
-                std::process::exit(1);
-            }
             let custody = live_settings::read_sync::<CustodyConfig>(&StoreSettings(store.clone()));
             let backend = custody.default.as_str().to_string();
             let router = Arc::new(CustodyRouter::default());
@@ -185,15 +180,6 @@ async fn run(action: Action) {
              that way than let it live in the database.",
             token.expose()
         );
-    }
-
-    match migrate_key_custody_setting(&store.lock()) {
-        Ok(Some(done)) => tracing::info!("{done}"),
-        Ok(None) => {}
-        Err(e) => {
-            tracing::error!(error = %e, "failed to move key custody settings to per-store custody");
-            std::process::exit(1);
-        }
     }
 
     // Every setting, live (admin_settings_v2.md part 1). Node clients are

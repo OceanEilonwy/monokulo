@@ -106,10 +106,14 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     let writer_store = Store::open_file(src_db_path.to_str().unwrap()).unwrap();
     let writer_tenant_id = tenant_id.clone();
     let writer_stop = stop.clone();
+    // Counts the inserts that committed, not the attempts: an attempt that
+    // failed (the database locked by the backup, say) proves nothing about
+    // a backup taken mid-write.
     let writer = std::thread::spawn(move || {
         let mut i = 1000u32;
+        let mut inserted = 0u32;
         while !writer_stop.load(Ordering::Relaxed) {
-            let _ = writer_store.create_order(NewOrder {
+            let created = writer_store.create_order(NewOrder {
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(writer_tenant_id.clone()),
                 merchant_order_id: None,
@@ -120,9 +124,12 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
                 created_at: 1_000,
                 expires_at: 2_000,
             });
+            if created.is_ok() {
+                inserted += 1;
+            }
             i += 1;
         }
-        i
+        inserted
     });
 
     // Give the writer a head start so the backup genuinely lands mid-stream
@@ -136,7 +143,7 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
         .expect("failed to run scripts/backup-database.sh");
 
     stop.store(true, Ordering::Relaxed);
-    let final_writer_index = writer.join().unwrap();
+    let inserted_concurrently = writer.join().unwrap();
 
     assert!(
         backup_output.status.success(),
@@ -155,7 +162,7 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     let source_tenant_count = source_final.count_tenants().unwrap();
     assert_eq!(source_tenant_count, 1);
     assert!(
-        final_writer_index > 1000,
+        inserted_concurrently > 0,
         "concurrent writer should have gotten at least one insert in before the backup completed"
     );
 
