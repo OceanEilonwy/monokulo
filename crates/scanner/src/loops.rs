@@ -361,7 +361,7 @@ pub async fn run_scanner_loop(
         {
             Ok(report) => {
                 let backlogged = report.backlogged();
-                (report.into_result(), backlogged)
+                (report.into_status_result(), backlogged)
             }
             Err(_) => (
                 Err(crate::scanner::ScannerError::Internal(format!(
@@ -378,12 +378,24 @@ pub async fn run_scanner_loop(
         // Not for a network whose node setting was cleared during this tick:
         // its status was removed when its loops were stopped.
         if daemons.get(network).is_some() {
+            // The handles are one map for every network; the status row is
+            // for this one.
+            let on_network = db
+                .run(crate::store::db::Class::Scanner, move |s| {
+                    s.tenant_ids_on_network(network)
+                })
+                .await
+                .unwrap_or_default();
+            let scanned = tenants
+                .iter()
+                .filter(|(id, _)| on_network.contains(id))
+                .count();
             scanner_status::record_tick(
                 &scanner_status,
                 network,
                 started_at,
                 finished_at,
-                tenants.len(),
+                scanned,
                 &result,
             );
         }

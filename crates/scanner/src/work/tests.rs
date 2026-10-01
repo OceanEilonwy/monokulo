@@ -4283,3 +4283,37 @@ async fn a_page_of_vanished_payments_costs_two_round_trips_and_the_stuck_ones_ba
     );
     assert_eq!(voided(), 1);
 }
+
+/// For the status page a round is only as good as its tiers: one the node
+/// blocked (no blocks, or no pool, could be read) is a failed round, even
+/// though no unit itself failed.
+#[test]
+fn a_round_with_a_tier_blocked_by_the_node_is_a_failed_round_for_status() {
+    let clean = RoundReport {
+        steps: PerTier::filled(1),
+        outcomes: PerTier::filled(TierOutcome::Idle),
+        error: None,
+    };
+    assert!(clean.into_status_result().is_ok());
+    let waiting = RoundReport {
+        steps: PerTier::filled(1),
+        outcomes: PerTier::filled(TierOutcome::Blocked(Wait::ReorgBeingReconciled)),
+        error: None,
+    };
+    assert!(
+        waiting.into_status_result().is_ok(),
+        "waiting on itself is fine"
+    );
+    for wait in [Wait::NodeFailed, Wait::MempoolUnreadable] {
+        let mut outcomes = PerTier::filled(TierOutcome::Idle);
+        outcomes[Tier::Blocks] = TierOutcome::Blocked(wait);
+        let blocked = RoundReport {
+            steps: PerTier::filled(1),
+            outcomes,
+            error: None,
+        };
+        assert!(blocked.error.is_none(), "no unit failed");
+        let error = blocked.into_status_result().unwrap_err().to_string();
+        assert!(error.contains("Blocks"), "{error}");
+    }
+}

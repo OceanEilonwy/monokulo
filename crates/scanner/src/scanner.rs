@@ -365,109 +365,9 @@ fn output_index(index: usize) -> Result<i64> {
     })
 }
 
-pub struct ReconcileReport {
-    /// Lowest height at which the canonical chain diverged from what was
-    /// previously scanned, if any reorg was detected this call.
-    pub reorg_detected_at: Option<u64>,
-    /// Orders whose payments changed in a way that warrants a status recompute.
-    pub dirty_orders: Vec<crate::store::OrderId>,
-    /// The subset of `dirty_orders` where the change was specifically a proven
-    /// double-spend (a payment voided because its key image was confirmed spent by
-    /// a different transaction) - callers use this to enqueue the independent
-    /// `order.double_spend_detected` webhook event (see `docs/DESIGN.md` §11),
-    /// separate from whatever `order.<status>` event the recompute may also imply.
-    pub double_spent_orders: Vec<crate::store::OrderId>,
-}
-
-/// Checks for a reorg within the last `reorg_check_depth` blocks and, if one is
-/// found (or one is already being reconciled), runs its reconciliation as far
-/// as it can go now: every affected payment re-examined, then the rewind to
-/// the common ancestor. Never voids a payment on ambiguous evidence
-/// (§DESIGN.md 7.5) - only when `is_key_image_spent` affirmatively proves a
-/// different transaction consumed the same inputs.
-///
-/// The scheduler runs the same work in bounded units (`work::chain`); this
-/// drives it to completion in one call, for callers and tests that want
-/// "reconcile now". The job is durable: a failure partway (an unreachable
-/// node) returns the error and leaves the job, and the losing chain's
-/// hashes, for the next call to finish.
-///
-/// Not called by the engine: its scheduler's chain tier does this work a
-/// bounded unit at a time. For tests and tools.
-pub async fn check_for_reorg_and_reconcile(
-    store: &crate::store::SharedStore,
-    daemon: &dyn MoneroDaemonClient,
-    network: &str,
-    reorg_check_depth: u64,
-    now: i64,
-) -> Result<ReconcileReport> {
-    use crate::work::chain::{Chain, JobStep};
-    let crate::daemon::ChainTip {
-        height: tip,
-        hash: tip_hash,
-    } = daemon.get_tip().await?;
-    let db = crate::store::Db::over_shared(store.clone());
-    let parsed = crate::network::parse_network(network)
-        .map_err(|e| ScannerError::Internal(e.to_string()))?;
-    let chain = Chain::new(&db, daemon, parsed, reorg_check_depth, now).with_tip_hash(tip_hash);
-    if let Some(fork) = chain.detect(tip).await? {
-        chain.open(fork).await?;
-    }
-    let reorg_detected_at = store.lock().reorg_job(parsed)?.map(|job| job.fork_height);
-    let mut dirty_orders = HashSet::new();
-    let mut double_spent_orders = HashSet::new();
-    let mut attempted = HashSet::new();
-    let mut failure = None;
-    loop {
-        match chain
-            .advance_job(
-                tip,
-                &mut attempted,
-                tokio::time::Instant::now() + crate::work::ROUND_BUDGET,
-            )
-            .await
-        {
-            Ok(Some(JobStep::Collected)) => {}
-            Ok(Some(JobStep::Processed {
-                reconciled,
-                failure: page_failure,
-            })) => {
-                dirty_orders.extend(reconciled.dirty_orders);
-                double_spent_orders.extend(reconciled.double_spent_orders);
-                if let Some(error) = page_failure {
-                    failure.get_or_insert(error);
-                }
-            }
-            Ok(None | Some(JobStep::Waiting) | Some(JobStep::Rewound)) => break,
-            Err(error) => {
-                failure.get_or_insert(error);
-                break;
-            }
-        }
-    }
-    // The notifying recompute: a reorg-driven transition (`paid` ->
-    // `confirming` when a tx falls back to the mempool, say) is as
-    // webhook-worthy as a forward-scan-driven one. While the job is still
-    // open, the store holds back any new settlement.
-    {
-        let s = store.lock();
-        for order_id in &dirty_orders {
-            recompute_and_notify(&s, order_id, tip, now)?;
-        }
-    }
-    if let Some(error) = failure {
-        return Err(error);
-    }
-    Ok(ReconcileReport {
-        reorg_detected_at,
-        dirty_orders: dirty_orders.into_iter().collect(),
-        double_spent_orders: double_spent_orders.into_iter().collect(),
-    })
-}
-
-/// What one `check_vanished_mempool_payments` sweep concluded. Same two lists as
-/// `ReconcileReport`, minus the reorg point (this sweep is not about the chain
-/// changing shape).
+/// What one `check_vanished_mempool_payments` sweep concluded: orders
+/// whose payments changed, and the reorg point is not part of it (this sweep
+/// is not about the chain changing shape).
 pub struct VanishedPoolReport {
     /// Orders whose payments changed and therefore need a status recompute.
     pub dirty_orders: Vec<crate::store::OrderId>,
@@ -1172,18 +1072,9 @@ pub async fn run_scan_tick_with(
 /// Uses the same "first handle in wins" rule as
 /// `http::resolve_wallet_handle`, which may be registering the same tenant
 /// at the same time: the losing registration is removed again.
-pub async fn register_missing_wallets(
-    store: &crate::store::SharedStore,
-    key_custody: &dyn KeyCustody,
-    wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
-    network: monero::Network,
-) -> usize {
-    register_missing_wallets_checking_state(store, key_custody, wallet_handles, None, network).await
-}
-
-/// `register_missing_wallets`, first asking the key-custody backend whether
-/// it still holds the wallets registered with it (`KeyCustody::check_state`,
-/// task 5.8). If it has lost them since `handled_epoch` (a sidecar that
+/// With `handled_epoch`, first asks the key-custody backend whether it still
+/// holds the wallets registered with it (`KeyCustody::check_state`, task
+/// 5.8). If it has lost them since `handled_epoch` (a sidecar that
 /// restarted with empty memory), every handle in `wallet_handles` is
 /// useless, so the map is cleared (once per epoch, however many network
 /// loops notice) and this network's tenants are registered again from their
@@ -1849,6 +1740,106 @@ pub(crate) mod tests {
     ) -> Result<HashSet<crate::store::OrderId>> {
         let scan = scan_transaction(key_custody, handle, tx, minor_range).await?;
         record_scan_match(store, tenant_id, &scan, seen_at, block_height)
+    }
+
+    pub(crate) struct ReconcileReport {
+        /// Lowest height at which the canonical chain diverged from what was
+        /// previously scanned, if any reorg was detected this call.
+        pub reorg_detected_at: Option<u64>,
+        /// Orders whose payments changed in a way that warrants a status recompute.
+        pub dirty_orders: Vec<crate::store::OrderId>,
+        /// The subset of `dirty_orders` where the change was specifically a proven
+        /// double-spend (a payment voided because its key image was confirmed spent by
+        /// a different transaction) - callers use this to enqueue the independent
+        /// `order.double_spend_detected` webhook event (see `docs/DESIGN.md` §11),
+        /// separate from whatever `order.<status>` event the recompute may also imply.
+        pub double_spent_orders: Vec<crate::store::OrderId>,
+    }
+
+    /// Checks for a reorg within the last `reorg_check_depth` blocks and, if one is
+    /// found (or one is already being reconciled), runs its reconciliation as far
+    /// as it can go now: every affected payment re-examined, then the rewind to
+    /// the common ancestor. Never voids a payment on ambiguous evidence
+    /// (§DESIGN.md 7.5) - only when `is_key_image_spent` affirmatively proves a
+    /// different transaction consumed the same inputs.
+    ///
+    /// The scheduler runs the same work in bounded units (`work::chain`); this
+    /// drives it to completion in one call, for callers and tests that want
+    /// "reconcile now". The job is durable: a failure partway (an unreachable
+    /// node) returns the error and leaves the job, and the losing chain's
+    /// hashes, for the next call to finish.
+    ///
+    /// Not called by the engine: its scheduler's chain tier does this work a
+    /// bounded unit at a time. A test driver over that same code.
+    pub(crate) async fn check_for_reorg_and_reconcile(
+        store: &crate::store::SharedStore,
+        daemon: &dyn MoneroDaemonClient,
+        network: &str,
+        reorg_check_depth: u64,
+        now: i64,
+    ) -> Result<ReconcileReport> {
+        use crate::work::chain::{Chain, JobStep};
+        let crate::daemon::ChainTip {
+            height: tip,
+            hash: tip_hash,
+        } = daemon.get_tip().await?;
+        let db = crate::store::Db::over_shared(store.clone());
+        let parsed = crate::network::parse_network(network)
+            .map_err(|e| ScannerError::Internal(e.to_string()))?;
+        let chain = Chain::new(&db, daemon, parsed, reorg_check_depth, now).with_tip_hash(tip_hash);
+        if let Some(fork) = chain.detect(tip).await? {
+            chain.open(fork).await?;
+        }
+        let reorg_detected_at = store.lock().reorg_job(parsed)?.map(|job| job.fork_height);
+        let mut dirty_orders = HashSet::new();
+        let mut double_spent_orders = HashSet::new();
+        let mut attempted = HashSet::new();
+        let mut failure = None;
+        loop {
+            match chain
+                .advance_job(
+                    tip,
+                    &mut attempted,
+                    tokio::time::Instant::now() + crate::work::ROUND_BUDGET,
+                )
+                .await
+            {
+                Ok(Some(JobStep::Collected)) => {}
+                Ok(Some(JobStep::Processed {
+                    reconciled,
+                    failure: page_failure,
+                })) => {
+                    dirty_orders.extend(reconciled.dirty_orders);
+                    double_spent_orders.extend(reconciled.double_spent_orders);
+                    if let Some(error) = page_failure {
+                        failure.get_or_insert(error);
+                    }
+                }
+                Ok(None | Some(JobStep::Waiting) | Some(JobStep::Rewound)) => break,
+                Err(error) => {
+                    failure.get_or_insert(error);
+                    break;
+                }
+            }
+        }
+        // The notifying recompute: a reorg-driven transition (`paid` ->
+        // `confirming` when a tx falls back to the mempool, say) is as
+        // webhook-worthy as a forward-scan-driven one. While the job is still
+        // open, the store holds back any new settlement.
+        {
+            let s = store.lock();
+            for order_id in &dirty_orders {
+                recompute_and_notify(&s, order_id, tip, now)?;
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        Ok(ReconcileReport {
+            reorg_detected_at,
+            dirty_orders: dirty_orders.into_iter().collect(),
+            double_spent_orders: double_spent_orders.into_iter().collect(),
+        })
     }
 
     pub(crate) fn fixture_tx() -> Transaction {
@@ -10201,17 +10192,38 @@ pub(crate) mod tests {
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
         assert_eq!(
-            register_missing_wallets(&store, &custody, &handles, monero::Network::Stagenet).await,
+            register_missing_wallets_checking_state(
+                &store,
+                &custody,
+                &handles,
+                None,
+                monero::Network::Stagenet
+            )
+            .await,
             0,
             "other networks untouched"
         );
         assert_eq!(
-            register_missing_wallets(&store, &custody, &handles, monero::Network::Mainnet).await,
+            register_missing_wallets_checking_state(
+                &store,
+                &custody,
+                &handles,
+                None,
+                monero::Network::Mainnet
+            )
+            .await,
             1
         );
         assert!(handles.read().contains_key(&tenant.id));
         assert_eq!(
-            register_missing_wallets(&store, &custody, &handles, monero::Network::Mainnet).await,
+            register_missing_wallets_checking_state(
+                &store,
+                &custody,
+                &handles,
+                None,
+                monero::Network::Mainnet
+            )
+            .await,
             0,
             "nothing left to do"
         );

@@ -993,6 +993,19 @@ impl Store {
         Ok(rows)
     }
 
+    /// Ids of the enabled tenants on `network`.
+    pub fn tenant_ids_on_network(&self, network: monero::Network) -> Result<Vec<TenantId>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(params![shared::network::SqlNetwork(network)], |row| {
+                row.get::<_, TenantId>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Every active tenant's (public key, network, key custody backend).
     pub fn tenant_custody_backends(&self) -> Result<Vec<(String, String, String)>> {
         let mut stmt = self.conn.prepare_cached(
