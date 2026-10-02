@@ -1,6 +1,9 @@
 # Engine scaling: slow links, large blocks, and showing the admin why
 
-Status: proposal (review finding 30, extended). Nothing here is built yet.
+Status: built (review finding 30, extended), in four phases: e29f617
+(measure and adapt), f6dfc6c (leaner memory), eb7922d and 37ff01d (seeing
+it), fe20aab (large blocks). Where the build differs from the proposal
+below, "As built" near the end says how and why.
 
 ## The problem
 
@@ -286,6 +289,48 @@ Mainnet scanning                                          ● slow
   page see the network state and the slow banner, never node addresses or
   rates.
 
+## As built
+
+Where the code differs from the proposal above, or settles something it
+left open:
+
+- **Memory test (phase 2).** No counting-allocator test of a chunk's peak:
+  a global allocator in the engine's test binary would count every other
+  test running beside it. Structural tests stand in: the response cap
+  follows the budget, a block's answer is dropped before its blocks are
+  decoded, and the cache keeps only the compact `ScanTx`.
+- **A budget too large at start (section 3).** The engine doesn't clamp it.
+  As for any setting that fails validation, the scan settings fall back to
+  their defaults, and the refusal says the machine's real maximum. The
+  admin page shows that maximum on the setting.
+- **Paging threshold (section 4).** A block is scanned in pages when its
+  weight is over the response cap or would take its node's link over 30
+  seconds; a block whose header gives no weight is fetched whole. A page
+  holds at most 100 transactions, the most a restricted (public) node
+  returns from one `/get_transactions`.
+- **Headers before every chunk (the open question).** Settled for always:
+  headers come 256 at a time, so this costs one small call per 256 blocks
+  while catching up, and one per block at the tip. A block that appears
+  suddenly large is caught before it is asked for whole.
+- **Checkpoints.** A page doesn't write `partial_block_progress` by itself.
+  The existing checkpoint is written when a unit runs out of time or a
+  page fails, which is when a resume needs it. A crash costs at most the
+  pages since the last one, as for any unit.
+- **The round's time (section 4).** It is computed from the large block in
+  progress, if any, each round: one page of one transaction (round trip,
+  first byte, its bytes at the link's rate, its scan for every store).
+  `/status` reports it as `round_deadline_secs`.
+- **Hover detail (section 6).** Each minute of a resource chart is an SVG
+  `<title>`, which browsers show on hover with or without JavaScript. A
+  Refresh link (fixi) reloads the tab; nothing refreshes on its own.
+- **Chart colours.** Okabe-Ito blue (engine) and vermillion (monokulo),
+  lighter in dark mode, each tested at 3:1 against the card.
+- **Node addresses.** The slow-block sentence names the node and its rate
+  for operators only. The status page shows anyone else the rate alone.
+- **Not built:** the 200 MB test uses a block whose header says 200 MB
+  rather than 200 MB of transactions. The paging decision, page sizes and
+  the scan are the same either way, and the test stays fast.
+
 ## Phases
 
 | Phase | Delivers | Tested by |
@@ -303,6 +348,3 @@ leaves the engine working.
 - monerod's `get_blocks.bin` appears to cap one answer at about 100 MB but
   always return at least one block. This needs verifying against monerod's
   source; segmented mode avoids depending on it either way.
-- Whether `get_block_header_by_height` for a run of heights (the
-  `get_block_headers_range` call) is cheap enough to precede every chunk, or
-  should only run once the running average suggests big blocks.
