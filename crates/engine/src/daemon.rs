@@ -107,12 +107,16 @@ pub struct ChainBlock {
     /// The miner's timestamp (unix seconds). Consensus lets it run up to two
     /// hours ahead of real time.
     pub timestamp: u64,
-    /// The block's transactions, without the coinbase.
-    pub txs: Vec<Transaction>,
+    /// The block's transactions, without the coinbase, as the scan keeps
+    /// them (docs/engine_scaling.md section 3).
+    pub txs: Vec<ScanTx>,
     /// The id of each of `txs` (lowercase hex), in order. They come with
     /// the block: a pruned transaction can't be hashed to its id
     /// (`shared::monero_tx`).
     pub txids: Vec<String>,
+    /// The block's size as it came from the node, in bytes: what block
+    /// requests are sized and the block cache is counted by.
+    pub wire_bytes: u64,
 }
 
 impl ChainBlock {
@@ -122,6 +126,36 @@ impl ChainBlock {
             hash: self.hash.clone(),
             prev_hash: self.prev_hash.clone(),
             timestamp: self.timestamp,
+        }
+    }
+}
+
+/// What the scan keeps of one transaction (docs/engine_scaling.md section
+/// 3): what a view key reads ([`ScanInput`]: the outputs, `extra`, the unlock
+/// time, the encrypted amounts and commitments) and the inputs' key images,
+/// which a payment is recorded with. Ring members and everything else are
+/// dropped once the transaction is decoded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScanTx {
+    pub input: shared::key_custody::ScanInput,
+    pub key_images: Vec<[u8; 32]>,
+}
+
+impl ScanTx {
+    pub fn of(tx: &Transaction) -> Self {
+        ScanTx {
+            input: shared::key_custody::ScanInput::of(tx),
+            key_images: tx
+                .prefix
+                .inputs
+                .iter()
+                .filter_map(|input| match input {
+                    monero::blockdata::transaction::TxIn::ToKey { k_image, .. } => {
+                        Some(k_image.image.to_bytes())
+                    }
+                    monero::blockdata::transaction::TxIn::Gen { .. } => None,
+                })
+                .collect(),
         }
     }
 }
@@ -647,8 +681,13 @@ pub mod fake {
                     hash: block.hash.clone(),
                     prev_hash,
                     timestamp: block.timestamp,
-                    txs: block.txs.clone(),
+                    txs: block.txs.iter().map(ScanTx::of).collect(),
                     txids: block.txs.iter().map(tx_id_hex).collect(),
+                    wire_bytes: block
+                        .txs
+                        .iter()
+                        .map(|tx| monero::consensus::encode::serialize(tx).len() as u64)
+                        .sum(),
                 });
             }
             if out.is_empty() {

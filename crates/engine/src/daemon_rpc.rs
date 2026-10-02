@@ -206,7 +206,14 @@ impl RpcDaemonClient {
     ) -> Result<Vec<u8>, DaemonError> {
         let started = Instant::now();
         let bytes = self
-            .post_timed(endpoint, path, body, json, REQUEST_TIMEOUT)
+            .post_timed(
+                endpoint,
+                path,
+                body,
+                json,
+                REQUEST_TIMEOUT,
+                self.max_response_bytes,
+            )
             .await?
             .0;
         if bytes.len() <= SMALL_RESPONSE_BYTES {
@@ -224,9 +231,10 @@ impl RpcDaemonClient {
         body: Vec<u8>,
         json: bool,
         timeout: Duration,
+        cap: usize,
     ) -> Result<(Vec<u8>, Timing), DaemonError> {
         let result = self
-            .post_timed_inner(endpoint, path, body, json, timeout)
+            .post_timed_inner(endpoint, path, body, json, timeout, cap)
             .await;
         match &result {
             Err(DaemonError::TimedOut(_)) => self.link.record_timeout(),
@@ -243,6 +251,7 @@ impl RpcDaemonClient {
         body: Vec<u8>,
         json: bool,
         timeout: Duration,
+        cap: usize,
     ) -> Result<(Vec<u8>, Timing), DaemonError> {
         let started = Instant::now();
         let sent = body.len() as u64;
@@ -270,7 +279,7 @@ impl RpcDaemonClient {
             .await
             .map_err(|e| request_error(&format!("{endpoint} after {timeout:?}"), &e))?;
         let first_byte = Instant::now();
-        let bytes = read_capped(response, self.max_response_bytes, endpoint).await?;
+        let bytes = read_capped(response, cap, endpoint).await?;
         if let Some(entry) = self.stats.lock().get_mut(endpoint) {
             entry.bytes_received += bytes.len() as u64;
         }
@@ -382,16 +391,30 @@ impl RpcDaemonClient {
                 request,
                 false,
                 timeout,
+                self.blocks_cap(max_block_count),
             )
             .await?;
         let blocks = parse_get_blocks_bin_response(&response)?;
+        let received = response.len();
+        // The blocks' blobs are copied out: the answer they came in goes now,
+        // not when the whole chunk is decoded (docs/engine_scaling.md 3).
+        drop(response);
         self.link.record_blocks(
             blocks.len() as u64,
-            response.len(),
+            received,
             timing.to_first_byte,
             timing.transfer,
         );
         Ok(blocks)
+    }
+
+    /// The largest `get_blocks.bin` answer accepted for `blocks` blocks:
+    /// four times what this link's blocks have averaged, and never under
+    /// the general cap. A larger answer is refused as too large, and the
+    /// scan asks for fewer blocks next time.
+    fn blocks_cap(&self, blocks: u64) -> usize {
+        let expected = blocks as f64 * self.link.bytes_per_block();
+        ((expected * 4.0).min(usize::MAX as f64) as usize).max(self.max_response_bytes)
     }
 
     /// One header by height (`get_block_header_by_height`): about a
@@ -650,6 +673,8 @@ impl BinBlock {
                 self.txs.len()
             )));
         }
+        let wire_bytes =
+            (blob.len() + self.txs.iter().map(|entry| entry.blob.len()).sum::<usize>()) as u64;
         let mut txs = Vec::with_capacity(self.txs.len());
         let mut txids = Vec::with_capacity(self.txs.len());
         for (entry, listed) in self.txs.iter().zip(&block.tx_hashes) {
@@ -658,7 +683,9 @@ impl BinBlock {
                 .map_err(|e| {
                     DaemonError::Request(format!("get_blocks.bin: block {height}: {e}"))
                 })?;
-            txs.push(tx.tx);
+            // Only what the scan reads is kept; the transaction itself is
+            // dropped here.
+            txs.push(crate::daemon::ScanTx::of(&tx.tx));
             txids.push(txid);
         }
         Ok(ChainBlock {
@@ -668,6 +695,7 @@ impl BinBlock {
             timestamp: block.header.timestamp.0,
             txs,
             txids,
+            wire_bytes,
         })
     }
 }
@@ -1531,6 +1559,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 timestamp: header.timestamp,
                 txs: Vec::new(),
                 txids: Vec::new(),
+                wire_bytes: 0,
             });
             from = 1;
         }
@@ -2888,6 +2917,7 @@ mod wire_tests {
                 Vec::new(),
                 false,
                 Duration::from_millis(200),
+                MAX_RESPONSE_BYTES,
             )
             .await
             .err()
@@ -2900,6 +2930,18 @@ mod wire_tests {
             link.rate_bytes_per_sec,
             (crate::link::COLD_RATE_BYTES_PER_SEC / 2.0) as u64
         );
+    }
+
+    /// A block answer may be four times what its blocks are expected to
+    /// weigh, and never less than the general cap: a node can't send an
+    /// unbounded answer to a small request, and a big request isn't refused
+    /// for being as big as asked.
+    #[test]
+    fn a_block_answer_is_capped_by_what_was_asked_for() {
+        let client = RpcDaemonClient::new("127.0.0.1", 1, false, false).unwrap();
+        // 50 kB a block until measured.
+        assert_eq!(client.blocks_cap(1), MAX_RESPONSE_BYTES);
+        assert_eq!(client.blocks_cap(1_000), 200_000_000);
     }
 
     /// An answer over the cap asks for less too.
@@ -3155,7 +3197,10 @@ mod wire_tests {
         let block = entry(&txid, Some(prunable))
             .into_chain_block(height)
             .unwrap();
-        assert!(shared::monero_tx::is_pruned(&block.txs[0]));
+        // Kept as the scan reads it: no ring members, but the key images.
+        assert!(block.txs[0].input.prefix().inputs.is_empty());
+        assert!(!block.txs[0].key_images.is_empty());
+        assert!(block.wire_bytes > blob.len() as u64);
         assert_eq!(block.txids, vec![txid.clone()]);
         // The block lists another transaction than the one that came.
         let error = entry(B, Some(prunable))
@@ -3251,8 +3296,8 @@ mod live_node_tests {
         assert_eq!(block.txs.len(), 87);
         assert_eq!(block.txids.len(), 87);
         for tx in &block.txs {
-            assert!(!tx.prefix.inputs.is_empty());
-            assert!(!tx.prefix.outputs.is_empty());
+            assert!(!tx.key_images.is_empty());
+            assert!(!tx.input.prefix().outputs.is_empty());
         }
         assert!(block.txids.iter().any(|txid| txid == KNOWN_TX));
     }
@@ -3310,8 +3355,8 @@ mod live_node_tests {
                     hex::encode(whole.hash().to_bytes()),
                     "block {height}, transaction {index}"
                 );
-                assert!(shared::monero_tx::is_pruned(pruned));
-                assert_eq!(pruned.prefix, whole.prefix);
+                // What the scan keeps is what the whole transaction says.
+                assert_eq!(*pruned, crate::daemon::ScanTx::of(whole));
                 transactions += 1;
             }
         }
@@ -3447,7 +3492,7 @@ mod live_node_tests {
             .iter()
             .position(|txid| txid == KNOWN_TX)
             .expect("the known txid must be one of this block's own transactions");
-        assert_eq!(fetched.tx, block.txs[index]);
+        assert_eq!(crate::daemon::ScanTx::of(&fetched.tx), block.txs[index]);
     }
 
     #[tokio::test]
