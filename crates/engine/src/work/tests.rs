@@ -4356,9 +4356,8 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     assert_eq!(payments().len(), 1, "seen in the pool");
     assert_eq!(payments()[0].block_height, None);
 
-    // Its block: its header first (a block too large for one answer would
-    // be scanned in pages), then fetched whole, scanned, and the payment
-    // given its height.
+    // Its block: fetched whole, with no header asked first (nothing says
+    // blocks may be large), scanned, and the payment given its height.
     fake.set_mempool(vec![]);
     let height = fake.push_block("a4", vec![fixture_tx()]);
     run_round(
@@ -4371,6 +4370,7 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     .unwrap();
     let asked = node.take();
     assert!(asked.contains(&"get_chain_blocks"), "{asked:?}");
+    assert!(!asked.contains(&"get_chain_headers"), "{asked:?}");
     assert_eq!(payments().len(), 1);
     assert_eq!(payments()[0].block_height, Some(height as i64));
     assert_eq!(cursor_of(&store, tenant.as_str()), Some(height));
@@ -4579,6 +4579,9 @@ struct PagedNode<'a> {
     pool_reads: AtomicU64,
     /// The page (counted from 0) that fails, once.
     failing_page: AtomicU64,
+    /// A block too large for one answer: a request for it is refused as
+    /// too large, as a real node's answer would be past the cap.
+    too_large: AtomicU64,
 }
 
 impl<'a> PagedNode<'a> {
@@ -4590,6 +4593,7 @@ impl<'a> PagedNode<'a> {
             pages: Default::default(),
             pool_reads: AtomicU64::new(0),
             failing_page: AtomicU64::new(u64::MAX),
+            too_large: AtomicU64::new(u64::MAX),
         }
     }
 }
@@ -4611,6 +4615,9 @@ impl MoneroDaemonClient for PagedNode<'_> {
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
         self.chain_fetches.lock().push((start, count));
+        if (start..start + count).contains(&self.too_large.load(Ordering::Relaxed)) {
+            return Err(DaemonError::TooLarge("over the response cap".into()));
+        }
         self.inner.get_chain_blocks(start, count).await
     }
     async fn get_chain_headers(
@@ -4665,11 +4672,12 @@ impl MoneroDaemonClient for PagedNode<'_> {
 
 /// A block too large to fetch whole (a 200 MB header; the bytes themselves
 /// aren't needed) is scanned a page of transactions at a time across
-/// rounds (docs/engine_scaling.md section 4): it is never asked for whole,
-/// its outline is asked for once, and each page fits the response cap. Its
-/// payment is staged until the whole block is scanned, then recorded at its
-/// height, and the pool is read every round meanwhile. The block after it
-/// is fetched whole again.
+/// rounds (docs/engine_scaling.md section 4). Headers aren't read first
+/// until something says blocks may be large: here the one request for it
+/// whole, refused as too large. From then on its outline is asked for once
+/// and each page fits the response cap. Its payment is staged until the
+/// whole block is scanned, then recorded at its height, and the pool is
+/// read every round meanwhile. The block after it is fetched whole again.
 #[tokio::test]
 async fn a_200_mb_block_is_scanned_in_pages_and_its_payment_found() {
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
@@ -4679,6 +4687,7 @@ async fn a_200_mb_block_is_scanned_in_pages_and_its_payment_found() {
     fake.set_block_weight(height, 200_000_000);
     let after = fake.push_block("after", vec![unrelated_tx(7)]);
     let node = PagedNode::new(&fake);
+    node.too_large.store(height, Ordering::Relaxed);
     let state = ScanState::default();
     let db = Db::over_shared(store.clone());
     // A 256 MB budget: answers of up to 32 MiB, so ten transactions of
@@ -4727,12 +4736,14 @@ async fn a_200_mb_block_is_scanned_in_pages_and_its_payment_found() {
     assert_eq!(payments()[0].block_height, Some(height as i64));
     assert_eq!(staged(), 0);
 
-    assert!(
+    assert_eq!(
         node.chain_fetches
             .lock()
             .iter()
-            .all(|(start, count)| !(*start..start + count).contains(&height)),
-        "never asked for whole: {:?}",
+            .filter(|(start, count)| (*start..start + count).contains(&height))
+            .count(),
+        1,
+        "asked for whole once, refused, then read by its header: {:?}",
         node.chain_fetches.lock()
     );
     assert_eq!(node.outlines.load(Ordering::Relaxed), 1, "its outline once");
@@ -4768,6 +4779,7 @@ async fn a_failed_page_keeps_the_pages_before_it() {
     let height = fake.push_block("big", txs);
     fake.set_block_weight(height, 200_000_000);
     let node = PagedNode::new(&fake);
+    node.too_large.store(height, Ordering::Relaxed);
     node.failing_page.store(2, Ordering::Relaxed);
     let state = ScanState::default();
     let db = Db::over_shared(store.clone());
@@ -4775,6 +4787,8 @@ async fn a_failed_page_keeps_the_pages_before_it() {
         scan_chunk_memory_budget_mb: 256,
         ..inputs(&db, &custody, &node, &tenants)
     };
+    // Asked for whole, refused: headers come first from now on.
+    run_round(&state, &inputs, ROUND_BUDGET).await;
     // The whole round's time: two pages, then the third fails.
     let report = run_round(&state, &inputs, ROUND_BUDGET).await;
     assert_eq!(

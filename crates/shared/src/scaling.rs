@@ -97,6 +97,26 @@ pub struct DoneBlock {
     pub finished_unix: i64,
 }
 
+/// Why blocks' headers are being read before the blocks
+/// (docs/engine_scaling.md section 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadersFirstReason {
+    /// A block request ran out of time or came back too large.
+    FailedRequest,
+    /// A block came within a quarter of the size that is scanned in pages,
+    /// or one is being scanned in pages.
+    LargeBlock,
+}
+
+/// Blocks' headers are read before the blocks, for this much longer, and
+/// why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadersFirst {
+    pub remaining_secs: i64,
+    pub reason: HeadersFirstReason,
+}
+
 /// One network's block scan, as it has gone lately.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScanReport {
@@ -115,6 +135,9 @@ pub struct ScanReport {
     /// The time the last round was given, when known.
     #[serde(default)]
     pub round_budget_secs: Option<u64>,
+    /// While blocks' headers are read before the blocks.
+    #[serde(default)]
+    pub headers_first: Option<HeadersFirst>,
 }
 
 /// What sets a network's scan pace right now: the one thing an admin would
@@ -202,6 +225,7 @@ mod tests {
             in_progress_secs: None,
             peak_cache_bytes: None,
             round_budget_secs: None,
+            headers_first: None,
         }
     }
 

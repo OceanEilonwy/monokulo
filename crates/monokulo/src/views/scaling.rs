@@ -5,7 +5,7 @@
 use maud::{html, Markup};
 use shared::resources::{ResourceReport, ResourceSample};
 use shared::scaling::{
-    ChunkLimit, LinkPoint, LinkSnapshot, NetworkScaling, Pace, SlowBlock, Trend,
+    ChunkLimit, HeadersFirstReason, LinkPoint, LinkSnapshot, NetworkScaling, Pace, SlowBlock, Trend,
 };
 
 /// `bytes` in decimal units, as sizes on a network are given: "412 MB",
@@ -689,6 +689,21 @@ pub fn scanning_panel(
     } else {
         format!("Deadline {} s (the base)", scaling.round_deadline_secs)
     };
+    let headers_first = match scan.headers_first {
+        Some(on) => format!(
+            "On for about {} more: {}, so each block's size is checked before it is fetched",
+            duration_rough(on.remaining_secs),
+            match on.reason {
+                HeadersFirstReason::FailedRequest => {
+                    "a block request ran out of time or came back too large"
+                }
+                HeadersFirstReason::LargeBlock => {
+                    "a recent block came near the size that is scanned in pages"
+                }
+            }
+        ),
+        None => "Off: blocks are fetched whole without asking their size first".to_string(),
+    };
     let time = format!(
         "Fetching {}, scanning {}",
         duration(scan.fetch_secs_recent.round() as i64),
@@ -707,6 +722,7 @@ pub fn scanning_panel(
                 dt { "Block size" } dd { (block_size) }
                 dt { "Memory" } dd { (memory_line) }
                 dt { "Round" } dd { (round) }
+                dt { "Headers first" } dd { (headers_first) }
                 dt { "Last 10 minutes" } dd { (time) }
             }
         }
@@ -956,6 +972,7 @@ mod tests {
                 in_progress_secs: Some(130),
                 peak_cache_bytes: Some(301_000_000),
                 round_budget_secs: None,
+                headers_first: None,
             },
             blocks_behind: 14,
             catch_up_secs: Some(240),
@@ -1003,6 +1020,10 @@ mod tests {
         assert!(html.contains("Average 1.8 MB (rising ↗) · largest recent 412 MB (block 3,411,990), took 18 m 0 s"), "{html}");
         assert!(html.contains("Budget 256 MB · block cache peak 301 MB in the last hour · this machine allows up to 1,536 MB"), "{html}");
         assert!(html.contains("Deadline 10 s (the base)"), "{html}");
+        assert!(
+            html.contains("Off: blocks are fetched whole without asking their size first"),
+            "{html}"
+        );
         assert!(html.contains("Fetching 6 m 40 s, scanning 12 s"), "{html}");
 
         let html = scanning_panel("mainnet", &scaling(Pace::Memory), node()).into_string();
@@ -1025,8 +1046,13 @@ mod tests {
         );
         assert!(html.contains("Deadline 45 s, raised from 10 s"), "{html}");
 
-        // A large block scanned a page at a time says how far it has got.
+        // A large block scanned a page at a time says how far it has got,
+        // and why headers come first.
         let mut paged = scaling(Pace::Link);
+        paged.scan.headers_first = Some(shared::scaling::HeadersFirst {
+            remaining_secs: 3_000,
+            reason: HeadersFirstReason::FailedRequest,
+        });
         if let Some(block) = paged.scan.in_progress.as_mut() {
             block.pages = Some(shared::scaling::PageProgress {
                 done_txs: 41_000,
@@ -1037,6 +1063,10 @@ mod tests {
         let html = scanning_panel("mainnet", &paged, None).into_string();
         assert!(
             html.contains("in pages: 41,000 of 97,000 transactions scanned, 100 a page"),
+            "{html}"
+        );
+        assert!(
+            html.contains("On for about 50 minutes more: a block request ran out of time or came back too large"),
             "{html}"
         );
 
