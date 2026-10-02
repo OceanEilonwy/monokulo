@@ -158,7 +158,7 @@ test('real POS uses the site theme toggle, applies it in place and remembers it'
 });
 
 test('real POS header is the site app bar: the mark, the store, a POS label and the status indicator', async ({ page }) => {
-  await page.route('**/status/summary', route => route.fulfill({ json: { healthy: true } }));
+  await page.route('**/status/summary', route => route.fulfill({ json: { healthy: true, state: 'ok' } }));
   await page.goto(posUrl());
   const top = page.locator('.pos-top');
   // The site's own mark and name first, linking to the dashboard, as the
@@ -190,7 +190,7 @@ test('real dashboard health indicator follows healthy and unavailable polls', as
     if (polls === 1) await new Promise(resolve => { releaseFirst = resolve; });
     return health === null
       ? route.fulfill({ status: 503, contentType: 'text/plain', body: 'Unavailable' })
-      : route.fulfill({ json: { healthy: health } });
+      : route.fulfill({ json: { healthy: health, state: health ? 'ok' : 'error' } });
   });
   await page.goto(`${fixture.base_url}/dashboard`);
   const dot = page.locator('#status-indicator .status-dot');

@@ -11,34 +11,6 @@ use crate::scanner::{void_and_notify_in_tx, ScannerError};
 use crate::store::db::Class;
 use crate::store::{Db, OpenedReorg, OrderPaymentRow, ReorgPhase, Store};
 
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod decide_tests {
-    use super::*;
-
-    #[test]
-    fn reconciliation_follows_the_transaction_and_voids_only_on_proof() {
-        use Decision::*;
-        use TxLocation::*;
-        for (voided, location, proven, expected) in [
-            (false, InBlock(7), false, Move(Some(7))),
-            (false, InPool, false, Move(None)),
-            (false, NotFound, true, Void),
-            (false, NotFound, false, Move(None)),
-            (true, InBlock(7), false, Restore(7)),
-            (true, InPool, false, Keep),
-            (true, NotFound, false, Keep),
-            (true, NotFound, true, Keep),
-        ] {
-            assert_eq!(
-                decide(voided, location, proven),
-                expected,
-                "voided={voided} {location:?} proven={proven}"
-            );
-        }
-    }
-}
-
 use super::{bounded, Progress, Round, Wait};
 
 /// Candidates collected into the job per unit.
@@ -601,5 +573,33 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
         }
         Ok(Some(_)) => Progress::Advanced,
         Err(error) => Progress::Failed(error),
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod decide_tests {
+    use super::*;
+
+    #[test]
+    fn reconciliation_follows_the_transaction_and_voids_only_on_proof() {
+        use Decision::*;
+        use TxLocation::*;
+        for (voided, location, proven, expected) in [
+            (false, InBlock(7), false, Move(Some(7))),
+            (false, InPool, false, Move(None)),
+            (false, NotFound, true, Void),
+            (false, NotFound, false, Move(None)),
+            (true, InBlock(7), false, Restore(7)),
+            (true, InPool, false, Keep),
+            (true, NotFound, false, Keep),
+            (true, NotFound, true, Keep),
+        ] {
+            assert_eq!(
+                decide(voided, location, proven),
+                expected,
+                "voided={voided} {location:?} proven={proven}"
+            );
+        }
     }
 }

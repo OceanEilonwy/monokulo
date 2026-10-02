@@ -1080,74 +1080,6 @@ pub(crate) fn next_page(
     }
 }
 
-#[cfg(test)]
-mod paging_tests {
-    use super::*;
-
-    /// A block goes to pages when it would overrun one answer, or take the
-    /// link over 30 seconds; one whose weight isn't known is fetched whole.
-    #[test]
-    fn a_block_is_paged_when_too_large_for_an_answer_or_the_link() {
-        let cap = 32_000_000;
-        assert!(!scan_in_pages(None, cap, Some(1.0)));
-        assert!(!scan_in_pages(Some(300_000), cap, None));
-        assert!(scan_in_pages(Some(200_000_000), cap, None), "over the cap");
-        assert!(
-            scan_in_pages(Some(4_000_000), cap, Some(100_000.0)),
-            "40 s at 100 kB/s"
-        );
-        assert!(
-            !scan_in_pages(Some(2_000_000), cap, Some(100_000.0)),
-            "20 s"
-        );
-    }
-
-    /// A page is the fewest of what fits the cap, what the link sends in a
-    /// target call and what the scan gets through in the round's share,
-    /// from 1 to 100 transactions.
-    #[test]
-    fn a_page_is_sized_by_memory_link_and_cpu() {
-        let page = |cap, rate, avg, cpu, remaining| next_page(cap, rate, avg, cpu, 4.0, remaining);
-        assert_eq!(
-            page(32_000_000, None, 2_000.0, None, 10_000),
-            ChunkPlan {
-                blocks: PAGE_MAX_TXS,
-                limited_by: ChunkLimit::Maximum
-            }
-        );
-        assert_eq!(
-            page(100_000, None, 2_000.0, None, 10_000),
-            ChunkPlan {
-                blocks: 50,
-                limited_by: ChunkLimit::Memory
-            }
-        );
-        assert_eq!(
-            page(32_000_000, Some(10_000.0), 2_000.0, None, 10_000),
-            ChunkPlan {
-                blocks: 20,
-                limited_by: ChunkLimit::Link
-            }
-        );
-        assert_eq!(
-            page(32_000_000, None, 2_000.0, Some(0.5), 10_000),
-            ChunkPlan {
-                blocks: 8,
-                limited_by: ChunkLimit::Cpu
-            }
-        );
-        assert_eq!(
-            page(32_000_000, None, 2_000.0, None, 7),
-            ChunkPlan {
-                blocks: 7,
-                limited_by: ChunkLimit::Remaining
-            }
-        );
-        // A transaction larger than the cap still makes a page of one.
-        assert_eq!(page(256_000, None, 3_000_000.0, None, 10).blocks, 1);
-    }
-}
-
 /// The bytes-per-block estimate after a block request that ran out of time
 /// or came back too large: doubled, so the next request asks for half as
 /// many blocks (docs/engine_scaling.md section 2). Successes bring it back
@@ -12683,5 +12615,73 @@ pub(crate) mod tests {
             check_for_reorg_and_reconcile(&store, &daemon, "moonnet", 20, 0).await,
             Err(ScannerError::Internal(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+
+    /// A block goes to pages when it would overrun one answer, or take the
+    /// link over 30 seconds; one whose weight isn't known is fetched whole.
+    #[test]
+    fn a_block_is_paged_when_too_large_for_an_answer_or_the_link() {
+        let cap = 32_000_000;
+        assert!(!scan_in_pages(None, cap, Some(1.0)));
+        assert!(!scan_in_pages(Some(300_000), cap, None));
+        assert!(scan_in_pages(Some(200_000_000), cap, None), "over the cap");
+        assert!(
+            scan_in_pages(Some(4_000_000), cap, Some(100_000.0)),
+            "40 s at 100 kB/s"
+        );
+        assert!(
+            !scan_in_pages(Some(2_000_000), cap, Some(100_000.0)),
+            "20 s"
+        );
+    }
+
+    /// A page is the fewest of what fits the cap, what the link sends in a
+    /// target call and what the scan gets through in the round's share,
+    /// from 1 to 100 transactions.
+    #[test]
+    fn a_page_is_sized_by_memory_link_and_cpu() {
+        let page = |cap, rate, avg, cpu, remaining| next_page(cap, rate, avg, cpu, 4.0, remaining);
+        assert_eq!(
+            page(32_000_000, None, 2_000.0, None, 10_000),
+            ChunkPlan {
+                blocks: PAGE_MAX_TXS,
+                limited_by: ChunkLimit::Maximum
+            }
+        );
+        assert_eq!(
+            page(100_000, None, 2_000.0, None, 10_000),
+            ChunkPlan {
+                blocks: 50,
+                limited_by: ChunkLimit::Memory
+            }
+        );
+        assert_eq!(
+            page(32_000_000, Some(10_000.0), 2_000.0, None, 10_000),
+            ChunkPlan {
+                blocks: 20,
+                limited_by: ChunkLimit::Link
+            }
+        );
+        assert_eq!(
+            page(32_000_000, None, 2_000.0, Some(0.5), 10_000),
+            ChunkPlan {
+                blocks: 8,
+                limited_by: ChunkLimit::Cpu
+            }
+        );
+        assert_eq!(
+            page(32_000_000, None, 2_000.0, None, 7),
+            ChunkPlan {
+                blocks: 7,
+                limited_by: ChunkLimit::Remaining
+            }
+        );
+        // A transaction larger than the cap still makes a page of one.
+        assert_eq!(page(256_000, None, 3_000_000.0, None, 10).blocks, 1);
     }
 }
