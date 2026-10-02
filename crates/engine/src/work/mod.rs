@@ -367,6 +367,9 @@ pub struct ScanState {
     /// Wakes webhook delivery when something was just enqueued, so a
     /// settlement's webhook goes out at once rather than on the next poll.
     webhooks: std::sync::Arc<tokio::sync::Notify>,
+    /// Wakes the network's loops when its node announces a block or a pool
+    /// transaction (docs/monero_zmq.md).
+    node_wakes: std::sync::Arc<crate::node_events::NodeWakes>,
     mempool: mempool::MempoolState,
     blocks: blocks::BlockState,
     settlement: settlement::SettlementState,
@@ -397,6 +400,12 @@ impl ScanState {
     /// block's smallest unit needs more (docs/engine_scaling.md section 4).
     pub fn round_budget(&self, daemon: &dyn MoneroDaemonClient, stores: usize) -> Duration {
         self.blocks.round_budget(daemon, stores)
+    }
+
+    /// What wakes this network's loops early: its loops wait on it, and a
+    /// node subscriber pokes it.
+    pub fn node_wakes(&self) -> &std::sync::Arc<crate::node_events::NodeWakes> {
+        &self.node_wakes
     }
 
     pub(crate) fn wake_webhooks(&self) {

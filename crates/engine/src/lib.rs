@@ -16,6 +16,7 @@ pub mod key_custody;
 pub mod link;
 pub mod loops;
 pub mod network;
+pub mod node_events;
 pub mod scaling;
 pub mod scanner;
 pub mod scanner_status;

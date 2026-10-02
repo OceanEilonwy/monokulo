@@ -28,6 +28,9 @@ pub struct NodeRow {
     pub address: String,
     /// "Use TLS".
     pub ssl: bool,
+    /// "Announcements (ZMQ)", as typed: the node's `--zmq-pub`, or empty
+    /// for none (docs/monero_zmq.md).
+    pub zmq_pub: String,
     /// "Accept a self-signed certificate".
     pub self_signed: bool,
     /// Shown under the address; nothing is saved while any row has one.
@@ -223,6 +226,10 @@ impl NodeForm {
                 NodeRow {
                     address: value.trim().to_string(),
                     ssl: ticked("ssl"),
+                    zmq_pub: form
+                        .get(&format!("node_{name}_{index}_zmq_pub"))
+                        .map(|value| value.trim().to_string())
+                        .unwrap_or_default(),
                     self_signed: ticked("self_signed"),
                     error: None,
                 },
@@ -315,6 +322,16 @@ fn check_rows(rows: &mut [NodeRow]) {
             }
             Err(message) => row.error = Some(message),
         }
+        // The engine checks the rest (and whether it was built to listen).
+        if row.error.is_none()
+            && !row.zmq_pub.is_empty()
+            && !(row.zmq_pub.starts_with("tcp://") || row.zmq_pub.starts_with("ipc://"))
+        {
+            row.error = Some(
+                "Announcements: give the node's --zmq-pub address, like tcp://127.0.0.1:18083."
+                    .to_string(),
+            );
+        }
     }
 }
 
@@ -327,13 +344,17 @@ pub fn rows_to_setting(rows: &[NodeRow]) -> Option<serde_json::Value> {
         .iter()
         .map(|row| {
             let address = parse_address(&row.address).ok()?;
-            Some(serde_json::json!({
+            let mut node = serde_json::json!({
                 "host": address.host,
                 "port": address.port,
                 "ssl": row.ssl || address.https,
                 "accept_self_signed_certs": row.self_signed,
                 "fallbacks": [],
-            }))
+            });
+            if !row.zmq_pub.is_empty() {
+                node["zmq_pub"] = serde_json::Value::String(row.zmq_pub.clone());
+            }
+            Some(node)
         })
         .collect::<Option<_>>()?;
     let mut nodes = nodes.into_iter();
@@ -353,6 +374,11 @@ fn saved_node(value: &serde_json::Value) -> Option<(String, u16, NodeRow)> {
             .get("ssl")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
+        zmq_pub: value
+            .get("zmq_pub")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         self_signed: value
             .get("accept_self_signed_certs")
             .and_then(serde_json::Value::as_bool)
@@ -673,24 +699,28 @@ mod tests {
             NodeRow {
                 address: "https://primary.example:18089".into(),
                 ssl: false,
+                zmq_pub: String::new(),
                 self_signed: false,
                 error: None,
             },
             NodeRow {
                 address: "one.example:18081".into(),
                 ssl: false,
+                zmq_pub: "tcp://one.example:18083".into(),
                 self_signed: true,
                 error: None,
             },
             NodeRow {
                 address: "[::1]:18081".into(),
                 ssl: true,
+                zmq_pub: String::new(),
                 self_signed: true,
                 error: None,
             },
             NodeRow {
                 address: "three.example:18081".into(),
                 ssl: true,
+                zmq_pub: String::new(),
                 self_signed: false,
                 error: None,
             },
@@ -701,7 +731,7 @@ mod tests {
             serde_json::json!({
                 "host": "primary.example", "port": 18089, "ssl": true, "accept_self_signed_certs": false,
                 "fallbacks": [
-                    { "host": "one.example", "port": 18081, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] },
+                    { "host": "one.example", "port": 18081, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [], "zmq_pub": "tcp://one.example:18083" },
                     { "host": "[::1]", "port": 18081, "ssl": true, "accept_self_signed_certs": true, "fallbacks": [] },
                     { "host": "three.example", "port": 18081, "ssl": true, "accept_self_signed_certs": false, "fallbacks": [] },
                 ]
@@ -725,6 +755,7 @@ mod tests {
             NodeRow {
                 address: "primary.example:18089".into(),
                 ssl: true,
+                zmq_pub: String::new(),
                 self_signed: false,
                 error: None
             },
@@ -750,12 +781,49 @@ mod tests {
             NodeRow {
                 address: "[::1]:18081".into(),
                 ssl: false,
+                zmq_pub: String::new(),
                 self_signed: true,
                 error: None
             }
         );
         assert!(rows_from_setting(None).is_empty());
         assert!(rows_from_setting(Some(&serde_json::Value::Null)).is_empty());
+    }
+
+    #[test]
+    fn a_row_s_announcement_address_is_kept_and_needs_a_zmq_scheme() {
+        let parsed = NodeForm::from_form(
+            &form(&[
+                ("node_mainnet_0_address", "127.0.0.1:18081"),
+                ("node_mainnet_0_zmq_pub", " tcp://127.0.0.1:18083 "),
+                ("node_mainnet_1_address", "node.example.com:18081"),
+                ("node_mainnet_1_zmq_pub", ""),
+            ]),
+            ORDER,
+        );
+        assert!(!parsed.has_errors());
+        let rows = parsed.rows(Network::Mainnet).unwrap();
+        assert_eq!(rows[0].zmq_pub, "tcp://127.0.0.1:18083");
+        assert_eq!(rows[1].zmq_pub, "");
+        let json = rows_to_setting(rows).unwrap();
+        assert_eq!(json["zmq_pub"], "tcp://127.0.0.1:18083");
+        assert!(
+            json["fallbacks"][0].get("zmq_pub").is_none(),
+            "none saved for a node without one"
+        );
+
+        let parsed = NodeForm::from_form(
+            &form(&[
+                ("node_mainnet_0_address", "127.0.0.1:18081"),
+                ("node_mainnet_0_zmq_pub", "127.0.0.1:18083"),
+            ]),
+            ORDER,
+        );
+        let error = parsed.rows(Network::Mainnet).unwrap()[0]
+            .error
+            .clone()
+            .unwrap();
+        assert!(error.contains("--zmq-pub"), "{error}");
     }
 
     #[test]

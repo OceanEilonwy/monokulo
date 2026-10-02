@@ -90,6 +90,10 @@ monokulo = { path = "../monokulo", optional = true }
 # own Cargo.toml along with the wallet code that used them.
 cli-wallet = { path = "../cli-wallet", optional = true }
 clap = "4.6.7"
+# Push notifications from the operator's own monerod (`--zmq-pub`), behind
+# the `zmq` feature (docs/monero_zmq.md). A pure-Rust ZeroMQ, so the binary
+# stays static: no `libzmq`, which is why the design ruled ZMQ out before.
+zeromq = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport", "ipc-transport"], optional = true }
 
 [features]
 # Real-spend-wallet support for the e2e tests and the POS e2e harness binary
@@ -101,6 +105,11 @@ e2e = ["dep:monokulo", "dep:cli-wallet", "test-support", "monokulo/test-support"
 # The in-thread database pools (`store::Database::inline`) for
 # `engine-test-support` and the e2e harness. Never in production.
 test-support = ["shared/test-support"]
+# Wakes the scan loops when a node configured with `zmq_pub` says a block or
+# a pool transaction arrived (docs/monero_zmq.md). Polling stays on as the
+# safety net. Without this feature a node setting naming `zmq_pub` is
+# refused, so it can't be saved and silently ignored.
+zmq = ["dep:zeromq"]
 
 [[test]]
 name = "e2e_stagenet"
