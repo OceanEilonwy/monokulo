@@ -20,11 +20,12 @@ use crate::stress::{atomic_json, fresh_db, profile, target_dir};
 use crate::{escape_html, root};
 
 /// The columns of each scenario's table: field, heading, decimals.
-const COLUMNS: [(&str, &str, usize); 8] = [
+const COLUMNS: [(&str, &str, usize); 9] = [
     ("blocks_per_sec", "Blocks/s", 1),
     ("served_per_scanned", "Sent per scanned", 2),
     ("blocks_scanned", "Scanned", 0),
     ("blocks_served", "Sent", 0),
+    ("discarded_cache_bytes", "Discarded unread (bytes)", 0),
     ("rounds", "Rounds", 0),
     ("round_ms_p50", "Round p50 (ms)", 0),
     ("round_ms_max", "Longest round (ms)", 0),

@@ -544,7 +544,7 @@ pub async fn run_round(
             .collect(),
         pool_txids: None,
         chain: Default::default(),
-        blocks: Default::default(),
+        blocks: blocks::BlocksRound::resume(&state.blocks, inputs),
         mempool: mempool::MempoolRound::starting(watching, polled),
         settlement: Default::default(),
         upkeep: Default::default(),
@@ -587,6 +587,7 @@ pub async fn run_round(
             }
         }
     }
+    blocks::carry(&mut round).await;
     report
 }
 

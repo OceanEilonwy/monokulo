@@ -129,6 +129,10 @@ pub(crate) struct BlockState {
     /// The large block being scanned in pages, kept across rounds so its
     /// outline is fetched once.
     paged: parking_lot::Mutex<Option<Paged>>,
+    /// The block cache the last round left for the next ([`carry`]): taken
+    /// whole at a round's start and put back at its end, never shared while
+    /// a round runs.
+    carried: parking_lot::Mutex<Option<Carried>>,
 }
 
 /// A large block being scanned a page at a time (docs/engine_scaling.md
@@ -150,6 +154,16 @@ impl Default for BlockState {
 }
 
 impl BlockState {
+    /// The heights the last round left for the next, lowest first.
+    #[cfg(test)]
+    pub(super) fn carried_heights(&self) -> Vec<u64> {
+        self.carried
+            .lock()
+            .as_ref()
+            .map(|carried| carried.cache.blocks.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
     /// State whose progress (sizing, the block in progress, recent blocks)
     /// is `progress`, which `/status` reads.
     pub(crate) fn with_progress(progress: crate::scaling::SharedProgress) -> Self {
@@ -157,6 +171,7 @@ impl BlockState {
             catch_up_turn: AtomicBool::new(false),
             progress,
             paged: parking_lot::Mutex::new(None),
+            carried: parking_lot::Mutex::new(None),
         }
     }
 
@@ -300,6 +315,77 @@ pub(crate) struct BlocksRound {
     frontier_header_only: Option<bool>,
 }
 
+impl BlocksRound {
+    /// A round's block state, starting from the cache the last round left,
+    /// if its blocks came from the node this round reads, trimmed to the
+    /// memory budget as it is now (the setting may have been lowered).
+    pub(crate) fn resume(state: &BlockState, inputs: &super::RoundInputs<'_>) -> Self {
+        let mut round = BlocksRound::default();
+        let Some(mut carried) = state.carried.lock().take() else {
+            return round;
+        };
+        let discarded = if inputs.daemon.node() == Some(carried.node) {
+            let budget = budget_bytes(inputs.scan_chunk_memory_budget_mb);
+            let discarded = carried.cache.trim(None, budget);
+            round.cache = carried.cache;
+            discarded
+        } else {
+            carried.cache.clear()
+        };
+        let mut progress = state.progress.lock();
+        progress.discarded_cache_bytes += discarded;
+        progress.cache_bytes(round.cache.bytes as u64, crate::now_unix());
+        round
+    }
+}
+
+/// Leaves the next round what may serve it: blocks above every tenant's
+/// cursor (below it, nobody needs them again) and at least
+/// `reorg_check_depth` below the tip, where reorg detection treats the
+/// chain as settled; a block nearer the tip may be replaced before the next
+/// round. Nothing is left after a rewind, while a reorg job is open, when
+/// the tip couldn't be read, or from a client that may ask a different node
+/// each call. A caught-up network leaves nothing: every held block is at or
+/// below a cursor, or near the tip.
+pub(super) async fn carry(round: &mut Round<'_>) {
+    let mut cache = std::mem::take(&mut round.blocks.cache);
+    if cache.blocks.is_empty() {
+        return;
+    }
+    let node = round.inputs.daemon.node();
+    let lowest_cursor = match (node, round.tip, round.chain.rewound) {
+        (Some(_), Some(_), false) => round
+            .db(|s, network| -> Result<Option<u64>, ScannerError> {
+                if s.reorg_job(network)?.is_some() {
+                    return Ok(None);
+                }
+                let Some(high_water) = s.max_scanned_height(network)? else {
+                    return Ok(None);
+                };
+                let lowest_group = s.scan_group_cursors(network, high_water, None, 1)?;
+                Ok(Some(lowest_group.first().copied().unwrap_or(high_water)))
+            })
+            .await
+            .ok()
+            .flatten(),
+        _ => None,
+    };
+    let settled = round
+        .tip
+        .map(|tip| tip.saturating_sub(round.inputs.reorg_check_depth));
+    let discarded = match (lowest_cursor, settled) {
+        (Some(lowest), Some(settled)) => cache.retain(lowest.saturating_add(1)..=settled),
+        _ => cache.clear(),
+    };
+    let mut progress = round.state.blocks.progress.lock();
+    progress.discarded_cache_bytes += discarded;
+    progress.cache_bytes(cache.bytes as u64, crate::now_unix());
+    drop(progress);
+    if let (Some(node), false) = (node, cache.blocks.is_empty()) {
+        *round.state.blocks.carried.lock() = Some(Carried { cache, node });
+    }
+}
+
 /// Which catch-up group is served next. Groups are keyed by cursor height;
 /// after a group is served, the rotation moves past where that group *ended
 /// up*, so a group far behind can't be "next" again just because it moved
@@ -358,43 +444,124 @@ impl Rotation {
     }
 }
 
-/// Blocks fetched this round, bounded by the scan memory budget. Each block
-/// carries its own id, so a cached body can never be paired with another
-/// block's hash; the cache is still per round, so nothing stale is kept.
+/// Blocks fetched for scanning, within the scan memory budget. A round
+/// starts with what the last one left ([`BlockState::resume`]) and leaves
+/// what may serve the next ([`BlocksRound::carry`]), so a run fetched ahead
+/// isn't fetched again because a round ended. Each block carries its own id
+/// and is checked against the recorded chain before it is scanned, so a
+/// cached body can never be paired with another block's hash.
 #[derive(Default)]
 struct BlockCache {
-    blocks: BTreeMap<u64, (Arc<ChainBlock>, usize)>,
+    blocks: BTreeMap<u64, Cached>,
     bytes: usize,
+}
+
+struct Cached {
+    block: Arc<ChainBlock>,
+    /// Its size on the wire: what the memory budget counts.
+    bytes: usize,
+    /// Handed to a scan at least once. A block let go of before that was
+    /// fetched for nothing.
+    read: bool,
 }
 
 impl BlockCache {
     fn insert(&mut self, block: ChainBlock, bytes: usize) -> Arc<ChainBlock> {
         let block = Arc::new(block);
-        if let Some((_, old)) = self.blocks.insert(block.height, (block.clone(), bytes)) {
-            self.bytes -= old;
+        let cached = Cached {
+            block: block.clone(),
+            bytes,
+            read: false,
+        };
+        if let Some(old) = self.blocks.insert(block.height, cached) {
+            self.bytes -= old.bytes;
         }
         self.bytes += bytes;
         block
     }
 
-    /// Evicts the blocks farthest from `keep` until within `budget`; `keep`
-    /// itself always stays.
-    fn trim(&mut self, keep: u64, budget: usize) {
-        // Farthest first; of two as far, the lower (already scanned past).
-        let mut victims: Vec<u64> = self
+    fn contains(&self, height: u64) -> bool {
+        self.blocks.contains_key(&height)
+    }
+
+    /// Block `height`, if held, for a scan to read.
+    fn read(&mut self, height: u64) -> Option<Arc<ChainBlock>> {
+        self.blocks.get_mut(&height).map(|cached| {
+            cached.read = true;
+            cached.block.clone()
+        })
+    }
+
+    /// Lets go of block `height`; returns its bytes if no scan read it.
+    fn remove(&mut self, height: u64) -> u64 {
+        match self.blocks.remove(&height) {
+            Some(cached) => {
+                self.bytes -= cached.bytes;
+                if cached.read {
+                    0
+                } else {
+                    cached.bytes as u64
+                }
+            }
+            None => 0,
+        }
+    }
+
+    /// Evicts blocks until within `budget`, `keep` never: first those a scan
+    /// has read (their group has moved past them), then unread ones; of
+    /// each, the farthest from `keep` (the lowest held, without one) first.
+    /// Returns the bytes let go of unread.
+    fn trim(&mut self, keep: Option<u64>, budget: usize) -> u64 {
+        let Some(anchor) = keep.or_else(|| self.blocks.keys().next().copied()) else {
+            return 0;
+        };
+        let mut victims: Vec<(bool, u64)> = self
             .blocks
-            .keys()
-            .copied()
-            .filter(|&height| height != keep)
+            .iter()
+            .filter(|(height, _)| Some(**height) != keep)
+            .map(|(height, cached)| (cached.read, *height))
             .collect();
-        victims.sort_by_key(|&height| std::cmp::Reverse(height.abs_diff(keep)));
-        for height in victims {
+        victims.sort_by_key(|&(read, height)| (!read, std::cmp::Reverse(height.abs_diff(anchor))));
+        let mut discarded = 0;
+        for (_, height) in victims {
             if self.bytes <= budget {
                 break;
             }
-            self.bytes -= self.blocks.remove(&height).map_or(0, |(_, bytes)| bytes);
+            discarded += self.remove(height);
         }
+        discarded
     }
+
+    /// Lets go of every block; returns the bytes let go of unread.
+    fn clear(&mut self) -> u64 {
+        let heights: Vec<u64> = self.blocks.keys().copied().collect();
+        heights.into_iter().map(|height| self.remove(height)).sum()
+    }
+
+    /// Keeps only blocks in `heights`; returns the bytes let go of unread.
+    fn retain(&mut self, heights: std::ops::RangeInclusive<u64>) -> u64 {
+        let outside: Vec<u64> = self
+            .blocks
+            .keys()
+            .copied()
+            .filter(|height| !heights.contains(height))
+            .collect();
+        outside.into_iter().map(|height| self.remove(height)).sum()
+    }
+}
+
+/// A scan memory budget of `budget_mb` in bytes.
+fn budget_bytes(budget_mb: u32) -> usize {
+    usize::try_from(budget_mb)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(1024 * 1024)
+}
+
+/// A block cache left by one round for the next, with the node its blocks
+/// came from.
+struct Carried {
+    cache: BlockCache,
+    node: crate::daemon::NodeKey,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1147,7 +1314,7 @@ fn commit(
 /// the end of what it has).
 fn prefetch_range(round: &Round<'_>, next: u64, end: u64) -> Option<(u64, u64)> {
     let cache = &round.blocks.cache;
-    if next > end || cache.blocks.contains_key(&next) || !cache.blocks.contains_key(&(next - 1)) {
+    if next > end || cache.contains(next) || !cache.contains(next - 1) {
         return None;
     }
     let count = whole_run(
@@ -1160,7 +1327,7 @@ fn prefetch_range(round: &Round<'_>, next: u64, end: u64) -> Option<(u64, u64)> 
 
 impl BlockCache {
     /// Adds a fetched run of blocks, keeping within the memory budget
-    /// around `keep`. Returns block `keep`, if the run had it.
+    /// around `keep`, which stays.
     fn add_chunk(
         &mut self,
         chunk: Vec<ChainBlock>,
@@ -1168,9 +1335,9 @@ impl BlockCache {
         budget_mb: u32,
         rate: Option<f64>,
         state: &BlockState,
-    ) -> Option<Arc<ChainBlock>> {
+    ) {
         if chunk.is_empty() {
-            return None;
+            return;
         }
         // As the blocks came from the node: what requests are sized by.
         let sizes: Vec<usize> = chunk
@@ -1179,24 +1346,13 @@ impl BlockCache {
             .collect();
         state.note_fetched(sizes.iter().sum(), chunk.len());
         state.note_sizes(&sizes, crate::scanner::response_cap_bytes(budget_mb), rate);
-        let mut kept = None;
         for (block, bytes) in chunk.into_iter().zip(sizes) {
-            let block = self.insert(block, bytes);
-            if block.height == keep {
-                kept = Some(block);
-            }
+            self.insert(block, bytes);
         }
-        self.trim(
-            keep,
-            usize::try_from(budget_mb)
-                .unwrap_or(usize::MAX)
-                .saturating_mul(1024 * 1024),
-        );
-        state
-            .progress
-            .lock()
-            .cache_bytes(self.bytes as u64, crate::now_unix());
-        kept
+        let discarded = self.trim(Some(keep), budget_bytes(budget_mb));
+        let mut progress = state.progress.lock();
+        progress.discarded_cache_bytes += discarded;
+        progress.cache_bytes(self.bytes as u64, crate::now_unix());
     }
 }
 
@@ -1464,8 +1620,8 @@ async fn known_header(
 /// Block `height` ready to scan: held whole, or, if it is large, its
 /// outline.
 async fn source(round: &mut Round<'_>, height: u64, end: u64) -> Result<Source, ScannerError> {
-    if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
-        return Ok(Source::Whole(block.clone()));
+    if let Some(block) = round.blocks.cache.read(height) {
+        return Ok(Source::Whole(block));
     }
     if round.state.blocks.headers_first() {
         let header = known_header(round, height, end).await?;
@@ -1479,7 +1635,7 @@ async fn source(round: &mut Round<'_>, height: u64, end: u64) -> Result<Source, 
 /// Fetches block `height` whole ahead of its scan, unless it is held
 /// already or is scanned in pages.
 async fn hold(round: &mut Round<'_>, height: u64, end: u64) -> Result<(), ScannerError> {
-    if round.blocks.cache.blocks.contains_key(&height) {
+    if round.blocks.cache.contains(height) {
         return Ok(());
     }
     if round.state.blocks.headers_first() {
@@ -1554,8 +1710,8 @@ async fn block(
     height: u64,
     end: u64,
 ) -> Result<Arc<ChainBlock>, ScannerError> {
-    if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
-        return Ok(block.clone());
+    if let Some(block) = round.blocks.cache.read(height) {
+        return Ok(block);
     }
     let count = round.state.blocks.plan(round, height, end).blocks;
     let count = whole_run(round, height, count).max(1);
@@ -1574,21 +1730,18 @@ async fn block(
     };
     // The block asked for is never evicted by its own fetch.
     let state = round.state;
-    round
-        .blocks
-        .cache
-        .add_chunk(
-            chunk,
-            height,
-            round.inputs.scan_chunk_memory_budget_mb,
-            round.inputs.daemon.transfer_rate(),
-            &state.blocks,
-        )
-        .ok_or_else(|| {
-            ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
-                "the node returned no block at height {height}"
-            )))
-        })
+    round.blocks.cache.add_chunk(
+        chunk,
+        height,
+        round.inputs.scan_chunk_memory_budget_mb,
+        round.inputs.daemon.transfer_rate(),
+        &state.blocks,
+    );
+    round.blocks.cache.read(height).ok_or_else(|| {
+        ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
+            "the node returned no block at height {height}"
+        )))
+    })
 }
 
 /// Block `height` as its header alone (no transactions), for recording a
@@ -1602,8 +1755,8 @@ async fn header_block(
     height: u64,
     end: u64,
 ) -> Result<Arc<ChainBlock>, ScannerError> {
-    if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
-        return Ok(block.clone());
+    if let Some(block) = round.blocks.cache.read(height) {
+        return Ok(block);
     }
     let header = known_header(round, height, end).await?;
     Ok(Arc::new(ChainBlock {
@@ -1691,16 +1844,81 @@ mod tests {
         }
         cache.insert(block(15), 40);
         assert_eq!(cache.bytes, 10 * 100 + 40);
-        cache.trim(12, 500);
+        assert_eq!(cache.trim(Some(12), 500), 540, "none had been read");
         assert!(cache.bytes <= 500);
         let kept: Vec<u64> = cache.blocks.keys().copied().collect();
         assert!(kept.contains(&12));
         assert!(kept.iter().all(|h| h.abs_diff(12) <= 3), "{kept:?}");
-        cache.trim(12, 0);
+        cache.trim(Some(12), 0);
         assert_eq!(
             cache.blocks.keys().copied().collect::<Vec<_>>(),
             vec![12],
             "the block in use always stays"
         );
+    }
+
+    /// Blocks a scan has read go before blocks fetched ahead: with many
+    /// groups sharing the budget, one group's run fetched ahead isn't
+    /// evicted while blocks already scanned remain. Only unread blocks
+    /// count as discarded.
+    #[test]
+    fn the_block_cache_evicts_read_blocks_before_unread_ones() {
+        let mut cache = BlockCache::default();
+        for h in 10..=20 {
+            cache.insert(block(h), 100);
+        }
+        for h in [11, 19] {
+            assert!(cache.read(h).is_some());
+        }
+        assert_eq!(cache.trim(Some(15), 900), 0, "the read ones went");
+        assert!(!cache.contains(11) && !cache.contains(19));
+        assert_eq!(cache.trim(Some(15), 800), 100, "then the farthest unread");
+        assert!(!cache.contains(10) && cache.contains(20));
+        assert_eq!(cache.retain(14..=16), 500);
+        assert_eq!(cache.bytes, 300);
+        assert!(cache.read(15).is_some());
+        assert_eq!(cache.clear(), 200, "15 was read");
+        assert_eq!(cache.bytes, 0);
+    }
+
+    /// A round starts from what the last one left, trimmed to the memory
+    /// budget as it is now, and only on the node the blocks came from. What
+    /// is let go of unread is counted for `/status`.
+    #[tokio::test]
+    async fn a_round_resumes_the_cache_within_todays_budget() {
+        let state = BlockState::default();
+        let carry = |state: &BlockState, node| {
+            let mut cache = BlockCache::default();
+            for h in 1..=4 {
+                cache.insert(block(h), 512 * 1024);
+            }
+            *state.carried.lock() = Some(Carried { cache, node });
+        };
+        let store = crate::store::Store::open_in_memory().unwrap().into_shared();
+        let db = crate::store::Db::over_shared(store);
+        let custody = crate::key_custody::PlainKeyCustody::default();
+        let daemon = crate::daemon::fake::FakeDaemonClient::new();
+        let inputs = super::super::RoundInputs {
+            db: &db,
+            custody: &custody,
+            daemon: &daemon,
+            network: monero::Network::Mainnet,
+            tenants: &[],
+            reorg_check_depth: 10,
+            grace_period_seconds: 0,
+            scan_chunk_memory_budget_mb: 1,
+        };
+
+        carry(&state, crate::daemon::NodeKey::default());
+        let round = BlocksRound::resume(&state, &inputs);
+        assert_eq!(round.cache.bytes, 1024 * 1024, "two of four fit 1 MB");
+        assert!(round.cache.contains(1) && round.cache.contains(2));
+        assert!(state.carried.lock().is_none(), "taken, not shared");
+        assert_eq!(state.progress.lock().discarded_cache_bytes, 1024 * 1024);
+
+        carry(&state, crate::daemon::NodeKey(7));
+        let round = BlocksRound::resume(&state, &inputs);
+        assert_eq!(round.cache.bytes, 0, "another node's blocks");
+        assert_eq!(state.progress.lock().discarded_cache_bytes, 3 * 1024 * 1024);
     }
 }

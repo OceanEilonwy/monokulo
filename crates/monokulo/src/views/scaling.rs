@@ -984,6 +984,7 @@ mod tests {
                 }),
                 in_progress_secs: Some(130),
                 peak_cache_bytes: Some(301_000_000),
+                discarded_cache_bytes: 0,
                 round_budget_secs: None,
                 headers_first: None,
             },

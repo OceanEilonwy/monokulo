@@ -298,6 +298,9 @@ fn outline_bytes(tx_count: Option<u64>) -> u64 {
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for PinnedDaemon<'_> {
+    fn node(&self) -> Option<crate::daemon::NodeKey> {
+        Some(crate::daemon::NodeKey(self.idx))
+    }
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.one(|c| c.get_height()).await
     }
@@ -428,6 +431,11 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for FallbackDaemonClient {
+    /// Each call goes to whichever node answers first.
+    fn node(&self) -> Option<crate::daemon::NodeKey> {
+        None
+    }
+
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.failover(|c| c.get_height()).await
     }

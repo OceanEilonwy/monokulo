@@ -9,7 +9,8 @@
 //!   needed (a prefetched block dropped at the end of a round is sent again);
 //! - **the wait between rounds**: settlement and the mempool get a turn once
 //!   a round, so the longest round is the longest they wait;
-//! - **a round's fixed cost**: how long a round with nothing to do takes.
+//! - **a round's fixed cost**: how long a round with nothing to do takes;
+//! - **discarded bytes**: blocks the scan's cache let go of unread.
 //!
 //! Progress is read over the binary's own SQLite connection, as in
 //! `stress_fixture`.
@@ -352,7 +353,8 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
     observer.busy_timeout(Duration::from_secs(5))?;
     let tenants: Vec<(TenantId, WalletHandle)> =
         handles.iter().map(|(id, h)| (id.clone(), *h)).collect();
-    let state = ScanState::default();
+    let progress = engine::scaling::new_progress();
+    let state = ScanState::default().with_progress(progress.clone());
     let inputs = RoundInputs {
         db: &db,
         custody: custody.as_ref(),
@@ -426,6 +428,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         "blocks_served": blocks_served,
         "distinct_heights_served": distinct,
         "bytes_served": daemon.bytes_served.load(Ordering::Relaxed),
+        "discarded_cache_bytes": progress.lock().discarded_cache_bytes,
         "served_per_scanned": blocks_served as f64 / scanned.max(1) as f64,
         "block_requests": daemon.block_requests.load(Ordering::Relaxed),
         "small_requests": daemon.small_requests.load(Ordering::Relaxed),

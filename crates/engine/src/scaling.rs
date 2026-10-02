@@ -47,6 +47,9 @@ pub struct ScanProgress {
     pub time: VecDeque<TimeSpent>,
     /// The largest the block cache has been, and when (for an hour).
     pub peak_cache: Option<(i64, u64)>,
+    /// Bytes of blocks the cache let go of before any scan read them, since
+    /// the engine started: fetched for nothing, and fetched again if needed.
+    pub discarded_cache_bytes: u64,
     /// The time the last round was given: the base, unless one page of a
     /// large block needed more (docs/engine_scaling.md section 4).
     pub round_budget: std::time::Duration,
@@ -64,6 +67,7 @@ impl Default for ScanProgress {
             recent: VecDeque::new(),
             time: VecDeque::new(),
             peak_cache: None,
+            discarded_cache_bytes: 0,
             round_budget: crate::work::ROUND_BUDGET,
             headers_first: None,
         }
@@ -205,6 +209,7 @@ impl ScanProgress {
                 .peak_cache
                 .filter(|(at, _)| *at >= now_unix - 3600)
                 .map(|(_, bytes)| bytes),
+            discarded_cache_bytes: self.discarded_cache_bytes,
             round_budget_secs: Some(self.round_budget.as_secs()),
             headers_first: self
                 .headers_first

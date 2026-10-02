@@ -331,6 +331,22 @@ left open:
   while it is off costs one refused request, bounded by the response cap
   or the link's timeout, and the next try pages it. The Scanning panel
   says whether it is on, and why.
+- **The block cache outlasts the round (round length sweep).** A run
+  fetched ahead used to be dropped when its round ended and fetched again
+  in the next, so a link-limited catch-up re-sent up to one chunk a round
+  (22 times the blocks it scanned at 2 s rounds, 1.3 times at 10 s:
+  `cargo xtask stress rounds`). A round now starts from the cache the last
+  one left and leaves what may serve the next: blocks above every tenant's
+  cursor and at least `reorg_check_depth` below the tip, from the same node
+  (`MoneroDaemonClient::node`), never after a rewind or while a reorg job is
+  open. The cache stays within the scan memory budget at all times, and is
+  trimmed to it again at each round's start in case the setting was
+  lowered. A caught-up network holds nothing. With many catch-up groups
+  sharing the budget, blocks already scanned are evicted before runs
+  fetched ahead. Blocks let go of unread are counted
+  (`discarded_cache_bytes` in `/status`). The peak is unchanged, since one
+  round could already fill the budget; only how long it is held changed, so
+  the `budget × networks × 1.25` check stands.
 - **Checkpoints.** A page doesn't write `partial_block_progress` by itself.
   The existing checkpoint is written when a unit runs out of time or a
   page fails, which is when a resume needs it. A crash costs at most the

@@ -132,6 +132,10 @@ pub struct ScanReport {
     pub in_progress: Option<BlockInProgress>,
     pub in_progress_secs: Option<i64>,
     pub peak_cache_bytes: Option<u64>,
+    /// Bytes of blocks fetched and then let go of before any scan read them,
+    /// since the engine started.
+    #[serde(default)]
+    pub discarded_cache_bytes: u64,
     /// The time the last round was given, when known.
     #[serde(default)]
     pub round_budget_secs: Option<u64>,
@@ -224,6 +228,7 @@ mod tests {
             in_progress: None,
             in_progress_secs: None,
             peak_cache_bytes: None,
+            discarded_cache_bytes: 0,
             round_budget_secs: None,
             headers_first: None,
         }
