@@ -100,6 +100,24 @@ Sources are grouped in tiers. The order is the priority within a round:
 Each round has a deadline. Every tier has a **reserved share** of it
 (Chain 20 %, Blocks 40 %, Mempool 15 %, Settlement 20 %, Upkeep 5 %).
 
+The shares are the only times written down. Everything a tier does in one
+call follows from its share (`Tier::reserved()`, worked out at build time
+from `ROUND_BUDGET`), so a change to the round or the shares carries
+through:
+
+| Time | From | Today |
+| --- | --- | --- |
+| A block request's target (`SCAN_CHUNK_TARGET_CALL_SECS`) | Blocks share | 4 s |
+| One store's key-custody scan of a run of a block's transactions | Blocks share | 4 s |
+| One store's scan of a pool transaction (round and fast path) | Mempool share | 1.5 s |
+| One vanished payment's lookups | Settlement share | 2 s |
+
+A round raised for a large block (`work::blocks::round_budget_for`) splits
+its own length by the same shares (`Tier::share_of`). The per-call times
+above stay at the base round's, so a large block's pages stay small.
+Node timeouts don't follow the round: they come from each node's link
+(docs/engine_scaling.md section 2).
+
 - **Pass 1** runs each tier in priority order until its share is used or
   it goes idle.
 - **Pass 2** gives the remaining time to the tiers that still have work, in

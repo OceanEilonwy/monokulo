@@ -62,11 +62,25 @@ impl Tier {
         }
     }
 
-    /// The seconds reserved for this tier in a round of [`ROUND_BUDGET`].
-    /// The tier always runs at least one unit, so a unit that takes longer
-    /// than this delays every tier after it in the round.
+    /// This tier's share of a round of `budget`: the round's live length,
+    /// which is raised while a large block is scanned in pages.
+    pub const fn share_of(self, budget: Duration) -> Duration {
+        // Whole nanoseconds; a round would need to run for centuries to
+        // overflow the `u64`.
+        Duration::from_nanos((budget.as_nanos() * self.reserved_percent() as u128 / 100) as u64)
+    }
+
+    /// This tier's share of a round of [`ROUND_BUDGET`], worked out at build
+    /// time. The tier always runs at least one unit, so a unit that takes
+    /// longer than this delays every tier after it in the round: what one
+    /// of its calls may take is set from this, not written down beside it.
+    pub const fn reserved(self) -> Duration {
+        self.share_of(ROUND_BUDGET)
+    }
+
+    /// [`Self::reserved`] in seconds, for the sizing arithmetic.
     pub(crate) const fn reserved_secs(self) -> f64 {
-        ROUND_BUDGET.as_secs_f64() * self.reserved_percent() as f64 / 100.0
+        self.reserved().as_secs_f64()
     }
 
     const fn index(self) -> usize {
@@ -544,9 +558,8 @@ pub async fn run_round(
 
     for pass_end in [None, Some(round_end)] {
         for tier in Tier::ALL {
-            let until = pass_end.unwrap_or_else(|| {
-                (Instant::now() + budget * tier.reserved_percent() / 100).min(round_end)
-            });
+            let until =
+                pass_end.unwrap_or_else(|| (Instant::now() + tier.share_of(budget)).min(round_end));
             while open[tier] {
                 if report.steps[tier] > 0 && Instant::now() >= until {
                     break;

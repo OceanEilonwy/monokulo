@@ -2051,6 +2051,27 @@ async fn a_call_the_node_never_answers_fails_at_the_deadline() {
     assert_eq!(started.elapsed(), CALL_DEADLINE);
 }
 
+/// A tier's share follows the round it is a share of: the base round's at
+/// build time, a raised round's when one is raised, and together the shares
+/// cover the round to within a nanosecond a tier.
+#[test]
+fn a_tiers_share_follows_the_round() {
+    assert_eq!(Tier::Blocks.reserved(), Duration::from_secs(4));
+    assert_eq!(Tier::Settlement.reserved(), Duration::from_secs(2));
+    assert_eq!(
+        Tier::Blocks.share_of(Duration::from_secs(120)),
+        Duration::from_secs(48)
+    );
+    for budget in [
+        ROUND_BUDGET,
+        Duration::from_millis(7_777),
+        Duration::from_nanos(1_001),
+    ] {
+        let total: Duration = Tier::ALL.iter().map(|tier| tier.share_of(budget)).sum();
+        assert!(total <= budget && budget - total < Duration::from_nanos(Tier::ALL.len() as u64));
+    }
+}
+
 /// Tiers and wait reasons read as words in logs and reports, each its own.
 #[test]
 fn tiers_and_wait_reasons_display_distinctly() {

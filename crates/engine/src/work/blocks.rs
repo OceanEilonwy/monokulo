@@ -1262,6 +1262,7 @@ async fn scan_txs(
                 &txs[start..end],
                 &inputs[start..end],
                 batch,
+                super::Tier::Blocks.reserved(),
             )
             .await;
             round.state.blocks.progress.lock().spent(

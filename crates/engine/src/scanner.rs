@@ -162,18 +162,19 @@ pub(crate) async fn scan_transaction_in_window(
     Ok(ScanResult::of(txid, &tx, matches))
 }
 
-/// Longest one tenant's scan of one batch of transactions may take before it
-/// counts as a failure for that tenant (task 7.4). A key-custody backend that
-/// answers, but slowly, is then treated like one that is down: that tenant is
-/// left behind and caught up later, and nobody else waits on it.
-pub const SCAN_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-
 /// Most tenants scanned at the same time.
 pub(crate) const SCAN_CONCURRENCY: usize = 32;
 
 /// Scans a run of transactions for many tenants at once: one key-custody
-/// call per tenant for the whole run, each with `SCAN_CALL_DEADLINE`, so a
-/// slow tenant (a slow key-custody backend) doesn't hold up the others.
+/// call per tenant for the whole run, each with `deadline`, so a slow
+/// tenant (a slow key-custody backend) doesn't hold up the others.
+///
+/// `deadline` is the longest one tenant's scan of the run may take before
+/// it counts as a failure for that tenant (task 7.4): a backend that
+/// answers, but slowly, is then treated like one that is down, left behind
+/// and caught up later. Callers pass their tier's share of a round
+/// ([`crate::work::Tier::reserved`]): a scan that took longer would hold up
+/// the tiers after it.
 /// `txids` and `inputs` are the ids and the scan inputs of `txs`, in the
 /// same order (the ids come with the transactions: they may be pruned, and
 /// then can't be hashed to them). Each tenant comes with how many of the
@@ -189,6 +190,7 @@ pub(crate) async fn scan_txs_for_tenants(
     txs: &[crate::daemon::ScanTx],
     inputs: &[ScanInput],
     tenants: &[(&(crate::store::TenantId, WalletHandle, ScanIndices), usize)],
+    deadline: std::time::Duration,
 ) -> Vec<(crate::store::TenantId, Result<Vec<ScanResult>>)> {
     use futures_util::stream::{self, StreamExt};
     // By index: a closure over borrowed tuples trips a rustc limitation that
@@ -201,7 +203,7 @@ pub(crate) async fn scan_txs_for_tenants(
             tracing::Instrument::instrument(
                 async move {
                     let result = match tokio::time::timeout(
-                        SCAN_CALL_DEADLINE,
+                        deadline,
                         key_custody.scan_txs_for_indices(*handle, &inputs[done..], window),
                     )
                     .await
@@ -227,7 +229,7 @@ pub(crate) async fn scan_txs_for_tenants(
                         Ok(Err(error)) => Err(error.into()),
                         Err(_) => Err(ScannerError::KeyCustody(
                             KeyCustodyError::BackendUnavailable(format!(
-                                "scan took longer than {SCAN_CALL_DEADLINE:?}"
+                                "scan took longer than {deadline:?}"
                             )),
                         )),
                     };
@@ -241,13 +243,14 @@ pub(crate) async fn scan_txs_for_tenants(
         .await
 }
 
-/// `scan_txs_for_tenants` for one transaction: `None` is a tenant it pays
-/// nothing.
+/// `scan_txs_for_tenants` for one transaction, each tenant's scan within
+/// `deadline`: `None` is a tenant it pays nothing.
 pub(crate) async fn scan_for_tenants(
     key_custody: &dyn KeyCustody,
     txid: &str,
     tx: &Transaction,
     tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
+    deadline: std::time::Duration,
 ) -> Vec<(crate::store::TenantId, Result<Option<ScanResult>>)> {
     let tx = crate::daemon::ScanTx::of(tx);
     let inputs = [tx.input.clone()];
@@ -258,6 +261,7 @@ pub(crate) async fn scan_for_tenants(
         std::slice::from_ref(&tx),
         &inputs,
         &tenants,
+        deadline,
     )
     .await
     .into_iter()
@@ -2359,6 +2363,7 @@ pub(crate) mod tests {
             &tx_id_hex(&tx),
             &tx,
             &tenants.iter().collect::<Vec<_>>(),
+            crate::work::Tier::Mempool.reserved(),
         )
         .await;
 
@@ -2408,6 +2413,7 @@ pub(crate) mod tests {
             &kept,
             &inputs,
             &[(&fresh, 0), (&resumed, 1), (&finished, 3)],
+            crate::work::Tier::Blocks.reserved(),
         )
         .await;
 
@@ -10111,7 +10117,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(
-            started.elapsed() < SCAN_CALL_DEADLINE * 3,
+            started.elapsed() < crate::work::Tier::Blocks.reserved() * 3,
             "bounded by the per-call deadline: {:?}",
             started.elapsed()
         );

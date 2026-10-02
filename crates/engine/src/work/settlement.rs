@@ -23,8 +23,10 @@ use super::{Progress, Round, Wait};
 const VANISHED_PAGE: usize = 64;
 const RECOMPUTE_PAGE: usize = 64;
 const RECOMPUTES_PER_JOB: usize = 16;
-/// How long one vanished payment's lookups may take.
-const VANISHED_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long one vanished payment's lookups may take: the settlement tier's
+/// share of a round, so one payment's lookups can't hold up the tiers after
+/// it for longer than the tier was given.
+const VANISHED_CALL_DEADLINE: std::time::Duration = super::Tier::Settlement.reserved();
 
 #[derive(Default)]
 pub(crate) struct SettlementState {
