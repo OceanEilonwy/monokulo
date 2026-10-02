@@ -49,7 +49,7 @@ settings! {
         check: |token: &live_settings::Secret| shared::auth::check_engine_token(token.expose()),
         description: "The token every request to the engine must carry; the engine refuses any request without it. Required, at least 32 characters. Generate one with `openssl rand -hex 32` and give the same value to the engine (ENGINE_TOKEN) and monokulo (MONOKULO_ENGINE_TOKEN).",
         applies: Restart,
-        sources: [Cli, Env],
+        sources: [Env],
         required: true,
     },
     LOGGING_FORMAT: telemetry::LogFormat {
@@ -281,6 +281,7 @@ settings! {
         default: live_settings::Secret::default(),
         check: telemetry::otlp::check_headers,
         description: "Headers the collector needs, such as an API key, as name=value pairs separated by commas.",
+        sources: [Env, Database],
     },
 }
 

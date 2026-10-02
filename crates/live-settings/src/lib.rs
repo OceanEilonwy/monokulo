@@ -46,8 +46,8 @@ pub use registry::{
 };
 pub use section::{BootPolicy, FieldError, Live, Reloadable, Section, Warning};
 pub use setting::{
-    cli_flag, parsed_default, range, AnySetting, Applies, Bounds, Check, Env, Problem, Setting,
-    SettingSource, Snapshot, Source, Sources,
+    cli_flag, outside_names, parsed_default, range, AnySetting, Applies, Bounds, Check, Env,
+    Problem, Setting, SettingSource, Snapshot, Source, Sources,
 };
 pub use store::{MemoryStore, SettingsStore, StoreError};
 pub use value::{BindAddr, CommaList, HttpUrl, Json, Secret, SettingKind, SettingValue, MASK};

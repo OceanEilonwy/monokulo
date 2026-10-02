@@ -6,8 +6,9 @@
 //! through the registry applies the change to the running process (part 3).
 //!
 //! A few settings can't be saved, only given at start (`sources: [Cli,
-//! Env]`): where the database is, the engine's address and token, and the
-//! log format, which are needed before the database opens, and
+//! Env]`, or `[Env]` for a secret, since the process list is readable by
+//! every user on the machine): where the database is and the log format,
+//! which are needed before the database opens, the engine token, and
 //! `crypto.encryption_key`, the AES-256-GCM key every
 //! `store_connections.tenant_secret_token_encrypted` row is encrypted with
 //! (`crate::crypto`). Keeping it in the database it protects, or changing it
@@ -89,17 +90,16 @@ settings! {
         check: check_encryption_key,
         description: "The key the engine's secret token for each store is encrypted with in monokulo's database: 64 hex characters, from `openssl rand -hex 32`. Required, given at start only, and never changed once stores are connected: their tokens could no longer be read.",
         applies: Restart,
-        sources: [Cli, Env],
+        sources: [Env],
         required: true,
     },
     ENGINE_URL: HttpUrl {
         key: "engine.url",
         env: "MONOKULO_ENGINE_URL",
         default: live_settings::parsed_default("http://127.0.0.1:8443"),
-        description: "Where monokulo reaches the engine (the engine's server.bind). Given at start only.",
+        description: "Where monokulo reaches the engine: the engine's server.bind as a URL. Takes effect after monokulo restarts.",
         example: "http://127.0.0.1:8443",
         applies: Restart,
-        sources: [Cli, Env],
     },
     ENGINE_TOKEN: Secret {
         key: "engine.token",
@@ -108,7 +108,7 @@ settings! {
         check: |token: &Secret| shared::auth::check_engine_token(token.expose()),
         description: "The engine token, sent with every request to the engine, which refuses anything without it: the engine's ENGINE_TOKEN. Required, at least 32 characters, given at start only.",
         applies: Restart,
-        sources: [Cli, Env],
+        sources: [Env],
         required: true,
     },
     LOGGING_FORMAT: telemetry::LogFormat {
@@ -326,6 +326,7 @@ settings! {
         default: live_settings::Secret::default(),
         check: telemetry::otlp::check_headers,
         description: "Headers the collector needs, such as an API key, as name=value pairs separated by commas.",
+        sources: [Env, Database],
     },
 }
 
@@ -443,7 +444,6 @@ pub fn signup_mode(db: &Db) -> SignupMode {
 pub struct BootConfig {
     pub database_path: PathBuf,
     pub encryption_key: Secret,
-    pub engine_url: HttpUrl,
     pub engine_token: Secret,
     pub log_format: telemetry::LogFormat,
 }
@@ -454,7 +454,6 @@ impl Section for BootConfig {
         &[
             &DATABASE_PATH,
             &CRYPTO_ENCRYPTION_KEY,
-            &ENGINE_URL,
             &ENGINE_TOKEN,
             &LOGGING_FORMAT,
         ]
@@ -463,27 +462,29 @@ impl Section for BootConfig {
         Ok(BootConfig {
             database_path: snapshot.get(&DATABASE_PATH),
             encryption_key: snapshot.get(&CRYPTO_ENCRYPTION_KEY),
-            engine_url: snapshot.get(&ENGINE_URL),
             engine_token: snapshot.get(&ENGINE_TOKEN),
             log_format: snapshot.get(&LOGGING_FORMAT),
         })
     }
 }
 
-/// Where monokulo listens: read once at start, after the settings load.
+/// Where monokulo listens and where it reaches the engine: read once at
+/// start, from the database too, so both apply on restart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
+    pub engine_url: HttpUrl,
 }
 
 impl Section for ServerConfig {
     const NAME: &'static str = "server";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&SERVER_BIND]
+        &[&SERVER_BIND, &ENGINE_URL]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(ServerConfig {
             bind: snapshot.get(&SERVER_BIND).0,
+            engine_url: snapshot.get(&ENGINE_URL),
         })
     }
 }
@@ -894,6 +895,7 @@ impl MonokuloSettings {
             registry: None,
             server: live_settings::Live::new(ServerConfig {
                 bind: SERVER_BIND.default_value().0,
+                engine_url: ENGINE_URL.default_value(),
             }),
         })
     }
@@ -1088,7 +1090,7 @@ mod tests {
         );
         let missing = ENGINE_TOKEN.require(&none).unwrap_err();
         assert!(
-            missing.starts_with("MONOKULO_ENGINE_TOKEN or --engine-token must be set."),
+            missing.starts_with("MONOKULO_ENGINE_TOKEN must be set."),
             "{missing}"
         );
         let short = ENGINE_TOKEN
@@ -1187,13 +1189,13 @@ mod tests {
             vec!["coingecko", "coinmarketcap", "haveno"]
         );
 
-        assert!(
-            registry
-                .save(change("engine.url", "http://127.0.0.1:2"))
-                .await
-                .is_err(),
-            "the engine's address comes from the environment, not a save"
-        );
+        // The engine's address is saved for the next start: the running
+        // client keeps the one it started with.
+        let saved = registry
+            .save(change("engine.url", "http://127.0.0.1:2"))
+            .await
+            .unwrap();
+        assert_eq!(saved.restart_required, ["engine.url"]);
         assert_eq!(engine.base_url(), "http://127.0.0.1:1");
 
         registry

@@ -99,8 +99,9 @@ watches each network's chain for stores' payments. Only monokulo should reach it
 With none of the one-off commands, it starts the server. Every setting below can be given \
 as an option, as its environment variable, or (unless it says it isn't saved) on the admin \
 settings page, which applies it without a restart. An option wins over the environment \
-variable, which wins over the saved value, which wins over the default. ENGINE_TOKEN (or \
---server-token) is required.";
+variable, which wins over the saved value, which wins over the default. Secrets have no \
+option, only their environment variable (listed after the options): every user on the \
+machine can read the process list. ENGINE_TOKEN is required.";
 
 const EXAMPLES: &str = "Examples:
   ENGINE_TOKEN=$(cat engine.token) monokulo-engine
@@ -341,9 +342,15 @@ mod tests {
         ] {
             assert!(help.contains(flag), "help should mention {flag}");
         }
+        // An option for each setting that takes one; a secret's variable is
+        // listed after them, with no option (the process list shows options).
         for setting in crate::engine_settings::ALL {
             let flag = format!("--{}", live_settings::cli_flag(setting.key()));
-            assert!(help.contains(&flag), "help should mention {flag}");
+            assert_eq!(
+                help.contains(&flag),
+                setting.sources().cli,
+                "help and {flag}"
+            );
             assert!(
                 help.contains(setting.env_var()),
                 "help should mention {}",

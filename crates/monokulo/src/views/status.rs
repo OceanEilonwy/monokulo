@@ -31,6 +31,9 @@ pub struct StatusNetworkView {
     pub network: String,
     pub nodes: Vec<StatusNodeView>,
     pub scanner: StatusScannerView,
+    /// While block headers are read first, why and for how long
+    /// (docs/engine_scaling.md section 4).
+    pub headers_first: Option<String>,
 }
 
 /// `engine_error`, when set, means the engine itself couldn't be reached at
@@ -134,6 +137,9 @@ pub fn live_fragment(data: &StatusPageViewModel) -> Markup {
                         }
                         @if let Some(last_error) = &network.scanner.last_error {
                             div class="error" { (last_error) }
+                        }
+                        @if let Some(headers_first) = &network.headers_first {
+                            p class="hint headers-first" { (headers_first) }
                         }
                     }
                 }
@@ -245,6 +251,9 @@ mod tests {
                     tenants_scanned: 3,
                     last_error: Some("scanner blew up".to_string()),
                 },
+                headers_first: Some(
+                    "Reading block headers first for about 50 minutes more.".to_string(),
+                ),
             }],
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
@@ -255,6 +264,10 @@ mod tests {
         assert!(html.contains("tag-error"));
         assert!(html.contains("connection refused"));
         assert!(html.contains("scanner blew up"));
+        assert!(
+            html.contains(r#"<p class="hint headers-first">Reading block headers first for about 50 minutes more.</p>"#),
+            "{html}"
+        );
         assert!(
             html.contains("42"),
             "expected the tick count shown, got: {html}"

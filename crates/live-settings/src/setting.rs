@@ -71,6 +71,17 @@ impl Sources {
     }
 }
 
+/// How a setting is given from outside the admin page: `ENGINE_TOKEN`,
+/// `--server-bind`, or `ENGINE_SERVER_BIND or --server-bind`, as its sources
+/// allow.
+pub fn outside_names(key: &str, env_var: &str, sources: Sources) -> String {
+    match (sources.env, sources.cli) {
+        (true, true) => format!("{env_var} or --{}", cli_flag(key)),
+        (false, true) => format!("--{}", cli_flag(key)),
+        _ => env_var.to_string(),
+    }
+}
+
 /// A setting's command-line option, without the leading `--`:
 /// `payment.reorg_check_depth` is `payment-reorg-check-depth`.
 pub fn cli_flag(key: &str) -> String {
@@ -242,11 +253,7 @@ impl<T: SettingValue> Setting<T> {
 
     /// How to set it from outside: `ENGINE_TOKEN or --server-token`.
     fn outside_names(&self) -> String {
-        match (self.sources.env, self.sources.cli) {
-            (true, true) => format!("{} or --{}", self.env_var, cli_flag(self.key)),
-            (false, true) => format!("--{}", cli_flag(self.key)),
-            _ => self.env_var.to_string(),
-        }
+        outside_names(self.key, self.env_var, self.sources)
     }
 
     /// The command line over the environment over stored over default, for
@@ -430,6 +437,12 @@ pub(crate) mod private {
         fn check_declaration(&self) -> Result<(), String> {
             if self.key.is_empty() || self.env_var.is_empty() {
                 return Err("a setting needs a key and an environment variable".to_string());
+            }
+            if self.sources.cli && T::kind() == SettingKind::Secret {
+                return Err(
+                    "a secret can't be a command-line option: every user on the machine can read the process list"
+                        .to_string(),
+                );
             }
             if !(self.sources.cli || self.sources.env || self.sources.database) {
                 return Err("a setting needs at least one source".to_string());

@@ -99,7 +99,11 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
                 value: view.value,
                 source_label: source_label(live_source(view.source)),
                 help: Some(if locked {
-                    locked_help(view.description, view.env_var, &view.cli_flag, "monokulo")
+                    locked_help(
+                        view.description,
+                        &live_settings::outside_names(view.key, view.env_var, view.sources),
+                        "monokulo",
+                    )
                 } else {
                     view.description.to_string()
                 }),
@@ -116,9 +120,9 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
 
 /// A locked setting's help: what it is for, then how it is set, since the
 /// page can't change it.
-fn locked_help(description: &str, env_var: &str, cli_flag: &str, process: &str) -> String {
+fn locked_help(description: &str, set_with: &str, process: &str) -> String {
     format!(
-        "{description} Set with {env_var} or --{cli_flag} when {process} starts; change it there and restart {process}."
+        "{description} Set with {set_with} when {process} starts; change it there and restart {process}."
     )
 }
 
@@ -157,10 +161,9 @@ struct RemoteScalarSetting {
     /// Given at start only: shown locked.
     #[serde(default)]
     locked: bool,
+    /// How it is given from outside (its variable and/or option).
     #[serde(default)]
-    env_var: String,
-    #[serde(default)]
-    cli_flag: String,
+    set_with: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -209,12 +212,9 @@ async fn fetch_engine_settings(
             value: s.value,
             source_label: source_label(&s.source),
             help: match (s.locked, s.description) {
-                (true, Some(description)) => Some(locked_help(
-                    &description,
-                    &s.env_var,
-                    &s.cli_flag,
-                    "the engine",
-                )),
+                (true, Some(description)) => {
+                    Some(locked_help(&description, &s.set_with, "the engine"))
+                }
                 (_, description) => description,
             },
             kind: s.kind,
@@ -752,7 +752,7 @@ fn engine_save_notices(warnings: RemoteSaveWarnings, submitted_bind: Option<&str
         if warnings.restart_required.iter().any(|k| k == "server.bind") {
             if let Some(bind) = submitted_bind {
                 text.push_str(&format!(
-                    " After restarting it, set monokulo's engine.url to http://{bind} so monokulo can reach it."
+                     " After restarting it, set monokulo's engine.url to http://{bind} on the General tab and restart monokulo, so it can reach the engine."
                 ));
             }
         }
@@ -1403,6 +1403,7 @@ mod tests {
             ("logging.otlp_endpoint", "http://127.0.0.1:4318"),
             ("logging.otlp_headers", "x-team=ops"),
             ("server.bind", "127.0.0.1:9081"),
+            ("engine.url", "http://127.0.0.1:9443"),
         ];
         // Every monokulo setting the page can save must be covered here, or
         // this test would silently stop proving anything about a setting
@@ -1700,7 +1701,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_engine_address_and_token_show_locked_and_are_never_saved() {
+    async fn the_engine_token_shows_locked_and_is_never_saved_and_its_address_is_saved_for_a_restart(
+    ) {
         let engine = spawn_engine().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let db = state.db.clone();
@@ -1709,24 +1711,23 @@ mod tests {
 
         let page = body_text(get_settings_page(&router, &cookie).await).await;
         assert!(
-            page.contains(r#"<span class="locked-input" title="Given when the process starts; not saved here"><input type="text" value="http://127.0.0.1:8443" id="setting-engine.url" aria-describedby="setting-help-engine.url" disabled>"#),
-            "{page}"
-        );
-        assert!(
             page.contains(r#"<input type="password" value="locked" id="setting-engine.token" aria-describedby="setting-help-engine.token" disabled>"#),
             "{page}"
         );
         assert_eq!(
             page.matches(r#"<svg class="lock-icon""#).count(),
-            2,
+            1,
             "{page}"
         );
         assert!(
-            page.contains("Set with MONOKULO_ENGINE_TOKEN or --engine-token when monokulo starts"),
-            "the help names the variable and the option"
+            page.contains("Set with MONOKULO_ENGINE_TOKEN when monokulo starts"),
+            "the help names the variable: {page}"
+        );
+        assert!(
+            page.contains(r#"name="engine.url""#),
+            "the address can be edited: {page}"
         );
         for never in [
-            r#"name="engine.url""#,
             r#"name="engine.token""#,
             r#"name="clear:engine.token""#,
             shared::auth::TEST_ENGINE_TOKEN,
@@ -1734,7 +1735,8 @@ mod tests {
             assert!(!page.contains(never), "{never}: {page}");
         }
 
-        // A hand-made form that sends them anyway changes nothing.
+        // The address is saved, for the next start; a hand-made form that
+        // sends the token anyway changes nothing.
         router
             .clone()
             .oneshot(authed_form_request(
@@ -1749,9 +1751,12 @@ mod tests {
             ))
             .await
             .unwrap();
-        for key in ["engine.url", "engine.token"] {
-            assert_eq!(db.lock().get_setting(key).unwrap(), None, "{key}");
-        }
+        assert_eq!(db.lock().get_setting("engine.token").unwrap(), None);
+        assert_eq!(
+            db.lock().get_setting("engine.url").unwrap(),
+            None,
+            "the save was refused whole"
+        );
         let payments = body_text(
             get(
                 &router,

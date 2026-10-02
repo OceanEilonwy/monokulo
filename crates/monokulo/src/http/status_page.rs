@@ -501,6 +501,11 @@ fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageVi
 }
 
 fn build_network_view(network: NetworkStatus, now: i64) -> views::status::StatusNetworkView {
+    let headers_first = network
+        .scaling
+        .as_ref()
+        .and_then(|scaling| scaling.scan.headers_first.as_ref())
+        .map(views::scaling::headers_first_sentence);
     let nodes = network
         .nodes
         .into_iter()
@@ -542,6 +547,7 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
             tenants_scanned: scanner.tenants_scanned,
             last_error: scanner.last_error,
         },
+        headers_first,
     }
 }
 
@@ -640,6 +646,26 @@ mod tests {
 
     /// A block over two minutes turns the indicator yellow, not red: the
     /// engine works, it is just slow (docs/engine_scaling.md section 5).
+    /// While the engine reads block headers first, the status page says so,
+    /// with why and for how long (docs/engine_scaling.md section 4).
+    #[test]
+    fn the_status_page_says_when_block_headers_are_read_first() {
+        let mut status = status_with_slow(None);
+        let network = status.networks.remove(0);
+        assert_eq!(build_network_view(network.clone(), 0).headers_first, None);
+        let mut network = network;
+        if let Some(scaling) = network.scaling.as_mut() {
+            scaling.scan.headers_first = Some(shared::scaling::HeadersFirst {
+                remaining_secs: 3_000,
+                reason: shared::scaling::HeadersFirstReason::LargeBlock,
+            });
+        }
+        assert_eq!(
+            build_network_view(network, 0).headers_first.as_deref(),
+            Some("Reading block headers first for about 50 minutes more: a recent block came near the size that is scanned in pages, so each block's size is checked before it is fetched.")
+        );
+    }
+
     #[test]
     fn a_slow_block_is_yellow_and_says_why_and_what_would_help() {
         assert_eq!(health_of(&Ok(status_with_slow(None))), views::Health::Ok);
