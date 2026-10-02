@@ -14,6 +14,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
+const { startFakeNode } = require('../real-stack');
 const { useRealStack, fixture, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 useRealStack(test);
@@ -32,8 +33,11 @@ function freePort() {
 
 test('killing the engine at random moments never loses a confirmed order or reuses an address', async () => {
   test.setTimeout(120_000);
-  const { logs, fake_monerod: fakeAddress } = fixture();
-  const [fakeHost, fakePort] = fakeAddress.split(':');
+  const { logs } = fixture();
+  // A node of its own: the stack's shared one is taken offline by another
+  // spec (real-9's node-down test), which would fail this one's last check.
+  const node = await startFakeNode('stagenet');
+  const [fakeHost, fakePort] = node.address.split(':');
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
   const token = crypto.randomBytes(16).toString('hex');
@@ -42,6 +46,7 @@ test('killing the engine at random moments never loses a confirmed order or reus
   // Its own options file, which the settings saved below go to, so they
   // hold across every restart.
   const options = path.join(logs, 'crash.toml');
+  const engineLog = path.join(logs, 'crash-engine.log');
   fs.writeFileSync(options, `[server]\nbind = "127.0.0.1:${port}"\n[database]\npath = ${JSON.stringify(path.join(logs, 'crash.db'))}\n`);
   // The engine answers nothing without the engine token, so every request
   // carries it, as monokulo's do.
@@ -55,7 +60,11 @@ test('killing the engine at random moments never loses a confirmed order or reus
   });
   let engine = null;
   const start = async () => {
-    engine = spawn(ENGINE_BIN, ['--options', options], { env, stdio: 'ignore' });
+    // Its output is kept with the run's logs, and quoted when the last
+    // check fails.
+    const log = fs.openSync(engineLog, 'a');
+    engine = spawn(ENGINE_BIN, ['--options', options], { env, stdio: ['ignore', log, log] });
+    fs.closeSync(log);
     await expect.poll(async () => {
       try { return (await engineFetch(`/status`)).status; } catch { return 0; }
     }, { timeout: 20_000, intervals: [100] }).toBe(200);
@@ -124,13 +133,23 @@ test('killing the engine at random moments never loses a confirmed order or reus
     }
     expect(all.length).toBeGreaterThanOrEqual(confirmed.size);
     expect(new Set(all.map((order) => order.address)).size).toBe(all.length);
-    // And it's scanning again.
-    await expect.poll(async () => {
+    // And it's scanning again. If not, the failure quotes the scanner's own
+    // status and the engine's warnings: CI keeps no other trace of why.
+    let scanner = null;
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
       const status = await (await engineFetch(`/status`)).json();
-      const stagenet = status.networks.find((n) => n.network === 'stagenet');
-      return Boolean(stagenet && stagenet.scanner.last_tick_ok);
-    }, { timeout: 20_000 }).toBe(true);
+      scanner = status.networks.find((n) => n.network === 'stagenet')?.scanner ?? null;
+      if (scanner && scanner.last_tick_ok) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!(scanner && scanner.last_tick_ok)) {
+      const warnings = fs.readFileSync(engineLog, 'utf8').split('\n')
+        .filter((line) => /"level":"(WARN|ERROR)"/.test(line)).slice(-20).join('\n');
+      throw new Error(`no healthy scan within 20s of the last restart.\nscanner: ${JSON.stringify(scanner)}\nlast warnings and errors:\n${warnings}`);
+    }
   } finally {
     await kill(engine);
+    await node.stop();
   }
 });
