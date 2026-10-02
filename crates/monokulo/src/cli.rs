@@ -15,8 +15,9 @@ their customers and their shops' plugins use. It talks to its engine, which watc
 Every setting below can be given as an option, as its environment variable, or (unless it \
 says it isn't saved) on the admin settings page, which applies it without a restart. An \
 option wins over the environment variable, which wins over the saved value, which wins over \
-the default. MONOKULO_ENCRYPTION_KEY and MONOKULO_ENGINE_TOKEN (or their options) are \
-required.";
+the default. Secrets have no option, only their environment variable (listed after the \
+options): every user on the machine can read the process list. MONOKULO_ENCRYPTION_KEY and \
+MONOKULO_ENGINE_TOKEN are required.";
 
 const EXAMPLES: &str = "Examples:
   MONOKULO_ENCRYPTION_KEY=$(cat monokulo.key) MONOKULO_ENGINE_TOKEN=$(cat engine.token) monokulo
@@ -62,9 +63,15 @@ mod tests {
     #[test]
     fn every_setting_is_an_option_and_a_bad_value_is_refused() {
         let help = command().render_long_help().to_string();
+        // An option for each setting that takes one; a secret's variable is
+        // listed after them, with no option (the process list shows options).
         for setting in crate::settings::ALL {
             let flag = format!("--{}", live_settings::cli_flag(setting.key()));
-            assert!(help.contains(&flag), "help should mention {flag}");
+            assert_eq!(
+                help.contains(&flag),
+                setting.sources().cli,
+                "help and {flag}"
+            );
             assert!(
                 help.contains(setting.env_var()),
                 "help should mention {}",

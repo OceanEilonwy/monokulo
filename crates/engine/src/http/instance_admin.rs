@@ -46,9 +46,9 @@ pub struct ScalarSettingView {
     value: String,
     /// `"cli"`, `"env"`, `"database"`, or `"default"`.
     source: &'static str,
-    /// Its environment variable and command-line option (without `--`).
-    env_var: &'static str,
-    cli_flag: String,
+    /// How it is given from outside: its environment variable and/or
+    /// command-line option, as its sources allow.
+    set_with: String,
     /// It can't be saved here (only given at start): shown locked.
     locked: bool,
     description: String,
@@ -136,8 +136,7 @@ pub async fn get_settings(
             ScalarSettingView {
                 value: view.value,
                 source: source_str(view.source),
-                env_var: view.env_var,
-                cli_flag: view.cli_flag,
+                set_with: live_settings::outside_names(view.key, view.env_var, view.sources),
                 locked: !view.sources.database,
                 description: view.description.to_string(),
                 kind: view.kind,

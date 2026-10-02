@@ -557,6 +557,30 @@ fn capitalize_first(text: &str) -> String {
     network_name(text)
 }
 
+/// Why headers come first and for how long: "for about 50 minutes more: a
+/// block request ran out of time or came back too large, so each block's
+/// size is checked before it is fetched".
+fn headers_first_why(on: &shared::scaling::HeadersFirst) -> String {
+    format!(
+        "for about {} more: {}, so each block's size is checked before it is fetched",
+        duration_rough(on.remaining_secs),
+        match on.reason {
+            HeadersFirstReason::FailedRequest => {
+                "a block request ran out of time or came back too large"
+            }
+            HeadersFirstReason::LargeBlock => {
+                "a recent block came near the size that is scanned in pages"
+            }
+        }
+    )
+}
+
+/// The status page's sentence while a network's blocks are read
+/// header-first (docs/engine_scaling.md section 4).
+pub fn headers_first_sentence(on: &shared::scaling::HeadersFirst) -> String {
+    format!("Reading block headers first {}.", headers_first_why(on))
+}
+
 /// The node the scan is reading from, for the "Pace set by" line.
 pub struct ActiveNode<'a> {
     pub label: &'a str,
@@ -689,19 +713,8 @@ pub fn scanning_panel(
     } else {
         format!("Deadline {} s (the base)", scaling.round_deadline_secs)
     };
-    let headers_first = match scan.headers_first {
-        Some(on) => format!(
-            "On for about {} more: {}, so each block's size is checked before it is fetched",
-            duration_rough(on.remaining_secs),
-            match on.reason {
-                HeadersFirstReason::FailedRequest => {
-                    "a block request ran out of time or came back too large"
-                }
-                HeadersFirstReason::LargeBlock => {
-                    "a recent block came near the size that is scanned in pages"
-                }
-            }
-        ),
+    let headers_first = match &scan.headers_first {
+        Some(on) => format!("On {}", headers_first_why(on)),
         None => "Off: blocks are fetched whole without asking their size first".to_string(),
     };
     let time = format!(

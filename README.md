@@ -91,10 +91,11 @@ step 1.
    ```
 
    `MONOKULO_ENGINE_URL` is where monokulo reaches the engine (default
-   `http://127.0.0.1:8443`, the engine's default bind). Both it and
-   `MONOKULO_ENGINE_TOKEN` are read only when monokulo starts: the
-   admin settings page shows them locked, and changing either means
-   changing them where monokulo is started and restarting.
+   `http://127.0.0.1:8443`, the engine's default bind); it can also be
+   changed on the admin settings page, and takes effect when monokulo
+   restarts. `MONOKULO_ENGINE_TOKEN` is read only when monokulo starts: the
+   admin settings page shows it locked, and changing it means changing it
+   where monokulo is started and restarting.
 
    `MONOKULO_ENCRYPTION_KEY` must be 64 hex characters decoding to exactly 32
    bytes - generate one with `openssl rand -hex 32` and keep it, since it's
@@ -125,10 +126,11 @@ the setting's key with `-` for `.` and `_`: `payment.reorg_check_depth`
 is `--payment-reorg-check-depth` and `ENGINE_PAYMENT_REORG_CHECK_DEPTH`.
 
 A few settings can't be saved on the admin page, only given at start:
-each database path, the engine token, monokulo's encryption key and
-engine URL, and the log format. The page shows them locked. Prefer the
-environment variable for a secret (a token or key): an option is visible
-to other users of the machine in its process list.
+each database path, the engine token, monokulo's encryption key and the
+log format. The page shows them locked. A secret (a token, a key, the
+collector headers) has no option, only its environment variable, since
+every user of the machine can read a process's arguments; `--help` lists
+those variables after the options.
 
 An invalid value from the environment or the database is logged as a
 warning when the process starts, and the setting's default is used. An

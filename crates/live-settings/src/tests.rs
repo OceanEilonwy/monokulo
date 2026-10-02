@@ -52,7 +52,7 @@ settings! {
         description: "Listen address.",
         applies: Restart,
     },
-    TOKEN: Secret { key: "engine.token", env: "TEST_TOKEN", default: Secret::default(), description: "Admin token." },
+    TOKEN: Secret { key: "engine.token", env: "TEST_TOKEN", default: Secret::default(), description: "Admin token.", sources: [Env, Database] },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1582,7 +1582,7 @@ mod sources {
             check: |v: &Secret| if v.expose().len() == 4 { Ok(()) } else { Err("Enter 4 characters.".to_string()) },
             description: "The key that protects the store.",
             applies: Restart,
-            sources: [Cli, Env],
+            sources: [Env],
             required: true,
         },
         LIMIT: u32 {
@@ -1684,7 +1684,7 @@ mod sources {
         let missing = KEY.require(&no_env()).unwrap_err();
         assert_eq!(
             missing,
-            "TEST_KEY or --boot-key must be set. The key that protects the store."
+            "TEST_KEY must be set. The key that protects the store."
         );
         let invalid = KEY.require(&Env::fixed([("TEST_KEY", "abc")])).unwrap_err();
         assert_eq!(
@@ -1759,6 +1759,14 @@ mod sources {
             KEY.check_declaration().is_ok(),
             "a required setting's default is a placeholder"
         );
+        let secret_option = Setting {
+            sources: Sources::of(&[Source::Cli, Source::Env]),
+            ..KEY
+        };
+        assert!(
+            secret_option.check_declaration().is_err(),
+            "a secret on the command line shows in the process list"
+        );
     }
 
     /// Every setting that takes the command line is an option, under its
@@ -1777,23 +1785,30 @@ mod sources {
         ] {
             assert!(help.contains(note), "{note}: {help}");
         }
-        assert!(help.contains("--boot-key <SECRET>"), "{help}");
-        assert!(help.contains("[required]"), "{help}");
+        // A secret has no option; its variable is listed after them.
+        assert!(!help.contains("--boot-key"), "{help}");
+        assert!(help.contains("Environment variables"), "{help}");
         assert!(
-            help.contains("[an option is visible to other users on this machine: prefer TEST_KEY]"),
-            "a secret on the command line is warned about: {help}"
+            help.contains("TEST_KEY [required]\n          The key that protects the store."),
+            "{help}"
         );
+        let short = command.clone().render_help().to_string();
+        assert!(short.contains("TEST_KEY [required]"), "{short}");
         assert!(help.contains("Scan settings:"), "{help}");
         assert!(help.contains("--scan-limit-per-min <NUMBER>"), "{help}");
 
         let matches = command
             .clone()
-            .try_get_matches_from(["app", "--scan-limit-per-min", "50", "--boot-key", "abcd"])
+            .try_get_matches_from(["app", "--scan-limit-per-min", "50"])
             .unwrap();
         assert_eq!(
             crate::cli::values(&matches, ALL),
-            cli(&[("scan.limit_per_min", "50"), ("boot.key", "abcd")])
+            cli(&[("scan.limit_per_min", "50")])
         );
+        assert!(command
+            .clone()
+            .try_get_matches_from(["app", "--boot-key", "abcd"])
+            .is_err());
         let refused = command
             .try_get_matches_from(["app", "--scan-limit-per-min", "500"])
             .unwrap_err()

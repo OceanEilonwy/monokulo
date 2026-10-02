@@ -577,9 +577,12 @@ impl Registry {
                 errors.push(FieldError::new(
                     key,
                     format!(
-                        "This can't be saved here: it is set with {} or --{} when the process starts.",
-                        setting.env_var(),
-                        crate::setting::cli_flag(setting.key())
+                        "This can't be saved here: it is set with {} when the process starts.",
+                        crate::setting::outside_names(
+                            setting.key(),
+                            setting.env_var(),
+                            setting.sources()
+                        )
                     ),
                 ));
                 continue;

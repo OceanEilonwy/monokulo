@@ -44,24 +44,24 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let engine_url = required(&settings::ENGINE_URL, &env);
     let db_path = required(&settings::DATABASE_PATH, &env);
     let db_path = db_path.to_string_lossy().to_string();
     // CPU and memory every 10 s, for the admin page (docs/engine_scaling.md 6).
     shared::resources::start_sampling();
     // How many readers to open is itself a setting, read on a connection
-    // of its own before the pool exists; opening it also brings the schema
-    // up to date.
-    let read_connections = {
+    // of its own before the pool exists, as is where the engine is (both
+    // apply on restart); opening it also brings the schema up to date.
+    let (read_connections, engine_url) = {
         let db = Db::open_file(&db_path).unwrap_or_else(|e| {
             tracing::error!(path = %db_path, error = %e, "failed to open the database");
             std::process::exit(1);
         });
-        live_settings::read_sync_with_env::<settings::DatabaseConfig>(
-            db.list_settings().map_err(live_settings::StoreError::new),
-            &env,
+        let stored = || db.list_settings().map_err(live_settings::StoreError::new);
+        (
+            live_settings::read_sync_with_env::<settings::DatabaseConfig>(stored(), &env)
+                .read_connections,
+            live_settings::read_sync_with_env::<settings::ServerConfig>(stored(), &env).engine_url,
         )
-        .read_connections
     };
     // Everything else: read-only connections and one writer, each on its
     // own thread (`db::Database`).

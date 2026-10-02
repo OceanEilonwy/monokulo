@@ -17,12 +17,53 @@ use crate::setting::{cli_flag, AnySetting};
 use crate::value::SettingKind;
 
 /// `command` with an option for every setting in `declared` that accepts the
-/// command line.
+/// command line, and, after them, the environment variables of those that
+/// don't (secrets: the process list is readable by every user on the
+/// machine), so the help names every way to configure the process. What
+/// `command` already had after its help (examples) comes last.
 pub fn with_settings(mut command: Command, declared: &[&'static dyn AnySetting]) -> Command {
     for setting in declared.iter().filter(|s| s.sources().cli) {
         command = command.arg(arg(*setting));
     }
+    let env_only: Vec<&&'static dyn AnySetting> = declared
+        .iter()
+        .filter(|s| s.sources().env && !s.sources().cli)
+        .collect();
+    if env_only.is_empty() {
+        return command;
+    }
+    let after = command.get_after_help().map(|text| text.to_string());
+    let after_long = command
+        .get_after_long_help()
+        .map(|text| text.to_string())
+        .or_else(|| after.clone());
+    let list = |long: bool| {
+        let mut text = String::from("Environment variables (no option: the process list is readable by every user on the machine):\n");
+        for setting in &env_only {
+            let required = if setting.required() {
+                " [required]"
+            } else {
+                ""
+            };
+            let description = if long {
+                setting.description().to_string()
+            } else {
+                first_sentence(setting.description())
+            };
+            text.push_str(&format!(
+                "  {}{required}\n          {description}\n",
+                setting.env_var()
+            ));
+        }
+        text
+    };
+    let join = |list: String, rest: Option<String>| match rest {
+        Some(rest) => format!("{list}\n{rest}"),
+        None => list,
+    };
     command
+        .after_help(join(list(false), after))
+        .after_long_help(join(list(true), after_long))
 }
 
 /// The values given on the command line, by setting key, in their stored
@@ -60,14 +101,6 @@ fn arg(setting: &'static dyn AnySetting) -> Arg {
     }
     if !setting.sources().database {
         notes.push("[not saved: give it at every start]".to_string());
-    }
-    if setting.kind() == SettingKind::Secret && setting.sources().env {
-        // The argument list is readable by every user on the machine
-        // (`ps`) and kept by the shell's history.
-        notes.push(format!(
-            "[an option is visible to other users on this machine: prefer {}]",
-            setting.env_var()
-        ));
     }
     Arg::new(setting.key())
         .long(cli_flag(setting.key()))
