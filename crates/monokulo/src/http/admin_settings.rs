@@ -264,6 +264,7 @@ async fn fetch_engine_settings(
                 network,
                 example_address,
                 tenant_count: meta.tenant_count,
+                scaling: None,
                 error: None,
             }
         })
@@ -380,7 +381,13 @@ async fn build_view_model(
         let unserved = if tab == SettingsTab::Nodes {
             match super::status_page::get_status_cached(&state.engine).await {
                 Ok(status) => {
-                    attach_node_status(&mut view.engine_networks, &status);
+                    let now = shared::time::now_unix();
+                    attach_node_status(&mut view.engine_networks, &status, now);
+                    view.resources = Some(views::scaling::ResourcesView {
+                        engine: status.resources.clone(),
+                        monokulo: shared::resources::sampler().report(),
+                        now_unix: now,
+                    });
                     status.unserved_tenants
                 }
                 Err(_) => Vec::new(),
@@ -408,10 +415,12 @@ fn unreachable_networks(unserved: Vec<crate::engine_client::UnservedTenant>) -> 
 
 /// Each row's status from `/status`, found by the engine's label for the
 /// node (`host:port`). A node on a network other than its block's says so;
-/// one that reports `fakechain`, or nothing, isn't called wrong.
+/// one that reports `fakechain`, or nothing, isn't called wrong. Each
+/// network also gets its scan figures, and each node its link's.
 fn attach_node_status(
     networks: &mut [AdminNetworkFieldView],
     status: &crate::engine_client::EngineStatusResponse,
+    now: i64,
 ) {
     for network in networks {
         let Some(reported) = status
@@ -421,6 +430,8 @@ fn attach_node_status(
         else {
             continue;
         };
+        network.scaling = reported.scaling.clone();
+        let highest = reported.nodes.iter().filter_map(|node| node.height).max();
         for row in &mut network.rows {
             let Some(node) = reported
                 .nodes
@@ -439,6 +450,13 @@ fn attach_node_status(
                 wrong_network,
                 in_use: node.is_active,
                 resting: node.in_cooldown,
+                behind: highest
+                    .zip(node.height)
+                    .map(|(highest, height)| highest.saturating_sub(height)),
+                link: node.link.clone().map(|link| views::scaling::NodeLinkView {
+                    link,
+                    now_unix: now,
+                }),
             });
         }
     }
@@ -3040,6 +3058,15 @@ mod tests {
             html.contains(r#"<p class="node-status">Reachable, height 99. In use.</p>"#),
             "{html}"
         );
+        // The tab also shows how the engine is doing (docs/engine_scaling.md
+        // section 6): both processes' CPU and memory, and the network's scan.
+        assert!(
+            html.contains(r#"<h3 id="resources-title">Resources</h3>"#),
+            "{html}"
+        );
+        assert!(html.contains("<strong>CPU</strong>"), "{html}");
+        assert!(html.contains(r#"data-scanning="stagenet""#), "{html}");
+        assert!(html.contains("Pace set by"), "{html}");
     }
 
     fn stagenet_tenant() -> crate::engine_client::CreateTenantRequest {

@@ -226,6 +226,13 @@ test('every tab, for the gallery', async ({ page }) => {
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   for (const tab of SETTINGS_TABS) {
     await openSettingsTab(page, tab);
+    if (tab === 'nodes') {
+      // How the engine performs (docs/engine_scaling.md section 6): both
+      // processes' CPU and memory, stacked, and stagenet's scan.
+      await expect(page.locator('#resources-title')).toBeVisible();
+      await expect(page.locator('.resource-chart')).toHaveCount(2);
+      await expect(page.locator('[data-scanning="stagenet"]')).toContainText('Pace set by');
+    }
     await captureCoverageStage(page, `admin-settings-${tab}`, test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
   }
 });

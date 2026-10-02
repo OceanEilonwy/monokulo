@@ -418,6 +418,9 @@ fn text_and_controls_are_legible_in_both_themes() {
         ("--control-border", "--paper", 3.0),
         ("--btn-border", "--btn-bg", 3.0),
         ("--focus-ring", "--paper", 3.0),
+        // The resource charts' layers are graphics (WCAG 1.4.11).
+        ("--chart-engine", "--paper-raised", 3.0),
+        ("--chart-monokulo", "--paper-raised", 3.0),
     ]
     .iter()
     .map(|(fg, bg, min)| (fg.to_string(), bg.to_string(), *min))
