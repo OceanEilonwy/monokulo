@@ -1131,17 +1131,6 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub fn find_tenant_by_public_key(&self, public_key: &str) -> Result<Option<Tenant>> {
-        self.conn
-            .query_row(
-                "SELECT * FROM tenants WHERE public_key = ?1 AND disabled_at_utc IS NULL",
-                params![public_key],
-                Self::row_to_tenant,
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
     /// The *only* sanctioned way to resolve a tenant for an admin request: entirely
     /// from the presented secret token, never from any path parameter. See
     /// `docs/DESIGN.md` §10.1 for why this is structural, not a per-handler check.
@@ -3169,14 +3158,9 @@ mod tests {
     }
 
     #[test]
-    fn create_and_lookup_tenant_by_public_key_and_secret_token() {
+    fn create_and_lookup_tenant_by_secret_token() {
         let store = Store::open_in_memory().unwrap();
         let created = new_tenant(&store);
-
-        let by_pk = store
-            .find_tenant_by_public_key(&created.tenant.public_key)
-            .unwrap();
-        assert_eq!(by_pk.unwrap().id, created.tenant.id);
 
         let by_secret = store
             .find_tenant_by_secret_token(&created.secret_token)
@@ -3206,15 +3190,11 @@ mod tests {
     }
 
     #[test]
-    fn disabled_tenant_is_not_found_by_public_key_or_secret() {
+    fn disabled_tenant_is_not_found_by_its_secret() {
         let store = Store::open_in_memory().unwrap();
         let created = new_tenant(&store);
         store.disable_tenant(&created.tenant.id, 2000).unwrap();
 
-        assert!(store
-            .find_tenant_by_public_key(&created.tenant.public_key)
-            .unwrap()
-            .is_none());
         assert!(store
             .find_tenant_by_secret_token(&created.secret_token)
             .unwrap()

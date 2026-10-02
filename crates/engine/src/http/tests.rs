@@ -145,8 +145,10 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
 
     let guard = store.lock();
     let tenant_id = guard
-        .find_tenant_by_public_key(&tenant.public_key)
+        .list_active_tenants()
         .unwrap()
+        .into_iter()
+        .find(|t| t.public_key == tenant.public_key)
         .unwrap()
         .id;
     let order = guard
@@ -178,8 +180,10 @@ async fn creating_an_order_with_no_confirmations_required_override_leaves_it_uns
 
     let guard = store.lock();
     let tenant_id = guard
-        .find_tenant_by_public_key(&tenant.public_key)
+        .list_active_tenants()
         .unwrap()
+        .into_iter()
+        .find(|t| t.public_key == tenant.public_key)
         .unwrap()
         .id;
     let order = guard
@@ -232,8 +236,10 @@ async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
 
     let guard = store.lock();
     let tenant_id = guard
-        .find_tenant_by_public_key(&tenant.public_key)
+        .list_active_tenants()
         .unwrap()
+        .into_iter()
+        .find(|t| t.public_key == tenant.public_key)
         .unwrap()
         .id;
     let order = guard
@@ -3519,8 +3525,10 @@ async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_
     assert_eq!(response.status(), StatusCode::OK);
     let tenant_row = store
         .lock()
-        .find_tenant_by_public_key(&tenant.public_key)
+        .list_active_tenants()
         .unwrap()
+        .into_iter()
+        .find(|t| t.public_key == tenant.public_key)
         .unwrap();
     assert_eq!(tenant_row.key_custody_backend, "socket");
     assert_eq!(
@@ -3555,8 +3563,10 @@ async fn moving_a_store_needs_the_keys_of_its_own_wallet() {
     assert!(body.to_string().contains("different wallet"), "{body}");
     let tenant_row = store
         .lock()
-        .find_tenant_by_public_key(&tenant.public_key)
+        .list_active_tenants()
         .unwrap()
+        .into_iter()
+        .find(|t| t.public_key == tenant.public_key)
         .unwrap();
     assert_eq!(tenant_row.key_custody_backend, "plain", "nothing changed");
     assert_eq!(
@@ -3740,8 +3750,10 @@ async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is
     let tenant = create_tenant(&router, 1).await;
     let row = store
         .lock()
-        .find_tenant_by_public_key(&tenant.public_key)
+        .list_active_tenants()
         .unwrap()
+        .into_iter()
+        .find(|t| t.public_key == tenant.public_key)
         .unwrap();
     // Anchored at 100 (the last scanned block), then the network moves on
     // while this store's cursor stays behind.
@@ -3809,8 +3821,10 @@ async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_t
         assert_eq!(b.await.unwrap().unwrap().status(), StatusCode::OK);
         let row = store
             .lock()
-            .find_tenant_by_public_key(&tenant.public_key)
+            .list_active_tenants()
             .unwrap()
+            .into_iter()
+            .find(|t| t.public_key == tenant.public_key)
             .unwrap();
         let handle = wallet_handles.read()[&row.id];
         assert_eq!(
