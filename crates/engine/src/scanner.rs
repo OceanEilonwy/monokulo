@@ -947,8 +947,9 @@ const SCAN_CHUNK_EWMA_ALPHA: f64 = 0.3;
 /// sizes on a healthy network are often smaller than this), so the very
 /// first chunk of a catch-up walk undershoots `scan_chunk_memory_budget_mb`
 /// rather than overshoots it. Self-correcting from the second chunk onward
-/// regardless.
-pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = 50_000.0;
+/// regardless. The same guess the node's link starts from, so the first
+/// chunk and its timeout agree.
+pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = crate::link::COLD_BYTES_PER_BLOCK;
 
 /// How long one block request should take, at the node's measured transfer
 /// rate (docs/engine_scaling.md section 2). This is the Blocks tier's
@@ -1051,10 +1052,15 @@ pub(crate) fn next_scan_chunk(
 /// which a block counts as slow.
 pub(crate) const WHOLE_BLOCK_MAX_SECS: f64 = 30.0;
 
+const _: () = assert!(
+    WHOLE_BLOCK_MAX_SECS < shared::scaling::SLOW_BLOCK_SECS as f64,
+    "a block fetched whole must be able to finish before it counts as slow"
+);
+
 /// Most transactions on one page of a large block: what monerod's
 /// restricted RPC (a public node's) gives in one `/get_transactions`
 /// answer, so a page is one request.
-pub(crate) const PAGE_MAX_TXS: u64 = 100;
+pub(crate) const PAGE_MAX_TXS: u64 = crate::daemon_rpc::TXS_PER_REQUEST as u64;
 
 /// Whether a block of `weight` bytes is scanned in pages rather than
 /// fetched whole: it would overrun one response (the cap from the scan

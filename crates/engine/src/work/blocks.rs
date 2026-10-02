@@ -54,6 +54,10 @@ const GROUP_PAGE: usize = 256;
 const BLOCKS_PER_UNIT: usize = 8;
 /// Most headers fetched at once for blocks recorded without being scanned.
 const HEADERS_PER_FETCH: u64 = 256;
+const _: () = assert!(
+    HEADERS_PER_FETCH <= crate::daemon_rpc::MAX_HEADERS_PER_REQUEST,
+    "a headers fetch must be one request"
+);
 /// Transactions of a block scanned for a tenant in one key-custody call. A
 /// call costs a hop to a worker thread or a round trip to another process,
 /// which a run of transactions shares. It is also how far a unit gets
@@ -76,6 +80,10 @@ fn round_budget_for(unit_secs: f64) -> std::time::Duration {
 /// The most a round may be given for one page of a large block
 /// (docs/engine_scaling.md section 4).
 pub(crate) const MAX_ROUND_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+const _: () = assert!(
+    MAX_ROUND_BUDGET.as_secs() <= shared::scaling::SLOW_BLOCK_SECS as u64,
+    "a raised round must not by itself make a block count as slow"
+);
 /// How far ahead of real time consensus lets a block's timestamp run.
 /// Catch-up windows start this much before a block's own timestamp, so a
 /// forward-dated block can't hide an order that was open when it was mined.

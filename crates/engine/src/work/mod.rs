@@ -266,8 +266,8 @@ pub struct RoundInputs<'a> {
 pub const ROUND_BUDGET: Duration = Duration::from_secs(10);
 
 /// How long one daemon call inside a unit may take before the unit treats
-/// it as failed.
-pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(15);
+/// it as failed: the client's own request timeout for small calls.
+pub(crate) const CALL_DEADLINE: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
 
 /// A daemon (or other) call with [`CALL_DEADLINE`].
 pub(crate) async fn bounded<T, E>(

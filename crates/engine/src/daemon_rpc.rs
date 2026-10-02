@@ -1335,13 +1335,13 @@ struct IsKeyImageSpentResponse {
 
 /// Most transactions asked for in one `/get_transactions` request (a
 /// restricted node refuses more than 100).
-const TXS_PER_REQUEST: usize = 100;
+pub(crate) const TXS_PER_REQUEST: usize = 100;
 /// What one transaction adds to a `get_block` answer: its id in the blob, in
 /// the blob's JSON and in the list, as hex text with quotes and commas.
 const OUTLINE_BYTES_PER_TX: usize = 256;
 /// Most headers asked for in one `get_block_headers_range` request (a
 /// restricted node refuses more than 1000).
-const MAX_HEADERS_PER_REQUEST: u64 = 500;
+pub(crate) const MAX_HEADERS_PER_REQUEST: u64 = 500;
 /// The names pool-change polls are counted under in
 /// [`RpcDaemonClient::stats`]: the same path as block fetches, different
 /// requests.

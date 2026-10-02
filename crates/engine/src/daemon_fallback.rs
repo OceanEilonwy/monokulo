@@ -48,15 +48,16 @@ pub struct FallbackNode {
 const FIRST_COOLDOWN: Duration = Duration::from_secs(5);
 const MAX_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 
-/// Longest one call may take across all the nodes it tries, so a call with
-/// every node dead fails in bounded time rather than one full request
-/// timeout per node.
-pub const CALL_DEADLINE: Duration = Duration::from_secs(30);
 /// Longest one node gets within a call: the client's own request timeout
 /// (`daemon_rpc::REQUEST_TIMEOUT`). A node is never cut off short of what
 /// its own client would give it; the shrinking deadline limits how many
 /// nodes a call gets to try instead.
 const MAX_ATTEMPT: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
+/// Longest one call may take across all the nodes it tries, so a call with
+/// every node dead fails in bounded time rather than one full request
+/// timeout per node: two full attempts, so a primary that hangs still
+/// leaves one fallback its turn.
+pub const CALL_DEADLINE: Duration = Duration::from_secs(MAX_ATTEMPT.as_secs() * 2);
 /// Added to a node's own timeout where a layer above waits on it, so the
 /// node's own error (naming the node and the timeout) arrives first.
 pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
