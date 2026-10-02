@@ -1281,8 +1281,10 @@ mod tests {
 
         let store = engine.store().lock();
         let tenant_id = store
-            .find_tenant_by_public_key(&created.public_key)
+            .list_active_tenants()
             .unwrap()
+            .into_iter()
+            .find(|t| t.public_key == created.public_key)
             .unwrap()
             .id;
         let stored = store
@@ -1319,8 +1321,10 @@ mod tests {
 
         let store = engine.store().lock();
         let tenant_id = store
-            .find_tenant_by_public_key(&created.public_key)
+            .list_active_tenants()
             .unwrap()
+            .into_iter()
+            .find(|t| t.public_key == created.public_key)
             .unwrap()
             .id;
         let stored = store

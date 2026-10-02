@@ -393,8 +393,10 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     {
         let store = engine.store().lock();
         let tenant_id = store
-            .find_tenant_by_public_key(&public_key)
+            .list_active_tenants()
             .unwrap()
+            .into_iter()
+            .find(|t| t.public_key == public_key)
             .unwrap()
             .id;
         let stored = store

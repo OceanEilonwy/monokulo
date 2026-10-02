@@ -5500,8 +5500,10 @@ mod tests {
         {
             let store = engine.store().lock();
             let tenant_id = store
-                .find_tenant_by_public_key(&public_key)
+                .list_active_tenants()
                 .unwrap()
+                .into_iter()
+                .find(|t| t.public_key == public_key)
                 .unwrap()
                 .id;
             let stored = store
@@ -5623,8 +5625,10 @@ mod tests {
 
         let store = engine.store().lock();
         let tenant_id = store
-            .find_tenant_by_public_key(&public_key)
+            .list_active_tenants()
             .unwrap()
+            .into_iter()
+            .find(|t| t.public_key == public_key)
             .unwrap()
             .id;
         let stored = store
@@ -6284,7 +6288,12 @@ mod tests {
         // scanned_height`, matching exactly how two real scan ticks would move it.
         {
             let s = engine.store().lock();
-            let tenant = s.find_tenant_by_public_key(&public_key).unwrap().unwrap();
+            let tenant = s
+                .list_active_tenants()
+                .unwrap()
+                .into_iter()
+                .find(|t| t.public_key == public_key)
+                .unwrap();
             s.bump_scanned_heights_for_tenant(&tenant.id, 100, crate::now_unix(), 0)
                 .unwrap();
             s.bump_scanned_heights_for_tenant(&tenant.id, 250, crate::now_unix(), 0)

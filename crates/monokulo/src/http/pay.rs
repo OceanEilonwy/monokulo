@@ -966,8 +966,10 @@ mod tests {
         let tenant_id = engine
             .store()
             .lock()
-            .find_tenant_by_public_key(&pk)
+            .list_active_tenants()
             .unwrap()
+            .into_iter()
+            .find(|t| t.public_key == pk)
             .unwrap()
             .id;
         assert!(engine
@@ -1086,8 +1088,10 @@ mod tests {
         let tenant_id = engine
             .store()
             .lock()
-            .find_tenant_by_public_key(&pk)
+            .list_active_tenants()
             .unwrap()
+            .into_iter()
+            .find(|t| t.public_key == pk)
             .unwrap()
             .id;
         assert!(engine
@@ -1144,8 +1148,10 @@ mod tests {
         let tenant_id = engine
             .store()
             .lock()
-            .find_tenant_by_public_key(&pk)
+            .list_active_tenants()
             .unwrap()
+            .into_iter()
+            .find(|t| t.public_key == pk)
             .unwrap()
             .id;
         assert!(engine
@@ -2119,7 +2125,13 @@ mod tests {
         // resolution runs *before* `EngineClient::create_order`, so a
         // failure here must leave no ghost order behind on the engine.
         let store = engine.store().lock();
-        let tenant_id = store.find_tenant_by_public_key(&pk).unwrap().unwrap().id;
+        let tenant_id = store
+            .list_active_tenants()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.public_key == pk)
+            .unwrap()
+            .id;
         let orders = store.list_orders(&tenant_id, None, 100, None).unwrap();
         assert!(
             orders.is_empty(),
