@@ -839,7 +839,6 @@ impl TestEngineConfig {
             self.live_nodes
                 .then(|| engine::engine_settings::NodesReloadable {
                     daemons: daemons.clone(),
-                    strict_tls: false,
                 }),
             Arc::new(RateLimiter::new(1)),
             live_settings::Env::process(),

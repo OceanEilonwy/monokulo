@@ -10,6 +10,7 @@
 
 pub mod abuse;
 pub mod admin_nodes;
+pub mod cli;
 pub mod confirmation_thresholds;
 pub mod crypto;
 pub mod currencies;

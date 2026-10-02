@@ -29,8 +29,8 @@ pub struct SaveReport {
     pub restart_required: Vec<&'static str>,
     /// Warnings from the reloadables that were prepared.
     pub warnings: Vec<Warning>,
-    /// Changed keys whose environment variable still wins, so the saved
-    /// value has no effect until it is unset.
+    /// Changed keys whose environment variable or command-line option
+    /// still wins, so the saved value has no effect until it is unset.
     pub env_overridden: Vec<&'static str>,
 }
 
@@ -69,6 +69,8 @@ pub enum BuildError {
     Store(StoreError),
     #[error("the setting {0} is declared twice")]
     DuplicateKey(&'static str),
+    #[error("the setting {0} has the same command-line option as another")]
+    DuplicateFlag(&'static str),
     #[error("the setting {key} is declared wrongly: {message}")]
     BadDeclaration { key: &'static str, message: String },
     #[error("section {section} reads {key}, which isn't declared")]
@@ -128,6 +130,11 @@ pub struct SettingView {
     pub pending_restart: bool,
     /// Why the value in effect isn't the one that was set, if it isn't.
     pub problem: Option<Problem>,
+    /// Where its value may come from. Without `database` it can't be saved:
+    /// the admin page shows it locked.
+    pub sources: crate::setting::Sources,
+    /// Its command-line option, without the leading `--`.
+    pub cli_flag: String,
 }
 
 /// A section registered with the registry, whatever its type.
@@ -331,9 +338,13 @@ impl RegistryBuilder {
             return Err(BuildError::Store(e));
         }
         let mut by_key: HashMap<&'static str, &'static dyn AnySetting> = HashMap::new();
+        let mut flags = HashSet::new();
         for setting in &self.declared {
             if by_key.insert(setting.key(), *setting).is_some() {
                 return Err(BuildError::DuplicateKey(setting.key()));
+            }
+            if !flags.insert(crate::setting::cli_flag(setting.key())) {
+                return Err(BuildError::DuplicateFlag(setting.key()));
             }
             setting
                 .check_declaration()
@@ -562,6 +573,17 @@ impl Registry {
             let Some(setting) = inner.by_key.get(key.as_str()).copied() else {
                 return Err(SaveError::UnknownKey(key.clone()));
             };
+            if !setting.sources().database {
+                errors.push(FieldError::new(
+                    key,
+                    format!(
+                        "This can't be saved here: it is set with {} or --{} when the process starts.",
+                        setting.env_var(),
+                        crate::setting::cli_flag(setting.key())
+                    ),
+                ));
+                continue;
+            }
             if !seen.insert(setting.key()) {
                 errors.push(FieldError::new(
                     key,
@@ -673,7 +695,10 @@ impl Registry {
         for setting in changed {
             let key = setting.key();
             report.changed.push(key);
-            if env.get(setting.env_var()).is_some() {
+            let sources = setting.sources();
+            if (sources.env && env.get(setting.env_var()).is_some())
+                || (sources.cli && env.cli(key).is_some())
+            {
                 report.env_overridden.push(key);
             }
             if setting.applies() == Applies::Restart {
@@ -722,6 +747,8 @@ impl Registry {
                     applies: setting.applies(),
                     pending_restart,
                     problem,
+                    sources: setting.sources(),
+                    cli_flag: crate::setting::cli_flag(key),
                 }
             })
             .collect()

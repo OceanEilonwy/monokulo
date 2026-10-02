@@ -89,6 +89,7 @@ monokulo = { path = "../monokulo", optional = true }
 # `curve25519-dalek`) directly at all - they moved to `cli-wallet`'s
 # own Cargo.toml along with the wallet code that used them.
 cli-wallet = { path = "../cli-wallet", optional = true }
+clap = "4.6.7"
 
 [features]
 # Real-spend-wallet support for the e2e tests and the POS e2e harness binary
@@ -129,9 +130,7 @@ path = "src/bin/e2e_harness.rs"
 required-features = ["e2e"]
 
 [dev-dependencies]
-# Per-thread environment overrides for settings tests
-# (`shared::settings::test_env`), instead of mutating the real process
-# environment that parallel tests share.
+# `shared`'s test helpers (the test engine token).
 shared = { path = "../shared", features = ["test-support"] }
 tokio = { version = "1.53.1", features = ["rt", "macros", "test-util"] }
 # SQLite's authorizer hook (fault injection) and serialization (a migrated

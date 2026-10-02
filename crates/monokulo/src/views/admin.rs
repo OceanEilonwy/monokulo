@@ -273,7 +273,7 @@ pub struct AdminScalarFieldView {
     pub name: String,
     pub label: String,
     /// The field's current *effective* value - what wins under
-    /// `env > database > default`. Masked for secrets.
+    /// `command line > env > database > default`. Masked for secrets.
     pub value: String,
     /// `"environment variable"`, `"saved value"`, or `"default"`.
     pub source_label: String,
@@ -474,7 +474,7 @@ pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, Option
             "signup" | "engine" | "public_url" => (SettingsTab::General, None),
             "exchange_rate" => (SettingsTab::Payments, Some("Exchange rates")),
             "abuse" | "rate_limit" => (SettingsTab::Abuse, None),
-            "http_cache" | "database" => (SettingsTab::Server, None),
+            "http_cache" | "database" | "server" | "crypto" => (SettingsTab::Server, None),
             "logging" => (SettingsTab::Logging, Some("Monokulo")),
             _ => (SettingsTab::Other, None),
         },
@@ -645,13 +645,14 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
     }
 }
 
-/// A setting fixed by the environment: its value in a disabled box with a
-/// padlock inside, and no `name`, so it is never sent with the form. A
-/// secret shows as dots, never its value.
+/// A setting given only when its process starts (a command-line option or
+/// environment variable): its value in a disabled box with a padlock
+/// inside, and no `name`, so it is never sent with the form. A secret shows
+/// as dots, never its value.
 fn locked_input(field: &AdminScalarFieldView) -> Markup {
     let secret = matches!(field.kind, SettingKindView::Secret);
     html! {
-        span class="locked-input" title="Set in the environment when monokulo starts" {
+        span class="locked-input" title="Given when the process starts; not saved here" {
             @if secret {
                 input type="password" value="locked" id=(field_id(field.form_name()))
                     aria-describedby=[help_id(field)] disabled;
@@ -1183,6 +1184,10 @@ fn node_fields(data: &AdminSettingsViewModel) -> Markup {
             "A network with no nodes isn't used. A node that doesn't answer is still saved; one on another network is refused."
         }
         @for network in &data.engine_networks { (network_block(network)) }
+        // Settings for every node at once (`monero_node.strict_tls`).
+        @for field in group_fields(data, SettingsTab::Nodes, None, SettingOwner::Engine) {
+            (scalar_field(field))
+        }
     }
 }
 
@@ -1354,8 +1359,14 @@ mod tests {
                 Payments,
                 Some("Exchange rates"),
             ),
+            ("engine.url", M, General, None),
+            ("engine.token", M, General, None),
             ("http_cache.max_mb", M, Server, None),
             ("database.read_connections", M, Server, None),
+            ("database.path", M, Server, None),
+            ("server.bind", M, Server, None),
+            ("crypto.encryption_key", M, Server, None),
+            ("logging.format", M, Logging, Some("Monokulo")),
             ("abuse.soft_per_min", M, Abuse, None),
             ("abuse.hard_per_min", M, Abuse, None),
             ("abuse.signed_in_per_min", M, Abuse, None),
@@ -1375,6 +1386,7 @@ mod tests {
             ("monero_node.mainnet", E, Nodes, None),
             ("monero_node.stagenet", E, Nodes, None),
             ("monero_node.testnet", E, Nodes, None),
+            ("monero_node.strict_tls", E, Nodes, None),
             ("key_custody.enabled_backends", E, Custody, None),
             ("key_custody.default_backend", E, Custody, None),
             ("key_custody.socket_path", E, Custody, None),
@@ -1403,6 +1415,9 @@ mod tests {
             ("server.max_body_bytes", E, Server, None),
             ("server.rate_limit_per_token_per_min", E, Server, None),
             ("database.read_connections", E, Server, None),
+            ("database.path", E, Server, None),
+            ("server.token", E, Server, None),
+            ("logging.format", E, Logging, Some("Engine")),
             ("logging.level", E, Logging, Some("Engine")),
             ("logging.dev_mode_until", E, Logging, Some("Engine")),
             ("logging.retention_days", E, Logging, Some("Engine")),

@@ -263,10 +263,20 @@ impl CoingeckoRateProvider {
             // error message's wording).
             client: crate::http_cache::build_client(
                 concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
-                crate::http_cache::max_cache_bytes_from_env(),
+                crate::http_cache::DEFAULT_MAX_CACHE_BYTES,
             ),
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(CoingeckoCache::default())),
         }
+    }
+
+    /// This provider with a response cache of at most `bytes` (monokulo's
+    /// `http_cache.max_mb`).
+    pub fn with_cache_limit(mut self, bytes: u64) -> Self {
+        self.client = crate::http_cache::build_client(
+            concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
+            bytes,
+        );
+        self
     }
 
     /// Fetches the current XMR price in exactly one currency. `Ok(None)`

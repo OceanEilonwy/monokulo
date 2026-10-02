@@ -1,75 +1,77 @@
-//! Thin binary wrapper — all real logic lives in the library (`src/lib.rs`),
-//! same split as the engine's own `main.rs`/`lib.rs`. No config file, CLI
-//! parsing, or deployment wiring yet (that's for a later WBS task); this is
-//! just enough to actually run the one endpoint that exists so far.
+//! Thin binary wrapper: all real logic lives in the library (`src/lib.rs`),
+//! the same split as the engine's own `main.rs`/`lib.rs`. Every setting is
+//! declared in `monokulo::settings` and comes from its command-line option
+//! (`monokulo::cli`), its environment variable, the value saved on the admin
+//! page, or its default, in that order.
 
+use live_settings::Env;
 use monokulo::db::{Database, Db};
 use monokulo::engine_client::EngineClient;
 use monokulo::http::{build_router, AppState};
 use monokulo::settings;
 use std::sync::Arc;
 
-/// Reads the AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's
-/// `sk_...` secret token at rest (see `monokulo::crypto`) from
-/// `MONOKULO_ENCRYPTION_KEY`, expected as 64 hex characters (32 bytes).
-///
-/// Deliberately no hardcoded fallback key: unlike the engine-URL placeholder
-/// above (a stub value for a service that isn't really deployed yet), a
-/// checked-in "temporary" encryption key would be a real credential leak the
-/// moment this ever runs against a real database. A clear startup panic
-/// telling the operator exactly what to set is the right placeholder
-/// behavior instead.
-fn encryption_key_from_env() -> monokulo::crypto::AtRestKey {
-    let hex_key = std::env::var("MONOKULO_ENCRYPTION_KEY").expect(
-        "MONOKULO_ENCRYPTION_KEY must be set to 64 hex characters (32 bytes) - \
-         e.g. generate one with `openssl rand -hex 32`",
-    );
-    let bytes = hex::decode(&hex_key).expect(
-        "MONOKULO_ENCRYPTION_KEY must be valid hex (64 hex characters decoding to exactly 32 bytes)",
-    );
-    let bytes = <[u8; 32]>::try_from(bytes.as_slice())
-        .expect("MONOKULO_ENCRYPTION_KEY must decode to exactly 32 bytes (64 hex characters)");
-    monokulo::crypto::AtRestKey::new(bytes)
+/// A required setting, or the reason the process can't start without it.
+fn required<T: live_settings::SettingValue>(setting: &live_settings::Setting<T>, env: &Env) -> T {
+    setting.require(env).unwrap_or_else(|e| {
+        tracing::error!("{e}");
+        std::process::exit(1);
+    })
 }
 
 #[tokio::main]
 async fn main() {
-    // First, so everything after it is logged (structured_logging.md 1.1).
-    let telemetry = telemetry::init("monokulo", "MONOKULO");
-    // Where the database lives and where monokulo listens: boot-only, from
-    // the environment, like `MONOKULO_ENCRYPTION_KEY` (task 6.0 needs them
-    // to run a test instance on a temporary database and a free port).
-    let db_path = std::env::var("MONOKULO_DB_PATH").unwrap_or_else(|_| "monokulo.db".to_string());
-    let bind = std::env::var("MONOKULO_BIND").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
-    // The engine's address and the engine token: boot-only too, and shown locked
-    // on the admin page. The engine answers nothing without the token, so
-    // monokulo doesn't start without it.
-    // CPU and memory every 10 s, for the admin page (docs/engine_scaling.md 6).
-    shared::resources::start_sampling();
-    let engine_env = match settings::EngineEnv::from_env(&live_settings::Env::process()) {
-        Ok(engine_env) => engine_env,
+    // The command line first: `--help` and a mistyped option end here, and
+    // a setting given as an option counts from the start, per request too.
+    let env = monokulo::cli::parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
+    settings::set_process_env(env.clone());
+    // Then logging, so everything after it is logged (structured_logging.md
+    // 1.1), at the level and in the format the settings give. A problem
+    // with either is reported with the rest when the settings load.
+    let (level, _) = settings::LOGGING_LEVEL.read_unstored(&env);
+    let (format, _) = settings::LOGGING_FORMAT.read_unstored(&env);
+    let telemetry = telemetry::init_with("monokulo", &level, telemetry::Format::chosen(format));
+    // What has to be known before the database opens, or must never be kept
+    // in it: given at start only. The engine answers nothing without the
+    // token, and stores' secrets can't be read without the key, so monokulo
+    // doesn't start without either.
+    let engine_token = required(&settings::ENGINE_TOKEN, &env);
+    let encryption_key = required(&settings::CRYPTO_ENCRYPTION_KEY, &env);
+    let encryption_key = match settings::encryption_key_bytes(encryption_key.expose()) {
+        Ok(bytes) => monokulo::crypto::AtRestKey::new(bytes),
         Err(e) => {
-            eprintln!("{e}");
+            tracing::error!("{}: {e}", settings::CRYPTO_ENCRYPTION_KEY.env_var);
             std::process::exit(1);
         }
     };
+    let engine_url = required(&settings::ENGINE_URL, &env);
+    let db_path = required(&settings::DATABASE_PATH, &env);
+    let db_path = db_path.to_string_lossy().to_string();
+    // CPU and memory every 10 s, for the admin page (docs/engine_scaling.md 6).
+    shared::resources::start_sampling();
     // How many readers to open is itself a setting, read on a connection
     // of its own before the pool exists; opening it also brings the schema
     // up to date.
     let read_connections = {
-        let db = Db::open_file(&db_path).expect("failed to open monokulo database");
-        live_settings::read_sync::<settings::DatabaseConfig>(
+        let db = Db::open_file(&db_path).unwrap_or_else(|e| {
+            tracing::error!(path = %db_path, error = %e, "failed to open the database");
+            std::process::exit(1);
+        });
+        live_settings::read_sync_with_env::<settings::DatabaseConfig>(
             db.list_settings().map_err(live_settings::StoreError::new),
+            &env,
         )
         .read_connections
     };
     // Everything else: read-only connections and one writer, each on its
     // own thread (`db::Database`).
-    let db = Database::open(&db_path, read_connections).expect("failed to open monokulo database");
+    let db = Database::open(&db_path, read_connections).unwrap_or_else(|e| {
+        tracing::error!(path = %db_path, error = %e, "failed to open the database");
+        std::process::exit(1);
+    });
     // Beside the main database; lines logged since start-up go in too.
     let log_store =
         telemetry::global().and_then(|t| t.open_store_beside(std::path::Path::new(&db_path)));
-    let encryption_key = encryption_key_from_env();
     // Verified embed domains: the machine's own resolver. If it can't be set
     // up, the dashboard still works and every check says why it failed.
     let dns: Arc<dyn monokulo::embed_domains::TxtLookup> =
@@ -88,8 +90,11 @@ async fn main() {
     // are built here with placeholders and then configured from the saved
     // settings by the registry, which reconfigures them in place whenever
     // the admin page saves.
-    let engine_client =
-        EngineClient::with_cache_limit(engine_env.url, engine_env.token, 16 * 1024 * 1024);
+    let engine_client = EngineClient::with_cache_limit(
+        engine_url.as_str().to_string(),
+        shared::auth::engine_token(engine_token.expose()),
+        shared::http_cache::DEFAULT_MAX_CACHE_BYTES,
+    );
     let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only());
     let abuse = Arc::new(monokulo::abuse::AbuseProtection::default());
     let onion = settings::OnionReloadable::default();
@@ -99,7 +104,7 @@ async fn main() {
         exchange_rate.clone(),
         abuse.clone(),
         Some(onion.clone()),
-        live_settings::Env::process(),
+        env.clone(),
     )
     .await
     {
@@ -126,19 +131,25 @@ async fn main() {
         exchange_rate,
         abuse,
         dns,
-        settings: monokulo_settings,
+        settings: monokulo_settings.clone(),
         log_store,
         engine: monokulo::http::Engine::new(engine_client),
     };
+    let app_state_settings = monokulo_settings;
     let router = build_router(app_state);
     // The onion listener (`monokulo::abuse::proxy_protocol`): same router,
     // but every connection must start with tor's PROXY header, which names
     // the Tor circuit - each circuit is then its own client.
     onion.router_ready(router.clone());
 
+    // Read once: the listen address applies on restart.
+    let bind = app_state_settings.server.load().bind;
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
-        .expect("failed to bind server address");
+        .unwrap_or_else(|e| {
+            tracing::error!(server.address = %bind, error = %e, "failed to listen");
+            std::process::exit(1);
+        });
     tracing::info!(server.address = %bind, "monokulo listening");
     // `with_connect_info` - without this, `http::abuse`'s client lookup
     // would never see a real peer address in production, and would fail

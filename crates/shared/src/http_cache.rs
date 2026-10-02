@@ -40,37 +40,12 @@ use http::Extensions;
 use reqwest::{Method, Request, Response, ResponseBuilderExt};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 
-/// `MONOKULO_HTTP_CACHE_MAX_MB` - the same parse-with-a-clear-error-and-a-
-/// default convention every other monokulo numeric env knob already uses
-/// (`exchange_rate_config::parse`'s `MONOKULO_EXCHANGE_RATE_CACHE_SECONDS`
-/// is the closest sibling). A plain integer, megabytes - converted to bytes for
-/// the weigher-based `max_capacity` below. Defaults to 16 MB: the entire
-/// cacheable surface today (one rescan-list endpoint keyed by tenant, plus
-/// Coingecko's own per-currency rate lookups - though see `build_client`'s doc
-/// comment on whether Coingecko's real responses even qualify) is on the order
-/// of a thousand small JSON bodies at most, well under 1 MB even generously
-/// estimated - this exists as a hard backstop, not a limit anything here is
+/// The most bytes a client's response cache holds until its setting
+/// (monokulo's `http_cache.max_mb`) says otherwise: 16 MB. The whole
+/// cacheable surface is on the order of a thousand small JSON bodies at most,
+/// well under 1 MB; this is a hard backstop, not a limit anything here is
 /// expected to approach.
-pub fn max_cache_bytes_from_env() -> u64 {
-    const VAR: &str = "MONOKULO_HTTP_CACHE_MAX_MB";
-    const DEFAULT_MB: u64 = 16;
-    let mb = match crate::settings::env_value(VAR) {
-        None => DEFAULT_MB,
-        Some(raw) => match raw.trim().parse::<u64>() {
-            Ok(mb) if mb > 0 => mb,
-            _ => {
-                tracing::warn!(
-                    env = VAR,
-                    value = %raw,
-                    default_mb = DEFAULT_MB,
-                    "not a positive integer number of megabytes - using the default"
-                );
-                DEFAULT_MB
-            }
-        },
-    };
-    mb * 1024 * 1024
-}
+pub const DEFAULT_MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Builds the one HTTP client every outbound call in this workspace should use
 /// as its transport. `user_agent` distinguishes callers in server logs the same

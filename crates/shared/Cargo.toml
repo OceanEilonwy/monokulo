@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-# `settings::test_env`: per-thread environment overrides for tests. Enabled
-# only from other crates' [dev-dependencies] (resolver 2 keeps it out of
-# every normal build), never in production.
+# Test helpers (the test engine token, test hooks in the log and SQLite
+# helpers). Enabled only from other crates' [dev-dependencies] and test
+# features (resolver 2 keeps it out of every normal build), never in
+# production.
 test-support = []
 
 [dependencies]

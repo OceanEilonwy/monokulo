@@ -141,24 +141,27 @@ pub const TEST_ENGINE_TOKEN: &str = "engine_test_token_0123456789abcdef012345678
 /// characters.
 pub const MIN_ENGINE_TOKEN_LEN: usize = 32;
 
-/// The engine token from the environment variable `name` (its value
-/// `value`): refused when unset, blank, or shorter than
-/// [`MIN_ENGINE_TOKEN_LEN`], with a message saying how to make one. The
-/// engine (`ENGINE_TOKEN`) and monokulo
-/// (`MONOKULO_ENGINE_TOKEN`) both start only with one.
-pub fn engine_token_from_env(name: &str, value: Option<String>) -> Result<RawToken, String> {
-    let how = "generate one with `openssl rand -hex 32` and give the same value to the engine \
-               (ENGINE_TOKEN) and monokulo (MONOKULO_ENGINE_TOKEN)";
-    let value = value.map(|v| v.trim().to_string()).unwrap_or_default();
-    if value.is_empty() {
-        return Err(format!("{name} is not set: {how}"));
-    }
-    if value.chars().count() < MIN_ENGINE_TOKEN_LEN {
+/// How to make an engine token, for the two settings that hold it.
+pub const ENGINE_TOKEN_HOW: &str = "Generate one with `openssl rand -hex 32` and give the same \
+     value to the engine (ENGINE_TOKEN) and monokulo (MONOKULO_ENGINE_TOKEN).";
+
+/// The rule for an engine token: at least [`MIN_ENGINE_TOKEN_LEN`]
+/// characters, not counting surrounding whitespace (a trailing newline from
+/// a file). The engine's `server.token` and monokulo's `engine.token`
+/// settings check it; both processes start only with one.
+pub fn check_engine_token(value: &str) -> Result<(), String> {
+    if value.trim().chars().count() < MIN_ENGINE_TOKEN_LEN {
         return Err(format!(
-            "{name} is shorter than {MIN_ENGINE_TOKEN_LEN} characters: {how}"
+            "Use at least {MIN_ENGINE_TOKEN_LEN} characters. {ENGINE_TOKEN_HOW}"
         ));
     }
-    Ok(RawToken(value))
+    Ok(())
+}
+
+/// The engine token in `value`, without surrounding whitespace. Checked
+/// first with [`check_engine_token`], by its setting.
+pub fn engine_token(value: &str) -> RawToken {
+    RawToken(value.trim().to_string())
 }
 
 /// A single-use account-signup invite token (monokulo's `signup.mode ==
@@ -202,23 +205,19 @@ mod tests {
     }
 
     #[test]
-    fn an_engine_token_must_be_set_and_long_enough() {
+    fn an_engine_token_must_be_long_enough_and_is_kept_without_whitespace() {
         let long = "a".repeat(MIN_ENGINE_TOKEN_LEN);
+        let padded = format!("  {long}\n");
+        assert!(check_engine_token(&padded).is_ok());
         assert_eq!(
-            engine_token_from_env("T", Some(format!("  {long}\n")))
-                .unwrap()
-                .expose(),
+            engine_token(&padded).expose(),
             long,
             "surrounding whitespace (a trailing newline from a file) is not part of it"
         );
-        for refused in [None, Some(String::new()), Some("   ".into())] {
-            let err = engine_token_from_env("T", refused).unwrap_err();
-            assert!(err.starts_with("T is not set"), "{err}");
-            assert!(err.contains("openssl rand -hex 32"), "{err}");
-        }
-        let err =
-            engine_token_from_env("T", Some("a".repeat(MIN_ENGINE_TOKEN_LEN - 1))).unwrap_err();
-        assert!(err.contains("shorter than 32"), "{err}");
+        let short = format!("  {}  ", "a".repeat(MIN_ENGINE_TOKEN_LEN - 1));
+        let err = check_engine_token(&short).unwrap_err();
+        assert!(err.contains("at least 32 characters"), "{err}");
+        assert!(err.contains("openssl rand -hex 32"), "{err}");
     }
 
     #[test]

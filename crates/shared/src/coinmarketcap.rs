@@ -55,10 +55,20 @@ impl CoinMarketCapRateProvider {
             base_url: base_url.into(),
             client: crate::http_cache::build_client(
                 concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
-                crate::http_cache::max_cache_bytes_from_env(),
+                crate::http_cache::DEFAULT_MAX_CACHE_BYTES,
             ),
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    /// This provider with a response cache of at most `bytes` (monokulo's
+    /// `http_cache.max_mb`).
+    pub fn with_cache_limit(mut self, bytes: u64) -> Self {
+        self.client = crate::http_cache::build_client(
+            concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
+            bytes,
+        );
+        self
     }
 
     /// One live fetch. `Ok(None)`: a well-formed answer with no usable price

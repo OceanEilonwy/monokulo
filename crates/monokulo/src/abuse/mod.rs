@@ -27,7 +27,6 @@ use std::sync::Arc;
 pub use identity::{ClientIdentity, TrustedProxies};
 pub use limiter::{Limits, Tier};
 
-use crate::db::Db;
 use crate::settings;
 
 /// The abuse-protection settings in force, read from the settings table
@@ -72,28 +71,6 @@ impl Default for AbuseConfig {
 }
 
 impl AbuseConfig {
-    /// The current settings. A stored value that doesn't parse (possible only
-    /// through an environment variable; the admin page refuses them) falls
-    /// back to the default with a log line, like every other setting.
-    pub fn from_settings(db: &Db) -> Self {
-        let trusted_raw: String = settings::get(db, &settings::ABUSE_TRUSTED_PROXIES);
-        let trusted_proxies = TrustedProxies::parse(&trusted_raw).unwrap_or_else(|e| {
-            tracing::warn!(setting = "abuse.trusted_proxies", error = %e, "settings: invalid; trusting no proxy");
-            TrustedProxies::default()
-        });
-        AbuseConfig {
-            trusted_proxies,
-            soft_per_min: settings::get(db, &settings::ABUSE_SOFT_PER_MIN),
-            hard_per_min: settings::get(db, &settings::ABUSE_HARD_PER_MIN),
-            signed_in_per_min: settings::get(db, &settings::ABUSE_SIGNED_IN_PER_MIN),
-            client_logs_per_min: settings::get(db, &settings::ABUSE_CLIENT_LOGS_PER_MIN),
-            per_store_key_per_min: settings::get(db, &settings::RATE_LIMIT_PER_STORE_KEY_PER_MIN),
-            stream_cap: settings::get(db, &settings::ABUSE_STREAM_CAP),
-            challenge_bits: settings::get(db, &settings::ABUSE_CHALLENGE_BITS).clamp(1, 32),
-            under_attack: settings::get(db, &settings::ABUSE_UNDER_ATTACK),
-        }
-    }
-
     /// The limits that apply to `client`. Signed-in merchants and store keys
     /// get one limit each (soft = hard), so they are never challenged, only
     /// refused past it.

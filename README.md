@@ -94,13 +94,14 @@ step 1.
    `http://127.0.0.1:8443`, the engine's default bind). Both it and
    `MONOKULO_ENGINE_TOKEN` are read only when monokulo starts: the
    admin settings page shows them locked, and changing either means
-   changing the environment and restarting.
+   changing them where monokulo is started and restarting.
 
    `MONOKULO_ENCRYPTION_KEY` must be 64 hex characters decoding to exactly 32
    bytes - generate one with `openssl rand -hex 32` and keep it, since it's
    what encrypts data at rest in `monokulo`'s own database. `monokulo` opens
-   its SQLite database at the relative path `monokulo.db`, so run it from a
-   writable working directory dedicated to it.
+   its SQLite database at `monokulo.db` in the working directory unless
+   `MONOKULO_DB_PATH` says otherwise, and listens on `127.0.0.1:8081` unless
+   `MONOKULO_BIND` does.
 
 5. Open `monokulo` in a browser. The first visit redirects to a first-run
    admin setup wizard to create the one admin account. Its admin settings
@@ -111,6 +112,28 @@ step 1.
 Run both processes under whatever supervisor you normally use (systemd,
 etc.) - each is a single long-running binary with no daemonization of its
 own.
+
+### Settings
+
+Every setting of either process can be given three ways: as a
+command-line option, as an environment variable, or on the admin settings
+page. An option wins over the environment variable, which wins over the
+saved value, which wins over the default. `monokulo-engine --help` and
+`monokulo --help` list every option with its environment variable, its
+default and what it does; `-h` gives the short version. The option is
+the setting's key with `-` for `.` and `_`: `payment.reorg_check_depth`
+is `--payment-reorg-check-depth` and `ENGINE_PAYMENT_REORG_CHECK_DEPTH`.
+
+A few settings can't be saved on the admin page, only given at start:
+each database path, the engine token, monokulo's encryption key and
+engine URL, and the log format. The page shows them locked. Prefer the
+environment variable for a secret (a token or key): an option is visible
+to other users of the machine in its process list.
+
+An invalid value from the environment or the database is logged as a
+warning when the process starts, and the setting's default is used. An
+invalid option stops the process with a message saying what the option
+takes. A missing engine token or encryption key stops it too.
 
 ## Running in development
 

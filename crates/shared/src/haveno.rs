@@ -123,10 +123,20 @@ impl HavenoRateProvider {
             base_url: base_url.into(),
             client: crate::http_cache::build_client(
                 concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
-                crate::http_cache::max_cache_bytes_from_env(),
+                crate::http_cache::DEFAULT_MAX_CACHE_BYTES,
             ),
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(Cache::default())),
         }
+    }
+
+    /// This provider with a response cache of at most `bytes` (monokulo's
+    /// `http_cache.max_mb`).
+    pub fn with_cache_limit(mut self, bytes: u64) -> Self {
+        self.client = crate::http_cache::build_client(
+            concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
+            bytes,
+        );
+        self
     }
 
     async fn fetch_tickers(&self) -> Result<HashMap<String, Book>, ExchangeRateError> {

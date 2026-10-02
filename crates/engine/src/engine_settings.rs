@@ -33,6 +33,41 @@ choice_value! {
 const NODE_EXAMPLE: &str = r#"{"host":"node.monerodevs.org","port":38089,"ssl":false,"accept_self_signed_certs":true,"fallbacks":[{"host":"node2.monerodevs.org","port":38089,"ssl":false}]}"#;
 
 settings! {
+    DATABASE_PATH: PathBuf {
+        key: "database.path",
+        env: "ENGINE_DB_PATH",
+        default: PathBuf::from("engine.db"),
+        description: "The engine's database file. Its log store is kept beside it. Read from the environment only: the settings live inside it.",
+        example: "/var/lib/monokulo/engine.db",
+        applies: Restart,
+        sources: [Cli, Env],
+    },
+    SERVER_TOKEN: live_settings::Secret {
+        key: "server.token",
+        env: "ENGINE_TOKEN",
+        default: live_settings::Secret::default(),
+        check: |token: &live_settings::Secret| shared::auth::check_engine_token(token.expose()),
+        description: "The token every request to the engine must carry; the engine refuses any request without it. Required, at least 32 characters. Generate one with `openssl rand -hex 32` and give the same value to the engine (ENGINE_TOKEN) and monokulo (MONOKULO_ENGINE_TOKEN).",
+        applies: Restart,
+        sources: [Cli, Env],
+        required: true,
+    },
+    LOGGING_FORMAT: telemetry::LogFormat {
+        key: "logging.format",
+        env: "ENGINE_LOG_FORMAT",
+        default: telemetry::LogFormat::Auto,
+        description: "How log lines are written to the console: json, pretty, or auto (pretty at a terminal, JSON everywhere else).",
+        example: "json",
+        applies: Restart,
+        sources: [Cli, Env],
+    },
+    MONERO_NODE_STRICT_TLS: bool {
+        key: "monero_node.strict_tls",
+        env: "ENGINE_MONERO_NODE_STRICT_TLS",
+        default: false,
+        description: "Refuse self-signed certificates from every Monero node, whatever each node's own accept_self_signed_certs says. Only for nodes with a certificate from a public authority.",
+        example: "false",
+    },
     MONERO_NODE_MAINNET: Option<Json<MoneroNodeSetting>> {
         key: "monero_node.mainnet",
         env: "ENGINE_MONERO_NODE_MAINNET",
@@ -294,10 +329,35 @@ impl Section for LoggingConfig {
     }
 }
 
-/// Monero nodes per network (task 2.1).
+/// What the engine needs before its settings store exists, or must never
+/// keep in it: read from the environment only (`env_only`), at start.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BootConfig {
+    pub database_path: PathBuf,
+    pub token: live_settings::Secret,
+    pub log_format: telemetry::LogFormat,
+}
+
+impl Section for BootConfig {
+    const NAME: &'static str = "boot";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&DATABASE_PATH, &SERVER_TOKEN, &LOGGING_FORMAT]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(BootConfig {
+            database_path: snapshot.get(&DATABASE_PATH),
+            token: snapshot.get(&SERVER_TOKEN),
+            log_format: snapshot.get(&LOGGING_FORMAT),
+        })
+    }
+}
+
+/// Monero nodes per network (task 2.1), and whether self-signed
+/// certificates are refused from all of them.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NodeConfig {
     pub nodes: HashMap<&'static str, MoneroNodeSetting>,
+    pub strict_tls: bool,
 }
 
 impl Section for NodeConfig {
@@ -307,6 +367,7 @@ impl Section for NodeConfig {
             &MONERO_NODE_MAINNET,
             &MONERO_NODE_STAGENET,
             &MONERO_NODE_TESTNET,
+            &MONERO_NODE_STRICT_TLS,
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
@@ -316,7 +377,10 @@ impl Section for NodeConfig {
                 nodes.insert(network, node);
             }
         }
-        Ok(NodeConfig { nodes })
+        Ok(NodeConfig {
+            nodes,
+            strict_tls: snapshot.get(&MONERO_NODE_STRICT_TLS),
+        })
     }
 }
 
@@ -872,10 +936,10 @@ pub fn build_daemon_client(
 
 /// Applies saved node settings to the running engine (task 2.1): networks
 /// whose node settings didn't change keep their client (and its node health
-/// and cooldowns); changed ones get a new client; removed ones go.
+/// and cooldowns); changed ones get a new client, as does every network when
+/// `monero_node.strict_tls` changes; removed ones go.
 pub struct NodesReloadable {
     pub daemons: Daemons,
-    pub strict_tls: bool,
 }
 
 #[live_settings::async_trait]
@@ -898,11 +962,11 @@ impl live_settings::Reloadable for NodesReloadable {
                 .unwrap_or("monero_node");
             let network = crate::network::parse_network(name)
                 .map_err(|e| FieldError::new(setting, e.to_string()))?;
-            let unchanged = old.nodes.get(name) == Some(node);
+            let unchanged = old.nodes.get(name) == Some(node) && old.strict_tls == new.strict_tls;
             let client = match current.get(&network) {
                 Some(existing) if unchanged => existing.clone(),
                 _ => Arc::new(
-                    build_daemon_client(node, self.strict_tls)
+                    build_daemon_client(node, new.strict_tls)
                         .map_err(|e| FieldError::new(setting, e))?,
                 ),
             };
@@ -956,19 +1020,16 @@ impl EngineSettings {
     pub async fn load(
         store: SharedStore,
         daemons: Daemons,
-        strict_tls: bool,
         router: Arc<crate::key_custody::CustodyRouter>,
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
+        env: live_settings::Env,
     ) -> Result<Arc<Self>, String> {
         Self::load_full(
             store,
-            Some(NodesReloadable {
-                daemons,
-                strict_tls,
-            }),
+            Some(NodesReloadable { daemons }),
             Some(CustodyReloadable::new(router)),
             rate_limiter,
-            live_settings::Env::process(),
+            env,
         )
         .await
     }
@@ -1005,6 +1066,9 @@ impl EngineSettings {
         let webhooks = builder.section::<WebhookConfig>();
         let tenant_defaults = builder.section::<TenantDefaults>();
         let runtime = builder.section::<RuntimeConfig>();
+        // Read at start, before the store opened (`main`); registered so it
+        // is described, checked and reported like every other setting.
+        builder.section::<BootConfig>();
         builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
         let custody = match custody {
             Some(reloadable) => builder.reloadable(reloadable),
@@ -1022,13 +1086,8 @@ impl EngineSettings {
         for (section, error) in &report.degraded {
             tracing::warn!(section = %section, error = %error, "settings: could not be applied at start, carrying on without it");
         }
-        for (key, problem) in registry
-            .describe()
-            .iter()
-            .filter_map(|v| v.problem.as_ref().map(|p| (v.key, p)))
-        {
-            tracing::warn!(setting = %key, "settings: {}", problem.message);
-        }
+        // Each invalid value and each section on its defaults was already
+        // logged once, by `build`.
         Ok(Arc::new(EngineSettings {
             registry: Some(registry),
             env,
