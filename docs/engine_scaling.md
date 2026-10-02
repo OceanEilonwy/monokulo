@@ -1,0 +1,275 @@
+# Engine scaling: slow links, large blocks, and showing the admin why
+
+Status: proposal (review finding 30, extended). Nothing here is built yet.
+
+## The problem
+
+The engine fetches blocks from a Monero node in chunks sized by
+`payment.scan_chunk_memory_budget_mb`, and every node request has one fixed
+15 s timeout (`daemon_rpc::REQUEST_TIMEOUT`) inside a 15 s per-call deadline
+(`work::CALL_DEADLINE`).
+
+- **A slow link stalls the scan for good.** A chunk that can't arrive in 15 s
+  fails. The chunk size only adapts on success (a running average of bytes
+  per block), so the next round asks for the same chunk and fails again. At
+  the default 8 MB budget, any link under about 4.5 Mbit/s stalls.
+- **A timeout leaves no time to fall back.** The outer deadline equals the
+  client timeout, so a primary node that times out leaves no time to try a
+  fallback node.
+- **Blocks can't grow past one response.** A block is always fetched whole by
+  `get_blocks.bin`, so a block larger than the response cap (64 MB) or the
+  memory budget (at most 48 MB) can never be scanned. Monero's block size is
+  dynamic, so the engine should handle 100-500 MB blocks on hardware that can
+  hold them, rather than assume today's averages (about 13 kB a block, pruned).
+- **Memory is spent about three times over.** A chunk exists as the raw body,
+  as blobs copied out while parsing, and as fully decoded transactions, which
+  the block cache then keeps.
+- **The admin can't see any of this.** Nothing shows a node's speed, why the
+  scan goes at the pace it does, or how close the engine is to its memory
+  limit.
+
+What already helps:
+- Transactions are fetched pruned (prefix and RingCT base only).
+- A block's scan can already stop part-way and resume by transaction index
+  (`partial_block_progress`). Matches stay staged until the block's hash is
+  rechecked (`docs/scanner_microtasks.md`).
+- Rounds have a deadline with a reserved share per tier, so other work keeps
+  moving.
+
+## Goals
+
+1. A scan always makes progress on any link that can carry one transaction
+   within the timeout ceiling.
+2. Fast nodes get big requests; slow nodes get small ones that finish.
+3. Memory use stays close to the configured budget, and the budget is
+   checked against the memory the engine really has.
+4. A very large block is scanned in pieces, and mempool detection, settlement
+   and reorg checks keep running between the pieces.
+5. When the engine is slow, the admin sees that it's slow, why, and what
+   would help.
+
+## 1. Measuring each node
+
+Each node keeps three running averages (EWMA), in memory, next to its
+existing health state in `daemon_fallback`:
+
+| Measure | From | Why separate |
+|---|---|---|
+| Round-trip time (RTT) | small JSON calls (height, tip, info) | the fixed cost of any call |
+| Time to first byte (TTFB) per block requested | `get_blocks.bin`: time until response headers, divided by the block count | monerod builds the whole answer before sending, so its own work grows with the request; it isn't a constant |
+| Transfer rate (bytes/s) | body bytes ÷ (last byte − first byte), for bodies over 256 kB only | below that, latency dominates and the rate would read low |
+
+- **Cold start:** a new node (or a restart) starts at 1 Mbit/s, 1 s RTT and
+  50 ms TTFB per block. These are deliberately pessimistic and correct within
+  a few calls.
+- **Not persisted:** a stale measurement is worse than a quick re-measure.
+- **A timeout counts as evidence:** a timed-out call halves the node's rate
+  estimate. Otherwise a node that only ever times out would never get a lower
+  estimate.
+
+## 2. Timeouts and chunk sizes from the measurements
+
+For a request expected to return `B` bytes covering `n` blocks:
+
+```
+expected = RTT + n × TTFB_per_block + B ÷ rate
+timeout  = clamp(3 × expected, 15 s, 10 min)
+```
+
+- **Per call:** small JSON calls keep 15 s. The engine's per-call deadline
+  (`work::bounded`) gets the same number plus one more attempt's worth, so a
+  fallback node still has time.
+- **Chunk size** (blocks per `get_blocks.bin`) is the smaller of two limits:
+
+  ```
+  by_memory = response_cap ÷ avg_block_bytes
+  by_time   = rate × target_call ÷ avg_block_bytes   (target_call ≈ 4 s)
+  chunk     = clamp(min(by_memory, by_time), 1, 500)
+  ```
+
+  `response_cap` is defined in section 3 (an eighth of the budget).
+- **Failure halves, success grows:** a timeout or an over-cap answer halves
+  the next chunk (by doubling the bytes-per-block estimate) and halves the
+  node's rate. Successes grow both back through the running averages. Any
+  link that can deliver one block moves forward; the worst case is one
+  block per call.
+- **The size used for averages is the wire size** of each block, read from the
+  response itself, so nothing is re-serialized just to be measured.
+
+## 3. Memory
+
+### Holding a chunk once, not three times
+
+1. **Decode into the scan's own form.** The block cache keeps, per
+   transaction, only what the scan reads: output keys and view tags, the
+   transaction public keys from `extra`, the encrypted amounts and
+   commitments, and the transaction id. This is `ScanInput` and its parts;
+   the full `Transaction` and the raw blob are dropped as soon as each is
+   decoded.
+2. **Cap each response separately from the cache:**
+   `response_cap = budget ÷ 8`. The raw body and parse copies then cost a
+   fraction of the budget, not a multiple of it.
+3. **Release per block:** a block's raw bytes are dropped once it is decoded,
+   not when the whole response is done.
+
+Peak use is then about 1.25 × the budget. A truly streaming decoder (reading
+`get_blocks.bin` entries as bytes arrive) would only matter if one response
+had to approach the whole budget, and segmenting (section 4) avoids that.
+
+### Checking the budget against the machine
+
+- **Available memory:** the smaller of total RAM and, on Linux, the cgroup
+  limit (`/sys/fs/cgroup/memory.max`). In a container, host RAM is the wrong
+  number.
+- **The rule:** `budget × configured networks × 1.25 ≤ 80 % of available`.
+- **Wider range:** the budget setting accepts any value from 1 MB up; the old
+  ceiling of 48 MB and the fixed 64 MB response cap go. A value over the
+  machine's limit is refused with the real maximum:
+  "At most 1,536 MB on this machine (80 % of 7.6 GB, across 2 networks)."
+- **Shown on the setting:** the setting's help text shows the same maximum.
+- **Rechecked at start:** a database or environment value that no longer
+  fits (the machine shrank) makes the engine start with the largest budget
+  that fits, and raises an admin alert saying so.
+
+## 4. Very large blocks: segments sized to the round
+
+- **Decide before fetching.** For the next block, ask for its header first
+  (`get_block_header_by_height` gives `block_weight` and `num_txes`). Batched
+  for a run of small blocks, this costs one cheap call per chunk.
+- **Whole mode,** for a block expected to fit one response and one target
+  call: fetched with neighbours in a `get_blocks.bin` chunk, as now.
+- **Segmented mode,** for a larger block:
+  1. Fetch the block itself (header, miner transaction, transaction hashes)
+     with `get_block`.
+  2. Fetch its transactions in pages through pruned `/get_transactions`.
+     Page size comes from the section 2 formula, so one page is about one
+     target call and within the response cap.
+  3. Each page is one unit in the Blocks tier. It scans the page for every
+     store in the group and records `partial_block_progress` with the next
+     transaction index.
+  4. Once the last page is done, recheck the block's hash and commit the
+     cursor with the staged matches, as now.
+- **CPU is sized too.** A page also costs one scan per transaction per store.
+  The engine keeps a running average of scan time per transaction per store,
+  and shrinks the page when the CPU, not the link, is what would overrun the
+  slice.
+- **The rest of the engine keeps going.** A 500 MB block becomes many units
+  across many rounds. Mempool detection, settlement and reorg checks run
+  between them, so a giant block delays only block confirmations.
+
+### The round deadline
+
+- **Fixed base:** rounds keep their 10 s deadline and tier shares
+  (`work::ROUND_BUDGET`).
+- **Grows only when it must:** only if the smallest useful unit (one page
+  holding one transaction) is estimated to need more than the Blocks share.
+  Then the deadline becomes `max(10 s, 1.5 × that unit's estimate)`, capped at
+  120 s.
+- **Shown:** the status page and admin panel show that it was raised, and why.
+
+## 5. The slow-block state
+
+- **Trigger:** our own processing time for one block. The clock starts when
+  the engine starts fetching a block and stops when that block's scan is
+  committed. If it passes **2 minutes** while the node is answering, the
+  network is **slow**. The threshold is a constant, not a setting.
+- **Not a trigger:** the network's own block rate. Gaps between blocks
+  fluctuate (a block can take many minutes to be mined) and say nothing
+  about the engine. How far behind the tip we are isn't a trigger either: a
+  backlog of small blocks scanned quickly is healthy. Only one block taking
+  us too long is.
+- **What it shows:**
+  - The status indicator goes **yellow** (`status-dot-slow`), a new state
+    between healthy (green) and a problem (red). Yellow means only this:
+    slow but moving.
+  - The status page shows a warning banner for that network.
+  - The admin sees the same alert in the dashboard alert bar.
+  - It uses the existing `--warning` theme role, in both themes.
+- **The message says why and what would help.** For example:
+
+  > Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far, at
+  > 3.1 Mbit/s from node.example:18089. At this rate it needs about 18
+  > minutes. A faster node or a larger scan memory budget would help.
+
+- **Clears** by itself when the block completes. A node that doesn't answer
+  stays red, as now.
+
+## 6. What the admin sees
+
+On the **Monero nodes** tab, next to the settings each number describes.
+Everything is rendered on the server (works without JavaScript) and
+refreshes in place with fixi. Charts are small inline SVG with a text
+summary beside them, and use theme roles only.
+
+### Engine resources (top of the tab)
+
+```
+Engine        CPU  23 % of 4 cores   ▁▂▂▃▅▃▂▂▁▁▂▃  peak 61 % (last hour)
+              Memory  412 MB of 6.1 GB limit (7 %)  ▂▂▂▃▃▃▃▃▃▄▄▄  peak 455 MB
+Monokulo      CPU 2 %   Memory 96 MB
+```
+
+- **CPU:** the engine process's share of the whole machine, with the core
+  count.
+- **Memory:** the engine's resident memory against the limit it runs under
+  (the smaller of RAM and the cgroup limit), the same limit the budget check
+  uses.
+- **Trend:** one compact chart per measure for the last hour, sampled every
+  10 s and kept in memory (360 points) by the engine. Read with the
+  `sysinfo` crate (Linux and macOS), plus the cgroup limit file on Linux.
+- **Monokulo** shows its own current CPU and memory as plain numbers, so an
+  admin on a shared machine can see whose load is whose.
+
+### Each node row
+
+- Status, the node's height, and how far it is behind the network.
+- Transfer rate, RTT and TTFB, each with a one-hour sparkline.
+- When last measured, and failures and timeouts in the last hour.
+
+### One "Scanning" panel per network
+
+```
+Mainnet scanning                                          ● slow
+  Progress      14 blocks behind · 3.2 blocks/min · caught up in ~4 min
+  Pace set by   link speed (node.example:18089, 3.1 Mbit/s)
+  Chunk         1 block (segmented: page 41 of 97, 4.2 MB pages)
+  Block size    avg 1.8 MB (rising ↗) · largest recent 412 MB, took 18 m
+  Memory        budget 256 MB · peak 301 MB · machine allows 1,536 MB
+  Round         deadline 10 s (base)
+  Alerts        Block 3,412,001 has taken 2 m 10 s so far …
+```
+
+- **"Pace set by"** names the one thing limiting the scan right now: the
+  memory budget, link speed, round time, CPU (scan cost per store), or
+  "caught up". It's the line that tells the admin what to change.
+- **Chunk** says how big the current request is and why.
+
+### Where the numbers come from
+
+- **Engine:** a new `scaling` section of the engine's `/status` JSON, with
+  per-node measurements, per-network scan figures and the resource samples.
+  Everything on the engine already requires the engine token.
+- **monokulo:** renders it for admins only. Anonymous visitors to the status
+  page see the network state and the slow banner, never node addresses or
+  rates.
+
+## Phases
+
+| Phase | Delivers | Tested by |
+|---|---|---|
+| 1. Measure and adapt | per-node RTT/TTFB/rate; adaptive per-call timeout and deadline; chunk from memory and time; halving on failure | a fake node with a throttled body and a slow first byte: the scan completes at a low rate; a timeout halves the next chunk; the timeout follows the measured rate; a fallback node gets time after a primary times out |
+| 2. Leaner memory | compact decoded form; response cap; per-block release; budget check against RAM and the cgroup limit; fixed caps removed | peak allocation for a chunk stays within 1.3 × budget (counting allocator in a test); budget validation against a fixed memory figure; the start-up clamp and its alert |
+| 3. Seeing it | resource sampling and charts; node rows; Scanning panel; slow (yellow) state and banner | view tests for each panel state (light and dark gallery screenshots); the slow state starts after 2 minutes on a paused clock and clears when the block completes |
+| 4. Large blocks | header-first mode choice; segmented fetch through `/get_transactions` pages; CPU-aware page size; round deadline floor | a fake node serving a 200 MB block: scanned in pages with bounded memory; a payment in the block's last page is found and staged until the hash recheck; mempool detection keeps working mid-block |
+
+Phase 1 closes review finding 30. Each phase is its own commit series and
+leaves the engine working.
+
+## Open questions
+
+- monerod's `get_blocks.bin` appears to cap one answer at about 100 MB but
+  always return at least one block. This needs verifying against monerod's
+  source; segmented mode avoids depending on it either way.
+- Whether `get_block_header_by_height` for a run of heights (the
+  `get_block_headers_range` call) is cheap enough to precede every chunk, or
+  should only run once the running average suggests big blocks.
