@@ -1,7 +1,7 @@
 //! `cargo xtask stress rounds`: the round length sweep (docs/engine_stress.md).
 //!
 //! Runs `round_sweep` once for each scenario of
-//! `xtask/stress/round_sweep_v1.json` at each round length, pinned to one
+//! `xtask/stress/round_sweep_v2.json` at each round length, pinned to one
 //! CPU as the capacity sweep is, and writes `run.json` and `index.html` to
 //! `target/coverage/stress-rounds`. The binary is built in release: the
 //! sweep weighs scan time against link time, and a debug build's scan time
@@ -40,12 +40,32 @@ fn number(value: &Value, decimals: usize) -> String {
 }
 
 pub fn run() -> io::Result<bool> {
-    let output = root().join("target/coverage/stress-rounds");
+    // `ROUND_SWEEP_BUDGETS_MS=5000,7000` limits the sweep to those round
+    // lengths, into its own directory: for a run with `ROUND_BUDGET` itself
+    // set to one of them, so the per-call times derived from it follow too
+    // (docs/engine_stress.md).
+    let only: Option<Vec<Value>> = std::env::var("ROUND_SWEEP_BUDGETS_MS").ok().map(|list| {
+        list.split(',')
+            .filter_map(|ms| ms.trim().parse::<u64>().ok())
+            .map(Value::from)
+            .collect()
+    });
+    let output = match &only {
+        Some(budgets) => root().join(format!(
+            "target/coverage/stress-rounds-{}",
+            budgets
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("-")
+        )),
+        None => root().join("target/coverage/stress-rounds"),
+    };
     if output.exists() {
         fs::remove_dir_all(&output)?;
     }
     fs::create_dir_all(&output)?;
-    let raw = fs::read(root().join("xtask/stress/round_sweep_v1.json"))?;
+    let raw = fs::read(root().join("xtask/stress/round_sweep_v2.json"))?;
     let scenario: Value = serde_json::from_slice(&raw)?;
     let checksum = hex::encode(Sha256::digest(&raw));
     let built = Command::new("cargo")
@@ -71,9 +91,12 @@ pub fn run() -> io::Result<bool> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let budgets = scenario["round_budgets_ms"]
-        .as_array()
-        .ok_or_else(|| io::Error::other("scenario has no round budgets"))?;
+    let budgets = match &only {
+        Some(budgets) => budgets,
+        None => scenario["round_budgets_ms"]
+            .as_array()
+            .ok_or_else(|| io::Error::other("scenario has no round budgets"))?,
+    };
     let scenarios = scenario["scenarios"]
         .as_array()
         .ok_or_else(|| io::Error::other("scenario has no scenarios"))?;
@@ -97,7 +120,7 @@ pub fn run() -> io::Result<bool> {
                 ("--backlog-blocks", &case["backlog_blocks"]),
                 ("--link-kbps", &case["link_kbps"]),
                 ("--block-bytes", &scenario["block_bytes"]),
-                ("--rtt-ms", &scenario["rtt_ms"]),
+                ("--rtt-ms", &case["rtt_ms"]),
                 ("--ttfb-us-per-block", &scenario["ttfb_us_per_block"]),
                 ("--budget-mb", &scenario["budget_mb"]),
                 ("--idle-rounds", &scenario["idle_rounds"]),
@@ -145,9 +168,10 @@ fn report(output: &std::path::Path, scenarios: &[Value], results: &[Value]) -> i
     for case in scenarios {
         let name = case["name"].as_str().unwrap_or("unnamed");
         page.push_str(&format!(
-            "<h2>{}</h2><p>{} kbit/s, {} tenants in {} groups, {} blocks behind.</p><table><tr><th>Round</th>",
+            "<h2>{}</h2><p>{} kbit/s, {} ms round trip, {} tenants in {} groups, {} blocks behind.</p><table><tr><th>Round</th>",
             escape_html(name),
             case["link_kbps"],
+            case["rtt_ms"],
             case["tenants"],
             case["groups"],
             case["backlog_blocks"]

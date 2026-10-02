@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use engine::daemon::{
-    ChainBlock, ChainHeader, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, ScanTx,
-    TxLocation,
+    ChainBlock, ChainHeader, ChainTip, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient,
+    PoolAnswer, ScanTx, TxLocation,
 };
 use engine::key_custody::{KeyCustody, PlainKeyCustody, SubaddressIndex, WalletHandle};
 use engine::store::{Db, NewOrder, NewTenant, Store, TenantId};
@@ -110,6 +110,20 @@ impl MoneroDaemonClient for SweepDaemon {
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.small().await;
         Ok(self.tip)
+    }
+    /// The height with the tip's id in one answer, as monerod's
+    /// `/get_height` gives them, so reorg detection needs no lookup.
+    async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
+        self.small().await;
+        Ok(ChainTip {
+            height: self.tip,
+            hash: Some(Self::hash(self.tip)),
+        })
+    }
+    /// The tip and the pool in one request, as `RpcDaemonClient` asks them
+    /// while the chain hasn't moved.
+    async fn get_tip_and_mempool(&self) -> (Result<ChainTip, DaemonError>, PoolAnswer) {
+        (self.get_tip().await, Ok(vec![]))
     }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.small().await;

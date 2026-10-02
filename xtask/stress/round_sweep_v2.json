@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "description": "Round length against catch-up throughput, refetched blocks and the wait between rounds (docs/engine_stress.md, round length sweep). v2 adds a high-latency (Tor-like) node, and the node answers the tip with its id and the pool in one request, as the real client does.",
+  "round_budgets_ms": [5000, 7000, 10000, 15000, 20000],
+  "block_bytes": 13000,
+  "ttfb_us_per_block": 500,
+  "budget_mb": 8,
+  "idle_rounds": 5,
+  "max_secs": 90,
+  "seed": 1,
+  "scenarios": [
+    {"name": "slow-link", "link_kbps": 256, "rtt_ms": 50, "tenants": 100, "groups": 1, "backlog_blocks": 150},
+    {"name": "2mbit-1-tenant", "link_kbps": 2000, "rtt_ms": 50, "tenants": 1, "groups": 1, "backlog_blocks": 1000},
+    {"name": "2mbit-100-tenants", "link_kbps": 2000, "rtt_ms": 50, "tenants": 100, "groups": 1, "backlog_blocks": 1000},
+    {"name": "2mbit-1000-tenants", "link_kbps": 2000, "rtt_ms": 50, "tenants": 1000, "groups": 1, "backlog_blocks": 1000},
+    {"name": "2mbit-16-groups", "link_kbps": 2000, "rtt_ms": 50, "tenants": 64, "groups": 16, "backlog_blocks": 1000},
+    {"name": "fast-link", "link_kbps": 100000, "rtt_ms": 50, "tenants": 100, "groups": 1, "backlog_blocks": 3000},
+    {"name": "high-latency-2mbit", "link_kbps": 2000, "rtt_ms": 800, "tenants": 100, "groups": 1, "backlog_blocks": 1000},
+    {"name": "high-latency-slow-link", "link_kbps": 256, "rtt_ms": 800, "tenants": 100, "groups": 1, "backlog_blocks": 150}
+  ]
+}
