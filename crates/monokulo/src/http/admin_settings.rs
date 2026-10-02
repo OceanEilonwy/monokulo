@@ -2819,14 +2819,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new("read-only");
         let path = dir.0.join("monokulo.toml");
-        std::fs::write(&path, "[signup]\nmode = \"public\"\n").unwrap();
+        let text = "[signup]\nmode = \"public\"\n";
+        std::fs::write(&path, text).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
-        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::OpenOptions::new().append(true).open(&path).is_ok() {
+            return; // Root: permission bits don't bind it.
+        }
         let state = test_app_state_with_options(
             "127.0.0.1:1".parse().unwrap(),
             live_settings::OptionsFile::at(&path),
         )
         .await;
+        let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let page = unescaped(
@@ -2840,7 +2844,6 @@ mod tests {
             )
             .await,
         );
-        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(page.contains("It can't be written by monokulo"), "{page}");
         assert!(
             page.contains("can't be written by monokulo, so this is changed by editing it"),
@@ -2853,6 +2856,78 @@ mod tests {
         assert!(
             page.contains(r#"name="abuse.under_attack""#),
             "a runtime switch is in the database, still editable: {page}"
+        );
+
+        // A form that sends a locked setting anyway is refused, and the
+        // file, read-only, is left exactly as it was.
+        let refused = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "abuse"), ("abuse.soft_per_min", "61")],
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::OK);
+        let html = unescaped(&body_text(refused).await);
+        assert!(
+            html.contains("Nothing was saved") && html.contains("can't be written by this process"),
+            "{html}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o444
+        );
+        assert_eq!(monokulo_value(&settings, "abuse.soft_per_min").0, "60");
+
+        // The runtime switch still saves, to the database.
+        let saved = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "abuse"), ("abuse.under_attack", "true")],
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            monokulo_value(&settings, "abuse.under_attack"),
+            ("true".to_string(), live_settings::SettingSource::Database)
+        );
+    }
+
+    /// No options file yet: the page says so, everything is editable, and
+    /// the first save creates the file, which the page then names as there.
+    #[tokio::test]
+    async fn a_missing_options_file_is_created_by_the_first_save() {
+        let dir = TempDir::new("missing");
+        let path = dir.0.join("config").join("monokulo.toml");
+        let state = test_app_state_with_options(
+            "127.0.0.1:1".parse().unwrap(),
+            live_settings::OptionsFile::at(&path),
+        )
+        .await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let page = unescaped(&body_text(get_settings_page(&router, &cookie).await).await);
+        assert!(
+            page.contains("Not created yet: saving a setting here creates it."),
+            "{page}"
+        );
+        assert!(page.contains(r#"name="engine.url""#), "editable: {page}");
+
+        let saved = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "abuse"), ("abuse.soft_per_min", "61")],
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[abuse]\nsoft_per_min = 61\n"
+        );
+        let page = unescaped(&body_text(get_settings_page(&router, &cookie).await).await);
+        assert!(
+            page.contains("Saving here writes it; after editing it by hand, reload it."),
+            "{page}"
         );
     }
 

@@ -1860,6 +1860,286 @@ mod sources {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Sets a file's permission bits.
+    #[cfg(unix)]
+    fn chmod(path: &std::path::Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Whether permission bits bind this process: they don't for root,
+    /// where the tests below that rely on them have nothing to show.
+    #[cfg(unix)]
+    fn permissions_apply(dir: &std::path::Path) -> bool {
+        let probe = dir.join("probe");
+        std::fs::write(&probe, "x").unwrap();
+        chmod(&probe, 0o000);
+        let applies = std::fs::read(&probe).is_err();
+        chmod(&probe, 0o600);
+        let _ = std::fs::remove_file(&probe);
+        applies
+    }
+
+    /// No file yet: the process starts on the defaults, the page is told
+    /// the file doesn't exist but can be made, and the first save makes it
+    /// (and its directory).
+    #[tokio::test]
+    async fn a_missing_file_starts_on_the_defaults_and_the_first_save_creates_it() {
+        let dir = temp_dir("missing");
+        let path = dir.join("nested").join("app.toml");
+        let s = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+        assert_eq!(s.rate.load().limit, 10);
+        assert_eq!(
+            view(&s.registry.describe(), "scan.limit_per_min").source,
+            SettingSource::Default
+        );
+        let info = s.registry.options_file().unwrap();
+        assert!(!info.exists && info.writable, "{info:?}");
+
+        s.registry
+            .save(vec![change("scan.limit_per_min", "30")])
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[scan]\nlimit_per_min = 30\n"
+        );
+        assert!(s.registry.options_file().unwrap().exists);
+        assert_eq!(
+            view(&s.registry.describe(), "scan.limit_per_min").source,
+            SettingSource::Toml
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A file the process can't read stops the start, saying so; once
+    /// running, a reload of it or a save to it is refused and changes
+    /// nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_file_stops_the_start_and_is_never_half_applied() {
+        let dir = temp_dir("unreadable");
+        if !permissions_apply(&dir) {
+            return;
+        }
+        let path = dir.join("app.toml");
+        std::fs::write(&path, "[scan]\nlimit_per_min = 20\n").unwrap();
+        chmod(&path, 0o000);
+        let Err(BuildError::Store(e)) = setup(OptionsFile::at(&path), key_env()).await.map(|_| ())
+        else {
+            panic!("expected the start refused");
+        };
+        assert!(
+            e.0.contains(&format!("{} can't be read", path.display())),
+            "{e}"
+        );
+
+        chmod(&path, 0o600);
+        let s = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+        chmod(&path, 0o000);
+        let refused = s.registry.reload().await.unwrap_err().to_string();
+        assert!(refused.contains("can't be read"), "{refused}");
+        let refused = s
+            .registry
+            .save(vec![change("scan.limit_per_min", "30")])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("can't be written by this process"),
+            "{refused}"
+        );
+        assert_eq!(s.rate.load().limit, 20, "nothing changed");
+        chmod(&path, 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[scan]\nlimit_per_min = 20\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A read-only file, or a writable one in a directory that takes no new
+    /// file (a save writes beside it and renames), is reported as not
+    /// writable, and a save to it is refused - even one the page would not
+    /// have sent - leaving the file, and its permissions, as they were.
+    /// Runtime switches, in the database, still save.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_the_process_cannot_write_refuses_saves_and_stays_as_it_was() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("read-only");
+        if !permissions_apply(&dir) {
+            return;
+        }
+        let path = dir.join("app.toml");
+        let text = "# Mine.\n[scan]\nlimit_per_min = 20\n";
+        std::fs::write(&path, text).unwrap();
+        chmod(&path, 0o444);
+        let s = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+        assert!(!s.registry.options_file().unwrap().writable);
+        let refused = s
+            .registry
+            .save(vec![change("scan.limit_per_min", "30")])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains(
+                "can't be written by this process: change it by editing it, then reload it."
+            ),
+            "{refused}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o444,
+            "still read-only"
+        );
+        assert_eq!(s.rate.load().limit, 20);
+        s.registry
+            .save(vec![change("abuse.under_attack", "true")])
+            .await
+            .unwrap();
+        assert!(s.rate.load().under_attack);
+
+        chmod(&path, 0o644);
+        chmod(&dir, 0o555);
+        let s = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+        let writable = s.registry.options_file().unwrap().writable;
+        let refused = s
+            .registry
+            .save(vec![change("scan.limit_per_min", "30")])
+            .await;
+        chmod(&dir, 0o755);
+        assert!(!writable, "the directory takes no new file");
+        assert!(refused.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(leftovers, [std::ffi::OsString::from("app.toml")]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A file deleted while running: a save refuses to bring back a file
+    /// someone removed; a reload takes the defaults, as a start would, and
+    /// the next save creates it again.
+    #[tokio::test]
+    async fn a_file_deleted_while_running_is_reloaded_as_empty_not_silently_recreated() {
+        let dir = temp_dir("deleted");
+        let path = dir.join("app.toml");
+        std::fs::write(&path, "[scan]\nlimit_per_min = 20\n").unwrap();
+        let s = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let refused = s
+            .registry
+            .save(vec![change("public_url", "https://x.example")])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("has changed since it was loaded"),
+            "{refused}"
+        );
+        assert!(!path.exists());
+
+        let report = s.registry.reload().await.unwrap();
+        assert_eq!(report.changed, ["scan.limit_per_min"]);
+        assert_eq!(s.rate.load().limit, 10);
+        s.registry
+            .save(vec![change("scan.limit_per_min", "30")])
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[scan]\nlimit_per_min = 30\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An options file linked from elsewhere (dotfiles) stays a link: a
+    /// save writes the file it points to, keeping that file's permissions,
+    /// and leaves nothing behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_save_writes_through_a_symlink_and_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("symlink");
+        let real = dir.join("dotfiles").join("app.toml");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "[scan]\nlimit_per_min = 20\n").unwrap();
+        chmod(&real, 0o600);
+        let link = dir.join("app.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let s = setup(OptionsFile::at(&link), key_env()).await.unwrap();
+        assert_eq!(s.rate.load().limit, 20);
+        s.registry
+            .save(vec![change("scan.limit_per_min", "30")])
+            .await
+            .unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&real).unwrap(),
+            "[scan]\nlimit_per_min = 30\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let names = |d: &std::path::Path| -> Vec<std::ffi::OsString> {
+            std::fs::read_dir(d)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name())
+                .collect()
+        };
+        assert_eq!(
+            names(real.parent().unwrap()),
+            [std::ffi::OsString::from("app.toml")]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A database row for a setting the options file holds (left by an
+    /// older release, or written by hand) means nothing: the file, or the
+    /// default, wins. Runtime switches still come from the database.
+    #[tokio::test]
+    async fn a_database_row_for_a_setting_the_file_holds_is_ignored() {
+        let database = Arc::new(MemoryStore::new());
+        database
+            .write_all(vec![
+                ("scan.limit_per_min", Some("99".to_string())),
+                ("public_url", Some("https://stale.example".to_string())),
+                ("abuse.under_attack", Some("true".to_string())),
+            ])
+            .await
+            .unwrap();
+        let store = LayeredStore::new(
+            OptionsFile::in_memory("[scan]\nlimit_per_min = 20\n"),
+            Arc::clone(&database) as Arc<dyn SettingsStore>,
+            ALL,
+        );
+        let mut builder = Registry::builder_with_env(Arc::new(store), ALL, key_env()).await;
+        let rate = builder.section::<Rate>();
+        builder.section::<Boot>();
+        let registry = builder.build().unwrap();
+        registry.boot().await.unwrap();
+        let rate = rate.load();
+        assert_eq!(rate.limit, 20);
+        assert_eq!(rate.public, "");
+        assert!(rate.under_attack);
+        assert_eq!(
+            view(&registry.describe(), "public_url").source,
+            SettingSource::Default
+        );
+    }
+
     /// `--init` lists every setting the file may hold, commented out with
     /// its default, names the secrets' variables, leaves runtime switches
     /// out, reads back as an empty file would, and never overwrites one.

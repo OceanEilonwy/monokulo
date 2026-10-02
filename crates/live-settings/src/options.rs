@@ -134,6 +134,16 @@ impl OptionsFile {
         &self,
         changes: &[(&'static dyn AnySetting, Option<String>)],
     ) -> Result<(), StoreError> {
+        // The page locks what this file holds when it can't be written;
+        // this refuses a save that comes anyway (a hand-made form, the API).
+        if let Place::Disk(path) = &self.place {
+            if !crate::paths::writable(path) {
+                return Err(StoreError::new(format!(
+                    "{} can't be written by this process: change it by editing it, then reload it.",
+                    path.display()
+                )));
+            }
+        }
         let mut loaded = self.loaded.lock();
         let current = self.read_text()?;
         if current != *loaded {
@@ -158,7 +168,10 @@ impl OptionsFile {
     }
 }
 
+/// Writes `text` to the file `path` names (through a symlink, which stays),
+/// keeping its permissions: a new file beside it, renamed over it.
 fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
+    let path = crate::paths::resolved(path);
     if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
@@ -167,8 +180,16 @@ fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "options.toml".to_string());
     let temporary = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, path)
+    let written = std::fs::write(&temporary, text).and_then(|()| {
+        if let Ok(old) = std::fs::metadata(&path) {
+            std::fs::set_permissions(&temporary, old.permissions())?;
+        }
+        std::fs::rename(&temporary, &path)
+    });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// The options file and the database behind one store: each setting is
