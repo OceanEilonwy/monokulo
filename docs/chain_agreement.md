@@ -19,8 +19,12 @@ of cooldown) and believes it. The engine checks hashes chain together
 RandomX in the engine is out of scope. So the pinned node can:
 
 1. **Make up blocks.** It can serve blocks that pay an order, with as many
-   made-up blocks on top as the store requires. The order becomes `paid`,
-   its webhook fires, and the shop ships. This is the expensive one.
+   made-up blocks on top as the store requires. The payment itself is
+   real-looking: the attacker builds a genuine transaction to the order's
+   address from their own coins, but only ever shows it to the lying node,
+   so it never reaches the real chain and they keep the coins. The order
+   becomes `paid`, its webhook fires, and the shop ships. This is the
+   expensive one.
 2. **Hide or delay.** It can serve a stale chain, or leave payments out.
    Orders wait or expire. This is bad, but nothing false is recorded.
 3. **Fake the pool.** It can show made-up 0-conf transactions. That is

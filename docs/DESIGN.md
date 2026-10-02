@@ -592,7 +592,12 @@ and its `fallbacks` on any single call failure. Everything above about "the node
 trusted per network was written for exactly one node; with fallbacks configured it
 now means trusting *whichever* of them answers a given call, with no quorum and no
 cross-check between them - a compromised or eclipsed fallback is exactly as trusted
-as the primary the moment it starts answering. Two consequences worth naming
+as the primary the moment it starts answering. (Since then, with more than one node,
+the chain agreement check, `docs/chain_agreement.md`, adds that quorum for the chain:
+an order only settles on blocks most of the nodes have, and a node the others outvote
+is excluded. It matters most for the one thing "cannot manufacture a payment" above
+doesn't cover: a real transaction to the order's address, made by the attacker from
+coins they keep because it only ever appears in the lying node's made-up blocks.) Two consequences worth naming
 explicitly, both pinned by tests rather than left as unverified worry:
 
 - **A fallback presenting a different chain reconciles exactly like a reorg** -

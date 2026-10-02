@@ -28,6 +28,7 @@ smallest form the node offers, and ask once.
 | A page of unconfirmed payments that left the pool | one `/get_transactions` (pruned) for all of them, then one `/is_key_image_spent` per node for those found nowhere | about 1 kB per transaction |
 | A reorg | `on_get_block_hash`, O(log depth) times; one `/get_transactions` per page of affected payments | |
 | A page of recently voided payments, every five minutes | one `/is_key_image_spent` per node | |
+| With more than one node: a new recorded block, every 30 s, or every round while settlement is held or the agreed block is below the recorded top (`docs/chain_agreement.md`) | `/get_height` and `on_get_block_hash` per node, all nodes at once; more hash lookups only when the top block isn't agreed (at most 6) | about 270 B a node |
 | `/status` | `get_info` once per node, all nodes at once | about 1.4 kB a node |
 | Payment lookup by txid (admin) | one `/get_transactions` (pruned), then `/get_height` if it pays an order | |
 
