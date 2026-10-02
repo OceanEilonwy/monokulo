@@ -196,30 +196,6 @@ EOF
     fi
 }
 
-# Provisions the one self-hosted tenant, from the same watch-only stagenet
-# wallet the repo's own e2e tests use - a one-time action (refuses once a
-# tenant already exists), so this only ever does real work on the very
-# first `start` against a fresh database. It reads the same options file
-# as the engine, so the tenant starts with its confirmations_required and
-# order_expiry_minutes (`local_admin::bootstrap_wallet`'s own doc comment).
-ensure_wallet_bootstrapped() {
-    local out
-    # The view key goes in on standard input (printf is a shell builtin, so
-    # it never shows in the process list), never as an argument.
-    if out=$(printf '%s' "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e" \
-        | "$ENGINE_BIN" --options "$ENGINE_OPTIONS" --bootstrap-wallet \
-        --primary-address "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg" \
-        --view-key-file - \
-        --spend-pubkey "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335" \
-        --network stagenet 2>&1); then
-        echo "==> bootstrapped the dev stagenet tenant:"
-        echo "$out" | sed 's/^/    /'
-    fi
-    # A non-zero exit here just means "already bootstrapped" (a tenant
-    # from a previous run's database) - not an error worth failing
-    # `start` over, so deliberately not checked against `set -e`.
-}
-
 start_engine() {
     if is_running "$ENGINE_PID_FILE"; then
         if ! is_stale "$ENGINE_PID_FILE" "$ENGINE_BIN"; then
@@ -246,7 +222,6 @@ start_engine() {
         rm -f "$ENGINE_PID_FILE"
         exit 1
     fi
-    ensure_wallet_bootstrapped
 }
 
 start_control_plane() {

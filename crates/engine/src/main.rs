@@ -1,8 +1,7 @@
-//! Boot sequence: read the command line, read the engine token (`server.token`, required), open storage, bootstrap
-//! nothing automatically (provisioning the self-hosted tenant is now an explicit
-//! one-time `--bootstrap-wallet` command, not something every boot re-checks -
-//! see `cli::Action::BootstrapWallet`), register every tenant's wallet with
-//! `KeyCustody`, then run the chain scanner (once per configured network), the
+//! Boot sequence: read the command line, read the engine token (`server.token`,
+//! required), open storage, register every tenant's wallet with
+//! `KeyCustody` (tenants are created by monokulo, through the admin API, when
+//! a merchant connects a store), then run the chain scanner (once per configured network), the
 //! webhook delivery loop, and the HTTP server concurrently.
 //!
 //! Every setting is declared once (`engine::engine_settings`). Configuration
@@ -23,8 +22,7 @@ use std::time::Duration;
 
 use engine::cli::{self, Action};
 use engine::engine_settings::{
-    CustodyConfig, CustodyReloadable, Daemons, EngineSettings, RuntimeConfig, TenantDefaults, ALL,
-    LOGGING_FORMAT, LOGGING_LEVEL, SERVER_TOKEN,
+    Daemons, EngineSettings, RuntimeConfig, ALL, LOGGING_FORMAT, LOGGING_LEVEL, SERVER_TOKEN,
 };
 use engine::http::rate_limit::RateLimiter;
 use engine::http::{build_router, AppState};
@@ -155,44 +153,6 @@ async fn run(action: Action, boot: Boot) {
                         "Order expiry:          {} minutes",
                         s.order_expiry_seconds / 60
                     );
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Action::BootstrapWallet(command) => {
-            let args = match command.read_view_key() {
-                Ok(args) => args,
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            };
-            let store = open_store(&boot.db_path).into_shared();
-            let custody =
-                live_settings::read_sync_with_env::<CustodyConfig>(Ok(boot.file.clone()), env);
-            let backend = custody.default.as_str().to_string();
-            let router = Arc::new(CustodyRouter::default());
-            if let Err(e) = apply_custody(&router, &custody).await {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-            let key_custody: Arc<dyn KeyCustody> = router;
-            let defaults =
-                live_settings::read_sync_with_env::<TenantDefaults>(Ok(boot.file.clone()), env);
-            let bootstrapped =
-                local_admin::bootstrap_wallet(&store, &key_custody, &backend, &defaults, args)
-                    .await;
-            match bootstrapped {
-                Ok(created) => {
-                    println!(
-                        "bootstrapped self-hosted tenant: public_key={} (save this - it goes in your site's JS)",
-                        created.tenant.public_key
-                    );
-                    println!("bootstrap admin secret: {} (shown once - store it now, e.g. in a password manager)", created.secret_token.expose());
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -412,22 +372,6 @@ async fn run(action: Action, boot: Boot) {
 // `tokio::spawn` of an infinite loop panicking would silently kill chain
 // scanning/webhook delivery while the HTTP server keeps serving happily,
 // with no signal short of a merchant eventually complaining).
-
-/// Builds the router's backends from `custody` once, for the one-off CLI
-/// commands (the server applies them through its settings registry).
-async fn apply_custody(router: &Arc<CustodyRouter>, custody: &CustodyConfig) -> Result<(), String> {
-    use live_settings::Reloadable;
-    let reloadable = CustodyReloadable::new(router.clone());
-    let (prepared, warnings) = reloadable
-        .prepare(custody, custody)
-        .await
-        .map_err(|e| e.to_string())?;
-    for warning in warnings {
-        tracing::warn!("{}", warning.message);
-    }
-    reloadable.install(prepared).await;
-    Ok(())
-}
 
 /// Eagerly registers every non-disabled tenant's sealed key material with
 /// `KeyCustody`, so `AppState::wallet_handles` starts populated rather than relying
