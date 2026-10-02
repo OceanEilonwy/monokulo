@@ -163,41 +163,11 @@ pub fn slow_block_messages(status: &EngineStatusResponse, show_node: bool) -> Ve
         .iter()
         .filter_map(|n| {
             let slow = n.scaling.as_ref()?.slow.as_ref()?;
-            Some(slow_block_message(&n.network, slow, show_node))
+            Some(views::scaling::slow_block_message(
+                &n.network, slow, show_node,
+            ))
         })
         .collect()
-}
-
-fn slow_block_message(network: &str, slow: &shared::scaling::SlowBlock, show_node: bool) -> String {
-    let mut name = network.to_string();
-    if let Some(first) = name.get_mut(..1) {
-        first.make_ascii_uppercase();
-    }
-    let size = slow
-        .wire_bytes
-        .map(|bytes| format!(" ({})", views::scaling::bytes(bytes)))
-        .unwrap_or_default();
-    let mut message = format!(
-        "{name}: block {}{size} has taken {} so far",
-        views::scaling::thousands(slow.height),
-        views::scaling::duration(slow.elapsed_secs),
-    );
-    match (show_node, &slow.node, slow.rate_bytes_per_sec) {
-        (true, Some(node), Some(rate)) => {
-            message.push_str(&format!(", at {} from {node}", views::scaling::rate(rate)));
-        }
-        (_, _, Some(rate)) => message.push_str(&format!(", at {}", views::scaling::rate(rate))),
-        _ => {}
-    }
-    message.push('.');
-    if let Some(remaining) = slow.remaining_secs.filter(|secs| *secs > 0) {
-        message.push_str(&format!(
-            " At this rate it needs about {} more.",
-            views::scaling::duration_rough(remaining)
-        ));
-    }
-    message.push_str(" A faster node or a larger scan memory budget would help.");
-    message
 }
 
 /// The slow-block sentences from the cached status, for an operator's
