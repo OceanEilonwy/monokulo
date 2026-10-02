@@ -2958,6 +2958,51 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     );
 }
 
+/// A group larger than a page moves together. With no time at all, its
+/// first page of block 21 is scanned a batch a round (checkpointed between);
+/// once that page is done, the same unit gives the block to the rest of the
+/// group whatever the time, rather than moving the first page on and
+/// leaving the rest a block behind, to be fetched again as a catch-up group
+/// of their own.
+#[tokio::test]
+async fn a_group_larger_than_a_page_moves_together() {
+    // A second page of more than one scan batch.
+    let count = super::blocks::GROUP_PAGE + crate::scanner::SCAN_CONCURRENCY + 10;
+    let (store, custody, fake, tenants, _) = seeded_network(count, 20).await;
+    let mut txs = vec![fixture_tx()];
+    txs.extend((0..4u8).map(|i| unrelated_tx(100 + i)));
+    fake.push_block("a21", txs);
+    fake.push_block("a22", vec![]);
+    let cursors = || -> std::collections::BTreeSet<i64> {
+        let s = store.lock();
+        let mut stmt = s
+            .conn_for_test()
+            .prepare("SELECT scanned_through_height FROM tenants")
+            .unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    let mut rounds = 0;
+    while cursors() == [20].into() {
+        run_round(
+            &state,
+            &inputs(&db, &custody, &fake, &tenants),
+            Duration::ZERO,
+        )
+        .await
+        .into_result()
+        .unwrap();
+        rounds += 1;
+        assert!(rounds < 100);
+    }
+    assert!(rounds > 1, "the first page took more than one round");
+    assert_eq!(cursors(), [21].into(), "every page of the group got block 21");
+}
+
 /// More stores in a group than one scan batch, with no time: the first
 /// batch is checkpointed, the rest haven't started. A store that failed is
 /// left out of the checkpoint; next round it starts from the beginning while

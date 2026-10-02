@@ -143,5 +143,4 @@ block cache outlasted the round) and `docs/stress/round-budget-candidates.json`
 Not covered: the scripted node answers instantly apart from its link
 model, so monerod's own time to build an answer is only the time to first
 byte per block. A thousand tenants on one CPU are bound by scanning
-(about 2,500 tenant-blocks a second), and `GROUP_PAGE` lets the first 256
-run ahead of the rest.
+(about 5,000 tenant-blocks a second).

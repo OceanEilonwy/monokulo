@@ -150,10 +150,15 @@ catch-up).
   While the frontier (the group at the network high-water mark) is behind
   the node, turns alternate between it and catch-up. The turn is kept
   across rounds, so even one-unit rounds alternate.
-- **Big groups:** a unit scans at most 256 tenants of a group (in id order).
-  With more at one cursor, the rest stay there and become a catch-up group
-  one block behind, served by the rotation; the block is still held in the
-  round's cache, so it isn't fetched again.
+- **Big groups:** one block scan covers at most 256 tenants of a group (a
+  page, in id order) and one commit moves them. With more at one cursor,
+  the unit scans the same block (held in the cache) for the next page
+  before the group moves on, and a block it has started it finishes for
+  every page whatever the time, so the group moves together. Only past the
+  unit's 8 scans does the rest stay behind as a catch-up group. (When the
+  first page moved on alone, 1000 tenants at one cursor split into groups
+  that fetched the same blocks again: 2.5 blocks a second against 4.9 now,
+  in the round length sweep.)
 - **Idle stores:** a store with nothing that could have been paid from a
   block on (every order closed before the block's time) moves straight to
   the high-water mark, whether it is at the frontier or catching up, even

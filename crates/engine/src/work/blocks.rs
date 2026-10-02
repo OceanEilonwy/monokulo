@@ -47,10 +47,13 @@ use crate::store::{BlockCheckpoint, Store};
 
 use super::{bounded, Progress, Round, Wait};
 
-/// Most tenants of one group scanned by one unit. The rest of the group
-/// stays at its cursor and becomes its own catch-up group.
-const GROUP_PAGE: usize = 256;
-/// Most blocks one unit scans for its group before yielding the tier.
+/// Most tenants one block scan covers and one commit moves. A larger group
+/// is given the same block a page at a time before it moves on, within
+/// [`BLOCKS_PER_UNIT`] scans a unit; past that the rest of the group stays
+/// at its cursor and becomes its own catch-up group.
+pub(super) const GROUP_PAGE: usize = 256;
+/// Most block scans (a block for one page of its group's tenants) one unit
+/// makes before yielding the tier.
 const BLOCKS_PER_UNIT: usize = 8;
 /// Most headers fetched at once for blocks recorded without being scanned.
 const HEADERS_PER_FETCH: u64 = 256;
@@ -573,8 +576,16 @@ enum Group {
     CatchUp,
 }
 
+/// Which page of a group's tenants a committed block was scanned for.
+enum Page {
+    /// A full page: more of the group may still be at the parent cursor.
+    Full(Vec<TenantId>),
+    /// The last of the group at the parent cursor.
+    Last,
+}
+
 enum BlockOutcome {
-    Committed,
+    Committed(Page),
     /// Out of time partway through; progress is checkpointed.
     Interrupted,
     /// Nobody in the group could be scanned (keys not registered, retry
@@ -748,12 +759,17 @@ async fn advance_group(
         .db(|s, network| s.max_scanned_height(network))
         .await?
         .unwrap_or(cursor);
+    // Tenants already given block `cursor + 1` this unit, a page at a
+    // time, while the rest of the group at `cursor` waits for its page.
+    let mut given: Vec<TenantId> = Vec::new();
     for scanned in 0..BLOCKS_PER_UNIT {
         let end = match group {
             Group::Frontier => tip,
             Group::CatchUp => high_water,
         };
-        if cursor >= end || (scanned > 0 && Instant::now() >= until) {
+        // Out of time, a unit starts no new block; a block it started, it
+        // finishes for the whole group, so the group doesn't split.
+        if cursor >= end || (given.is_empty() && scanned > 0 && Instant::now() >= until) {
             break;
         }
         // The node's round trip for the next run of blocks overlaps this
@@ -781,9 +797,15 @@ async fn advance_group(
             high_water,
             end,
             until,
-            must_progress: scanned == 0,
+            on_timeout: if !given.is_empty() {
+                OnTimeout::Finish
+            } else if scanned == 0 {
+                OnTimeout::StopAfterProgress
+            } else {
+                OnTimeout::Stop
+            },
         };
-        let (outcome, prefetched) = tokio::join!(scan_block(round, task), async {
+        let (outcome, prefetched) = tokio::join!(scan_block(round, task, &given), async {
             match prefetch {
                 Some((from, count)) => {
                     let started = Instant::now();
@@ -811,7 +833,13 @@ async fn advance_group(
             None => {}
         }
         match outcome? {
-            BlockOutcome::Committed => {
+            // A whole page: the rest of the group at this cursor gets the
+            // same block (held already) before the group moves on, so a
+            // group larger than a page moves together rather than its
+            // first page running ahead of the rest.
+            BlockOutcome::Committed(Page::Full(page)) => given.extend(page),
+            BlockOutcome::Committed(Page::Last) => {
+                given.clear();
                 cursor += 1;
                 high_water = high_water.max(cursor);
             }
@@ -847,6 +875,8 @@ struct Reached {
 
 /// What one database read tells a block scan before it starts.
 struct Plan {
+    /// The page of tenants at the parent cursor this scan is for.
+    page: Page,
     /// Tenants at the parent cursor with something in scope, and their
     /// windows.
     members: Vec<(crate::store::TenantId, Vec<u32>)>,
@@ -867,19 +897,38 @@ struct BlockTask {
     /// Where the group's run ends (the tip, or the high-water mark).
     end: u64,
     until: Instant,
-    /// This is the unit's first block: it makes progress even past `until`.
-    must_progress: bool,
+    on_timeout: OnTimeout,
+}
+
+/// What a block scan does once its unit's time is up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnTimeout {
+    /// Stops where it is, with a checkpoint.
+    Stop,
+    /// Stops once it has scanned something: the unit's first block, so
+    /// every unit makes progress however little time it has.
+    StopAfterProgress,
+    /// Doesn't stop: a later page of a block the unit started, so a group
+    /// larger than a page isn't split. Bounded by the page and the unit's
+    /// [`BLOCKS_PER_UNIT`] scans.
+    Finish,
 }
 
 /// Scans block `task.parent + 1` for the tenants at cursor `task.parent`.
-async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutcome, ScannerError> {
+/// Scans block `task.parent + 1` for the next page of tenants at cursor
+/// `task.parent`, leaving out those `given` it already this unit.
+async fn scan_block(
+    round: &mut Round<'_>,
+    task: BlockTask,
+    given: &[TenantId],
+) -> Result<BlockOutcome, ScannerError> {
     let BlockTask {
         group,
         parent,
         high_water,
         end,
         until,
-        must_progress,
+        on_timeout,
     } = task;
     let height = parent + 1;
     let grace = round.inputs.grace_period_seconds;
@@ -890,7 +939,8 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
         .progress
         .lock()
         .start_block(height, crate::now_unix());
-    let waiting = round.state.backoff.waiting();
+    let mut waiting = round.state.backoff.waiting();
+    waiting.extend_from_slice(given);
     // A catch-up group none of whose stores can be scanned (keys not
     // registered, waiting to retry) waits where it is, before anything is
     // fetched. The frontier still records the block for the network.
@@ -924,6 +974,11 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let plan = round
         .db(move |s, network| -> Result<_, ScannerError> {
             let ids = s.tenants_at_cursor(network, parent, &waiting, GROUP_PAGE)?;
+            let page = if ids.len() == GROUP_PAGE {
+                Page::Full(ids.clone())
+            } else {
+                Page::Last
+            };
             let mut windows = s.scan_windows(&ids, since, grace)?;
             let members: Vec<(crate::store::TenantId, Vec<u32>)> = ids
                 .into_iter()
@@ -936,6 +991,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
                 }
             }
             Ok(Plan {
+                page,
                 members,
                 recorded: s.get_scanned_block_hash(network, height)?,
                 parent: s.get_scanned_block_hash(network, parent)?,
@@ -997,10 +1053,10 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let (hash, prev_hash) = (hash.to_string(), prev_hash.to_string());
 
     let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &hash, source.tx_count());
-    let mut progressed = !must_progress;
+    let mut progressed = on_timeout == OnTimeout::Stop;
     let at = ScanAt {
         height,
-        until,
+        until: (on_timeout != OnTimeout::Finish).then_some(until),
         scannable: &scannable,
     };
     let finished = match &source {
@@ -1088,7 +1144,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
         }
     }
     Ok(if committed {
-        BlockOutcome::Committed
+        BlockOutcome::Committed(plan.page)
     } else {
         BlockOutcome::Diverged("the recorded chain changed before commit")
     })
@@ -1394,10 +1450,10 @@ impl Source {
 }
 
 /// The block a scan is of, the tenants it is for and when its unit's time
-/// is up.
+/// is up (`None`: it finishes the block whatever the time).
 struct ScanAt<'s> {
     height: u64,
-    until: Instant,
+    until: Option<Instant>,
     scannable: &'s [(crate::store::TenantId, WalletHandle, ScanIndices)],
 }
 
@@ -1421,7 +1477,7 @@ async fn scan_txs(
             .due(at.scannable, offset + start, offset + end)
             .chunks(SCAN_CONCURRENCY)
         {
-            if *progressed && Instant::now() >= at.until {
+            if *progressed && at.until.is_some_and(|until| Instant::now() >= until) {
                 return false;
             }
             let scanning = Instant::now();
@@ -1480,7 +1536,7 @@ async fn scan_pages(
         .fetched_block(at.height, paged.weight);
     let mut next = scan.first_due(total);
     while next < total {
-        if *progressed && Instant::now() >= at.until {
+        if *progressed && at.until.is_some_and(|until| Instant::now() >= until) {
             return Ok(false);
         }
         let avg_tx_bytes = round
