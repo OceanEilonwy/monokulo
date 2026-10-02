@@ -177,15 +177,16 @@ pub fn tick_deadline(poll_interval: Duration) -> Duration {
 
 /// The outer deadline for one round on `daemon` given `budget`:
 /// [`tick_deadline`], or room for the largest block request the node's link
-/// allows (fetched and prefetched in one unit) after the round's own
-/// budget, whichever is longer. A slow link's requests aren't abandoned by
-/// the round around them (docs/engine_scaling.md section 2).
+/// allows under `tuning` (fetched and prefetched in one unit) after the
+/// round's own budget, whichever is longer. A slow link's requests aren't
+/// abandoned by the round around them (docs/engine_scaling.md section 2).
 fn round_deadline(
     poll_interval: Duration,
     daemon: &dyn crate::daemon::MoneroDaemonClient,
     budget: Duration,
+    tuning: &crate::work::ScanTuning,
 ) -> Duration {
-    let largest = daemon.chain_blocks_timeout(crate::scanner::SCAN_CHUNK_MAX_BLOCKS);
+    let largest = daemon.chain_blocks_timeout(tuning.chunk_max_blocks);
     tick_deadline(poll_interval).max(largest * 2 + budget)
 }
 
@@ -388,7 +389,7 @@ pub async fn run_scanner_loop(
         // large block needs it); this outer deadline only catches a unit
         // stuck somewhere no inner deadline reaches.
         let budget = scan_state.round_budget(&pinned, tenants.len());
-        let deadline = round_deadline(scan.poll_interval, &pinned, budget);
+        let deadline = round_deadline(scan.poll_interval, &pinned, budget, scan_state.tuning());
         let (result, backlogged) = match tokio::time::timeout(
             deadline,
             crate::work::run_round(&scan_state, &inputs, budget).instrument(tick.clone()),

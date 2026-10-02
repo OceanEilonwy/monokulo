@@ -30,7 +30,7 @@ use engine::daemon::{
 };
 use engine::key_custody::{KeyCustody, PlainKeyCustody, SubaddressIndex, WalletHandle};
 use engine::store::{Db, NewOrder, NewTenant, Store, TenantId};
-use engine::work::{RoundInputs, ScanState, Tier};
+use engine::work::{RoundInputs, ScanState, ScanTuning, Tier};
 use monero::{Network, Transaction};
 use parking_lot::Mutex;
 use serde_json::json;
@@ -431,7 +431,16 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
     let tenants: Vec<(TenantId, WalletHandle)> =
         handles.iter().map(|(id, h)| (id.clone(), *h)).collect();
     let progress = engine::scaling::new_progress();
-    let state = ScanState::default().with_progress(progress.clone());
+    // The swept round length as the engine's own round: every per-call
+    // time derived from it (the Blocks share a block request is sized to,
+    // the key-custody scan deadlines) follows it.
+    let tuning = ScanTuning {
+        round_budget,
+        ..ScanTuning::DEFAULT
+    };
+    let state = ScanState::default()
+        .with_progress(progress.clone())
+        .with_tuning(tuning)?;
     let inputs = RoundInputs {
         db: &db,
         custody: custody.as_ref(),

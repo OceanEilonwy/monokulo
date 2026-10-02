@@ -380,7 +380,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -441,7 +441,7 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
     run_round(
         &state,
         &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -454,7 +454,7 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
         run_round(
             &state,
             &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -487,7 +487,7 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
         run_round(
             &state,
             &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -516,7 +516,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     run_round(
         &ScanState::default(),
         &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -526,7 +526,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     // The payment first, then unrelated transactions: several units' worth,
     // so a restart lands in the middle.
     let mut txs = vec![fixture_tx()];
-    txs.extend((0..4 * blocks::TXS_PER_SCAN as u8).map(|i| unrelated_tx(100 + i)));
+    txs.extend((0..4 * ScanTuning::DEFAULT.txs_per_scan as u8).map(|i| unrelated_tx(100 + i)));
     let height = daemon.push_block("big", txs);
     let mut store = store;
     let mut rounds = 0;
@@ -618,7 +618,7 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     run_round(
         &state,
         &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -630,7 +630,7 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     run_round(
         &state,
         &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -773,7 +773,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
     let report = run_round(
         &ScanState::default(),
         &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert!(
@@ -860,18 +860,18 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
             .unwrap();
         }
     };
-    round(ROUND_BUDGET).await;
+    round(ScanTuning::DEFAULT.round_budget).await;
     for h in 3..=40u64 {
         fake.push_block(
             &format!("a{h}"),
             if h == 35 { vec![fixture_tx()] } else { vec![] },
         );
     }
-    round(ROUND_BUDGET).await;
-    round(ROUND_BUDGET).await;
-    round(ROUND_BUDGET).await;
-    round(ROUND_BUDGET).await;
-    round(ROUND_BUDGET).await;
+    round(ScanTuning::DEFAULT.round_budget).await;
+    round(ScanTuning::DEFAULT.round_budget).await;
+    round(ScanTuning::DEFAULT.round_budget).await;
+    round(ScanTuning::DEFAULT.round_budget).await;
+    round(ScanTuning::DEFAULT.round_budget).await;
     assert_eq!(
         store
             .lock()
@@ -921,7 +921,7 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
             .collect(),
     );
     for _ in 0..10 {
-        round(ROUND_BUDGET).await;
+        round(ScanTuning::DEFAULT.round_budget).await;
     }
     assert!(store
         .lock()
@@ -1211,7 +1211,7 @@ async fn run_round_on(
     run_round(
         &ScanState::default(),
         &inputs(&Db::over_shared(store.clone()), custody, daemon, tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -1322,7 +1322,7 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
     let report = run_round(
         &state,
         &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &[]),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert_eq!(daemon.locate_calls.load(Ordering::Relaxed), 1);
@@ -1364,8 +1364,14 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
     let store = store.into_shared();
     let state = ScanState::default();
     let db = Db::over_shared(store.clone());
-    let round =
-        || async { run_round(&state, &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await };
+    let round = || async {
+        run_round(
+            &state,
+            &inputs(&db, &custody, &fake, &[]),
+            ScanTuning::DEFAULT.round_budget,
+        )
+        .await
+    };
     let first = round().await;
     assert!(
         first.error.is_none(),
@@ -1433,14 +1439,14 @@ async fn a_failed_mempool_body_fetch_is_retried_next_round() {
     run_round(
         &state,
         &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     daemon.fail_bodies.store(false, Ordering::Relaxed);
     run_round(
         &state,
         &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     let requests = daemon.body_requests.lock();
@@ -1533,10 +1539,14 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
         ..inputs(&db, &custody, &daemon, &tenants)
     };
     let started = tokio::time::Instant::now();
-    run_round(&ScanState::default(), &inputs, ROUND_BUDGET)
-        .await
-        .into_result()
-        .unwrap();
+    run_round(
+        &ScanState::default(),
+        &inputs,
+        ScanTuning::DEFAULT.round_budget,
+    )
+    .await
+    .into_result()
+    .unwrap();
     let took = started.elapsed();
     assert_eq!(cursor_of(&store, tenant.as_str()), Some(start + 5));
     assert_eq!(
@@ -1612,7 +1622,7 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -1748,7 +1758,7 @@ impl Story {
         let report = run_round(
             &self.state,
             &inputs(&db, &self.custody, &self.daemon, &self.tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await;
         // The story is a few blocks: a tier that needs more units than this
@@ -2008,7 +2018,7 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -2017,7 +2027,7 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -2027,7 +2037,7 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     let report = run_round(
         &state,
         &inputs(&db, &custody, &HashLookupsFail(&fake), &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert_eq!(
@@ -2052,7 +2062,7 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -2143,27 +2153,6 @@ async fn a_hung_node_times_out_by_its_own_clock_and_cools_down() {
         client.in_cooldown(0),
         "the failure was recorded against the node"
     );
-}
-
-/// A tier's share follows the round it is a share of: the base round's at
-/// build time, a raised round's when one is raised, and together the shares
-/// cover the round to within a nanosecond a tier.
-#[test]
-fn a_tiers_share_follows_the_round() {
-    assert_eq!(Tier::Blocks.reserved(), Duration::from_secs(4));
-    assert_eq!(Tier::Settlement.reserved(), Duration::from_secs(2));
-    assert_eq!(
-        Tier::Blocks.share_of(Duration::from_secs(120)),
-        Duration::from_secs(48)
-    );
-    for budget in [
-        ROUND_BUDGET,
-        Duration::from_millis(7_777),
-        Duration::from_nanos(1_001),
-    ] {
-        let total: Duration = Tier::ALL.iter().map(|tier| tier.share_of(budget)).sum();
-        assert!(total <= budget && budget - total < Duration::from_nanos(Tier::ALL.len() as u64));
-    }
 }
 
 /// The lowest scan cursor of any tenant.
@@ -2339,7 +2328,7 @@ async fn a_round_without_the_chain_height_reports_it_and_scans_the_pool() {
     let report = run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &[]),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert!(
@@ -2360,7 +2349,7 @@ async fn a_round_without_the_chain_height_reports_it_and_scans_the_pool() {
     run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &[]),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert_eq!(
@@ -2466,7 +2455,7 @@ async fn run_job(chain: &chain::Chain<'_>) -> Vec<&'static str> {
             .advance_job(
                 10,
                 &mut HashSet::new(),
-                tokio::time::Instant::now() + ROUND_BUDGET,
+                tokio::time::Instant::now() + ScanTuning::DEFAULT.round_budget,
             )
             .await
             .unwrap();
@@ -2507,7 +2496,7 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
             .advance_job(
                 10,
                 &mut HashSet::new(),
-                tokio::time::Instant::now() + ROUND_BUDGET,
+                tokio::time::Instant::now() + ScanTuning::DEFAULT.round_budget,
             )
             .await
             .unwrap()
@@ -2645,7 +2634,7 @@ async fn a_reorg_page_with_no_time_left_does_one_candidate() {
     let db = Db::over_shared(store.clone());
     let chain = chain::Chain::new(&db, &fake, monero::Network::Mainnet, 20, crate::now_unix());
     let mut skip = HashSet::new();
-    let far = tokio::time::Instant::now() + ROUND_BUDGET;
+    let far = tokio::time::Instant::now() + ScanTuning::DEFAULT.round_budget;
     assert!(matches!(
         chain.advance_job(10, &mut skip, far).await.unwrap(),
         Some(chain::JobStep::Collected)
@@ -2785,7 +2774,7 @@ async fn seeded_network(
     run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &handles),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -2811,9 +2800,9 @@ async fn seeded_network(
 /// time.
 #[tokio::test]
 async fn a_payment_deep_in_a_big_block_is_found_in_one_go_and_a_unit_at_a_time() {
-    for budget in [ROUND_BUDGET, Duration::ZERO] {
+    for budget in [ScanTuning::DEFAULT.round_budget, Duration::ZERO] {
         let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
-        let mut txs: Vec<Transaction> = (0..blocks::TXS_PER_SCAN as u8 + 3)
+        let mut txs: Vec<Transaction> = (0..ScanTuning::DEFAULT.txs_per_scan as u8 + 3)
             .map(|i| unrelated_tx(100 + i))
             .collect();
         txs.push(fixture_tx());
@@ -2865,7 +2854,7 @@ async fn a_payment_whose_amount_cannot_be_read_does_not_stop_the_store_at_its_bl
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -2895,7 +2884,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
     let tenant = tenants[0].0.clone();
     let mut txs = vec![fixture_tx()];
-    txs.extend((0..blocks::TXS_PER_SCAN as u8 + 8).map(|i| unrelated_tx(100 + i)));
+    txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8 + 8).map(|i| unrelated_tx(100 + i)));
     fake.push_block("big", txs);
     let state = ScanState::default();
     let db = Db::over_shared(store.clone());
@@ -2925,7 +2914,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -2967,7 +2956,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
 #[tokio::test]
 async fn a_group_larger_than_a_page_moves_together() {
     // A second page of more than one scan batch.
-    let count = super::blocks::GROUP_PAGE + crate::scanner::SCAN_CONCURRENCY + 10;
+    let count = ScanTuning::DEFAULT.group_page + ScanTuning::DEFAULT.scan_concurrency + 10;
     let (store, custody, fake, tenants, _) = seeded_network(count, 20).await;
     let mut txs = vec![fixture_tx()];
     txs.extend((0..4u8).map(|i| unrelated_tx(100 + i)));
@@ -3014,7 +3003,7 @@ async fn a_group_larger_than_a_page_moves_together() {
 #[tokio::test]
 async fn a_big_group_resumes_each_store_from_its_own_place() {
     let (_guard, logs) = crate::test_log::capture();
-    let count = crate::scanner::SCAN_CONCURRENCY + 1;
+    let count = ScanTuning::DEFAULT.scan_concurrency + 1;
     let (store, custody, fake, tenants, orders) = seeded_network(count, 20).await;
     // The first store in id order: a group is scanned in that order, so it
     // is always started, even in a round with no time to spare. (Ids are
@@ -3074,7 +3063,7 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -3105,7 +3094,7 @@ async fn catching_up_onto_a_replaced_recorded_block_waits() {
     let report = run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert!(report.error.is_none(), "{:?}", report.error);
@@ -3146,7 +3135,7 @@ async fn a_recorded_chain_changed_mid_scan_stops_the_commit() {
         run_round(
             &ScanState::default(),
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -3180,7 +3169,7 @@ async fn catching_up_below_the_recorded_history_records_nothing_for_the_network(
         run_round(
             &ScanState::default(),
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -3218,7 +3207,7 @@ async fn a_node_that_returns_no_block_is_waited_out() {
     let report = run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert_eq!(
@@ -3252,7 +3241,7 @@ async fn a_store_whose_orders_all_closed_before_the_gap_moves_straight_on() {
     run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -3275,7 +3264,7 @@ async fn pool_transactions_gone_before_their_bodies_came_are_moved_past() {
     let report = run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &daemon, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert!(report.error.is_none(), "{:?}", report.error);
@@ -3345,7 +3334,7 @@ async fn the_fast_path_uses_the_last_rounds_chain_height() {
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -3446,7 +3435,7 @@ async fn a_failing_store_is_tried_once_per_pass_then_waits() {
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -3482,7 +3471,7 @@ async fn every_store_is_scanned_when_there_are_more_than_a_page() {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -3549,7 +3538,7 @@ async fn a_vanished_check_the_node_fails_or_stalls_is_retried() {
         let report = run_round(
             &ScanState::default(),
             &inputs(&db, &custody, &daemon, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await;
         assert!(report.error.is_none(), "{:?}", report.error);
@@ -3784,7 +3773,7 @@ async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await;
         store.lock().fail_nth_access(None);
@@ -3796,7 +3785,7 @@ async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -3891,7 +3880,7 @@ async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_ag
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -3923,7 +3912,7 @@ async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_ag
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -3962,7 +3951,7 @@ async fn a_cursor_moved_mid_scan_keeps_what_moved_it() {
     run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -3990,7 +3979,7 @@ async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
         let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
         // One transaction more than a unit scans before it looks at the clock.
         let mut txs = vec![fixture_tx()];
-        txs.extend((0..blocks::TXS_PER_SCAN as u8).map(|i| unrelated_tx(100 + i)));
+        txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8).map(|i| unrelated_tx(100 + i)));
         fake.push_block("big", txs);
         let db = Db::over_shared(store.clone());
         let state = ScanState::default();
@@ -4014,7 +4003,7 @@ async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await;
         store.lock().fail_nth_access(None);
@@ -4026,7 +4015,7 @@ async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
             run_round(
                 &state,
                 &inputs(&db, &custody, &fake, &tenants),
-                ROUND_BUDGET,
+                ScanTuning::DEFAULT.round_budget,
             )
             .await
             .into_result()
@@ -4062,14 +4051,24 @@ async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
         let db = Db::over_shared(store.clone());
         let state = ScanState::default();
         let seen = store.lock().fail_nth_access(Some(fault));
-        run_round(&state, &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await;
+        run_round(
+            &state,
+            &inputs(&db, &custody, &fake, &[]),
+            ScanTuning::DEFAULT.round_budget,
+        )
+        .await;
         store.lock().fail_nth_access(None);
         if seen.load(Ordering::Relaxed) <= fault {
             break;
         }
         faults += 1;
         for _ in 0..4 {
-            run_round(&state, &inputs(&db, &custody, &fake, &[]), ROUND_BUDGET).await;
+            run_round(
+                &state,
+                &inputs(&db, &custody, &fake, &[]),
+                ScanTuning::DEFAULT.round_budget,
+            )
+            .await;
         }
         assert!(
             store
@@ -4128,7 +4127,7 @@ async fn a_reorg_job_with_every_candidate_waiting_waits() {
     let report = run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &[]),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert_eq!(
@@ -4206,7 +4205,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -4424,7 +4423,7 @@ async fn a_slow_link_halves_its_requests_until_they_arrive_and_the_scan_complete
     let _ = run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     let tip = 61;
@@ -4451,7 +4450,7 @@ async fn a_slow_link_halves_its_requests_until_they_arrive_and_the_scan_complete
         let _ = run_round(
             &state,
             &inputs(&db, &custody, &node, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await;
     }
@@ -4499,7 +4498,7 @@ async fn a_block_request_gets_the_time_its_link_needs() {
     let _ = run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     // A first block scanned at full speed, so the store has a cursor.
@@ -4507,7 +4506,7 @@ async fn a_block_request_gets_the_time_its_link_needs() {
     let _ = run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     fake.push_block("a3", vec![unrelated_tx(3)]);
@@ -4518,7 +4517,7 @@ async fn a_block_request_gets_the_time_its_link_needs() {
     let _ = run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert_eq!(
@@ -4534,7 +4533,7 @@ async fn a_block_request_gets_the_time_its_link_needs() {
     let _ = run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await;
     assert_eq!(
@@ -4571,10 +4570,14 @@ async fn a_network_with_nothing_to_watch_costs_one_small_request_a_round() {
 
     // The first round starts the network just below the tip and records
     // the tip's block: from its header.
-    run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
-        .await
-        .into_result()
-        .unwrap();
+    run_round(
+        &state,
+        &inputs(&db, &custody, &node, &[]),
+        ScanTuning::DEFAULT.round_budget,
+    )
+    .await
+    .into_result()
+    .unwrap();
     assert_eq!(recorded_height(&store), Some(3));
     assert_eq!(
         node.take(),
@@ -4584,10 +4587,14 @@ async fn a_network_with_nothing_to_watch_costs_one_small_request_a_round() {
     // Nothing new, and a pool with a transaction in it: one request.
     fake.set_mempool(vec![unrelated_tx(1)]);
     for _ in 0..3 {
-        run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
-            .await
-            .into_result()
-            .unwrap();
+        run_round(
+            &state,
+            &inputs(&db, &custody, &node, &[]),
+            ScanTuning::DEFAULT.round_budget,
+        )
+        .await
+        .into_result()
+        .unwrap();
         assert_eq!(node.take(), vec!["get_tip"]);
     }
     assert_eq!(
@@ -4599,10 +4606,14 @@ async fn a_network_with_nothing_to_watch_costs_one_small_request_a_round() {
     // A new block: one hash (does the recorded chain still hold below the
     // new tip?) and the block's header.
     fake.push_block("a4", vec![fixture_tx()]);
-    run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
-        .await
-        .into_result()
-        .unwrap();
+    run_round(
+        &state,
+        &inputs(&db, &custody, &node, &[]),
+        ScanTuning::DEFAULT.round_budget,
+    )
+    .await
+    .into_result()
+    .unwrap();
     assert_eq!(recorded_height(&store), Some(4));
     assert_eq!(
         node.take(),
@@ -4626,10 +4637,14 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     let db = Db::over_shared(store.clone());
     let state = ScanState::default();
     for _ in 0..2 {
-        run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
-            .await
-            .into_result()
-            .unwrap();
+        run_round(
+            &state,
+            &inputs(&db, &custody, &node, &[]),
+            ScanTuning::DEFAULT.round_budget,
+        )
+        .await
+        .into_result()
+        .unwrap();
     }
     assert_eq!(node.take().last(), Some(&"get_tip"));
 
@@ -4641,7 +4656,7 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -4664,7 +4679,7 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -4694,18 +4709,26 @@ async fn nothing_is_fetched_for_a_store_whose_keys_are_not_registered() {
     let node = Asked::new(&fake);
     let db = Db::over_shared(store.clone());
     let state = ScanState::default();
-    run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
-        .await
-        .into_result()
-        .unwrap();
+    run_round(
+        &state,
+        &inputs(&db, &custody, &node, &[]),
+        ScanTuning::DEFAULT.round_budget,
+    )
+    .await
+    .into_result()
+    .unwrap();
     node.take();
 
     fake.set_mempool(vec![unrelated_tx(3)]);
     let paid_in = fake.push_block("a4", vec![fixture_tx()]);
-    run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
-        .await
-        .into_result()
-        .unwrap();
+    run_round(
+        &state,
+        &inputs(&db, &custody, &node, &[]),
+        ScanTuning::DEFAULT.round_budget,
+    )
+    .await
+    .into_result()
+    .unwrap();
     let asked = node.take();
     assert!(asked.contains(&"get_tip_and_mempool"), "{asked:?}");
     assert!(asked.contains(&"get_chain_headers"), "{asked:?}");
@@ -4720,7 +4743,7 @@ async fn nothing_is_fetched_for_a_store_whose_keys_are_not_registered() {
     run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -4784,7 +4807,7 @@ async fn a_page_of_vanished_payments_costs_two_round_trips_and_the_stuck_ones_ba
         run_round(
             &state,
             &inputs(&db, &custody, &node, &tenants),
-            ROUND_BUDGET,
+            ScanTuning::DEFAULT.round_budget,
         )
         .await
         .into_result()
@@ -4799,7 +4822,7 @@ async fn a_page_of_vanished_payments_costs_two_round_trips_and_the_stuck_ones_ba
     run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -4823,7 +4846,7 @@ async fn a_page_of_vanished_payments_costs_two_round_trips_and_the_stuck_ones_ba
     run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
-        ROUND_BUDGET,
+        ScanTuning::DEFAULT.round_budget,
     )
     .await
     .into_result()
@@ -5057,7 +5080,7 @@ async fn a_200_mb_block_is_scanned_in_pages_and_its_payment_found() {
     );
 
     // The next block is an ordinary one again.
-    run_round(&state, &inputs, ROUND_BUDGET)
+    run_round(&state, &inputs, ScanTuning::DEFAULT.round_budget)
         .await
         .into_result()
         .unwrap();
@@ -5089,9 +5112,9 @@ async fn a_failed_page_keeps_the_pages_before_it() {
         ..inputs(&db, &custody, &node, &tenants)
     };
     // Asked for whole, refused: headers come first from now on.
-    run_round(&state, &inputs, ROUND_BUDGET).await;
+    run_round(&state, &inputs, ScanTuning::DEFAULT.round_budget).await;
     // The whole round's time: two pages, then the third fails.
-    let report = run_round(&state, &inputs, ROUND_BUDGET).await;
+    let report = run_round(&state, &inputs, ScanTuning::DEFAULT.round_budget).await;
     assert_eq!(
         report.outcome(Tier::Blocks),
         TierOutcome::Blocked(Wait::NodeFailed)
@@ -5108,7 +5131,7 @@ async fn a_failed_page_keeps_the_pages_before_it() {
     // About 4.9 MB a transaction: six to a 32 MiB page.
     assert_eq!(checkpoint.next_tx, 12, "two pages of six");
 
-    run_round(&state, &inputs, ROUND_BUDGET)
+    run_round(&state, &inputs, ScanTuning::DEFAULT.round_budget)
         .await
         .into_result()
         .unwrap();

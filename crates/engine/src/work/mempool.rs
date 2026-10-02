@@ -62,10 +62,6 @@ const FAST_TXS_PER_PASS: usize = 256;
 /// changed meanwhile is caught by the rotation, which rescans a
 /// transaction for a store whose window changed.
 const WINDOWS_TTL: Duration = Duration::from_secs(1);
-/// Longest one store's scan of a pool transaction may take: the mempool
-/// tier's share of a round. The fast path scans with the same deadline, so
-/// a store it gives up on is given no less time by the round's rotation.
-const SCAN_DEADLINE: Duration = super::Tier::Mempool.reserved();
 
 type TenantWindow = (crate::store::TenantId, WalletHandle, ScanIndices);
 
@@ -394,7 +390,15 @@ async fn scan_and_record(
         .iter()
         .map(|(id, _, w)| (id.as_str(), w.generation()))
         .collect();
-    for (tenant_id, result) in scan_for_tenants(inputs.custody, txid, tx, due, SCAN_DEADLINE).await
+    for (tenant_id, result) in scan_for_tenants(
+        inputs.custody,
+        txid,
+        tx,
+        due,
+        &state.tuning,
+        super::Tier::Mempool,
+    )
+    .await
     {
         let scan = match result {
             Ok(scan) => scan,

@@ -40,27 +40,7 @@ fn number(value: &Value, decimals: usize) -> String {
 }
 
 pub fn run() -> io::Result<bool> {
-    // `ROUND_SWEEP_BUDGETS_MS=5000,7000` limits the sweep to those round
-    // lengths, into its own directory: for a run with `ROUND_BUDGET` itself
-    // set to one of them, so the per-call times derived from it follow too
-    // (docs/engine_stress.md).
-    let only: Option<Vec<Value>> = std::env::var("ROUND_SWEEP_BUDGETS_MS").ok().map(|list| {
-        list.split(',')
-            .filter_map(|ms| ms.trim().parse::<u64>().ok())
-            .map(Value::from)
-            .collect()
-    });
-    let output = match &only {
-        Some(budgets) => root().join(format!(
-            "target/coverage/stress-rounds-{}",
-            budgets
-                .iter()
-                .map(Value::to_string)
-                .collect::<Vec<_>>()
-                .join("-")
-        )),
-        None => root().join("target/coverage/stress-rounds"),
-    };
+    let output = root().join("target/coverage/stress-rounds");
     if output.exists() {
         fs::remove_dir_all(&output)?;
     }
@@ -91,12 +71,9 @@ pub fn run() -> io::Result<bool> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let budgets = match &only {
-        Some(budgets) => budgets,
-        None => scenario["round_budgets_ms"]
-            .as_array()
-            .ok_or_else(|| io::Error::other("scenario has no round budgets"))?,
-    };
+    let budgets = scenario["round_budgets_ms"]
+        .as_array()
+        .ok_or_else(|| io::Error::other("scenario has no round budgets"))?;
     let scenarios = scenario["scenarios"]
         .as_array()
         .ok_or_else(|| io::Error::other("scenario has no scenarios"))?;
