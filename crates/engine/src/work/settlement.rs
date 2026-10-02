@@ -23,10 +23,6 @@ use super::{Progress, Round, Wait};
 const VANISHED_PAGE: usize = 64;
 const RECOMPUTE_PAGE: usize = 64;
 const RECOMPUTES_PER_JOB: usize = 16;
-/// How long one vanished payment's lookups may take: the settlement tier's
-/// share of a round, so one payment's lookups can't hold up the tiers after
-/// it for longer than the tier was given.
-const VANISHED_CALL_DEADLINE: std::time::Duration = super::Tier::Settlement.reserved();
 
 #[derive(Default)]
 pub(crate) struct SettlementState {
@@ -85,6 +81,10 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
     let Some(txids) = round.pool_txids.clone() else {
         return Ok(());
     };
+    // One payment's lookups may take the settlement tier's share of a
+    // round, so they can't hold up the tiers after it for longer than the
+    // tier was given.
+    let vanished_deadline = round.state.tuning().reserved(super::Tier::Settlement);
     let network = round.network();
     let db = round.inputs.db;
     let page = round
@@ -115,7 +115,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
             .filter(|payment| !waiting.contains(&payment.id))
             .collect();
         tokio::time::timeout(
-            VANISHED_CALL_DEADLINE,
+            vanished_deadline,
             vanished_hints(round.inputs.daemon, &txids, &due),
         )
         .await
@@ -152,7 +152,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
         }
         let payment_id = payment.id;
         let checked = tokio::time::timeout(
-            VANISHED_CALL_DEADLINE,
+            vanished_deadline,
             check_vanished_candidates(
                 db,
                 round.inputs.daemon,

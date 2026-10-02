@@ -162,19 +162,16 @@ pub(crate) async fn scan_transaction_in_window(
     Ok(ScanResult::of(txid, &tx, matches))
 }
 
-/// Most tenants scanned at the same time.
-pub(crate) const SCAN_CONCURRENCY: usize = 32;
-
-/// Scans a run of transactions for many tenants at once: one key-custody
-/// call per tenant for the whole run, each with `deadline`, so a slow
-/// tenant (a slow key-custody backend) doesn't hold up the others.
+/// Scans a run of transactions for many tenants at once:
+/// `tuning.scan_concurrency` at a time, one key-custody call per tenant for
+/// the whole run, so a slow tenant (a slow key-custody backend) doesn't
+/// hold up the others.
 ///
-/// `deadline` is the longest one tenant's scan of the run may take before
-/// it counts as a failure for that tenant (task 7.4): a backend that
-/// answers, but slowly, is then treated like one that is down, left behind
-/// and caught up later. Callers pass their tier's share of a round
-/// ([`crate::work::Tier::reserved`]): a scan that took longer would hold up
-/// the tiers after it.
+/// A tenant's call may take `tier`'s share of a round, the tier the caller
+/// works in ([`crate::work::ScanTuning::reserved`]); past that it counts as
+/// a failure for that tenant (task 7.4). A backend that answers, but
+/// slowly, is then treated like one that is down, left behind and caught
+/// up later: a scan that took longer would hold up the tiers after it.
 /// `txids` and `inputs` are the ids and the scan inputs of `txs`, in the
 /// same order (the ids come with the transactions: they may be pruned, and
 /// then can't be hashed to them). Each tenant comes with how many of the
@@ -190,9 +187,11 @@ pub(crate) async fn scan_txs_for_tenants(
     txs: &[crate::daemon::ScanTx],
     inputs: &[ScanInput],
     tenants: &[(&(crate::store::TenantId, WalletHandle, ScanIndices), usize)],
-    deadline: std::time::Duration,
+    tuning: &crate::work::ScanTuning,
+    tier: crate::work::Tier,
 ) -> Vec<(crate::store::TenantId, Result<Vec<ScanResult>>)> {
     use futures_util::stream::{self, StreamExt};
+    let deadline = tuning.reserved(tier);
     // By index: a closure over borrowed tuples trips a rustc limitation that
     // makes the future not `Send`.
     stream::iter(0..tenants.len())
@@ -238,19 +237,20 @@ pub(crate) async fn scan_txs_for_tenants(
                 span,
             )
         })
-        .buffered(SCAN_CONCURRENCY)
+        .buffered(tuning.scan_concurrency)
         .collect()
         .await
 }
 
-/// `scan_txs_for_tenants` for one transaction, each tenant's scan within
-/// `deadline`: `None` is a tenant it pays nothing.
+/// `scan_txs_for_tenants` for one transaction: `None` is a tenant it pays
+/// nothing.
 pub(crate) async fn scan_for_tenants(
     key_custody: &dyn KeyCustody,
     txid: &str,
     tx: &Transaction,
     tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
-    deadline: std::time::Duration,
+    tuning: &crate::work::ScanTuning,
+    tier: crate::work::Tier,
 ) -> Vec<(crate::store::TenantId, Result<Option<ScanResult>>)> {
     let tx = crate::daemon::ScanTx::of(tx);
     let inputs = [tx.input.clone()];
@@ -261,7 +261,8 @@ pub(crate) async fn scan_for_tenants(
         std::slice::from_ref(&tx),
         &inputs,
         &tenants,
-        deadline,
+        tuning,
+        tier,
     )
     .await
     .into_iter()
@@ -932,20 +933,6 @@ pub(crate) async fn voided_key_image_statuses(
 /// (e.g. cold-start-too-low) estimate must not compute a chunk size of `0`
 /// and stall the catch-up walk forever.
 const SCAN_CHUNK_MIN_BLOCKS: u64 = 1;
-/// Never request more than this many blocks in one call, regardless of how
-/// small `avg_bytes_per_block` has drifted (e.g. a long run of near-empty
-/// blocks) - `payment.scan_chunk_memory_budget_mb` alone would technically
-/// allow an enormous request in that case, and an older monerod ignoring
-/// `get_blocks.bin`'s own `max_block_count` hint has no other backstop
-/// against that.
-pub(crate) const SCAN_CHUNK_MAX_BLOCKS: u64 = 500;
-/// How fast the running average of bytes-per-block reacts to a real chunk's
-/// own observed size - `0.3` weighs recent chunks heavily (so a genuine shift
-/// in block size, e.g. catching up through a period of network congestion,
-/// is reflected within a handful of chunks) without letting one anomalous
-/// chunk (a single giant consolidation tx, or a run of empty blocks) swing
-/// the next chunk's size wildly.
-const SCAN_CHUNK_EWMA_ALPHA: f64 = 0.3;
 /// The cold-start estimate for bytes-per-block, before any chunk in this tick
 /// has actually been fetched - deliberately conservative (real average block
 /// sizes on a healthy network are often smaller than this), so the very
@@ -955,84 +942,16 @@ const SCAN_CHUNK_EWMA_ALPHA: f64 = 0.3;
 /// chunk and its timeout agree.
 pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = crate::link::COLD_BYTES_PER_BLOCK;
 
-/// How long one block request should take, at the node's measured transfer
-/// rate (docs/engine_scaling.md section 2). This is the Blocks tier's
-/// reserved share of a round, so 4 s today (40 % of the 10 s
-/// [`crate::work::ROUND_BUDGET`]).
-///
-/// It is a time and not a size because the scheduler divides time, not
-/// bytes. A round gives each tier a share of its seconds, and a tier always
-/// runs at least one unit, which can't be stopped part-way through a node
-/// request. One block request is therefore the smallest delay the Blocks
-/// tier can cause the tiers after it: the mempool tier (zero-confirmation
-/// payments), settlement, and upkeep. A request sized in bytes alone takes
-/// milliseconds on a LAN node and minutes over Tor. Sized by the link's
-/// rate, it fits the Blocks tier's share on any link.
-///
-/// It doesn't limit throughput. A round that ends with blocks left is
-/// followed at once by the next, so a catch-up walk keeps the link about
-/// as busy as it would be with larger requests. Larger requests would only
-/// spread the fixed round trip over more bytes. At 4 s, a 1 s round trip
-/// (the cold-start guess) is a fifth of a call, and a typical 100 ms is
-/// 2.5 %.
-///
-/// On a fast link this limit rarely applies: the response cap (an eighth
-/// of `payment.scan_chunk_memory_budget_mb`, 1 MB at the default 8 MB)
-/// binds first. The link limit takes over below the cap divided by this
-/// many seconds, about 2 Mbit/s at the default budget. Slow nodes, Tor
-/// nodes and large budgets all fall below that.
-///
-/// A request's timeout is three times what the link says it needs, and
-/// never under 15 s ([`crate::link::timeout_for`]). Three times this target
-/// fits within that floor (checked below), so a request sized to the target
-/// gets nearly four times as long as it should need. If the rate estimate
-/// is out of date, the request runs slow but doesn't fail.
-///
-/// A request sized to it counts every term its timeout counts
-/// ([`crate::link::LinkCost`]): the round trip, the node's time to first
-/// byte for each block, and the bytes at the link's rate.
-///
-/// Derived from the round so that changing [`crate::work::ROUND_BUDGET`]
-/// or the tier shares can't leave it stale. [`next_page`] uses the same
-/// share for a large block's pages.
-pub(crate) const SCAN_CHUNK_TARGET_CALL_SECS: f64 = crate::work::Tier::Blocks.reserved_secs();
-
-const _: () = assert!(
-    SCAN_CHUNK_TARGET_CALL_SECS * crate::link::SAFETY <= crate::link::MIN_TIMEOUT.as_secs_f64(),
-    "a request sized to the target call must keep the minimum timeout"
-);
-
-/// One response's share of the scan memory budget: the raw answer and its
-/// parse copies are held at once, so each answer is kept to a fraction of
-/// what the block cache may hold (docs/engine_scaling.md section 3).
-pub(crate) const RESPONSE_SHARE_OF_BUDGET: u64 = 8;
-
-/// The largest block response to ask for under a `budget_mb` scan budget:
-/// an eighth of it, and never less than 256 kB, so a tiny budget still
-/// fetches whole blocks.
-pub(crate) fn response_cap_bytes(budget_mb: u32) -> u64 {
-    (u64::from(budget_mb) * 1024 * 1024 / RESPONSE_SHARE_OF_BUDGET).max(256 * 1024)
-}
-
-/// The largest block response one group may ask for when `groups` groups
-/// (the catch-up groups and the frontier) share the block cache: its share
-/// of the `budget_mb` scan budget, within [`response_cap_bytes`]. Every
-/// group's run fetched ahead then fits at once, so no group's run is
-/// evicted unread by another's; with many groups, each asks for fewer
-/// blocks at a time (at least one) instead of the cache going over budget.
-pub(crate) fn group_response_cap_bytes(budget_mb: u32, groups: u64) -> u64 {
-    let share = u64::from(budget_mb) * 1024 * 1024 / groups.max(1);
-    response_cap_bytes(budget_mb).min(share)
-}
-
 pub use shared::scaling::{ChunkLimit, ChunkPlan};
 
 /// Pure sizing decision, extracted so it's directly, cheaply unit-testable:
 /// the smaller of what fits the response cap and what the link delivers in
 /// a target call (its round trip, the node's work per block and the blocks'
-/// bytes, at the running bytes-per-block average), within 1..=500 and the
-/// blocks that remain. A link not measured (`None`) doesn't limit.
+/// bytes, at the running bytes-per-block average), within 1 and the
+/// tuning's most blocks a request, and the blocks that remain. A link not
+/// measured (`None`) doesn't limit.
 pub(crate) fn next_scan_chunk(
+    tuning: &crate::work::ScanTuning,
     response_cap_bytes: u64,
     link: Option<crate::link::LinkCost>,
     avg_bytes_per_block: f64,
@@ -1041,16 +960,16 @@ pub(crate) fn next_scan_chunk(
     let avg = avg_bytes_per_block.max(1.0);
     let by_memory = (response_cap_bytes as f64 / avg).floor();
     let by_time = link.map_or(f64::INFINITY, |link| {
-        link.items_within(SCAN_CHUNK_TARGET_CALL_SECS, avg, link.ttfb_per_block_secs)
+        link.items_within(tuning.target_call_secs(), avg, link.ttfb_per_block_secs)
     });
     let (wanted, mut limited_by) = if by_time < by_memory {
         (by_time, ChunkLimit::Link)
     } else {
         (by_memory, ChunkLimit::Memory)
     };
-    let mut blocks = if wanted >= SCAN_CHUNK_MAX_BLOCKS as f64 {
+    let mut blocks = if wanted >= tuning.chunk_max_blocks as f64 {
         limited_by = ChunkLimit::Maximum;
-        SCAN_CHUNK_MAX_BLOCKS
+        tuning.chunk_max_blocks
     } else {
         (wanted as u64).max(SCAN_CHUNK_MIN_BLOCKS)
     };
@@ -1061,17 +980,6 @@ pub(crate) fn next_scan_chunk(
     ChunkPlan { blocks, limited_by }
 }
 
-/// A block that would take longer than this to fetch whole at its node's
-/// measured rate is scanned a page of transactions at a time instead
-/// (docs/engine_scaling.md section 4): well inside the two minutes after
-/// which a block counts as slow.
-pub(crate) const WHOLE_BLOCK_MAX_SECS: f64 = 30.0;
-
-const _: () = assert!(
-    WHOLE_BLOCK_MAX_SECS < shared::scaling::SLOW_BLOCK_SECS as f64,
-    "a block fetched whole must be able to finish before it counts as slow"
-);
-
 /// Most transactions on one page of a large block: what monerod's
 /// restricted RPC (a public node's) gives in one `/get_transactions`
 /// answer, so a page is one request.
@@ -1079,10 +987,11 @@ pub(crate) const PAGE_MAX_TXS: u64 = crate::daemon_rpc::TXS_PER_REQUEST as u64;
 
 /// Whether a block of `weight` bytes is scanned in pages rather than
 /// fetched whole: it would overrun one response (the cap from the scan
-/// memory budget), or one request for it would take longer than
-/// [`WHOLE_BLOCK_MAX_SECS`] over the measured link. A block whose weight
-/// the node didn't give is fetched whole, as before.
+/// memory budget), or one request for it would take longer than the
+/// tuning's `whole_block_max_secs` over the measured link. A block whose
+/// weight the node didn't give is fetched whole, as before.
 pub(crate) fn scan_in_pages(
+    tuning: &crate::work::ScanTuning,
     weight: Option<u64>,
     response_cap_bytes: u64,
     link: Option<crate::link::LinkCost>,
@@ -1091,37 +1000,37 @@ pub(crate) fn scan_in_pages(
         return false;
     };
     weight > response_cap_bytes
-        || link.is_some_and(|link| link.secs(1, weight as f64) > WHOLE_BLOCK_MAX_SECS)
+        || link.is_some_and(|link| link.secs(1, weight as f64) > tuning.whole_block_max_secs)
 }
 
 /// How many transactions the next page of a large block holds
 /// (docs/engine_scaling.md section 4): the fewest of what fits the response
 /// cap and what the link delivers in a target call (its round trip and the
 /// transactions' bytes), at `avg_tx_bytes` a transaction, and what the scan
-/// gets through in `scan_slice_secs` when a
-/// transaction costs `scan_secs_per_tx` (for every store scanned for);
-/// within 1..=[`PAGE_MAX_TXS`] and the transactions that remain. A link not
+/// gets through in the same time when a transaction costs
+/// `scan_secs_per_tx` (for every store scanned for); within
+/// 1..=[`PAGE_MAX_TXS`] and the transactions that remain. A link not
 /// measured or a scan cost not known yet doesn't limit.
 pub(crate) fn next_page(
+    tuning: &crate::work::ScanTuning,
     response_cap_bytes: u64,
     link: Option<crate::link::LinkCost>,
     avg_tx_bytes: f64,
     scan_secs_per_tx: Option<f64>,
-    scan_slice_secs: f64,
     remaining: u64,
 ) -> ChunkPlan {
+    let slice_secs = tuning.target_call_secs();
     let avg = avg_tx_bytes.max(1.0);
     let mut wanted = (response_cap_bytes as f64 / avg).floor();
     let mut limited_by = ChunkLimit::Memory;
-    if let Some(by_time) = link.map(|link| link.items_within(SCAN_CHUNK_TARGET_CALL_SECS, avg, 0.0))
-    {
+    if let Some(by_time) = link.map(|link| link.items_within(slice_secs, avg, 0.0)) {
         if by_time < wanted {
             (wanted, limited_by) = (by_time, ChunkLimit::Link);
         }
     }
     if let Some(by_cpu) = scan_secs_per_tx
         .filter(|secs| *secs > 0.0)
-        .map(|secs| (scan_slice_secs / secs).floor())
+        .map(|secs| (slice_secs / secs).floor())
     {
         if by_cpu < wanted {
             (wanted, limited_by) = (by_cpu, ChunkLimit::Cpu);
@@ -1153,15 +1062,17 @@ pub(crate) fn avg_after_failed_fetch(avg_bytes_per_block: f64) -> f64 {
 
 /// Pure EWMA update, same reasoning as `next_scan_chunk_size` above - `chunk_
 /// bytes`/`block_count` are already known before this is called, so this is
-/// just the averaging formula on its own, testable without any daemon or
-/// store at all.
+/// just the averaging formula on its own (weighted by the tuning's
+/// `chunk_ewma_alpha`), testable without any daemon or store at all.
 pub(crate) fn update_avg_bytes_per_block(
+    tuning: &crate::work::ScanTuning,
     avg_bytes_per_block: f64,
     chunk_bytes: usize,
     block_count: usize,
 ) -> f64 {
     let observed_avg = chunk_bytes as f64 / block_count as f64;
-    SCAN_CHUNK_EWMA_ALPHA * observed_avg + (1.0 - SCAN_CHUNK_EWMA_ALPHA) * avg_bytes_per_block
+    let alpha = tuning.chunk_ewma_alpha;
+    alpha * observed_avg + (1.0 - alpha) * avg_bytes_per_block
 }
 
 /// One scan round for one network (docs/scanner_microtasks.md): reorg
@@ -1238,7 +1149,7 @@ pub async fn run_scan_tick_with(
         grace_period_seconds: expired_order_grace_period_seconds,
         scan_chunk_memory_budget_mb,
     };
-    crate::work::run_round(state, &inputs, crate::work::ROUND_BUDGET)
+    crate::work::run_round(state, &inputs, state.tuning().round_budget)
         .await
         .into_result()
 }
@@ -1548,6 +1459,9 @@ pub(crate) mod tests {
     //! §DESIGN.md 7.7).
 
     use super::*;
+
+    /// The tuning the engine runs, for the sizing functions.
+    const T: &crate::work::ScanTuning = &crate::work::ScanTuning::DEFAULT;
 
     /// A transaction's key images, hex, as a payment records them.
     fn key_images_of(tx: &Transaction) -> Vec<String> {
@@ -2000,7 +1914,7 @@ pub(crate) mod tests {
                 .advance_job(
                     tip,
                     &mut attempted,
-                    tokio::time::Instant::now() + crate::work::ROUND_BUDGET,
+                    tokio::time::Instant::now() + crate::work::ScanTuning::DEFAULT.round_budget,
                 )
                 .await
             {
@@ -2373,7 +2287,8 @@ pub(crate) mod tests {
             &tx_id_hex(&tx),
             &tx,
             &tenants.iter().collect::<Vec<_>>(),
-            crate::work::Tier::Mempool.reserved(),
+            T,
+            crate::work::Tier::Mempool,
         )
         .await;
 
@@ -2423,7 +2338,8 @@ pub(crate) mod tests {
             &kept,
             &inputs,
             &[(&fresh, 0), (&resumed, 1), (&finished, 3)],
-            crate::work::Tier::Blocks.reserved(),
+            T,
+            crate::work::Tier::Blocks,
         )
         .await;
 
@@ -7189,13 +7105,13 @@ pub(crate) mod tests {
     #[test]
     fn a_larger_average_block_asks_for_fewer_blocks() {
         let cap = 8 * 1024 * 1024;
-        let small = next_scan_chunk(cap, None, 1_000.0, u64::MAX);
-        let medium = next_scan_chunk(cap, None, 100_000.0, u64::MAX);
-        let large = next_scan_chunk(cap, None, 10_000_000.0, u64::MAX);
+        let small = next_scan_chunk(T, cap, None, 1_000.0, u64::MAX);
+        let medium = next_scan_chunk(T, cap, None, 100_000.0, u64::MAX);
+        let large = next_scan_chunk(T, cap, None, 10_000_000.0, u64::MAX);
         assert_eq!(
             small,
             ChunkPlan {
-                blocks: SCAN_CHUNK_MAX_BLOCKS,
+                blocks: T.chunk_max_blocks,
                 limited_by: ChunkLimit::Maximum
             }
         );
@@ -7223,6 +7139,7 @@ pub(crate) mod tests {
         // would allow 167.
         assert_eq!(
             next_scan_chunk(
+                T,
                 cap,
                 Some(crate::link::LinkCost::transfer_only(250_000.0)),
                 50_000.0,
@@ -7236,6 +7153,7 @@ pub(crate) mod tests {
         // A fast link doesn't lift the cap.
         assert_eq!(
             next_scan_chunk(
+                T,
                 cap,
                 Some(crate::link::LinkCost::transfer_only(1e9)),
                 50_000.0,
@@ -7249,6 +7167,7 @@ pub(crate) mod tests {
         // A link too slow for one block in a target call still gets one.
         assert_eq!(
             next_scan_chunk(
+                T,
                 cap,
                 Some(crate::link::LinkCost::transfer_only(1_000.0)),
                 50_000.0,
@@ -7273,7 +7192,7 @@ pub(crate) mod tests {
         };
         // (4 - 0.8) s / (0.01 + 13 kB / 250 kB/s) s a block = 51 blocks,
         // where the bytes alone would allow 76.
-        let plan = next_scan_chunk(cap, Some(link), 13_000.0, u64::MAX);
+        let plan = next_scan_chunk(T, cap, Some(link), 13_000.0, u64::MAX);
         assert_eq!(
             plan,
             ChunkPlan {
@@ -7282,21 +7201,21 @@ pub(crate) mod tests {
             }
         );
         let took = link.secs(plan.blocks, plan.blocks as f64 * 13_000.0);
-        assert!(took <= SCAN_CHUNK_TARGET_CALL_SECS, "{took}");
+        assert!(took <= T.target_call_secs(), "{took}");
         let one_more = link.secs(plan.blocks + 1, (plan.blocks + 1) as f64 * 13_000.0);
-        assert!(one_more > SCAN_CHUNK_TARGET_CALL_SECS, "{one_more}");
+        assert!(one_more > T.target_call_secs(), "{one_more}");
 
         let distant = crate::link::LinkCost {
             rtt_secs: 6.0,
             ..link
         };
         assert_eq!(
-            next_scan_chunk(cap, Some(distant), 13_000.0, u64::MAX).blocks,
+            next_scan_chunk(T, cap, Some(distant), 13_000.0, u64::MAX).blocks,
             1
         );
         // Pages count the round trip too: (4 - 0.8) s at 250 kB/s of 2 kB.
         assert_eq!(
-            next_page(cap, Some(link), 2_000.0, None, 4.0, 1_000).blocks,
+            next_page(T, cap, Some(link), 2_000.0, None, 1_000).blocks,
             100
         );
         let slow = crate::link::LinkCost {
@@ -7304,7 +7223,7 @@ pub(crate) mod tests {
             ..link
         };
         assert_eq!(
-            next_page(cap, Some(slow), 2_000.0, None, 4.0, 1_000).blocks,
+            next_page(T, cap, Some(slow), 2_000.0, None, 1_000).blocks,
             16
         );
     }
@@ -7312,13 +7231,20 @@ pub(crate) mod tests {
     #[test]
     fn a_chunk_stops_at_what_remains() {
         assert_eq!(
-            next_scan_chunk(8 << 20, None, 1.0, 3),
+            next_scan_chunk(T, 8 << 20, None, 1.0, 3),
             ChunkPlan {
                 blocks: 3,
                 limited_by: ChunkLimit::Remaining
             }
         );
-        assert_eq!(next_scan_chunk(8 << 20, None, f64::MAX, u64::MAX).blocks, 1);
+        assert_eq!(
+            next_scan_chunk(T, 8 << 20, None, f64::MAX, u64::MAX).blocks,
+            1
+        );
+        // Many groups sharing the cache: a share under one block still asks
+        // for one.
+        let tiny = T.group_response_cap_bytes(8, 1_000_000);
+        assert_eq!(next_scan_chunk(T, tiny, None, 13_000.0, 100).blocks, 1);
     }
 
     #[test]
@@ -7327,51 +7253,26 @@ pub(crate) mod tests {
         let mut avg = 50_000.0;
         let mut sizes = Vec::new();
         for _ in 0..10 {
-            sizes.push(next_scan_chunk(cap, None, avg, u64::MAX).blocks);
+            sizes.push(next_scan_chunk(T, cap, None, avg, u64::MAX).blocks);
             avg = avg_after_failed_fetch(avg);
         }
         assert_eq!(sizes, [167, 83, 41, 20, 10, 5, 2, 1, 1, 1]);
     }
 
     #[test]
-    fn the_response_cap_is_an_eighth_of_the_budget_and_at_least_256_kb() {
-        assert_eq!(response_cap_bytes(8), 1024 * 1024);
-        assert_eq!(response_cap_bytes(1), 256 * 1024);
-        assert_eq!(response_cap_bytes(4096), 512 * 1024 * 1024);
-    }
-
-    /// Groups sharing the block cache each get their share of the budget,
-    /// never more than one response's cap, so all their runs fetched ahead
-    /// fit at once; many groups ask for less at a time, down to one block.
-    #[test]
-    fn groups_share_the_scan_budget_between_their_requests() {
-        let mb = 1024 * 1024;
-        assert_eq!(group_response_cap_bytes(8, 1), mb, "the cap binds first");
-        assert_eq!(
-            group_response_cap_bytes(8, 0),
-            mb,
-            "no groups counts as one"
-        );
-        assert_eq!(group_response_cap_bytes(8, 8), mb);
-        assert_eq!(group_response_cap_bytes(8, 16), mb / 2);
-        assert_eq!(group_response_cap_bytes(8, 1_000_000), 8);
-        let plan = next_scan_chunk(group_response_cap_bytes(8, 1_000_000), None, 13_000.0, 100);
-        assert_eq!(plan.blocks, 1, "still one block at a time");
-    }
-
-    #[test]
     fn update_avg_bytes_per_block_weighs_recent_data_by_the_configured_alpha() {
         let after_one_big_chunk =
-            update_avg_bytes_per_block(SCAN_CHUNK_INITIAL_AVG_BYTES, 1_000_000, 1);
+            update_avg_bytes_per_block(T, SCAN_CHUNK_INITIAL_AVG_BYTES, 1_000_000, 1);
         assert!(
             after_one_big_chunk > SCAN_CHUNK_INITIAL_AVG_BYTES,
             "a chunk far bigger than the cold-start guess must pull the average up, not leave it unchanged"
         );
         // A single all-zero (empty-block) chunk should pull the average down
-        // but - by design, `SCAN_CHUNK_EWMA_ALPHA < 1.0` - not all the way to
+        // but - by design, `chunk_ewma_alpha < 1.0` - not all the way to
         // zero in one step; a lone anomalous chunk shouldn't swing the very
         // next chunk's size wildly.
-        let after_one_empty_chunk = update_avg_bytes_per_block(SCAN_CHUNK_INITIAL_AVG_BYTES, 0, 10);
+        let after_one_empty_chunk =
+            update_avg_bytes_per_block(T, SCAN_CHUNK_INITIAL_AVG_BYTES, 0, 10);
         assert!(
             after_one_empty_chunk > 0.0 && after_one_empty_chunk < SCAN_CHUNK_INITIAL_AVG_BYTES
         );
@@ -10185,6 +10086,67 @@ pub(crate) mod tests {
 
     use std::time::Duration;
 
+    /// A tuning other than the default reaches the calls it sizes: under a
+    /// 5 s round, a slow key-custody backend is given the Blocks share of
+    /// that round (2 s a call), not the default's (4 s), so the same tick
+    /// ends sooner. And a tuning the scanner can't run is refused before any
+    /// round runs.
+    #[tokio::test(start_paused = true)]
+    async fn a_scan_state_runs_the_tuning_it_was_given() {
+        use crate::work::{ScanState, ScanTuning, Tier, TuningError};
+        let five = ScanTuning {
+            round_budget: Duration::from_secs(5),
+            ..ScanTuning::DEFAULT
+        };
+        assert!(matches!(
+            ScanState::default().with_tuning(ScanTuning {
+                group_page: 0,
+                ..five
+            }),
+            Err(TuningError::ZeroCount)
+        ));
+        assert_eq!(ScanState::default().tuning(), &ScanTuning::DEFAULT);
+
+        // A tick in which one store's backend hangs, timed.
+        async fn hung_tick(state: ScanState) -> Duration {
+            let store = Store::open_in_memory().unwrap();
+            let custody = SlowKeyCustody::default();
+            let (a, a_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+            let store = store.into_shared();
+            let tenants = [(a.clone(), a_handle)];
+            let daemon = FakeDaemonClient::new();
+            daemon.push_block("h1", vec![]);
+            daemon.push_block("h2", vec![]);
+            run_scan_tick_with(
+                &state, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+            )
+            .await
+            .unwrap();
+            custody
+                .delays
+                .lock()
+                .insert(a_handle, Duration::from_secs(10 * 60));
+            daemon.push_block("h3", vec![fixture_tx()]);
+            let started = tokio::time::Instant::now();
+            run_scan_tick_with(
+                &state, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+            )
+            .await
+            .unwrap();
+            assert_eq!(cursor_of(&store, a.as_str()), Some(2), "A left behind");
+            started.elapsed()
+        }
+        let state = ScanState::default().with_tuning(five).unwrap();
+        assert_eq!(state.tuning(), &five);
+        let under_five = hung_tick(state).await;
+        let under_default = hung_tick(ScanState::default()).await;
+        assert!(under_five >= five.reserved(Tier::Blocks), "{under_five:?}");
+        assert!(
+            under_five < under_default,
+            "{under_five:?} under a 5 s round, {under_default:?} under the default"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_tenant_whose_backend_answers_slowly_is_left_behind_and_holds_nobody_up() {
         let store = Store::open_in_memory().unwrap();
@@ -10212,7 +10174,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(
-            started.elapsed() < crate::work::Tier::Blocks.reserved() * 3,
+            started.elapsed() < T.reserved(crate::work::Tier::Blocks) * 3,
             "bounded by the per-call deadline: {:?}",
             started.elapsed()
         );
@@ -10800,11 +10762,7 @@ pub(crate) mod tests {
                     .load()
                     .scan_chunk_memory_budget_mb,
             };
-            let mut tick = Box::pin(crate::work::run_round(
-                &state,
-                &inputs,
-                crate::work::ROUND_BUDGET,
-            ));
+            let mut tick = Box::pin(crate::work::run_round(&state, &inputs, T.round_budget));
             std::future::poll_fn(|cx| {
                 assert!(tick.as_mut().poll(cx).is_pending());
                 if store
@@ -12772,20 +12730,27 @@ pub(crate) mod tests {
 mod paging_tests {
     use super::*;
 
+    const T: &crate::work::ScanTuning = &crate::work::ScanTuning::DEFAULT;
+
     /// A block goes to pages when it would overrun one answer, or take the
     /// link over 30 seconds; one whose weight isn't known is fetched whole.
     #[test]
     fn a_block_is_paged_when_too_large_for_an_answer_or_the_link() {
         let cap = 32_000_000;
         assert!(!scan_in_pages(
+            T,
             None,
             cap,
             Some(crate::link::LinkCost::transfer_only(1.0))
         ));
-        assert!(!scan_in_pages(Some(300_000), cap, None));
-        assert!(scan_in_pages(Some(200_000_000), cap, None), "over the cap");
+        assert!(!scan_in_pages(T, Some(300_000), cap, None));
+        assert!(
+            scan_in_pages(T, Some(200_000_000), cap, None),
+            "over the cap"
+        );
         assert!(
             scan_in_pages(
+                T,
                 Some(4_000_000),
                 cap,
                 Some(crate::link::LinkCost::transfer_only(100_000.0))
@@ -12794,6 +12759,7 @@ mod paging_tests {
         );
         assert!(
             !scan_in_pages(
+                T,
                 Some(2_000_000),
                 cap,
                 Some(crate::link::LinkCost::transfer_only(100_000.0))
@@ -12807,7 +12773,7 @@ mod paging_tests {
     /// from 1 to 100 transactions.
     #[test]
     fn a_page_is_sized_by_memory_link_and_cpu() {
-        let page = |cap, rate, avg, cpu, remaining| next_page(cap, rate, avg, cpu, 4.0, remaining);
+        let page = |cap, rate, avg, cpu, remaining| next_page(T, cap, rate, avg, cpu, remaining);
         assert_eq!(
             page(32_000_000, None, 2_000.0, None, 10_000),
             ChunkPlan {

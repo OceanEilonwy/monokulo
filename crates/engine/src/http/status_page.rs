@@ -419,7 +419,7 @@ fn network_scaling(
         });
     let round_deadline_secs = scan
         .round_budget_secs
-        .unwrap_or(crate::work::ROUND_BUDGET.as_secs());
+        .unwrap_or(crate::work::ScanTuning::DEFAULT.round_budget.as_secs());
     NetworkScaling {
         pace: NetworkScaling::pace_of(blocks_behind, &scan),
         scan,
@@ -429,7 +429,7 @@ fn network_scaling(
         max_budget_mb: shared::resources::memory_limit_bytes()
             .map(|limit| crate::engine_settings::max_scan_budget_mb(limit, networks)),
         round_deadline_secs,
-        round_base_secs: crate::work::ROUND_BUDGET.as_secs(),
+        round_base_secs: crate::work::ScanTuning::DEFAULT.round_budget.as_secs(),
         slow,
     }
 }

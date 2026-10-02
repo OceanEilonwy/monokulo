@@ -71,7 +71,7 @@ impl Default for ScanProgress {
             peak_cache: None,
             discarded_cache_bytes: 0,
             discarded_recent: VecDeque::new(),
-            round_budget: crate::work::ROUND_BUDGET,
+            round_budget: crate::work::ScanTuning::DEFAULT.round_budget,
             headers_first: None,
         }
     }

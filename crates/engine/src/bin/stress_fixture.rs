@@ -317,7 +317,7 @@ impl Engine {
                         grace_period_seconds: scan.expired_order_grace_period_seconds,
                         scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
                     };
-                    engine::work::run_round(&memory, &inputs, engine::work::ROUND_BUDGET)
+                    engine::work::run_round(&memory, &inputs, memory.tuning().round_budget)
                         .await
                         .into_result()
                 })

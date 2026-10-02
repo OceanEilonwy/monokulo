@@ -40,53 +40,12 @@ use crate::daemon::{BlockOutline, ChainBlock, ChainHeader, ScanTx};
 use crate::key_custody::{ScanIndices, ScanInput, WalletHandle};
 use crate::scanner::{
     record_scan_match, scan_txs_for_tenants, stage_block_match, ScanResult, ScannerError,
-    SCAN_CONCURRENCY,
 };
 use crate::store::position::CatchUpGroup;
 use crate::store::{BlockCheckpoint, Store};
 
 use super::{bounded, Progress, Round, Wait};
 
-/// Most tenants one block scan covers and one commit moves. A larger group
-/// is given the same block a page at a time before it moves on, within
-/// [`BLOCKS_PER_UNIT`] scans a unit; past that the rest of the group stays
-/// at its cursor and becomes its own catch-up group.
-pub(super) const GROUP_PAGE: usize = 256;
-/// Most block scans (a block for one page of its group's tenants) one unit
-/// makes before yielding the tier.
-const BLOCKS_PER_UNIT: usize = 8;
-/// Most headers fetched at once for blocks recorded without being scanned.
-const HEADERS_PER_FETCH: u64 = 256;
-const _: () = assert!(
-    HEADERS_PER_FETCH <= crate::daemon_rpc::MAX_HEADERS_PER_REQUEST,
-    "a headers fetch must be one request"
-);
-/// Transactions of a block scanned for a tenant in one key-custody call. A
-/// call costs a hop to a worker thread or a round trip to another process,
-/// which a run of transactions shares. It is also how far a unit gets
-/// between looks at the clock, and how much of a block a tenant whose call
-/// fails has to be scanned for again.
-pub(super) const TXS_PER_SCAN: usize = 32;
-/// The time a round needs when the smallest unit of a large block takes
-/// `unit_secs`: the base while that fits the round's share for blocks, else
-/// half as much again as the unit, within [`MAX_ROUND_BUDGET`].
-fn round_budget_for(unit_secs: f64) -> std::time::Duration {
-    let base = super::ROUND_BUDGET;
-    if unit_secs > super::Tier::Blocks.reserved_secs() {
-        std::time::Duration::from_secs_f64((unit_secs * 1.5).min(MAX_ROUND_BUDGET.as_secs_f64()))
-            .max(base)
-    } else {
-        base
-    }
-}
-
-/// The most a round may be given for one page of a large block
-/// (docs/engine_scaling.md section 4).
-pub(crate) const MAX_ROUND_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
-const _: () = assert!(
-    MAX_ROUND_BUDGET.as_secs() <= shared::scaling::SLOW_BLOCK_SECS as u64,
-    "a raised round must not by itself make a block count as slow"
-);
 /// How far ahead of real time consensus lets a block's timestamp run.
 /// Catch-up windows start this much before a block's own timestamp, so a
 /// forward-dated block can't hide an order that was open when it was mined.
@@ -187,8 +146,9 @@ impl BlockState {
         &self,
         daemon: &dyn crate::daemon::MoneroDaemonClient,
         stores: usize,
+        tuning: &super::ScanTuning,
     ) -> std::time::Duration {
-        let base = super::ROUND_BUDGET;
+        let base = tuning.round_budget;
         let Some(avg_tx_bytes) = self.paged.lock().as_ref().map(|paged| paged.avg_tx_bytes) else {
             self.progress.lock().round_budget = base;
             return base;
@@ -197,7 +157,7 @@ impl BlockState {
             .link_cost()
             .map_or(0.0, |link| link.secs(1, avg_tx_bytes));
         let scan = self.progress.lock().secs_per_tx_scan().unwrap_or(0.0) * stores.max(1) as f64;
-        let budget = round_budget_for(fetch + scan);
+        let budget = tuning.round_budget_for(fetch + scan);
         self.progress.lock().round_budget = budget;
         budget
     }
@@ -205,8 +165,10 @@ impl BlockState {
     /// How many blocks to ask for from `from`, up to `end`.
     fn plan(&self, round: &Round<'_>, from: u64, end: u64) -> crate::scanner::ChunkPlan {
         let mut progress = self.progress.lock();
+        let tuning = round.state.tuning();
         let plan = crate::scanner::next_scan_chunk(
-            crate::scanner::group_response_cap_bytes(
+            tuning,
+            tuning.group_response_cap_bytes(
                 round.inputs.scan_chunk_memory_budget_mb,
                 round.blocks.groups.unwrap_or(1),
             ),
@@ -219,13 +181,17 @@ impl BlockState {
     }
 
     /// A fetched run of `blocks` blocks totalling `bytes`, in `secs`.
-    fn note_fetched(&self, bytes: usize, blocks: usize) {
+    fn note_fetched(&self, tuning: &super::ScanTuning, bytes: usize, blocks: usize) {
         if blocks == 0 {
             return;
         }
         let mut progress = self.progress.lock();
-        progress.avg_bytes_per_block =
-            crate::scanner::update_avg_bytes_per_block(progress.avg_bytes_per_block, bytes, blocks);
+        progress.avg_bytes_per_block = crate::scanner::update_avg_bytes_per_block(
+            tuning,
+            progress.avg_bytes_per_block,
+            bytes,
+            blocks,
+        );
     }
 
     /// A block request that failed: one that ran out of time or came back
@@ -247,9 +213,16 @@ impl BlockState {
     /// Fetched blocks of `sizes` bytes: one within a quarter of the size
     /// that is paged (under a `response_cap` and over `link`) means blocks
     /// may grow past it, so headers are read first for a while.
-    fn note_sizes(&self, sizes: &[usize], response_cap: u64, link: Option<crate::link::LinkCost>) {
+    fn note_sizes(
+        &self,
+        tuning: &super::ScanTuning,
+        sizes: &[usize],
+        response_cap: u64,
+        link: Option<crate::link::LinkCost>,
+    ) {
         let near = sizes.iter().any(|size| {
             crate::scanner::scan_in_pages(
+                tuning,
                 Some((*size as u64).saturating_mul(4)),
                 response_cap,
                 link,
@@ -749,9 +722,9 @@ async fn seed(round: &mut Round<'_>, tip: u64) -> Result<Progress, ScannerError>
     }
 }
 
-/// Scans up to `BLOCKS_PER_UNIT` blocks for the group at `cursor`, one
-/// after another, as far as its time allows (always at least one step of
-/// progress). The frontier stops at the tip; catch-up stops at the
+/// Makes up to the tuning's `blocks_per_unit` block scans for the group at
+/// `cursor`, one after another, as far as its time allows (always at least
+/// one step of progress). The frontier stops at the tip; catch-up stops at the
 /// network's high-water mark, where it joins the frontier. Returns the
 /// cursor the group reached, and whether it stopped at a block that doesn't
 /// extend the recorded chain.
@@ -770,7 +743,7 @@ async fn advance_group(
     // Tenants already given block `cursor + 1` this unit, a page at a
     // time, while the rest of the group at `cursor` waits for its page.
     let mut given: Vec<TenantId> = Vec::new();
-    for scanned in 0..BLOCKS_PER_UNIT {
+    for scanned in 0..round.state.tuning().blocks_per_unit {
         let end = match group {
             Group::Frontier => tip,
             Group::CatchUp => high_water,
@@ -834,6 +807,7 @@ async fn advance_group(
                     round.inputs.scan_chunk_memory_budget_mb,
                     daemon.link_cost(),
                     &state.blocks,
+                    state.tuning(),
                 );
             }
             // A failed prefetch is asked for again when it's needed.
@@ -919,7 +893,7 @@ enum OnTimeout {
     StopAfterProgress,
     /// Doesn't stop: a later page of a block the unit started, so a group
     /// larger than a page isn't split. Bounded by the page and the unit's
-    /// [`BLOCKS_PER_UNIT`] scans.
+    /// `blocks_per_unit` scans.
     Finish,
 }
 
@@ -948,6 +922,7 @@ async fn scan_block(
         .progress
         .lock()
         .start_block(height, crate::now_unix());
+    let group_page = round.state.tuning().group_page;
     let mut waiting = round.state.backoff.waiting();
     waiting.extend_from_slice(given);
     // A catch-up group none of whose stores can be scanned (keys not
@@ -956,7 +931,7 @@ async fn scan_block(
     if group == Group::CatchUp {
         let excluded = waiting.clone();
         let ids = round
-            .db(move |s, network| s.tenants_at_cursor(network, parent, &excluded, GROUP_PAGE))
+            .db(move |s, network| s.tenants_at_cursor(network, parent, &excluded, group_page))
             .await?;
         if !ids.iter().any(|id| round.handles.contains_key(id.as_str())) {
             return Ok(BlockOutcome::NobodyToScan);
@@ -982,8 +957,8 @@ async fn scan_block(
     };
     let plan = round
         .db(move |s, network| -> Result<_, ScannerError> {
-            let ids = s.tenants_at_cursor(network, parent, &waiting, GROUP_PAGE)?;
-            let page = if ids.len() == GROUP_PAGE {
+            let ids = s.tenants_at_cursor(network, parent, &waiting, group_page)?;
+            let page = if ids.len() == group_page {
                 Page::Full(ids.clone())
             } else {
                 Page::Last
@@ -1413,6 +1388,7 @@ impl BlockCache {
         budget_mb: u32,
         link: Option<crate::link::LinkCost>,
         state: &BlockState,
+        tuning: &super::ScanTuning,
     ) {
         if chunk.is_empty() {
             return;
@@ -1422,8 +1398,8 @@ impl BlockCache {
             .iter()
             .map(|b| usize::try_from(b.wire_bytes).unwrap_or(usize::MAX))
             .collect();
-        state.note_fetched(sizes.iter().sum(), chunk.len());
-        state.note_sizes(&sizes, crate::scanner::response_cap_bytes(budget_mb), link);
+        state.note_fetched(tuning, sizes.iter().sum(), chunk.len());
+        state.note_sizes(tuning, &sizes, tuning.response_cap_bytes(budget_mb), link);
         for (block, bytes) in chunk.into_iter().zip(sizes) {
             self.insert(block, bytes);
         }
@@ -1467,9 +1443,9 @@ struct ScanAt<'s> {
 }
 
 /// Scans transactions `offset..offset + txs.len()` of the block for every
-/// tenant still due them, [`TXS_PER_SCAN`] at a time. `false` if the unit's
-/// time ran out first (once it had made progress): the caller writes down
-/// how far each tenant got.
+/// tenant still due them, the tuning's `txs_per_scan` at a time. `false` if
+/// the unit's time ran out first (once it had made progress): the caller
+/// writes down how far each tenant got.
 async fn scan_txs(
     round: &Round<'_>,
     scan: &mut BlockScan,
@@ -1480,11 +1456,12 @@ async fn scan_txs(
     progressed: &mut bool,
 ) -> bool {
     let inputs: Vec<ScanInput> = txs.iter().map(|tx| tx.input.clone()).collect();
-    for start in (0..txs.len()).step_by(TXS_PER_SCAN) {
-        let end = (start + TXS_PER_SCAN).min(txs.len());
+    let tuning = round.state.tuning();
+    for start in (0..txs.len()).step_by(tuning.txs_per_scan) {
+        let end = (start + tuning.txs_per_scan).min(txs.len());
         for batch in scan
             .due(at.scannable, offset + start, offset + end)
-            .chunks(SCAN_CONCURRENCY)
+            .chunks(tuning.scan_concurrency)
         {
             if *progressed && at.until.is_some_and(|until| Instant::now() >= until) {
                 return false;
@@ -1496,7 +1473,8 @@ async fn scan_txs(
                 &txs[start..end],
                 &inputs[start..end],
                 batch,
-                super::Tier::Blocks.reserved(),
+                tuning,
+                super::Tier::Blocks,
             )
             .await;
             round.state.blocks.progress.lock().spent(
@@ -1591,12 +1569,13 @@ fn page_plan(
     let scan_secs = progress
         .secs_per_tx_scan()
         .map(|secs| secs * stores.max(1) as f64);
+    let tuning = round.state.tuning();
     let plan = crate::scanner::next_page(
-        crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
+        tuning,
+        tuning.response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
         round.inputs.daemon.link_cost(),
         avg_tx_bytes,
         scan_secs,
-        super::Tier::Blocks.reserved_secs(),
         remaining,
     );
     progress.last_chunk = Some(plan);
@@ -1648,9 +1627,11 @@ async fn fetch_page(
 /// Whether a block with this header is scanned in pages rather than
 /// fetched whole (`scanner::scan_in_pages`).
 fn in_pages(round: &Round<'_>, header: &ChainHeader) -> bool {
+    let tuning = round.state.tuning();
     crate::scanner::scan_in_pages(
+        tuning,
         header.weight,
-        crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
+        tuning.response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
         round.inputs.daemon.link_cost(),
     )
 }
@@ -1681,7 +1662,7 @@ async fn known_header(
     end: u64,
 ) -> Result<ChainHeader, ScannerError> {
     if !round.blocks.headers.contains_key(&height) {
-        let count = (end.saturating_sub(height) + 1).min(HEADERS_PER_FETCH);
+        let count = (end.saturating_sub(height) + 1).min(round.state.tuning().headers_per_fetch);
         let headers = bounded(round.inputs.daemon.get_chain_headers(height, count)).await?;
         round
             .blocks
@@ -1814,6 +1795,7 @@ async fn block(
         round.inputs.scan_chunk_memory_budget_mb,
         round.inputs.daemon.link_cost(),
         &state.blocks,
+        state.tuning(),
     );
     round.blocks.cache.get(height).ok_or_else(|| {
         ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
@@ -1865,29 +1847,14 @@ mod tests {
         }
     }
 
-    /// A round keeps its base time unless one page of one transaction
-    /// can't fit the share for blocks; then it gets half as much again as
-    /// that page, never past two minutes (docs/engine_scaling.md section 4).
+    /// With no large block in pages, a round gets the tuning's base round
+    /// (the growth itself: `tuning::tests`).
     #[test]
-    fn the_round_grows_only_for_a_page_that_cannot_fit_its_share() {
-        use std::time::Duration;
-        assert_eq!(round_budget_for(0.0), Duration::from_secs(10));
-        assert_eq!(
-            round_budget_for(4.0),
-            Duration::from_secs(10),
-            "the share is 4 s"
-        );
-        assert_eq!(
-            round_budget_for(5.0),
-            Duration::from_secs(10),
-            "1.5 x 5 s is under the base"
-        );
-        assert_eq!(round_budget_for(20.0), Duration::from_secs(30));
-        assert_eq!(round_budget_for(1_000.0), MAX_ROUND_BUDGET);
-        // Nothing in pages: the base.
+    fn a_round_without_a_paged_block_gets_the_base() {
         let state = BlockState::default();
         let daemon = crate::daemon::fake::FakeDaemonClient::new();
-        assert_eq!(state.round_budget(&daemon, 3), Duration::from_secs(10));
+        let tuning = super::super::ScanTuning::DEFAULT;
+        assert_eq!(state.round_budget(&daemon, 3, &tuning), tuning.round_budget);
     }
 
     /// A fetched block within a quarter of the size that is paged turns
@@ -1897,12 +1864,22 @@ mod tests {
     fn a_block_near_the_paging_size_turns_headers_first_on() {
         let state = BlockState::default();
         let cap = 32_000_000;
-        state.note_sizes(&[300_000, 2_000_000], cap, None);
+        state.note_sizes(
+            &super::super::ScanTuning::DEFAULT,
+            &[300_000, 2_000_000],
+            cap,
+            None,
+        );
         state.note_failed(&ScannerError::Daemon(crate::daemon::DaemonError::Request(
             "refused".into(),
         )));
         assert!(!state.headers_first());
-        state.note_sizes(&[300_000, 8_000_001], cap, None);
+        state.note_sizes(
+            &super::super::ScanTuning::DEFAULT,
+            &[300_000, 8_000_001],
+            cap,
+            None,
+        );
         assert!(state.headers_first(), "a quarter of the cap");
 
         let state = BlockState::default();

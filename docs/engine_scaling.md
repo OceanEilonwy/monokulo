@@ -102,9 +102,8 @@ timeout  = clamp(3 × expected, 15 s, 10 min)
   request. One block request is therefore the smallest delay the Blocks
   tier can cause the mempool, settlement and upkeep tiers. `target_call`
   is the Blocks tier's share, 40 % of 10 s, and the code derives it from
-  `work::ROUND_BUDGET` and the tier shares
-  (`scanner::SCAN_CHUNK_TARGET_CALL_SECS`). A limit in bytes alone would
-  be milliseconds on a LAN node and minutes over Tor.
+  the scanner's tuning (`ScanTuning::target_call_secs`). A limit in bytes
+  alone would be milliseconds on a LAN node and minutes over Tor.
   The limit doesn't cap throughput. A round that ends with blocks left is
   followed at once by the next, so a slow link stays about as busy as it
   would with larger requests, which would only spread the round trip over
@@ -182,7 +181,7 @@ had to approach the whole budget, and segmenting (section 4) avoids that.
 ### The round deadline
 
 - **Fixed base:** rounds keep their 10 s deadline and tier shares
-  (`work::ROUND_BUDGET`).
+  (`ScanTuning::round_budget`, `ScanTuning::shares`).
 - **Grows only when it must:** only if the smallest useful unit (one page
   holding one transaction) is estimated to need more than the Blocks share.
   Then the deadline becomes `max(10 s, 1.5 × that unit's estimate)`, capped at

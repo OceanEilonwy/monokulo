@@ -88,7 +88,7 @@ Measured results for each driver are recorded in `docs/scanner_microtasks.md`.
 ## Round length sweep
 
 `cargo xtask stress rounds` measures what the scheduler's round length
-(`work::ROUND_BUDGET`) costs and buys. `round_sweep` runs the production
+(`ScanTuning::round_budget`) costs and buys. `round_sweep` runs the production
 scheduler through a backlog of blocks from a scripted node, rounds back to
 back as the engine's loop runs them, pinned to one CPU and built in release
 (the sweep weighs scan time against link time). The scenarios are in
@@ -113,17 +113,20 @@ Each point reports:
 - **Idle round**: a round with nothing left to scan, the fixed cost.
 - **Discarded**: bytes the block cache let go of before a scan of them committed.
 
-`--round-budget-ms` changes the round's length only. Per-call times are
-shares of `ROUND_BUDGET` itself, fixed at build time (`Tier::reserved`). To
-measure a different `ROUND_BUDGET` whole, set it in `work/mod.rs` and run
-`ROUND_SWEEP_BUDGETS_MS=<the same, in ms> cargo xtask stress rounds`. Each
-run writes to its own `target/coverage/stress-rounds-<ms>`.
+`--round-budget-ms` runs the scheduler with that round in its tuning
+(`ScanState::with_tuning`), so everything derived from the round follows it:
+the tier shares, the Blocks share a block request is sized to, and the
+key-custody scan deadlines. A point measures that round length as the
+engine would run it. (`docs/stress/round-budget-candidates.json` was
+recorded before the tuning was a value, by building `round_sweep` once for
+each round length with the constant changed; the numbers are the same
+measurement.)
 
 ### What it found
 
 Recorded runs: `docs/stress/round-budget-sweep-baseline.json` (before the
 block cache outlasted the round) and `docs/stress/round-budget-candidates.json`
-(each round length with `ROUND_BUDGET` set to it).
+(each round length as the engine's whole round).
 
 - **The block cache was per round.** A run fetched ahead, sized to the
   link's 4 s target, was dropped when its round ended and fetched again. At
@@ -138,7 +141,7 @@ block cache outlasted the round) and `docs/stress/round-budget-candidates.json`
   second and 130 kB discarded.
 - **The round length** then barely matters over a nearby node, and matters
   over a high-latency one. That sets 10 s; the reasoning is on
-  `ROUND_BUDGET`.
+  `ScanTuning::round_budget`.
 
 Not covered: the scripted node answers instantly apart from its link
 model, so monerod's own time to build an answer is only the time to first
