@@ -51,9 +51,11 @@ finding, since not every read the attacker got is equally bad.
    it going forward. That is a merchant-facing, non-code decision (§4 below),
    not an on-call action. What *can* be rotated immediately, unilaterally, by
    an operator:
-   - Every `secret_token` (`scanner --rotate-secret`, per tenant —
-     `docs/DESIGN.md` §4.1's onboarding-tooling flags operate directly on the
-     local SQLite file, exactly the operation this calls for).
+   - Every store's `secret_token`: have each merchant reconnect their store
+     in monokulo, which creates a fresh tenant with a fresh `sk_` and hands
+     it to the plugin. (Rotating it on the engine alone, through
+     `POST /api/v1/admin/tenant/rotate-secret`, would leave monokulo and the
+     plugin holding the old one; monokulo has no rotate action yet.)
    - Every webhook signing secret (same admin surface).
    - Any monokulo-issued OAuth/connect-flow tokens still outstanding
      (`monokulo`'s `connect_tokens` — these are already single-use with

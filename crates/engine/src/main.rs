@@ -20,14 +20,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use engine::cli::{self, Action};
+use engine::cli;
 use engine::engine_settings::{
     Daemons, EngineSettings, RuntimeConfig, ALL, LOGGING_FORMAT, LOGGING_LEVEL, SERVER_TOKEN,
 };
 use engine::http::rate_limit::RateLimiter;
 use engine::http::{build_router, AppState};
 use engine::key_custody::{CustodyRouter, KeyCustody, WalletHandle};
-use engine::local_admin;
 use engine::loops;
 use engine::scanner_status;
 use engine::store::{SharedStore, Store};
@@ -61,8 +60,7 @@ fn open_store(db_path: &std::path::Path) -> Store {
 fn main() {
     // The command line first: `--help` and a mistyped option end here, and
     // a setting given as an option counts from the start.
-    let invocation = cli::parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
-    let start = invocation.start;
+    let start = cli::parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
     if start.init {
         match live_settings::cli::init("monokulo-engine", &start.options, ALL) {
             Ok(()) => std::process::exit(0),
@@ -82,9 +80,7 @@ fn main() {
         });
     let early = Snapshot::new(file.clone(), start.env.clone());
     // Then logging, so everything after it is logged (structured_logging.md
-    // 1.1), at the level and in the format the settings give. Output meant
-    // for the person at the terminal (a one-off command's result, a secret
-    // shown once) stays on stdout with `println!`.
+    // 1.1), at the level and in the format the settings give.
     let _telemetry = telemetry::init_with(
         "engine",
         &early.get(&LOGGING_LEVEL),
@@ -96,15 +92,9 @@ fn main() {
         options: start.options,
         file,
     };
-    // Only the server reads its thread count; the one-off commands don't
-    // need more than the default.
-    let worker_threads = match invocation.action {
-        Action::RunServer => {
-            live_settings::read_sync_with_env::<RuntimeConfig>(Ok(boot.file.clone()), &boot.env)
-                .worker_threads
-        }
-        _ => 2,
-    };
+    let worker_threads =
+        live_settings::read_sync_with_env::<RuntimeConfig>(Ok(boot.file.clone()), &boot.env)
+            .worker_threads;
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
         .enable_all()
@@ -116,54 +106,15 @@ fn main() {
             std::process::exit(1);
         }
     };
-    runtime.block_on(run(invocation.action, boot));
+    runtime.block_on(run(boot));
 }
 
 #[allow(
     clippy::expect_used,
     reason = "boot-time: a listener that can't bind or a server that can't start ends the process"
 )]
-async fn run(action: Action, boot: Boot) {
+async fn run(boot: Boot) {
     let env = &boot.env;
-    match action {
-        Action::RotateSecret { pk } => {
-            let store = open_store(&boot.db_path);
-            match local_admin::rotate_secret(&store, pk.as_deref()) {
-                Ok((pk, secret)) => {
-                    println!("Tenant: {pk}");
-                    println!("New secret: {secret}");
-                    println!("(shown once - store it now; the old secret no longer works)");
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Action::ShowTenant { pk } => {
-            let store = open_store(&boot.db_path);
-            match local_admin::show_tenant(&store, pk.as_deref()) {
-                Ok(s) => {
-                    println!("Public key:            {}", s.public_key);
-                    println!("Network:               {}", s.network);
-                    println!("Primary address:       {}", s.primary_address);
-                    println!("Confirmations required: {}", s.confirmations_required);
-                    println!(
-                        "Order expiry:          {} minutes",
-                        s.order_expiry_seconds / 60
-                    );
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Action::RunServer => {}
-    }
-
     // Every request must carry it (`http::engine_token_middleware`): without
     // one, nothing could talk to this engine, so it doesn't start.
     let engine_token = match SERVER_TOKEN.require(env) {

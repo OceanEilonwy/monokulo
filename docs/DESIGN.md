@@ -95,27 +95,17 @@ interface). Monokulo is the only public address; see §4.2.
 
 ### 4.1 Onboarding tooling
 
-`monokulo-engine --init` (optionally `--stagenet`/`--testnet`, `--config <path>`) is
-an interactive wizard that produces or merges `moneropay.toml` — curated node
-choice with a live "test this connection now" check, the `[wallet]` bootstrap
-walked through field by field (or, on a re-run against an existing bootstrap,
-offered as keep-as-is / replace entirely), and a rendered
-file with every setting present, active or commented with its default. It
-deliberately does not generate wallet key material — a self-hoster brings their
-own existing wallet (§3, non-goals).
-
-Three further flags (`--rotate-secret`, `--show-tenant`, `--snippet`, each taking
-`--config` and, for a hosted instance with more than one tenant, `--pk`) operate
-directly on the local SQLite file rather than through the HTTP admin API in §10 —
-justified by the same reasoning as §6.3's local-file `PlainKeyCustody`: filesystem
-access to the box already implies more trust than any `sk_` could grant, and this
-is a single-operator, self-hosted tool, not a service with a separate admin role
-to keep out. `--snippet` in particular exists to close the onboarding gap of
-turning a freshly bootstrapped tenant into a pasteable "Pay with Monero" button —
-it prints a ready-to-embed HTML/JS block pre-filled with the tenant's real `pk_`
-and an operator-supplied endpoint URL (never derived from `[server].bind`, which
-says nothing about the externally-reachable URL once a reverse proxy sits in
-front of it).
+The engine has no onboarding commands of its own. `monokulo-engine --init`
+writes its options file, with every setting described and its default
+commented out; everything else is set on monokulo's admin settings page.
+Stores (tenants) are created, read and changed only by monokulo, through the
+admin API in §10, when a merchant connects one: monokulo keeps each store's
+`sk_` and hands it to the store's plugin. The one-off commands that once
+worked on the engine's SQLite file directly (`--bootstrap-wallet`,
+`--rotate-secret`, `--show-tenant`, `--snippet`) are gone: a tenant made, or
+a secret changed, behind monokulo's back is one monokulo can't see or can no
+longer reach. A store's `sk_` is rotated through the API
+(`POST /api/v1/admin/tenant/rotate-secret`).
 
 The database always lives next to whichever config file was actually used
 (`moneropay.db` in the config's own directory, not the process's CWD) so these

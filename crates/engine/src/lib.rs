@@ -14,7 +14,6 @@ pub mod engine_settings;
 pub mod http;
 pub mod key_custody;
 pub mod link;
-pub mod local_admin;
 pub mod loops;
 pub mod network;
 pub mod scaling;
