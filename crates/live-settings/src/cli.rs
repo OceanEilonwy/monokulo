@@ -5,23 +5,60 @@
 //! default as its help. So `--help` always says what the registry says.
 //!
 //! A value is checked by its setting's own rules as it is parsed: a bad one
-//! stops the process with clap's message naming the option, rather than
-//! falling back to the default the way an environment or stored value does.
-//! The values reach the registry through [`Env::with_cli`](crate::Env::with_cli).
+//! stops the process with clap's message naming the option. The values
+//! reach the registry through [`Env::with_cli`](crate::Env::with_cli).
+//!
+//! Every process also gets `--options <PATH>`, the options file to read
+//! (otherwise `~/.config/monokulo/<file>`, see [`crate::paths`]), and
+//! `--init`, which writes a commented options file there and exits.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-use clap::{Arg, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::setting::{cli_flag, AnySetting};
 use crate::value::SettingKind;
 
-/// `command` with an option for every setting in `declared` that accepts the
-/// command line, and, after them, the environment variables of those that
-/// don't (secrets: the process list is readable by every user on the
-/// machine), so the help names every way to configure the process. What
-/// `command` already had after its help (examples) comes last.
-pub fn with_settings(mut command: Command, declared: &[&'static dyn AnySetting]) -> Command {
+/// The heading the options file's own options are listed under.
+const OPTIONS_FILE: &str = "Options file";
+
+/// `command` with `--options` and `--init`, an option for every setting in
+/// `declared` that accepts the command line, and, after them, the
+/// environment variables of those that don't (secrets: the process list is
+/// readable by every user on the machine), so the help names every way to
+/// configure the process. What `command` already had after its help
+/// (examples) comes last. `file` names the options file (`engine.toml`).
+pub fn with_settings(
+    command: Command,
+    declared: &[&'static dyn AnySetting],
+    file: &str,
+) -> Command {
+    let default = default_options_path(file);
+    let mut command = command
+        .arg(
+            Arg::new("options")
+                .long("options")
+                .value_name("PATH")
+                .value_parser(clap::value_parser!(PathBuf))
+                .help_heading(OPTIONS_FILE)
+                .help(format!(
+                    "Read settings from this TOML file [default: {}]",
+                    default.display()
+                ))
+                .long_help(format!(
+                    "Read settings from this TOML file. The admin settings page saves to it, and reads it again when Reload is pressed. A command-line option wins over it.\n[default: {}]",
+                    default.display()
+                )),
+        )
+        .arg(
+            Arg::new("init")
+                .long("init")
+                .action(ArgAction::SetTrue)
+                .help_heading(OPTIONS_FILE)
+                .help("Write an options file listing every setting with its default, commented out, then exit")
+                .long_help("Write an options file listing every setting with what it is for and its default, commented out, then exit. It goes where --options says, or the default place, and is never written over one that exists."),
+        );
     for setting in declared.iter().filter(|s| s.sources().cli) {
         command = command.arg(arg(*setting));
     }
@@ -66,6 +103,48 @@ pub fn with_settings(mut command: Command, declared: &[&'static dyn AnySetting])
         .after_long_help(join(list(true), after_long))
 }
 
+/// Where the options file is when `--options` doesn't say:
+/// `~/.config/monokulo/<file>` (XDG), or `<file>` in the working directory
+/// if that can't be used.
+pub fn default_options_path(file: &str) -> PathBuf {
+    crate::paths::usable_or_cwd(crate::paths::config_file(file), file)
+}
+
+/// What the command line asks of a process before it starts: the settings
+/// it gave (over the environment), the options file to read, and whether
+/// to write that file instead (`--init`).
+#[derive(Debug)]
+pub struct Start {
+    pub env: crate::Env,
+    pub options: PathBuf,
+    pub init: bool,
+}
+
+/// [`Start`] from parsed arguments.
+pub fn start(matches: &ArgMatches, declared: &[&'static dyn AnySetting], file: &str) -> Start {
+    Start {
+        env: crate::Env::process().with_cli(values(matches, declared)),
+        options: matches
+            .get_one::<PathBuf>("options")
+            .cloned()
+            .unwrap_or_else(|| default_options_path(file)),
+        init: matches.get_flag("init"),
+    }
+}
+
+/// `--init`: writes the commented options file for `program` at `path`,
+/// refusing to replace one, and says where it went (on standard output,
+/// for the person who asked).
+pub fn init(
+    program: &str,
+    path: &std::path::Path,
+    declared: &[&'static dyn AnySetting],
+) -> Result<(), String> {
+    crate::write_init(path, &crate::render_init(program, declared))?;
+    println!("Wrote {}", path.display());
+    Ok(())
+}
+
 /// The values given on the command line, by setting key, in their stored
 /// form: what [`Env::with_cli`](crate::Env::with_cli) takes.
 pub fn values(
@@ -99,8 +178,10 @@ fn arg(setting: &'static dyn AnySetting) -> Arg {
             format!("[default: {default}]")
         });
     }
-    if !setting.sources().database {
-        notes.push("[not saved: give it at every start]".to_string());
+    if setting.sources().toml {
+        notes.push(format!("[options file: {}]", setting.key()));
+    } else {
+        notes.push("[command line only]".to_string());
     }
     Arg::new(setting.key())
         .long(cli_flag(setting.key()))

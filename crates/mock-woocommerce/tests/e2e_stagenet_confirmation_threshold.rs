@@ -144,19 +144,13 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     use monokulo::http::{build_router, AppState};
 
     let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
-    // Signup defaults to invite-only (`monokulo::settings::SIGNUP_MODE`) -
-    // this test signs up its own fresh account with no invite token, exactly
-    // like a real self-hoster's admin would first switch signup to public.
-    // See `mock_woocommerce::spawn_test_monokulo` (`src/lib.rs`)'s own
-    // identical fix for the full "why" - without this, signup silently
-    // no-ops (a plain `200`, not an error), and everything downstream fails
-    // confusingly instead.
-    db.set_setting("signup.mode", "public")
-        .expect("failed to set signup.mode for test monokulo db");
     let state = AppState {
         engine: monokulo::http::Engine::new(EngineClient::for_tests(format!(
             "http://{engine_addr}"
         ))),
+        // Public signup, as `mock_woocommerce::spawn_test_monokulo`
+        // (`src/lib.rs`) needs - see that call site's own comment.
+        settings: AppState::test_settings(None),
         ..AppState::for_tests_with_db(db.into_shared())
     };
     let router = build_router(state);

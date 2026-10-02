@@ -273,10 +273,11 @@ pub struct AdminScalarFieldView {
     pub name: String,
     pub label: String,
     /// The field's current *effective* value - what wins under
-    /// `command line > env > database > default`. Masked for secrets.
+    /// `environment > command line > options file or database > default`.
+    /// Masked for secrets.
     pub value: String,
-    /// `"environment variable"`, `"saved value"`, or `"default"`.
-    pub source_label: String,
+    /// Where that value comes from: the chip beside the name.
+    pub source: SettingSourceView,
     /// What the setting is for (task 4.1).
     pub help: Option<String>,
     pub kind: SettingKindView,
@@ -287,9 +288,129 @@ pub struct AdminScalarFieldView {
     pub pending_restart: bool,
     /// Why the value in effect isn't the one set, if it isn't.
     pub problem: Option<String>,
-    /// Fixed by the environment at start (the engine's address and token):
-    /// shown, with a padlock, but not editable or sent with the form.
-    pub locked: bool,
+    /// Why the page can't change it, if it can't (given on the command
+    /// line or in the environment, or kept in an options file that can't
+    /// be written): shown, with a padlock and this reason, but not
+    /// editable or sent with the form.
+    pub locked: Option<String>,
+}
+
+/// Where a setting's value comes from, as the chip beside its name shows
+/// it, lowest precedence first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SettingSourceView {
+    /// Nothing sets it.
+    #[default]
+    Default,
+    /// The options file, which saving on this page writes.
+    OptionsFile,
+    /// A runtime switch, kept in the database.
+    Runtime,
+    /// A command-line option.
+    CommandLine,
+    /// An environment variable (secrets only).
+    Environment,
+}
+
+impl SettingSourceView {
+    /// From the name the registry and the engine's API give a source.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "toml" => SettingSourceView::OptionsFile,
+            "database" => SettingSourceView::Runtime,
+            "cli" => SettingSourceView::CommandLine,
+            "env" => SettingSourceView::Environment,
+            _ => SettingSourceView::Default,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingSourceView::Default => "Default",
+            SettingSourceView::OptionsFile => "Options file",
+            SettingSourceView::Runtime => "Runtime",
+            SettingSourceView::CommandLine => "Command line",
+            SettingSourceView::Environment => "Environment",
+        }
+    }
+
+    /// The whole sentence, for the chip's tooltip and screen readers.
+    fn sentence(self) -> &'static str {
+        match self {
+            SettingSourceView::Default => "The default: nothing sets it.",
+            SettingSourceView::OptionsFile => "From the options file, which saving here writes.",
+            SettingSourceView::Runtime => "A runtime switch, kept in the database.",
+            SettingSourceView::CommandLine => {
+                "From a command-line option, which wins over the options file."
+            }
+            SettingSourceView::Environment => "From an environment variable.",
+        }
+    }
+}
+
+/// A 24-unit stroked icon, drawn in the text colour.
+fn icon(paths: Markup) -> Markup {
+    html! {
+        svg class="src-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" { (paths) }
+    }
+}
+
+fn source_icon(source: SettingSourceView) -> Markup {
+    icon(match source {
+        SettingSourceView::Default => html! {
+            circle cx="12" cy="12" r="8" stroke-dasharray="2.5 3" {}
+            circle class="filled" cx="12" cy="12" r="1.6" {}
+        },
+        SettingSourceView::OptionsFile => file_icon_paths(),
+        SettingSourceView::Runtime => html! {
+            ellipse cx="12" cy="5" rx="7" ry="3" {}
+            path d="M5 5v14c0 1.7 3.1 3 7 3s7-1.3 7-3V5" {}
+            path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3" {}
+        },
+        SettingSourceView::CommandLine => html! {
+            rect x="3" y="4" width="18" height="16" rx="2" {}
+            path d="m7 9 3 3-3 3" {}
+            path d="M13 15h4" {}
+        },
+        SettingSourceView::Environment => html! {
+            path d="M8 4H7a2 2 0 0 0-2 2v4l-2 2 2 2v4a2 2 0 0 0 2 2h1" {}
+            path d="M16 4h1a2 2 0 0 1 2 2v4l2 2-2 2v4a2 2 0 0 1-2 2h-1" {}
+            path d="M14.2 9.3c-.4-.8-1.2-1.3-2.2-1.3-1.3 0-2.3.7-2.3 1.8 0 2.4 4.6 1.4 4.6 3.9 0 1.1-1 1.8-2.3 1.8-1 0-1.9-.5-2.3-1.3" {}
+            path d="M12 6.5V8" {}
+            path d="M12 16v1.5" {}
+        },
+    })
+}
+
+fn file_icon_paths() -> Markup {
+    html! {
+        path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" {}
+        path d="M14 3v5h5" {}
+        path d="M9 13h6" {}
+        path d="M9 17h4" {}
+    }
+}
+
+/// The chip beside a setting's name saying where its value comes from; the
+/// whole sentence is its tooltip and what a screen reader reads.
+fn source_chip(source: SettingSourceView) -> Markup {
+    html! {
+        span class={ "source-chip" @if source == SettingSourceView::Default { " default" } }
+            title=(source.sentence()) {
+            (source_icon(source))
+            span aria-hidden="true" { (source.label()) }
+            span class="visually-hidden" { (source.sentence()) }
+        }
+    }
+}
+
+/// One process's options file, as the bar above the tabs shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OptionsFileView {
+    pub owner: SettingOwner,
+    pub path: String,
+    pub exists: bool,
+    pub writable: bool,
 }
 
 /// A node's status from the engine's `/status`, for its row.
@@ -518,6 +639,8 @@ pub struct AdminSettingsViewModel {
     pub unreachable_networks: Vec<String>,
     /// Both processes' CPU and memory, on the Monero nodes tab only.
     pub resources: Option<super::scaling::ResourcesView>,
+    /// monokulo's options file, then the engine's (when it answered).
+    pub options_files: Vec<OptionsFileView>,
 }
 
 /// The id of a setting's control, which its label and help point at.
@@ -582,17 +705,6 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
         SettingKindView::Url => {
             html! { input type="url" name=(name) value=(field.value) id=(id) aria-describedby=[help]; }
         }
-        // Never echoed back: left empty means "keep the current one".
-        SettingKindView::Secret => html! {
-            input type="password" name=(name) value="" autocomplete="off" id=(id) aria-describedby=[help]
-                placeholder=(if field.value.is_empty() { "not set" } else { "set - leave empty to keep it" });
-            @if !field.value.is_empty() {
-                label class="inline" {
-                    input type="checkbox" name=(format!("clear:{name}")) value="on";
-                    " Clear it"
-                }
-            }
-        },
         SettingKindView::Json => {
             html! { textarea name=(name) rows="4" id=(id) aria-describedby=[help] { (field.value) } }
         }
@@ -617,42 +729,60 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
     }
 }
 
-/// A setting's name, then what it's for, then its control, then where its
-/// value came from. A list of choices is a group of checkboxes, named by a
-/// legend rather than a label.
+/// A setting's name with the chip saying where its value comes from, then
+/// what it's for, then its control, then anything more about it. A list of
+/// choices is a group of checkboxes, named by a legend rather than a label.
 fn scalar_field(field: &AdminScalarFieldView) -> Markup {
     let help = html! {
         @if let (Some(help), Some(id)) = (&field.help, help_id(field)) {
             span class="field-help" id=(id) { (help) }
         }
     };
+    let locked = html! {
+        @if let Some(reason) = &field.locked {
+            span class="field-help locked-reason" { (reason) }
+        }
+    };
     html! {
-        @if matches!(field.kind, SettingKindView::ChoiceList { .. }) {
+        @if matches!(field.kind, SettingKindView::ChoiceList { .. }) && field.locked.is_none() {
             fieldset class="setting-field" aria-describedby=[help_id(field)] {
-                legend class="setting-label" { (field.label) }
+                legend class="setting-label-row" {
+                    span class="setting-label" { (field.label) }
+                    (source_chip(field.source))
+                }
                 (help)
                 div class="setting-choices" { (scalar_input(field)) }
                 (field_status(field))
             }
         } @else {
             div class="setting-field" {
-                label class="setting-label" for=(field_id(field.form_name())) { (field.label) }
+                div class="setting-label-row" {
+                    label class="setting-label" for=(field_id(field.form_name())) { (field.label) }
+                    (source_chip(field.source))
+                }
                 (help)
-                @if field.locked { (locked_input(field)) } @else { (scalar_input(field)) }
+                // A secret comes from the environment only, and is never
+                // shown: always locked.
+                @if field.locked.is_some() || field.kind == SettingKindView::Secret {
+                    (locked_input(field))
+                } @else {
+                    (scalar_input(field))
+                }
+                (locked)
                 (field_status(field))
             }
         }
     }
 }
 
-/// A setting given only when its process starts (a command-line option or
-/// environment variable): its value in a disabled box with a padlock
-/// inside, and no `name`, so it is never sent with the form. A secret shows
-/// as dots, never its value.
+/// A setting the page can't change (given on the command line or in the
+/// environment, or kept in a file it can't write): its value in a disabled
+/// box with a padlock inside, and no `name`, so it is never sent with the
+/// form. A secret shows as dots, never its value.
 fn locked_input(field: &AdminScalarFieldView) -> Markup {
     let secret = matches!(field.kind, SettingKindView::Secret);
     html! {
-        span class="locked-input" title="Given when the process starts; not saved here" {
+        span class="locked-input" {
             @if secret {
                 input type="password" value="locked" id=(field_id(field.form_name()))
                     aria-describedby=[help_id(field)] disabled;
@@ -668,17 +798,15 @@ fn locked_input(field: &AdminScalarFieldView) -> Markup {
     }
 }
 
-/// Under a setting's control: an example, where its value came from, and
-/// anything wrong with it.
+/// Under a setting's control: an example, whether it waits for a restart,
+/// and anything wrong with it.
 fn field_status(field: &AdminScalarFieldView) -> Markup {
     html! {
         @if let Some(example) = &field.example {
             span class="field-help" { "Example: " code { (example) } }
         }
-        span class="setting-source" {
-            "(" (field.source_label)
-            @if field.restart_only { ", applies after a restart" }
-            ")"
+        @if field.restart_only {
+            span class="setting-source" { "Applies after a restart." }
         }
         @if field.pending_restart {
             span class="setting-pending" { "Saved - restart needed for it to take effect." }
@@ -892,6 +1020,51 @@ pub fn banners(data: &AdminSettingsViewModel, oob: bool) -> Markup {
                 p class="success" role="status" { (success) }
             }
             (notices(&data.notices))
+        }
+    }
+}
+
+/// Each process's options file: where it is, whether the page can write
+/// it, and a button that reads it again, for an edit made by hand. Not part
+/// of what fixi swaps: a save doesn't move the file.
+fn options_file_bars(data: &AdminSettingsViewModel) -> Markup {
+    html! {
+        @if !data.options_files.is_empty() {
+            div class="options-files" {
+                @for file in &data.options_files {
+                    @let process = match file.owner {
+                        SettingOwner::Monokulo => "monokulo",
+                        SettingOwner::Engine => "the engine",
+                    };
+                    form class="options-file" method="post" action="/dashboard/admin/settings/reload" {
+                        input type="hidden" name="tab" value=(data.tab.id());
+                        input type="hidden" name="owner" value=(match file.owner {
+                            SettingOwner::Monokulo => "monokulo",
+                            SettingOwner::Engine => "engine",
+                        });
+                        div class="options-file-where" {
+                            span class="options-file-path" { (icon(file_icon_paths())) code { (file.path) } }
+                            span class="options-file-state" {
+                                @if !file.writable {
+                                    "The options file of " (process) ". It can't be written by " (process)
+                                    ", so its settings are locked here: edit the file, then reload it."
+                                } @else if !file.exists {
+                                    "The options file of " (process) ". Not created yet: saving a setting here creates it."
+                                } @else {
+                                    "The options file of " (process) ". Saving here writes it; after editing it by hand, reload it."
+                                }
+                            }
+                        }
+                        button type="submit" {
+                            (icon(html! {
+                                path d="M20 11a8 8 0 1 0-2.3 5.7" {}
+                                path d="M20 4v7h-7" {}
+                            }))
+                            "Reload options file"
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1233,7 +1406,7 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
     html! {
         section id="settings-panel" aria-labelledby="settings-panel-title" {
             h2 id="settings-panel-title" tabindex="-1" data-fx-focus[focus] { (tab.label()) }
-            p class="hint" { "Saved settings apply straight away. An environment variable, where set, always wins over the value saved here - saving still works, it just won't take effect until that variable is unset." }
+            p class="hint" { "Saving writes the options file and applies the change straight away. A setting given on the command line or in the environment is locked here: change it where it is given." }
             @if tab == SettingsTab::Abuse {
                 p class="hint" {
                     "How this instance tells visitors apart and slows down anyone sending too many requests. A visitor "
@@ -1285,6 +1458,7 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
             nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
             h1 { "Admin settings" }
             (banners(data, false))
+            (options_file_bars(data))
             (tab_bar(data, false))
             (settings_panel(data, false))
             script { (maud::PreEscaped(CONFIRM_CLEARED_NETWORK_SCRIPT)) }
@@ -1635,7 +1809,6 @@ mod tests {
             },
             label: key.replace(['.', '_'], " "),
             value: "1".to_string(),
-            source_label: "default".to_string(),
             help: Some(format!("What {key} is for.")),
             kind: SettingKindView::Text,
             ..Default::default()
@@ -1962,7 +2135,7 @@ mod tests {
                 key: "engine.url".to_string(),
                 label: "engine url".to_string(),
                 value: "http://scanner.internal".to_string(),
-                source_label: "saved value".to_string(),
+                source: SettingSourceView::OptionsFile,
                 help: Some("Where the engine listens.".to_string()),
                 kind: SettingKindView::Url,
                 ..Default::default()
@@ -1971,11 +2144,18 @@ mod tests {
         });
         assert!(
             html.contains(concat!(
-                r#"<label class="setting-label" for="setting-engine.url">engine url</label>"#,
+                r#"<div class="setting-label-row"><label class="setting-label" for="setting-engine.url">engine url</label>"#,
+                r#"<span class="source-chip" title="From the options file, which saving here writes.">"#,
+            )),
+            "the name, with where its value comes from beside it: {html}"
+        );
+        assert!(
+            html.contains(concat!(
+                r#"<span class="visually-hidden">From the options file, which saving here writes.</span></span></div>"#,
                 r#"<span class="field-help" id="setting-help-engine.url">Where the engine listens.</span>"#,
                 r#"<input type="url" name="engine.url" value="http://scanner.internal""#,
             )),
-            "{html}"
+            "then what it is for, then its control: {html}"
         );
         assert!(
             html.contains(r#"aria-describedby="setting-help-engine.url""#),
@@ -2354,9 +2534,10 @@ mod tests {
         ))
         .into_string();
         assert!(
-            secret.contains(r#"type="password""#) && secret.contains(r#"value="""#),
-            "{secret}"
+            secret.contains(r#"type="password" value="locked""#) && secret.contains("disabled"),
+            "a secret comes from the environment: always locked, {secret}"
         );
+        assert!(!secret.contains("name="), "never sent: {secret}");
         assert!(!secret.contains('\u{2022}'));
     }
 
@@ -2425,7 +2606,7 @@ mod tests {
                 key: "server.worker_threads".into(),
                 label: "server worker threads".into(),
                 value: "4".into(),
-                source_label: "saved value".into(),
+                source: SettingSourceView::OptionsFile,
                 restart_only: true,
                 pending_restart: true,
                 ..Default::default()
@@ -2436,7 +2617,7 @@ mod tests {
         assert!(html.contains(r#"<p class="error" role="alert">2 stores use the stagenet network"#));
         assert!(html.contains(r#"<p class="warning" role="status">Saved. These settings take effect after the engine restarts"#));
         assert!(html.contains(r#"<p class="notice">Saved, but set by an environment variable."#));
-        assert!(html.contains("applies after a restart"));
+        assert!(html.contains("Applies after a restart."));
         assert!(html.contains("restart needed"));
     }
 }

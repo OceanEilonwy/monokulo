@@ -247,11 +247,8 @@ const NO_PUBLIC_URL: &str = "This Monokulo instance can't connect plugins yet: i
 /// `/finish`, so a plugin is never handed a wrong address.
 async fn public_url_for_plugins(state: &AppState) -> Result<String, String> {
     state
-        .db
-        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::public_url(db)))
-        .await
-        .ok()
-        .flatten()
+        .settings
+        .public_url()
         .ok_or_else(|| NO_PUBLIC_URL.to_string())
 }
 
@@ -760,12 +757,11 @@ mod tests {
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
-        };
-        state
-            .db
-            .lock()
-            .set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL)
-            .unwrap();
+        }
+        .with_options(&format!(
+            "public_url = \"{TEST_PUBLIC_URL}\"\n[signup]\nmode = \"public\"\n"
+        ))
+        .await;
         (state, engine)
     }
 
@@ -1868,11 +1864,7 @@ mod tests {
     #[tokio::test]
     async fn plugins_cannot_connect_until_the_public_url_is_set_and_are_told_why() {
         let (state, engine) = test_state_with_real_engine().await;
-        state
-            .db
-            .lock()
-            .set_setting(crate::settings::PUBLIC_URL.key, "")
-            .unwrap();
+        state.save_setting("public_url", "").await;
         let router = build_router(state.clone());
         let cookie = signed_up_and_logged_in_session_cookie(
             &router,
@@ -1923,11 +1915,7 @@ mod tests {
             .is_empty());
 
         // Get a real token with the address set, then unset it again.
-        state
-            .db
-            .lock()
-            .set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL)
-            .unwrap();
+        state.save_setting("public_url", TEST_PUBLIC_URL).await;
         let submit = router
             .clone()
             .oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields))
@@ -1936,11 +1924,7 @@ mod tests {
         assert_eq!(submit.status(), StatusCode::FOUND);
         let token =
             parse_query_params(submit.headers()["location"].to_str().unwrap())["token"].clone();
-        state
-            .db
-            .lock()
-            .set_setting(crate::settings::PUBLIC_URL.key, "")
-            .unwrap();
+        state.save_setting("public_url", "").await;
 
         let finish = |token: String| {
             router.clone().oneshot(
@@ -1962,11 +1946,7 @@ mod tests {
             "{body}"
         );
 
-        state
-            .db
-            .lock()
-            .set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL)
-            .unwrap();
+        state.save_setting("public_url", TEST_PUBLIC_URL).await;
         let response = finish(token).await.unwrap();
         assert_eq!(
             response.status(),

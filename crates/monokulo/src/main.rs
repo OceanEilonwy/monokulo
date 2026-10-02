@@ -1,11 +1,12 @@
 //! Thin binary wrapper: all real logic lives in the library (`src/lib.rs`),
 //! the same split as the engine's own `main.rs`/`lib.rs`. Every setting is
-//! declared in `monokulo::settings` and comes from its command-line option
-//! (`monokulo::cli`), its environment variable, the value saved on the admin
-//! page, or its default, in that order.
+//! declared in `monokulo::settings`. Configuration comes from the options
+//! file (`--options`, else `~/.config/monokulo/monokulo.toml`), which the
+//! admin page saves to, or its command-line option (`monokulo::cli`), which
+//! wins; runtime switches from the database; secrets from the environment.
 
-use live_settings::Env;
-use monokulo::db::{Database, Db};
+use live_settings::{Env, OptionsFile, Snapshot};
+use monokulo::db::Database;
 use monokulo::engine_client::EngineClient;
 use monokulo::http::{build_router, AppState};
 use monokulo::settings;
@@ -21,16 +22,35 @@ fn required<T: live_settings::SettingValue>(setting: &live_settings::Setting<T>,
 
 #[tokio::main]
 async fn main() {
-    // The command line first: `--help` and a mistyped option end here, and
-    // a setting given as an option counts from the start, per request too.
-    let env = monokulo::cli::parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
-    settings::set_process_env(env.clone());
+    // The command line first: `--help`, `--init` and a mistyped option end
+    // here.
+    let start = monokulo::cli::parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
+    if start.init {
+        match live_settings::cli::init("monokulo", &start.options, settings::ALL) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let env = start.env;
+    // The options file next: it says where the database is, and anything
+    // wrong in it stops monokulo here, line by line.
+    let file = OptionsFile::at(&start.options)
+        .read(settings::ALL)
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+    let early = Snapshot::new(file, env.clone());
     // Then logging, so everything after it is logged (structured_logging.md
-    // 1.1), at the level and in the format the settings give. A problem
-    // with either is reported with the rest when the settings load.
-    let (level, _) = settings::LOGGING_LEVEL.read_unstored(&env);
-    let (format, _) = settings::LOGGING_FORMAT.read_unstored(&env);
-    let telemetry = telemetry::init_with("monokulo", &level, telemetry::Format::chosen(format));
+    // 1.1), at the level and in the format the settings give.
+    let telemetry = telemetry::init_with(
+        "monokulo",
+        &early.get(&settings::LOGGING_LEVEL),
+        telemetry::Format::chosen(early.get(&settings::LOGGING_FORMAT)),
+    );
     // What has to be known before the database opens, or must never be kept
     // in it: given at start only. The engine answers nothing without the
     // token, and stores' secrets can't be read without the key, so monokulo
@@ -44,27 +64,16 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let db_path = required(&settings::DATABASE_PATH, &env);
-    let db_path = db_path.to_string_lossy().to_string();
+    let db_path = monokulo::cli::database_path(&early)
+        .to_string_lossy()
+        .to_string();
     // CPU and memory every 10 s, for the admin page (docs/engine_scaling.md 6).
     shared::resources::start_sampling();
-    // How many readers to open is itself a setting, read on a connection
-    // of its own before the pool exists, as is where the engine is (both
-    // apply on restart); opening it also brings the schema up to date.
-    let (read_connections, engine_url) = {
-        let db = Db::open_file(&db_path).unwrap_or_else(|e| {
-            tracing::error!(path = %db_path, error = %e, "failed to open the database");
-            std::process::exit(1);
-        });
-        let stored = || db.list_settings().map_err(live_settings::StoreError::new);
-        (
-            live_settings::read_sync_with_env::<settings::DatabaseConfig>(stored(), &env)
-                .read_connections,
-            live_settings::read_sync_with_env::<settings::ServerConfig>(stored(), &env).engine_url,
-        )
-    };
-    // Everything else: read-only connections and one writer, each on its
-    // own thread (`db::Database`).
+    // How many readers to open and where the engine is apply on restart.
+    let read_connections = early.get(&settings::DATABASE_READ_CONNECTIONS);
+    let engine_url = early.get(&settings::ENGINE_URL);
+    // Read-only connections and one writer, each on its own thread
+    // (`db::Database`); opening it also brings the schema up to date.
     let db = Database::open(&db_path, read_connections).unwrap_or_else(|e| {
         tracing::error!(path = %db_path, error = %e, "failed to open the database");
         std::process::exit(1);
@@ -87,9 +96,9 @@ async fn main() {
 
     // Every setting, live (admin_settings_v2.md parts 1 and 3): the engine
     // client, exchange-rate providers, abuse protection and onion listener
-    // are built here with placeholders and then configured from the saved
+    // are built here with placeholders and then configured from the
     // settings by the registry, which reconfigures them in place whenever
-    // the admin page saves.
+    // the admin page saves or reloads the options file.
     let engine_client = EngineClient::with_cache_limit(
         engine_url.as_str().to_string(),
         shared::auth::engine_token(engine_token.expose()),
@@ -105,6 +114,7 @@ async fn main() {
         abuse.clone(),
         Some(onion.clone()),
         env.clone(),
+        OptionsFile::at(&start.options),
     )
     .await
     {

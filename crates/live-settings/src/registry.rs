@@ -86,6 +86,10 @@ pub enum BuildError {
     EmptySection(&'static str),
     #[error("section {0} mixes live and restart-only settings")]
     MixedApplies(&'static str),
+    /// A value that is set can't be used: it is fixed where it was set, and
+    /// the process started again.
+    #[error("{}", .0.join("\n"))]
+    Invalid(Vec<String>),
 }
 
 /// What boot did.
@@ -130,9 +134,13 @@ pub struct SettingView {
     pub pending_restart: bool,
     /// Why the value in effect isn't the one that was set, if it isn't.
     pub problem: Option<Problem>,
-    /// Where its value may come from. Without `database` it can't be saved:
-    /// the admin page shows it locked.
+    /// Where its value may come from.
     pub sources: crate::setting::Sources,
+    /// Why the admin page can't change it now, if it can't: it isn't
+    /// stored, the page may not change it, or the command line or the
+    /// environment sets it. The options file being read-only is the
+    /// page's to add (`Registry::options_file`).
+    pub locked: Option<String>,
     /// Its command-line option, without the leading `--`.
     pub cli_flag: String,
 }
@@ -392,20 +400,29 @@ impl RegistryBuilder {
             return Err(BuildError::Orphaned(orphaned));
         }
 
+        // Every value must be usable, wherever it came from: one that isn't
+        // stops the process here, with every problem named, rather than run
+        // on a default nobody chose.
         let stored = self.snapshot.stored().clone();
         let mut boot_effective = HashMap::new();
+        let mut problems = Vec::new();
         for setting in &self.declared {
             let view =
                 setting.resolve_view(stored.get(setting.key()).map(String::as_str), &self.env);
             if let Some(problem) = &view.problem {
-                tracing::warn!(setting = setting.key(), "settings: {}", problem.message);
+                problems.push(format!("{}: {}", setting.key(), problem.message));
             }
             if setting.applies() == Applies::Restart {
                 boot_effective.insert(setting.key(), view.stored_form);
             }
         }
-        for (section, errors) in &self.section_problems {
-            tracing::warn!(section = %section, reasons = %join_errors(errors), "settings: section is using its defaults");
+        let mut sections: Vec<_> = self.section_problems.iter().collect();
+        sections.sort_by_key(|(section, _)| **section);
+        for (section, errors) in sections {
+            problems.push(format!("the {section} settings: {}", join_errors(errors)));
+        }
+        if !problems.is_empty() {
+            return Err(BuildError::Invalid(problems));
         }
 
         Ok(Registry {
@@ -573,18 +590,8 @@ impl Registry {
             let Some(setting) = inner.by_key.get(key.as_str()).copied() else {
                 return Err(SaveError::UnknownKey(key.clone()));
             };
-            if !setting.sources().database {
-                errors.push(FieldError::new(
-                    key,
-                    format!(
-                        "This can't be saved here: it is set with {} when the process starts.",
-                        crate::setting::outside_names(
-                            setting.key(),
-                            setting.env_var(),
-                            setting.sources()
-                        )
-                    ),
-                ));
+            if let Some(why) = locked(setting, &inner.env) {
+                errors.push(FieldError::new(key, why));
                 continue;
             }
             if !seen.insert(setting.key()) {
@@ -606,7 +613,10 @@ impl Registry {
             return Err(SaveError::Invalid(errors));
         }
 
-        let old = inner.store.read_all().await?;
+        // The values as last read or saved: the options file is read again
+        // only on a reload, so edits made to it since can't slip in here
+        // (writing it refuses if it changed).
+        let old = inner.stored.read().clone();
         let mut new = old.clone();
         let mut writes: Vec<(&'static str, Option<String>)> = Vec::new();
         let mut changed: Vec<&'static dyn AnySetting> = Vec::new();
@@ -626,8 +636,63 @@ impl Registry {
             writes.push((key, value));
             changed.push(setting);
         }
+        self.apply(lock, new, changed, Some(writes)).await
+    }
+
+    /// Reads the options file (and the database) again and applies what
+    /// changed, as a save would, all of it or nothing: a value that is
+    /// invalid, a key the file may not hold, or a section that refuses the
+    /// new values leaves everything as it was, and says why.
+    pub async fn reload(&self) -> Result<SaveReport, SaveError> {
+        let inner = &self.inner;
+        let lock = Arc::clone(&inner.save_lock).lock_owned().await;
+        if !*lock {
+            return Err(SaveError::NotBooted);
+        }
+        let new = inner.store.read_all().await?;
+        let errors: Vec<FieldError> = inner
+            .declared
+            .iter()
+            .filter_map(|setting| {
+                let problem = setting
+                    .resolve_view(new.get(setting.key()).map(String::as_str), &inner.env)
+                    .problem?;
+                Some(FieldError::new(setting.key(), problem.message))
+            })
+            .collect();
+        if !errors.is_empty() {
+            return Err(SaveError::Invalid(errors));
+        }
+        let old = inner.stored.read().clone();
+        let changed: Vec<&'static dyn AnySetting> = inner
+            .declared
+            .iter()
+            .copied()
+            .filter(|setting| old.get(setting.key()) != new.get(setting.key()))
+            .collect();
+        self.apply(lock, new, changed, None).await
+    }
+
+    /// Where the options file is and whether it can be written, when the
+    /// store has one.
+    pub fn options_file(&self) -> Option<crate::options::FileInfo> {
+        self.inner.store.file_info()
+    }
+
+    /// The rest of a save or a reload, under its lock: rebuilds the sections
+    /// that read a changed key, prepares the live ones, writes `writes` (a
+    /// save's; a reload has none), then installs and reports.
+    async fn apply(
+        &self,
+        lock: tokio::sync::OwnedMutexGuard<bool>,
+        new: HashMap<String, String>,
+        changed: Vec<&'static dyn AnySetting>,
+        writes: Option<Vec<(&'static str, Option<String>)>>,
+    ) -> Result<SaveReport, SaveError> {
+        let inner = &self.inner;
+        let mut errors = Vec::new();
         if changed.is_empty() {
-            *inner.stored.write() = old;
+            *inner.stored.write() = new;
             return Ok(SaveReport::default());
         }
 
@@ -665,8 +730,10 @@ impl Registry {
             return Err(SaveError::Invalid(errors));
         }
 
-        // 4. Persist.
-        inner.store.write_all(writes).await?;
+        // 4. Persist (a save only: a reload read them from the store).
+        if let Some(writes) = writes {
+            inner.store.write_all(writes).await?;
+        }
         *inner.stored.write() = snapshot.stored().clone();
         {
             let mut problems = inner.section_problems.write();
@@ -751,6 +818,7 @@ impl Registry {
                     pending_restart,
                     problem,
                     sources: setting.sources(),
+                    locked: locked(*setting, &inner.env),
                     cli_flag: crate::setting::cli_flag(key),
                 }
             })
@@ -770,6 +838,33 @@ impl Registry {
         problems.sort_by_key(|(section, _)| *section);
         problems
     }
+}
+
+/// Why the admin page can't change `setting` now, or `None` when it can.
+fn locked(setting: &'static dyn AnySetting, env: &Env) -> Option<String> {
+    let sources = setting.sources();
+    let names = crate::setting::outside_names(setting.key(), setting.env_var(), sources);
+    if sources.env && env.get(setting.env_var()).is_some() {
+        return Some(format!(
+            "This is set with {} when the process starts; change it there.",
+            setting.env_var()
+        ));
+    }
+    if sources.cli && env.cli(setting.key()).is_some() {
+        return Some(format!(
+            "This is set with --{} when the process starts; remove it there to change it here.",
+            crate::setting::cli_flag(setting.key())
+        ));
+    }
+    if !sources.stored() {
+        return Some(format!("This is set with {names} when the process starts."));
+    }
+    if !setting.editable() {
+        return Some(
+            "This can only be changed in the options file or on the command line.".to_string(),
+        );
+    }
+    None
 }
 
 /// One section from stored values the caller read itself, resolving

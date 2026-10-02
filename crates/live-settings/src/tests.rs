@@ -15,7 +15,6 @@ use crate::*;
 settings! {
     DEPTH: u64 {
         key: "scan.depth",
-        env: "TEST_SCAN_DEPTH",
         default: 20,
         check: range(1, 10_000),
         description: "How many recent blocks are checked again.",
@@ -24,22 +23,19 @@ settings! {
     POLL_MS: u64 {
         description: "How long to wait between polls.",
         default: 1000,
-        env: "TEST_SCAN_POLL_MS",
         key: "scan.poll_ms",
     },
-    SOFT: u32 { key: "limits.soft", env: "TEST_LIMITS_SOFT", default: 60, description: "Soft limit." },
-    HARD: u32 { key: "limits.hard", env: "TEST_LIMITS_HARD", default: 300, description: "Hard limit." },
+    SOFT: u32 { key: "limits.soft", default: 60, description: "Soft limit." },
+    HARD: u32 { key: "limits.hard", default: 300, description: "Hard limit." },
     NODE_A: HttpUrl {
         key: "node.a",
-        env: "TEST_NODE_A",
         default: parsed_default("http://a.example"),
         description: "Node A.",
         example: "https://node.example:18081",
     },
-    NODE_B: HttpUrl { key: "node.b", env: "TEST_NODE_B", default: parsed_default("http://b.example"), description: "Node B." },
+    NODE_B: HttpUrl { key: "node.b", default: parsed_default("http://b.example"), description: "Node B." },
     WORKERS: usize {
         key: "server.workers",
-        env: "TEST_WORKERS",
         default: 2,
         check: range(1, 256),
         description: "Worker threads.",
@@ -47,12 +43,11 @@ settings! {
     },
     BIND: BindAddr {
         key: "server.bind",
-        env: "TEST_BIND",
         default: parsed_default("127.0.0.1:8443"),
         description: "Listen address.",
         applies: Restart,
     },
-    TOKEN: Secret { key: "engine.token", env: "TEST_TOKEN", default: Secret::default(), description: "Admin token.", sources: [Env, Database] },
+    TOKEN: Secret { key: "engine.token", env: "TEST_TOKEN", default: Secret::default(), description: "Admin token.", sources: [Env], applies: Restart },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -409,6 +404,16 @@ fn no_env() -> Env {
     Env::fixed(Vec::<(String, String)>::new())
 }
 
+/// No environment, and `values` given on the command line, by key.
+fn options(values: &[(&str, &str)]) -> Env {
+    no_env().with_cli(
+        values
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    )
+}
+
 fn change(key: &str, value: &str) -> (String, Option<String>) {
     (key.to_string(), Some(value.to_string()))
 }
@@ -429,9 +434,9 @@ fn invalid_keys(err: &SaveError) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_value_resolves_env_over_stored_over_default_and_reports_its_source() {
+async fn a_value_resolves_the_command_line_over_stored_over_default_and_reports_its_source() {
     let store = TestStore::with(&[("scan.depth", "30"), ("scan.poll_ms", "500")]);
-    let h = booted(&store, Env::fixed([("TEST_SCAN_POLL_MS", "250")])).await;
+    let h = booted(&store, options(&[("scan.poll_ms", "250")])).await;
 
     assert_eq!(
         *h.scan.load(),
@@ -443,33 +448,37 @@ async fn a_value_resolves_env_over_stored_over_default_and_reports_its_source() 
     assert_eq!(h.limits.load().soft, 60);
 
     let views = h.registry.describe();
-    assert_eq!(view(&views, "scan.depth").source, SettingSource::Database);
+    assert_eq!(view(&views, "scan.depth").source, SettingSource::Toml);
     assert_eq!(view(&views, "scan.depth").value, "30");
-    assert_eq!(view(&views, "scan.poll_ms").source, SettingSource::Env);
+    assert_eq!(view(&views, "scan.poll_ms").source, SettingSource::Cli);
     assert_eq!(view(&views, "scan.poll_ms").value, "250");
     assert_eq!(view(&views, "limits.soft").source, SettingSource::Default);
     assert_eq!(view(&views, "limits.soft").value, "60");
 
     let snapshot = Snapshot::new(
         store.inner.read_all().await.unwrap(),
-        Env::fixed([("TEST_SCAN_POLL_MS", "250")]),
+        options(&[("scan.poll_ms", "250")]),
     );
-    assert_eq!(snapshot.source(&POLL_MS), SettingSource::Env);
-    assert_eq!(snapshot.source(&DEPTH), SettingSource::Database);
+    assert_eq!(snapshot.source(&POLL_MS), SettingSource::Cli);
+    assert_eq!(snapshot.source(&DEPTH), SettingSource::Toml);
     assert_eq!(snapshot.source(&SOFT), SettingSource::Default);
 }
 
 #[tokio::test]
-async fn a_blank_environment_variable_does_not_hide_a_stored_value() {
-    let store = TestStore::with(&[("scan.depth", "30")]);
-    let h = booted(&store, Env::fixed([("TEST_SCAN_DEPTH", "  ")])).await;
-    assert_eq!(h.scan.load().depth, 30);
+async fn a_blank_environment_variable_is_unset() {
+    let store = TestStore::with(&[]);
+    let h = booted(&store, Env::fixed([("TEST_TOKEN", "  ")])).await;
+    assert_eq!(h.auth.load().token.expose(), "");
+    assert_eq!(
+        view(&h.registry.describe(), "engine.token").source,
+        SettingSource::Default
+    );
 }
 
 #[tokio::test]
 async fn describe_reports_metadata_and_masks_secrets() {
-    let store = TestStore::with(&[("engine.token", "hunter2")]);
-    let h = booted(&store, no_env()).await;
+    let store = TestStore::with(&[]);
+    let h = booted(&store, Env::fixed([("TEST_TOKEN", "hunter2")])).await;
     assert_eq!(h.auth.load().token.expose(), "hunter2");
 
     let views = h.registry.describe();
@@ -487,7 +496,8 @@ async fn describe_reports_metadata_and_masks_secrets() {
     );
 
     let depth = view(&views, "scan.depth");
-    assert_eq!(depth.env_var, "TEST_SCAN_DEPTH");
+    assert_eq!(depth.env_var, "");
+    assert_eq!(depth.cli_flag, "scan-depth");
     assert_eq!(
         depth.description,
         "How many recent blocks are checked again."
@@ -812,135 +822,80 @@ async fn a_restart_setting_is_stored_not_installed_and_pending_until_a_new_regis
 }
 
 #[tokio::test]
-async fn a_restart_setting_overridden_by_the_environment_is_not_pending_after_a_save() {
+async fn a_setting_given_on_the_command_line_is_locked_and_a_save_of_it_refused() {
     let store = TestStore::with(&[]);
-    let h = booted(&store, Env::fixed([("TEST_WORKERS", "4")])).await;
+    let h = booted(&store, options(&[("server.workers", "4")])).await;
     assert_eq!(h.runtime.load().workers, 4);
-
-    let report = h
-        .registry
-        .save(vec![change("server.workers", "8")])
-        .await
-        .unwrap();
-    assert_eq!(report.changed, ["server.workers"]);
-    assert!(
-        report.restart_required.is_empty(),
-        "the effective value won't change"
-    );
-    assert_eq!(report.env_overridden, ["server.workers"]);
-
-    let workers = view(&h.registry.describe(), "server.workers").clone();
-    assert!(!workers.pending_restart);
-    assert_eq!(workers.value, "4");
-    assert_eq!(workers.source, SettingSource::Env);
-}
-
-#[tokio::test]
-async fn an_env_overridden_key_appears_in_env_overridden() {
-    let store = TestStore::with(&[]);
-    let h = booted(&store, Env::fixed([("TEST_SCAN_DEPTH", "99")])).await;
-    let report = h
+    let error = h
         .registry
         .save(vec![
-            change("scan.depth", "50"),
+            change("server.workers", "8"),
             change("scan.poll_ms", "10"),
         ])
         .await
-        .unwrap();
-    assert_eq!(report.changed, ["scan.depth", "scan.poll_ms"]);
-    assert_eq!(report.env_overridden, ["scan.depth"]);
-    assert_eq!(
-        store.get("scan.depth").as_deref(),
-        Some("50"),
-        "saved anyway"
-    );
-    assert_eq!(
-        *h.scan.load(),
-        Scan {
-            depth: 99,
-            poll_ms: 10
-        }
-    );
+        .unwrap_err();
+    assert_eq!(invalid_keys(&error), ["server.workers"]);
+    assert_eq!(store.get("scan.poll_ms"), None, "nothing saved");
+    let workers = view(&h.registry.describe(), "server.workers").clone();
+    assert_eq!(workers.source, SettingSource::Cli);
+    assert!(workers.locked.is_some());
 }
 
+/// A value that is set but can't be used stops the start, every one named
+/// with where it came from: nothing runs on a default nobody chose.
 #[tokio::test]
-async fn at_boot_an_invalid_value_falls_back_to_its_own_default_only() {
+async fn at_boot_any_invalid_value_stops_the_start() {
     let store = TestStore::with(&[
         ("scan.depth", "zero"),
         ("scan.poll_ms", "250"),
         ("limits.soft", "70"),
     ]);
-    let h = booted(&store, Env::fixed([("TEST_LIMITS_HARD", "lots")])).await;
-
+    let built = Registry::builder_with_env(
+        Arc::clone(&store) as Arc<dyn SettingsStore>,
+        ALL,
+        options(&[("limits.hard", "lots")]),
+    )
+    .await;
+    let mut builder = built;
+    builder.section::<Scan>();
+    builder.section::<Limits>();
+    builder.section::<NodeA>();
+    builder.section::<NodeB>();
+    builder.section::<Runtime>();
+    builder.section::<Auth>();
+    let Err(BuildError::Invalid(problems)) = builder.build() else {
+        panic!("expected the start refused");
+    };
     assert_eq!(
-        *h.scan.load(),
-        Scan {
-            depth: 20,
-            poll_ms: 250
-        },
-        "poll_ms keeps its stored value"
+        problems,
+        [
+            "scan.depth: In the options file, it is invalid. Enter a whole number from 1 to 10000.",
+            "limits.hard: --limits-hard is set to an invalid value. Enter a whole number from 0 to 4294967295.",
+        ]
     );
-    assert_eq!(
-        *h.limits.load(),
-        Limits {
-            soft: 70,
-            hard: 300
-        }
-    );
-
-    let views = h.registry.describe();
-    let depth = view(&views, "scan.depth");
-    assert_eq!(depth.source, SettingSource::Default);
-    assert_eq!(depth.value, "20");
-    let problem = depth.problem.as_ref().unwrap();
-    assert!(!problem.from_env);
-    assert!(
-        problem.message.contains("saved value is invalid"),
-        "{}",
-        problem.message
-    );
-    assert_eq!(view(&views, "scan.poll_ms").problem, None);
-
-    let hard = view(&views, "limits.hard").problem.as_ref().unwrap();
-    assert!(
-        hard.from_env,
-        "the page must say the bad value is in the environment"
-    );
-    assert!(hard.message.contains("TEST_LIMITS_HARD"));
 }
 
+/// Values that break a rule between them stop the start too.
 #[tokio::test]
-async fn at_boot_a_section_whose_values_break_a_rule_uses_its_defaults_until_fixed() {
+async fn at_boot_a_section_whose_values_break_a_rule_stops_the_start() {
     let store = TestStore::with(&[("limits.soft", "500"), ("limits.hard", "100")]);
-    let h = booted(&store, no_env()).await;
-    assert_eq!(
-        *h.limits.load(),
-        Limits {
-            soft: 60,
-            hard: 300
-        }
+    let mut builder =
+        Registry::builder_with_env(Arc::clone(&store) as Arc<dyn SettingsStore>, ALL, no_env())
+            .await;
+    builder.section::<Scan>();
+    builder.section::<Limits>();
+    builder.section::<NodeA>();
+    builder.section::<NodeB>();
+    builder.section::<Runtime>();
+    builder.section::<Auth>();
+    let Err(BuildError::Invalid(problems)) = builder.build() else {
+        panic!("expected the start refused");
+    };
+    assert_eq!(problems.len(), 1);
+    assert!(
+        problems[0].starts_with("the limits settings: "),
+        "{problems:?}"
     );
-    assert_eq!(h.registry.section_problems().len(), 1);
-    let soft = view(&h.registry.describe(), "limits.soft").clone();
-    assert!(soft
-        .problem
-        .unwrap()
-        .message
-        .contains("limits settings are using their defaults"));
-
-    h.registry
-        .save(vec![change("limits.hard", "1000")])
-        .await
-        .unwrap();
-    assert_eq!(
-        *h.limits.load(),
-        Limits {
-            soft: 500,
-            hard: 1000
-        }
-    );
-    assert!(h.registry.section_problems().is_empty());
-    assert_eq!(view(&h.registry.describe(), "limits.soft").problem, None);
 }
 
 // The paused clock makes each sleep below return only once every task is
@@ -1060,13 +1015,13 @@ async fn two_concurrent_saves_run_one_after_the_other() {
 #[tokio::test]
 async fn read_sync_returns_the_same_section_value_the_registry_would() {
     let store = TestStore::with(&[
-        ("scan.depth", "not a number"),
+        ("scan.depth", "30"),
         ("scan.poll_ms", "250"),
-        ("limits.soft", "500"),
+        ("limits.soft", "50"),
         ("limits.hard", "100"),
         ("server.workers", "8"),
     ]);
-    let env = Env::fixed([("TEST_BIND", "0.0.0.0:9000")]);
+    let env = options(&[("server.bind", "0.0.0.0:9000")]);
     let h = build(&store, env.clone(), Probe::new(), Probe::new()).await;
 
     assert_eq!(
@@ -1172,14 +1127,15 @@ async fn build_fails_on_mistakes_in_the_declarations() {
     // A default its own range rejects, and an invalid example.
     const OUT_OF_RANGE: Setting<u32> = Setting {
         key: "bad.default",
-        env_var: "TEST_BAD_DEFAULT",
+        env_var: "",
         default: || 0,
         check: None,
         bounds: range(1, 10),
         description: "",
         example: None,
         applies: Applies::Live,
-        sources: Sources::ALL,
+        sources: Sources::CONFIG,
+        editable: true,
         required: false,
     };
     const BAD_EXAMPLE: Setting<u32> = Setting {
@@ -1492,7 +1448,6 @@ fn a_setting_applies_its_range_and_check_on_top_of_its_type() {
     settings! {
         EVEN: u32 {
             key: "even",
-            env: "TEST_EVEN",
             default: 2,
             check: |v: &u32| if v.is_multiple_of(2) { Ok(()) } else { Err("Enter an even number.".to_string()) },
             description: "An even number.",
@@ -1536,15 +1491,17 @@ fn a_setting_applies_its_range_and_check_on_top_of_its_type() {
 }
 
 #[tokio::test]
-async fn saved_secrets_are_applied_but_never_shown() {
+async fn a_secret_comes_from_the_environment_and_is_never_saved_or_shown() {
     let store = TestStore::with(&[]);
-    let h = booted(&store, no_env()).await;
-    h.registry
-        .save(vec![change("engine.token", "hunter2")])
-        .await
-        .unwrap();
+    let h = booted(&store, Env::fixed([("TEST_TOKEN", "hunter2")])).await;
     assert_eq!(h.auth.load().token.expose(), "hunter2");
-    assert_eq!(store.get("engine.token").as_deref(), Some("hunter2"));
+    let error = h
+        .registry
+        .save(vec![change("engine.token", "other")])
+        .await
+        .unwrap_err();
+    assert_eq!(invalid_keys(&error), ["engine.token"]);
+    assert_eq!(store.get("engine.token"), None);
     assert_eq!(view(&h.registry.describe(), "engine.token").value, MASK);
 }
 
@@ -1559,9 +1516,8 @@ fn live_new_holds_a_fixed_value() {
     assert!(!rx.has_changed().unwrap());
 }
 
-/// Where a value may come from: the command line over the environment over
-/// the store, and settings that can't be saved, needed before the store
-/// opens or never to be kept in it.
+/// Where a value may come from: the options file, the database (runtime
+/// switches), the command line and the environment (secrets), lowest first.
 mod sources {
     use super::*;
     use crate::setting::private::Resolve;
@@ -1569,11 +1525,10 @@ mod sources {
     settings! {
         DB_PATH: String {
             key: "boot.db_path",
-            env: "TEST_DB_PATH",
             default: "app.db".to_string(),
             description: "Where the database is. Kept beside its logs.",
             applies: Restart,
-            sources: [Cli, Env],
+            editable: false,
         },
         KEY: Secret {
             key: "boot.key",
@@ -1587,10 +1542,27 @@ mod sources {
         },
         LIMIT: u32 {
             key: "scan.limit_per_min",
-            env: "TEST_LIMIT",
             default: 10,
             check: range(1, 100),
             description: "Requests a minute.",
+            example: "10",
+        },
+        ENABLED: CommaList<String> {
+            key: "scan.networks",
+            default: parsed_default("mainnet"),
+            description: "Networks to scan.",
+        },
+        UNDER_ATTACK: bool {
+            key: "abuse.under_attack",
+            default: false,
+            description: "Challenge every visitor.",
+            sources: [Database],
+        },
+        PUBLIC: String {
+            key: "public_url",
+            default: String::new(),
+            description: "Where this instance is.",
+            example: "https://pay.example.com",
         },
     }
 
@@ -1614,16 +1586,22 @@ mod sources {
     #[derive(Debug, Clone, PartialEq)]
     struct Rate {
         limit: u32,
+        networks: Vec<String>,
+        under_attack: bool,
+        public: String,
     }
 
     impl Section for Rate {
         const NAME: &'static str = "rate";
         fn keys() -> &'static [&'static dyn AnySetting] {
-            &[&LIMIT]
+            &[&LIMIT, &ENABLED, &UNDER_ATTACK, &PUBLIC]
         }
         fn from_snapshot(s: &Snapshot) -> Result<Self, Vec<FieldError>> {
             Ok(Rate {
                 limit: s.get(&LIMIT),
+                networks: s.get(&ENABLED).0,
+                under_attack: s.get(&UNDER_ATTACK),
+                public: s.get(&PUBLIC),
             })
         }
     }
@@ -1635,185 +1613,381 @@ mod sources {
             .collect()
     }
 
-    /// The command line wins over the environment, which wins over the
-    /// store, and each is reported as the source.
-    #[tokio::test]
-    async fn the_command_line_wins_over_the_environment_and_the_store() {
-        let store: Arc<dyn SettingsStore> = Arc::new(MemoryStore::new());
-        store
-            .write_all(vec![("scan.limit_per_min", Some("30".to_string()))])
-            .await
-            .unwrap();
-        let both = Env::fixed([("TEST_LIMIT", "20"), ("TEST_KEY", "abcd")])
-            .with_cli(cli(&[("scan.limit_per_min", "40")]));
-        let mut builder = Registry::builder_with_env(Arc::clone(&store), ALL, both).await;
+    fn key_env() -> Env {
+        Env::fixed([("TEST_KEY", "abcd")])
+    }
+
+    struct Setup {
+        registry: Registry,
+        rate: Live<Rate>,
+        database: Arc<MemoryStore>,
+    }
+
+    async fn setup(file: OptionsFile, env: Env) -> Result<Setup, BuildError> {
+        let database = Arc::new(MemoryStore::new());
+        let store = LayeredStore::new(file, Arc::clone(&database) as Arc<dyn SettingsStore>, ALL);
+        let mut builder = Registry::builder_with_env(Arc::new(store), ALL, env).await;
         let rate = builder.section::<Rate>();
         builder.section::<Boot>();
-        let registry = builder.build().unwrap();
-        assert_eq!(rate.load().limit, 40);
+        let registry = builder.build()?;
+        registry.boot().await.unwrap();
+        Ok(Setup {
+            registry,
+            rate,
+            database,
+        })
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("live-settings-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The options file under the command line under the environment; a
+    /// runtime switch from the database; each reported with its source.
+    #[tokio::test]
+    async fn each_source_wins_over_the_ones_below_it() {
+        let file = OptionsFile::in_memory(
+            "public_url = \"https://file.example\"\n[scan]\nlimit_per_min = 20\nnetworks = [\"mainnet\", \"stagenet\"]\n",
+        );
+        let env = key_env().with_cli(cli(&[("scan.limit_per_min", "40")]));
+        let s = setup(file, env).await.unwrap();
         assert_eq!(
-            view(&registry.describe(), "scan.limit_per_min").source,
+            *s.rate.load(),
+            Rate {
+                limit: 40,
+                networks: vec!["mainnet".into(), "stagenet".into()],
+                under_attack: false,
+                public: "https://file.example".into(),
+            }
+        );
+        let views = s.registry.describe();
+        assert_eq!(
+            view(&views, "scan.limit_per_min").source,
             SettingSource::Cli
         );
+        assert_eq!(view(&views, "scan.networks").source, SettingSource::Toml);
         assert_eq!(
-            LIMIT.read_unstored(&Env::fixed([("TEST_LIMIT", "20")])).0,
-            20
+            view(&views, "abuse.under_attack").source,
+            SettingSource::Default
         );
-        assert_eq!(
-            Snapshot::new(
-                HashMap::from([("scan.limit_per_min".to_string(), "30".to_string())]),
-                no_env()
-            )
-            .get(&LIMIT),
-            30
-        );
-    }
+        assert_eq!(view(&views, "boot.key").source, SettingSource::Env);
+        assert_eq!(view(&views, "boot.key").value, MASK);
 
-    /// Read before any store exists: the command line, the environment or
-    /// the default; a required one that is missing or invalid is an error
-    /// to start on, naming both ways to set it.
-    #[test]
-    fn a_setting_is_read_without_the_store_at_start() {
-        let env = Env::fixed([("TEST_DB_PATH", "/data/app.db"), ("TEST_KEY", "abcd")]);
-        assert_eq!(DB_PATH.require(&env).unwrap(), "/data/app.db");
-        assert_eq!(KEY.require(&env).unwrap().expose(), "abcd");
-        assert_eq!(DB_PATH.require(&no_env()).unwrap(), "app.db");
-        let flagged = env.clone().with_cli(cli(&[("boot.db_path", "/cli.db")]));
-        assert_eq!(DB_PATH.require(&flagged).unwrap(), "/cli.db");
-
-        let missing = KEY.require(&no_env()).unwrap_err();
-        assert_eq!(
-            missing,
-            "TEST_KEY must be set. The key that protects the store."
-        );
-        let invalid = KEY.require(&Env::fixed([("TEST_KEY", "abc")])).unwrap_err();
-        assert_eq!(
-            invalid,
-            "TEST_KEY is set to an invalid value. Enter 4 characters."
-        );
-        let (_, problem) = DB_PATH.read_unstored(&no_env());
-        assert_eq!(problem, None);
-    }
-
-    /// A setting that can't be saved is never taken from the store, is
-    /// refused by a save, and is described with its sources.
-    #[tokio::test]
-    async fn a_setting_that_cannot_be_saved_is_never_stored() {
-        let store: Arc<dyn SettingsStore> = Arc::new(MemoryStore::new());
-        store
-            .write_all(vec![("boot.db_path", Some("/stored.db".to_string()))])
+        // A runtime switch is saved to the database, not the file.
+        s.registry
+            .save(vec![change("abuse.under_attack", "true")])
             .await
             .unwrap();
-        let env = Env::fixed([("TEST_KEY", "abcd")]);
-        let mut builder = Registry::builder_with_env(Arc::clone(&store), ALL, env).await;
-        let live = builder.section::<Boot>();
-        builder.section::<Rate>();
-        let registry = builder.build().unwrap();
-        registry.boot().await.unwrap();
-        assert_eq!(live.load().db_path, "app.db", "the stored value is ignored");
+        assert_eq!(
+            s.database.get("abuse.under_attack").as_deref(),
+            Some("true")
+        );
+        assert!(s.rate.load().under_attack);
+        assert_eq!(
+            view(&s.registry.describe(), "abuse.under_attack").source,
+            SettingSource::Database
+        );
+    }
 
-        let error = registry
-            .save(vec![(
-                "boot.db_path".to_string(),
-                Some("/x.db".to_string()),
-            )])
-            .await
-            .unwrap_err();
-        assert_eq!(invalid_keys(&error), ["boot.db_path"]);
+    /// What the command line or the environment sets, or what isn't stored
+    /// or isn't the page's to change, is locked: described so, and refused
+    /// by a save.
+    #[tokio::test]
+    async fn the_page_cannot_change_what_is_given_at_start() {
+        let env = key_env().with_cli(cli(&[("scan.limit_per_min", "40")]));
+        let s = setup(OptionsFile::in_memory(""), env).await.unwrap();
+        let views = s.registry.describe();
+        assert_eq!(
+            view(&views, "scan.limit_per_min").locked.as_deref(),
+            Some("This is set with --scan-limit-per-min when the process starts; remove it there to change it here.")
+        );
+        assert_eq!(
+            view(&views, "boot.key").locked.as_deref(),
+            Some("This is set with TEST_KEY when the process starts; change it there.")
+        );
+        assert!(view(&views, "boot.db_path").locked.is_some());
+        assert_eq!(view(&views, "public_url").locked, None);
+        for key in ["scan.limit_per_min", "boot.key", "boot.db_path"] {
+            let error = s.registry.save(vec![change(key, "5")]).await.unwrap_err();
+            assert_eq!(invalid_keys(&error), [key]);
+        }
+    }
+
+    /// Read before any store exists: the environment or the default; a
+    /// required one that is missing or invalid is an error to start on.
+    #[test]
+    fn a_secret_is_read_without_the_store_at_start() {
+        assert_eq!(KEY.require(&key_env()).unwrap().expose(), "abcd");
+        assert_eq!(
+            KEY.require(&no_env()).unwrap_err(),
+            "TEST_KEY must be set. The key that protects the store."
+        );
+        assert_eq!(
+            KEY.require(&Env::fixed([("TEST_KEY", "abc")])).unwrap_err(),
+            "TEST_KEY is set to an invalid value. Enter 4 characters."
+        );
+        let flagged = no_env().with_cli(cli(&[("boot.db_path", "/cli.db")]));
+        assert_eq!(DB_PATH.require(&flagged).unwrap(), "/cli.db");
+        assert_eq!(DB_PATH.require(&no_env()).unwrap(), "app.db");
+    }
+
+    /// Any value that is set but unusable stops the process at start, from
+    /// whichever source, all of them named.
+    #[tokio::test]
+    async fn an_invalid_value_anywhere_stops_the_start() {
+        let file = OptionsFile::in_memory("[scan]\nlimit_per_min = 500\n");
+        let Err(BuildError::Store(e)) = setup(file, key_env()).await.map(|_| ()) else {
+            panic!("expected the file refused");
+        };
         assert!(
-            error.to_string().contains("TEST_DB_PATH or --boot-db-path"),
-            "{error}"
+            e.0.contains("line 2: scan.limit_per_min: Enter a whole number from 1 to 100."),
+            "{e}"
         );
 
-        let views = registry.describe();
-        let db = view(&views, "boot.db_path");
-        assert!(!db.sources.database && db.sources.cli && db.sources.env);
-        assert_eq!(db.cli_flag, "boot-db-path");
-        assert_eq!(view(&views, "boot.key").value, MASK);
+        let missing = setup(OptionsFile::in_memory(""), no_env()).await;
+        let Err(BuildError::Invalid(problems)) = missing.map(|_| ()) else {
+            panic!("expected the missing secret refused");
+        };
+        assert_eq!(
+            problems,
+            ["boot.key: TEST_KEY must be set. The key that protects the store."]
+        );
+    }
+
+    /// The file holds only what it may, each problem with its line.
+    #[tokio::test]
+    async fn the_options_file_refuses_what_it_may_not_hold() {
+        let file = OptionsFile::in_memory(
+            "[scan]\nlimit_per_minute = 5\n\n[boot]\nkey = \"abcd\"\n\n[abuse]\nunder_attack = true\n",
+        );
+        let Err(BuildError::Store(e)) = setup(file, key_env()).await.map(|_| ()) else {
+            panic!("expected the file refused");
+        };
+        let message = e.0;
+        assert!(
+            message.contains("line 2: there is no setting called scan.limit_per_minute"),
+            "{message}"
+        );
+        assert!(message.contains("line 5: boot.key can't be in the options file: it is a secret: set TEST_KEY in the environment"), "{message}");
+        assert!(
+            message.contains(
+                "line 8: abuse.under_attack can't be in the options file: the admin page keeps it"
+            ),
+            "{message}"
+        );
+        let bad = OptionsFile::in_memory("[scan\n");
+        let Err(BuildError::Store(e)) = setup(bad, key_env()).await.map(|_| ()) else {
+            panic!("expected a syntax error");
+        };
+        assert!(e.0.contains("line 1"), "{e}");
+    }
+
+    /// A save writes only its keys, in place, keeping the file's comments;
+    /// it refuses if the file changed on disk since it was read, and the
+    /// reload that then applies those changes refuses an invalid one.
+    #[tokio::test]
+    async fn saves_write_the_file_in_place_and_reloads_apply_edits() {
+        let dir = temp_dir("options");
+        let path = dir.join("app.toml");
+        std::fs::write(&path, "# Kept.\n[scan]\n# How fast.\nlimit_per_min = 20\n").unwrap();
+        let s = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+        assert_eq!(s.rate.load().limit, 20);
+        let info = s.registry.options_file().unwrap();
+        assert_eq!(info.path, path.display().to_string());
+        assert!(info.exists && info.writable);
+
+        s.registry
+            .save(vec![
+                change("scan.limit_per_min", "30"),
+                change("public_url", "https://pay.example.com"),
+                change("scan.networks", "mainnet,testnet"),
+            ])
+            .await
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            "public_url = \"https://pay.example.com\"\n# Kept.\n[scan]\n# How fast.\nlimit_per_min = 30\nnetworks = \"mainnet,testnet\"\n"
+        );
+        assert_eq!(s.rate.load().limit, 30);
+
+        // Edited by hand: a save refuses to overwrite it.
+        std::fs::write(
+            &path,
+            text.replace("limit_per_min = 30", "limit_per_min = 50"),
+        )
+        .unwrap();
+        let refused = s
+            .registry
+            .save(vec![change("public_url", "")])
+            .await
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("has changed since it was loaded"),
+            "{refused}"
+        );
+        assert_eq!(s.rate.load().limit, 30, "not applied until reloaded");
+
+        let report = s.registry.reload().await.unwrap();
+        assert_eq!(report.changed, ["scan.limit_per_min"]);
+        assert_eq!(s.rate.load().limit, 50);
+
+        std::fs::write(&path, "[scan]\nlimit_per_min = 0\n").unwrap();
+        let refused = s.registry.reload().await.unwrap_err();
+        assert!(
+            refused.to_string().contains("line 2: scan.limit_per_min"),
+            "{refused}"
+        );
+        assert_eq!(s.rate.load().limit, 50, "a bad file changes nothing");
+
+        // Now it saves again: the reload refused, so the last good read stands
+        // until the file is fixed.
+        std::fs::write(&path, "[scan]\nlimit_per_min = 60\n").unwrap();
+        s.registry.reload().await.unwrap();
+        s.registry
+            .save(vec![change("public_url", "https://x.example")])
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "public_url = \"https://x.example\"\n[scan]\nlimit_per_min = 60\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `--init` lists every setting the file may hold, commented out with
+    /// its default, names the secrets' variables, leaves runtime switches
+    /// out, reads back as an empty file would, and never overwrites one.
+    #[test]
+    fn init_writes_a_commented_file_that_changes_nothing() {
+        let text = render_init("app", ALL);
+        assert!(
+            text.contains("# Options file for app, written by `app --init`."),
+            "{text}"
+        );
+        assert!(text.contains("#   TEST_KEY (required)"), "{text}");
+        assert!(text.contains("# Where this instance is.\n# Unset by default; for example:\n# public_url = \"https://pay.example.com\""), "{text}");
+        assert!(text.contains("[scan]\n# Requests a minute.\n# A whole number from 1 to 100.\n# limit_per_min = 10\n"), "{text}");
+        assert!(
+            text.contains("\n\n# Networks to scan.\n# networks = \"mainnet\"\n"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("\n\n\n"),
+            "one blank line between settings: {text}"
+        );
+        assert!(text.contains("# Takes effect after a restart. The admin page doesn't change it.\n# db_path = \"app.db\""), "{text}");
+        assert!(!text.contains("under_attack"), "{text}");
+        assert!(
+            text.find("public_url").unwrap() < text.find("[boot]").unwrap(),
+            "{text}"
+        );
+        assert!(super::options_values_for_test(&text, ALL)
+            .unwrap()
+            .is_empty());
+
+        let dir = temp_dir("init");
+        let path = dir.join("nested").join("app.toml");
+        write_init(&path, &text).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        let again = write_init(&path, "other").unwrap_err();
+        assert!(again.contains("already exists"), "{again}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Declarations that can't work are refused.
     #[test]
-    fn declarations_need_a_source_and_unsaved_ones_apply_on_restart() {
-        let unsaved_live: Setting<u32> = Setting {
-            applies: Applies::Live,
+    fn declarations_keep_each_source_to_its_kind_of_setting() {
+        assert_eq!(ALL.len(), 6);
+        let with_env = Setting {
+            env_var: "TEST_LIMIT",
+            sources: Sources::of(&[Source::Env]),
             ..LIMIT
         };
-        let unsaved_live = Setting {
-            sources: Sources::of(&[Source::Env]),
-            ..unsaved_live
+        assert!(
+            with_env.check_declaration().is_err(),
+            "only a secret comes from the environment"
+        );
+        let both = Setting {
+            sources: Sources::of(&[Source::Toml, Source::Database]),
+            ..LIMIT
         };
-        assert!(unsaved_live.check_declaration().is_err());
-        let saved_required = Setting {
+        assert!(both.check_declaration().is_err(), "stored in one place");
+        let required_stored = Setting {
             required: true,
             ..LIMIT
         };
-        assert!(saved_required.check_declaration().is_err());
-        let nowhere = Setting {
-            sources: Sources::of(&[]),
-            applies: Applies::Restart,
-            ..LIMIT
-        };
-        assert!(nowhere.check_declaration().is_err());
-        assert!(
-            KEY.check_declaration().is_ok(),
-            "a required setting's default is a placeholder"
-        );
+        assert!(required_stored.check_declaration().is_err());
         let secret_option = Setting {
             sources: Sources::of(&[Source::Cli, Source::Env]),
             ..KEY
         };
         assert!(
             secret_option.check_declaration().is_err(),
-            "a secret on the command line shows in the process list"
+            "the process list shows options"
+        );
+        let secret_file = Setting {
+            sources: Sources::of(&[Source::Toml, Source::Env]),
+            ..KEY
+        };
+        assert!(secret_file.check_declaration().is_err());
+        assert!(
+            KEY.check_declaration().is_ok(),
+            "a required setting's default is a placeholder"
         );
     }
 
-    /// Every setting that takes the command line is an option, under its
-    /// key's heading, with its own help, env variable and default; a value
-    /// is checked as it is parsed, and lands in the registry's input.
+    /// Every setting that takes the command line is an option, with help
+    /// from its declaration; a value is checked as it is parsed; the
+    /// secrets' variables are listed after the options; `--options` and
+    /// `--init` are there too.
     #[test]
     fn every_setting_is_a_command_line_option_with_help_from_its_declaration() {
-        let command = crate::cli::with_settings(clap::Command::new("app"), ALL);
+        let command = crate::cli::with_settings(clap::Command::new("app"), ALL, "app.toml");
         let help = command.clone().render_long_help().to_string();
-        assert!(help.contains("Boot settings:"), "{help}");
-        assert!(help.contains("--boot-db-path <TEXT>"), "{help}");
-        for note in [
-            "[env: TEST_DB_PATH]",
-            "[default: app.db]",
-            "[not saved: give it at every start]",
+        for text in [
+            "Scan settings:",
+            "--scan-limit-per-min <NUMBER>",
+            "[default: 10]",
+            "[options file: scan.limit_per_min]",
+            "--boot-db-path <TEXT>",
+            "Options file:",
+            "--options <PATH>",
+            "--init",
+            "TEST_KEY [required]\n          The key that protects the store.",
         ] {
-            assert!(help.contains(note), "{note}: {help}");
+            assert!(help.contains(text), "{text}: {help}");
         }
-        // A secret has no option; its variable is listed after them.
         assert!(!help.contains("--boot-key"), "{help}");
-        assert!(help.contains("Environment variables"), "{help}");
         assert!(
-            help.contains("TEST_KEY [required]\n          The key that protects the store."),
-            "{help}"
+            !help.contains("--abuse-under-attack"),
+            "a runtime switch isn't an option: {help}"
         );
-        let short = command.clone().render_help().to_string();
-        assert!(short.contains("TEST_KEY [required]"), "{short}");
-        assert!(help.contains("Scan settings:"), "{help}");
-        assert!(help.contains("--scan-limit-per-min <NUMBER>"), "{help}");
 
         let matches = command
             .clone()
-            .try_get_matches_from(["app", "--scan-limit-per-min", "50"])
+            .try_get_matches_from([
+                "app",
+                "--scan-limit-per-min",
+                "50",
+                "--options",
+                "/etc/app.toml",
+                "--init",
+            ])
             .unwrap();
-        assert_eq!(
-            crate::cli::values(&matches, ALL),
-            cli(&[("scan.limit_per_min", "50")])
-        );
-        assert!(command
-            .clone()
-            .try_get_matches_from(["app", "--boot-key", "abcd"])
-            .is_err());
+        let start = crate::cli::start(&matches, ALL, "app.toml");
+        assert_eq!(start.env.cli("scan.limit_per_min").as_deref(), Some("50"));
+        assert_eq!(start.options, std::path::PathBuf::from("/etc/app.toml"));
+        assert!(start.init);
         let refused = command
             .try_get_matches_from(["app", "--scan-limit-per-min", "500"])
             .unwrap_err()
             .to_string();
-        assert!(refused.contains("--scan-limit-per-min"), "{refused}");
         assert!(
             refused.contains("Enter a whole number from 1 to 100."),
             "{refused}"
@@ -1824,8 +1998,8 @@ mod sources {
     #[tokio::test]
     async fn two_settings_with_one_option_are_refused() {
         settings! {
-            DOTTED: u32 { key: "a.b_c", env: "TEST_A", default: 1, description: "" },
-            UNDERSCORED: u32 { key: "a.b.c", env: "TEST_B", default: 1, description: "" },
+            DOTTED: u32 { key: "a.b_c", default: 1, description: "" },
+            UNDERSCORED: u32 { key: "a.b.c", default: 1, description: "" },
         }
         let store: Arc<dyn SettingsStore> = Arc::new(MemoryStore::new());
         let builder = Registry::builder_with_env(store, ALL, no_env()).await;
@@ -1834,4 +2008,14 @@ mod sources {
             Err(BuildError::DuplicateFlag("a.b.c"))
         ));
     }
+}
+
+/// The options file's values, for a test that checks what a text holds.
+fn options_values_for_test(
+    text: &str,
+    declared: &[&'static dyn AnySetting],
+) -> Result<HashMap<String, String>, StoreError> {
+    let file = OptionsFile::in_memory(text);
+    let store = LayeredStore::new(file, Arc::new(MemoryStore::new()), declared);
+    futures_util::FutureExt::now_or_never(store.read_all()).unwrap_or_else(|| Ok(HashMap::new()))
 }

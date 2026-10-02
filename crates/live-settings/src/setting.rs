@@ -19,55 +19,63 @@ pub enum Applies {
     Restart,
 }
 
-/// Where a setting's value can come from.
+/// Where a setting's value can come from, lowest precedence first: a value
+/// from a later source wins over one from an earlier source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
+    /// The options file (TOML), which the admin page writes to.
+    Toml,
+    /// The database: runtime switches the admin page keeps.
+    Database,
     /// A command-line option, `--` and the key with `-` for `.` and `_`
     /// ([`cli_flag`]).
     Cli,
-    /// The setting's environment variable.
+    /// The setting's environment variable: secrets only.
     Env,
-    /// A value saved on the admin page (the settings store).
-    Database,
 }
 
-/// The sources a setting accepts. Every setting accepts all three unless it
-/// says otherwise; one that can't be saved (no `Database`) is for what is
-/// needed before the store opens or must never be kept in it, and applies
-/// on restart.
+/// The sources a setting accepts: the options file and the command line,
+/// unless it says otherwise. A setting is stored in at most one place (the
+/// options file or the database), and only a secret comes from the
+/// environment, alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Sources {
+    pub toml: bool,
+    pub database: bool,
     pub cli: bool,
     pub env: bool,
-    pub database: bool,
 }
 
 impl Sources {
-    /// The command line, the environment and the database.
-    pub const ALL: Sources = Sources {
-        cli: true,
-        env: true,
-        database: true,
-    };
+    /// Configuration: the options file and the command line.
+    pub const CONFIG: Sources = Sources::of(&[Source::Toml, Source::Cli]);
 
     /// Exactly `sources`.
     pub const fn of(sources: &[Source]) -> Sources {
         let mut out = Sources {
+            toml: false,
+            database: false,
             cli: false,
             env: false,
-            database: false,
         };
         let mut i = 0;
         while i < sources.len() {
             match sources[i] {
+                Source::Toml => out.toml = true,
+                Source::Database => out.database = true,
                 Source::Cli => out.cli = true,
                 Source::Env => out.env = true,
-                Source::Database => out.database = true,
             }
             i += 1;
         }
         out
+    }
+
+    /// Whether a value is kept somewhere (the options file or the
+    /// database), so the admin page can change it.
+    pub const fn stored(self) -> bool {
+        self.toml || self.database
     }
 }
 
@@ -133,7 +141,8 @@ pub type Check<T> = fn(&T) -> Result<(), String>;
 pub struct Setting<T: SettingValue> {
     /// The stored key, and the field name on the admin page.
     pub key: &'static str,
-    /// The environment variable that overrides the stored value.
+    /// Its environment variable: a secret's, and empty for every other
+    /// setting.
     pub env_var: &'static str,
     /// The value when neither the environment nor the store has one. A
     /// function, because most value types can't be built in a `const`.
@@ -156,19 +165,24 @@ pub struct Setting<T: SettingValue> {
     /// process can't start without it ([`Setting::require`]). `default` is
     /// a placeholder, never used for anything that runs.
     pub required: bool,
+    /// Whether the admin page may change it. A setting the page shouldn't
+    /// touch (where the database is) can still be in the options file.
+    pub editable: bool,
 }
 
 /// Where a setting's effective value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingSource {
-    /// A command-line option, which wins over everything else.
-    Cli,
-    /// An environment variable, which wins over anything saved.
-    Env,
-    /// A saved value.
+    /// The options file.
+    Toml,
+    /// The database (a runtime switch).
     Database,
-    /// Neither is set, or the one that is set is invalid.
+    /// A command-line option, which wins over anything stored.
+    Cli,
+    /// An environment variable, which wins over everything else.
+    Env,
+    /// Nothing sets it, or what sets it is invalid.
     Default,
 }
 
@@ -256,25 +270,27 @@ impl<T: SettingValue> Setting<T> {
         outside_names(self.key, self.env_var, self.sources)
     }
 
-    /// The command line over the environment over stored over default, for
-    /// the sources this setting accepts. An invalid value from any of them
-    /// falls back to the default for this key only, and is reported as a
-    /// problem. A required setting that is unset is a problem too.
+    /// The environment over the command line over the stored value (the
+    /// options file's or the database's) over the default, for the sources
+    /// this setting accepts. An invalid value from any of them gives the
+    /// default and is reported as a problem, which stops the process at
+    /// start (`Registry::build`). A required setting that is unset is a
+    /// problem too.
     pub(crate) fn resolve(&self, stored: Option<&str>, env: &Env) -> Resolved<T> {
-        let stored = if self.sources.database { stored } else { None };
+        let stored = if self.sources.stored() { stored } else { None };
         let mut problem = None;
         let outside = [
-            (
-                self.sources.cli,
-                SettingSource::Cli,
-                env.cli(self.key),
-                format!("--{}", cli_flag(self.key)),
-            ),
             (
                 self.sources.env,
                 SettingSource::Env,
                 env.get(self.env_var),
                 self.env_var.to_string(),
+            ),
+            (
+                self.sources.cli,
+                SettingSource::Cli,
+                env.cli(self.key),
+                format!("--{}", cli_flag(self.key)),
             ),
         ];
         let given = outside
@@ -291,34 +307,31 @@ impl<T: SettingValue> Setting<T> {
                         problem: None,
                     }
                 }
-                Err(e) if self.required => {
+                Err(e) => {
                     problem = Some(Problem {
                         from_env: true,
                         message: format!("{name} is set to an invalid value. {e}"),
                     })
                 }
-                Err(e) => {
-                    problem = Some(Problem {
-                        from_env: true,
-                        message: format!(
-                            "{name} is set to an invalid value, so the default is used. {e}"
-                        ),
-                    })
-                }
             }
         } else if let Some(raw) = stored {
+            let (source, place) = if self.sources.toml {
+                (SettingSource::Toml, "In the options file, it")
+            } else {
+                (SettingSource::Database, "The saved value")
+            };
             match self.parse(raw) {
                 Ok(value) => {
                     return Resolved {
                         value,
-                        source: SettingSource::Database,
+                        source,
                         problem: None,
                     }
                 }
                 Err(e) => {
                     problem = Some(Problem {
                         from_env: false,
-                        message: format!("The saved value is invalid, so the default is used. {e}"),
+                        message: format!("{place} is invalid. {e}"),
                     })
                 }
             }
@@ -353,6 +366,8 @@ pub trait AnySetting: private::Resolve + Send + Sync {
     fn sources(&self) -> Sources;
     /// Whether the process can't start without it.
     fn required(&self) -> bool;
+    /// Whether the admin page may change it.
+    fn editable(&self) -> bool;
 }
 
 impl<T: SettingValue> AnySetting for Setting<T> {
@@ -387,6 +402,10 @@ impl<T: SettingValue> AnySetting for Setting<T> {
     fn required(&self) -> bool {
         self.required
     }
+
+    fn editable(&self) -> bool {
+        self.editable
+    }
 }
 
 /// The untyped operations the registry needs. In a private module so
@@ -410,6 +429,9 @@ pub(crate) mod private {
         fn normalise(&self, raw: &str) -> Result<String, String>;
         fn resolve_view(&self, stored: Option<&str>, env: &Env) -> ResolvedView;
         fn default_shown(&self) -> String;
+        /// The default in its stored form (unmasked), for the options
+        /// file `--init` writes.
+        fn default_stored(&self) -> String;
         /// Checks the declaration itself: the default and example are
         /// valid, and bounds are only on whole numbers.
         fn check_declaration(&self) -> Result<(), String>;
@@ -434,27 +456,41 @@ pub(crate) mod private {
             self.default_value().render()
         }
 
+        fn default_stored(&self) -> String {
+            self.default_value().to_stored()
+        }
+
         fn check_declaration(&self) -> Result<(), String> {
-            if self.key.is_empty() || self.env_var.is_empty() {
-                return Err("a setting needs a key and an environment variable".to_string());
+            let sources = self.sources;
+            if self.key.is_empty() {
+                return Err("a setting needs a key".to_string());
             }
-            if self.sources.cli && T::kind() == SettingKind::Secret {
-                return Err(
-                    "a secret can't be a command-line option: every user on the machine can read the process list"
-                        .to_string(),
-                );
-            }
-            if !(self.sources.cli || self.sources.env || self.sources.database) {
+            if !(sources.toml || sources.database || sources.cli || sources.env) {
                 return Err("a setting needs at least one source".to_string());
             }
-            if !self.sources.database && self.applies != Applies::Restart {
+            let secret = T::kind() == SettingKind::Secret;
+            if secret && sources != Sources::of(&[Source::Env]) {
                 return Err(
-                    "a setting that can't be saved applies on restart: the command line and environment don't change while the process runs"
+                    "a secret comes from its environment variable alone: the process list and an options file can be read by others"
                         .to_string(),
                 );
             }
-            if self.required && self.sources.database {
-                return Err("only a setting that can't be saved can be required".to_string());
+            if !secret && sources.env {
+                return Err("only a secret comes from the environment".to_string());
+            }
+            if sources.env == self.env_var.is_empty() {
+                return Err(
+                    "a setting has an environment variable exactly when it comes from the environment"
+                        .to_string(),
+                );
+            }
+            if sources.toml && sources.database {
+                return Err(
+                    "a setting is stored in the options file or the database, not both".to_string(),
+                );
+            }
+            if self.required && sources.stored() {
+                return Err("only a setting that isn't stored can be required".to_string());
             }
             if let Some(bounds) = self.bounds {
                 if !matches!(T::kind(), SettingKind::Integer { .. }) {
@@ -536,6 +572,23 @@ impl Env {
                     .collect(),
             )),
             cli: Arc::default(),
+        }
+    }
+
+    /// This fixed environment with `var` set to `value` unless it is set
+    /// already: for a test that needs a required secret without naming it.
+    /// The process environment is left as it is.
+    pub fn or_var(self, var: &str, value: &str) -> Self {
+        match &self.fixed {
+            Some(vars) if !vars.contains_key(var) => {
+                let mut vars = (**vars).clone();
+                vars.insert(var.to_string(), value.to_string());
+                Env {
+                    fixed: Some(Arc::new(vars)),
+                    cli: self.cli,
+                }
+            }
+            _ => self,
         }
     }
 

@@ -1,19 +1,20 @@
 //! Every monokulo setting, declared once with the `live-settings` library
 //! (admin_settings_v2.md part 1): each setting's type, range, description
-//! and example live in its declaration. A value comes from its command-line
-//! option, its environment variable, the value saved on the admin settings
-//! page (`http/admin_settings.rs`), or its default, in that order; saving
-//! through the registry applies the change to the running process (part 3).
+//! and example live in its declaration. Configuration comes from the options
+//! file (`monokulo.toml`), which the admin settings page
+//! (`http/admin_settings.rs`) saves to, or from its command-line option,
+//! which wins and locks it on the page. Saving or reloading through the
+//! registry applies the change to the running process (part 3).
 //!
-//! A few settings can't be saved, only given at start (`sources: [Cli,
-//! Env]`, or `[Env]` for a secret, since the process list is readable by
-//! every user on the machine): where the database is and the log format,
-//! which are needed before the database opens, the engine token, and
-//! `crypto.encryption_key`, the AES-256-GCM key every
-//! `store_connections.tenant_secret_token_encrypted` row is encrypted with
-//! (`crate::crypto`). Keeping it in the database it protects, or changing it
-//! while running, would leak it or make every stored token unreadable. The
-//! admin page shows them locked.
+//! Two runtime switches, `abuse.under_attack` and `logging.dev_mode_until`,
+//! are kept in the database instead: they are flipped from the admin page
+//! while running, not configured. Secrets come from the environment only
+//! (the process list and the options file can be read by others): the
+//! engine token, the collector's headers, and `crypto.encryption_key`, the
+//! AES-256-GCM key every `store_connections.tenant_secret_token_encrypted`
+//! row is encrypted with (`crate::crypto`). Keeping it in the database it
+//! protects, or changing it while running, would leak it or make every
+//! stored token unreadable.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -21,12 +22,12 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use live_settings::{
-    choice_value, settings, AnySetting, BindAddr, Env, FieldError, HttpUrl, Registry, Secret,
-    Section, Snapshot, Warning,
+    choice_value, settings, AnySetting, BindAddr, FieldError, HttpUrl, Registry, Secret, Section,
+    Snapshot, Warning,
 };
 
 use crate::abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
-use crate::db::{Database, Db};
+use crate::db::Database;
 use crate::engine_client::EngineClient;
 use crate::exchange_rate_config::{ExchangeRateConfig, ExchangeRateProviders};
 
@@ -68,16 +69,14 @@ pub fn encryption_key_bytes(value: &str) -> Result<[u8; 32], String> {
 settings! {
     DATABASE_PATH: PathBuf {
         key: "database.path",
-        env: "MONOKULO_DB_PATH",
-        default: PathBuf::from("monokulo.db"),
-        description: "monokulo's database file. Its log store is kept beside it. Given at start only: the settings live inside it.",
+        default: live_settings::paths::data_file("monokulo.db").unwrap_or_else(|| PathBuf::from("monokulo.db")),
+        description: "monokulo's database file, by default ~/.local/share/monokulo/monokulo.db (or monokulo.db in the working directory if that can't be used). Its log store is kept beside it.",
         example: "/var/lib/monokulo/monokulo.db",
         applies: Restart,
-        sources: [Cli, Env],
+        editable: false,
     },
     SERVER_BIND: BindAddr {
         key: "server.bind",
-        env: "MONOKULO_BIND",
         default: live_settings::parsed_default("127.0.0.1:8081"),
         description: "The address and port monokulo listens on. Takes effect after a restart.",
         example: "127.0.0.1:8081",
@@ -95,7 +94,6 @@ settings! {
     },
     ENGINE_URL: HttpUrl {
         key: "engine.url",
-        env: "MONOKULO_ENGINE_URL",
         default: live_settings::parsed_default("http://127.0.0.1:8443"),
         description: "Where monokulo reaches the engine: the engine's server.bind as a URL. Takes effect after monokulo restarts.",
         example: "http://127.0.0.1:8443",
@@ -113,65 +111,55 @@ settings! {
     },
     LOGGING_FORMAT: telemetry::LogFormat {
         key: "logging.format",
-        env: "MONOKULO_LOG_FORMAT",
         default: telemetry::LogFormat::Auto,
         description: "How log lines are written to the console: json, pretty, or auto (pretty at a terminal, JSON everywhere else).",
         example: "json",
         applies: Restart,
-        sources: [Cli, Env],
     },
     SIGNUP_MODE: SignupMode {
         key: "signup.mode",
-        env: "MONOKULO_SIGNUP_MODE",
         default: SignupMode::InviteOnly,
         description: "Who can create an account: public (anyone) or invite_only (only people with an invite link from the admin).",
         example: "invite_only",
     },
     EXCHANGE_RATE_COINGECKO_ENABLED: bool {
         key: "exchange_rate.coingecko_enabled",
-        env: "MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED",
         default: true,
         description: "Whether stores can price orders in fiat currencies using Coingecko's rates. Off, only XMR prices work.",
         example: "true",
     },
     EXCHANGE_RATE_COINGECKO_BASE_URL: HttpUrl {
         key: "exchange_rate.coingecko_base_url",
-        env: "MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL",
         default: live_settings::parsed_default("https://api.coingecko.com"),
         description: "Where Coingecko's API is reached. Change it only to use a proxy or mirror.",
         example: "https://api.coingecko.com",
     },
     EXCHANGE_RATE_COINMARKETCAP_ENABLED: bool {
         key: "exchange_rate.coinmarketcap_enabled",
-        env: "MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED",
         default: true,
         description: "Whether stores can price orders in fiat currencies using CoinMarketCap's rates. Each store still chooses whether to use it, and in what order.",
         example: "true",
     },
     EXCHANGE_RATE_COINMARKETCAP_BASE_URL: HttpUrl {
         key: "exchange_rate.coinmarketcap_base_url",
-        env: "MONOKULO_EXCHANGE_RATE_COINMARKETCAP_BASE_URL",
         default: live_settings::parsed_default("https://pro-api.coinmarketcap.com/public-api"),
         description: "Where CoinMarketCap's keyless API is reached. Change it only to use a proxy or mirror.",
         example: "https://pro-api.coinmarketcap.com/public-api",
     },
     EXCHANGE_RATE_HAVENO_ENABLED: bool {
         key: "exchange_rate.haveno_enabled",
-        env: "MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED",
         default: false,
         description: "Whether stores can price orders using the RetoSwap (Haveno) order book, read through haveno.markets. It is a thin peer-to-peer market, so it prices only currencies with both buyers and sellers listed right now.",
         example: "false",
     },
     EXCHANGE_RATE_HAVENO_BASE_URL: HttpUrl {
         key: "exchange_rate.haveno_base_url",
-        env: "MONOKULO_EXCHANGE_RATE_HAVENO_BASE_URL",
         default: live_settings::parsed_default("https://haveno.markets"),
         description: "Where the haveno.markets API is reached. Change it only to use a proxy or mirror.",
         example: "https://haveno.markets",
     },
     EXCHANGE_RATE_CACHE_SECONDS: u64 {
         key: "exchange_rate.cache_seconds",
-        env: "MONOKULO_EXCHANGE_RATE_CACHE_SECONDS",
         default: 30,
         check: range(0, 86_400),
         description: "Seconds a fetched exchange rate is reused before asking its provider again.",
@@ -179,7 +167,6 @@ settings! {
     },
     HTTP_CACHE_MAX_MB: u64 {
         key: "http_cache.max_mb",
-        env: "MONOKULO_HTTP_CACHE_MAX_MB",
         default: 16,
         check: range(1, 4096),
         description: "Megabytes of memory for monokulo's cache of engine responses.",
@@ -187,7 +174,6 @@ settings! {
     },
     DATABASE_READ_CONNECTIONS: usize {
         key: "database.read_connections",
-        env: "MONOKULO_DATABASE_READ_CONNECTIONS",
         default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
         check: range(1, 64),
         description: "Read-only connections monokulo opens to its database, each on its own thread. Reads run side by side, so more help up to the number of CPU cores; each keeps its own cache of about 2 MB. Takes effect after a restart.",
@@ -196,7 +182,6 @@ settings! {
     },
     RATE_LIMIT_PER_STORE_KEY_PER_MIN: u32 {
         key: "rate_limit.per_store_key_per_min",
-        env: "MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN",
         default: 600,
         check: range(1, 10_000_000),
         description: "Requests a minute a shop's server may make with its store's secret key (for example the WooCommerce plugin creating orders). These are never challenged.",
@@ -204,7 +189,6 @@ settings! {
     },
     PUBLIC_URL: String {
         key: "public_url",
-        env: "MONOKULO_PUBLIC_URL",
         default: String::new(),
         check: |v: &String| check_public_url(v),
         description: "This instance's public address, e.g. https://pay.example.com or an http://....onion address. Plugins such as WooCommerce are given it when they connect, and send customers to its checkout. Plugins can't connect until it is set.",
@@ -212,7 +196,6 @@ settings! {
     },
     ABUSE_TRUSTED_PROXIES: String {
         key: "abuse.trusted_proxies",
-        env: "MONOKULO_ABUSE_TRUSTED_PROXIES",
         default: String::new(),
         check: |v: &String| check_trusted_proxies(v),
         description: "Addresses and CIDR ranges of reverse proxies in front of this instance, comma-separated. A request from one of these is identified by the last address in its X-Forwarded-For header that isn't a trusted proxy. Leave empty if clients connect directly.",
@@ -220,7 +203,6 @@ settings! {
     },
     ABUSE_ONION_LISTENER: String {
         key: "abuse.onion_listener",
-        env: "MONOKULO_ABUSE_ONION_LISTENER",
         default: String::new(),
         check: |v: &String| check_onion_listener(v),
         description: "A loopback address:port for tor's onion service to connect to, with HiddenServiceExportCircuitID haproxy set in torrc, so each Tor circuit is its own client. Empty turns it off. Only loopback is accepted.",
@@ -228,7 +210,6 @@ settings! {
     },
     ABUSE_STREAM_CAP: usize {
         key: "abuse.stream_cap",
-        env: "MONOKULO_ABUSE_STREAM_CAP",
         default: 16,
         check: range(1, 100_000),
         description: "Live-update streams one client may hold open at once to one store.",
@@ -236,7 +217,6 @@ settings! {
     },
     ABUSE_SOFT_PER_MIN: u32 {
         key: "abuse.soft_per_min",
-        env: "MONOKULO_ABUSE_SOFT_PER_MIN",
         default: 60,
         check: range(1, 10_000_000),
         description: "Requests a minute one visitor (a Tor circuit, or an address) may make to the checkout and public pages before being asked to solve a short challenge. Signed-in merchants and shops using their secret key are never challenged.",
@@ -244,7 +224,6 @@ settings! {
     },
     ABUSE_HARD_PER_MIN: u32 {
         key: "abuse.hard_per_min",
-        env: "MONOKULO_ABUSE_HARD_PER_MIN",
         default: 300,
         check: range(1, 10_000_000),
         description: "Requests a minute past which a visitor is refused outright (429) until the minute is up. Must be above the soft limit.",
@@ -252,7 +231,6 @@ settings! {
     },
     ABUSE_SIGNED_IN_PER_MIN: u32 {
         key: "abuse.signed_in_per_min",
-        env: "MONOKULO_ABUSE_SIGNED_IN_PER_MIN",
         default: 600,
         check: range(1, 10_000_000),
         description: "Requests a minute a signed-in merchant may make (dashboard, POS). Never challenged.",
@@ -260,7 +238,6 @@ settings! {
     },
     ABUSE_CLIENT_LOGS_PER_MIN: u32 {
         key: "abuse.client_logs_per_min",
-        env: "MONOKULO_ABUSE_CLIENT_LOGS_PER_MIN",
         default: 30,
         check: range(1, 100_000),
         description: "Log reports a minute one client may send (browser problem reports, POS session timelines, WooCommerce plugin errors). Past it, reports are dropped with a 429 - never a challenge - and the client's other requests are unaffected.",
@@ -268,7 +245,6 @@ settings! {
     },
     ABUSE_CHALLENGE_BITS: u32 {
         key: "abuse.challenge_bits",
-        env: "MONOKULO_ABUSE_CHALLENGE_BITS",
         default: 16,
         check: range(8, 24),
         description: "How hard the challenge is, in leading zero bits of a SHA-256 hash. Each extra bit doubles the work; 16 takes a phone about a second.",
@@ -276,14 +252,13 @@ settings! {
     },
     ABUSE_UNDER_ATTACK: bool {
         key: "abuse.under_attack",
-        env: "MONOKULO_ABUSE_UNDER_ATTACK",
         default: false,
         description: "When true, every visitor who isn't signed in must pass a challenge before using the checkout or public pages (live updates are not affected). A pass lasts 10 minutes.",
         example: "false",
+        sources: [Database],
     },
     LOGGING_LEVEL: String {
         key: "logging.level",
-        env: "MONOKULO_LOG",
         default: telemetry::DEFAULT_LEVEL.to_string(),
         check: telemetry::check_level,
         description: "Which log lines monokulo writes: a level (error, warn, info, debug, trace), optionally followed by target=level pairs for parts of monokulo.",
@@ -291,14 +266,13 @@ settings! {
     },
     LOGGING_DEV_MODE_UNTIL: u64 {
         key: "logging.dev_mode_until",
-        env: "MONOKULO_LOGGING_DEV_MODE_UNTIL",
         default: 0,
         check: range(0, i64::MAX),
         description: "Development logging: until this time monokulo logs at debug level, then goes back to the level above by itself. Secrets and addresses stay hidden either way.",
+        sources: [Database],
     },
     LOGGING_RETENTION_DAYS: u64 {
         key: "logging.retention_days",
-        env: "MONOKULO_LOGGING_RETENTION_DAYS",
         default: telemetry::store::DEFAULT_RETENTION_DAYS,
         check: range(1, 365),
         description: "Days monokulo's log store keeps lines for the Logs page. Older lines are deleted once a minute.",
@@ -306,7 +280,6 @@ settings! {
     },
     LOGGING_MAX_MB: u64 {
         key: "logging.max_mb",
-        env: "MONOKULO_LOGGING_MAX_MB",
         default: telemetry::store::DEFAULT_MAX_MB,
         check: range(10, 100_000),
         description: "Most megabytes monokulo's log store may use. Past it, the oldest lines are deleted first.",
@@ -314,7 +287,6 @@ settings! {
     },
     LOGGING_OTLP_ENDPOINT: String {
         key: "logging.otlp_endpoint",
-        env: "MONOKULO_LOGGING_OTLP_ENDPOINT",
         default: String::new(),
         check: telemetry::otlp::check_endpoint,
         description: "An OpenTelemetry collector (OTLP over HTTP) to send monokulo's log lines and spans to as well, such as a Collector, Grafana, Seq or the Aspire Dashboard. Leave empty to keep them here only. They are redacted the same way either way.",
@@ -326,7 +298,7 @@ settings! {
         default: live_settings::Secret::default(),
         check: telemetry::otlp::check_headers,
         description: "Headers the collector needs, such as an API key, as name=value pairs separated by commas.",
-        sources: [Env, Database],
+        sources: [Env],
     },
 }
 
@@ -365,47 +337,13 @@ impl Section for LoggingConfig {
     }
 }
 
-/// The command line and environment this process resolves its settings
-/// against, set once at start (`main`); the process environment until then
-/// (and in tests).
-static PROCESS_ENV: OnceLock<Env> = OnceLock::new();
-
-/// Sets the command line and environment per-request reads resolve against,
-/// so a setting given on the command line counts there as everywhere else.
-pub fn set_process_env(env: Env) {
-    let _ = PROCESS_ENV.set(env);
-}
-
-fn process_env() -> Env {
-    PROCESS_ENV.get().cloned().unwrap_or_else(Env::process)
-}
-
-/// The settings read per request, resolved as the registry resolves them:
-/// the command line, the environment, the saved value, the default. An
-/// invalid value gives the default; it was reported when the settings
-/// loaded.
-pub fn per_request(db: &Db) -> PerRequest {
-    let stored = PerRequest::keys()
-        .iter()
-        .filter_map(|setting| {
-            let value = db.get_setting(setting.key()).ok().flatten()?;
-            Some((setting.key().to_string(), value))
-        })
-        .collect();
-    let snapshot = Snapshot::new(stored, process_env());
-    PerRequest {
-        signup_mode: snapshot.get(&SIGNUP_MODE),
-        public_url: snapshot.get(&PUBLIC_URL),
-    }
-}
-
 /// Checks a `public_url` value: this instance's external base URL, the one
 /// address plugins and customers use (clearnet or `.onion`). It must be an
 /// absolute `http`/`https` URL with a host and nothing after it but an
 /// optional `/` - no path, query, fragment or login - since callers append
 /// paths like `/pay/{pk}/orders` to it. Returns it without the trailing
 /// `/`. The empty string is not valid here; an empty setting just means
-/// "not set" ([`public_url`]).
+/// "not set" ([`MonokuloSettings::public_url`]).
 pub fn validate_public_url(value: &str) -> Result<String, String> {
     let value = value.trim();
     let problem = "Enter this instance's public address, like https://pay.example.com or http://abc...xyz.onion, with no path after it.";
@@ -423,23 +361,8 @@ pub fn validate_public_url(value: &str) -> Result<String, String> {
     Ok(parsed.as_str().trim_end_matches('/').to_string())
 }
 
-/// This instance's public base URL (no trailing `/`), or `None` while it
-/// isn't set.
-pub fn public_url(db: &Db) -> Option<String> {
-    let value = per_request(db).public_url;
-    if value.trim().is_empty() {
-        return None;
-    }
-    validate_public_url(&value).ok()
-}
-
-/// This instance's current signup mode.
-pub fn signup_mode(db: &Db) -> SignupMode {
-    per_request(db).signup_mode
-}
-
-/// What monokulo needs before its database opens, or must never keep in it:
-/// given at start only (`sources: [Cli, Env]`), read in `main`.
+/// What monokulo needs before its database opens, or must never keep in it,
+/// read in `main`: where the database is, the log format, and the secrets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BootConfig {
     pub database_path: PathBuf,
@@ -469,7 +392,7 @@ impl Section for BootConfig {
 }
 
 /// Where monokulo listens and where it reaches the engine: read once at
-/// start, from the database too, so both apply on restart.
+/// start, so both apply on restart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -508,7 +431,8 @@ impl Section for EngineConnection {
     }
 }
 
-/// Read per request with [`per_request`]; nothing holds it live.
+/// Read on each request that needs them ([`MonokuloSettings::signup_mode`],
+/// [`MonokuloSettings::public_url`]); a save or reload applies at once.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PerRequest {
     pub signup_mode: SignupMode,
@@ -641,7 +565,8 @@ impl Section for OnionListenerConfig {
     }
 }
 
-/// monokulo's settings store, over its own `settings` table, through the
+/// monokulo's store for the runtime switches (`sources: [Database]`), over
+/// its own `settings` table, through the
 /// same reading and writing connections as everything else (so a save
 /// queues behind other writes on the writer's thread, never on a Tokio
 /// worker).
@@ -886,22 +811,52 @@ pub struct MonokuloSettings {
     pub registry: Option<Registry>,
     /// Where monokulo listens, read once at start.
     pub server: live_settings::Live<ServerConfig>,
+    /// Who may sign up and this instance's public address.
+    pub per_request: live_settings::Live<PerRequest>,
 }
 
 impl MonokuloSettings {
-    /// No registry, for tests that don't use the admin settings page.
+    /// No registry and every default, for tests that don't use the admin
+    /// settings page.
     pub fn defaults() -> Arc<Self> {
+        Self::fixed(PerRequest {
+            signup_mode: SIGNUP_MODE.default_value(),
+            public_url: PUBLIC_URL.default_value(),
+        })
+    }
+
+    /// No registry, with the given signup mode and public address: for
+    /// tests.
+    pub fn fixed(per_request: PerRequest) -> Arc<Self> {
         Arc::new(MonokuloSettings {
             registry: None,
             server: live_settings::Live::new(ServerConfig {
                 bind: SERVER_BIND.default_value().0,
                 engine_url: ENGINE_URL.default_value(),
             }),
+            per_request: live_settings::Live::new(per_request),
         })
     }
 
-    /// Loads every setting and applies it to the given runtime pieces;
-    /// later saves through the registry apply the same way.
+    /// This instance's current signup mode.
+    pub fn signup_mode(&self) -> SignupMode {
+        self.per_request.load().signup_mode
+    }
+
+    /// This instance's public base URL (no trailing `/`), or `None` while
+    /// it isn't set.
+    pub fn public_url(&self) -> Option<String> {
+        let value = &self.per_request.load().public_url;
+        if value.trim().is_empty() {
+            return None;
+        }
+        validate_public_url(value).ok()
+    }
+
+    /// Loads every setting, from the options file, the database and `env`,
+    /// and applies it to the given runtime pieces; later saves and reloads
+    /// through the registry apply the same way. Anything invalid, or a
+    /// missing secret, stops it with every problem named.
     pub async fn load(
         db: Database,
         engine_client: EngineClient,
@@ -909,8 +864,12 @@ impl MonokuloSettings {
         abuse: Arc<AbuseProtection>,
         onion: Option<OnionReloadable>,
         env: live_settings::Env,
+        options: live_settings::OptionsFile,
     ) -> Result<Arc<Self>, String> {
-        let mut builder = Registry::builder_with_env(Arc::new(DbSettings(db)), ALL, env).await;
+        // The options file holds the configuration and the database the
+        // runtime switches, each key in its own place.
+        let layered = live_settings::LayeredStore::new(options, Arc::new(DbSettings(db)), ALL);
+        let mut builder = Registry::builder_with_env(Arc::new(layered), ALL, env).await;
         builder.reloadable(EngineConnectionReloadable { engine_client });
         builder.reloadable(ExchangeRatesReloadable {
             providers: exchange_rates,
@@ -924,9 +883,8 @@ impl MonokuloSettings {
                 builder.section::<OnionListenerConfig>();
             }
         }
-        // Its settings are read per request with `per_request` (they have
-        // no runtime state to rebuild); the section only groups them.
-        builder.section::<PerRequest>();
+        // Read per request: nothing to rebuild when they change.
+        let per_request = builder.section::<PerRequest>();
         // Read once at start, before the registry exists (`main.rs`).
         builder.section::<DatabaseConfig>();
         builder.section::<BootConfig>();
@@ -947,13 +905,27 @@ impl MonokuloSettings {
         Ok(Arc::new(MonokuloSettings {
             registry: Some(registry),
             server,
+            per_request,
         }))
     }
+}
+
+/// The two secrets monokulo can't start without, for tests.
+#[cfg(test)]
+pub(crate) fn test_secrets() -> live_settings::Env {
+    live_settings::Env::fixed([
+        (CRYPTO_ENCRYPTION_KEY.env_var.to_string(), "07".repeat(32)),
+        (
+            ENGINE_TOKEN.env_var.to_string(),
+            "t".repeat(shared::auth::MIN_ENGINE_TOKEN_LEN),
+        ),
+    ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Db;
 
     #[test]
     fn a_public_url_must_be_an_http_base_url_with_nothing_after_it() {
@@ -994,33 +966,36 @@ mod tests {
 
     #[test]
     fn public_url_is_none_until_set_and_then_normalized() {
-        let db = Db::open_in_memory().unwrap();
-        assert_eq!(public_url(&db), None);
-        db.set_setting(PUBLIC_URL.key, "https://pay.example.com/")
-            .unwrap();
-        assert_eq!(public_url(&db).as_deref(), Some("https://pay.example.com"));
-        db.set_setting(PUBLIC_URL.key, "not a url").unwrap();
-        assert_eq!(public_url(&db), None);
+        let with = |public_url: &str| {
+            MonokuloSettings::fixed(PerRequest {
+                signup_mode: SignupMode::InviteOnly,
+                public_url: public_url.to_string(),
+            })
+            .public_url()
+        };
+        assert_eq!(MonokuloSettings::defaults().public_url(), None);
+        assert_eq!(
+            with("https://pay.example.com/").as_deref(),
+            Some("https://pay.example.com")
+        );
+        assert_eq!(with("not a url"), None);
     }
 
-    /// An environment value that doesn't parse gives the default, as the
-    /// registry (and so the admin page) resolves it, not the saved value.
+    /// A value given on the command line wins over the options file's, as
+    /// the registry (and so the admin page) resolves it.
     #[test]
-    fn an_invalid_env_var_gives_the_default_as_the_registry_does() {
-        let db = Db::open_in_memory().unwrap();
-        db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3")
-            .unwrap();
-        let resolved = live_settings::read_sync_with_env::<ExchangeRateConfig>(
-            db.list_settings().map_err(live_settings::StoreError::new),
-            &live_settings::Env::fixed([(EXCHANGE_RATE_CACHE_SECONDS.env_var, "lots")]),
-        );
-        assert_eq!(resolved.cache_seconds, 30);
-        let resolved = live_settings::read_sync_with_env::<ExchangeRateConfig>(
-            db.list_settings().map_err(live_settings::StoreError::new),
-            &live_settings::Env::fixed(Vec::<(String, String)>::new()),
-        );
+    fn the_command_line_wins_over_the_options_file() {
+        let file: std::collections::HashMap<String, String> =
+            [(EXCHANGE_RATE_CACHE_SECONDS.key.to_string(), "3".to_string())].into();
+        let none = live_settings::Env::fixed(Vec::<(String, String)>::new());
+        let resolved =
+            live_settings::read_sync_with_env::<ExchangeRateConfig>(Ok(file.clone()), &none);
         assert_eq!(resolved.cache_seconds, 3);
         assert_eq!(resolved.http_cache_bytes, 16 * 1024 * 1024);
+        let given =
+            none.with_cli([(EXCHANGE_RATE_CACHE_SECONDS.key.to_string(), "9".to_string())].into());
+        let resolved = live_settings::read_sync_with_env::<ExchangeRateConfig>(Ok(file), &given);
+        assert_eq!(resolved.cache_seconds, 9);
     }
 
     /// With nothing saved and nothing in the environment: Coingecko and
@@ -1047,9 +1022,9 @@ mod tests {
         );
     }
 
-    /// What has to be known at start comes from the command line or the
-    /// environment: the engine's address (defaulting to one on this
-    /// machine), and the engine token and encryption key, without which
+    /// What has to be known at start: the engine's address (defaulting to
+    /// one on this machine, or given on the command line), and the engine
+    /// token and encryption key, from the environment, without which
     /// monokulo doesn't start.
     #[test]
     fn the_start_up_settings_come_from_outside_and_two_are_required() {
@@ -1067,18 +1042,13 @@ mod tests {
             ENGINE_URL.require(&none).unwrap().as_str(),
             "http://127.0.0.1:8443"
         );
-        let set = env(&[("MONOKULO_ENGINE_URL", "http://engine:8443/")]);
-        assert_eq!(
-            ENGINE_URL.require(&set).unwrap().as_str(),
-            "http://engine:8443",
-            "no trailing slash to double up"
-        );
-        let flagged =
-            set.with_cli([("engine.url".to_string(), "http://other:8443".to_string())].into());
+        let flagged = none
+            .clone()
+            .with_cli([("engine.url".to_string(), "http://engine:8443/".to_string())].into());
         assert_eq!(
             ENGINE_URL.require(&flagged).unwrap().as_str(),
-            "http://other:8443",
-            "the option wins"
+            "http://engine:8443",
+            "no trailing slash to double up"
         );
 
         assert_eq!(
@@ -1159,7 +1129,8 @@ mod tests {
             rates.clone(),
             abuse.clone(),
             onion,
-            live_settings::Env::fixed(Vec::<(String, String)>::new()),
+            test_secrets(),
+            live_settings::OptionsFile::in_memory(""),
         )
         .await
         .unwrap();

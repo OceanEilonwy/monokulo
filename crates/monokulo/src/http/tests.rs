@@ -1324,10 +1324,12 @@ async fn public_mode_signup_needs_no_invite_token_at_all() {
 
 #[tokio::test]
 async fn invite_only_mode_rejects_a_signup_with_no_token() {
-    let state = AppState::for_tests();
-    let db = state.db.clone();
+    // Invite-only is the default.
+    let state = AppState {
+        settings: crate::settings::MonokuloSettings::defaults(),
+        ..AppState::for_tests()
+    };
     let router = build_router(state);
-    db.lock().set_setting("signup.mode", "invite_only").unwrap();
 
     let response = router
         .oneshot(invite_token_signup_request(
@@ -1347,10 +1349,12 @@ async fn invite_only_mode_rejects_a_signup_with_no_token() {
 
 #[tokio::test]
 async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
-    let state = AppState::for_tests();
+    let state = AppState {
+        settings: crate::settings::MonokuloSettings::defaults(),
+        ..AppState::for_tests()
+    };
     let db = state.db.clone();
     let router = build_router(state);
-    db.lock().set_setting("signup.mode", "invite_only").unwrap();
     let raw_token = shared::auth::generate_invite_token();
     db.lock()
         .create_invite_link("link-1", &raw_token.hash(), None, None, crate::now_unix())

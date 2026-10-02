@@ -169,11 +169,7 @@ pub struct ConnectForm {
 /// session, so showing the sign-up/log-in links regardless of any existing
 /// one is the reasonable default (see `views::auth`'s own doc comment).
 async fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> Response {
-    let invite_only = state
-        .db
-        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::signup_mode(db)))
-        .await
-        .is_ok_and(|mode| mode == crate::settings::SignupMode::InviteOnly);
+    let invite_only = state.settings.signup_mode() == crate::settings::SignupMode::InviteOnly;
     let invite_required = invite_only && invite_token.trim().is_empty();
     let chrome = super::page_chrome(state, None, "").await;
     let data = views::auth::SignupViewModel {
@@ -246,12 +242,7 @@ async fn render_connect_success(
     user: &UserRow,
 ) -> Response {
     let chrome = super::page_chrome(state, Some(user), "/dashboard/connect").await;
-    let public_url = state
-        .db
-        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::public_url(db)))
-        .await
-        .ok()
-        .flatten();
+    let public_url = state.settings.public_url();
     let data = views::connect::ConnectViewModel {
         error: None,
         public_key: Some(public_key.to_string()),

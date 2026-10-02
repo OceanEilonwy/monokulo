@@ -1722,6 +1722,106 @@ async fn test_app_state_with_real_daemon_and_env(
     (state, fake_daemon)
 }
 
+/// The settings API over an options file on disk: GET says where it is,
+/// a save writes it, a hand edit is applied by a reload, and a bad edit is
+/// refused by line, changing nothing.
+#[tokio::test]
+async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
+    let dir = std::env::temp_dir().join(format!("engine-options-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("engine.toml");
+    std::fs::write(&path, "# Mine.\n[payment]\nconfirmations_required = 4\n").unwrap();
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let settings = crate::engine_settings::EngineSettings::load_full(
+        store.clone(),
+        None,
+        None,
+        Arc::new(RateLimiter::new(10_000)),
+        live_settings::Env::fixed([("ENGINE_TOKEN", shared::auth::TEST_ENGINE_TOKEN)]),
+        live_settings::OptionsFile::at(&path),
+    )
+    .await
+    .unwrap();
+    let router = build_router(
+        AppState {
+            settings,
+            ..AppState::for_tests_with_store(store)
+        },
+        1_000_000,
+    );
+    let get = |router: axum::Router| async move {
+        body_json(router.oneshot(settings_request("GET", None)).await.unwrap()).await
+    };
+    let body = get(router.clone()).await;
+    assert_eq!(body["options_file"]["path"], path.display().to_string());
+    assert_eq!(body["options_file"]["writable"], true);
+    assert_eq!(
+        body["scalars"]["payment.confirmations_required"]["value"],
+        "4"
+    );
+    assert_eq!(
+        body["scalars"]["payment.confirmations_required"]["source"],
+        "toml"
+    );
+
+    let saved = router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some(serde_json::json!({ "scalars": { "payment.order_expiry_minutes": "45" } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# Mine.\n[payment]\nconfirmations_required = 4\norder_expiry_minutes = 45\n"
+    );
+
+    let reload = || {
+        router.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/settings/reload")
+                .header(
+                    shared::auth::ENGINE_TOKEN_HEADER,
+                    shared::auth::TEST_ENGINE_TOKEN,
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    std::fs::write(&path, "[payment]\nconfirmations_required = 7\n").unwrap();
+    let reloaded = reload().await.unwrap();
+    assert_eq!(reloaded.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(reloaded).await["changed"],
+        serde_json::json!([
+            "payment.confirmations_required",
+            "payment.order_expiry_minutes"
+        ])
+    );
+    assert_eq!(
+        get(router.clone()).await["scalars"]["payment.confirmations_required"]["value"],
+        "7"
+    );
+
+    std::fs::write(&path, "[payment]\nconfirmations_required = 7000\n").unwrap();
+    let refused = reload().await.unwrap();
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let body = body_json(refused).await.to_string();
+    assert!(
+        body.contains("line 2: payment.confirmations_required"),
+        "{body}"
+    );
+    assert_eq!(
+        get(router.clone()).await["scalars"]["payment.confirmations_required"]["value"],
+        "7"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // -- The engine token ---------------------------------------------------
 
 /// Every route, whatever credential of its own it takes, refuses a request
@@ -1874,17 +1974,22 @@ async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
     );
     assert_eq!(
         body["scalars"]["payment.confirmations_required"]["source"],
-        "database"
+        "toml"
     );
 }
 
+/// A setting given on the command line wins and is locked: the API says so,
+/// and refuses a save of it.
 #[tokio::test]
-async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save() {
-    let (state, _daemon) = test_app_state_with_real_daemon_and_env(live_settings::Env::fixed([(
-        "ENGINE_PAYMENT_CONFIRMATIONS_REQUIRED",
-        "99",
-    )]))
-    .await;
+async fn a_setting_given_on_the_command_line_is_locked_and_a_save_of_it_refused() {
+    let env = live_settings::Env::fixed(Vec::<(String, String)>::new()).with_cli(
+        [(
+            "payment.confirmations_required".to_string(),
+            "99".to_string(),
+        )]
+        .into(),
+    );
+    let (state, _daemon) = test_app_state_with_real_daemon_and_env(env).await;
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1895,22 +2000,23 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
         ))
         .await
         .unwrap();
-    let saved = body_json(post).await;
-    assert_eq!(
-        saved["warnings"]["env_overridden"],
-        serde_json::json!(["payment.confirmations_required"]),
-        "got: {saved}"
+    assert_eq!(post.status(), StatusCode::BAD_REQUEST);
+    let refused = body_json(post).await.to_string();
+    assert!(
+        refused.contains("--payment-confirmations-required"),
+        "{refused}"
     );
 
     let get = router.oneshot(settings_request("GET", None)).await.unwrap();
     let body = body_json(get).await;
-    assert_eq!(
-        body["scalars"]["payment.confirmations_required"]["value"],
-        "99"
-    );
-    assert_eq!(
-        body["scalars"]["payment.confirmations_required"]["source"],
-        "env"
+    let setting = &body["scalars"]["payment.confirmations_required"];
+    assert_eq!(setting["value"], "99");
+    assert_eq!(setting["source"], "cli");
+    assert!(
+        setting["locked"]
+            .as_str()
+            .is_some_and(|why| why.contains("--payment-confirmations-required")),
+        "{setting}"
     );
 }
 
@@ -1939,41 +2045,37 @@ async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
     );
 }
 
-/// The collector's headers are `name=value` pairs. A value that isn't (an
-/// API key pasted on its own) would be left out of every request to the
-/// collector without a word, so it is refused: by the pair's position, not
-/// by showing back the secret that was typed.
+/// The collector's headers are a secret: they come from the environment,
+/// are shown masked, and can't be saved through the API.
 #[tokio::test]
-async fn otlp_headers_that_are_not_name_value_pairs_are_refused_without_being_shown_back() {
-    let (state, _daemon) = test_app_state_with_real_daemon().await;
+async fn otlp_headers_come_from_the_environment_and_are_never_saved_or_shown() {
+    let env = live_settings::Env::fixed([(
+        "ENGINE_LOGGING_OTLP_HEADERS",
+        "authorization=Bearer sk-live-abc123",
+    )]);
+    let (state, _daemon) = test_app_state_with_real_daemon_and_env(env).await;
     let router = build_router(state, 1_000_000);
-    let save = |headers: &str| {
-        router.clone().oneshot(settings_request(
-            "POST",
-            Some(serde_json::json!({ "scalars": { "logging.otlp_headers": headers } })),
-        ))
-    };
 
-    let refused = save("x-team=ops,sk-live-abc123").await.unwrap();
-    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(refused).await.to_string();
-    assert!(body.contains("Pair 2 isn't name=value"), "{body}");
-    assert!(!body.contains("sk-live-abc123"), "{body}");
     let get = router
         .clone()
         .oneshot(settings_request("GET", None))
         .await
         .unwrap();
-    assert_eq!(
-        body_json(get).await["scalars"]["logging.otlp_headers"]["source"],
-        "default",
-        "nothing was saved"
-    );
+    let body = body_json(get).await;
+    assert_eq!(body["scalars"]["logging.otlp_headers"]["source"], "env");
+    assert!(!body.to_string().contains("sk-live-abc123"), "{body}");
 
-    let saved = save("authorization=Bearer sk-live-abc123,x-team=ops")
+    let refused = router
+        .oneshot(settings_request(
+            "POST",
+            Some(serde_json::json!({ "scalars": { "logging.otlp_headers": "x-team=ops,sk-live-other" } })),
+        ))
         .await
         .unwrap();
-    assert_eq!(saved.status(), StatusCode::OK);
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await.to_string();
+    assert!(body.contains("ENGINE_LOGGING_OTLP_HEADERS"), "{body}");
+    assert!(!body.contains("sk-live"), "{body}");
 }
 
 #[tokio::test]

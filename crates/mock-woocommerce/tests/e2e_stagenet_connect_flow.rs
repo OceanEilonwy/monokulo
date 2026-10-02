@@ -169,10 +169,6 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     use monokulo::http::{build_router, AppState};
 
     let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
-    // Same "signup defaults to invite-only" fix `mock_woocommerce::spawn_test_monokulo`
-    // (`src/lib.rs`) needs - see that call site's own comment.
-    db.set_setting("signup.mode", "public")
-        .expect("failed to set signup.mode for test monokulo db");
     // Bound first so monokulo's public address (`/finish`'s `endpoint`) can
     // be this very listener - see `mock_woocommerce`'s own `spawn_test_monokulo`.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -181,12 +177,13 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     let addr = listener
         .local_addr()
         .expect("bound listener has no local address");
-    db.set_setting("public_url", &format!("http://{addr}"))
-        .expect("failed to set public_url for test monokulo db");
     let state = AppState {
         engine: monokulo::http::Engine::new(EngineClient::for_tests(format!(
             "http://{engine_addr}"
         ))),
+        // Public signup, as `mock_woocommerce::spawn_test_monokulo`
+        // (`src/lib.rs`) needs - see that call site's own comment.
+        settings: AppState::test_settings(Some(&format!("http://{addr}"))),
         ..AppState::for_tests_with_db(db.into_shared())
     };
     let router = build_router(state);

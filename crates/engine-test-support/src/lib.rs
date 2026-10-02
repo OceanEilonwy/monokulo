@@ -841,7 +841,7 @@ impl TestEngineConfig {
                     daemons: daemons.clone(),
                 }),
             Arc::new(RateLimiter::new(1)),
-            live_settings::Env::process(),
+            live_settings::Env::fixed(Vec::<(String, String)>::new()),
         )
         .await
         .expect("test engine settings load from an empty store");

@@ -908,22 +908,12 @@ impl Db {
         Ok(self.get_setting("setup_complete")?.as_deref() == Some("true"))
     }
 
-    /// Test-only convenience seeding a known admin account, marking setup
-    /// complete, and setting `signup.mode` to `"public"` - the "tests
-    /// should seed the admin account with a known user/pass, which will
-    /// mean the admin flow won't trigger" requirement, extended the same
-    /// way for the invite system: `signup.mode` defaults to `"invite_only"`
-    /// in production, which would otherwise block every existing test's
-    /// ordinary `create_account`/signup calls the moment that default
-    /// shipped. Dedicated invite-flow tests (`http::signup`/
-    /// `http::dashboard`/`http::invites`) explicitly set `signup.mode` back
-    /// to `"invite_only"` themselves when that's what they mean to exercise
-    /// — this is a permissive *default*, not something every test is stuck
-    /// with. Applied as a single shared helper every test fixture calls
-    /// rather than each reimplementing the same writes. Panics on a
-    /// database error - every caller is a test fixture already `.unwrap()`-
-    /// ing `Db::open_in_memory()` right next to this, so a failure here is
-    /// exactly as fatal to the test as that would be.
+    /// Test-only convenience seeding a known admin account and marking setup
+    /// complete - the "tests should seed the admin account with a known
+    /// user/pass, which will mean the admin flow won't trigger" requirement.
+    /// Panics on a database error - every caller is a test fixture already
+    /// `.unwrap()`-ing `Db::open_in_memory()` right next to this, so a
+    /// failure here is exactly as fatal to the test as that would be.
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_test_admin(&self) {
         self.create_user(
@@ -936,8 +926,6 @@ impl Db {
         .expect("seeding the test admin account");
         self.set_setting("setup_complete", "true")
             .expect("marking setup complete for the seeded test admin");
-        self.set_setting("signup.mode", "public")
-            .expect("defaulting the test admin's signup.mode to public");
     }
 
     /// Stores a new session. `token_hash` must already be hashed (see

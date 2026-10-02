@@ -782,8 +782,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_standalone_invite_link_is_shown_once_and_actually_works_for_signup() {
-        let state = test_state();
-        let db = state.db.clone();
+        let state = test_state()
+            .with_options("[signup]\nmode = \"public\"\n")
+            .await;
+        let admin_page = state.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -804,9 +806,7 @@ mod tests {
         // Switch to invite-only mode to actually prove the token is real -
         // "public" mode (this crate's own test default) would let anyone
         // sign up regardless, which wouldn't prove anything about the token.
-        db.lock()
-            .set_setting(crate::settings::SIGNUP_MODE.key, "invite_only")
-            .unwrap();
+        admin_page.save_setting("signup.mode", "invite_only").await;
 
         let signup = signed_up_session_cookie(
             &router,

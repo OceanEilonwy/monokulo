@@ -313,8 +313,23 @@ form .field-help { display: block; font-weight: 400; color: var(--muted); margin
    starting its own line below the form - block, like `.field-help` above,
    fixes that regardless of how much room is left on the line. */
 .setting-source { display: block; margin-top: 0.15em; }
-/* A setting fixed by the environment (the engine's address and token):
-   shown in a disabled box with a padlock inside it. */
+/* Where a setting's value comes from: a chip beside its name, with the
+   icon of its source (options file, runtime, command line, environment);
+   dashed for the default, which nothing has chosen. */
+.setting-label-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; }
+.source-chip { display: inline-flex; align-items: center; gap: 0.3em; font-size: 0.8em; font-weight: 400; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0.05em 0.55em 0.05em 0.45em; background: var(--paper); }
+.source-chip.default { border-style: dashed; background: transparent; }
+.src-icon { width: 1.15em; height: 1.15em; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.src-icon .filled { fill: currentColor; stroke: none; }
+/* Each process's options file, above the tabs, with its Reload button. */
+.options-files { display: grid; gap: 0.5em; margin-bottom: 1em; }
+.options-file { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75em; background: var(--paper-raised); border: 1px solid var(--line); border-radius: 9px; padding: 0.75em 1em; }
+.options-file-where { display: grid; gap: 0.15em; min-width: 0; }
+.options-file-path { display: flex; align-items: center; gap: 0.45em; overflow-wrap: anywhere; }
+.options-file-state { font-size: 0.85em; color: var(--muted); }
+.options-file button { display: inline-flex; align-items: center; gap: 0.4em; }
+/* A setting the page can't change (given on the command line or in the
+   environment): shown in a disabled box with a padlock inside it. */
 .locked-input { position: relative; display: block; }
 .locked-input input[disabled] { padding-right: 2.4em; background: var(--surface-sunken); color: var(--muted); cursor: not-allowed; }
 .locked-input .lock-icon { position: absolute; right: 0.8em; top: 50%; width: 1em; height: 1em; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
