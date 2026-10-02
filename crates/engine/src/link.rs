@@ -21,7 +21,6 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use serde::Serialize;
 
 /// How strongly a new sample moves an average.
 const ALPHA: f64 = 0.3;
@@ -94,29 +93,7 @@ struct Minute {
     failures: u32,
 }
 
-/// A link as `/status` reports it.
-#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
-pub struct LinkSnapshot {
-    /// Whether these come from real calls, not the starting guesses.
-    pub measured: bool,
-    pub rtt_ms: u64,
-    pub ttfb_per_block_ms: u64,
-    pub rate_bytes_per_sec: u64,
-    pub bytes_per_block: u64,
-    pub last_measured_unix: Option<i64>,
-    pub timeouts_last_hour: u32,
-    pub failures_last_hour: u32,
-    /// One point per minute with a measurement, oldest first.
-    pub history: Vec<LinkPoint>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
-pub struct LinkPoint {
-    pub minute_unix: i64,
-    pub rate_bytes_per_sec: u64,
-    pub rtt_ms: u64,
-    pub ttfb_per_block_ms: u64,
-}
+pub use shared::scaling::{LinkPoint, LinkSnapshot};
 
 fn ewma(average: f64, sample: f64) -> f64 {
     ALPHA * sample + (1.0 - ALPHA) * average

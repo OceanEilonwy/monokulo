@@ -1464,6 +1464,51 @@ async fn every_path_that_can_set_a_webhook_url_validates_the_scheme() {
     );
 }
 
+/// /status reports the engine's CPU and memory, and each network's scaling
+/// figures (docs/engine_scaling.md section 6). One block that has taken over
+/// two minutes, while its node answers, is reported as slow, with what is
+/// known about it.
+#[tokio::test]
+async fn status_reports_resources_scaling_and_a_slow_block() {
+    let state = AppState::for_tests();
+    let progress = crate::scanner_status::progress_of(
+        &state.networks.scanner_status,
+        monero::Network::Mainnet,
+    );
+    let router = build_router(state, 1_000_000);
+
+    let status = get_status_json(router.clone()).await;
+    assert!(status["resources"]["cpu_count"].as_u64().unwrap() >= 1);
+    assert!(!status["resources"]["host_id"].as_str().unwrap().is_empty());
+    let scaling = &status["networks"][0]["scaling"];
+    assert_eq!(scaling["slow"], serde_json::Value::Null);
+    assert_eq!(scaling["budget_mb"], 8);
+    assert!(scaling["pace"].is_string(), "{scaling}");
+    assert!(
+        status["networks"][0]["scanner"]["ever_ticked"] == false,
+        "progress alone isn't a tick"
+    );
+
+    // A minute in: not slow yet.
+    progress.lock().start_block(42, crate::now_unix() - 60);
+    let status = get_status_json(router.clone()).await;
+    assert_eq!(
+        status["networks"][0]["scaling"]["slow"],
+        serde_json::Value::Null
+    );
+
+    // Past two minutes on the same block: slow.
+    progress.lock().in_progress = None;
+    progress.lock().start_block(42, crate::now_unix() - 130);
+    progress.lock().fetched_block(42, 400_000_000);
+    let status = get_status_json(router).await;
+    let slow = &status["networks"][0]["scaling"]["slow"];
+    assert_eq!(slow["height"], 42, "{status}");
+    assert_eq!(slow["wire_bytes"], 400_000_000);
+    assert!(slow["elapsed_secs"].as_i64().unwrap() >= 130);
+    assert_eq!(slow["node"], "fake-node:18081");
+}
+
 async fn get_status_json(router: Router) -> serde_json::Value {
     let response = router
         .oneshot(

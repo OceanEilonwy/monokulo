@@ -32,6 +32,7 @@ pub mod landing;
 pub mod logs;
 pub mod orders;
 pub mod pos;
+pub mod scaling;
 pub mod status;
 pub mod store_detail;
 pub mod store_settings;
@@ -72,10 +73,9 @@ pub struct PageChrome {
     /// flow's own `next` - never trusted at face value just because it
     /// came from this struct.
     pub current_path: String,
-    /// The engine's last known health for the status indicator:
-    /// `Some(true)` healthy, `Some(false)` a problem, `None` not known yet.
-    /// See `crate::http::status_page::known_health`.
-    pub health: Option<bool>,
+    /// The engine's last known health for the status indicator, `None`
+    /// while not known yet. See `crate::http::status_page::known_health`.
+    pub health: Option<Health>,
     /// Problems the signed-in merchant needs to know about on every page
     /// (task 3.7): their stores that can't be scanned right now. Shown under
     /// the nav on every page that has one, so never in the POS terminal.
@@ -121,7 +121,7 @@ impl PageChrome {
         }
     }
 
-    pub fn with_health(mut self, health: Option<bool>) -> Self {
+    pub fn with_health(mut self, health: Option<Health>) -> Self {
         self.health = health;
         self
     }
@@ -446,6 +446,29 @@ pub fn reload_button(href: &str) -> Markup {
     html! { a class="btn btn-secondary reload" href=(href) { "Reload" } }
 }
 
+/// The engine's health as the status indicator shows it: green, yellow or
+/// red (docs/engine_scaling.md section 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    /// Everything answers and scans.
+    Ok,
+    /// Everything works, but one block has taken over two minutes to scan.
+    Slow,
+    /// A node or the scan is failing, or the engine can't be reached.
+    Problem,
+}
+
+impl Health {
+    /// The name the summary endpoint and the dot's class use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Health::Ok => "ok",
+            Health::Slow => "slow",
+            Health::Problem => "error",
+        }
+    }
+}
+
 /// Polls `GET /status/summary` and updates the indicator in place. Starts
 /// straight away only when the page was rendered without a known health;
 /// skips polls while the tab is hidden.
@@ -461,7 +484,8 @@ const STATUS_INDICATOR_SCRIPT: &str = r#"(function () {
       if (!r.ok) throw new Error("status unavailable");
       return r.json();
     }).then(function (data) {
-      if (data && data.healthy) show("ok", "all systems healthy");
+      if (data && data.state === "ok") show("ok", "all systems healthy");
+      else if (data && data.state === "slow") show("slow", "scanning is slow - see the status page");
       else show("error", "an issue was detected - see the status page");
     }).catch(function () {
       show("unknown", "could not check status");
@@ -478,10 +502,11 @@ const STATUS_INDICATOR_SCRIPT: &str = r#"(function () {
 /// polling. It is only the glowing dot - the title and aria-label carry the
 /// words. `class` is the link's own class, for where it sits (nav bar, POS
 /// top bar).
-pub fn status_indicator(health: Option<bool>, class: &str) -> Markup {
+pub fn status_indicator(health: Option<Health>, class: &str) -> Markup {
     let (state, title) = match health {
-        Some(true) => ("ok", "all systems healthy"),
-        Some(false) => ("error", "an issue was detected - see the status page"),
+        Some(Health::Ok) => ("ok", "all systems healthy"),
+        Some(Health::Slow) => ("slow", "scanning is slow - see the status page"),
+        Some(Health::Problem) => ("error", "an issue was detected - see the status page"),
         None => ("unknown", "status not checked yet"),
     };
     html! {
@@ -603,11 +628,17 @@ mod tests {
 
     #[test]
     fn status_indicator_is_rendered_with_the_known_health_and_polls_only_as_an_enhancement() {
-        let healthy = status_indicator(Some(true), "nav-status-link").into_string();
+        let healthy = status_indicator(Some(Health::Ok), "nav-status-link").into_string();
         assert!(healthy.contains(r#"<a href="/status" class="nav-status-link" id="status-indicator" title="all systems healthy" aria-label="Status: all systems healthy"><span class="status-dot status-dot-ok"></span></a>"#), "got: {healthy}");
         assert!(healthy.contains("/status/summary"));
 
-        let problem = status_indicator(Some(false), "pos-status-link").into_string();
+        let problem = status_indicator(Some(Health::Problem), "pos-status-link").into_string();
+        let slow = status_indicator(Some(Health::Slow), "nav-status-link").into_string();
+        assert!(
+            slow.contains(r#"class="status-dot status-dot-slow""#),
+            "{slow}"
+        );
+        assert!(slow.contains("scanning is slow"), "{slow}");
         assert!(
             problem.contains(r#"class="status-dot status-dot-error""#),
             "got: {problem}"
@@ -619,7 +650,7 @@ mod tests {
             "got: {unknown}"
         );
 
-        let chrome = PageChrome::from_user(None, "/").with_health(Some(true));
+        let chrome = PageChrome::from_user(None, "/").with_health(Some(Health::Ok));
         assert!(nav(&chrome)
             .into_string()
             .contains("status-dot status-dot-ok"));
