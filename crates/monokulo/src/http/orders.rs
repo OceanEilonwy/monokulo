@@ -570,12 +570,7 @@ async fn payment_link_for(
     order_id: &crate::db::OrderId,
 ) -> String {
     let path = format!("/pay/{public_key}/orders/{order_id}/share");
-    let configured = state
-        .db
-        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::public_url(db)))
-        .await
-        .ok()
-        .flatten();
+    let configured = state.settings.public_url();
     if let Some(base) = configured {
         return format!("{base}{path}");
     }
@@ -872,12 +867,7 @@ async fn render_store_detail_page(
 
     let tenant_result = state.engine.client.get_tenant(&sk).await;
     let (health, health_label) = health_of_tenant_lookup(&tenant_result);
-    let public_url = state
-        .db
-        .read(|db| Ok::<_, crate::db::DbError>(crate::settings::public_url(db)))
-        .await
-        .ok()
-        .flatten();
+    let public_url = state.settings.public_url();
 
     // A store whose engine is currently unreachable still gets a real page -
     // just with no order data available, rather than a hard error. The

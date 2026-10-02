@@ -44,13 +44,14 @@ fn budget_description(base: &str, networks: usize) -> String {
 #[derive(Serialize)]
 pub struct ScalarSettingView {
     value: String,
-    /// `"cli"`, `"env"`, `"database"`, or `"default"`.
+    /// `"toml"` (the options file), `"database"`, `"cli"`, `"env"`, or
+    /// `"default"`.
     source: &'static str,
     /// How it is given from outside: its environment variable and/or
     /// command-line option, as its sources allow.
     set_with: String,
-    /// It can't be saved here (only given at start): shown locked.
-    locked: bool,
+    /// Why the admin page can't change it now, if it can't: shown locked.
+    locked: Option<String>,
     description: String,
     kind: live_settings::SettingKind,
     example: Option<&'static str>,
@@ -65,6 +66,7 @@ pub struct ScalarSettingView {
 
 fn source_str(source: live_settings::SettingSource) -> &'static str {
     match source {
+        live_settings::SettingSource::Toml => "toml",
         live_settings::SettingSource::Cli => "cli",
         live_settings::SettingSource::Env => "env",
         live_settings::SettingSource::Database => "database",
@@ -84,6 +86,8 @@ pub struct NetworkView {
 
 #[derive(Serialize)]
 pub struct SettingsView {
+    /// Where the engine's options file is, and whether it can be written.
+    options_file: Option<live_settings::FileInfo>,
     scalars: HashMap<String, ScalarSettingView>,
     monero_node: HashMap<String, Option<serde_json::Value>>,
     networks: HashMap<String, NetworkView>,
@@ -109,6 +113,12 @@ pub async fn get_settings(
         ));
     };
     let tenant_counts = db.read(|s| s.count_tenants_by_network()).await?;
+    let options_file = registry.options_file();
+    let file_writable = options_file.as_ref().is_none_or(|file| file.writable);
+    let read_only = format!(
+        "The options file {} can't be written by the engine, so this is changed by editing it.",
+        options_file.as_ref().map_or("", |file| file.path.as_str())
+    );
     let mut scalars = HashMap::new();
     let mut monero_node = HashMap::new();
     let mut networks = HashMap::new();
@@ -137,7 +147,10 @@ pub async fn get_settings(
                 value: view.value,
                 source: source_str(view.source),
                 set_with: live_settings::outside_names(view.key, view.env_var, view.sources),
-                locked: !view.sources.database,
+                locked: view.locked.or_else(|| {
+                    // Kept in the options file, which can't be written.
+                    (view.sources.toml && !file_writable).then(|| read_only.clone())
+                }),
                 description: view.description.to_string(),
                 kind: view.kind,
                 example: view.example,
@@ -156,6 +169,7 @@ pub async fn get_settings(
         view.description = budget_description(&view.description, networks);
     }
     Ok(Json(SettingsView {
+        options_file,
         scalars,
         monero_node,
         networks,
@@ -381,16 +395,63 @@ pub async fn update_settings(
             )
                 .into_response()
         }
-        Err(live_settings::SaveError::Invalid(errors)) => refused(&errors),
-        Err(live_settings::SaveError::UnknownKey(key)) => (
+        Err(e) => save_refused(e),
+    }
+}
+
+/// Why a save or a reload changed nothing, as the response says it.
+fn save_refused(error: live_settings::SaveError) -> axum::response::Response {
+    match error {
+        live_settings::SaveError::Invalid(errors) => refused(&errors),
+        live_settings::SaveError::UnknownKey(key) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": format!("there is no setting called {key:?}") })),
         )
             .into_response(),
-        Err(e) => (
+        // The options file changed since it was read, can't be written, or
+        // has something wrong in it: the admin fixes or reloads it.
+        live_settings::SaveError::Store(e) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        e => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
         )
             .into_response(),
+    }
+}
+
+/// `POST /api/v1/admin/settings/reload` - reads the options file again and
+/// applies what changed in it, as a save would: all of it, or, when
+/// anything in it is wrong, none of it, with every problem named by line.
+/// The response says what changed and what needs a restart.
+pub async fn reload_settings(
+    State(settings): State<Arc<EngineSettings>>,
+) -> axum::response::Response {
+    let Some(registry) = settings.registry.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "settings are not available on this engine" })),
+        )
+            .into_response();
+    };
+    match registry.reload().await {
+        Ok(report) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "changed": report.changed,
+                "warnings": {
+                    "restart_required": report.restart_required,
+                    "env_overridden": report.env_overridden,
+                    "messages": report.warnings.iter().map(|w| json!({ "key": w.key, "message": w.message })).collect::<Vec<_>>(),
+                    "unserved_networks": Vec::<UnservedNetwork>::new(),
+                },
+            })),
+        )
+            .into_response(),
+        Err(e) => save_refused(e),
     }
 }

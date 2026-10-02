@@ -244,6 +244,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             "/api/v1/admin/settings",
             get(instance_admin::get_settings).post(instance_admin::update_settings),
         )
+        .route(
+            "/api/v1/admin/settings/reload",
+            post(instance_admin::reload_settings),
+        )
         // This engine's logs, for monokulo's Logs page (structured_logging.md 3.3).
         .route("/api/v1/admin/logs", get(logs::list))
         .route("/api/v1/admin/logs/trace/{trace_id}", get(logs::trace))

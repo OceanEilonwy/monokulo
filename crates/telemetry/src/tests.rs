@@ -289,14 +289,12 @@ mod through_settings {
     settings! {
         LEVEL: String {
             key: "logging.level",
-            env: "TELEMETRY_TEST_LOG",
             default: DEFAULT_LEVEL.to_string(),
             check: check_level,
             description: "level",
         },
         DEV_MODE_UNTIL: u64 {
             key: "logging.dev_mode_until",
-            env: "TELEMETRY_TEST_LOGGING_DEV_MODE_UNTIL",
             default: 0,
             description: "until",
         },

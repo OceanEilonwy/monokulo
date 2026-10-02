@@ -92,13 +92,7 @@ pub(super) async fn create_account(
     // Whether an invite is needed is settled before the password is
     // hashed: a hash costs tens of milliseconds of CPU, which a request
     // with no invite on an invite-only instance never earns.
-    let invite_only = !is_admin
-        && state
-            .db
-            .read(|db| Ok::<_, crate::db::DbError>(crate::settings::signup_mode(db)))
-            .await
-            .map_err(|_| CreateAccountError::Internal)?
-            == SignupMode::InviteOnly;
+    let invite_only = !is_admin && state.settings.signup_mode() == SignupMode::InviteOnly;
     if invite_only && token_hash.is_none() {
         return Err(CreateAccountError::InviteRequired);
     }
@@ -115,8 +109,9 @@ pub(super) async fn create_account(
     let id = crate::db::UserId::new(Uuid::new_v4().to_string());
     let created_at = now_unix();
 
-    // One write job: the signup mode is read again under the same writer
-    // as the account is created, so a mode saved in between still holds.
+    // The signup mode is read again now the password is hashed, so a mode
+    // saved in between still holds.
+    let invite_only = state.settings.signup_mode() == SignupMode::InviteOnly;
     state
         .db
         .write(move |db| {
@@ -133,7 +128,7 @@ pub(super) async fn create_account(
                     Err(_) => Err(CreateAccountError::Internal),
                 };
             }
-            if crate::settings::signup_mode(db) == SignupMode::InviteOnly {
+            if invite_only {
                 let Some(token_hash) = token_hash else {
                     return Err(CreateAccountError::InviteRequired);
                 };

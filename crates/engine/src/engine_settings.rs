@@ -35,12 +35,11 @@ const NODE_EXAMPLE: &str = r#"{"host":"node.monerodevs.org","port":38089,"ssl":f
 settings! {
     DATABASE_PATH: PathBuf {
         key: "database.path",
-        env: "ENGINE_DB_PATH",
-        default: PathBuf::from("engine.db"),
-        description: "The engine's database file. Its log store is kept beside it. Read from the environment only: the settings live inside it.",
+        default: live_settings::paths::data_file("engine.db").unwrap_or_else(|| PathBuf::from("engine.db")),
+        description: "The engine's database file, ~/.local/share/monokulo/engine.db unless set (or engine.db in the working directory if that can't be used). Its log store is kept beside it.",
         example: "/var/lib/monokulo/engine.db",
         applies: Restart,
-        sources: [Cli, Env],
+        editable: false,
     },
     SERVER_TOKEN: live_settings::Secret {
         key: "server.token",
@@ -54,23 +53,19 @@ settings! {
     },
     LOGGING_FORMAT: telemetry::LogFormat {
         key: "logging.format",
-        env: "ENGINE_LOG_FORMAT",
         default: telemetry::LogFormat::Auto,
         description: "How log lines are written to the console: json, pretty, or auto (pretty at a terminal, JSON everywhere else).",
         example: "json",
         applies: Restart,
-        sources: [Cli, Env],
     },
     MONERO_NODE_STRICT_TLS: bool {
         key: "monero_node.strict_tls",
-        env: "ENGINE_MONERO_NODE_STRICT_TLS",
         default: false,
         description: "Refuse self-signed certificates from every Monero node, whatever each node's own accept_self_signed_certs says. Only for nodes with a certificate from a public authority.",
         example: "false",
     },
     MONERO_NODE_MAINNET: Option<Json<MoneroNodeSetting>> {
         key: "monero_node.mainnet",
-        env: "ENGINE_MONERO_NODE_MAINNET",
         default: None,
         check: crate::settings::check_node,
         description: "The Monero node the engine reads the mainnet chain from, as JSON: host, port, ssl (default false), accept_self_signed_certs (default true), and fallbacks, a list of more nodes in the same shape tried in order when the one before fails (fallbacks can't have fallbacks). Leave empty to not use mainnet.",
@@ -78,7 +73,6 @@ settings! {
     },
     MONERO_NODE_STAGENET: Option<Json<MoneroNodeSetting>> {
         key: "monero_node.stagenet",
-        env: "ENGINE_MONERO_NODE_STAGENET",
         default: None,
         check: crate::settings::check_node,
         description: "The Monero node for the stagenet test network, in the same JSON shape as mainnet's. Leave empty to not use stagenet.",
@@ -86,7 +80,6 @@ settings! {
     },
     MONERO_NODE_TESTNET: Option<Json<MoneroNodeSetting>> {
         key: "monero_node.testnet",
-        env: "ENGINE_MONERO_NODE_TESTNET",
         default: None,
         check: crate::settings::check_node,
         description: "The Monero node for testnet, in the same JSON shape as mainnet's. Leave empty to not use testnet.",
@@ -94,28 +87,24 @@ settings! {
     },
     KEY_CUSTODY_ENABLED_BACKENDS: CommaList<CustodyBackend> {
         key: "key_custody.enabled_backends",
-        env: "ENGINE_KEY_CUSTODY_ENABLED_BACKENDS",
         default: live_settings::parsed_default("plain"),
         description: "Where stores' private view keys may be held (comma-separated in the environment variable): plain (in the engine's own memory) and socket (a separate key-custody-server process). Each store uses one of these; a store whose backend is turned off stops being scanned until it's turned on again or the store moves to another one.",
         example: "plain,socket",
     },
     KEY_CUSTODY_DEFAULT_BACKEND: CustodyBackend {
         key: "key_custody.default_backend",
-        env: "ENGINE_KEY_CUSTODY_DEFAULT_BACKEND",
         default: CustodyBackend::Plain,
         description: "The backend new stores get unless they choose another. Must be one of the enabled ones.",
         example: "plain",
     },
     KEY_CUSTODY_SOCKET_PATH: Option<PathBuf> {
         key: "key_custody.socket_path",
-        env: "ENGINE_KEY_CUSTODY_SOCKET_PATH",
         default: None,
         description: "The Unix socket a running key-custody-server listens on. Required when socket is enabled.",
         example: "/run/key-custody/sock",
     },
     KEY_CUSTODY_SOCKET_CONNECTIONS: Option<usize> {
         key: "key_custody.socket_connections",
-        env: "ENGINE_KEY_CUSTODY_SOCKET_CONNECTIONS",
         default: None,
         check: range(1, 1024),
         description: "The most connections the engine keeps to the key-custody-server. A connection carries one scan at a time, so no more stores than this are scanned on the socket backend at once. Leave empty for one per CPU core. Connections are opened only as scans overlap.",
@@ -123,7 +112,6 @@ settings! {
     },
     PAYMENT_CONFIRMATIONS_REQUIRED: u64 {
         key: "payment.confirmations_required",
-        env: "ENGINE_PAYMENT_CONFIRMATIONS_REQUIRED",
         default: 10,
         check: range(0, 720),
         description: "Confirmations a payment needs before an order is paid, for new stores that don't set their own. 0 means paid as soon as the payment is seen in the mempool. Each store's own thresholds in monokulo apply to its orders.",
@@ -131,7 +119,6 @@ settings! {
     },
     PAYMENT_ORDER_EXPIRY_MINUTES: i64 {
         key: "payment.order_expiry_minutes",
-        env: "ENGINE_PAYMENT_ORDER_EXPIRY_MINUTES",
         default: 30,
         check: range(1, 525_600),
         description: "Minutes an order waits for payment before it expires, for new stores that don't set their own.",
@@ -139,7 +126,6 @@ settings! {
     },
     PAYMENT_REORG_CHECK_DEPTH: u64 {
         key: "payment.reorg_check_depth",
-        env: "ENGINE_PAYMENT_REORG_CHECK_DEPTH",
         default: 20,
         check: range(1, 10_000),
         description: "How many recent blocks are checked again on every scan for a chain reorganisation.",
@@ -147,7 +133,6 @@ settings! {
     },
     PAYMENT_MEMPOOL_POLL_INTERVAL_MS: u64 {
         key: "payment.mempool_poll_interval_ms",
-        env: "ENGINE_PAYMENT_MEMPOOL_POLL_INTERVAL_MS",
         default: 1000,
         check: range(100, 3_600_000),
         description: "Milliseconds between scans of the mempool and new blocks. Lower detects payments sooner and asks more of the node.",
@@ -155,7 +140,6 @@ settings! {
     },
     PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES: i64 {
         key: "payment.expired_order_grace_period_minutes",
-        env: "ENGINE_PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES",
         default: 360,
         check: range(0, 525_600),
         description: "Minutes after an order is paid or expires during which payments to it are still watched for. A payment sent later is found with the store's payment lookup.",
@@ -163,7 +147,6 @@ settings! {
     },
     PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB: u32 {
         key: "payment.scan_chunk_memory_budget_mb",
-        env: "ENGINE_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB",
         default: 8,
         // Up to 1 TB here; what this machine allows is checked with the
         // other networks' budgets (`max_scan_budget_mb`).
@@ -173,7 +156,6 @@ settings! {
     },
     SERVER_BIND: BindAddr {
         key: "server.bind",
-        env: "ENGINE_SERVER_BIND",
         default: live_settings::parsed_default("127.0.0.1:8443"),
         description: "The address and port the engine listens on. Keep it loopback or private: only monokulo should reach the engine. After changing it, restart the engine, then set monokulo's engine URL to match.",
         example: "127.0.0.1:8443",
@@ -181,7 +163,6 @@ settings! {
     },
     SERVER_WORKER_THREADS: usize {
         key: "server.worker_threads",
-        env: "ENGINE_SERVER_WORKER_THREADS",
         default: 2,
         check: range(1, 1024),
         description: "Threads the engine uses to serve requests and run its loops (scanning work has its own pool). Takes effect after the engine restarts.",
@@ -190,7 +171,6 @@ settings! {
     },
     DATABASE_READ_CONNECTIONS: usize {
         key: "database.read_connections",
-        env: "ENGINE_DATABASE_READ_CONNECTIONS",
         default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
         check: range(1, 64),
         description: "Read-only connections the engine opens to its database, each on its own thread. Reads run side by side, so more help up to the number of CPU cores; each keeps its own cache of about 2 MB. Takes effect after a restart.",
@@ -199,7 +179,6 @@ settings! {
     },
     SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN: u32 {
         key: "server.rate_limit_per_token_per_min",
-        env: "ENGINE_SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN",
         default: 120,
         check: range(1, 1_000_000),
         description: "Requests a minute allowed per API token (per store, and for requests without a store key).",
@@ -207,7 +186,6 @@ settings! {
     },
     SERVER_MAX_BODY_BYTES: usize {
         key: "server.max_body_bytes",
-        env: "ENGINE_SERVER_MAX_BODY_BYTES",
         default: 8192,
         check: range(256, 16 * 1024 * 1024),
         description: "Largest request body the engine accepts, in bytes.",
@@ -215,14 +193,12 @@ settings! {
     },
     WEBHOOKS_ALLOW_PRIVATE_URLS: bool {
         key: "webhooks.allow_private_urls",
-        env: "ENGINE_WEBHOOKS_ALLOW_PRIVATE_URLS",
         default: false,
         description: "Whether webhooks may be sent to private or loopback addresses. Only for testing against your own network.",
         example: "false",
     },
     WEBHOOKS_DELIVERY_TIMEOUT_MS: u64 {
         key: "webhooks.delivery_timeout_ms",
-        env: "ENGINE_WEBHOOKS_DELIVERY_TIMEOUT_MS",
         default: 5000,
         check: range(100, 300_000),
         description: "Milliseconds a store's webhook endpoint has to answer before the attempt counts as failed.",
@@ -230,7 +206,6 @@ settings! {
     },
     WEBHOOKS_MAX_ATTEMPTS: u32 {
         key: "webhooks.max_attempts",
-        env: "ENGINE_WEBHOOKS_MAX_ATTEMPTS",
         default: 8,
         check: range(1, 64),
         description: "Attempts per webhook delivery before giving up, with the wait doubling from 1 minute up to 1 hour between them.",
@@ -238,7 +213,6 @@ settings! {
     },
     LOGGING_LEVEL: String {
         key: "logging.level",
-        env: "ENGINE_LOG",
         default: telemetry::DEFAULT_LEVEL.to_string(),
         check: telemetry::check_level,
         description: "Which log lines the engine writes: a level (error, warn, info, debug, trace), optionally followed by target=level pairs for parts of the engine.",
@@ -246,14 +220,13 @@ settings! {
     },
     LOGGING_DEV_MODE_UNTIL: u64 {
         key: "logging.dev_mode_until",
-        env: "ENGINE_LOGGING_DEV_MODE_UNTIL",
         default: 0,
         check: range(0, i64::MAX),
         description: "Development logging: until this time the engine logs at debug level, then goes back to the level above by itself. Secrets and addresses stay hidden either way.",
+        sources: [Database],
     },
     LOGGING_RETENTION_DAYS: u64 {
         key: "logging.retention_days",
-        env: "ENGINE_LOGGING_RETENTION_DAYS",
         default: telemetry::store::DEFAULT_RETENTION_DAYS,
         check: range(1, 365),
         description: "Days the engine's log store keeps lines for the Logs page. Older lines are deleted once a minute.",
@@ -261,7 +234,6 @@ settings! {
     },
     LOGGING_MAX_MB: u64 {
         key: "logging.max_mb",
-        env: "ENGINE_LOGGING_MAX_MB",
         default: telemetry::store::DEFAULT_MAX_MB,
         check: range(10, 100_000),
         description: "Most megabytes the engine's log store may use. Past it, the oldest lines are deleted first.",
@@ -269,7 +241,6 @@ settings! {
     },
     LOGGING_OTLP_ENDPOINT: String {
         key: "logging.otlp_endpoint",
-        env: "ENGINE_LOGGING_OTLP_ENDPOINT",
         default: String::new(),
         check: telemetry::otlp::check_endpoint,
         description: "An OpenTelemetry collector (OTLP over HTTP) to send the engine's log lines and spans to as well, such as a Collector, Grafana, Seq or the Aspire Dashboard. Leave empty to keep them here only. They are redacted the same way either way.",
@@ -281,7 +252,7 @@ settings! {
         default: live_settings::Secret::default(),
         check: telemetry::otlp::check_headers,
         description: "Headers the collector needs, such as an API key, as name=value pairs separated by commas.",
-        sources: [Env, Database],
+        sources: [Env],
     },
 }
 
@@ -759,9 +730,8 @@ impl live_settings::Reloadable for CustodyReloadable {
 pub struct StoreSettings(pub SharedStore);
 
 impl StoreSettings {
-    /// Every stored setting, read on the calling thread: for start-up,
-    /// before the async runtime exists (`live_settings::read_sync`).
-    pub fn read_now(&self) -> Result<HashMap<String, String>, live_settings::StoreError> {
+    /// Every stored setting, read on the calling thread.
+    fn read_now(&self) -> Result<HashMap<String, String>, live_settings::StoreError> {
         self.0
             .lock()
             .list_settings()
@@ -817,25 +787,6 @@ pub struct EngineSettings {
     pub tenant_defaults: Live<TenantDefaults>,
     pub runtime: Live<RuntimeConfig>,
     pub custody: Live<CustodyConfig>,
-}
-
-/// One section as saved in `store` right now (environment overrides
-/// included), for the one-off CLI commands that hold a plain `Store`. A
-/// section whose saved values don't make sense falls back to its defaults,
-/// with a message, as at boot.
-pub fn read_section<S: Section>(store: &crate::store::Store) -> S {
-    let stored = store.list_settings().unwrap_or_else(|e| {
-        tracing::warn!(section = S::NAME, error = %e, "settings: couldn't read saved settings, so this section uses its defaults");
-        HashMap::new()
-    });
-    match S::from_snapshot(&Snapshot::new(stored, live_settings::Env::process())) {
-        Ok(section) => section,
-        Err(errors) => {
-            let reasons: Vec<String> = errors.iter().map(ToString::to_string).collect();
-            tracing::warn!(section = S::NAME, reasons = %reasons.join("; "), "settings: section is using its defaults");
-            defaults_of()
-        }
-    }
 }
 
 fn defaults_of<S: Section>() -> S {
@@ -1024,6 +975,7 @@ impl EngineSettings {
         router: Arc<crate::key_custody::CustodyRouter>,
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
+        options: live_settings::OptionsFile,
     ) -> Result<Arc<Self>, String> {
         Self::load_full(
             store,
@@ -1031,19 +983,30 @@ impl EngineSettings {
             Some(CustodyReloadable::new(router)),
             rate_limiter,
             env,
+            options,
         )
         .await
     }
 
     /// `load_full` without applying custody settings to a router (tests
-    /// with a fixed key custody).
+    /// with a fixed key custody), over an options file in memory, with the
+    /// test engine token unless `env` has one.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn load_with(
         store: SharedStore,
         nodes: Option<NodesReloadable>,
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
     ) -> Result<Arc<Self>, String> {
-        Self::load_full(store, nodes, None, rate_limiter, env).await
+        Self::load_full(
+            store,
+            nodes,
+            None,
+            rate_limiter,
+            env.or_var(SERVER_TOKEN.env_var, shared::auth::TEST_ENGINE_TOKEN),
+            live_settings::OptionsFile::in_memory(""),
+        )
+        .await
     }
 
     /// `load`, optionally without applying node settings to daemon clients:
@@ -1055,9 +1018,13 @@ impl EngineSettings {
         custody: Option<CustodyReloadable>,
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
+        options: live_settings::OptionsFile,
     ) -> Result<Arc<Self>, String> {
-        let mut builder =
-            Registry::builder_with_env(Arc::new(StoreSettings(store)), ALL, env.clone()).await;
+        // The options file holds the configuration and the database the
+        // runtime switches, each key in its own place.
+        let layered =
+            live_settings::LayeredStore::new(options, Arc::new(StoreSettings(store)), ALL);
+        let mut builder = Registry::builder_with_env(Arc::new(layered), ALL, env.clone()).await;
         let nodes = match nodes {
             Some(reloadable) => builder.reloadable(reloadable),
             None => builder.section::<NodeConfig>(),

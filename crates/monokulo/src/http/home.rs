@@ -30,16 +30,12 @@ use super::{resolve_authed_user, AppState, AuthedUser};
 /// pre-setup; only the very first thing a fresh install's operator sees when
 /// they actually load the site.
 pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let (setup_complete, signup_mode) = state
+    let setup_complete = state
         .db
-        .read(|db| {
-            Ok::<_, crate::db::DbError>((
-                db.is_setup_complete().unwrap_or(true),
-                crate::settings::signup_mode(db),
-            ))
-        })
+        .read(|db| Ok::<_, crate::db::DbError>(db.is_setup_complete().unwrap_or(true)))
         .await
-        .unwrap_or((true, crate::settings::SignupMode::InviteOnly));
+        .unwrap_or(true);
+    let signup_mode = state.settings.signup_mode();
     if !setup_complete {
         return redirect_302("/admin/setup");
     }

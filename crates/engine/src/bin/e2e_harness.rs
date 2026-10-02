@@ -213,18 +213,6 @@ async fn send_payment_handler(
 
 #[tokio::main]
 async fn main() {
-    // monokulo's `signup.mode` now defaults to `"invite_only"` (added after
-    // this harness's sibling `tests/e2e_dashboard_stagenet.rs` was written -
-    // that test's own bare signup, with no invite token, is now equally
-    // affected) - a fresh in-memory `Db` has no stored override, so without
-    // this the plain `/dashboard/signup` call below gets silently rejected
-    // (a re-rendered `200` form, not the `302` it asserts on) instead of
-    // creating the account. `settings::per_request` resolves this env var live on
-    // every call (command line > env > database > default), so setting it here before
-    // `main` does anything else is enough - scoped to this one process only,
-    // never touches the shared test file above.
-    std::env::set_var("MONOKULO_SIGNUP_MODE", "public");
-
     // ---- real, network-bound engine against the real public stagenet node ----
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
@@ -306,7 +294,10 @@ async fn main() {
             "DNS is not available in tests".to_string(),
         )),
         log_store: None,
-        settings: monokulo::settings::MonokuloSettings::defaults(),
+        // Public signup: `signup.mode` defaults to invite-only, which would
+        // refuse the plain `/dashboard/signup` below (a re-rendered `200`
+        // form, not the `302` it asserts on).
+        settings: ControlPlaneAppState::test_settings(None),
         engine: monokulo::http::Engine::new(EngineClient::for_tests(engine_base_url.clone())),
     };
     let cp_router = build_monokulo_router(cp_state);

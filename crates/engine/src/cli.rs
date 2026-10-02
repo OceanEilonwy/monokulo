@@ -5,10 +5,10 @@
 //! `main.rs`) so it's unit-testable the normal way, and so `main.rs` stays a
 //! thin wrapper around whatever this decides the process should do.
 //!
-//! A setting comes from its option, then its environment variable, then
-//! the value saved on the admin page, then its default. Every mode below
-//! agrees on where the database is: `database.path` (`--database-path` or
-//! `ENGINE_DB_PATH`).
+//! A setting comes from its environment variable (secrets only), then its
+//! option, then the options file (or, for the runtime switches, the
+//! database), then its default. Every mode below agrees on where the
+//! database is: `database.path` ([`database_path`]).
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
@@ -37,7 +37,9 @@ pub enum Action {
 #[derive(Debug)]
 pub struct Invocation {
     pub action: Action,
-    pub env: live_settings::Env,
+    /// The settings given on the command line, the options file to read,
+    /// and whether to write one instead (`--init`).
+    pub start: live_settings::cli::Start,
 }
 
 /// `--bootstrap-wallet` as parsed: everything `local_admin::bootstrap_wallet`
@@ -96,14 +98,16 @@ watches each network's chain for stores' payments. Only monokulo should reach it
 const LONG_ABOUT: &str = "The engine of Monokulo, a self-hosted Monero payment gateway: it \
 watches each network's chain for stores' payments. Only monokulo should reach it.
 
-With none of the one-off commands, it starts the server. Every setting below can be given \
-as an option, as its environment variable, or (unless it says it isn't saved) on the admin \
-settings page, which applies it without a restart. An option wins over the environment \
-variable, which wins over the saved value, which wins over the default. Secrets have no \
-option, only their environment variable (listed after the options): every user on the \
-machine can read the process list. ENGINE_TOKEN is required.";
+With none of the one-off commands, it starts the server. Settings are kept in the options \
+file (--options, by default ~/.config/monokulo/engine.toml), which the admin settings page \
+edits and reloads without a restart; --init writes one with every setting described. An \
+option below wins over the file and locks that setting on the admin page. Secrets have no \
+option and are never kept in the file, only in their environment variable (listed after the \
+options): every user on the machine can read the process list. ENGINE_TOKEN is required.";
 
 const EXAMPLES: &str = "Examples:
+  monokulo-engine --init
+      Write the options file, with every setting described, and say where.
   ENGINE_TOKEN=$(cat engine.token) monokulo-engine
       Start the server.
   ENGINE_TOKEN=$(cat engine.token) monokulo-engine --server-bind 10.0.0.2:8443 --monero-node-strict-tls true
@@ -196,7 +200,7 @@ pub fn command() -> Command {
                 .help_heading(COMMANDS)
                 .help("Which tenant --rotate-secret or --show-tenant act on. Only needed when there is more than one."),
         );
-    live_settings::cli::with_settings(command, crate::engine_settings::ALL)
+    live_settings::cli::with_settings(command, crate::engine_settings::ALL, OPTIONS_FILE)
 }
 
 /// Parses the full argument list, argv[0] included. Help, the version and
@@ -208,10 +212,10 @@ where
     T: Into<std::ffi::OsString> + Clone,
 {
     let matches = command().try_get_matches_from(args)?;
-    Ok(invocation(&matches, live_settings::Env::process()))
+    Ok(invocation(&matches))
 }
 
-fn invocation(matches: &ArgMatches, env: live_settings::Env) -> Invocation {
+fn invocation(matches: &ArgMatches) -> Invocation {
     let text = |id: &str| matches.get_one::<String>(id).cloned();
     let action = if matches.get_flag("bootstrap-wallet") {
         // `requires_all` above: clap has refused the command without them.
@@ -231,19 +235,25 @@ fn invocation(matches: &ArgMatches, env: live_settings::Env) -> Invocation {
     };
     Invocation {
         action,
-        env: env.with_cli(live_settings::cli::values(
-            matches,
-            crate::engine_settings::ALL,
-        )),
+        start: live_settings::cli::start(matches, crate::engine_settings::ALL, OPTIONS_FILE),
     }
 }
 
+/// The engine's options file, in `~/.config/monokulo/` unless `--options`
+/// names another.
+pub const OPTIONS_FILE: &str = "engine.toml";
+
 /// The database file every mode reads: `database.path`, from its option or
-/// `ENGINE_DB_PATH`, otherwise `engine.db` in the current directory.
-pub fn database_path(env: &live_settings::Env) -> std::path::PathBuf {
-    crate::engine_settings::DATABASE_PATH
-        .require(env)
-        .unwrap_or_else(|_| crate::engine_settings::DATABASE_PATH.default_value())
+/// the options file, otherwise `~/.local/share/monokulo/engine.db` (or
+/// `engine.db` in the working directory if that can't be used).
+pub fn database_path(start: &live_settings::Snapshot) -> std::path::PathBuf {
+    let path = start.get(&crate::engine_settings::DATABASE_PATH);
+    if start.source(&crate::engine_settings::DATABASE_PATH) == live_settings::SettingSource::Default
+    {
+        live_settings::paths::usable_or_cwd(Some(path), "engine.db")
+    } else {
+        path
+    }
 }
 
 #[cfg(test)]
@@ -254,10 +264,7 @@ mod tests {
     fn parse(argv: &[&str]) -> Result<Invocation, clap::Error> {
         let matches = command()
             .try_get_matches_from(std::iter::once("monokulo-engine").chain(argv.iter().copied()))?;
-        Ok(invocation(
-            &matches,
-            live_settings::Env::fixed(Vec::<(String, String)>::new()),
-        ))
+        Ok(invocation(&matches))
     }
 
     #[test]
@@ -282,12 +289,17 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(invocation.action, Action::RunServer));
+        let start = live_settings::Snapshot::new(Default::default(), invocation.start.env.clone());
         assert_eq!(
-            database_path(&invocation.env),
+            database_path(&start),
             std::path::PathBuf::from("/data/e.db")
         );
         assert_eq!(
-            invocation.env.cli("monero_node.strict_tls").as_deref(),
+            invocation
+                .start
+                .env
+                .cli("monero_node.strict_tls")
+                .as_deref(),
             Some("true")
         );
         let refused = parse(&["--payment-reorg-check-depth", "0"])
@@ -508,21 +520,33 @@ mod tests {
         assert!(parse(&origins).is_err());
     }
 
+    /// The database is under ~/.local/share/monokulo unless the options
+    /// file or the command line says otherwise.
     #[test]
-    fn the_database_path_defaults_to_a_fixed_relative_path_and_can_be_given() {
-        let env = |vars: &[(&str, &str)]| live_settings::Env::fixed(vars.iter().copied());
-        assert_eq!(
-            database_path(&env(&[])),
-            std::path::PathBuf::from("engine.db")
+    fn the_database_path_follows_xdg_unless_given() {
+        let none = live_settings::Env::fixed(Vec::<(String, String)>::new());
+        let from = |file: &[(&str, &str)], env: live_settings::Env| {
+            let stored = file
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            database_path(&live_settings::Snapshot::new(stored, env))
+        };
+        let default = from(&[], none.clone());
+        assert!(
+            default == std::path::Path::new("engine.db") || default.ends_with("monokulo/engine.db"),
+            "{default:?}"
         );
         assert_eq!(
-            database_path(&env(&[("ENGINE_DB_PATH", "")])),
-            std::path::PathBuf::from("engine.db"),
-            "blank is unset"
+            from(&[("database.path", "/srv/engine.db")], none.clone()),
+            std::path::PathBuf::from("/srv/engine.db")
         );
+        let flagged =
+            none.with_cli([("database.path".to_string(), "/cli/engine.db".to_string())].into());
         assert_eq!(
-            database_path(&env(&[("ENGINE_DB_PATH", "/tmp/somewhere/custom.db")])),
-            std::path::PathBuf::from("/tmp/somewhere/custom.db")
+            from(&[("database.path", "/srv/engine.db")], flagged),
+            std::path::PathBuf::from("/cli/engine.db"),
+            "the option wins over the file"
         );
     }
 }

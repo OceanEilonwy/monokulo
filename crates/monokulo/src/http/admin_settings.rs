@@ -10,9 +10,9 @@
 //! (`views::admin::SettingsTab`), and a tab can hold both processes'
 //! settings; its one Save posts here, and [`save`] splits the form by
 //! owner and saves each half the way it always has. Monokulo's own
-//! settings (`crate::settings::ALL`) are simple: read/write this
-//! service's own `settings` table directly, exactly like every other setting
-//! this crate already persists. The scanner half is a live HTTP proxy - this
+//! settings (`crate::settings::ALL`) are saved through its registry, into
+//! its options file (or, for the runtime switches, its database). The
+//! scanner half is a live HTTP proxy - this
 //! page holds no scanner state of its own at all, it just calls the
 //! configured scanner instance's own `GET`/`POST /api/v1/admin/settings`
 //! (`engine::http::instance_admin`) through monokulo's engine client
@@ -22,13 +22,13 @@
 //! multi-tenant "one monokulo, many engines" design - see this crate's own
 //! `EngineClient`, which already assumes exactly one engine base URL.
 //!
-//! Every field on every tab always carries its *current effective* value (secrets excepted: they are never echoed back, and an empty secret field keeps the current one)
-//! (`value="..."`, `command line > env > database > default`) - per the explicit "the
-//! settings should have a value='' that corresponds to the active setting"
-//! requirement - and the save button can always be clicked: submitting the
-//! form as-is (nothing changed) just re-persists whatever is currently
-//! effective, which is exactly the "use this to persist the environment
-//! variables currently configured" behavior asked for.
+//! Every field on every tab always carries its *current effective* value
+//! (secrets excepted: they are never echoed back), with a chip saying where
+//! it comes from (`environment > command line > options file or database >
+//! default`). A value given on the command line or in the environment is
+//! locked: the page shows it, and says where to change it. Each process's
+//! options file is named above the tabs, with a button that reads it again
+//! after an edit by hand ([`reload`]).
 //!
 //! **Database access**: settings are read through `state.db.read` (and the
 //! settings registry), each a job on the database's own threads; the
@@ -46,7 +46,8 @@ use crate::db::UserRow;
 use crate::views;
 use crate::views::admin::{
     setting_placement, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel,
-    NodeRowView, NodeStatusView, Notice, SettingKindView, SettingOwner, SettingsTab,
+    NodeRowView, NodeStatusView, Notice, OptionsFileView, SettingKindView, SettingOwner,
+    SettingSourceView, SettingsTab,
 };
 
 use super::fx::FxRequest;
@@ -60,23 +61,23 @@ fn humanize_key(key: &str) -> String {
     key.replace(['.', '_'], " ")
 }
 
-fn source_label(source: &str) -> String {
+fn live_source(source: live_settings::SettingSource) -> SettingSourceView {
     match source {
-        "cli" => "command-line option".to_string(),
-        "env" => "environment variable".to_string(),
-        "database" => "saved value".to_string(),
-        "default" => "default".to_string(),
-        other => other.to_string(),
+        live_settings::SettingSource::Toml => SettingSourceView::OptionsFile,
+        live_settings::SettingSource::Database => SettingSourceView::Runtime,
+        live_settings::SettingSource::Cli => SettingSourceView::CommandLine,
+        live_settings::SettingSource::Env => SettingSourceView::Environment,
+        live_settings::SettingSource::Default => SettingSourceView::Default,
     }
 }
 
-fn live_source(source: live_settings::SettingSource) -> &'static str {
-    match source {
-        live_settings::SettingSource::Cli => "cli",
-        live_settings::SettingSource::Env => "env",
-        live_settings::SettingSource::Database => "database",
-        live_settings::SettingSource::Default => "default",
-    }
+/// Why a setting kept in an options file can't be changed here, when
+/// `process` can't write that file.
+fn read_only_file(file: &live_settings::FileInfo, process: &str) -> String {
+    format!(
+        "The options file {} can't be written by {process}, so this is changed by editing it, then reloading it.",
+        file.path
+    )
 }
 
 /// Every monokulo setting as the page shows it, from the registry's
@@ -86,27 +87,26 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
     let Some(registry) = state.settings.registry.as_ref() else {
         return Vec::new();
     };
+    let read_only = registry
+        .options_file()
+        .filter(|file| !file.writable)
+        .map(|file| read_only_file(&file, "monokulo"));
     registry
         .describe()
         .into_iter()
         .map(|view| {
-            // Given at start only: shown, with a padlock, never saved here.
-            let locked = !view.sources.database;
+            // Given at start, or in a file monokulo can't write: shown,
+            // with a padlock and the reason, never saved here.
+            let locked = view
+                .locked
+                .or_else(|| read_only.clone().filter(|_| view.sources.toml));
             AdminScalarFieldView {
                 key: view.key.to_string(),
                 name: String::new(),
                 label: humanize_key(view.key),
                 value: view.value,
-                source_label: source_label(live_source(view.source)),
-                help: Some(if locked {
-                    locked_help(
-                        view.description,
-                        &live_settings::outside_names(view.key, view.env_var, view.sources),
-                        "monokulo",
-                    )
-                } else {
-                    view.description.to_string()
-                }),
+                source: live_source(view.source),
+                help: Some(view.description.to_string()),
                 kind: SettingKindView::from(view.kind),
                 example: view.example.map(str::to_string),
                 restart_only: view.applies == live_settings::Applies::Restart,
@@ -116,14 +116,6 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
             }
         })
         .collect()
-}
-
-/// A locked setting's help: what it is for, then how it is set, since the
-/// page can't change it.
-fn locked_help(description: &str, set_with: &str, process: &str) -> String {
-    format!(
-        "{description} Set with {set_with} when {process} starts; change it there and restart {process}."
-    )
 }
 
 /// Whether `key` is one of monokulo's own settings.
@@ -158,12 +150,9 @@ struct RemoteScalarSetting {
     pending_restart: bool,
     #[serde(default)]
     problem: Option<String>,
-    /// Given at start only: shown locked.
+    /// Why the page can't change it, if it can't: shown locked.
     #[serde(default)]
-    locked: bool,
-    /// How it is given from outside (its variable and/or option).
-    #[serde(default)]
-    set_with: String,
+    locked: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -182,13 +171,23 @@ struct RemoteSettingsResponse {
     /// engine doesn't send it.
     #[serde(default)]
     networks: BTreeMap<String, RemoteNetwork>,
+    /// Where the engine's options file is, and whether it can write it.
+    #[serde(default)]
+    options_file: Option<live_settings::FileInfo>,
+}
+
+/// The engine's settings, as the page shows them.
+struct EngineSettings {
+    fields: Vec<AdminScalarFieldView>,
+    networks: Vec<AdminNetworkFieldView>,
+    options_file: Option<live_settings::FileInfo>,
 }
 
 /// Fetches the engine's own settings over HTTP; `Err` for a reachability,
 /// auth or parse failure worth showing.
 async fn fetch_engine_settings(
     engine: &crate::engine_client::EngineClient,
-) -> Result<(Vec<AdminScalarFieldView>, Vec<AdminNetworkFieldView>), String> {
+) -> Result<EngineSettings, String> {
     let response = engine
         .request(reqwest::Method::GET, "/api/v1/admin/settings")
         .send()
@@ -210,13 +209,8 @@ async fn fetch_engine_settings(
             name: engine_form_name(&key),
             key,
             value: s.value,
-            source_label: source_label(&s.source),
-            help: match (s.locked, s.description) {
-                (true, Some(description)) => {
-                    Some(locked_help(&description, &s.set_with, "the engine"))
-                }
-                (_, description) => description,
-            },
+            source: SettingSourceView::from_name(&s.source),
+            help: s.description,
             kind: s.kind,
             example: s.example,
             restart_only: s.applies.as_deref() == Some("restart"),
@@ -264,7 +258,11 @@ async fn fetch_engine_settings(
             .position(|known| shared::network::network_str(*known) == n.network)
             .unwrap_or(usize::MAX)
     });
-    Ok((fields, networks))
+    Ok(EngineSettings {
+        fields,
+        networks,
+        options_file: parsed.options_file,
+    })
 }
 
 /// Assembles the whole page's view model: monokulo's fields from its
@@ -314,20 +312,42 @@ async fn build_view_model(
     let clock = views::time::Clock::for_user(admin);
     let mut monokulo_fields = monokulo_fields(state);
     with_time_limits(&mut monokulo_fields, &clock);
+    let options_files = state
+        .settings
+        .registry
+        .as_ref()
+        .and_then(live_settings::Registry::options_file)
+        .map(|file| OptionsFileView {
+            owner: SettingOwner::Monokulo,
+            path: file.path,
+            exists: file.exists,
+            writable: file.writable,
+        })
+        .into_iter()
+        .collect();
     let mut view = AdminSettingsViewModel {
         tab,
         error,
         success,
         notices,
         monokulo_fields,
+        options_files,
         ..Default::default()
     };
     match fetch_engine_settings(&state.engine.client).await {
-        Ok((mut fields, networks)) => {
+        Ok(engine) => {
+            let mut fields = engine.fields;
             with_time_limits(&mut fields, &clock);
             view.engine_reachable = true;
             view.engine_fields = fields;
-            view.engine_networks = networks;
+            view.engine_networks = engine.networks;
+            view.options_files
+                .extend(engine.options_file.map(|file| OptionsFileView {
+                    owner: SettingOwner::Engine,
+                    path: file.path,
+                    exists: file.exists,
+                    writable: file.writable,
+                }));
         }
         Err(e) => {
             view.engine_reachable = false;
@@ -482,7 +502,7 @@ pub async fn page(
                 ..Default::default()
             };
             let mut view = build_view_model(&state, &admin_user, tab, result).await;
-            view.saved_tab = Some(flash.tab);
+            view.saved_tab = (!flash.reloaded).then_some(flash.tab);
             view
         }
         None => build_view_model(&state, &admin_user, tab, SaveResult::default()).await,
@@ -516,14 +536,12 @@ fn joined(pairs: Vec<(String, String)>) -> HashMap<String, String> {
 }
 
 /// A submitted tab, split by who owns each field (nicer_admin_screen.md
-/// T3): monokulo's are the names its registry knows (and their "Clear it"
-/// boxes); everything else is the engine's.
+/// T3): monokulo's are the names its registry knows; everything else is
+/// the engine's.
 #[derive(Default)]
 struct SplitForm {
     monokulo: HashMap<String, String>,
     engine: RemoteUpdateRequest,
-    /// Engine secrets whose "Clear it" box was ticked.
-    engine_clears: Vec<String>,
     /// The node form was submitted (`node_*` fields: `admin_nodes`).
     nodes: bool,
 }
@@ -539,22 +557,14 @@ impl SplitForm {
                 split.nodes = true;
                 continue;
             }
-            let (clear, bare) = match name.strip_prefix("clear:") {
-                Some(bare) => (true, bare),
-                None => (false, name.as_str()),
-            };
-            let engine_key = bare.strip_prefix("engine:");
-            if engine_key.is_none() && is_monokulo_key(bare) {
+            let engine_key = name.strip_prefix("engine:");
+            if engine_key.is_none() && is_monokulo_key(name) {
                 split.monokulo.insert(name.clone(), value.clone());
-            } else if clear {
-                split
-                    .engine_clears
-                    .push(engine_key.unwrap_or(bare).to_string());
             } else {
                 split
                     .engine
                     .scalars
-                    .insert(engine_key.unwrap_or(bare).to_string(), value.clone());
+                    .insert(engine_key.unwrap_or(name).to_string(), value.clone());
             }
         }
         split
@@ -587,43 +597,16 @@ impl SaveOutcome {
 
 /// Saves the monokulo half of a tab through the registry
 /// (admin_settings_v2.md part 1): all checked first, then applied to the
-/// running process and stored together, or nothing at all. A secret field
-/// left empty keeps its current value.
+/// running process and stored together, or nothing at all. A locked
+/// setting (a secret, or one given on the command line) refuses the save.
 async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> SaveOutcome {
     let Some(registry) = state.settings.registry.as_ref() else {
         return SaveOutcome::refused("Settings can't be saved on this instance.".to_string());
     };
-    // A new value and "Clear it" together can't both be meant.
-    if let Some(key) = crate::settings::ALL.iter().map(|s| s.key()).find(|key| {
-        form.contains_key(&format!("clear:{key}"))
-            && form.get(*key).is_some_and(|value| !value.is_empty())
-    }) {
-        return SaveOutcome {
-            error_key: Some((key.to_string(), SettingOwner::Monokulo)),
-            ..SaveOutcome::refused(format!(
-                "{key}: either type a new value or tick \"Clear it\", not both."
-            ))
-        };
-    }
-    let secrets: Vec<&str> = crate::settings::ALL
-        .iter()
-        .filter(|s| matches!(s.kind(), live_settings::SettingKind::Secret))
-        .map(|s| s.key())
-        .collect();
     let changes: live_settings::Changes = crate::settings::ALL
         .iter()
         .filter_map(|setting| {
-            // A secret's field is always empty on the page, so empty means
-            // "keep it"; its "Clear it" box removes it.
-            if secrets.contains(&setting.key())
-                && form.contains_key(&format!("clear:{}", setting.key()))
-            {
-                return Some((setting.key().to_string(), None));
-            }
             let value = form.get(setting.key())?;
-            if secrets.contains(&setting.key()) && value.is_empty() {
-                return None;
-            }
             Some((setting.key().to_string(), Some(value.clone())))
         })
         .collect();
@@ -665,6 +648,12 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
                     .join(" "),
             )
         },
+        // The options file changed since it was read, or can't be written:
+        // the admin reloads it, or fixes its permissions.
+        Err(live_settings::SaveError::Store(e)) => {
+            tracing::warn!(error = %e, "monokulo's settings could not be stored");
+            SaveOutcome::refused(format!("Nothing was saved: {e}"))
+        }
         // Stored, but applying them failed: retrying would fail the same way.
         Err(live_settings::SaveError::Install(message)) => {
             tracing::error!(error = %message, "monokulo settings were saved but applying them failed");
@@ -770,58 +759,11 @@ fn engine_save_notices(warnings: RemoteSaveWarnings, submitted_bind: Option<&str
     notices
 }
 
-/// An engine secret is never shown on the page, so an empty one means
-/// "keep it", as for monokulo's; its "Clear it" box sends an empty value.
-/// Which of the submitted settings are secrets is the engine's to say, so
-/// it's asked, only when there's an empty value or a ticked box to decide.
-async fn apply_engine_secrets(
-    engine: &crate::engine_client::EngineClient,
-    req: &mut RemoteUpdateRequest,
-    clears: &[String],
-) -> Result<(), Box<SaveOutcome>> {
-    if clears.is_empty() && !req.scalars.values().any(String::is_empty) {
-        return Ok(());
-    }
-    let fields = match fetch_engine_settings(engine).await {
-        Ok((fields, _)) => fields,
-        Err(e) => {
-            return Err(Box::new(SaveOutcome::refused(format!(
-                "Could not reach the configured engine: {e}"
-            ))))
-        }
-    };
-    for key in clears {
-        if req.scalars.get(key).is_some_and(|value| !value.is_empty()) {
-            return Err(Box::new(SaveOutcome {
-                error_key: Some((key.clone(), SettingOwner::Engine)),
-                ..SaveOutcome::refused(format!(
-                    "{key}: either type a new value or tick \"Clear it\", not both."
-                ))
-            }));
-        }
-    }
-    for field in fields.iter().filter(|f| f.kind == SettingKindView::Secret) {
-        if clears.contains(&field.key) {
-            req.scalars.insert(field.key.clone(), String::new());
-        } else if req.scalars.get(&field.key).is_some_and(String::is_empty) {
-            req.scalars.remove(&field.key);
-        }
-    }
-    Ok(())
-}
-
 /// Forwards the engine half of a tab to the engine's own
 /// `POST /api/v1/admin/settings`, which checks it. Whatever the engine
 /// refuses comes back as the page's error, verbatim; what it accepts comes
 /// back with its warnings as banners.
-async fn save_engine(
-    state: &AppState,
-    mut req: RemoteUpdateRequest,
-    clears: &[String],
-) -> SaveOutcome {
-    if let Err(refused) = apply_engine_secrets(&state.engine.client, &mut req, clears).await {
-        return *refused;
-    }
+async fn save_engine(state: &AppState, req: RemoteUpdateRequest) -> SaveOutcome {
     if req.is_empty() {
         return SaveOutcome::default();
     }
@@ -951,8 +893,8 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutco
     }
     let mut saved_here: Vec<String> = split.monokulo.keys().cloned().collect();
     saved_here.sort();
-    if !split.engine.is_empty() || !split.engine_clears.is_empty() {
-        let engine = save_engine(state, split.engine, &split.engine_clears).await;
+    if !split.engine.is_empty() {
+        let engine = save_engine(state, split.engine).await;
         if engine.error.is_some() {
             outcome.nodes = nodes;
         }
@@ -976,6 +918,8 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutco
 /// redirects to (post, redirect, get), shown once.
 struct Flash {
     tab: SettingsTab,
+    /// From the Reload button, not Save: no word beside Save.
+    reloaded: bool,
     success: String,
     notices: Vec<Notice>,
     created: std::time::Instant,
@@ -1044,6 +988,7 @@ pub async fn save(
     if outcome.error.is_none() && !fx.0 {
         let token = put_flash(Flash {
             tab,
+            reloaded: false,
             success,
             notices: outcome.notices,
             created: std::time::Instant::now(),
@@ -1068,6 +1013,148 @@ pub async fn save(
         super::fx::invalid(fragment)
     } else {
         axum::response::Html(fragment.into_string()).into_response()
+    }
+}
+
+/// The Reload options file form: whose file, and the tab to come back to.
+#[derive(Deserialize)]
+pub struct ReloadForm {
+    owner: String,
+    tab: Option<String>,
+}
+
+/// What a reload changed, as the page says it.
+fn reload_notices(
+    process: &str,
+    changed: &[String],
+    restart_required: &[String],
+) -> (String, Vec<Notice>) {
+    let success = if changed.is_empty() {
+        format!("Reloaded {process}'s options file: nothing in it changed.")
+    } else {
+        format!(
+            "Reloaded {process}'s options file and applied it: {}.",
+            changed.join(", ")
+        )
+    };
+    let mut notices = Vec::new();
+    if !restart_required.is_empty() {
+        notices.push(Notice::Warning(format!(
+            "These take effect after {process} restarts: {}.",
+            restart_required.join(", ")
+        )));
+    }
+    (success, notices)
+}
+
+/// Reads monokulo's options file again and applies it; `Err` is why
+/// nothing changed.
+async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<Notice>), String> {
+    let Some(registry) = state.settings.registry.as_ref() else {
+        return Err("Settings can't be reloaded on this instance.".to_string());
+    };
+    match registry.reload().await {
+        Ok(report) => {
+            let changed: Vec<String> = report.changed.iter().map(ToString::to_string).collect();
+            let restart: Vec<String> = report
+                .restart_required
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            let (success, mut notices) = reload_notices("monokulo", &changed, &restart);
+            notices.extend(
+                report
+                    .warnings
+                    .iter()
+                    .map(|warning| Notice::Error(warning.message.clone())),
+            );
+            Ok((success, notices))
+        }
+        Err(e) => Err(format!(
+            "Nothing was reloaded: monokulo's options file has problems. {e}"
+        )),
+    }
+}
+
+/// Asks the engine to read its options file again and apply it
+/// (`POST /api/v1/admin/settings/reload`); `Err` is why nothing changed.
+async fn reload_engine(state: &AppState) -> Result<(String, Vec<Notice>), String> {
+    let response = state
+        .engine
+        .client
+        .request(reqwest::Method::POST, "/api/v1/admin/settings/reload")
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach the configured engine: {e}"))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let message = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or(body);
+        return Err(format!(
+            "Nothing was reloaded: the engine's options file has problems ({status}). {message}"
+        ));
+    }
+    let saved: RemoteSaveResponse = serde_json::from_str(&body).unwrap_or_default();
+    if saved
+        .changed
+        .iter()
+        .any(|key| key.starts_with("monero_node."))
+    {
+        super::status_page::invalidate_status_cache(&state.engine);
+    }
+    let (success, mut notices) = reload_notices(
+        "the engine",
+        &saved.changed,
+        &saved.warnings.restart_required,
+    );
+    notices.extend(
+        saved
+            .warnings
+            .messages
+            .into_iter()
+            .map(|message| Notice::Warning(message.message)),
+    );
+    Ok((success, notices))
+}
+
+/// `POST /dashboard/admin/settings/reload` - the Reload options file button:
+/// reads monokulo's or the engine's options file again, after an edit by
+/// hand, and applies all of it, or, when anything in it is wrong, none of
+/// it, with every problem named by line. A reload that worked redirects
+/// back to the tab with its banners (post, redirect, get); one that didn't
+/// renders the page with why.
+pub async fn reload(
+    State(state): State<AppState>,
+    AuthedAdmin(admin_user, _): AuthedAdmin,
+    Form(form): Form<ReloadForm>,
+) -> Response {
+    let tab = SettingsTab::from_id(form.tab.as_deref());
+    let result = match form.owner.as_str() {
+        "engine" => reload_engine(&state).await,
+        _ => reload_monokulo(&state).await,
+    };
+    match result {
+        Ok((success, notices)) => {
+            let token = put_flash(Flash {
+                tab,
+                reloaded: true,
+                success,
+                notices,
+                created: std::time::Instant::now(),
+            });
+            super::dashboard::redirect_303(&format!("{}&saved={token}", tab.href()))
+        }
+        Err(error) => {
+            let result = SaveResult {
+                error: Some(error),
+                ..Default::default()
+            };
+            let view = build_view_model(&state, &admin_user, tab, result).await;
+            render(&state, &admin_user, view).await
+        }
     }
 }
 
@@ -1098,6 +1185,18 @@ mod tests {
     /// what most tests in this module want, since the whole point of this
     /// page is proxying that connection.
     async fn test_app_state_connected_to(engine_addr: std::net::SocketAddr) -> AppState {
+        test_app_state_with_options(
+            engine_addr,
+            live_settings::OptionsFile::in_memory("[signup]\nmode = \"public\"\n"),
+        )
+        .await
+    }
+
+    /// [`test_app_state_connected_to`] over the given options file.
+    async fn test_app_state_with_options(
+        engine_addr: std::net::SocketAddr,
+        options: live_settings::OptionsFile,
+    ) -> AppState {
         let db = Db::open_in_memory().unwrap();
         db.seed_test_admin();
         let db = db.into_shared();
@@ -1110,7 +1209,8 @@ mod tests {
             exchange_rate.clone(),
             abuse.clone(),
             None,
-            live_settings::Env::fixed(Vec::<(String, String)>::new()),
+            crate::settings::test_secrets(),
+            options,
         )
         .await
         .unwrap();
@@ -1124,6 +1224,35 @@ mod tests {
     }
 
     use crate::http::test_support::body_text;
+
+    /// A monokulo setting's value and where it comes from, as the registry
+    /// has it.
+    fn monokulo_value(
+        settings: &crate::settings::MonokuloSettings,
+        key: &str,
+    ) -> (String, live_settings::SettingSource) {
+        let view = settings
+            .registry
+            .as_ref()
+            .unwrap()
+            .describe()
+            .into_iter()
+            .find(|view| view.key == key)
+            .unwrap();
+        (view.value, view.source)
+    }
+
+    /// The part of a page from a setting's label to its control: the
+    /// label row with its source chip.
+    fn label_row<'a>(html: &'a str, key: &str) -> &'a str {
+        let start = html
+            .find(&format!(r#"for="setting-{key}""#))
+            .unwrap_or_else(|| panic!("no label for {key}: {html}"));
+        let end = html[start..]
+            .find("</div>")
+            .map_or(html.len(), |end| start + end);
+        &html[start..end]
+    }
 
     use crate::http::test_support::urlencoding_encode;
 
@@ -1354,8 +1483,12 @@ mod tests {
             "expected the saved value to survive a fresh page load, got: {html}"
         );
         assert!(
-            html.contains("saved value"),
-            "expected the source label to say this came from a saved value, got: {html}"
+            label_row(&html, "abuse.soft_per_min").contains("Options file"),
+            "expected the chip to say this came from the options file, got: {html}"
+        );
+        assert!(
+            label_row(&html, "abuse.hard_per_min").contains("Default"),
+            "and an unset one from the default, got: {html}"
         );
     }
 
@@ -1401,18 +1534,19 @@ mod tests {
             ("logging.retention_days", "30"),
             ("logging.max_mb", "250"),
             ("logging.otlp_endpoint", "http://127.0.0.1:4318"),
-            ("logging.otlp_headers", "x-team=ops"),
+            ("logging.format", "json"),
             ("server.bind", "127.0.0.1:9081"),
             ("engine.url", "http://127.0.0.1:9443"),
         ];
         // Every monokulo setting the page can save must be covered here, or
         // this test would silently stop proving anything about a setting
-        // added later. The rest are given only at start, shown locked.
+        // added later. The rest (the secrets, and where the database is)
+        // are shown locked.
         assert_eq!(
             new_values.len(),
             crate::settings::ALL
                 .iter()
-                .filter(|s| s.sources().database)
+                .filter(|s| (s.sources().toml || s.sources().database) && s.editable())
                 .count(),
             "this test must cover every known monokulo setting"
         );
@@ -1436,10 +1570,6 @@ mod tests {
 
         let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
-            if *key == "logging.otlp_headers" {
-                assert!(!html.contains(value), "a secret is never echoed back");
-                continue;
-            }
             assert!(
                 shows_value(&html, value),
                 "expected {key}={value:?} to have round-tripped, got: {html}"
@@ -1488,15 +1618,16 @@ mod tests {
             ("engine:logging.retention_days", "30"),
             ("engine:logging.max_mb", "250"),
             ("engine:logging.otlp_endpoint", "http://127.0.0.1:4318"),
-            ("engine:logging.otlp_headers", "x-team=ops"),
+            ("engine:logging.format", "json"),
         ];
         // Every engine setting the page can save, apart from the node ones
-        // (their own form); the rest are given only at start, shown locked.
+        // (their own form); the rest (the secrets, and where the database
+        // is) are shown locked.
         assert_eq!(
             new_values.len(),
             engine::engine_settings::ALL
                 .iter()
-                .filter(|s| s.sources().database)
+                .filter(|s| (s.sources().toml || s.sources().database) && s.editable())
                 .count()
                 - engine::engine_settings::NETWORKS.len(),
             "this test must cover every engine setting the page can save, apart from the node ones"
@@ -1538,10 +1669,6 @@ mod tests {
             if value.is_empty() {
                 continue;
             }
-            if *key == "engine:logging.otlp_headers" {
-                assert!(!html.contains(value), "a secret is never echoed back");
-                continue;
-            }
             assert!(
                 shows_value(&html, value),
                 "expected {key}={value:?} to have round-tripped, got: {html}"
@@ -1553,8 +1680,12 @@ mod tests {
             "the engine's own logging level"
         );
         assert_eq!(
-            engine_view["scalars"]["logging.otlp_headers"]["source"], "database",
-            "{engine_view}"
+            engine_view["scalars"]["logging.level"]["source"], "toml",
+            "saved into the engine's options file: {engine_view}"
+        );
+        assert_eq!(
+            engine_view["scalars"]["logging.dev_mode_until"]["source"], "database",
+            "a runtime switch, into its database: {engine_view}"
         );
     }
 
@@ -1705,7 +1836,7 @@ mod tests {
     ) {
         let engine = spawn_engine().await;
         let state = test_app_state_connected_to(engine.addr).await;
-        let db = state.db.clone();
+        let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -1714,14 +1845,13 @@ mod tests {
             page.contains(r#"<input type="password" value="locked" id="setting-engine.token" aria-describedby="setting-help-engine.token" disabled>"#),
             "{page}"
         );
-        assert_eq!(
-            page.matches(r#"<svg class="lock-icon""#).count(),
-            1,
-            "{page}"
+        assert!(
+            page.contains("This is set with MONOKULO_ENGINE_TOKEN when the process starts"),
+            "the lock says where it is set: {page}"
         );
         assert!(
-            page.contains("Set with MONOKULO_ENGINE_TOKEN when monokulo starts"),
-            "the help names the variable: {page}"
+            label_row(&page, "engine.token").contains("Environment"),
+            "{page}"
         );
         assert!(
             page.contains(r#"name="engine.url""#),
@@ -1751,10 +1881,9 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(db.lock().get_setting("engine.token").unwrap(), None);
         assert_eq!(
-            db.lock().get_setting("engine.url").unwrap(),
-            None,
+            monokulo_value(&settings, "engine.url").1,
+            live_settings::SettingSource::Default,
             "the save was refused whole"
         );
         let payments = body_text(
@@ -1772,26 +1901,15 @@ mod tests {
         );
     }
 
+    /// Secrets come from the environment only: each process's is shown
+    /// locked, as dots, and a hand-made form that sends one is refused.
     #[tokio::test]
-    async fn a_secret_is_kept_when_left_empty_and_removed_when_cleared() {
+    async fn a_secret_is_shown_locked_and_a_form_sending_one_is_refused() {
         let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
-        let db = state.db.clone();
+        let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let key = crate::settings::LOGGING_OTLP_HEADERS.key;
-        // Through the page, so the loaded settings see it too.
-        let set = router
-            .clone()
-            .oneshot(authed_form_request(
-                "POST",
-                "/dashboard/admin/settings",
-                &cookie,
-                &[("tab", "logging"), (key, "authorization=Bearer kept")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(set.status(), StatusCode::SEE_OTHER);
-
         let page = body_text(
             get(
                 &router,
@@ -1802,76 +1920,33 @@ mod tests {
         )
         .await;
         assert!(
-            page.contains(&format!(r#"name="clear:{key}""#)),
-            "a set secret can be cleared: {page}"
+            page.contains(&format!(
+                r#"<input type="password" value="locked" id="setting-{key}""#
+            )),
+            "{page}"
         );
+        assert!(!page.contains(&format!(r#"name="{key}""#)), "{page}");
 
-        let kept = router
+        let refused = router
             .clone()
             .oneshot(authed_form_request(
                 "POST",
                 "/dashboard/admin/settings",
                 &cookie,
-                &[("tab", "logging"), (key, "")],
+                &[("tab", "logging"), (key, "authorization=Bearer sk-live-x")],
             ))
             .await
             .unwrap();
-        assert_eq!(kept.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            db.lock().get_setting(key).unwrap().as_deref(),
-            Some("authorization=Bearer kept"),
-            "empty keeps it"
-        );
-
-        let clear = format!("clear:{key}");
-        let cleared = router
-            .clone()
-            .oneshot(authed_form_request(
-                "POST",
-                "/dashboard/admin/settings",
-                &cookie,
-                &[("tab", "logging"), (key, ""), (clear.as_str(), "on")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
-        assert_eq!(db.lock().get_setting(key).unwrap(), None);
-        let page = body_text(
-            get(
-                &router,
-                &crate::views::admin::SettingsTab::Logging.href(),
-                Some(&cookie),
-            )
-            .await,
-        )
-        .await;
+        assert_eq!(refused.status(), StatusCode::OK);
+        let html = unescaped(&body_text(refused).await);
+        assert!(html.contains("MONOKULO_LOGGING_OTLP_HEADERS"), "{html}");
         assert!(
-            !page.contains(&format!(r#"name="clear:{key}""#)),
-            "nothing left to clear"
+            !html.contains("sk-live-x"),
+            "the refused secret is on the page"
         );
-
-        db.lock()
-            .set_setting(key, "authorization=Bearer some")
-            .unwrap();
-        let both = router
-            .clone()
-            .oneshot(authed_form_request(
-                "POST",
-                "/dashboard/admin/settings",
-                &cookie,
-                &[
-                    ("tab", "logging"),
-                    (key, "authorization=Bearer new"),
-                    (clear.as_str(), "on"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert!(body_text(both).await.contains("not both"));
         assert_eq!(
-            db.lock().get_setting(key).unwrap().as_deref(),
-            Some("authorization=Bearer some"),
-            "nothing changed"
+            monokulo_value(&settings, key).1,
+            live_settings::SettingSource::Default
         );
     }
 
@@ -1951,12 +2026,6 @@ mod tests {
                 "not a url",
                 "Enter this instance's public address",
             ),
-            // The key pasted on its own, where name=value pairs go.
-            (
-                "logging.otlp_headers",
-                "sk-live-abc123",
-                "Pair 1 isn't name=value",
-            ),
         ] {
             let save = router
                 .clone()
@@ -1984,11 +2053,6 @@ mod tests {
                     .next()
                     .unwrap_or("")
             );
-            // A secret that was refused isn't shown back, in the message or
-            // in its field.
-            if key == "logging.otlp_headers" {
-                assert!(!html.contains(value), "the refused secret is on the page");
-            }
         }
     }
 
@@ -2251,7 +2315,7 @@ mod tests {
     #[tokio::test]
     async fn a_tab_with_only_monokulo_settings_saves_only_monokulo() {
         let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
-        let db = state.db.clone();
+        let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -2271,11 +2335,8 @@ mod tests {
             .await
             .contains("Settings saved and applied."));
         assert_eq!(
-            db.lock()
-                .get_setting("abuse.soft_per_min")
-                .unwrap()
-                .as_deref(),
-            Some("61")
+            monokulo_value(&settings, "abuse.soft_per_min"),
+            ("61".to_string(), live_settings::SettingSource::Toml)
         );
     }
 
@@ -2312,7 +2373,7 @@ mod tests {
     async fn a_mixed_tab_saves_both_halves() {
         let engine = spawn_engine().await;
         let state = test_app_state_connected_to(engine.addr).await;
-        let db = state.db.clone();
+        let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -2334,11 +2395,8 @@ mod tests {
             "7"
         );
         assert_eq!(
-            db.lock()
-                .get_setting("exchange_rate.cache_seconds")
-                .unwrap()
-                .as_deref(),
-            Some("88")
+            monokulo_value(&settings, "exchange_rate.cache_seconds").0,
+            "88"
         );
         let page = body_text(
             get(
@@ -2561,39 +2619,16 @@ mod tests {
         );
     }
 
-    /// Both processes have `logging.otlp_headers`, a secret: on the Logging
-    /// tab each keeps its own when left empty, and each is cleared only by
-    /// its own box.
+    /// Both processes have `logging.level` and `logging.max_mb`: on the
+    /// Logging tab each is sent under its own name, and saved where it
+    /// belongs.
     #[tokio::test]
-    async fn the_logging_tab_keeps_each_processs_secret_apart() {
+    async fn the_logging_tab_keeps_each_processs_settings_apart() {
         let engine = spawn_engine().await;
         let state = test_app_state_connected_to(engine.addr).await;
-        let db = state.db.clone();
+        let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-
-        let set = post_settings(
-            &router,
-            &cookie,
-            &[
-                ("tab", "logging"),
-                ("logging.otlp_headers", "x-monokulo=1"),
-                ("engine:logging.otlp_headers", "x-engine=1"),
-            ],
-        )
-        .await;
-        assert_eq!(set.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            db.lock()
-                .get_setting("logging.otlp_headers")
-                .unwrap()
-                .as_deref(),
-            Some("x-monokulo=1")
-        );
-        assert_eq!(
-            engine_settings(&engine).await["scalars"]["logging.otlp_headers"]["source"],
-            "database"
-        );
 
         let page = body_text(
             get(
@@ -2605,65 +2640,219 @@ mod tests {
         )
         .await;
         assert!(
-            page.contains(r#"name="clear:logging.otlp_headers""#)
-                && page.contains(r#"name="clear:engine:logging.otlp_headers""#),
-            "{page}"
-        );
-        assert!(
             page.contains(r#"id="setting-engine:logging.level""#)
                 && page.contains(r#"id="setting-logging.level""#),
             "one id each: {page}"
         );
 
-        // Saved as the page sends it: both empty, so both kept.
-        let kept = post_settings(
+        let saved = post_settings(
             &router,
             &cookie,
             &[
                 ("tab", "logging"),
-                ("logging.otlp_headers", ""),
-                ("engine:logging.otlp_headers", ""),
+                ("logging.max_mb", "200"),
                 ("engine:logging.max_mb", "300"),
             ],
         )
         .await;
-        assert_eq!(kept.status(), StatusCode::SEE_OTHER);
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
         assert_eq!(
-            db.lock()
-                .get_setting("logging.otlp_headers")
-                .unwrap()
-                .as_deref(),
-            Some("x-monokulo=1")
+            monokulo_value(&settings, "logging.max_mb"),
+            ("200".to_string(), live_settings::SettingSource::Toml)
         );
         let engine_view = engine_settings(&engine).await;
-        assert_ne!(
-            engine_view["scalars"]["logging.otlp_headers"]["value"], "",
-            "{engine_view}"
-        );
         assert_eq!(engine_view["scalars"]["logging.max_mb"]["value"], "300");
+        assert_eq!(engine_view["scalars"]["logging.max_mb"]["source"], "toml");
+    }
 
-        let cleared = post_settings(
-            &router,
-            &cookie,
-            &[
-                ("tab", "logging"),
-                ("engine:logging.otlp_headers", ""),
-                ("clear:engine:logging.otlp_headers", "on"),
-            ],
+    /// A temporary directory of its own, removed when dropped.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let dir = std::env::temp_dir().join(format!(
+                "monokulo-{name}-{}-{}",
+                std::process::id(),
+                rand::random::<u32>()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The options file on disk: the page names it, a save writes it
+    /// keeping the admin's own comments, the Reload button applies an edit
+    /// made by hand, and a bad edit is refused by line, changing nothing.
+    #[tokio::test]
+    async fn the_options_file_is_named_saved_to_and_reloaded_from_the_page() {
+        let dir = TempDir::new("options");
+        let path = dir.0.join("monokulo.toml");
+        std::fs::write(&path, "# Mine.\n[signup]\nmode = \"public\"\n").unwrap();
+        let state = test_app_state_with_options(
+            "127.0.0.1:1".parse().unwrap(),
+            live_settings::OptionsFile::at(&path),
         )
         .await;
-        assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            engine_settings(&engine).await["scalars"]["logging.otlp_headers"]["value"],
-            ""
+        let settings = state.settings.clone();
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+
+        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(page.contains(&path.display().to_string()), "{page}");
+        assert!(
+            page.contains(r#"action="/dashboard/admin/settings/reload""#),
+            "{page}"
         );
+
+        let save = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "abuse"), ("abuse.soft_per_min", "61")],
+        )
+        .await;
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
         assert_eq!(
-            db.lock()
-                .get_setting("logging.otlp_headers")
-                .unwrap()
-                .as_deref(),
-            Some("x-monokulo=1"),
-            "monokulo's own is untouched"
+            std::fs::read_to_string(&path).unwrap(),
+            "# Mine.\n[signup]\nmode = \"public\"\n\n[abuse]\nsoft_per_min = 61\n"
+        );
+
+        let reload = |fields: &'static [(&'static str, &'static str)]| {
+            router.clone().oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings/reload",
+                &cookie,
+                fields,
+            ))
+        };
+        std::fs::write(
+            &path,
+            "[signup]\nmode = \"public\"\n[abuse]\nsoft_per_min = 70\n",
+        )
+        .unwrap();
+        let reloaded = reload(&[("owner", "monokulo"), ("tab", "abuse")])
+            .await
+            .unwrap();
+        assert_eq!(reloaded.status(), StatusCode::SEE_OTHER);
+        let location = reloaded.headers()["location"].to_str().unwrap().to_string();
+        assert!(
+            location.starts_with("/dashboard/admin/settings?tab=abuse&saved="),
+            "{location}"
+        );
+        let html = follow(&router, &cookie, reloaded).await;
+        assert!(
+            html.contains(
+                "Reloaded monokulo&#39;s options file and applied it: abuse.soft_per_min."
+            ) || html
+                .contains("Reloaded monokulo's options file and applied it: abuse.soft_per_min."),
+            "{html}"
+        );
+        assert!(!html.contains("save-status"), "no word beside Save: {html}");
+        assert_eq!(
+            monokulo_value(&settings, "abuse.soft_per_min"),
+            ("70".to_string(), live_settings::SettingSource::Toml)
+        );
+
+        std::fs::write(&path, "[abuse]\nsoft_per_min = 0\nnot_a_setting = 1\n").unwrap();
+        let refused = reload(&[("owner", "monokulo"), ("tab", "abuse")])
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::OK);
+        let html = unescaped(&body_text(refused).await);
+        assert!(html.contains("Nothing was reloaded"), "{html}");
+        assert!(html.contains("line 2: abuse.soft_per_min"), "{html}");
+        assert!(
+            html.contains("line 3: there is no setting called abuse.not_a_setting"),
+            "{html}"
+        );
+        assert_eq!(monokulo_value(&settings, "abuse.soft_per_min").0, "70");
+
+        // Changed on disk since it was read: a save is refused, not lost.
+        let refused = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "abuse"), ("abuse.hard_per_min", "400")],
+        )
+        .await;
+        let html = unescaped(&body_text(refused).await);
+        assert!(html.contains("has changed since it was loaded"), "{html}");
+    }
+
+    /// The engine's Reload button asks the engine to read its own file.
+    #[tokio::test]
+    async fn the_engines_options_file_is_reloaded_through_its_api() {
+        let engine = spawn_engine().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(page.contains(r#"name="owner" value="engine""#), "{page}");
+
+        let reloaded = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings/reload",
+                &cookie,
+                &[("owner", "engine"), ("tab", "payments")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reloaded.status(), StatusCode::SEE_OTHER);
+        let html = unescaped(&follow(&router, &cookie, reloaded).await);
+        assert!(
+            html.contains("Reloaded the engine's options file: nothing in it changed."),
+            "{html}"
+        );
+    }
+
+    /// An options file monokulo can't write: the page says so, and every
+    /// setting kept in it is locked with why.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_read_only_options_file_locks_what_it_holds() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("read-only");
+        let path = dir.0.join("monokulo.toml");
+        std::fs::write(&path, "[signup]\nmode = \"public\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let state = test_app_state_with_options(
+            "127.0.0.1:1".parse().unwrap(),
+            live_settings::OptionsFile::at(&path),
+        )
+        .await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let page = unescaped(
+            &body_text(
+                get(
+                    &router,
+                    &crate::views::admin::SettingsTab::Abuse.href(),
+                    Some(&cookie),
+                )
+                .await,
+            )
+            .await,
+        );
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(page.contains("It can't be written by monokulo"), "{page}");
+        assert!(
+            page.contains("can't be written by monokulo, so this is changed by editing it"),
+            "{page}"
+        );
+        assert!(
+            !page.contains(r#"name="abuse.soft_per_min""#),
+            "locked: {page}"
+        );
+        assert!(
+            page.contains(r#"name="abuse.under_attack""#),
+            "a runtime switch is in the database, still editable: {page}"
         );
     }
 
@@ -2704,7 +2893,7 @@ mod tests {
         let mut req = super::RemoteUpdateRequest::default();
         req.scalars
             .insert("scan.poll_interval_secs".into(), "5".into());
-        let outcome = super::save_engine(&state, req, &[]).await;
+        let outcome = super::save_engine(&state, req).await;
         assert!(
             matches!(outcome.notices.as_slice(), [super::Notice::Warning(text)] if text.contains("reply could not be read")),
             "{:?}",

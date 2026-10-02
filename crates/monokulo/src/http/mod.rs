@@ -229,7 +229,8 @@ impl AppState {
     /// A state for tests: an in-memory db with the test admin seeded
     /// (`Db::seed_test_admin`), an engine URL nothing listens on, a fixed
     /// encryption key, XMR-only exchange rates, default abuse limits and
-    /// settings, no DNS and no log store. A test that needs something else
+    /// settings except that anyone may sign up ([`AppState::test_settings`]),
+    /// no DNS and no log store. A test that needs something else
     /// overrides just that field with struct update syntax:
     /// `AppState { log_store, ..AppState::for_tests() }`.
     pub fn for_tests() -> Self {
@@ -251,10 +252,53 @@ impl AppState {
             dns: Arc::new(crate::embed_domains::UnavailableDns(
                 "DNS is not available in tests".to_string(),
             )),
-            settings: crate::settings::MonokuloSettings::defaults(),
+            settings: Self::test_settings(None),
             log_store: None,
             engine: crate::http::Engine::new(EngineClient::for_tests("http://127.0.0.1:1")),
         }
+    }
+
+    /// Settings for tests: no registry, and anyone may sign up (signup is
+    /// invite-only by default, which would stop every test's ordinary
+    /// signups; the invite tests ask for it themselves), with `public_url`
+    /// set or not.
+    pub fn test_settings(public_url: Option<&str>) -> Arc<crate::settings::MonokuloSettings> {
+        crate::settings::MonokuloSettings::fixed(crate::settings::PerRequest {
+            signup_mode: crate::settings::SignupMode::Public,
+            public_url: public_url.unwrap_or_default().to_string(),
+        })
+    }
+}
+
+#[cfg(test)]
+impl AppState {
+    /// This state with a real settings registry, over an options file in
+    /// memory holding `options` (TOML), so a test can save settings as the
+    /// admin page does ([`AppState::save_setting`]).
+    pub async fn with_options(self, options: &str) -> Self {
+        let settings = crate::settings::MonokuloSettings::load(
+            self.db.clone(),
+            self.engine.client.clone(),
+            self.exchange_rate.clone(),
+            self.abuse.clone(),
+            None,
+            crate::settings::test_secrets(),
+            live_settings::OptionsFile::in_memory(options),
+        )
+        .await
+        .expect("loading the test settings");
+        AppState { settings, ..self }
+    }
+
+    /// Saves one setting through the registry, as the admin page does.
+    pub async fn save_setting(&self, key: &str, value: &str) {
+        self.settings
+            .registry
+            .as_ref()
+            .expect("a state from `with_options`")
+            .save(vec![(key.to_string(), Some(value.to_string()))])
+            .await
+            .expect("saving a test setting");
     }
 }
 
@@ -268,6 +312,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/dashboard/admin/settings",
             axum::routing::get(admin_settings::page).post(admin_settings::save),
+        )
+        .route(
+            "/dashboard/admin/settings/reload",
+            axum::routing::post(admin_settings::reload),
         )
         .route(
             "/request-invite",

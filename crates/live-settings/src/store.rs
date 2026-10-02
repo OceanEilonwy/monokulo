@@ -33,6 +33,12 @@ pub trait SettingsStore: Send + Sync {
         &self,
         changes: Vec<(&'static str, Option<String>)>,
     ) -> Result<(), StoreError>;
+
+    /// Where its options file is and whether it can be written, for a
+    /// store that keeps one ([`crate::LayeredStore`]).
+    fn file_info(&self) -> Option<crate::options::FileInfo> {
+        None
+    }
 }
 
 /// A store in memory, for tests and tools.

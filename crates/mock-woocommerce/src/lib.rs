@@ -949,18 +949,6 @@ mod tests {
         use monokulo::http::{build_router, AppState};
 
         let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
-        // Signup defaults to invite-only (`monokulo::settings::SIGNUP_MODE`) -
-        // every driver in this crate signs up its own fresh test account with
-        // no invite token, exactly like a real self-hoster's admin would
-        // first switch signup to public before letting real merchants sign
-        // themselves up. Without this, `signup_submit` silently re-renders
-        // the signup form (a plain `200`, not an error status) instead of
-        // creating an account - `expect_ok`'s own success-status check can't
-        // tell that apart from a real success, so every downstream step
-        // (login, connect confirm) then fails with a genuinely confusing
-        // `401`, far from the actual cause.
-        db.set_setting("signup.mode", "public")
-            .expect("failed to set signup.mode for test monokulo db");
         // Bound before the state is built so monokulo's public address (what
         // `/finish` hands the plugin as `endpoint`) can be this very listener.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -969,12 +957,17 @@ mod tests {
         let addr = listener
             .local_addr()
             .expect("bound listener has no local address");
-        db.set_setting("public_url", &format!("http://{addr}"))
-            .expect("failed to set public_url for test monokulo db");
         let state = AppState {
             engine: monokulo::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{engine_addr}"
             ))),
+            // Public signup (the default is invite-only): every driver in
+            // this crate signs up its own fresh test account with no invite
+            // token, as a self-hoster's admin would first switch signup to
+            // public. Without it, `signup_submit` silently re-renders the
+            // signup form (a plain `200`, not an error status), and every
+            // later step fails with a confusing `401`, far from the cause.
+            settings: AppState::test_settings(Some(&format!("http://{addr}"))),
             ..AppState::for_tests_with_db(db.into_shared())
         };
         let router = build_router(state);
