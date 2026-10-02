@@ -306,20 +306,53 @@ impl RpcDaemonClient {
         let bytes = self
             .post(method, "/json_rpc", body.to_string().into_bytes(), true)
             .await?;
-        let value: Value = serde_json::from_slice(&bytes)
-            .map_err(|e| DaemonError::Request(format!("invalid JSON response: {e}")))?;
-        if let Some(err) = value.get("error") {
-            return Err(DaemonError::Request(format!(
-                "daemon RPC error calling {method}: {err}"
-            )));
-        }
-        let result = value.get("result").ok_or_else(|| {
-            DaemonError::Request(format!("missing 'result' field calling {method}"))
-        })?;
-        serde_json::from_value(result.clone())
-            .map_err(|e| DaemonError::Request(format!("failed to parse result of {method}: {e}")))
+        json_rpc_result(method, &bytes)
     }
 
+    /// [`Self::post_json_rpc`] within `timeout`, accepting an answer of up
+    /// to `cap` bytes: for an answer whose size the caller knows to expect.
+    async fn post_json_rpc_within<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        cap: usize,
+    ) -> Result<T, DaemonError> {
+        let body = json!({ "jsonrpc": "2.0", "id": "0", "method": method, "params": params });
+        let (bytes, _) = self
+            .post_timed(
+                method,
+                "/json_rpc",
+                body.to_string().into_bytes(),
+                true,
+                timeout,
+                cap,
+            )
+            .await?;
+        json_rpc_result(method, &bytes)
+    }
+}
+
+/// The `result` of a JSON-RPC answer, or the error the node gave.
+fn json_rpc_result<T: for<'de> Deserialize<'de>>(
+    method: &str,
+    bytes: &[u8],
+) -> Result<T, DaemonError> {
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|e| DaemonError::Request(format!("invalid JSON response: {e}")))?;
+    if let Some(err) = value.get("error") {
+        return Err(DaemonError::Request(format!(
+            "daemon RPC error calling {method}: {err}"
+        )));
+    }
+    let result = value
+        .get("result")
+        .ok_or_else(|| DaemonError::Request(format!("missing 'result' field calling {method}")))?;
+    serde_json::from_value(result.clone())
+        .map_err(|e| DaemonError::Request(format!("failed to parse result of {method}: {e}")))
+}
+
+impl RpcDaemonClient {
     async fn post_plain<T: for<'de> Deserialize<'de>>(
         &self,
         path: &str,
@@ -1156,6 +1189,10 @@ struct BlockHeader {
     height: Option<u64>,
     #[serde(default)]
     prev_hash: String,
+    #[serde(default)]
+    block_weight: Option<u64>,
+    #[serde(default)]
+    num_txes: Option<u64>,
 }
 
 impl BlockHeader {
@@ -1189,6 +1226,8 @@ impl BlockHeader {
             hash,
             prev_hash,
             timestamp: self.timestamp,
+            weight: self.block_weight,
+            tx_count: self.num_txes,
         })
     }
 }
@@ -1297,6 +1336,9 @@ struct IsKeyImageSpentResponse {
 /// Most transactions asked for in one `/get_transactions` request (a
 /// restricted node refuses more than 100).
 const TXS_PER_REQUEST: usize = 100;
+/// What one transaction adds to a `get_block` answer: its id in the blob, in
+/// the blob's JSON and in the list, as hex text with quotes and commas.
+const OUTLINE_BYTES_PER_TX: usize = 256;
 /// Most headers asked for in one `get_block_headers_range` request (a
 /// restricted node refuses more than 1000).
 const MAX_HEADERS_PER_REQUEST: u64 = 500;
@@ -1456,6 +1498,10 @@ impl MoneroDaemonClient for RpcDaemonClient {
 
     fn chain_blocks_timeout(&self, count: u64) -> Duration {
         self.link.timeout_for_blocks(count)
+    }
+
+    fn transfer_timeout(&self, bytes: u64) -> Duration {
+        crate::link::timeout_for(self.link.expected_for_blocks(1, bytes as f64))
     }
 
     async fn get_height(&self) -> Result<u64, DaemonError> {
@@ -1648,6 +1694,59 @@ impl MoneroDaemonClient for RpcDaemonClient {
             )));
         }
         Ok(vec![header.into_chain_header(start_height)?])
+    }
+
+    /// `get_block` by height: the block's blob (its header, coinbase and
+    /// transactions' ids) without the transactions, checked as a
+    /// `get_blocks.bin` block is: the coinbase must name the height asked
+    /// for, and the id is computed from the blob. The answer carries each
+    /// id three times over (the blob, its JSON and the list), so it may be
+    /// as large as `tx_count` needs, and gets the time the link needs.
+    async fn get_block_outline(
+        &self,
+        height: u64,
+        tx_count: Option<u64>,
+    ) -> Result<crate::daemon::BlockOutline, DaemonError> {
+        #[derive(Deserialize)]
+        struct GetBlock {
+            blob: String,
+        }
+        let expected = usize::try_from(tx_count.unwrap_or(0))
+            .unwrap_or(usize::MAX)
+            .saturating_mul(OUTLINE_BYTES_PER_TX);
+        let cap = expected.saturating_add(self.max_response_bytes);
+        let timeout = self.transfer_timeout(expected as u64);
+        let answer: GetBlock = self
+            .post_json_rpc_within("get_block", json!({ "height": height }), timeout, cap)
+            .await?;
+        let blob = hex::decode(answer.blob.trim()).map_err(|e| {
+            DaemonError::Request(format!("get_block: block {height}'s blob isn't hex: {e}"))
+        })?;
+        drop(answer);
+        let block: monero::Block = deserialize(&blob).map_err(|e| {
+            DaemonError::Request(format!(
+                "get_block: block {height} could not be decoded: {e}"
+            ))
+        })?;
+        match block.miner_tx.prefix.inputs.first() {
+            Some(monero::blockdata::transaction::TxIn::Gen { height: own }) if own.0 == height => {}
+            _ => {
+                return Err(DaemonError::Request(format!(
+                    "get_block: asked for block {height}, the node sent another"
+                )))
+            }
+        }
+        Ok(crate::daemon::BlockOutline {
+            height,
+            hash: hex::encode(block.id().0),
+            prev_hash: if height == 0 {
+                String::new()
+            } else {
+                hex::encode(block.header.prev_id.0)
+            },
+            timestamp: block.header.timestamp.0,
+            txids: block.tx_hashes.iter().map(|id| hex::encode(id.0)).collect(),
+        })
     }
 
     /// The pool's transaction ids, followed by its changes where the node
@@ -3115,11 +3214,53 @@ mod wire_tests {
     }
 
     fn header(height: u64, hash: &str, prev_hash: &str) -> Value {
-        json!({ "height": height, "hash": hash, "prev_hash": prev_hash, "timestamp": 1_000 + height })
+        json!({ "height": height, "hash": hash, "prev_hash": prev_hash, "timestamp": 1_000 + height,
+            "block_weight": 1_000 * height, "num_txes": height })
     }
 
     fn rpc_result(result: Value) -> String {
         json!({ "id": "0", "jsonrpc": "2.0", "result": result }).to_string()
+    }
+
+    /// A large block's outline comes from `get_block`: its id computed from
+    /// the blob, its parent and time, and its transactions' ids in order,
+    /// with no transaction fetched. A blob from another height is refused
+    /// (docs/engine_scaling.md section 4).
+    #[tokio::test]
+    async fn a_large_blocks_outline_is_read_from_its_own_blob() {
+        let (client, node) = scripted().await;
+        let mut block: monero::Block =
+            deserialize(&hex::decode(crate::daemon_rpc::tests::COINBASE_ONLY_BLOCK_HEX).unwrap())
+                .unwrap();
+        block.tx_hashes = vec![monero::Hash([1; 32]), monero::Hash([2; 32])];
+        let height = match &block.miner_tx.prefix.inputs[0] {
+            monero::blockdata::transaction::TxIn::Gen { height } => height.0,
+            _ => unreachable!("a coinbase input"),
+        };
+        let blob = hex::encode(monero::consensus::serialize(&block));
+        node.answer(
+            "/json_rpc",
+            rpc_result(json!({ "status": "OK", "blob": blob })),
+        );
+        let outline = client.get_block_outline(height, Some(2)).await.unwrap();
+        assert_eq!(outline.height, height);
+        assert_eq!(outline.hash, hex::encode(block.id().0));
+        assert_eq!(outline.prev_hash, hex::encode(block.header.prev_id.0));
+        assert_eq!(outline.timestamp, block.header.timestamp.0);
+        assert_eq!(
+            outline.txids,
+            vec![hex::encode([1; 32]), hex::encode([2; 32])]
+        );
+        let request: Value = serde_json::from_slice(&node.requests_to("/json_rpc")[0]).unwrap();
+        assert_eq!(request["method"], json!("get_block"));
+        assert_eq!(request["params"], json!({ "height": height }));
+        assert!(node.requests_to("/get_transactions").is_empty());
+        // The node answered with another height's block.
+        let error = client
+            .get_block_outline(height + 1, Some(2))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("sent another"), "{error}");
     }
 
     /// Headers come a range at a time; a header for another height than the
@@ -3139,13 +3280,17 @@ mod wire_tests {
                     height: 5,
                     hash: B.to_string(),
                     prev_hash: D.to_string(),
-                    timestamp: 1_005
+                    timestamp: 1_005,
+                    weight: Some(5_000),
+                    tx_count: Some(5),
                 },
                 ChainHeader {
                     height: 6,
                     hash: C.to_string(),
                     prev_hash: B.to_string(),
-                    timestamp: 1_006
+                    timestamp: 1_006,
+                    weight: Some(6_000),
+                    tx_count: Some(6),
                 },
             ]
         );

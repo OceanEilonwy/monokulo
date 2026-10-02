@@ -2086,6 +2086,7 @@ mod tests {
                 in_progress: None,
                 in_progress_secs: None,
                 peak_cache_bytes: None,
+                round_budget_secs: None,
             },
             blocks_behind: 3,
             catch_up_secs: None,

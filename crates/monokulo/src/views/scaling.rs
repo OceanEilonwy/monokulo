@@ -626,6 +626,7 @@ pub fn scanning_panel(
                     ChunkLimit::Link => "the link's speed",
                     ChunkLimit::Maximum => "the most one request asks for",
                     ChunkLimit::Remaining => "the blocks left",
+                    ChunkLimit::Cpu => "the time scanning takes",
                 }
             ),
             None => "None yet".to_string(),
@@ -636,6 +637,14 @@ pub fn scanning_panel(
                 thousands(block.height),
                 duration(secs)
             ));
+            if let Some(pages) = block.pages {
+                text.push_str(&format!(
+                    ", in pages: {} of {} transactions scanned, {} a page",
+                    thousands(pages.done_txs),
+                    thousands(pages.total_txs),
+                    thousands(pages.page_txs)
+                ));
+            }
         }
         text
     };
@@ -942,9 +951,11 @@ mod tests {
                     height: 3_412_001,
                     started_unix: NOW - 130,
                     wire_bytes: None,
+                    pages: None,
                 }),
                 in_progress_secs: Some(130),
                 peak_cache_bytes: Some(301_000_000),
+                round_budget_secs: None,
             },
             blocks_behind: 14,
             catch_up_secs: Some(240),
@@ -1013,6 +1024,21 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("Deadline 45 s, raised from 10 s"), "{html}");
+
+        // A large block scanned a page at a time says how far it has got.
+        let mut paged = scaling(Pace::Link);
+        if let Some(block) = paged.scan.in_progress.as_mut() {
+            block.pages = Some(shared::scaling::PageProgress {
+                done_txs: 41_000,
+                total_txs: 97_000,
+                page_txs: 100,
+            });
+        }
+        let html = scanning_panel("mainnet", &paged, None).into_string();
+        assert!(
+            html.contains("in pages: 41,000 of 97,000 transactions scanned, 100 a page"),
+            "{html}"
+        );
 
         let mut slow = scaling(Pace::Link);
         slow.slow = Some(SlowBlock {

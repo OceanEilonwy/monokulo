@@ -126,6 +126,8 @@ impl ChainBlock {
             hash: self.hash.clone(),
             prev_hash: self.prev_hash.clone(),
             timestamp: self.timestamp,
+            weight: Some(self.wire_bytes),
+            tx_count: Some(self.txs.len() as u64),
         }
     }
 }
@@ -169,6 +171,29 @@ pub struct ChainHeader {
     /// The parent block's id; empty for the genesis block.
     pub prev_hash: String,
     pub timestamp: u64,
+    /// The block's weight in bytes, when the node said: whether it is
+    /// fetched whole or a page of transactions at a time depends on it
+    /// (docs/engine_scaling.md section 4).
+    pub weight: Option<u64>,
+    /// How many transactions it holds besides the coinbase, when the node
+    /// said.
+    pub tx_count: Option<u64>,
+}
+
+/// A block's identity and its transactions' ids in order, without their
+/// bodies ([`MoneroDaemonClient::get_block_outline`]): what a block too large
+/// to fetch whole is scanned from, a page of transactions at a time
+/// (docs/engine_scaling.md section 4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockOutline {
+    pub height: u64,
+    pub hash: String,
+    /// The parent block's id; empty for the genesis block.
+    pub prev_hash: String,
+    pub timestamp: u64,
+    /// Its transactions' ids (lowercase hex), coinbase excluded, in the
+    /// block's order.
+    pub txids: Vec<String>,
 }
 
 /// The node's tip ([`MoneroDaemonClient::get_tip`]).
@@ -216,6 +241,13 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// take: what the link's measurements say it needs, with room to spare.
     /// A client that doesn't measure gets the fixed floor.
     fn chain_blocks_timeout(&self, _count: u64) -> std::time::Duration {
+        crate::link::MIN_TIMEOUT
+    }
+
+    /// How long an answer of about `bytes` bytes may take, by the same
+    /// measure as [`Self::chain_blocks_timeout`]: for a large block's
+    /// outline and its pages of transactions.
+    fn transfer_timeout(&self, _bytes: u64) -> std::time::Duration {
         crate::link::MIN_TIMEOUT
     }
 
@@ -284,6 +316,36 @@ pub trait MoneroDaemonClient: Send + Sync {
             .iter()
             .map(ChainBlock::header)
             .collect())
+    }
+
+    /// Block `height`'s identity and its transactions' ids, without their
+    /// bodies: for a block too large for one [`Self::get_chain_blocks`]
+    /// answer, whose transactions are then fetched a page at a time with
+    /// [`Self::get_transactions_with_ids`]. `tx_count`, from its header,
+    /// sizes the answer allowed.
+    ///
+    /// The default reads the whole block; `RpcDaemonClient` asks monerod's
+    /// `get_block`, which sends the block without its transactions.
+    async fn get_block_outline(
+        &self,
+        height: u64,
+        tx_count: Option<u64>,
+    ) -> Result<BlockOutline, DaemonError> {
+        let _ = tx_count;
+        let block = self
+            .get_chain_blocks(height, 1)
+            .await?
+            .into_iter()
+            .next()
+            .filter(|block| block.height == height)
+            .ok_or_else(|| DaemonError::Request(format!("no block at height {height}")))?;
+        Ok(BlockOutline {
+            height,
+            hash: block.hash,
+            prev_hash: block.prev_hash,
+            timestamp: block.timestamp,
+            txids: block.txids,
+        })
     }
 
     /// The txids in the mempool, without their bodies, so a scanner that
@@ -429,6 +491,9 @@ pub mod fake {
         /// or mark it fully gone (NotFound) after a reorg.
         tx_locations: HashMap<String, TxLocation>,
         key_image_status: HashMap<String, KeyImageStatus>,
+        /// Weights a test gives blocks in place of their real size, so a
+        /// block can be "large" without the bytes (`set_block_weight`).
+        weights: HashMap<u64, u64>,
     }
 
     #[derive(Default)]
@@ -617,6 +682,13 @@ pub mod fake {
                 .insert(key_image_hex.to_string(), status);
         }
 
+        /// Has block `height`'s header report `weight` bytes, whatever its
+        /// transactions add up to: a block too large to fetch whole, without
+        /// the bytes.
+        pub fn set_block_weight(&self, height: u64, weight: u64) {
+            self.state.lock().weights.insert(height, weight);
+        }
+
         pub fn drop_from_mempool(&self, tx: &Transaction) {
             let mut state = self.state.lock();
             state.mempool.retain(|t| tx_id_hex(t) != tx_id_hex(tx));
@@ -717,11 +789,18 @@ pub mod fake {
                     .and_then(|p| state.blocks.get(&p))
                     .map(|b| b.hash.clone())
                     .unwrap_or_default();
+                let real: u64 = block
+                    .txs
+                    .iter()
+                    .map(|tx| monero::consensus::encode::serialize(tx).len() as u64)
+                    .sum();
                 out.push(ChainHeader {
                     height,
                     hash: block.hash.clone(),
                     prev_hash,
                     timestamp: block.timestamp,
+                    weight: Some(state.weights.get(&height).copied().unwrap_or(real)),
+                    tx_count: Some(block.txs.len() as u64),
                 });
             }
             if out.is_empty() {

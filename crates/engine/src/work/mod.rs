@@ -393,6 +393,12 @@ impl ScanState {
         self
     }
 
+    /// The time the next round may take: [`ROUND_BUDGET`], unless a large
+    /// block's smallest unit needs more (docs/engine_scaling.md section 4).
+    pub fn round_budget(&self, daemon: &dyn MoneroDaemonClient, stores: usize) -> Duration {
+        self.blocks.round_budget(daemon, stores)
+    }
+
     pub(crate) fn wake_webhooks(&self) {
         self.webhooks.notify_one();
     }
