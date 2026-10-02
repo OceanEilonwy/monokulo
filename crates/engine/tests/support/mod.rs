@@ -5,7 +5,7 @@
 //! shared stagenet fixture data every real e2e test in this crate still
 //! needs regardless of which wallet implementation sends the payment.
 
-/// The real end-to-end tests' fixed stagenet connection + bootstrap-wallet
+/// The real end-to-end tests' fixed stagenet connection + watch-only wallet
 /// fixture - replaces what used to be `e2e/moneropay-stagenet.toml`, parsed at
 /// test time via the now-removed `engine::config::Config`. Plain Rust
 /// constants instead of a TOML file: `e2e_stagenet.rs`/`e2e_dashboard_stagenet.rs`

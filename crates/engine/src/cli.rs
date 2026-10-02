@@ -1,5 +1,5 @@
 //! The `monokulo-engine` command line, with `clap`: the one-off commands
-//! (`--bootstrap-wallet`, `--rotate-secret`, `--show-tenant`) and an option
+//! (`--rotate-secret`, `--show-tenant`) and an option
 //! for every setting that takes one, with help from the settings' own
 //! declarations (`live_settings::cli`). Kept in the lib crate (not
 //! `main.rs`) so it's unit-testable the normal way, and so `main.rs` stays a
@@ -11,8 +11,6 @@
 //! database is: `database.path` ([`database_path`]).
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
-
-use crate::local_admin::BootstrapWalletArgs;
 
 #[derive(Debug)]
 pub enum Action {
@@ -26,10 +24,6 @@ pub enum Action {
     ShowTenant {
         pk: Option<String>,
     },
-    /// Provisions the one tenant a self-hosted deployment needs, replacing what
-    /// used to be the `[wallet]` section of the (now-removed) TOML config file -
-    /// see `local_admin::bootstrap_wallet`.
-    BootstrapWallet(BootstrapWalletCommand),
 }
 
 /// What the command line asked for: the mode, and the settings it gave,
@@ -40,56 +34,6 @@ pub struct Invocation {
     /// The settings given on the command line, the options file to read,
     /// and whether to write one instead (`--init`).
     pub start: live_settings::cli::Start,
-}
-
-/// `--bootstrap-wallet` as parsed: everything `local_admin::bootstrap_wallet`
-/// needs except the private view key itself, which is read from a file (or
-/// standard input) by [`BootstrapWalletCommand::read_view_key`] - never
-/// taken from the argument list, where every user on the machine can read
-/// it (`ps`, `/proc/*/cmdline`) and the shell's history keeps it.
-#[derive(Debug, PartialEq)]
-pub struct BootstrapWalletCommand {
-    pub primary_address: String,
-    /// Where the hex-encoded private view key is read from; `-` is standard
-    /// input.
-    pub view_key_file: String,
-    pub spend_pubkey_hex: String,
-    pub network: String,
-    pub key_custody_backend: Option<String>,
-}
-
-impl BootstrapWalletCommand {
-    /// Reads the view key from where `--view-key-file` points, trimming
-    /// the newline an editor or `echo` leaves.
-    pub fn read_view_key(self) -> Result<BootstrapWalletArgs, String> {
-        let raw = if self.view_key_file == "-" {
-            let mut raw = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)
-                .map_err(|e| format!("could not read the view key from standard input: {e}"))?;
-            raw
-        } else {
-            std::fs::read_to_string(&self.view_key_file).map_err(|e| {
-                format!(
-                    "could not read the view key from {:?}: {e}",
-                    self.view_key_file
-                )
-            })?
-        };
-        let view_key_hex = raw.trim().to_string();
-        if view_key_hex.is_empty() {
-            return Err(format!(
-                "the view key file {:?} is empty",
-                self.view_key_file
-            ));
-        }
-        Ok(BootstrapWalletArgs {
-            primary_address: self.primary_address,
-            view_key_hex,
-            spend_pubkey_hex: self.spend_pubkey_hex,
-            network: self.network,
-            key_custody_backend: self.key_custody_backend,
-        })
-    }
 }
 
 const ABOUT: &str = "The engine of Monokulo, a self-hosted Monero payment gateway: it \
@@ -112,10 +56,6 @@ const EXAMPLES: &str = "Examples:
       Start the server.
   ENGINE_TOKEN=$(cat engine.token) monokulo-engine --server-bind 10.0.0.2:8443 --monero-node-strict-tls true
       Start it on a private address, refusing self-signed node certificates.
-  monokulo-engine --bootstrap-wallet --primary-address 4... --view-key-file view.key --spend-pubkey <hex>
-      Provision the one self-hosted tenant.
-  printf '%s' <hex> | monokulo-engine --bootstrap-wallet ... --view-key-file -
-      The same, with the key on standard input.
   monokulo-engine --rotate-secret
       Mint a fresh admin secret for the sole tenant.";
 
@@ -124,60 +64,11 @@ const COMMANDS: &str = "One-off commands";
 
 /// The command line: the one-off commands, then an option per setting.
 pub fn command() -> Command {
-    let only_for_bootstrap = |arg: Arg| arg.requires("bootstrap-wallet").help_heading(COMMANDS);
     let command = Command::new("monokulo-engine")
         .version(env!("CARGO_PKG_VERSION"))
         .about(ABOUT)
         .long_about(LONG_ABOUT)
         .after_help(EXAMPLES)
-        .arg(
-            Arg::new("bootstrap-wallet")
-                .long("bootstrap-wallet")
-                .action(ArgAction::SetTrue)
-                .requires_all(["primary-address", "view-key-file", "spend-pubkey"])
-                .conflicts_with_all(["rotate-secret", "show-tenant"])
-                .help_heading(COMMANDS)
-                .help("Create the one tenant a self-hosted deployment needs, from a watch-only view key and spend public key, then exit. Refuses if a tenant already exists."),
-        )
-        .arg(only_for_bootstrap(
-            Arg::new("primary-address")
-                .long("primary-address")
-                .value_name("ADDRESS")
-                .help("The wallet's own primary address. It must be the wallet of the given keys on the given network."),
-        ))
-        .arg(only_for_bootstrap(
-            Arg::new("view-key-file")
-                .long("view-key-file")
-                .value_name("PATH")
-                .help("A file holding the wallet's private view key, hex-encoded; - reads it from standard input. Never the key itself: the argument list is readable by every user on the machine and kept by the shell's history."),
-        ))
-        .arg(
-            Arg::new("view-key")
-                .long("view-key")
-                .hide(true)
-                .value_parser(|_: &str| -> Result<String, String> {
-                    Err("a key in the argument list is readable by every user on the machine - put it in a file and pass --view-key-file <PATH> (or - for standard input)".to_string())
-                }),
-        )
-        .arg(only_for_bootstrap(
-            Arg::new("spend-pubkey")
-                .long("spend-pubkey")
-                .value_name("HEX")
-                .help("The wallet's public spend key, hex-encoded: the public half only, never the private spend key."),
-        ))
-        .arg(only_for_bootstrap(
-            Arg::new("network")
-                .long("network")
-                .value_parser(["mainnet", "stagenet", "testnet"])
-                .default_value("mainnet")
-                .help("Which network the bootstrap tenant watches."),
-        ))
-        .arg(only_for_bootstrap(
-            Arg::new("key-custody-backend")
-                .long("key-custody-backend")
-                .value_name("BACKEND")
-                .help("Where the wallet's keys are kept: one of the enabled key custody backends. key_custody.default_backend when not given."),
-        ))
         .arg(
             Arg::new("rotate-secret")
                 .long("rotate-secret")
@@ -217,16 +108,7 @@ where
 
 fn invocation(matches: &ArgMatches) -> Invocation {
     let text = |id: &str| matches.get_one::<String>(id).cloned();
-    let action = if matches.get_flag("bootstrap-wallet") {
-        // `requires_all` above: clap has refused the command without them.
-        Action::BootstrapWallet(BootstrapWalletCommand {
-            primary_address: text("primary-address").unwrap_or_default(),
-            view_key_file: text("view-key-file").unwrap_or_default(),
-            spend_pubkey_hex: text("spend-pubkey").unwrap_or_default(),
-            network: text("network").unwrap_or_else(|| "mainnet".to_string()),
-            key_custody_backend: text("key-custody-backend"),
-        })
-    } else if matches.get_flag("rotate-secret") {
+    let action = if matches.get_flag("rotate-secret") {
         Action::RotateSecret { pk: text("pk") }
     } else if matches.get_flag("show-tenant") {
         Action::ShowTenant { pk: text("pk") }
@@ -315,6 +197,9 @@ mod tests {
         // `--config`/positional-path era) must not be silently accepted and
         // ignored - that would look like it worked while doing nothing.
         assert!(parse(&["moneropay.toml"]).is_err());
+        // Stores are created by monokulo when a merchant connects one; the
+        // engine no longer makes one of its own.
+        assert!(parse(&["--bootstrap-wallet"]).is_err());
     }
 
     #[test]
@@ -341,17 +226,7 @@ mod tests {
     #[test]
     fn the_help_documents_the_commands_and_every_setting() {
         let help = command().render_long_help().to_string();
-        for flag in [
-            "--bootstrap-wallet",
-            "--primary-address",
-            "--view-key-file",
-            "--spend-pubkey",
-            "--network",
-            "--rotate-secret",
-            "--show-tenant",
-            "--pk",
-            "--help",
-        ] {
+        for flag in ["--rotate-secret", "--show-tenant", "--pk", "--help"] {
             assert!(help.contains(flag), "help should mention {flag}");
         }
         // An option for each setting that takes one; a secret's variable is
@@ -369,10 +244,6 @@ mod tests {
                 setting.env_var()
             );
         }
-        assert!(
-            !help.contains("--view-key "),
-            "the refused flag stays hidden"
-        );
     }
 
     #[test]
@@ -387,7 +258,7 @@ mod tests {
         }
     }
 
-    /// A mistyped flag, or a bootstrap-only one, with `--rotate-secret`/
+    /// A mistyped flag with `--rotate-secret`/
     /// `--show-tenant` is refused, not ignored: ignored, it would act on the
     /// default tenant.
     #[test]
@@ -400,124 +271,6 @@ mod tests {
         ] {
             assert!(parse(argv).is_err(), "{argv:?}");
         }
-    }
-
-    #[test]
-    fn bootstrap_wallet_requires_the_three_key_material_flags() {
-        assert!(parse(&["--bootstrap-wallet"]).is_err());
-        assert!(parse(&["--bootstrap-wallet", "--primary-address", "4abc"]).is_err());
-        assert!(parse(&[
-            "--bootstrap-wallet",
-            "--primary-address",
-            "4abc",
-            "--view-key-file",
-            "view.key",
-            "--spend-pubkey",
-            "bb",
-        ])
-        .is_ok());
-    }
-
-    /// The private view key is never an argument: the old flag is refused
-    /// with the fix named, and the file (or standard input) is read, with
-    /// the newline an editor leaves trimmed.
-    #[test]
-    fn the_view_key_comes_from_a_file_never_from_the_argument_list() {
-        let refused = parse(&[
-            "--bootstrap-wallet",
-            "--primary-address",
-            "4abc",
-            "--view-key",
-            "aa",
-            "--view-key-file",
-            "x",
-            "--spend-pubkey",
-            "bb",
-        ])
-        .unwrap_err()
-        .to_string();
-        assert!(refused.contains("--view-key-file"), "{refused}");
-
-        let dir = std::env::temp_dir().join(format!("engine-view-key-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("view.key");
-        std::fs::write(&path, "aabb\n").unwrap();
-        let command = match parse(&[
-            "--bootstrap-wallet",
-            "--primary-address",
-            "4abc",
-            "--view-key-file",
-            path.to_str().unwrap(),
-            "--spend-pubkey",
-            "bb",
-        ])
-        .unwrap()
-        .action
-        {
-            Action::BootstrapWallet(command) => command,
-            other => panic!("expected BootstrapWallet, got {other:?}"),
-        };
-        let read = command.read_view_key().unwrap();
-        assert_eq!(read.view_key_hex, "aabb");
-        assert_eq!(read.spend_pubkey_hex, "bb");
-
-        std::fs::write(&path, " \n").unwrap();
-        let empty = BootstrapWalletCommand {
-            view_key_file: path.to_str().unwrap().to_string(),
-            ..bootstrap_command()
-        };
-        assert!(empty.read_view_key().unwrap_err().contains("empty"));
-        let missing = BootstrapWalletCommand {
-            view_key_file: dir.join("nowhere").to_str().unwrap().to_string(),
-            ..bootstrap_command()
-        };
-        assert!(missing.read_view_key().is_err());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    fn bootstrap_command() -> BootstrapWalletCommand {
-        BootstrapWalletCommand {
-            primary_address: "4abc".to_string(),
-            view_key_file: "-".to_string(),
-            spend_pubkey_hex: "bb".to_string(),
-            network: "mainnet".to_string(),
-            key_custody_backend: None,
-        }
-    }
-
-    #[test]
-    fn bootstrap_wallet_takes_a_network_defaulting_to_mainnet_and_refuses_the_removed_origins_flag()
-    {
-        let bootstrap = [
-            "--bootstrap-wallet",
-            "--primary-address",
-            "4abc",
-            "--view-key-file",
-            "view.key",
-            "--spend-pubkey",
-            "bb",
-        ];
-        match parse(&bootstrap).unwrap().action {
-            Action::BootstrapWallet(a) => assert_eq!(a.network, "mainnet"),
-            other => panic!("expected BootstrapWallet, got {other:?}"),
-        }
-        let stagenet: Vec<&str> = bootstrap
-            .iter()
-            .copied()
-            .chain(["--network", "stagenet"])
-            .collect();
-        match parse(&stagenet).unwrap().action {
-            Action::BootstrapWallet(a) => assert_eq!(a.network, "stagenet"),
-            other => panic!("expected BootstrapWallet, got {other:?}"),
-        }
-        // The engine has no origin list any more (embedding policy is
-        // monokulo's), so the old flag is an error rather than silently ignored.
-        let origins: Vec<&str> = bootstrap
-            .iter()
-            .copied()
-            .chain(["--allowed-origins", "https://a.example"])
-            .collect();
-        assert!(parse(&origins).is_err());
     }
 
     /// The database is under ~/.local/share/monokulo unless the options
