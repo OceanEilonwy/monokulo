@@ -277,6 +277,34 @@ pub struct RoundInputs<'a> {
 
 /// The time one round may take. A round ends sooner when every tier runs out
 /// of work; a round that ends with work left is followed at once by the next.
+///
+/// It only matters while there is a backlog: a caught-up round ends in well
+/// under a second and the loop sleeps for the poll interval. Then it sets
+/// two things. Each tier's per-call times are a share of it
+/// ([`Tier::reserved`]), so it sets how much of a node's link one block
+/// request uses. And the mempool and settlement tiers get a turn once a
+/// round, so it is about the longest they wait while blocks catch up
+/// (zero-confirmation detection doesn't wait: the fast mempool path runs
+/// every 250 ms).
+///
+/// 10 s is measured, not guessed (`cargo xtask stress rounds`,
+/// docs/engine_stress.md, round length sweep). Each round pays about one
+/// round trip of its own, and each block request one more on top of its
+/// share of the Blocks tier's time:
+///
+/// - Over a nearby node (50 ms), throughput barely changes from 5 to 20 s
+///   (2 Mbit/s: 17.8 to 18.3 blocks a second). Only the wait changes.
+/// - Over a Tor-like node (800 ms), rounds shorter than 10 s lose 28 % at
+///   5 s and 12 to 14 % at 7 s; 15 and 20 s gain 6 to 22 %.
+/// - Longer rounds cost: the wait grows from about 13 s to 17 to 26 s,
+///   catch-up groups sharing the cache fetch more blocks twice as their
+///   runs grow (16 groups: 1.45 times at 10 s, 2.04 at 20 s), and past
+///   12.5 s a block request sized to the Blocks share no longer fits three
+///   times within the 15 s minimum timeout (checked at build time in
+///   `scanner`).
+///
+/// 10 s keeps a nearby node within 1 % of the longest round tried, a
+/// Tor-like one within 7 to 18 %, and the wait near 13 s.
 pub const ROUND_BUDGET: Duration = Duration::from_secs(10);
 
 /// How long one daemon call inside a unit may take before the unit treats

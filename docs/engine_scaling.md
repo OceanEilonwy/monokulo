@@ -334,7 +334,7 @@ left open:
 - **The block cache outlasts the round (round length sweep).** A run
   fetched ahead used to be dropped when its round ended and fetched again
   in the next, so a link-limited catch-up re-sent up to one chunk a round
-  (22 times the blocks it scanned at 2 s rounds, 1.3 times at 10 s:
+  (12 to 19 times the distinct blocks at 2 s rounds, 1.3 to 1.4 at 10 s:
   `cargo xtask stress rounds`). A round now starts from the cache the last
   one left and leaves what may serve the next: blocks above every tenant's
   cursor and at least `reorg_check_depth` below the tip, from the same node

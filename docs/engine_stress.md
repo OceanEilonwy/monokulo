@@ -84,3 +84,64 @@ on an OS crash or power loss. Process-crash recovery is a separate property.
 ## Results
 
 Measured results for each driver are recorded in `docs/scanner_microtasks.md`.
+
+## Round length sweep
+
+`cargo xtask stress rounds` measures what the scheduler's round length
+(`work::ROUND_BUDGET`) costs and buys. `round_sweep` runs the production
+scheduler through a backlog of blocks from a scripted node, rounds back to
+back as the engine's loop runs them, pinned to one CPU and built in release
+(the sweep weighs scan time against link time). The scenarios are in
+`xtask/stress/round_sweep_v2.json`:
+
+- **The node's link** has a round trip, a time to first byte per block and a
+  transfer rate, and reports the rate as a measured client does, so block
+  requests are sized as in production. It answers the tip with its id and
+  the pool in one request, as `RpcDaemonClient` asks them.
+- **Blocks** are 13 kB (today's pruned average) and each pays tenant 0, so
+  every block records a payment and recomputes an order.
+- **Tenants** start in one group, or in several spaced through the backlog
+  (catch-up groups sharing the block cache).
+
+Each point reports:
+
+- **Blocks a second**: each group's blocks, averaged over its tenants.
+- **Sent per distinct**: blocks the node sent over distinct blocks sent.
+  Above 1 is blocks fetched ahead and let go of before their scan.
+- **Round p50 and longest round**: settlement and the mempool get a turn
+  once a round, so the longest round is about the longest they wait.
+- **Idle round**: a round with nothing left to scan, the fixed cost.
+- **Discarded**: bytes the block cache let go of unread.
+
+`--round-budget-ms` changes the round's length only. Per-call times are
+shares of `ROUND_BUDGET` itself, fixed at build time (`Tier::reserved`). To
+measure a different `ROUND_BUDGET` whole, set it in `work/mod.rs` and run
+`ROUND_SWEEP_BUDGETS_MS=<the same, in ms> cargo xtask stress rounds`. Each
+run writes to its own `target/coverage/stress-rounds-<ms>`.
+
+### What it found
+
+Recorded runs: `docs/stress/round-budget-sweep-baseline.json` (before the
+block cache outlasted the round) and `docs/stress/round-budget-candidates.json`
+(each round length with `ROUND_BUDGET` set to it).
+
+- **The block cache was per round.** A run fetched ahead, sized to the
+  link's 4 s target, was dropped when its round ended and fetched again. At
+  2 s rounds the node sent 12 to 19 times the distinct blocks for one group
+  over 2 Mbit/s and 256 kbit/s links; at 10 s, 1.3 to 1.4 times. The cache now outlasts
+  the round within the scan memory budget (docs/engine_scaling.md, "As
+  built"): 1.00 at every length for one group.
+- **Catch-up groups evicted each other's runs.** With 16 groups, each
+  group's 1 MB run (the response cap at the default 8 MB budget) didn't fit
+  beside the others: 4.7 blocks a second and 9 MB discarded at 10 s. Each
+  group's request is now capped at its share of the budget: 13.4 blocks a
+  second and 130 kB discarded.
+- **The round length** then barely matters over a nearby node, and matters
+  over a high-latency one. That sets 10 s; the reasoning is on
+  `ROUND_BUDGET`.
+
+Not covered: the scripted node answers instantly apart from its link
+model, so monerod's own time to build an answer is only the time to first
+byte per block. A thousand tenants on one CPU are bound by scanning
+(about 2,500 tenant-blocks a second), and `GROUP_PAGE` lets the first 256
+run ahead of the rest.

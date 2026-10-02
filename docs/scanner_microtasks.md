@@ -100,7 +100,9 @@ Sources are grouped in tiers. The order is the priority within a round:
 Each round has a deadline. Every tier has a **reserved share** of it
 (Chain 20 %, Blocks 40 %, Mempool 15 %, Settlement 20 %, Upkeep 5 %).
 
-The shares are the only times written down. Everything a tier does in one
+The round is 10 s (`ROUND_BUDGET`), measured by the round length sweep
+(docs/engine_stress.md); its comment gives the reasons. The shares are the
+only other times written down. Everything a tier does in one
 call follows from its share (`Tier::reserved()`, worked out at build time
 from `ROUND_BUDGET`), so a change to the round or the shares carries
 through:
