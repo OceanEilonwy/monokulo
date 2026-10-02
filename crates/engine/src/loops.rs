@@ -116,6 +116,7 @@ pub async fn run_fast_mempool_loop(
                 reorg_check_depth: scan.reorg_check_depth,
                 grace_period_seconds: scan.expired_order_grace_period_seconds,
                 scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
+                nodes: None,
             };
             let pass = tokio::time::timeout(
                 tick_deadline(scan.poll_interval),
@@ -224,7 +225,11 @@ pub async fn manage_network_loops(
             let scan_state = Arc::new(
                 crate::work::ScanState::waking(webhooks.clone())
                     .with_progress(crate::scanner_status::progress_of(&scanner_status, network))
-                    .with_wakes(crate::scanner_status::wakes_of(&scanner_status, network)),
+                    .with_wakes(crate::scanner_status::wakes_of(&scanner_status, network))
+                    .with_agreement(crate::scanner_status::agreement_of(
+                        &scanner_status,
+                        network,
+                    )),
             );
             #[cfg(feature = "zmq")]
             {
@@ -383,6 +388,7 @@ pub async fn run_scanner_loop(
             reorg_check_depth: scan.reorg_check_depth,
             grace_period_seconds: scan.expired_order_grace_period_seconds,
             scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
+            nodes: Some(daemon.as_ref()),
         };
         // The round keeps to its own budget (more only while one page of a
         // large block needs it); this outer deadline only catches a unit

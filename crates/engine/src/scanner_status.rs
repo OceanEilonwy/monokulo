@@ -40,6 +40,9 @@ pub struct NetworkScanStatus {
     /// What wakes the network's loops early, and what it has done
     /// (docs/monero_zmq.md).
     pub wakes: Arc<crate::node_events::NodeWakes>,
+    /// Whether the network's nodes agree with the recorded chain
+    /// (docs/chain_agreement.md).
+    pub agreement: Arc<crate::work::agreement::ChainAgreement>,
 }
 
 impl Default for NetworkScanStatus {
@@ -53,8 +56,17 @@ impl Default for NetworkScanStatus {
             tenants_scanned: 0,
             progress: crate::scaling::new_progress(),
             wakes: Arc::default(),
+            agreement: Arc::default(),
         }
     }
+}
+
+/// `network`'s chain agreement, made if it has none yet.
+pub fn agreement_of(
+    map: &ScannerStatusMap,
+    network: Network,
+) -> Arc<crate::work::agreement::ChainAgreement> {
+    map.write().entry(network).or_default().agreement.clone()
 }
 
 /// `network`'s wakes, made if it has none yet.

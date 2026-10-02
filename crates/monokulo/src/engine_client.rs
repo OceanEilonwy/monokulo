@@ -1009,6 +1009,10 @@ pub struct NetworkStatus {
     /// node of this network has a `zmq_pub`.
     #[serde(default)]
     pub announcements: Option<shared::announcements::Announcements>,
+    /// Whether the network's nodes agree with the recorded chain
+    /// (docs/chain_agreement.md); absent with one node.
+    #[serde(default)]
+    pub agreement: Option<shared::agreement::Agreement>,
 }
 
 /// Mirrors the engine's own `EngineStatusResponse` — the whole body of

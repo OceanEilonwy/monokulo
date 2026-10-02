@@ -1174,6 +1174,7 @@ pub async fn run_scan_tick_with(
         reorg_check_depth,
         grace_period_seconds: expired_order_grace_period_seconds,
         scan_chunk_memory_budget_mb,
+        nodes: None,
     };
     crate::work::run_round(state, &inputs, crate::work::ROUND_BUDGET)
         .await
@@ -10649,6 +10650,7 @@ pub(crate) mod tests {
                     .scan
                     .load()
                     .scan_chunk_memory_budget_mb,
+                nodes: None,
             };
             let mut tick = Box::pin(crate::work::run_round(
                 &state,

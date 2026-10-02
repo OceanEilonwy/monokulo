@@ -37,6 +37,27 @@ pub struct StatusNetworkView {
     /// The nodes' ZMQ announcements (docs/monero_zmq.md): set only for an
     /// admin, and only when a node of this network has a publisher.
     pub announcements: Option<AnnouncementsView>,
+    /// Whether the nodes agree with the recorded chain
+    /// (docs/chain_agreement.md): set only for an admin, and only with more
+    /// than one node.
+    pub agreement: Option<AgreementView>,
+}
+
+/// A network's chain agreement, ready to show.
+pub struct AgreementView {
+    /// One sentence on where it stands.
+    pub summary: String,
+    /// Settlement is held (a node disagrees, or none other answers yet).
+    pub held: bool,
+    /// The last check: when, and on which block.
+    pub checked_display: String,
+    pub nodes: Vec<AgreementNodeView>,
+}
+
+pub struct AgreementNodeView {
+    pub node: String,
+    pub vote: String,
+    pub excluded: bool,
 }
 
 /// A network's ZMQ announcements, ready to show.
@@ -165,12 +186,51 @@ pub fn live_fragment(data: &StatusPageViewModel) -> Markup {
                         @if let Some(headers_first) = &network.headers_first {
                             p class="hint headers-first" { (headers_first) }
                         }
+                        @if let Some(agreement) = &network.agreement {
+                            (agreement_section(agreement))
+                        }
                         @if let Some(announcements) = &network.announcements {
                             (announcements_section(announcements))
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/// Whether the network's nodes agree with the chain the engine recorded.
+fn agreement_section(agreement: &AgreementView) -> Markup {
+    html! {
+        section class="agreement" {
+            h3 { "Node agreement" }
+            p class="hint" {
+                "Only operators see this. Orders only become paid on blocks most of the configured nodes have, "
+                "so one node serving a made-up chain can't mark an order paid."
+            }
+            p {
+                @if agreement.held { span class="tag tag-error" { "settlement held" } }
+                @else { span class="tag tag-ok" { "agreed" } }
+                " " (agreement.summary)
+            }
+            @if !agreement.nodes.is_empty() {
+                table {
+                    thead { tr { th { "Node" } th { "Last vote" } th { "In use" } } }
+                    tbody {
+                        @for node in &agreement.nodes {
+                            tr {
+                                td { code { (node.node) } }
+                                td { (node.vote) }
+                                td {
+                                    @if node.excluded { span class="tag tag-error" { "excluded: outvoted" } }
+                                    @else { "yes" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p class="hint" { (agreement.checked_display) }
         }
     }
 }
@@ -326,6 +386,7 @@ mod tests {
                     "Reading block headers first for about 50 minutes more.".to_string(),
                 ),
                 announcements: None,
+                agreement: None,
             }],
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),

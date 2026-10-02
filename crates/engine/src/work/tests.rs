@@ -87,6 +87,7 @@ fn inputs<'a>(
         reorg_check_depth: 20,
         grace_period_seconds: 0,
         scan_chunk_memory_budget_mb: 16,
+        nodes: None,
     }
 }
 
@@ -4823,4 +4824,303 @@ async fn a_failed_page_keeps_the_pages_before_it() {
         .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
         .unwrap();
     assert_eq!(payments.len(), 1);
+}
+
+// -- Chain agreement across nodes (docs/chain_agreement.md) --------------
+
+/// `n` fake nodes behind one client, as a network's node and fallbacks.
+fn node_set(
+    n: usize,
+) -> (
+    Vec<std::sync::Arc<FakeDaemonClient>>,
+    crate::daemon_fallback::FallbackDaemonClient,
+) {
+    let fakes: Vec<std::sync::Arc<FakeDaemonClient>> = (0..n)
+        .map(|_| std::sync::Arc::new(FakeDaemonClient::new()))
+        .collect();
+    let client = crate::daemon_fallback::FallbackDaemonClient::new(
+        fakes
+            .iter()
+            .enumerate()
+            .map(|(i, fake)| crate::daemon_fallback::FallbackNode {
+                label: format!("node{i}:18081"),
+                client: fake.clone(),
+            })
+            .collect(),
+    );
+    (fakes, client)
+}
+
+/// One round as the scanner loop runs it: one node pinned for the round,
+/// the agreement check first.
+async fn agreed_round(
+    state: &ScanState,
+    store: &SharedStore,
+    custody: &dyn KeyCustody,
+    nodes: &crate::daemon_fallback::FallbackDaemonClient,
+    tenants: &[(crate::store::TenantId, WalletHandle)],
+) {
+    let db = Db::over_shared(store.clone());
+    let pinned = nodes.pin();
+    let inputs = RoundInputs {
+        nodes: Some(nodes),
+        ..inputs(&db, custody, &pinned, tenants)
+    };
+    let _ = run_round(state, &inputs, ROUND_BUDGET).await;
+}
+
+fn ceiling(store: &SharedStore) -> Option<u64> {
+    store
+        .lock()
+        .settlement_ceiling(monero::Network::Mainnet)
+        .unwrap()
+}
+
+/// Paid, or overpaid (the fixture's payment is more than its order asks).
+fn settled(store: &SharedStore, order: &shared::ids::OrderId) -> bool {
+    matches!(
+        order_status(store, order),
+        OrderStatus::Paid | OrderStatus::Overpaid
+    )
+}
+
+/// The primary of three nodes serves a made-up block paying the order, and
+/// ten made-up blocks on top. The order never settles; the others outvote
+/// the primary, which is left out; the next rounds follow an honest node,
+/// whose chain takes the payment out of the made-up block.
+#[tokio::test]
+async fn a_node_serving_a_made_up_payment_is_outvoted_and_the_order_never_settles() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let order = shared::ids::OrderId::new(order.to_string());
+    let (fakes, nodes) = node_set(3);
+    for fake in &fakes {
+        fake.push_block("a1", vec![]);
+        fake.push_block("a2", vec![]);
+    }
+    let tenants = [(tenant.clone(), handle)];
+    let state = ScanState::default();
+    agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+
+    fakes[0].push_block("x3", vec![fixture_tx()]);
+    for h in 4..=13 {
+        fakes[0].push_block(&format!("x{h}"), vec![]);
+    }
+    for fake in &fakes[1..] {
+        fake.push_block("a3", vec![]);
+        fake.push_block("a4", vec![]);
+    }
+    let mut excluded_after = None;
+    for round in 1..=20 {
+        agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+        assert!(
+            !settled(&store, &order),
+            "round {round}: never settled on made-up blocks"
+        );
+        if excluded_after.is_none() && nodes.is_excluded(0) {
+            excluded_after = Some(round);
+        }
+        let payments = store.lock().get_all_payments(&order).unwrap();
+        if nodes.is_excluded(0)
+            && payments.iter().all(|p| p.block_height.is_none())
+            && store
+                .lock()
+                .reorg_job(monero::Network::Mainnet)
+                .unwrap()
+                .is_none()
+        {
+            break;
+        }
+    }
+    assert!(
+        excluded_after.is_some_and(|round| round <= 3),
+        "outvoted within a few rounds: {excluded_after:?}"
+    );
+    assert!(!nodes.is_excluded(1) && !nodes.is_excluded(2));
+    let payments = store.lock().get_all_payments(&order).unwrap();
+    let reorg = store.lock().reorg_job(monero::Network::Mainnet).unwrap();
+    let recorded = store
+        .lock()
+        .scanned_blocks_between(monero::Network::Mainnet, 0, 20)
+        .unwrap();
+    assert!(
+        payments.iter().all(|p| p.block_height.is_none()),
+        "no longer counted as mined: {payments:?}, state {:?}, ceiling {:?}, reorg {reorg:?}, recorded {recorded:?}",
+        state.agreement.state(),
+        ceiling(&store),
+    );
+    assert!(
+        ceiling(&store).is_some_and(|c| c <= 4),
+        "the ceiling stays on the real chain: {:?}",
+        ceiling(&store)
+    );
+
+    // The real chain grows far past ten confirmations of block 3: the
+    // payment isn't in it, so the order still doesn't settle (the outvoted
+    // node's claim that it is can't put it back).
+    for h in 5..=16 {
+        for fake in &fakes[1..] {
+            fake.push_block(&format!("a{h}"), vec![]);
+        }
+    }
+    for _ in 0..6 {
+        agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+        assert!(!settled(&store, &order));
+    }
+    let recorded = store
+        .lock()
+        .max_scanned_height(monero::Network::Mainnet)
+        .unwrap();
+    assert!(
+        matches!(
+            state.agreement.state(),
+            agreement::AgreementState::Agreed { height: 16, .. }
+        ),
+        "{:?}, recorded up to {recorded:?}, ceiling {:?}",
+        state.agreement.state(),
+        ceiling(&store)
+    );
+    assert_eq!(ceiling(&store), Some(16));
+    assert!(nodes.is_excluded(0), "still on its own chain");
+}
+
+/// Two nodes that disagree can't tell which is lying: nothing settles
+/// while they do. Once they agree, the order settles at once.
+#[tokio::test]
+async fn two_nodes_that_disagree_hold_settlement_until_they_agree() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let order = shared::ids::OrderId::new(order.to_string());
+    let (fakes, nodes) = node_set(2);
+    for fake in &fakes {
+        fake.push_block("a1", vec![]);
+        fake.push_block("a2", vec![]);
+    }
+    let tenants = [(tenant.clone(), handle)];
+    let state = ScanState::default();
+    agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+
+    let chain: Vec<(String, Vec<Transaction>)> = (3..=13)
+        .map(|h| {
+            let txs = if h == 3 { vec![fixture_tx()] } else { vec![] };
+            (format!("p{h}"), txs)
+        })
+        .collect();
+    for (hash, txs) in &chain {
+        fakes[0].push_block(hash, txs.clone());
+    }
+    for h in 3..=13 {
+        fakes[1].push_block(&format!("q{h}"), vec![]);
+    }
+    for _ in 0..6 {
+        agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+    }
+    assert_eq!(
+        order_status(&store, &order),
+        OrderStatus::Confirming,
+        "eleven confirmations, but only on blocks the other node disputes"
+    );
+    assert!(matches!(
+        state.agreement.state(),
+        agreement::AgreementState::Holding {
+            hold: agreement::Hold::Contested,
+            ..
+        }
+    ));
+    assert_eq!(ceiling(&store), Some(2));
+    assert!(
+        !nodes.is_excluded(0) && !nodes.is_excluded(1),
+        "no side wins"
+    );
+
+    // The second node comes round to the first's chain.
+    fakes[1].reorg_from(
+        3,
+        chain
+            .iter()
+            .map(|(h, txs)| (h.as_str(), txs.clone()))
+            .collect(),
+    );
+    for _ in 0..3 {
+        agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+        if settled(&store, &order) {
+            break;
+        }
+    }
+    assert!(settled(&store, &order));
+    assert_eq!(ceiling(&store), Some(13));
+}
+
+/// An honest node a block behind costs a block of waiting, nothing more:
+/// the ceiling is the highest block both have.
+#[tokio::test]
+async fn a_node_a_block_behind_delays_settlement_by_that_block() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let order = shared::ids::OrderId::new(order.to_string());
+    let (fakes, nodes) = node_set(2);
+    for fake in &fakes {
+        fake.push_block("a1", vec![]);
+        fake.push_block("a2", vec![]);
+    }
+    let tenants = [(tenant.clone(), handle)];
+    let state = ScanState::default();
+    agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+    for h in 3..=12 {
+        let txs = if h == 3 { vec![fixture_tx()] } else { vec![] };
+        fakes[0].push_block(&format!("p{h}"), txs.clone());
+        if h < 12 {
+            fakes[1].push_block(&format!("p{h}"), txs);
+        }
+    }
+    for _ in 0..4 {
+        agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+    }
+    assert_eq!(ceiling(&store), Some(11));
+    assert_eq!(
+        order_status(&store, &order),
+        OrderStatus::Confirming,
+        "ten confirmations at the tip, nine on blocks both nodes have"
+    );
+
+    fakes[1].push_block("p12", vec![]);
+    for _ in 0..3 {
+        agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+    }
+    assert_eq!(ceiling(&store), Some(12));
+    assert!(settled(&store, &order));
+    assert!(!nodes.is_excluded(0) && !nodes.is_excluded(1));
+}
+
+/// With one node there is nothing to compare: no ceiling, settlement as
+/// before.
+#[tokio::test]
+async fn a_single_node_settles_as_before_with_no_ceiling() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let order = shared::ids::OrderId::new(order.to_string());
+    let (fakes, nodes) = node_set(1);
+    fakes[0].push_block("a1", vec![]);
+    fakes[0].push_block("a2", vec![]);
+    let tenants = [(tenant.clone(), handle)];
+    let state = ScanState::default();
+    agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+    for h in 3..=12 {
+        let txs = if h == 3 { vec![fixture_tx()] } else { vec![] };
+        fakes[0].push_block(&format!("p{h}"), txs);
+    }
+    for _ in 0..3 {
+        agreed_round(&state, &store, &custody, &nodes, &tenants).await;
+    }
+    assert!(settled(&store, &order));
+    assert_eq!(ceiling(&store), None);
+    assert_eq!(state.agreement.state(), agreement::AgreementState::Single);
 }

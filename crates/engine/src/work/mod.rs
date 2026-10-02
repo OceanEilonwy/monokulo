@@ -6,7 +6,12 @@
 //! it has work, so a slow node, a throttled CPU or a flood of one kind of work
 //! slows every tier but starves none. Units keep their progress in SQLite, so
 //! a round cut short, a crash or a restart repeats at most the unit in flight.
+//!
+//! Before the tiers, a round on a network with more than one node checks
+//! that most of them agree with the recorded chain (`agreement`,
+//! docs/chain_agreement.md).
 
+pub mod agreement;
 mod blocks;
 pub(crate) mod chain;
 mod mempool;
@@ -252,6 +257,10 @@ pub struct RoundInputs<'a> {
     pub reorg_check_depth: u64,
     pub grace_period_seconds: i64,
     pub scan_chunk_memory_budget_mb: u32,
+    /// Every configured node of the network, for the chain agreement check
+    /// (docs/chain_agreement.md). `None` skips it (the fast mempool pass,
+    /// tools and tests that pin a single client).
+    pub nodes: Option<&'a crate::daemon_fallback::FallbackDaemonClient>,
 }
 
 /// The time one round may take. A round ends sooner when every tier runs out
@@ -370,6 +379,9 @@ pub struct ScanState {
     /// Wakes the network's loops when its node announces a block or a pool
     /// transaction (docs/monero_zmq.md).
     node_wakes: std::sync::Arc<crate::node_events::NodeWakes>,
+    /// Whether the network's nodes agree with the recorded chain
+    /// (docs/chain_agreement.md); shared with `/status`.
+    agreement: std::sync::Arc<agreement::ChainAgreement>,
     mempool: mempool::MempoolState,
     blocks: blocks::BlockState,
     settlement: settlement::SettlementState,
@@ -400,6 +412,13 @@ impl ScanState {
     /// block's smallest unit needs more (docs/engine_scaling.md section 4).
     pub fn round_budget(&self, daemon: &dyn MoneroDaemonClient, stores: usize) -> Duration {
         self.blocks.round_budget(daemon, stores)
+    }
+
+    /// This state, keeping the nodes' agreement in `agreement` (shared
+    /// with `/status`).
+    pub fn with_agreement(mut self, agreement: std::sync::Arc<agreement::ChainAgreement>) -> Self {
+        self.agreement = agreement;
+        self
     }
 
     /// This state, its loops woken by `wakes` (shared with `/status`).
@@ -492,6 +511,9 @@ pub async fn run_round(
     let started = Instant::now();
     let round_end = started + budget;
     let now = crate::now_unix();
+    if let Some(nodes) = inputs.nodes {
+        agreement::step(&state.agreement, inputs.db, inputs.network, nodes, now).await;
+    }
     // A round that will look at the pool asks for the tip and the pool
     // together: one request while the chain hasn't moved.
     let watching = mempool::watching(inputs, now).await;

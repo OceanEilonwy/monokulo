@@ -443,8 +443,10 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
             if network.scanner.last_error.is_some() {
                 network.scanner.last_error = Some("the last scan failed".to_string());
             }
-            // Publisher addresses and their errors, likewise.
+            // Publisher addresses and their errors, likewise; and which
+            // node disagrees.
             network.announcements = None;
+            network.agreement = None;
         }
     }
     // Challenge activity is for operators only; anonymous visitors and
@@ -553,6 +555,69 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
         announcements: network
             .announcements
             .map(|announcements| announcements_view(announcements, now)),
+        agreement: network
+            .agreement
+            .map(|agreement| agreement_view(agreement, now)),
+    }
+}
+
+/// A network's chain agreement as shown to an admin
+/// (docs/chain_agreement.md).
+fn agreement_view(
+    agreement: shared::agreement::Agreement,
+    now: i64,
+) -> views::status::AgreementView {
+    let since = agreement
+        .since
+        .map(|at| format!(" (since {})", relative_time(now, at)))
+        .unwrap_or_default();
+    let up_to = match agreement.ceiling {
+        Some(0) => "no block yet".to_string(),
+        Some(height) => format!("block {height}"),
+        None => "the node's tip".to_string(),
+    };
+    let (summary, held) = match (agreement.state.as_str(), agreement.hold.as_deref()) {
+        ("agreed", _) => (
+            format!("The nodes agree on the recorded chain up to {up_to}."),
+            false,
+        ),
+        ("holding", Some("contested")) => (
+            format!("The nodes disagree on the recorded chain{since}: orders settle only up to {up_to} until they agree."),
+            true,
+        ),
+        ("holding", Some("outvoted")) => (
+            format!("The other nodes outvote the recorded chain{since}: the outvoted node is excluded, and orders settle only up to {up_to} meanwhile."),
+            true,
+        ),
+        ("holding", _) => (
+            format!("No other node can be compared with yet{since}: orders settle only up to {up_to}. After 10 minutes the pinned node is trusted alone."),
+            true,
+        ),
+        ("degraded", _) => (
+            format!("No other node has answered{since}: the pinned node is trusted alone, as with a single node."),
+            false,
+        ),
+        _ => ("The nodes haven't been compared yet.".to_string(), true),
+    };
+    views::status::AgreementView {
+        summary,
+        held,
+        checked_display: match (agreement.checked_at, agreement.height) {
+            (Some(at), Some(height)) => {
+                format!("Last checked {} on block {height}.", relative_time(now, at))
+            }
+            (Some(at), None) => format!("Last checked {}.", relative_time(now, at)),
+            _ => "Not checked yet.".to_string(),
+        },
+        nodes: agreement
+            .nodes
+            .into_iter()
+            .map(|node| views::status::AgreementNodeView {
+                node: node.node,
+                vote: node.vote,
+                excluded: node.excluded,
+            })
+            .collect(),
     }
 }
 
@@ -667,6 +732,7 @@ mod tests {
                     slow,
                 }),
                 announcements: None,
+                agreement: None,
             }],
             poll_interval_secs: 2,
             generated_at: 0,
@@ -1110,6 +1176,7 @@ mod tests {
                 scanner,
                 scaling: None,
                 announcements: None,
+                agreement: None,
             };
             let view = super::super::build_view_model(EngineStatusResponse {
                 networks: vec![
@@ -1230,6 +1297,101 @@ mod tests {
                 !html.contains("10.0.0.5") && !html.contains("Announcements"),
                 "{html}"
             );
+        }
+
+        /// Whether the nodes agree (docs/chain_agreement.md) is shown to an
+        /// admin, with each node's vote and which is excluded; to nobody
+        /// else.
+        #[tokio::test]
+        async fn node_agreement_is_shown_to_admins_only() {
+            let now = crate::now_unix();
+            let mut status = super::status_with_slow(None);
+            status.networks[0].agreement = Some(shared::agreement::Agreement {
+                state: "holding".into(),
+                hold: Some("outvoted".into()),
+                since: Some(now - 120),
+                ceiling: Some(3_412_000),
+                checked_at: Some(now - 2),
+                height: Some(3_412_009),
+                nodes: vec![
+                    shared::agreement::NodeVote {
+                        node: "10.0.0.5:18081".into(),
+                        vote: "disagrees".into(),
+                        excluded: true,
+                    },
+                    shared::agreement::NodeVote {
+                        node: "node.example:18089".into(),
+                        vote: "agrees".into(),
+                        excluded: false,
+                    },
+                ],
+            });
+            let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
+            super::super::seed_status_for_tests(&state.engine, status);
+
+            let anonymous = super::super::status_view(&state, false).await;
+            assert!(anonymous.networks[0].agreement.is_none());
+            let html = crate::views::status::live_fragment(&anonymous).into_string();
+            assert!(
+                !html.contains("10.0.0.5") && !html.contains("Node agreement"),
+                "{html}"
+            );
+
+            let admin = super::super::status_view(&state, true).await;
+            let shown = admin.networks[0].agreement.as_ref().unwrap();
+            assert!(shown.held);
+            assert_eq!(
+                shown.summary,
+                "The other nodes outvote the recorded chain (since 2m ago): the outvoted node is excluded, and orders settle only up to block 3412000 meanwhile."
+            );
+            assert_eq!(
+                shown.checked_display,
+                "Last checked 2s ago on block 3412009."
+            );
+            let html = crate::views::status::live_fragment(&admin).into_string();
+            for expected in [
+                "Node agreement",
+                r#"<span class="tag tag-error">settlement held</span>"#,
+                "<code>10.0.0.5:18081</code>",
+                r#"<span class="tag tag-error">excluded: outvoted</span>"#,
+                "<td>agrees</td>",
+            ] {
+                assert!(html.contains(expected), "{expected} in {html}");
+            }
+        }
+
+        /// Each state reads as one plain sentence.
+        #[test]
+        fn each_agreement_state_reads_as_a_sentence() {
+            let view = |state: &str, hold: Option<&str>, ceiling| {
+                super::super::agreement_view(
+                    shared::agreement::Agreement {
+                        state: state.into(),
+                        hold: hold.map(str::to_string),
+                        ceiling,
+                        ..Default::default()
+                    },
+                    0,
+                )
+            };
+            let agreed = view("agreed", None, Some(10));
+            assert_eq!(
+                agreed.summary,
+                "The nodes agree on the recorded chain up to block 10."
+            );
+            assert!(!agreed.held);
+            let contested = view("holding", Some("contested"), Some(0));
+            assert!(
+                contested.held
+                    && contested.summary.contains("disagree")
+                    && contested.summary.contains("no block yet")
+            );
+            let unverified = view("holding", Some("unverified"), Some(9));
+            assert!(unverified.held && unverified.summary.contains("10 minutes"));
+            let degraded = view("degraded", None, None);
+            assert!(!degraded.held && degraded.summary.contains("trusted alone"));
+            let checking = view("checking", None, None);
+            assert!(checking.held && checking.checked_display == "Not checked yet.");
         }
 
         #[tokio::test]

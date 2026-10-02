@@ -415,6 +415,54 @@ impl Store {
             .map_err(Into::into)
     }
 
+    /// The highest block an order on `network` may newly settle on, if
+    /// there is a ceiling (docs/chain_agreement.md).
+    pub fn settlement_ceiling(&self, network: monero::Network) -> Result<Option<u64>> {
+        self.conn
+            .query_row(
+                "SELECT height FROM settlement_ceilings WHERE network = ?1",
+                [shared::network::SqlNetwork(network)],
+                |row| unsigned(row, 0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Applies a chain agreement transition's ceiling. Only
+    /// `work::agreement` calls this, with what its state machine decided.
+    pub fn write_settlement_ceiling(
+        &self,
+        network: monero::Network,
+        write: crate::work::agreement::CeilingWrite,
+        now: i64,
+    ) -> Result<()> {
+        use crate::work::agreement::CeilingWrite;
+        let network = shared::network::SqlNetwork(network);
+        match write {
+            CeilingWrite::Keep => {}
+            CeilingWrite::Set(height) => {
+                self.conn.execute(
+                    "INSERT INTO settlement_ceilings (network, height, updated_at_utc) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (network) DO UPDATE SET height = excluded.height, updated_at_utc = excluded.updated_at_utc",
+                    params![network, Unsigned(height), now],
+                )?;
+            }
+            CeilingWrite::KeepOrHoldAll => {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO settlement_ceilings (network, height, updated_at_utc) VALUES (?1, 0, ?2)",
+                    params![network, now],
+                )?;
+            }
+            CeilingWrite::Clear => {
+                self.conn.execute(
+                    "DELETE FROM settlement_ceilings WHERE network = ?1",
+                    [network],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Stored block hashes on `network` from `from` to `to` inclusive,
     /// lowest first. Bounded by the retained window.
     pub fn scanned_blocks_between(

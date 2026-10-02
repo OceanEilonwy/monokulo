@@ -115,6 +115,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         23,
         include_str!("../migrations/0023_order_idempotency_key.sql"),
     ),
+    (
+        24,
+        include_str!("../migrations/0024_settlement_ceilings.sql"),
+    ),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -511,6 +515,10 @@ struct StatusFacts<'a> {
     tenant_lagging: bool,
     /// A reorg is being reconciled on the order's network.
     settlement_frozen: bool,
+    /// The highest block a majority of the network's nodes agree on, when
+    /// more than one is configured (docs/chain_agreement.md): an order may
+    /// only newly settle on confirmations counted up to it.
+    settlement_ceiling: Option<u64>,
     current_height: u64,
     now: i64,
 }
@@ -561,8 +569,36 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     // counted on the losing chain: an order can't newly settle until the
     // rewind. Everything else (expiry, confirmation counts, walking a
     // settlement back) still happens, and it shows where the payment stands.
-    let settlement_deferred =
-        is_settlement(derived) && !is_settlement(order.status) && facts.settlement_frozen;
+    //
+    // Likewise while confirmations above the ceiling are needed: blocks the
+    // other nodes don't (yet) agree on may be made up (docs/chain_agreement.md).
+    let settles_on_agreed_blocks = || match facts.settlement_ceiling {
+        None => true,
+        Some(ceiling) => {
+            let unagreed = facts.current_height.saturating_sub(ceiling);
+            let views: Vec<PaymentView> = facts
+                .views
+                .iter()
+                .map(|v| PaymentView {
+                    confirmations: v.confirmations.saturating_sub(unagreed),
+                    ..*v
+                })
+                .collect();
+            let as_of_ceiling = derive_status(
+                &views,
+                StatusInputs {
+                    xmr_amount_piconero: order.xmr_amount_piconero,
+                    confirmations_required: facts.confirmations_required,
+                    now: facts.now,
+                    expires_at: order.expires_at,
+                },
+            );
+            is_settlement(as_of_ceiling)
+        }
+    };
+    let settlement_deferred = is_settlement(derived)
+        && !is_settlement(order.status)
+        && (facts.settlement_frozen || !settles_on_agreed_blocks());
     let status = if expiry_held {
         order.status
     } else if settlement_deferred {
@@ -1824,6 +1860,7 @@ impl Store {
                 .unwrap_or(confirmations_required),
             tenant_lagging: lagging,
             settlement_frozen: self.settlement_frozen(network)?,
+            settlement_ceiling: self.settlement_ceiling(network)?,
             current_height,
             now,
         });
@@ -2042,6 +2079,12 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height >= ?2",
+            params![shared::network::SqlNetwork(network), height as i64],
+        )?;
+        // A block agreed on the chain being replaced never vouches for the
+        // one that replaces it (docs/chain_agreement.md).
+        self.conn.execute(
+            "UPDATE settlement_ceilings SET height = MIN(height, MAX(?2 - 1, 0)) WHERE network = ?1",
             params![shared::network::SqlNetwork(network), height as i64],
         )?;
         Ok(())
@@ -2706,6 +2749,7 @@ mod tests {
                 confirmations_required: case.required,
                 tenant_lagging: case.lagging,
                 settlement_frozen: case.frozen,
+                settlement_ceiling: None,
                 current_height: 50,
                 now: case.now,
             });
@@ -2721,6 +2765,110 @@ mod tests {
                 case.what
             );
         }
+    }
+
+    /// An order settles only on confirmations counted up to the ceiling
+    /// (docs/chain_agreement.md); the counts shown stay the real ones, and
+    /// an order already settled isn't walked back by it.
+    #[test]
+    fn settlement_waits_for_agreed_blocks_under_a_ceiling() {
+        use OrderStatus::*;
+        // Ten confirmations required, tip 50: a payment with 12 has its
+        // block at 39 and its tenth confirmation at 48.
+        for (ceiling, was, expect, deferred) in [
+            (None, Confirming, Paid, false),
+            (Some(50), Confirming, Paid, false),
+            (Some(48), Confirming, Paid, false),
+            (Some(47), Confirming, Confirming, true),
+            (Some(39), Confirming, Confirming, true),
+            (Some(0), Confirming, Confirming, true),
+            (Some(0), Paid, Paid, false),
+        ] {
+            let order = order(was, 1000);
+            let plan = plan_status(&StatusFacts {
+                order: &order,
+                views: &[mined(100, 12)],
+                confirmations_required: 10,
+                tenant_lagging: false,
+                settlement_frozen: false,
+                settlement_ceiling: ceiling,
+                current_height: 50,
+                now: 500,
+            });
+            assert_eq!(
+                (plan.status, plan.keep_obligation, plan.confirmations),
+                (expect, deferred, 12),
+                "ceiling {ceiling:?}, was {was:?}"
+            );
+            if deferred {
+                assert_eq!(plan.next_due_at, Some(500), "looked at again next round");
+            }
+        }
+        // Zero-conf acceptance has nothing to wait for.
+        let order = order(Pending, 1000);
+        let plan = plan_status(&StatusFacts {
+            order: &order,
+            views: &[pooled(100)],
+            confirmations_required: 0,
+            tenant_lagging: false,
+            settlement_frozen: false,
+            settlement_ceiling: Some(0),
+            current_height: 50,
+            now: 500,
+        });
+        assert_eq!(plan.status, Paid);
+    }
+
+    #[test]
+    fn the_ceiling_is_written_as_decided_and_lowered_by_a_rewind() {
+        use crate::work::agreement::CeilingWrite;
+        let store = Store::open_in_memory().unwrap();
+        let net = monero::Network::Stagenet;
+        assert_eq!(
+            store.settlement_ceiling(net).unwrap(),
+            None,
+            "none by default"
+        );
+        store
+            .write_settlement_ceiling(net, CeilingWrite::KeepOrHoldAll, 1)
+            .unwrap();
+        assert_eq!(
+            store.settlement_ceiling(net).unwrap(),
+            Some(0),
+            "hold all until agreed"
+        );
+        store
+            .write_settlement_ceiling(net, CeilingWrite::Set(120), 2)
+            .unwrap();
+        store
+            .write_settlement_ceiling(net, CeilingWrite::KeepOrHoldAll, 3)
+            .unwrap();
+        store
+            .write_settlement_ceiling(net, CeilingWrite::Keep, 4)
+            .unwrap();
+        assert_eq!(store.settlement_ceiling(net).unwrap(), Some(120), "kept");
+        assert_eq!(
+            store.settlement_ceiling(monero::Network::Mainnet).unwrap(),
+            None
+        );
+
+        store.forget_scanned_blocks_at_or_above(net, 130).unwrap();
+        assert_eq!(
+            store.settlement_ceiling(net).unwrap(),
+            Some(120),
+            "a fork above it"
+        );
+        store.forget_scanned_blocks_at_or_above(net, 101).unwrap();
+        assert_eq!(
+            store.settlement_ceiling(net).unwrap(),
+            Some(100),
+            "below the fork"
+        );
+
+        store
+            .write_settlement_ceiling(net, CeilingWrite::Clear, 5)
+            .unwrap();
+        assert_eq!(store.settlement_ceiling(net).unwrap(), None);
     }
 
     /// A recompute that changes nothing writes nothing (`updated_at` stays).
