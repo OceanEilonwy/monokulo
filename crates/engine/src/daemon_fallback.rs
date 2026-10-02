@@ -57,6 +57,9 @@ pub const CALL_DEADLINE: Duration = Duration::from_secs(30);
 /// its own client would give it; the shrinking deadline limits how many
 /// nodes a call gets to try instead.
 const MAX_ATTEMPT: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
+/// Added to a node's own timeout where a layer above waits on it, so the
+/// node's own error (naming the node and the timeout) arrives first.
+pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct NodeHealth {
@@ -183,14 +186,31 @@ impl FallbackDaemonClient {
         F: Fn(&'a dyn MoneroDaemonClient) -> Fut,
         Fut: std::future::Future<Output = Result<T, DaemonError>> + 'a,
     {
-        let deadline = Instant::now() + CALL_DEADLINE;
+        self.failover_within(CALL_DEADLINE, |_| MAX_ATTEMPT, call)
+            .await
+    }
+
+    /// [`Self::failover`] with a deadline of `total` for the whole call and
+    /// `per_node(node)` for each attempt: a block request is given what each
+    /// node's own link needs (docs/engine_scaling.md section 2).
+    async fn failover_within<'a, T, F, Fut>(
+        &'a self,
+        total: Duration,
+        per_node: impl Fn(&dyn MoneroDaemonClient) -> Duration,
+        call: F,
+    ) -> Result<T, DaemonError>
+    where
+        F: Fn(&'a dyn MoneroDaemonClient) -> Fut,
+        Fut: std::future::Future<Output = Result<T, DaemonError>> + 'a,
+    {
+        let deadline = Instant::now() + total;
         let mut last_err = None;
         let order = self.attempt_order();
         for (tried, &idx) in order.iter().enumerate() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                last_err = Some(DaemonError::Request(format!(
-                    "no node answered within {CALL_DEADLINE:?}"
+                last_err = Some(DaemonError::TimedOut(format!(
+                    "no node answered within {total:?}"
                 )));
                 break;
             }
@@ -198,16 +218,14 @@ impl FallbackDaemonClient {
             // left of the call: one that hangs costs the nodes after it
             // their turn in this call, never the call its deadline.
             let _ = tried;
-            let this_attempt = remaining.min(MAX_ATTEMPT);
-            let outcome =
-                match tokio::time::timeout(this_attempt, call(self.nodes[idx].client.as_ref()))
-                    .await
-                {
-                    Ok(outcome) => outcome,
-                    Err(_) => Err(DaemonError::Request(format!(
-                        "no answer within the call's {CALL_DEADLINE:?} deadline"
-                    ))),
-                };
+            let node = self.nodes[idx].client.as_ref();
+            let this_attempt = remaining.min(per_node(node));
+            let outcome = match tokio::time::timeout(this_attempt, call(node)).await {
+                Ok(outcome) => outcome,
+                Err(_) => Err(DaemonError::TimedOut(format!(
+                    "no answer within {this_attempt:?}"
+                ))),
+            };
             match outcome {
                 Ok(v) => {
                     self.note_success(idx);
@@ -241,13 +259,26 @@ impl PinnedDaemon<'_> {
         F: FnOnce(&'b dyn MoneroDaemonClient) -> Fut,
         Fut: std::future::Future<Output = Result<T, DaemonError>> + 'b,
     {
+        self.one_within(CALL_DEADLINE, call).await
+    }
+
+    /// [`Self::one`] with a deadline of `deadline`.
+    async fn one_within<'b, T, F, Fut>(
+        &'b self,
+        deadline: Duration,
+        call: F,
+    ) -> Result<T, DaemonError>
+    where
+        F: FnOnce(&'b dyn MoneroDaemonClient) -> Fut,
+        Fut: std::future::Future<Output = Result<T, DaemonError>> + 'b,
+    {
         let Some(node) = self.inner.nodes.get(self.idx) else {
             return Err(FallbackDaemonClient::note_all_failed());
         };
-        let outcome = match tokio::time::timeout(CALL_DEADLINE, call(node.client.as_ref())).await {
+        let outcome = match tokio::time::timeout(deadline, call(node.client.as_ref())).await {
             Ok(outcome) => outcome,
-            Err(_) => Err(DaemonError::Request(format!(
-                "no answer within the call's {CALL_DEADLINE:?} deadline"
+            Err(_) => Err(DaemonError::TimedOut(format!(
+                "no answer within the call's {deadline:?} deadline"
             ))),
         };
         match &outcome {
@@ -274,7 +305,28 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
         start_height: u64,
         count: u64,
     ) -> Result<Vec<ChainBlock>, DaemonError> {
-        self.one(|c| c.get_chain_blocks(start_height, count)).await
+        let deadline = self.chain_blocks_timeout(count);
+        self.one_within(deadline, |c| c.get_chain_blocks(start_height, count))
+            .await
+    }
+
+    fn link(&self) -> Option<crate::link::LinkSnapshot> {
+        self.inner.nodes.get(self.idx)?.client.link()
+    }
+
+    fn transfer_rate(&self) -> Option<f64> {
+        self.inner.nodes.get(self.idx)?.client.transfer_rate()
+    }
+
+    /// The pinned node's own timeout, with a moment over it so the node's
+    /// own error (which names it) wins.
+    fn chain_blocks_timeout(&self, count: u64) -> Duration {
+        self.inner
+            .nodes
+            .get(self.idx)
+            .map_or(CALL_DEADLINE, |node| {
+                (node.client.chain_blocks_timeout(count) + DEADLINE_MARGIN).max(CALL_DEADLINE)
+            })
     }
     async fn get_chain_headers(
         &self,
@@ -368,8 +420,35 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         start_height: u64,
         count: u64,
     ) -> Result<Vec<ChainBlock>, DaemonError> {
-        self.failover(|c| c.get_chain_blocks(start_height, count))
-            .await
+        self.failover_within(
+            self.chain_blocks_timeout(count),
+            |node| node.chain_blocks_timeout(count) + DEADLINE_MARGIN,
+            |c| c.get_chain_blocks(start_height, count),
+        )
+        .await
+    }
+
+    /// The node a call would try first.
+    fn link(&self) -> Option<crate::link::LinkSnapshot> {
+        let first = *self.attempt_order().first()?;
+        self.nodes[first].client.link()
+    }
+
+    fn transfer_rate(&self) -> Option<f64> {
+        let first = *self.attempt_order().first()?;
+        self.nodes[first].client.transfer_rate()
+    }
+
+    /// Room for the first two nodes in order to try, each with what its own
+    /// link needs: a primary that times out leaves its fallback a turn.
+    fn chain_blocks_timeout(&self, count: u64) -> Duration {
+        let total: Duration = self
+            .attempt_order()
+            .into_iter()
+            .take(2)
+            .map(|idx| self.nodes[idx].client.chain_blocks_timeout(count) + DEADLINE_MARGIN)
+            .sum();
+        total.max(CALL_DEADLINE)
     }
 
     async fn get_chain_headers(
@@ -1096,6 +1175,111 @@ mod tests {
         ) -> Result<Vec<KeyImageStatus>, DaemonError> {
             std::future::pending().await
         }
+    }
+
+    /// A node whose block requests take `delay` and whose link
+    /// measurements allow `timeout` for them; its block is named `label`.
+    struct SlowLinkClient {
+        label: &'static str,
+        delay: Duration,
+        timeout: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for SlowLinkClient {
+        fn chain_blocks_timeout(&self, _count: u64) -> Duration {
+            self.timeout
+        }
+        async fn get_height(&self) -> Result<u64, DaemonError> {
+            std::future::pending().await
+        }
+        async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
+            std::future::pending().await
+        }
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+            std::future::pending().await
+        }
+        async fn get_chain_blocks(
+            &self,
+            start_height: u64,
+            _count: u64,
+        ) -> Result<Vec<ChainBlock>, DaemonError> {
+            tokio::time::sleep(self.delay).await;
+            Ok(vec![ChainBlock {
+                height: start_height,
+                hash: self.label.to_string(),
+                prev_hash: String::new(),
+                timestamp: 0,
+                txs: Vec::new(),
+                txids: Vec::new(),
+            }])
+        }
+        async fn get_transactions_with_ids(
+            &self,
+            _txids: &[String],
+        ) -> Result<Vec<FetchedTx>, DaemonError> {
+            std::future::pending().await
+        }
+        async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
+            std::future::pending().await
+        }
+        async fn is_key_image_spent(
+            &self,
+            _key_images: &[String],
+        ) -> Result<Vec<KeyImageStatus>, DaemonError> {
+            std::future::pending().await
+        }
+    }
+
+    fn slow_link(label: &'static str, delay_secs: u64, timeout_secs: u64) -> FallbackNode {
+        FallbackNode {
+            label: label.into(),
+            client: Arc::new(SlowLinkClient {
+                label,
+                delay: Duration::from_secs(delay_secs),
+                timeout: Duration::from_secs(timeout_secs),
+            }),
+        }
+    }
+
+    /// A block request gets what each node's link needs
+    /// (docs/engine_scaling.md section 2): a slow primary that will deliver
+    /// within its own timeout isn't cut off at the fixed 15 s, and a primary
+    /// that hangs still leaves its fallback a turn.
+    #[tokio::test(start_paused = true)]
+    async fn a_block_request_gives_each_node_the_time_its_link_needs() {
+        let client = FallbackDaemonClient::new(vec![
+            slow_link("primary", 30, 40),
+            slow_link("fallback", 0, 15),
+        ]);
+        let started = Instant::now();
+        let blocks = client.get_chain_blocks(7, 1).await.unwrap();
+        assert_eq!(
+            blocks[0].hash, "primary",
+            "past 15 s but within its own timeout"
+        );
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
+
+        let client = FallbackDaemonClient::new(vec![
+            slow_link("primary", 3600, 40),
+            slow_link("fallback", 5, 15),
+        ]);
+        assert_eq!(
+            client.chain_blocks_timeout(1),
+            Duration::from_secs(41 + 16),
+            "room for both nodes' own timeouts"
+        );
+        let started = Instant::now();
+        let blocks = client.get_chain_blocks(7, 1).await.unwrap();
+        assert_eq!(blocks[0].hash, "fallback");
+        assert_eq!(started.elapsed(), Duration::from_secs(41 + 5));
+        assert_eq!(client.current_index(), 1, "the fallback answered");
+
+        // Pinned to one node, a block request gets that node's own timeout.
+        let client = FallbackDaemonClient::new(vec![slow_link("only", 50, 55)]);
+        let pinned = client.pin();
+        assert_eq!(pinned.get_chain_blocks(7, 1).await.unwrap()[0].hash, "only");
+        assert_eq!(pinned.chain_blocks_timeout(1), Duration::from_secs(56));
     }
 
     #[tokio::test(start_paused = true)]

@@ -953,20 +953,83 @@ const SCAN_CHUNK_EWMA_ALPHA: f64 = 0.3;
 /// regardless.
 pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = 50_000.0;
 
-/// Pure sizing decision, extracted from `run_scan_tick`'s own loop specifically
-/// so it's directly, cheaply unit-testable - the real behavior lives entirely
-/// in arithmetic over three numbers, and proving "a larger average yields a
-/// smaller chunk" shouldn't require driving real transactions through real
-/// crypto to observe.
-pub(crate) fn next_scan_chunk_size(
-    budget_bytes: u64,
+/// How long one block request should take on a measured link
+/// (docs/engine_scaling.md section 2): long enough that the round trip is a
+/// small part of it, short enough that a round stays responsive.
+pub(crate) const SCAN_CHUNK_TARGET_CALL_SECS: f64 = 4.0;
+
+/// One response's share of the scan memory budget: the raw answer and its
+/// parse copies are held at once, so each answer is kept to a fraction of
+/// what the block cache may hold (docs/engine_scaling.md section 3).
+pub(crate) const RESPONSE_SHARE_OF_BUDGET: u64 = 8;
+
+/// The largest block response to ask for under a `budget_mb` scan budget:
+/// an eighth of it, and never less than 256 kB, so a tiny budget still
+/// fetches whole blocks.
+pub(crate) fn response_cap_bytes(budget_mb: u32) -> u64 {
+    (u64::from(budget_mb) * 1024 * 1024 / RESPONSE_SHARE_OF_BUDGET).max(256 * 1024)
+}
+
+/// What set a chunk's size: the scaling panel's "Chunk" line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChunkLimit {
+    /// The response cap from the scan memory budget.
+    Memory,
+    /// What the node's link delivers in [`SCAN_CHUNK_TARGET_CALL_SECS`].
+    Link,
+    /// [`SCAN_CHUNK_MAX_BLOCKS`].
+    Maximum,
+    /// There were no more blocks to ask for.
+    Remaining,
+}
+
+/// How many blocks to ask for next, and why that many.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChunkPlan {
+    pub blocks: u64,
+    pub limited_by: ChunkLimit,
+}
+
+/// Pure sizing decision, extracted so it's directly, cheaply unit-testable:
+/// the smaller of what fits the response cap and what the link delivers in
+/// a target call, at the running bytes-per-block average, within 1..=500
+/// and the blocks that remain. A link not measured (`None`) doesn't limit.
+pub(crate) fn next_scan_chunk(
+    response_cap_bytes: u64,
+    rate_bytes_per_sec: Option<f64>,
     avg_bytes_per_block: f64,
     remaining: u64,
-) -> u64 {
-    let by_budget = ((budget_bytes as f64) / avg_bytes_per_block).floor() as u64;
-    by_budget
-        .clamp(SCAN_CHUNK_MIN_BLOCKS, SCAN_CHUNK_MAX_BLOCKS)
-        .min(remaining)
+) -> ChunkPlan {
+    let avg = avg_bytes_per_block.max(1.0);
+    let by_memory = (response_cap_bytes as f64 / avg).floor();
+    let by_time = rate_bytes_per_sec.map_or(f64::INFINITY, |rate| {
+        (rate * SCAN_CHUNK_TARGET_CALL_SECS / avg).floor()
+    });
+    let (wanted, mut limited_by) = if by_time < by_memory {
+        (by_time, ChunkLimit::Link)
+    } else {
+        (by_memory, ChunkLimit::Memory)
+    };
+    let mut blocks = if wanted >= SCAN_CHUNK_MAX_BLOCKS as f64 {
+        limited_by = ChunkLimit::Maximum;
+        SCAN_CHUNK_MAX_BLOCKS
+    } else {
+        (wanted as u64).max(SCAN_CHUNK_MIN_BLOCKS)
+    };
+    if remaining < blocks {
+        blocks = remaining.max(SCAN_CHUNK_MIN_BLOCKS).min(blocks);
+        limited_by = ChunkLimit::Remaining;
+    }
+    ChunkPlan { blocks, limited_by }
+}
+
+/// The bytes-per-block estimate after a block request that ran out of time
+/// or came back too large: doubled, so the next request asks for half as
+/// many blocks (docs/engine_scaling.md section 2). Successes bring it back
+/// down through [`update_avg_bytes_per_block`].
+pub(crate) fn avg_after_failed_fetch(avg_bytes_per_block: f64) -> f64 {
+    (avg_bytes_per_block * 2.0).min(1e12)
 }
 
 /// Pure EWMA update, same reasoning as `next_scan_chunk_size` above - `chunk_
@@ -6984,47 +7047,91 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn next_scan_chunk_size_shrinks_as_the_observed_average_grows() {
-        // The actual claim behind "dynamic, memory-budget-based chunk sizing"
-        // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A), proven directly
-        // against the pure sizing function rather than by driving real
-        // transactions through real crypto to observe it indirectly - a fast,
-        // precise unit test where an end-to-end one would need thousands of
-        // scanned outputs just to move the needle.
-        let budget_bytes = 8 * 1024 * 1024;
-        let small_block_chunk = next_scan_chunk_size(budget_bytes, 1_000.0, u64::MAX);
-        let medium_block_chunk = next_scan_chunk_size(budget_bytes, 100_000.0, u64::MAX);
-        let large_block_chunk = next_scan_chunk_size(budget_bytes, 10_000_000.0, u64::MAX);
-        assert!(
-            small_block_chunk > medium_block_chunk,
-            "1KB-average blocks ({small_block_chunk}) should fit far more per chunk than 100KB-average ones \
-             ({medium_block_chunk})"
+    fn a_larger_average_block_asks_for_fewer_blocks() {
+        let cap = 8 * 1024 * 1024;
+        let small = next_scan_chunk(cap, None, 1_000.0, u64::MAX);
+        let medium = next_scan_chunk(cap, None, 100_000.0, u64::MAX);
+        let large = next_scan_chunk(cap, None, 10_000_000.0, u64::MAX);
+        assert_eq!(
+            small,
+            ChunkPlan {
+                blocks: SCAN_CHUNK_MAX_BLOCKS,
+                limited_by: ChunkLimit::Maximum
+            }
         );
-        assert!(
-            medium_block_chunk > large_block_chunk,
-            "100KB-average blocks ({medium_block_chunk}) should still fit more per chunk than 10MB-average ones \
-             ({large_block_chunk})"
+        assert_eq!(
+            medium,
+            ChunkPlan {
+                blocks: 83,
+                limited_by: ChunkLimit::Memory
+            }
+        );
+        assert_eq!(
+            large,
+            ChunkPlan {
+                blocks: 1,
+                limited_by: ChunkLimit::Memory
+            },
+            "never fewer than one"
         );
     }
 
     #[test]
-    fn next_scan_chunk_size_respects_its_own_bounds() {
-        let budget_bytes = 8 * 1024 * 1024;
-        // An average so small it would otherwise compute a chunk far larger
-        // than `SCAN_CHUNK_MAX_BLOCKS` - the backstop `RESCAN_CHUNK_MAX_BLOCKS`'s
-        // own doc comment names (an older node ignoring `max_block_count`).
+    fn a_slow_link_asks_for_what_it_delivers_in_a_target_call() {
+        let cap = 8 * 1024 * 1024;
+        // 250 kB/s for 4 s at 50 kB a block: 20 blocks, where the cap
+        // would allow 167.
         assert_eq!(
-            next_scan_chunk_size(budget_bytes, 1.0, u64::MAX),
-            SCAN_CHUNK_MAX_BLOCKS
+            next_scan_chunk(cap, Some(250_000.0), 50_000.0, u64::MAX),
+            ChunkPlan {
+                blocks: 20,
+                limited_by: ChunkLimit::Link
+            }
         );
-        // An average so large it would otherwise compute a chunk of `0`, which
-        // must never happen (it would stall the catch-up walk forever).
+        // A fast link doesn't lift the cap.
         assert_eq!(
-            next_scan_chunk_size(budget_bytes, f64::MAX, u64::MAX),
-            SCAN_CHUNK_MIN_BLOCKS
+            next_scan_chunk(cap, Some(1e9), 50_000.0, u64::MAX),
+            ChunkPlan {
+                blocks: 167,
+                limited_by: ChunkLimit::Memory
+            }
         );
-        // Never larger than what's actually left to scan, regardless of budget.
-        assert_eq!(next_scan_chunk_size(budget_bytes, 1.0, 3), 3);
+        // A link too slow for one block in a target call still gets one.
+        assert_eq!(
+            next_scan_chunk(cap, Some(1_000.0), 50_000.0, u64::MAX).blocks,
+            1
+        );
+    }
+
+    #[test]
+    fn a_chunk_stops_at_what_remains() {
+        assert_eq!(
+            next_scan_chunk(8 << 20, None, 1.0, 3),
+            ChunkPlan {
+                blocks: 3,
+                limited_by: ChunkLimit::Remaining
+            }
+        );
+        assert_eq!(next_scan_chunk(8 << 20, None, f64::MAX, u64::MAX).blocks, 1);
+    }
+
+    #[test]
+    fn a_failed_fetch_halves_the_next_one() {
+        let cap = 8 * 1024 * 1024;
+        let mut avg = 50_000.0;
+        let mut sizes = Vec::new();
+        for _ in 0..10 {
+            sizes.push(next_scan_chunk(cap, None, avg, u64::MAX).blocks);
+            avg = avg_after_failed_fetch(avg);
+        }
+        assert_eq!(sizes, [167, 83, 41, 20, 10, 5, 2, 1, 1, 1]);
+    }
+
+    #[test]
+    fn the_response_cap_is_an_eighth_of_the_budget_and_at_least_256_kb() {
+        assert_eq!(response_cap_bytes(8), 1024 * 1024);
+        assert_eq!(response_cap_bytes(1), 256 * 1024);
+        assert_eq!(response_cap_bytes(4096), 512 * 1024 * 1024);
     }
 
     #[test]

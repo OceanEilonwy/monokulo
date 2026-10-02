@@ -85,11 +85,79 @@ impl ScannedBlock {
     }
 }
 
-/// Kept across rounds: whose turn it is while the frontier is behind. Across
-/// rounds, not per round, so a round with time for one unit alternates too.
+/// Kept across rounds: whose turn it is while the frontier is behind, and
+/// how big block requests are. Across rounds, not per round, so a round
+/// with time for one unit alternates too, and a request halved after a
+/// failure stays halved in the next round.
 #[derive(Default)]
 pub(crate) struct BlockState {
     catch_up_turn: AtomicBool,
+    sizing: parking_lot::Mutex<Sizing>,
+}
+
+/// What block requests are sized from (docs/engine_scaling.md section 2).
+pub(crate) struct Sizing {
+    /// Running average of a block's size, from what was fetched; doubled
+    /// after a request that ran out of time or came back too large.
+    avg_bytes_per_block: f64,
+    /// The last request's plan: for the status page.
+    last_chunk: Option<crate::scanner::ChunkPlan>,
+}
+
+impl Default for Sizing {
+    fn default() -> Self {
+        Sizing {
+            avg_bytes_per_block: crate::scanner::SCAN_CHUNK_INITIAL_AVG_BYTES,
+            last_chunk: None,
+        }
+    }
+}
+
+impl BlockState {
+    /// How many blocks to ask for from `from`, up to `end`.
+    fn plan(&self, round: &Round<'_>, from: u64, end: u64) -> crate::scanner::ChunkPlan {
+        let mut sizing = self.sizing.lock();
+        let plan = crate::scanner::next_scan_chunk(
+            crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
+            round.inputs.daemon.transfer_rate(),
+            sizing.avg_bytes_per_block,
+            end.saturating_sub(from) + 1,
+        );
+        sizing.last_chunk = Some(plan);
+        plan
+    }
+
+    /// A fetched run of `blocks` blocks totalling `bytes`.
+    fn note_fetched(&self, bytes: usize, blocks: usize) {
+        if blocks == 0 {
+            return;
+        }
+        let mut sizing = self.sizing.lock();
+        sizing.avg_bytes_per_block =
+            crate::scanner::update_avg_bytes_per_block(sizing.avg_bytes_per_block, bytes, blocks);
+    }
+
+    /// A block request that failed: one that ran out of time or came back
+    /// too large halves the next.
+    fn note_failed(&self, error: &ScannerError) {
+        if matches!(error, ScannerError::Daemon(e) if e.asks_for_less()) {
+            let mut sizing = self.sizing.lock();
+            sizing.avg_bytes_per_block =
+                crate::scanner::avg_after_failed_fetch(sizing.avg_bytes_per_block);
+        }
+    }
+}
+
+/// Fetches `count` blocks from `from`, given the time the node's link needs
+/// for that many (docs/engine_scaling.md section 2).
+async fn fetch_chunk(
+    daemon: &dyn crate::daemon::MoneroDaemonClient,
+    from: u64,
+    count: u64,
+) -> Result<Vec<ChainBlock>, ScannerError> {
+    let deadline = (daemon.chain_blocks_timeout(count) + crate::daemon_fallback::DEADLINE_MARGIN)
+        .max(super::CALL_DEADLINE);
+    super::bounded_by(deadline, daemon.get_chain_blocks(from, count)).await
 }
 
 #[derive(Default)]
@@ -167,20 +235,10 @@ impl Rotation {
 /// Blocks fetched this round, bounded by the scan memory budget. Each block
 /// carries its own id, so a cached body can never be paired with another
 /// block's hash; the cache is still per round, so nothing stale is kept.
+#[derive(Default)]
 struct BlockCache {
     blocks: BTreeMap<u64, (Arc<ChainBlock>, usize)>,
     bytes: usize,
-    avg_bytes_per_block: f64,
-}
-
-impl Default for BlockCache {
-    fn default() -> Self {
-        Self {
-            blocks: BTreeMap::new(),
-            bytes: 0,
-            avg_bytes_per_block: crate::scanner::SCAN_CHUNK_INITIAL_AVG_BYTES,
-        }
-    }
 }
 
 impl BlockCache {
@@ -410,6 +468,7 @@ async fn advance_group(
         }
         let prefetch = prefetch_range(round, cursor + 2, end);
         let daemon = round.inputs.daemon;
+        let state = round.state;
         let task = BlockTask {
             group,
             parent: cursor,
@@ -420,16 +479,22 @@ async fn advance_group(
         };
         let (outcome, prefetched) = tokio::join!(scan_block(round, task), async {
             match prefetch {
-                Some((from, count)) => bounded(daemon.get_chain_blocks(from, count)).await.ok(),
+                Some((from, count)) => Some(fetch_chunk(daemon, from, count).await),
                 None => None,
             }
         });
-        if let Some(chunk) = prefetched {
-            round.blocks.cache.add_chunk(
-                chunk,
-                cursor + 2,
-                round.inputs.scan_chunk_memory_budget_mb,
-            );
+        match prefetched {
+            Some(Ok(chunk)) => {
+                round.blocks.cache.add_chunk(
+                    chunk,
+                    cursor + 2,
+                    round.inputs.scan_chunk_memory_budget_mb,
+                    &state.blocks,
+                );
+            }
+            // A failed prefetch is asked for again when it's needed.
+            Some(Err(e)) => state.blocks.note_failed(&e),
+            None => {}
         }
         match outcome? {
             BlockOutcome::Committed => {
@@ -901,11 +966,7 @@ fn prefetch_range(round: &Round<'_>, next: u64, end: u64) -> Option<(u64, u64)> 
     if next > end || cache.blocks.contains_key(&next) || !cache.blocks.contains_key(&(next - 1)) {
         return None;
     }
-    let budget = u64::from(round.inputs.scan_chunk_memory_budget_mb).saturating_mul(1024 * 1024);
-    Some((
-        next,
-        crate::scanner::next_scan_chunk_size(budget, cache.avg_bytes_per_block, end - next + 1),
-    ))
+    Some((next, round.state.blocks.plan(round, next, end).blocks))
 }
 
 impl BlockCache {
@@ -916,6 +977,7 @@ impl BlockCache {
         chunk: Vec<ChainBlock>,
         keep: u64,
         budget_mb: u32,
+        state: &BlockState,
     ) -> Option<Arc<ChainBlock>> {
         if chunk.is_empty() {
             return None;
@@ -929,11 +991,7 @@ impl BlockCache {
                     .sum()
             })
             .collect();
-        self.avg_bytes_per_block = crate::scanner::update_avg_bytes_per_block(
-            self.avg_bytes_per_block,
-            sizes.iter().sum(),
-            chunk.len(),
-        );
+        state.note_fetched(sizes.iter().sum(), chunk.len());
         let mut kept = None;
         for (block, bytes) in chunk.into_iter().zip(sizes) {
             let block = self.insert(block, bytes);
@@ -961,18 +1019,25 @@ async fn block(
     if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
         return Ok(block.clone());
     }
-    let budget = u64::from(round.inputs.scan_chunk_memory_budget_mb).saturating_mul(1024 * 1024);
-    let count = crate::scanner::next_scan_chunk_size(
-        budget,
-        round.blocks.cache.avg_bytes_per_block,
-        end.saturating_sub(height) + 1,
-    );
-    let chunk = bounded(round.inputs.daemon.get_chain_blocks(height, count)).await?;
+    let count = round.state.blocks.plan(round, height, end).blocks;
+    let chunk = match fetch_chunk(round.inputs.daemon, height, count).await {
+        Ok(chunk) => chunk,
+        Err(e) => {
+            round.state.blocks.note_failed(&e);
+            return Err(e);
+        }
+    };
     // The block asked for is never evicted by its own fetch.
+    let state = round.state;
     round
         .blocks
         .cache
-        .add_chunk(chunk, height, round.inputs.scan_chunk_memory_budget_mb)
+        .add_chunk(
+            chunk,
+            height,
+            round.inputs.scan_chunk_memory_budget_mb,
+            &state.blocks,
+        )
         .ok_or_else(|| {
             ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
                 "the node returned no block at height {height}"
