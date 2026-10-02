@@ -305,6 +305,10 @@ pub struct NodeStatusView {
     pub in_use: bool,
     /// Skipped for a while after failing.
     pub resting: bool,
+    /// How many blocks it is behind the highest of its network's nodes.
+    pub behind: Option<u64>,
+    /// What the engine measured of its link.
+    pub link: Option<super::scaling::NodeLinkView>,
 }
 
 /// One node row on the Monero nodes tab.
@@ -334,6 +338,8 @@ pub struct AdminNetworkFieldView {
     /// Why the engine refused this network's nodes (a node on another
     /// network), shown at the top of its block.
     pub error: Option<String>,
+    /// How its block scan is going, from the engine's `/status`.
+    pub scaling: Option<shared::scaling::NetworkScaling>,
 }
 
 /// A banner shown at the top of the page after a save (task 4.5).
@@ -510,6 +516,8 @@ pub struct AdminSettingsViewModel {
     /// Networks stores use that no node answers for, as far as monokulo
     /// knows (the engine's `/status`): the Monero nodes tab is marked.
     pub unreachable_networks: Vec<String>,
+    /// Both processes' CPU and memory, on the Monero nodes tab only.
+    pub resources: Option<super::scaling::ResourcesView>,
 }
 
 /// The id of a setting's control, which its label and help point at.
@@ -1002,7 +1010,14 @@ fn node_status(status: &NodeStatusView) -> Markup {
     if let Some(network) = &status.wrong_network {
         parts.push(format!("Wrong network: this node is on {network}"));
     } else if let Some(height) = status.height {
-        parts.push(format!("Reachable, height {}", thousands(height)));
+        match status.behind.filter(|behind| *behind > 0) {
+            Some(behind) => parts.push(format!(
+                "Reachable, height {} ({} behind)",
+                thousands(height),
+                thousands(behind)
+            )),
+            None => parts.push(format!("Reachable, height {}", thousands(height))),
+        }
     } else if let Some(error) = &status.error {
         parts.push(format!("Not reachable: {error}"));
     }
@@ -1016,6 +1031,7 @@ fn node_status(status: &NodeStatusView) -> Markup {
         @if !parts.is_empty() {
             p class=(if problem { "node-status is-problem" } else { "node-status" }) { (parts.join(". ")) "." }
         }
+        @if let Some(link) = &status.link { (super::scaling::link_figures(link)) }
     }
 }
 
@@ -1129,6 +1145,9 @@ fn network_block(network: &AdminNetworkFieldView) -> Markup {
             section class="node-network" data-network=(n) data-tenant-count=(network.tenant_count) aria-labelledby=(format!("node-network-{n}")) {
                 h3 id=(format!("node-network-{n}")) { (capitalized(n)) }
                 (used_by)
+                @if let Some(scaling) = &network.scaling {
+                    (super::scaling::scanning_panel(n, scaling, active_node(network)))
+                }
                 (rows)
             }
         } @else {
@@ -1139,6 +1158,21 @@ fn network_block(network: &AdminNetworkFieldView) -> Markup {
             }
         }
     }
+}
+
+/// The node a network's scan reads from, with its measured rate.
+fn active_node(network: &AdminNetworkFieldView) -> Option<super::scaling::ActiveNode<'_>> {
+    network.rows.iter().find_map(|row| {
+        let status = row.status.as_ref().filter(|status| status.in_use)?;
+        Some(super::scaling::ActiveNode {
+            label: &row.label,
+            rate_bytes_per_sec: status
+                .link
+                .as_ref()
+                .filter(|link| link.link.measured)
+                .map(|link| link.link.rate_bytes_per_sec),
+        })
+    })
 }
 
 /// The Monero nodes tab's fields: a block per network.
@@ -1206,6 +1240,9 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
             @if tab.engine_only() && !engine_available(data) {
                 (engine_unavailable(data))
             } @else {
+                @if let (SettingsTab::Nodes, Some(resources)) = (tab, &data.resources) {
+                    (super::scaling::resources_panel(resources, &tab.href()))
+                }
                 form method="post" action="/dashboard/admin/settings" id="settings-form"
                     fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#settings-panel" {
                     input type="hidden" name="tab" value=(tab.id());
@@ -1612,6 +1649,7 @@ mod tests {
                     example_address: Some("node.example.com:18089".to_string()),
                     tenant_count: 0,
                     error: None,
+                    scaling: None,
                 })
                 .collect(),
             ..Default::default()
@@ -2016,6 +2054,94 @@ mod tests {
         assert!(form.find(r#"<button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Save</button>"#).unwrap() < form.find(r#"name="node_action""#).unwrap());
     }
 
+    /// The Monero nodes tab shows how the engine performs beside the
+    /// settings each figure describes (docs/engine_scaling.md section 6):
+    /// Resources at the top, a Scanning panel per network, and each node's
+    /// lag and link.
+    #[test]
+    fn the_nodes_tab_shows_resources_scanning_and_each_nodes_link() {
+        let mut data = full_view(SettingsTab::Nodes);
+        let report = shared::resources::ResourceReport {
+            host_id: "boot".into(),
+            cpu_count: 2,
+            machine_memory_bytes: Some(4_000_000_000),
+            cgroup_memory_bytes: None,
+            samples: vec![],
+        };
+        data.resources = Some(crate::views::scaling::ResourcesView {
+            engine: Some(report.clone()),
+            monokulo: report,
+            now_unix: 1_800_000_000,
+        });
+        let network = &mut data.engine_networks[0];
+        network.scaling = Some(shared::scaling::NetworkScaling {
+            scan: shared::scaling::ScanReport {
+                avg_block_bytes: 0,
+                block_size_trend: shared::scaling::Trend::Steady,
+                last_chunk: None,
+                blocks_per_minute: 0.0,
+                fetch_secs_recent: 0.0,
+                scan_secs_recent: 0.0,
+                largest_recent: None,
+                in_progress: None,
+                in_progress_secs: None,
+                peak_cache_bytes: None,
+            },
+            blocks_behind: 3,
+            catch_up_secs: None,
+            pace: shared::scaling::Pace::Link,
+            budget_mb: 256,
+            max_budget_mb: None,
+            round_deadline_secs: 10,
+            round_base_secs: 10,
+            slow: None,
+        });
+        network.rows[0].status = Some(NodeStatusView {
+            height: Some(1_000),
+            behind: Some(2),
+            in_use: true,
+            link: Some(crate::views::scaling::NodeLinkView {
+                link: shared::scaling::LinkSnapshot {
+                    measured: true,
+                    rtt_ms: 80,
+                    ttfb_per_block_ms: 20,
+                    rate_bytes_per_sec: 1_250_000,
+                    bytes_per_block: 50_000,
+                    last_measured_unix: Some(1_800_000_000),
+                    timeouts_last_hour: 0,
+                    failures_last_hour: 0,
+                    history: vec![],
+                },
+                now_unix: 1_800_000_000,
+            }),
+            ..Default::default()
+        });
+        let html = page(&data);
+        let resources = html.find(r#"<h3 id="resources-title">Resources</h3>"#);
+        let form = html.find(r#"id="settings-form""#);
+        assert!(
+            resources.is_some() && resources < form,
+            "Resources comes first: {html}"
+        );
+        assert!(
+            html.contains("Reachable, height 1,000 (2 behind). In use."),
+            "{html}"
+        );
+        assert!(
+            html.contains("Transfer <strong>10.0 Mbit/s</strong>"),
+            "{html}"
+        );
+        assert!(html.contains(r#"data-scanning="mainnet""#), "{html}");
+        assert!(
+            html.contains("Link speed: node.example.com:18081 at 10.0 Mbit/s."),
+            "the pace names the node in use: {html}"
+        );
+
+        // Other tabs don't carry it.
+        data.tab = SettingsTab::Server;
+        assert!(!page(&data).contains("resources-title"));
+    }
+
     #[test]
     fn a_nodes_status_is_said_in_words() {
         let mut data = full_view(SettingsTab::Nodes);
@@ -2023,6 +2149,7 @@ mod tests {
             NodeStatusView {
                 height: Some(1_234_567),
                 in_use: true,
+                behind: Some(0),
                 ..Default::default()
             },
             NodeStatusView {

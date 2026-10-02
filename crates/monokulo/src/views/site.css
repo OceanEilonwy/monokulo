@@ -103,6 +103,8 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
   padding: var(--space-sm) var(--space-md);
   margin: 1em 0;
 }
+/* A block taking us over two minutes: slow, not broken (docs/engine_scaling.md section 5). */
+.notice.slow-block { background: var(--tint-warning); border-color: var(--warning); }
 .setting-field { margin: 0 0 1.1em; }
 /* A setting reads name, what it's for, then its control. */
 .setting-field .setting-label { display: block; margin: 0.9em 0 0.15em; font-weight: 700; }
@@ -130,6 +132,38 @@ details.node-network > summary { cursor: pointer; font-weight: 700; }
 .node-status { margin: var(--space-xs) 0; color: var(--muted); }
 .node-status.is-problem { color: var(--error); }
 .node-row-actions button { margin-top: var(--space-xs); }
+/* How the engine is performing (`views::scaling`): the Resources panel's
+   stacked charts, each node's link figures, each network's Scanning panel. */
+.resources { border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); margin: var(--space-md) 0; }
+.resources h3 { margin-top: 0; }
+.resource { margin: var(--space-sm) 0; }
+.resource-figure { margin: 0 0 var(--space-xs); }
+.resource-chart { display: block; width: 100%; height: 5rem; background: var(--surface-sunken); border-radius: var(--radius-sm); }
+.chart-layer.chart-engine { fill: var(--chart-engine); }
+.chart-layer.chart-monokulo { fill: var(--chart-monokulo); }
+.chart-limit { stroke-width: 1.5; stroke-dasharray: 4 3; }
+.chart-limit.chart-engine { stroke: var(--chart-engine); }
+.chart-limit.chart-monokulo { stroke: var(--chart-monokulo); }
+.chart-hover { fill: transparent; }
+.chart-hover:hover { fill: var(--line); fill-opacity: 0.5; }
+.chart-axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.8em; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: var(--space-md); list-style: none; padding: 0; margin: var(--space-xs) 0; }
+.chart-swatch { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 2px; margin-right: 0.35em; vertical-align: -0.05em; }
+.chart-swatch.chart-engine { background: var(--chart-engine); }
+.chart-swatch.chart-monokulo { background: var(--chart-monokulo); }
+.node-link { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-md); list-style: none; padding: 0; margin: var(--space-xs) 0; }
+.sparkline { width: 4rem; height: 1rem; vertical-align: middle; fill: none; stroke: var(--chart-engine); stroke-width: 1.5; }
+.sparkline polyline { vector-effect: non-scaling-stroke; }
+.sparkline circle { fill: var(--chart-engine); stroke: none; }
+.scanning { border-left: 3px solid var(--line); padding-left: var(--space-md); margin: var(--space-sm) 0 var(--space-md); }
+.scanning h4 { margin: 0 0 var(--space-xs); }
+.scan-figures { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); margin: 0; }
+.scan-figures dt { color: var(--muted); }
+.scan-figures dd { margin: 0; min-width: 0; }
+@media (max-width: 30rem) {
+  .scan-figures { grid-template-columns: 1fr; }
+  .scan-figures dd { margin-bottom: var(--space-xs); }
+}
 /* Controls that only work with JavaScript. */
 html:not(.js) .js-only { display: none; }
 /* Read out, not shown: words that go with something only visible. */
@@ -391,6 +425,7 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .tag-unknown { background: var(--tint-neutral); }
 .tag-syncing { background: var(--accent); color: var(--accent-ink); }
 .tag-stalled { background: var(--tint-warning); }
+.tag-slow { background: var(--tint-warning); }
 /* An order's status, the same everywhere it's shown: the checkout, the POS
    and the dashboard (`views::state_badge`). Each `.state-*` names its colour
    set; `.tag` and the POS's own badges and cards paint with it. */
