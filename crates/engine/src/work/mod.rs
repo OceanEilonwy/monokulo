@@ -11,7 +11,7 @@ mod blocks;
 pub(crate) mod chain;
 mod mempool;
 mod settlement;
-pub mod tuning;
+mod tuning;
 mod upkeep;
 
 use std::collections::HashMap;

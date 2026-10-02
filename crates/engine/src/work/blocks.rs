@@ -722,9 +722,9 @@ async fn seed(round: &mut Round<'_>, tip: u64) -> Result<Progress, ScannerError>
     }
 }
 
-/// Makes up to the tuning's `blocks_per_unit` block scans for the group at `cursor`, one
-/// after another, as far as its time allows (always at least one step of
-/// progress). The frontier stops at the tip; catch-up stops at the
+/// Makes up to the tuning's `blocks_per_unit` block scans for the group at
+/// `cursor`, one after another, as far as its time allows (always at least
+/// one step of progress). The frontier stops at the tip; catch-up stops at the
 /// network's high-water mark, where it joins the frontier. Returns the
 /// cursor the group reached, and whether it stopped at a block that doesn't
 /// extend the recorded chain.
@@ -1443,9 +1443,9 @@ struct ScanAt<'s> {
 }
 
 /// Scans transactions `offset..offset + txs.len()` of the block for every
-/// tenant still due them, the tuning's `txs_per_scan` at a time. `false` if the unit's
-/// time ran out first (once it had made progress): the caller writes down
-/// how far each tenant got.
+/// tenant still due them, the tuning's `txs_per_scan` at a time. `false` if
+/// the unit's time ran out first (once it had made progress): the caller
+/// writes down how far each tenant got.
 async fn scan_txs(
     round: &Round<'_>,
     scan: &mut BlockScan,

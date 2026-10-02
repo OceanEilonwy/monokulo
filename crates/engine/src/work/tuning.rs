@@ -40,8 +40,14 @@ impl TierShares {
         }
     }
 
-    const fn total(&self) -> u32 {
-        self.chain + self.blocks + self.mempool + self.settlement + self.upkeep
+    /// The shares added up, wide enough that no five `u32`s wrap round to
+    /// 100.
+    const fn total(&self) -> u64 {
+        self.chain as u64
+            + self.blocks as u64
+            + self.mempool as u64
+            + self.settlement as u64
+            + self.upkeep as u64
     }
 }
 
@@ -113,7 +119,7 @@ pub struct ScanTuning {
     /// would allow an enormous request then, and an older monerod ignoring
     /// `get_blocks.bin`'s own `max_block_count` hint has no other backstop.
     pub chunk_max_blocks: u64,
-    /// How strongly a fetched run's own bytes a block move the running
+    /// How strongly a fetched run's own bytes per block move the running
     /// average: 0.3 follows a real shift in block size within a handful of
     /// runs without one odd run (a giant consolidation transaction, a run of
     /// empty blocks) swinging the next request.
@@ -135,10 +141,11 @@ pub struct ScanTuning {
 pub enum TuningError {
     SharesNotWholeRound,
     NoRound,
+    ShareTooSmall,
     RoundOverMaximum,
     RaisedRoundSlow,
     HeadersOverOneRequest,
-    WholeBlockSlow,
+    WholeBlockOutOfRange,
     ZeroCount,
     AlphaOutOfRange,
 }
@@ -148,6 +155,9 @@ impl TuningError {
         match self {
             TuningError::SharesNotWholeRound => "tier shares must cover the whole round",
             TuningError::NoRound => "a round must have some time",
+            TuningError::ShareTooSmall => {
+                "the blocks, mempool and settlement shares must each be some time: each is a call's deadline"
+            }
             TuningError::RoundOverMaximum => {
                 "the round must not exceed the most it may be raised to"
             }
@@ -155,8 +165,8 @@ impl TuningError {
                 "a raised round must not by itself make a block count as slow"
             }
             TuningError::HeadersOverOneRequest => "a headers fetch must be one request",
-            TuningError::WholeBlockSlow => {
-                "a block fetched whole must be able to finish before it counts as slow"
+            TuningError::WholeBlockOutOfRange => {
+                "a block's whole-fetch limit must be above 0 s and let it finish before it counts as slow"
             }
             TuningError::ZeroCount => {
                 "page, unit, batch, concurrency and request sizes must be at least one"
@@ -232,8 +242,9 @@ impl ScanTuning {
     /// about as busy as it would be with larger requests. Larger requests
     /// would only spread the fixed round trip over more bytes.
     ///
-    /// On a fast link this limit rarely applies: the response cap (an
-    /// eighth of `payment.scan_chunk_memory_budget_mb`, 1 MB at the default
+    /// On a fast link this limit rarely applies: the response cap (one
+    /// `response_share_of_budget`th of `payment.scan_chunk_memory_budget_mb`,
+    /// an eighth by default, so 1 MB at the default
     /// 8 MB) binds first. The link limit takes over below the cap divided by
     /// this many seconds, about 2 Mbit/s at the default budget. Slow nodes,
     /// Tor nodes and large budgets all fall below that.
@@ -301,6 +312,11 @@ impl ScanTuning {
             Err(TuningError::SharesNotWholeRound)
         } else if self.round_budget.is_zero() {
             Err(TuningError::NoRound)
+        } else if self.reserved(Tier::Blocks).is_zero()
+            || self.reserved(Tier::Mempool).is_zero()
+            || self.reserved(Tier::Settlement).is_zero()
+        {
+            Err(TuningError::ShareTooSmall)
         } else if self.round_budget.as_nanos() > self.max_round_budget.as_nanos() {
             Err(TuningError::RoundOverMaximum)
         } else if self.max_round_budget.as_secs() > slow_secs
@@ -311,9 +327,10 @@ impl ScanTuning {
         } else if self.headers_per_fetch > crate::daemon_rpc::MAX_HEADERS_PER_REQUEST {
             Err(TuningError::HeadersOverOneRequest)
         } else if self.whole_block_max_secs.is_nan()
+            || self.whole_block_max_secs <= 0.0
             || self.whole_block_max_secs >= slow_secs as f64
         {
-            Err(TuningError::WholeBlockSlow)
+            Err(TuningError::WholeBlockOutOfRange)
         } else if self.group_page == 0
             || self.blocks_per_unit == 0
             || self.txs_per_scan == 0
@@ -395,6 +412,7 @@ mod tests {
         assert_eq!(t.response_cap_bytes(1), 256 * 1024);
         assert_eq!(t.response_cap_bytes(4096), 512 * mb);
         assert_eq!(t.group_response_cap_bytes(8, 1), mb, "the cap binds first");
+        assert_eq!(t.group_response_cap_bytes(8, 8), mb, "the share is the cap");
         assert_eq!(
             t.group_response_cap_bytes(8, 0),
             mb,
@@ -439,6 +457,66 @@ mod tests {
             refused(ScanTuning { shares, ..d }),
             TuningError::SharesNotWholeRound
         );
+        // Shares that would wrap a `u32` round to 100.
+        let wrapping = TierShares {
+            chain: u32::MAX,
+            blocks: 101,
+            mempool: 0,
+            settlement: 0,
+            upkeep: 0,
+        };
+        assert_eq!(
+            refused(ScanTuning {
+                shares: wrapping,
+                ..d
+            }),
+            TuningError::SharesNotWholeRound
+        );
+        // A share that is a call's deadline can't be nothing: not by a zero
+        // percentage, nor by a round too short to share out.
+        for shares in [
+            TierShares {
+                blocks: 0,
+                chain: 60,
+                ..d.shares
+            },
+            TierShares {
+                mempool: 0,
+                chain: 35,
+                ..d.shares
+            },
+            TierShares {
+                settlement: 0,
+                chain: 40,
+                ..d.shares
+            },
+        ] {
+            assert_eq!(
+                refused(ScanTuning { shares, ..d }),
+                TuningError::ShareTooSmall
+            );
+        }
+        assert_eq!(
+            refused(ScanTuning {
+                round_budget: Duration::from_nanos(1),
+                ..d
+            }),
+            TuningError::ShareTooSmall
+        );
+        let no_chain = TierShares {
+            chain: 0,
+            upkeep: 25,
+            ..d.shares
+        };
+        assert_eq!(
+            ScanTuning {
+                shares: no_chain,
+                ..d
+            }
+            .validate(),
+            Ok(()),
+            "a share that is no call's deadline may be nothing: the tier still runs a unit"
+        );
         assert_eq!(
             refused(ScanTuning {
                 round_budget: Duration::ZERO,
@@ -481,15 +559,17 @@ mod tests {
                 whole_block_max_secs: 120.0,
                 ..d
             }),
-            TuningError::WholeBlockSlow
+            TuningError::WholeBlockOutOfRange
         );
-        assert_eq!(
-            refused(ScanTuning {
-                whole_block_max_secs: f64::NAN,
-                ..d
-            }),
-            TuningError::WholeBlockSlow
-        );
+        for limit in [f64::NAN, 0.0, -1.0] {
+            assert_eq!(
+                refused(ScanTuning {
+                    whole_block_max_secs: limit,
+                    ..d
+                }),
+                TuningError::WholeBlockOutOfRange
+            );
+        }
         for t in [
             ScanTuning { group_page: 0, ..d },
             ScanTuning {

@@ -102,8 +102,8 @@ timeout  = clamp(3 × expected, 15 s, 10 min)
   request. One block request is therefore the smallest delay the Blocks
   tier can cause the mempool, settlement and upkeep tiers. `target_call`
   is the Blocks tier's share, 40 % of 10 s, and the code derives it from
-  the scanner's tuning (`ScanTuning::target_call_secs`). A limit in bytes alone would
-  be milliseconds on a LAN node and minutes over Tor.
+  the scanner's tuning (`ScanTuning::target_call_secs`). A limit in bytes
+  alone would be milliseconds on a LAN node and minutes over Tor.
   The limit doesn't cap throughput. A round that ends with blocks left is
   followed at once by the next, so a slow link stays about as busy as it
   would with larger requests, which would only spread the round trip over

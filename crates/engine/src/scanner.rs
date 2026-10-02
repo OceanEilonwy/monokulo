@@ -10086,6 +10086,67 @@ pub(crate) mod tests {
 
     use std::time::Duration;
 
+    /// A tuning other than the default reaches the calls it sizes: under a
+    /// 5 s round, a slow key-custody backend is given the Blocks share of
+    /// that round (2 s a call), not the default's (4 s), so the same tick
+    /// ends sooner. And a tuning the scanner can't run is refused before any
+    /// round runs.
+    #[tokio::test(start_paused = true)]
+    async fn a_scan_state_runs_the_tuning_it_was_given() {
+        use crate::work::{ScanState, ScanTuning, Tier, TuningError};
+        let five = ScanTuning {
+            round_budget: Duration::from_secs(5),
+            ..ScanTuning::DEFAULT
+        };
+        assert!(matches!(
+            ScanState::default().with_tuning(ScanTuning {
+                group_page: 0,
+                ..five
+            }),
+            Err(TuningError::ZeroCount)
+        ));
+        assert_eq!(ScanState::default().tuning(), &ScanTuning::DEFAULT);
+
+        // A tick in which one store's backend hangs, timed.
+        async fn hung_tick(state: ScanState) -> Duration {
+            let store = Store::open_in_memory().unwrap();
+            let custody = SlowKeyCustody::default();
+            let (a, a_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+            let store = store.into_shared();
+            let tenants = [(a.clone(), a_handle)];
+            let daemon = FakeDaemonClient::new();
+            daemon.push_block("h1", vec![]);
+            daemon.push_block("h2", vec![]);
+            run_scan_tick_with(
+                &state, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+            )
+            .await
+            .unwrap();
+            custody
+                .delays
+                .lock()
+                .insert(a_handle, Duration::from_secs(10 * 60));
+            daemon.push_block("h3", vec![fixture_tx()]);
+            let started = tokio::time::Instant::now();
+            run_scan_tick_with(
+                &state, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8,
+            )
+            .await
+            .unwrap();
+            assert_eq!(cursor_of(&store, a.as_str()), Some(2), "A left behind");
+            started.elapsed()
+        }
+        let state = ScanState::default().with_tuning(five).unwrap();
+        assert_eq!(state.tuning(), &five);
+        let under_five = hung_tick(state).await;
+        let under_default = hung_tick(ScanState::default()).await;
+        assert!(under_five >= five.reserved(Tier::Blocks), "{under_five:?}");
+        assert!(
+            under_five < under_default,
+            "{under_five:?} under a 5 s round, {under_default:?} under the default"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_tenant_whose_backend_answers_slowly_is_left_behind_and_holds_nobody_up() {
         let store = Store::open_in_memory().unwrap();

@@ -395,7 +395,7 @@ async fn scan_and_record(
         txid,
         tx,
         due,
-        &state.tuning,
+        state.tuning(),
         super::Tier::Mempool,
     )
     .await
