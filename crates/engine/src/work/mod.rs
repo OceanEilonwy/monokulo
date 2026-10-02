@@ -308,8 +308,13 @@ pub struct RoundInputs<'a> {
 pub const ROUND_BUDGET: Duration = Duration::from_secs(10);
 
 /// How long one daemon call inside a unit may take before the unit treats
-/// it as failed: the client's own request timeout for small calls.
-pub(crate) const CALL_DEADLINE: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
+/// it as failed: the client's own request timeout for small calls, and a
+/// margin. The client's timer starts a moment after this one, so without
+/// the margin this deadline could fire first and drop the call before the
+/// node's own error (naming the node) came back and its failure was
+/// recorded: the hung node would be pinned again next round.
+pub(crate) const CALL_DEADLINE: Duration =
+    crate::daemon_rpc::REQUEST_TIMEOUT.saturating_add(crate::daemon_fallback::DEADLINE_MARGIN);
 
 /// A daemon (or other) call with [`CALL_DEADLINE`].
 pub(crate) async fn bounded<T, E>(

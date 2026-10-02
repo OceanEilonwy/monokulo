@@ -2080,6 +2080,66 @@ async fn a_call_the_node_never_answers_fails_at_the_deadline() {
     assert_eq!(started.elapsed(), CALL_DEADLINE);
 }
 
+/// A node that never answers, behind a client whose own request timeout
+/// starts once the request is on its way (a moment after the call began),
+/// as `RpcDaemonClient`'s does.
+struct TimesOutItself;
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for TimesOutItself {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::time::sleep(crate::daemon_rpc::REQUEST_TIMEOUT).await;
+        Err(DaemonError::TimedOut("node.example: request timed out".into()))
+    }
+    async fn get_block_hash(&self, _: u64) -> Result<String, DaemonError> {
+        unreachable!()
+    }
+    async fn get_chain_blocks(
+        &self,
+        _: u64,
+        _: u64,
+    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        unreachable!()
+    }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        unreachable!()
+    }
+    async fn get_transactions_with_ids(
+        &self,
+        _: &[String],
+    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+        unreachable!()
+    }
+    async fn locate_transaction(&self, _: &str) -> Result<TxLocation, DaemonError> {
+        unreachable!()
+    }
+    async fn is_key_image_spent(&self, _: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        unreachable!()
+    }
+}
+
+/// A unit's call outlasts the node client's own timeout, so the node's own
+/// error arrives first: it names the node, and the node is put in cooldown
+/// for the next round's pick, rather than the call being dropped unrecorded
+/// and the same hung node pinned again.
+#[tokio::test(start_paused = true)]
+async fn a_hung_node_times_out_by_its_own_clock_and_cools_down() {
+    let client = crate::daemon_fallback::FallbackDaemonClient::new(vec![
+        crate::daemon_fallback::FallbackNode {
+            label: "hung".into(),
+            client: std::sync::Arc::new(TimesOutItself),
+        },
+    ]);
+    let pinned = client.pin();
+    let result = bounded(pinned.get_height()).await;
+    assert!(
+        matches!(result, Err(ScannerError::Daemon(DaemonError::TimedOut(ref m))) if m.contains("node.example")),
+        "{result:?}"
+    );
+    assert!(client.in_cooldown(0), "the failure was recorded against the node");
+}
+
 /// A tier's share follows the round it is a share of: the base round's at
 /// build time, a raised round's when one is raised, and together the shares
 /// cover the round to within a nanosecond a tier.
