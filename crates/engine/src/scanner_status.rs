@@ -18,7 +18,7 @@ use monero::Network;
 /// is the real, honest state before this network has ever ticked even
 /// once - the status page renders that as "never ticked yet" rather than
 /// guessing.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct NetworkScanStatus {
     pub last_tick_started_at: Option<i64>,
     pub last_tick_finished_at: Option<i64>,
@@ -34,6 +34,28 @@ pub struct NetworkScanStatus {
     /// matches anything, rather than that being indistinguishable from a
     /// stuck scanner.
     pub tenants_scanned: usize,
+    /// The block scan's live progress (docs/engine_scaling.md section 6),
+    /// written by the scan as it works.
+    pub progress: crate::scaling::SharedProgress,
+}
+
+impl Default for NetworkScanStatus {
+    fn default() -> Self {
+        NetworkScanStatus {
+            last_tick_started_at: None,
+            last_tick_finished_at: None,
+            last_tick_ok: false,
+            last_error: None,
+            tick_count: 0,
+            tenants_scanned: 0,
+            progress: crate::scaling::new_progress(),
+        }
+    }
+}
+
+/// `network`'s scan progress, made if it has none yet.
+pub fn progress_of(map: &ScannerStatusMap, network: Network) -> crate::scaling::SharedProgress {
+    map.write().entry(network).or_default().progress.clone()
 }
 
 pub type ScannerStatusMap = Arc<RwLock<HashMap<Network, NetworkScanStatus>>>;

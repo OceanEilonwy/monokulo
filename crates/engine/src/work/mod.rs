@@ -386,6 +386,13 @@ impl ScanState {
         }
     }
 
+    /// This state, keeping its block scan's progress in `progress`, which
+    /// `/status` reads (docs/engine_scaling.md section 6).
+    pub fn with_progress(mut self, progress: crate::scaling::SharedProgress) -> Self {
+        self.blocks = blocks::BlockState::with_progress(progress);
+        self
+    }
+
     pub(crate) fn wake_webhooks(&self) {
         self.webhooks.notify_one();
     }

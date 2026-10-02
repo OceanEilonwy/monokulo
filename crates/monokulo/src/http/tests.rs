@@ -1642,6 +1642,7 @@ fn status_with(
         unserved_tenants: unserved,
         key_custody: vec![],
         key_custody_default: None,
+        resources: None,
     }
 }
 

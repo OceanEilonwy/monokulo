@@ -934,7 +934,7 @@ const SCAN_CHUNK_MIN_BLOCKS: u64 = 1;
 /// allow an enormous request in that case, and an older monerod ignoring
 /// `get_blocks.bin`'s own `max_block_count` hint has no other backstop
 /// against that.
-const SCAN_CHUNK_MAX_BLOCKS: u64 = 500;
+pub(crate) const SCAN_CHUNK_MAX_BLOCKS: u64 = 500;
 /// How fast the running average of bytes-per-block reacts to a real chunk's
 /// own observed size - `0.3` weighs recent chunks heavily (so a genuine shift
 /// in block size, e.g. catching up through a period of network congestion,
@@ -967,26 +967,7 @@ pub(crate) fn response_cap_bytes(budget_mb: u32) -> u64 {
     (u64::from(budget_mb) * 1024 * 1024 / RESPONSE_SHARE_OF_BUDGET).max(256 * 1024)
 }
 
-/// What set a chunk's size: the scaling panel's "Chunk" line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChunkLimit {
-    /// The response cap from the scan memory budget.
-    Memory,
-    /// What the node's link delivers in [`SCAN_CHUNK_TARGET_CALL_SECS`].
-    Link,
-    /// [`SCAN_CHUNK_MAX_BLOCKS`].
-    Maximum,
-    /// There were no more blocks to ask for.
-    Remaining,
-}
-
-/// How many blocks to ask for next, and why that many.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ChunkPlan {
-    pub blocks: u64,
-    pub limited_by: ChunkLimit,
-}
+pub use shared::scaling::{ChunkLimit, ChunkPlan};
 
 /// Pure sizing decision, extracted so it's directly, cheaply unit-testable:
 /// the smaller of what fits the response cap and what the link delivers in

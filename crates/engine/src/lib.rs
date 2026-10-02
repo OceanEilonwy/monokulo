@@ -17,6 +17,7 @@ pub mod link;
 pub mod local_admin;
 pub mod loops;
 pub mod network;
+pub mod scaling;
 pub mod scanner;
 pub mod scanner_status;
 pub mod settings;

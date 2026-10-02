@@ -624,6 +624,7 @@ a.order-id { display: inline-block; max-width: 11em; }
 }
 .status-dot-ok { background: var(--success); box-shadow: 0 0 6px 2px color-mix(in srgb, var(--success) 75%, transparent); animation: status-pulse 2s ease-in-out infinite; }
 .status-dot-error { background: var(--error); box-shadow: 0 0 6px 2px color-mix(in srgb, var(--error) 75%, transparent); animation: status-pulse 1.2s ease-in-out infinite; }
+.status-dot-slow { background: var(--warning); box-shadow: 0 0 6px 2px color-mix(in srgb, var(--warning) 75%, transparent); animation: status-pulse 1.2s ease-in-out infinite; }
 .status-dot-unknown { background: var(--muted); box-shadow: none; animation: none; }
 @keyframes status-pulse {
   0%, 100% { opacity: 1; }

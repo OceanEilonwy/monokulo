@@ -99,7 +99,7 @@ const KNOWN_STATUS_MAX_AGE: Duration = Duration::from_secs(300);
 /// it stale starts a background refresh, so the next page (or the
 /// indicator's own poll) sees a fresh answer - which keeps it current for
 /// visitors without JavaScript too.
-pub fn known_health(engine: &Engine) -> Option<bool> {
+pub fn known_health(engine: &Engine) -> Option<views::Health> {
     let mut cache = status_cache(engine);
     let age = cache
         .cached
@@ -131,7 +131,86 @@ pub fn known_health(engine: &Engine) -> Option<bool> {
         .cached
         .as_ref()
         .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)?;
-    Some(is_healthy(&cached.result))
+    Some(health_of(&cached.result))
+}
+
+/// Green, yellow or red: a problem if [`is_healthy`] says so, else slow if
+/// any network has a block that has taken over two minutes
+/// (docs/engine_scaling.md section 5), else fine.
+fn health_of(result: &Result<EngineStatusResponse, String>) -> views::Health {
+    if !is_healthy(result) {
+        return views::Health::Problem;
+    }
+    let slow = result.as_ref().is_ok_and(|status| {
+        status
+            .networks
+            .iter()
+            .any(|n| n.scaling.as_ref().is_some_and(|s| s.slow.is_some()))
+    });
+    if slow {
+        views::Health::Slow
+    } else {
+        views::Health::Ok
+    }
+}
+
+/// The networks with a slow block, as one sentence each
+/// (docs/engine_scaling.md section 5). The node and its rate only for an
+/// operator: anyone else isn't shown node addresses.
+pub fn slow_block_messages(status: &EngineStatusResponse, show_node: bool) -> Vec<String> {
+    status
+        .networks
+        .iter()
+        .filter_map(|n| {
+            let slow = n.scaling.as_ref()?.slow.as_ref()?;
+            Some(slow_block_message(&n.network, slow, show_node))
+        })
+        .collect()
+}
+
+fn slow_block_message(network: &str, slow: &shared::scaling::SlowBlock, show_node: bool) -> String {
+    let mut name = network.to_string();
+    if let Some(first) = name.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    let size = slow
+        .wire_bytes
+        .map(|bytes| format!(" ({})", views::scaling::bytes(bytes)))
+        .unwrap_or_default();
+    let mut message = format!(
+        "{name}: block {}{size} has taken {} so far",
+        views::scaling::thousands(slow.height),
+        views::scaling::duration(slow.elapsed_secs),
+    );
+    match (show_node, &slow.node, slow.rate_bytes_per_sec) {
+        (true, Some(node), Some(rate)) => {
+            message.push_str(&format!(", at {} from {node}", views::scaling::rate(rate)));
+        }
+        (_, _, Some(rate)) => message.push_str(&format!(", at {}", views::scaling::rate(rate))),
+        _ => {}
+    }
+    message.push('.');
+    if let Some(remaining) = slow.remaining_secs.filter(|secs| *secs > 0) {
+        message.push_str(&format!(
+            " At this rate it needs about {} more.",
+            views::scaling::duration_rough(remaining)
+        ));
+    }
+    message.push_str(" A faster node or a larger scan memory budget would help.");
+    message
+}
+
+/// The slow-block sentences from the cached status, for an operator's
+/// alert bar; nothing while the status isn't known.
+pub fn known_slow_blocks(engine: &Engine) -> Vec<String> {
+    let cache = status_cache(engine);
+    cache
+        .cached
+        .as_ref()
+        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
+        .and_then(|cached| cached.result.as_ref().ok())
+        .map(|status| slow_block_messages(status, true))
+        .unwrap_or_default()
 }
 
 /// The key custody backends a new store may choose from, with the default
@@ -364,13 +443,20 @@ pub async fn status_events(
 /// The status page's content; abuse figures only for an admin.
 async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPageViewModel {
     let mut view_model = match get_status_cached(&state.engine).await {
-        Ok(status) => build_view_model(status),
+        Ok(status) => {
+            let slow = slow_block_messages(&status, admin);
+            views::status::StatusPageViewModel {
+                slow_blocks: slow,
+                ..build_view_model(status)
+            }
+        }
         Err(message) => views::status::StatusPageViewModel {
             abuse: None,
             engine_error: Some(message),
             networks: Vec::new(),
             poll_interval_secs: 0,
             generated_at_display: String::new(),
+            slow_blocks: Vec::new(),
         },
     };
     // Node addresses and the raw text of node and scanner errors (which
@@ -408,8 +494,12 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
 /// page itself is rendered with [`known_health`]), without pulling in the
 /// full status page's own engine round trip. See [`is_healthy`].
 pub async fn status_summary(State(engine): State<Engine>) -> Response {
-    let healthy = is_healthy(&get_status_cached(&engine).await);
-    Json(json!({ "healthy": healthy })).into_response()
+    let health = health_of(&get_status_cached(&engine).await);
+    Json(json!({
+        "healthy": health != views::Health::Problem,
+        "state": health.as_str(),
+    }))
+    .into_response()
 }
 
 fn describe_engine_error(err: &EngineClientError) -> String {
@@ -436,6 +526,7 @@ fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageVi
         networks,
         poll_interval_secs: status.poll_interval_secs,
         generated_at_display: relative_time(now, status.generated_at),
+        slow_blocks: Vec::new(),
     }
 }
 
@@ -507,6 +598,97 @@ fn relative_time(now: i64, at: i64) -> String {
 mod tests {
     use super::*;
 
+    /// One healthy network, its block scan reporting `slow`.
+    fn status_with_slow(slow: Option<shared::scaling::SlowBlock>) -> EngineStatusResponse {
+        use shared::scaling::{NetworkScaling, Pace, ScanReport, Trend};
+        EngineStatusResponse {
+            networks: vec![crate::engine_client::NetworkStatus {
+                network: "mainnet".into(),
+                nodes: vec![crate::engine_client::NodeStatus {
+                    label: "node.example:18089".into(),
+                    is_active: true,
+                    in_cooldown: false,
+                    height: Some(3_412_015),
+                    error: None,
+                    network: None,
+                    link: None,
+                }],
+                scanner: crate::engine_client::ScannerStatusView {
+                    ever_ticked: true,
+                    last_tick_started_at: Some(0),
+                    last_tick_finished_at: Some(0),
+                    tick_count: 1,
+                    tenants_scanned: 1,
+                    last_tick_ok: true,
+                    last_error: None,
+                    is_stale: false,
+                },
+                scaling: Some(NetworkScaling {
+                    scan: ScanReport {
+                        avg_block_bytes: 0,
+                        block_size_trend: Trend::Steady,
+                        last_chunk: None,
+                        blocks_per_minute: 0.0,
+                        fetch_secs_recent: 0.0,
+                        scan_secs_recent: 0.0,
+                        largest_recent: None,
+                        in_progress: None,
+                        in_progress_secs: None,
+                        peak_cache_bytes: None,
+                    },
+                    blocks_behind: 14,
+                    catch_up_secs: None,
+                    pace: Pace::Link,
+                    budget_mb: 256,
+                    max_budget_mb: Some(1536),
+                    round_deadline_secs: 10,
+                    round_base_secs: 10,
+                    slow,
+                }),
+            }],
+            poll_interval_secs: 2,
+            generated_at: 0,
+            unserved_tenants: vec![],
+            key_custody: vec![],
+            key_custody_default: None,
+            resources: None,
+        }
+    }
+
+    fn slow_block() -> shared::scaling::SlowBlock {
+        shared::scaling::SlowBlock {
+            height: 3_412_001,
+            wire_bytes: Some(412_000_000),
+            elapsed_secs: 130,
+            node: Some("node.example:18089".into()),
+            rate_bytes_per_sec: Some(387_500),
+            remaining_secs: Some(1_080),
+        }
+    }
+
+    /// A block over two minutes turns the indicator yellow, not red: the
+    /// engine works, it is just slow (docs/engine_scaling.md section 5).
+    #[test]
+    fn a_slow_block_is_yellow_and_says_why_and_what_would_help() {
+        assert_eq!(health_of(&Ok(status_with_slow(None))), views::Health::Ok);
+        let status = status_with_slow(Some(slow_block()));
+        assert_eq!(health_of(&Ok(status.clone())), views::Health::Slow);
+        assert_eq!(
+            slow_block_messages(&status, true),
+            vec![
+                "Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far, at 3.1 Mbit/s \
+                  from node.example:18089. At this rate it needs about 18 minutes more. A \
+                  faster node or a larger scan memory budget would help."
+                    .to_string()
+            ]
+        );
+        let public = slow_block_messages(&status, false);
+        assert!(!public[0].contains("node.example"), "{public:?}");
+        assert!(public[0].contains("at 3.1 Mbit/s."), "{public:?}");
+        // A failing engine is still red, slow or not.
+        assert_eq!(health_of(&Err("down".into())), views::Health::Problem);
+    }
+
     #[test]
     fn relative_time_picks_the_right_bucket() {
         assert_eq!(relative_time(100, 100), "0s ago");
@@ -538,7 +720,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         // The test engine is unreachable, which is a known problem.
-        assert_eq!(known_health(&state.engine), Some(false));
+        assert_eq!(known_health(&state.engine), Some(views::Health::Problem));
 
         // Too old to show as known. (On a host up for less than that, an
         // `Instant` that old can't exist; there is nothing to check.)
@@ -871,6 +1053,7 @@ mod tests {
                         height: Some(3_700_000),
                         error: None,
                         network: None,
+                        link: None,
                     },
                     NodeStatus {
                         label: "node-b:18081".into(),
@@ -879,9 +1062,11 @@ mod tests {
                         height: None,
                         error: Some("connection refused".into()),
                         network: None,
+                        link: None,
                     },
                 ],
                 scanner,
+                scaling: None,
             };
             let view = super::super::build_view_model(EngineStatusResponse {
                 networks: vec![
@@ -897,6 +1082,7 @@ mod tests {
                 unserved_tenants: vec![],
                 key_custody: vec![],
                 key_custody_default: None,
+                resources: None,
             });
             let labels: Vec<(&str, &str)> = view
                 .networks

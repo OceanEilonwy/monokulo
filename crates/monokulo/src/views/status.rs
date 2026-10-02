@@ -51,6 +51,9 @@ pub struct StatusPageViewModel {
     pub networks: Vec<StatusNetworkView>,
     pub poll_interval_secs: u64,
     pub generated_at_display: String,
+    /// A sentence per network with a slow block (docs/engine_scaling.md
+    /// section 5).
+    pub slow_blocks: Vec<String>,
 }
 
 /// Everything on the status page below its heading: streamed as a whole
@@ -63,6 +66,9 @@ pub fn live_fragment(data: &StatusPageViewModel) -> Markup {
                 (data.poll_interval_secs) "s."
             }
 
+            @for message in &data.slow_blocks {
+                p class="notice slow-block" role="status" { (message) }
+            }
             @if let Some(abuse) = &data.abuse {
                 div class="box" id="abuse-protection" {
                     h2 { "Abuse protection" }
@@ -169,12 +175,34 @@ mod tests {
             networks: vec![],
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
+            slow_blocks: vec![],
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("the engine could not be reached"));
         assert!(
             !html.contains("<table"),
             "an engine error must not still show a (fabricated) networks table"
+        );
+    }
+
+    /// A slow block shows as a notice above everything else
+    /// (docs/engine_scaling.md section 5).
+    #[test]
+    fn a_slow_block_is_announced_at_the_top() {
+        let data = StatusPageViewModel {
+            abuse: None,
+            engine_error: None,
+            networks: vec![],
+            poll_interval_secs: 30,
+            generated_at_display: "just now".to_string(),
+            slow_blocks: vec![
+                "Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far.".to_string(),
+            ],
+        };
+        let html = page(&chrome(), &data).into_string();
+        assert!(
+            html.contains(r#"<p class="notice slow-block" role="status">Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far.</p>"#),
+            "{html}"
         );
     }
 
@@ -186,6 +214,7 @@ mod tests {
             networks: vec![],
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
+            slow_blocks: vec![],
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html
@@ -219,6 +248,7 @@ mod tests {
             }],
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
+            slow_blocks: vec![],
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("node.example.com"));
