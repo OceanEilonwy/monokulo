@@ -305,17 +305,13 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   await page.clock.install();
   await page.goto(url);
   await expect.poll(() => attempts.length).toBe(1);
-  // The retry's timer starts when the refused stream's error reaches the
-  // page, a moment after the request is counted: that moment passes in real
-  // time before the fake clock moves. Each "not yet" check likewise lets a
-  // request the fake clock just released reach the route before counting.
-  await page.waitForTimeout(500);
+  // Each "not yet" check lets a request the fake clock just released reach
+  // the route before counting.
   await page.clock.runFor(4000);
   await page.waitForTimeout(500);
   expect(attempts.length, 'waits 5s before the first retry').toBe(1);
   await page.clock.runFor(1500);
   await expect.poll(() => attempts.length).toBe(2);
-  await page.waitForTimeout(500);
   await page.clock.runFor(9000);
   await page.waitForTimeout(500);
   expect(attempts.length, 'then doubles the wait to 10s').toBe(2);
