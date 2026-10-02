@@ -21,12 +21,15 @@
 //!   changes in one validated, all-or-nothing step, and describes every
 //!   setting for the admin page.
 //!
-//! Values resolve the command line over the environment over stored over
-//! default, per key: an invalid value falls back to that setting's default
-//! and nothing else. A setting that can't be saved (its `sources` leave out
-//! the database) is read from the command line and the environment alone,
-//! before any store exists if need be ([`Setting::require`]). [`cli`] turns
-//! the declared settings into command-line options, with help.
+//! Values resolve the environment (secrets only) over the command line over
+//! stored over default, per key. Stored means the options file
+//! ([`OptionsFile`]) for configuration, or the database for a runtime
+//! switch: a [`LayeredStore`] keeps each key in its place. Any invalid
+//! value stops [`Registry::build`] with every problem named, so a process
+//! never starts on a value it would have to guess about. A secret is read
+//! from the environment alone, before any store exists if need be
+//! ([`Setting::require`]). [`cli`] turns the declared settings into
+//! command-line options, with help, plus `--options` and `--init`.
 //!
 //! The crate knows nothing about either process or its database. Each
 //! plugs in its own [`SettingsStore`].
@@ -67,7 +70,6 @@ pub use async_trait::async_trait;
 ///     /// Checked again on every scan.
 ///     REORG_CHECK_DEPTH: u64 {
 ///         key: "payment.reorg_check_depth",
-///         env: "ENGINE_PAYMENT_REORG_CHECK_DEPTH",
 ///         default: 20,
 ///         check: range(1, 10_000),
 ///         description: "How many recent blocks are checked again on every scan for a chain reorganisation.",
@@ -75,7 +77,6 @@ pub use async_trait::async_trait;
 ///     },
 ///     WORKER_THREADS: usize {
 ///         key: "server.worker_threads",
-///         env: "ENGINE_SERVER_WORKER_THREADS",
 ///         default: 2,
 ///         check: range(1, 256),
 ///         description: "Threads serving requests.",
@@ -83,18 +84,25 @@ pub use async_trait::async_trait;
 ///     },
 ///     SIGNUP_NOTE: String {
 ///         key: "signup.note",
-///         env: "MONOKULO_SIGNUP_NOTE",
 ///         default: "Invite only".to_string(),
 ///         check: |v: &String| if v.len() <= 200 { Ok(()) } else { Err("Keep it under 200 characters.".to_string()) },
 ///         description: "Shown on the signup page.",
 ///     },
+///     API_KEY: live_settings::Secret {
+///         key: "api.key",
+///         env: "APP_API_KEY",
+///         default: live_settings::Secret::default(),
+///         description: "The key for the upstream API.",
+///         sources: [Env],
+///         required: true,
+///     },
 /// }
-/// assert_eq!(ALL.len(), 3);
+/// assert_eq!(ALL.len(), 4);
 /// assert_eq!(REORG_CHECK_DEPTH.default_value(), 20);
 /// ```
 ///
 /// Fields may come in any order. `key`, `default` and `description` are
-/// required. `default` is an expression of the setting's type, evaluated
+/// required; `env` (the variable's name) only for a secret. `default` is an expression of the setting's type, evaluated
 /// whenever the default is needed. `check` is either `range(min, max)`
 /// (whole numbers only; the admin page gets the bounds too) or a function or
 /// closure `fn(&T) -> Result<(), String>`. `example` is a raw value, checked

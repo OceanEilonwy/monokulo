@@ -44,13 +44,13 @@ COPY --from=build /out/ /usr/local/bin/
 USER monokulo
 WORKDIR /var/lib/monokulo
 VOLUME /var/lib/monokulo
-# Listen on every interface inside the container; publish only monokulo's
-# port. The engine's API is for monokulo alone.
-ENV MONOKULO_BIND=0.0.0.0:8081 \
-    MONOKULO_DB_PATH=/var/lib/monokulo/monokulo.db \
-    ENGINE_SERVER_BIND=0.0.0.0:8443 \
-    ENGINE_DB_PATH=/var/lib/monokulo/engine.db
 EXPOSE 8081
 # tini passes SIGTERM on, so `docker stop` lets requests in flight finish.
 ENTRYPOINT ["tini", "--"]
-CMD ["monokulo"]
+# Listen on every interface inside the container (publish only monokulo's
+# port: the engine's API is for monokulo alone), with the options file and
+# database in the volume. Given as options, these are locked on the admin
+# page; everything else is saved to the options file. compose.yaml runs the
+# engine the same way.
+CMD ["monokulo", "--options", "/var/lib/monokulo/monokulo.toml", \
+     "--server-bind", "0.0.0.0:8081", "--database-path", "/var/lib/monokulo/monokulo.db"]

@@ -90,20 +90,26 @@ async function startStack() {
 
   const enginePort = await freePort();
   const engineToken = crypto.randomBytes(32).toString('hex');
+  // Each process's options file, in this run's directory: never the
+  // user's own in ~/.config, which a spec saving on the admin page would
+  // otherwise write.
+  const engineOptions = path.join(dir, 'engine.toml');
+  fs.writeFileSync(engineOptions, [
+    '[server]',
+    `bind = "127.0.0.1:${enginePort}"`,
+    // Every spec shares this engine, and monokulo's requests to it without a
+    // store key share one budget (keyed on its address), so the default 120
+    // a minute is spent across specs (status reloads, the Logs page) and a
+    // later spec's settings save gets a 429 on a slow runner.
+    'rate_limit_per_token_per_min = 100000',
+    '[database]',
+    `path = ${JSON.stringify(path.join(dir, 'engine.db'))}`,
+    '',
+  ].join('\n'));
   // E2E_ENGINE_BIN runs another engine build, e.g. an older one to check a
   // spec fails against the bug it guards.
-  const engine = spawn(process.env.E2E_ENGINE_BIN || BIN('monokulo-engine'), [], {
-    env: {
-      ...cleanEnv(),
-      ENGINE_DB_PATH: path.join(dir, 'engine.db'),
-      ENGINE_SERVER_BIND: `127.0.0.1:${enginePort}`,
-      ENGINE_TOKEN: engineToken,
-      // Every spec shares this engine, and monokulo's requests to it without a
-      // store key share one budget (keyed on its address), so the
-      // default 120 a minute is spent across specs (status reloads, the Logs
-      // page) and a later spec's settings save gets a 429 on a slow runner.
-      ENGINE_SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN: '100000',
-    },
+  const engine = spawn(process.env.E2E_ENGINE_BIN || BIN('monokulo-engine'), ['--options', engineOptions], {
+    env: { ...cleanEnv(), ENGINE_TOKEN: engineToken },
     stdio: ['ignore', log('engine'), log('engine')],
   });
   children.push(engine);
@@ -111,14 +117,21 @@ async function startStack() {
   await waitFor(`${engineUrl}/status`, 'the engine', engine);
 
   const monokuloPort = await freePort();
-  const monokulo = spawn(BIN('monokulo'), [], {
+  const monokuloOptions = path.join(dir, 'monokulo.toml');
+  fs.writeFileSync(monokuloOptions, [
+    '[server]',
+    `bind = "127.0.0.1:${monokuloPort}"`,
+    '[engine]',
+    `url = "${engineUrl}"`,
+    '[database]',
+    `path = ${JSON.stringify(path.join(dir, 'monokulo.db'))}`,
+    '',
+  ].join('\n'));
+  const monokulo = spawn(BIN('monokulo'), ['--options', monokuloOptions], {
     cwd: dir,
     env: {
       ...cleanEnv(),
       MONOKULO_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
-      MONOKULO_DB_PATH: path.join(dir, 'monokulo.db'),
-      MONOKULO_BIND: `127.0.0.1:${monokuloPort}`,
-      MONOKULO_ENGINE_URL: engineUrl,
       MONOKULO_ENGINE_TOKEN: engineToken,
     },
     stdio: ['ignore', log('monokulo'), log('monokulo')],

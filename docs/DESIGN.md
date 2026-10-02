@@ -87,7 +87,7 @@ difference is how many rows exist in `tenants`:
   restart (§7.3).
 
 **The engine is private.** It listens on `127.0.0.1:8443` by default (`server.bind`,
-`ENGINE_SERVER_BIND`) and only monokulo, on the same machine or a private network,
+`--server-bind`) and only monokulo, on the same machine or a private network,
 should ever reach it. At boot the engine prints a loud warning if it is bound to
 anything other than a loopback, RFC 1918, IPv6 unique-local (`fc00::/7`) or
 link-local address (`0.0.0.0` and `::` count as public, since they listen on every

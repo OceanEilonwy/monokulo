@@ -119,20 +119,23 @@ the parameter.
 ## Settings
 
 All on the admin settings page's "Abuse protection" tab, with help text and
-validation; everything but the onion listener applies immediately.
+validation, and all applied at once (the onion listener too: a new address is
+bound before it is saved). They are kept in monokulo's options file, or given
+as the command-line option shown, except `abuse.under_attack`, a switch
+flipped while running, which is kept in monokulo's database.
 
-| Setting | Env var | Default |
+| Setting | Option | Default |
 |---|---|---|
-| `abuse.trusted_proxies` | `MONOKULO_ABUSE_TRUSTED_PROXIES` | (none) |
-| `abuse.onion_listener` | `MONOKULO_ABUSE_ONION_LISTENER` | (off) |
-| `abuse.soft_per_min` | `MONOKULO_ABUSE_SOFT_PER_MIN` | 60 |
-| `abuse.hard_per_min` | `MONOKULO_ABUSE_HARD_PER_MIN` | 300 |
-| `abuse.signed_in_per_min` | `MONOKULO_ABUSE_SIGNED_IN_PER_MIN` | 600 |
-| `abuse.client_logs_per_min` | `MONOKULO_ABUSE_CLIENT_LOGS_PER_MIN` | 30 |
-| `rate_limit.per_store_key_per_min` | `MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN` | 600 |
-| `abuse.stream_cap` | `MONOKULO_ABUSE_STREAM_CAP` | 16 |
-| `abuse.challenge_bits` | `MONOKULO_ABUSE_CHALLENGE_BITS` | 16 |
-| `abuse.under_attack` | `MONOKULO_ABUSE_UNDER_ATTACK` | false |
+| `abuse.trusted_proxies` | `--abuse-trusted-proxies` | (none) |
+| `abuse.onion_listener` | `--abuse-onion-listener` | (off) |
+| `abuse.soft_per_min` | `--abuse-soft-per-min` | 60 |
+| `abuse.hard_per_min` | `--abuse-hard-per-min` | 300 |
+| `abuse.signed_in_per_min` | `--abuse-signed-in-per-min` | 600 |
+| `abuse.client_logs_per_min` | `--abuse-client-logs-per-min` | 30 |
+| `rate_limit.per_store_key_per_min` | `--rate-limit-per-store-key-per-min` | 600 |
+| `abuse.stream_cap` | `--abuse-stream-cap` | 16 |
+| `abuse.challenge_bits` | `--abuse-challenge-bits` | 16 |
+| `abuse.under_attack` | (the admin page only) | false |
 
 Operators (admins) see challenges issued, solved and refused in the last hour,
 and whether under-attack mode is on, on the status page.

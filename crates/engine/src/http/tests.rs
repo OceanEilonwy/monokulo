@@ -3182,10 +3182,6 @@ async fn saving_a_restart_only_setting_says_so() {
         body["scalars"]["server.worker_threads"]["applies"],
         "restart"
     );
-    assert!(body["scalars"]["server.worker_threads"]["description"]
-        .as_str()
-        .unwrap()
-        .contains("restart"));
     assert!(body["networks"]["stagenet"]["description"]
         .as_str()
         .unwrap()

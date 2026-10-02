@@ -65,44 +65,42 @@ step 1.
    Keep it with your other secrets. To change it, set the new value on both
    processes and restart both.
 
-3. Start the engine. It needs the token, a writable path for its SQLite
-   database and a bind address. Everything else (Monero node endpoints,
-   confirmation/expiry thresholds, rate limits, webhook policy) is set
-   afterward on monokulo's admin settings page:
+3. Start the engine with the token. Everything else (Monero node
+   endpoints, confirmation/expiry thresholds, rate limits, webhook policy)
+   is set afterward on monokulo's admin settings page:
 
    ```sh
    ENGINE_TOKEN=<the engine token> \
-   ENGINE_DB_PATH=/var/lib/monokulo/engine.db \
-   ENGINE_SERVER_BIND=127.0.0.1:8080 \
-       ./target/release/monokulo-engine
+       ./target/release/monokulo-engine --server-bind 127.0.0.1:8080
    ```
 
    Bind it where only monokulo can reach it (the same machine, or a private
    network): the token keeps everything else out, but nothing outside
-   monokulo has a reason to reach the engine at all.
+   monokulo has a reason to reach the engine at all. Its database is
+   `~/.local/share/monokulo/engine.db` unless `--database-path` (or its
+   options file) says otherwise.
 
 4. Start the control plane, pointed at the engine, with the same token:
 
    ```sh
    MONOKULO_ENCRYPTION_KEY=<64 hex chars, 32 bytes> \
-   MONOKULO_ENGINE_URL=http://127.0.0.1:8080 \
    MONOKULO_ENGINE_TOKEN=<the engine token> \
-       ./target/release/monokulo
+       ./target/release/monokulo --engine-url http://127.0.0.1:8080
    ```
 
-   `MONOKULO_ENGINE_URL` is where monokulo reaches the engine (default
-   `http://127.0.0.1:8443`, the engine's default bind); it can also be
-   changed on the admin settings page, and takes effect when monokulo
-   restarts. `MONOKULO_ENGINE_TOKEN` is read only when monokulo starts: the
-   admin settings page shows it locked, and changing it means changing it
-   where monokulo is started and restarting.
+   `--engine-url` is where monokulo reaches the engine (default
+   `http://127.0.0.1:8443`, the engine's default bind); left off the command
+   line, it can be changed on the admin settings page instead, taking effect
+   when monokulo restarts. `MONOKULO_ENGINE_TOKEN` is read only when
+   monokulo starts: the admin settings page shows it locked, and changing it
+   means changing it where monokulo is started and restarting.
 
    `MONOKULO_ENCRYPTION_KEY` must be 64 hex characters decoding to exactly 32
    bytes - generate one with `openssl rand -hex 32` and keep it, since it's
-   what encrypts data at rest in `monokulo`'s own database. `monokulo` opens
-   its SQLite database at `monokulo.db` in the working directory unless
-   `MONOKULO_DB_PATH` says otherwise, and listens on `127.0.0.1:8081` unless
-   `MONOKULO_BIND` does.
+   what encrypts data at rest in `monokulo`'s own database. `monokulo` keeps
+   its SQLite database at `~/.local/share/monokulo/monokulo.db` unless
+   `--database-path` says otherwise, and listens on `127.0.0.1:8081` unless
+   `--server-bind` does.
 
 5. Open `monokulo` in a browser. The first visit redirects to a first-run
    admin setup wizard to create the one admin account. Its admin settings
@@ -116,26 +114,38 @@ own.
 
 ### Settings
 
-Every setting of either process can be given three ways: as a
-command-line option, as an environment variable, or on the admin settings
-page. An option wins over the environment variable, which wins over the
-saved value, which wins over the default. `monokulo-engine --help` and
-`monokulo --help` list every option with its environment variable, its
-default and what it does; `-h` gives the short version. The option is
-the setting's key with `-` for `.` and `_`: `payment.reorg_check_depth`
-is `--payment-reorg-check-depth` and `ENGINE_PAYMENT_REORG_CHECK_DEPTH`.
+Each process keeps its settings in an options file, TOML, at
+`~/.config/monokulo/engine.toml` and `~/.config/monokulo/monokulo.toml`
+(`$XDG_CONFIG_HOME` if set; the working directory if that can't be used),
+or wherever `--options <PATH>` says. `monokulo-engine --init` and
+`monokulo --init` write one with every setting, its default commented out
+and what it does, and print where. The admin settings page edits the file
+in place, keeping your comments, and applies the change at once; after
+editing it by hand, press Reload options file on that page. A save is
+refused if the file changed on disk since it was read, and every setting
+the file holds is locked on the page if the process can't write it.
 
-A few settings can't be saved on the admin page, only given at start:
-each database path, the engine token, monokulo's encryption key and the
-log format. The page shows them locked. A secret (a token, a key, the
-collector headers) has no option, only its environment variable, since
-every user of the machine can read a process's arguments; `--help` lists
-those variables after the options.
+Every setting can also be given as a command-line option: the setting's
+key with `-` for `.` and `_` (`payment.reorg_check_depth` is
+`--payment-reorg-check-depth`). An option wins over the file, and the
+admin page shows that setting locked. `monokulo-engine --help` and
+`monokulo --help` list every option with its default and what it does;
+`-h` gives the short version.
 
-An invalid value from the environment or the database is logged as a
-warning when the process starts, and the setting's default is used. An
-invalid option stops the process with a message saying what the option
-takes. A missing engine token or encryption key stops it too.
+Secrets are only ever taken from the environment, never an option or the
+file, since every user of the machine can read a process's arguments:
+`ENGINE_TOKEN` and `ENGINE_LOGGING_OTLP_HEADERS` for the engine,
+`MONOKULO_ENGINE_TOKEN`, `MONOKULO_ENCRYPTION_KEY` and
+`MONOKULO_LOGGING_OTLP_HEADERS` for monokulo. `--help` lists them after
+the options. Two runtime switches, `abuse.under_attack` and
+`logging.dev_mode_until`, are kept in each database instead, since they
+are flipped while running rather than configured. Each field on the admin
+page has a chip saying where its value comes from.
+
+An invalid value anywhere - the file (named by line), an option, the
+environment or the database - stops the process at start with every
+problem listed, so a value an upgrade no longer accepts is fixed, not
+silently replaced. A missing engine token or encryption key stops it too.
 
 ## Running in development
 
@@ -146,7 +156,10 @@ POS with Solid's development diagnostics, a release build the minified one.
 `scripts/dev-run.sh` builds and runs both processes locally the same way
 they run in production, with all state kept under `.dev-run/` (gitignored)
 and a real stagenet Monero node pre-configured so payments actually work
-end-to-end without touching mainnet funds.
+end-to-end without touching mainnet funds. Each process's options file
+(`.dev-run/engine/engine.toml`, `.dev-run/monokulo/monokulo.toml`) is
+written with the dev values the first time only; delete one to get them
+back.
 
 ```sh
 scripts/dev-run.sh start            # build (debug) + start both processes
