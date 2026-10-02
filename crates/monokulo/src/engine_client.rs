@@ -121,11 +121,7 @@ impl EngineClient {
     /// The engine at `base_url`, reached with the engine token `token`
     /// (`ENGINE_TOKEN`), which every request carries.
     pub fn new(base_url: impl Into<String>, token: RawToken) -> Self {
-        Self::with_cache_limit(
-            base_url,
-            token,
-            shared::http_cache::max_cache_bytes_from_env(),
-        )
+        Self::with_cache_limit(base_url, token, shared::http_cache::DEFAULT_MAX_CACHE_BYTES)
     }
 
     /// [`Self::new`] with the token every test engine accepts

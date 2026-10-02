@@ -488,6 +488,7 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+ "terminal_size",
 ]
 
 [[package]]
@@ -1008,6 +1009,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "clap",
  "cli-wallet",
  "futures-util",
  "hex",
@@ -2003,6 +2005,7 @@ name = "live-settings"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "clap",
  "futures-util",
  "parking_lot",
  "serde",
@@ -2390,6 +2393,7 @@ dependencies = [
  "aes-gcm",
  "axum",
  "axum-extra",
+ "clap",
  "engine",
  "engine-test-support",
  "futures-util",
@@ -3850,6 +3854,16 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
+dependencies = [
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

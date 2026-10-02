@@ -3,8 +3,8 @@
 //! admin API (`http::admin`, authenticated by that tenant's own `sk_`). This
 //! is what replaces the former TOML config file: every setting that used to
 //! be read once at boot from a file is now read from the `settings` table
-//! (`env > database > default`, `shared::settings`) and editable here at
-//! runtime.
+//! (the command line, then the environment, then the table, then the
+//! default: `crate::engine_settings`) and editable here at runtime.
 //!
 //! Like every engine route, reachable only with the engine token
 //! (`ENGINE_TOKEN`), which the router checks on every request
@@ -44,8 +44,13 @@ fn budget_description(base: &str, networks: usize) -> String {
 #[derive(Serialize)]
 pub struct ScalarSettingView {
     value: String,
-    /// `"env"`, `"database"`, or `"default"`.
+    /// `"cli"`, `"env"`, `"database"`, or `"default"`.
     source: &'static str,
+    /// Its environment variable and command-line option (without `--`).
+    env_var: &'static str,
+    cli_flag: String,
+    /// It can't be saved here (only given at start): shown locked.
+    locked: bool,
     description: String,
     kind: live_settings::SettingKind,
     example: Option<&'static str>,
@@ -60,6 +65,7 @@ pub struct ScalarSettingView {
 
 fn source_str(source: live_settings::SettingSource) -> &'static str {
     match source {
+        live_settings::SettingSource::Cli => "cli",
         live_settings::SettingSource::Env => "env",
         live_settings::SettingSource::Database => "database",
         live_settings::SettingSource::Default => "default",
@@ -130,6 +136,9 @@ pub async fn get_settings(
             ScalarSettingView {
                 value: view.value,
                 source: source_str(view.source),
+                env_var: view.env_var,
+                cli_flag: view.cli_flag,
+                locked: !view.sources.database,
                 description: view.description.to_string(),
                 kind: view.kind,
                 example: view.example,

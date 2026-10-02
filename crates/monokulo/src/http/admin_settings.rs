@@ -23,7 +23,7 @@
 //! `EngineClient`, which already assumes exactly one engine base URL.
 //!
 //! Every field on every tab always carries its *current effective* value (secrets excepted: they are never echoed back, and an empty secret field keeps the current one)
-//! (`value="..."`, `env > database > default`) - per the explicit "the
+//! (`value="..."`, `command line > env > database > default`) - per the explicit "the
 //! settings should have a value='' that corresponds to the active setting"
 //! requirement - and the save button can always be clicked: submitting the
 //! form as-is (nothing changed) just re-persists whatever is currently
@@ -62,6 +62,7 @@ fn humanize_key(key: &str) -> String {
 
 fn source_label(source: &str) -> String {
     match source {
+        "cli" => "command-line option".to_string(),
         "env" => "environment variable".to_string(),
         "database" => "saved value".to_string(),
         "default" => "default".to_string(),
@@ -71,6 +72,7 @@ fn source_label(source: &str) -> String {
 
 fn live_source(source: live_settings::SettingSource) -> &'static str {
     match source {
+        live_settings::SettingSource::Cli => "cli",
         live_settings::SettingSource::Env => "env",
         live_settings::SettingSource::Database => "database",
         live_settings::SettingSource::Default => "default",
@@ -84,68 +86,40 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
     let Some(registry) = state.settings.registry.as_ref() else {
         return Vec::new();
     };
-    engine_connection_fields(state)
+    registry
+        .describe()
         .into_iter()
-        .chain(
-            registry
-                .describe()
-                .into_iter()
-                .map(|view| AdminScalarFieldView {
-                    key: view.key.to_string(),
-                    name: String::new(),
-                    label: humanize_key(view.key),
-                    value: view.value,
-                    source_label: source_label(live_source(view.source)),
-                    help: Some(view.description.to_string()),
-                    kind: SettingKindView::from(view.kind),
-                    example: view.example.map(str::to_string),
-                    restart_only: view.applies == live_settings::Applies::Restart,
-                    pending_restart: view.pending_restart,
-                    problem: view.problem.map(|p| p.message),
-                    locked: false,
+        .map(|view| {
+            // Given at start only: shown, with a padlock, never saved here.
+            let locked = !view.sources.database;
+            AdminScalarFieldView {
+                key: view.key.to_string(),
+                name: String::new(),
+                label: humanize_key(view.key),
+                value: view.value,
+                source_label: source_label(live_source(view.source)),
+                help: Some(if locked {
+                    locked_help(view.description, view.env_var, &view.cli_flag, "monokulo")
+                } else {
+                    view.description.to_string()
                 }),
-        )
+                kind: SettingKindView::from(view.kind),
+                example: view.example.map(str::to_string),
+                restart_only: view.applies == live_settings::Applies::Restart,
+                pending_restart: view.pending_restart,
+                problem: view.problem.map(|p| p.message),
+                locked,
+            }
+        })
         .collect()
 }
 
-/// The engine's address and the engine token, which monokulo reads from the
-/// environment when it starts: shown locked on the General tab, never
-/// saved from the page.
-fn engine_connection_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
-    use crate::settings::{ENGINE_TOKEN_ENV, ENGINE_URL_ENV};
-    let url_source = if std::env::var_os(ENGINE_URL_ENV).is_some() {
-        "environment variable"
-    } else {
-        "default"
-    };
-    vec![
-        AdminScalarFieldView {
-            key: "engine.url".to_string(),
-            label: humanize_key("engine.url"),
-            value: state.engine.client.base_url(),
-            source_label: url_source.to_string(),
-            help: Some(format!(
-                "Where monokulo reaches the engine. Set by {ENGINE_URL_ENV} when monokulo starts; change it there and restart monokulo."
-            )),
-            kind: SettingKindView::Url,
-            restart_only: true,
-            locked: true,
-            ..Default::default()
-        },
-        AdminScalarFieldView {
-            key: "engine.token".to_string(),
-            label: humanize_key("engine.token"),
-            value: "set".to_string(),
-            source_label: "environment variable".to_string(),
-            help: Some(format!(
-                "The engine token, sent with every request to the engine, which refuses anything without it. Set by {ENGINE_TOKEN_ENV} (the engine's ENGINE_TOKEN) when monokulo starts; change both and restart both."
-            )),
-            kind: SettingKindView::Secret,
-            restart_only: true,
-            locked: true,
-            ..Default::default()
-        },
-    ]
+/// A locked setting's help: what it is for, then how it is set, since the
+/// page can't change it.
+fn locked_help(description: &str, env_var: &str, cli_flag: &str, process: &str) -> String {
+    format!(
+        "{description} Set with {env_var} or --{cli_flag} when {process} starts; change it there and restart {process}."
+    )
 }
 
 /// Whether `key` is one of monokulo's own settings.
@@ -180,6 +154,13 @@ struct RemoteScalarSetting {
     pending_restart: bool,
     #[serde(default)]
     problem: Option<String>,
+    /// Given at start only: shown locked.
+    #[serde(default)]
+    locked: bool,
+    #[serde(default)]
+    env_var: String,
+    #[serde(default)]
+    cli_flag: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -227,13 +208,21 @@ async fn fetch_engine_settings(
             key,
             value: s.value,
             source_label: source_label(&s.source),
-            help: s.description,
+            help: match (s.locked, s.description) {
+                (true, Some(description)) => Some(locked_help(
+                    &description,
+                    &s.env_var,
+                    &s.cli_flag,
+                    "the engine",
+                )),
+                (_, description) => description,
+            },
             kind: s.kind,
             example: s.example,
             restart_only: s.applies.as_deref() == Some("restart"),
             pending_restart: s.pending_restart,
             problem: s.problem,
-            locked: false,
+            locked: s.locked,
         })
         .collect();
     let mut networks_meta = parsed.networks;
@@ -1413,12 +1402,17 @@ mod tests {
             ("logging.max_mb", "250"),
             ("logging.otlp_endpoint", "http://127.0.0.1:4318"),
             ("logging.otlp_headers", "x-team=ops"),
+            ("server.bind", "127.0.0.1:9081"),
         ];
-        // Every monokulo setting must be covered here, or this test would
-        // silently stop proving anything about a setting added later.
+        // Every monokulo setting the page can save must be covered here, or
+        // this test would silently stop proving anything about a setting
+        // added later. The rest are given only at start, shown locked.
         assert_eq!(
             new_values.len(),
-            crate::settings::ALL.len(),
+            crate::settings::ALL
+                .iter()
+                .filter(|s| s.sources().database)
+                .count(),
             "this test must cover every known monokulo setting"
         );
 
@@ -1475,7 +1469,9 @@ mod tests {
             ("payment.mempool_poll_interval_ms", "2000"),
             ("payment.expired_order_grace_period_minutes", "500"),
             ("payment.scan_chunk_memory_budget_mb", "16"),
-            ("server.bind", "127.0.0.1:9443"),
+            ("monero_node.strict_tls", "true"),
+            // Monokulo has its own server.bind: the engine's is `engine:<key>`.
+            ("engine:server.bind", "127.0.0.1:9443"),
             ("server.worker_threads", "4"),
             ("server.rate_limit_per_token_per_min", "200"),
             ("server.max_body_bytes", "16384"),
@@ -1493,10 +1489,16 @@ mod tests {
             ("engine:logging.otlp_endpoint", "http://127.0.0.1:4318"),
             ("engine:logging.otlp_headers", "x-team=ops"),
         ];
+        // Every engine setting the page can save, apart from the node ones
+        // (their own form); the rest are given only at start, shown locked.
         assert_eq!(
             new_values.len(),
-            engine::engine_settings::ALL.len() - engine::engine_settings::NETWORKS.len(),
-            "this test must cover every known engine setting apart from the node ones"
+            engine::engine_settings::ALL
+                .iter()
+                .filter(|s| s.sources().database)
+                .count()
+                - engine::engine_settings::NETWORKS.len(),
+            "this test must cover every engine setting the page can save, apart from the node ones"
         );
 
         let save = router
@@ -1707,10 +1709,7 @@ mod tests {
 
         let page = body_text(get_settings_page(&router, &cookie).await).await;
         assert!(
-            page.contains(&format!(
-                r#"<span class="locked-input" title="Set in the environment when monokulo starts"><input type="text" value="http://{}" id="setting-engine.url" aria-describedby="setting-help-engine.url" disabled>"#,
-                engine.addr
-            )),
+            page.contains(r#"<span class="locked-input" title="Given when the process starts; not saved here"><input type="text" value="http://127.0.0.1:8443" id="setting-engine.url" aria-describedby="setting-help-engine.url" disabled>"#),
             "{page}"
         );
         assert!(
@@ -1723,8 +1722,8 @@ mod tests {
             "{page}"
         );
         assert!(
-            page.contains("MONOKULO_ENGINE_TOKEN"),
-            "the help names the variable"
+            page.contains("Set with MONOKULO_ENGINE_TOKEN or --engine-token when monokulo starts"),
+            "the help names the variable and the option"
         );
         for never in [
             r#"name="engine.url""#,
@@ -1919,7 +1918,7 @@ mod tests {
             (
                 "exchange_rate.cache_seconds",
                 "-5",
-                "Enter a whole number, 0 or more.",
+                "Enter a whole number from 0 to 86400.",
             ),
             ("http_cache.max_mb", "1.5", "Enter a whole number"),
             (
@@ -2378,7 +2377,7 @@ mod tests {
         );
         let html = unescaped(&body_text(save).await);
         assert!(
-            html.contains("exchange_rate.cache_seconds: Enter a whole number, 0 or more."),
+            html.contains("exchange_rate.cache_seconds: Enter a whole number from 0 to 86400."),
             "{html}"
         );
         assert!(html.contains(r##"href="/dashboard/admin/settings?tab=payments" fx-action="/dashboard/admin/settings?tab=payments" fx-target="#settings-panel" fx-push-url aria-current="page""##), "shown on the tab holding it: {html}");

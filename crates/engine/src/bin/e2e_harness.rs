@@ -219,8 +219,8 @@ async fn main() {
     // affected) - a fresh in-memory `Db` has no stored override, so without
     // this the plain `/dashboard/signup` call below gets silently rejected
     // (a re-rendered `200` form, not the `302` it asserts on) instead of
-    // creating the account. `settings::get` resolves this env var live on
-    // every call (env > database > default), so setting it here before
+    // creating the account. `settings::per_request` resolves this env var live on
+    // every call (command line > env > database > default), so setting it here before
     // `main` does anything else is enough - scoped to this one process only,
     // never touches the shared test file above.
     std::env::set_var("MONOKULO_SIGNUP_MODE", "public");

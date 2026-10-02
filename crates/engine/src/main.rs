@@ -1,16 +1,15 @@
-//! Boot sequence: read the engine token (`ENGINE_TOKEN`, required), open storage, bootstrap
+//! Boot sequence: read the command line, read the engine token (`server.token`, required), open storage, bootstrap
 //! nothing automatically (provisioning the self-hosted tenant is now an explicit
 //! one-time `--bootstrap-wallet` command, not something every boot re-checks -
 //! see `cli::Action::BootstrapWallet`), register every tenant's wallet with
 //! `KeyCustody`, then run the chain scanner (once per configured network), the
 //! webhook delivery loop, and the HTTP server concurrently.
 //!
-//! Every runtime-configurable setting (Monero node endpoints, confirmation/
-//! expiry thresholds, rate limits, webhook policy, ...) is now read from the
-//! `settings` table via `engine::settings` - `env > database > default`, see
-//! that module's own doc comment - rather than a TOML config file read once at
-//! boot. There is no config file any more; the only thing this binary itself
-//! needs to be told is where its own database lives (`cli::database_path`).
+//! Every setting is declared once (`engine::engine_settings`) and comes from
+//! its command-line option, its environment variable, the value saved on the
+//! admin page, or its default, in that order. The few that are needed before
+//! the database opens (where it is, the engine token, the log format) come
+//! from the command line or the environment only.
 
 // See `lib.rs`: no panics in loop code. `main` itself may still exit at boot
 // (a listener that can't bind), which is marked where it happens.
@@ -24,6 +23,7 @@ use std::time::Duration;
 use engine::cli::{self, Action};
 use engine::engine_settings::{
     CustodyConfig, CustodyReloadable, Daemons, EngineSettings, RuntimeConfig, StoreSettings,
+    LOGGING_FORMAT, LOGGING_LEVEL, SERVER_TOKEN,
 };
 use engine::http::rate_limit::RateLimiter;
 use engine::http::{build_router, AppState};
@@ -32,6 +32,7 @@ use engine::local_admin;
 use engine::loops;
 use engine::scanner_status;
 use engine::store::{SharedStore, Store};
+use live_settings::Env;
 use shared::supervise::supervise;
 
 /// A fixed outer ceiling on request bodies; `server.max_body_bytes` (the
@@ -39,8 +40,8 @@ use shared::supervise::supervise;
 /// out here.
 const MAX_BODY_CEILING: usize = 16 * 1024 * 1024;
 
-fn open_store() -> Store {
-    let db_path = cli::database_path();
+fn open_store(env: &Env) -> Store {
+    let db_path = cli::database_path(env);
     Store::open_file(&db_path.to_string_lossy()).unwrap_or_else(|e| {
         tracing::error!(path = %db_path.display(), error = %e, "failed to open database");
         std::process::exit(1);
@@ -50,26 +51,28 @@ fn open_store() -> Store {
 /// Builds the runtime with `server.worker_threads` threads (task 2.8: read
 /// before the runtime exists, so it applies at the next start), then runs.
 fn main() {
-    // First, so everything after it is logged (structured_logging.md 1.1).
-    // Output meant for the person at the terminal (a one-off command's
-    // result, a secret shown once) stays on stdout with `println!`.
-    let _telemetry = telemetry::init("engine", "ENGINE");
-    let raw: Vec<String> = std::env::args().skip(1).collect();
-    let action = cli::parse_args(&raw).unwrap_or_else(|e| {
-        eprintln!("{e}\n\nRun with --help for usage.");
-        std::process::exit(1);
-    });
-    if matches!(action, Action::Help) {
-        print!("{}", cli::HELP_TEXT);
-        std::process::exit(0);
-    }
+    // The command line first: `--help` and a mistyped option end here, and
+    // a setting given as an option counts from the start.
+    let invocation = cli::parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
+    let env = invocation.env;
+    // Then logging, so everything after it is logged (structured_logging.md
+    // 1.1), at the level and in the format the settings give. A problem with
+    // either is reported with the rest when the settings load. Output meant
+    // for the person at the terminal (a one-off command's result, a secret
+    // shown once) stays on stdout with `println!`.
+    let (level, _) = LOGGING_LEVEL.read_unstored(&env);
+    let (format, _) = LOGGING_FORMAT.read_unstored(&env);
+    let _telemetry = telemetry::init_with("engine", &level, telemetry::Format::chosen(format));
     // Only the server reads its thread count; the one-off commands don't
     // need more than the default.
-    let worker_threads = match action {
-        Action::RunServer { .. } => {
-            let store = open_store().into_shared();
-            live_settings::read_sync::<RuntimeConfig>(StoreSettings(store).read_now())
-                .worker_threads
+    let worker_threads = match invocation.action {
+        Action::RunServer => {
+            let store = open_store(&env).into_shared();
+            live_settings::read_sync_with_env::<RuntimeConfig>(
+                StoreSettings(store).read_now(),
+                &env,
+            )
+            .worker_threads
         }
         _ => 2,
     };
@@ -84,21 +87,17 @@ fn main() {
             std::process::exit(1);
         }
     };
-    runtime.block_on(run(action));
+    runtime.block_on(run(invocation.action, env));
 }
 
 #[allow(
     clippy::expect_used,
     reason = "boot-time: a listener that can't bind or a server that can't start ends the process"
 )]
-async fn run(action: Action) {
-    let strict_tls = match action {
-        Action::Help => {
-            print!("{}", cli::HELP_TEXT);
-            std::process::exit(0);
-        }
+async fn run(action: Action, env: Env) {
+    match action {
         Action::RotateSecret { pk } => {
-            let store = open_store();
+            let store = open_store(&env);
             match local_admin::rotate_secret(&store, pk.as_deref()) {
                 Ok((pk, secret)) => {
                     println!("Tenant: {pk}");
@@ -113,7 +112,7 @@ async fn run(action: Action) {
             }
         }
         Action::ShowTenant { pk } => {
-            let store = open_store();
+            let store = open_store(&env);
             match local_admin::show_tenant(&store, pk.as_deref()) {
                 Ok(s) => {
                     println!("Public key:            {}", s.public_key);
@@ -140,9 +139,11 @@ async fn run(action: Action) {
                     std::process::exit(1);
                 }
             };
-            let store = open_store().into_shared();
-            let custody =
-                live_settings::read_sync::<CustodyConfig>(StoreSettings(store.clone()).read_now());
+            let store = open_store(&env).into_shared();
+            let custody = live_settings::read_sync_with_env::<CustodyConfig>(
+                StoreSettings(store.clone()).read_now(),
+                &env,
+            );
             let backend = custody.default.as_str().to_string();
             let router = Arc::new(CustodyRouter::default());
             if let Err(e) = apply_custody(&router, &custody).await {
@@ -167,18 +168,15 @@ async fn run(action: Action) {
                 }
             }
         }
-        Action::RunServer { strict_tls } => strict_tls,
-    };
+        Action::RunServer => {}
+    }
 
     // Every request must carry it (`http::engine_token_middleware`): without
     // one, nothing could talk to this engine, so it doesn't start.
-    let engine_token = match shared::auth::engine_token_from_env(
-        "ENGINE_TOKEN",
-        std::env::var("ENGINE_TOKEN").ok(),
-    ) {
-        Ok(token) => Arc::new(token.hash()),
+    let engine_token = match SERVER_TOKEN.require(&env) {
+        Ok(token) => Arc::new(shared::auth::engine_token(token.expose()).hash()),
         Err(e) => {
-            eprintln!("{e}");
+            tracing::error!("{e}");
             std::process::exit(1);
         }
     };
@@ -186,9 +184,10 @@ async fn run(action: Action) {
     // CPU and memory every 10 s, for the admin page (docs/engine_scaling.md 6).
     shared::resources::start_sampling();
 
-    let store = open_store().into_shared();
+    let store = open_store(&env).into_shared();
+    let db_path = cli::database_path(&env);
     // Beside the main database; lines logged since start-up go in too.
-    let log_store = telemetry::global().and_then(|t| t.open_store_beside(&cli::database_path()));
+    let log_store = telemetry::global().and_then(|t| t.open_store_beside(&db_path));
 
     // Every setting, live (admin_settings_v2.md part 1). Node clients are
     // built into `daemons` from the saved node settings, and rebuilt whenever
@@ -200,9 +199,9 @@ async fn run(action: Action) {
     let engine_settings = match EngineSettings::load(
         store.clone(),
         daemons.clone(),
-        strict_tls,
         router.clone(),
         admin_rate_limiter.clone(),
+        env.clone(),
     )
     .await
     {
@@ -253,16 +252,15 @@ async fn run(action: Action) {
 
     // The database worker: its own connection, on its own thread, for the
     // scanner, webhook delivery and API writes (docs/scanner_microtasks.md).
-    let db = engine::store::Db::open(&cli::database_path().to_string_lossy(), &store.lock())
-        .unwrap_or_else(|e| {
+    let db =
+        engine::store::Db::open(&db_path.to_string_lossy(), &store.lock()).unwrap_or_else(|e| {
             eprintln!("failed to start the database worker: {e}");
             std::process::exit(1)
         });
 
     let read_pool = engine::store::ReadStorePool::open(
-        &cli::database_path().to_string_lossy(),
-        live_settings::read_sync::<RuntimeConfig>(StoreSettings(store.clone()).read_now())
-            .read_connections,
+        &db_path.to_string_lossy(),
+        engine_settings.runtime.load().read_connections,
     )
     .unwrap_or_else(|e| {
         eprintln!("failed to open database read pool: {e}");

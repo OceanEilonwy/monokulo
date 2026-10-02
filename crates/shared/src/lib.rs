@@ -26,7 +26,6 @@ pub mod password;
 pub mod rate_limit;
 pub mod resources;
 pub mod scaling;
-pub mod settings;
 pub mod shutdown;
 pub mod sqlite;
 pub mod supervise;

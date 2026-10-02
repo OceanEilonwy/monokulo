@@ -19,6 +19,64 @@ pub enum Applies {
     Restart,
 }
 
+/// Where a setting's value can come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    /// A command-line option, `--` and the key with `-` for `.` and `_`
+    /// ([`cli_flag`]).
+    Cli,
+    /// The setting's environment variable.
+    Env,
+    /// A value saved on the admin page (the settings store).
+    Database,
+}
+
+/// The sources a setting accepts. Every setting accepts all three unless it
+/// says otherwise; one that can't be saved (no `Database`) is for what is
+/// needed before the store opens or must never be kept in it, and applies
+/// on restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Sources {
+    pub cli: bool,
+    pub env: bool,
+    pub database: bool,
+}
+
+impl Sources {
+    /// The command line, the environment and the database.
+    pub const ALL: Sources = Sources {
+        cli: true,
+        env: true,
+        database: true,
+    };
+
+    /// Exactly `sources`.
+    pub const fn of(sources: &[Source]) -> Sources {
+        let mut out = Sources {
+            cli: false,
+            env: false,
+            database: false,
+        };
+        let mut i = 0;
+        while i < sources.len() {
+            match sources[i] {
+                Source::Cli => out.cli = true,
+                Source::Env => out.env = true,
+                Source::Database => out.database = true,
+            }
+            i += 1;
+        }
+        out
+    }
+}
+
+/// A setting's command-line option, without the leading `--`:
+/// `payment.reorg_check_depth` is `payment-reorg-check-depth`.
+pub fn cli_flag(key: &str) -> String {
+    key.replace(['.', '_'], "-")
+}
+
 /// Inclusive limits on a whole-number setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Bounds {
@@ -80,12 +138,21 @@ pub struct Setting<T: SettingValue> {
     /// An example value. It must itself be valid; `Registry::build` checks.
     pub example: Option<&'static str>,
     pub applies: Applies,
+    /// Where its value may come from. Without `Database` it is never
+    /// stored, a save refuses it and the admin page shows it locked.
+    pub sources: Sources,
+    /// A setting that can't be saved and has no usable default: the
+    /// process can't start without it ([`Setting::require`]). `default` is
+    /// a placeholder, never used for anything that runs.
+    pub required: bool,
 }
 
 /// Where a setting's effective value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingSource {
+    /// A command-line option, which wins over everything else.
+    Cli,
     /// An environment variable, which wins over anything saved.
     Env,
     /// A saved value.
@@ -98,8 +165,8 @@ pub enum SettingSource {
 /// instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Problem {
-    /// Whether the bad value came from the environment, where the admin
-    /// page can't fix it.
+    /// Whether the bad value came from the environment or the command
+    /// line, where the admin page can't fix it.
     pub from_env: bool,
     pub message: String,
 }
@@ -115,7 +182,12 @@ impl<T: SettingValue> Setting<T> {
     /// Parses `raw` with the type's rules, then this setting's bounds and
     /// check.
     pub fn parse(&self, raw: &str) -> Result<T, String> {
-        let value = T::parse(raw)?;
+        // A number that doesn't parse is told this setting's range, not
+        // the type's.
+        let value = T::parse(raw).map_err(|error| match (self.bounds, self.kind()) {
+            (Some(_), SettingKind::Integer { min, max }) => whole_number_message(min, max),
+            _ => error,
+        })?;
         self.validate(&value)?;
         Ok(value)
     }
@@ -147,26 +219,82 @@ impl<T: SettingValue> Setting<T> {
         }
     }
 
-    /// Environment over stored over default. An invalid environment or
-    /// stored value falls back to the default for this key only, and is
-    /// reported as a problem.
+    /// The value from the command line and the environment alone (no
+    /// store), and what is wrong with it, if anything: for a setting read
+    /// before the store opens, or before logging starts. The registry
+    /// reports the problem when it is built.
+    pub fn read_unstored(&self, env: &Env) -> (T, Option<Problem>) {
+        let resolved = self.resolve(None, env);
+        (resolved.value, resolved.problem)
+    }
+
+    /// The value from the command line and the environment alone, for
+    /// start-up. A required setting that is unset or invalid is an error,
+    /// which the process reports and exits on. Any other invalid value
+    /// gives the default (the registry reports it when it is built).
+    pub fn require(&self, env: &Env) -> Result<T, String> {
+        let (value, problem) = self.read_unstored(env);
+        match problem {
+            Some(problem) if self.required => Err(problem.message),
+            _ => Ok(value),
+        }
+    }
+
+    /// How to set it from outside: `ENGINE_TOKEN or --server-token`.
+    fn outside_names(&self) -> String {
+        match (self.sources.env, self.sources.cli) {
+            (true, true) => format!("{} or --{}", self.env_var, cli_flag(self.key)),
+            (false, true) => format!("--{}", cli_flag(self.key)),
+            _ => self.env_var.to_string(),
+        }
+    }
+
+    /// The command line over the environment over stored over default, for
+    /// the sources this setting accepts. An invalid value from any of them
+    /// falls back to the default for this key only, and is reported as a
+    /// problem. A required setting that is unset is a problem too.
     pub(crate) fn resolve(&self, stored: Option<&str>, env: &Env) -> Resolved<T> {
+        let stored = if self.sources.database { stored } else { None };
         let mut problem = None;
-        if let Some(raw) = env.get(self.env_var) {
+        let outside = [
+            (
+                self.sources.cli,
+                SettingSource::Cli,
+                env.cli(self.key),
+                format!("--{}", cli_flag(self.key)),
+            ),
+            (
+                self.sources.env,
+                SettingSource::Env,
+                env.get(self.env_var),
+                self.env_var.to_string(),
+            ),
+        ];
+        let given = outside
+            .into_iter()
+            .find_map(|(accepted, source, raw, name)| {
+                Some((source, raw.filter(|_| accepted)?, name))
+            });
+        if let Some((source, raw, name)) = given {
             match self.parse(&raw) {
                 Ok(value) => {
                     return Resolved {
                         value,
-                        source: SettingSource::Env,
+                        source,
                         problem: None,
                     }
+                }
+                Err(e) if self.required => {
+                    problem = Some(Problem {
+                        from_env: true,
+                        message: format!("{name} is set to an invalid value. {e}"),
+                    })
                 }
                 Err(e) => {
                     problem = Some(Problem {
                         from_env: true,
                         message: format!(
-                            "{} is set to an invalid value, so the default is used. {e}",
-                            self.env_var
+                            "{name} is set to an invalid value, so the default is used. {e}"
                         ),
                     })
                 }
@@ -187,6 +315,11 @@ impl<T: SettingValue> Setting<T> {
                     })
                 }
             }
+        } else if self.required {
+            problem = Some(Problem {
+                from_env: true,
+                message: format!("{} must be set. {}", self.outside_names(), self.description),
+            });
         }
         Resolved {
             value: self.default_value(),
@@ -208,6 +341,11 @@ pub trait AnySetting: private::Resolve + Send + Sync {
     fn example(&self) -> Option<&'static str>;
     fn applies(&self) -> Applies;
     fn kind(&self) -> SettingKind;
+    /// Where its value may come from. Without `Database`: never stored,
+    /// shown locked.
+    fn sources(&self) -> Sources;
+    /// Whether the process can't start without it.
+    fn required(&self) -> bool;
 }
 
 impl<T: SettingValue> AnySetting for Setting<T> {
@@ -233,6 +371,14 @@ impl<T: SettingValue> AnySetting for Setting<T> {
 
     fn kind(&self) -> SettingKind {
         Setting::kind(self)
+    }
+
+    fn sources(&self) -> Sources {
+        self.sources
+    }
+
+    fn required(&self) -> bool {
+        self.required
     }
 }
 
@@ -285,6 +431,18 @@ pub(crate) mod private {
             if self.key.is_empty() || self.env_var.is_empty() {
                 return Err("a setting needs a key and an environment variable".to_string());
             }
+            if !(self.sources.cli || self.sources.env || self.sources.database) {
+                return Err("a setting needs at least one source".to_string());
+            }
+            if !self.sources.database && self.applies != Applies::Restart {
+                return Err(
+                    "a setting that can't be saved applies on restart: the command line and environment don't change while the process runs"
+                        .to_string(),
+                );
+            }
+            if self.required && self.sources.database {
+                return Err("only a setting that can't be saved can be required".to_string());
+            }
             if let Some(bounds) = self.bounds {
                 if !matches!(T::kind(), SettingKind::Integer { .. }) {
                     return Err("range(..) only applies to whole-number settings".to_string());
@@ -293,13 +451,18 @@ pub(crate) mod private {
                     return Err(format!("range({}, {}) is empty", bounds.min, bounds.max));
                 }
             }
-            let default = self.default_value();
-            self.validate(&default)
-                .map_err(|e| format!("the default is rejected by its own rules: {e}"))?;
-            match T::parse(&default.to_stored()) {
-                Ok(back) if back == default => {}
-                _ => {
-                    return Err("the default doesn't survive being stored and read back".to_string())
+            // A required setting's default is a placeholder, never used.
+            if !self.required {
+                let default = self.default_value();
+                self.validate(&default)
+                    .map_err(|e| format!("the default is rejected by its own rules: {e}"))?;
+                match T::parse(&default.to_stored()) {
+                    Ok(back) if back == default => {}
+                    _ => {
+                        return Err(
+                            "the default doesn't survive being stored and read back".to_string()
+                        )
+                    }
                 }
             }
             if let Some(example) = self.example {
@@ -319,17 +482,27 @@ pub(crate) mod private {
 #[derive(Clone, Default)]
 pub struct Env {
     fixed: Option<Arc<HashMap<String, String>>>,
+    /// Values from the command line, by setting key.
+    cli: Arc<HashMap<String, String>>,
 }
 
 /// Names only: a variable's value may be a secret (an admin token).
 impl std::fmt::Debug for Env {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut cli: Vec<&String> = self.cli.keys().collect();
+        cli.sort();
         match &self.fixed {
-            None => f.write_str("Env(process)"),
+            None => f
+                .debug_struct("Env")
+                .field("cli", &cli)
+                .finish_non_exhaustive(),
             Some(vars) => {
                 let mut names: Vec<&String> = vars.keys().collect();
                 names.sort();
-                f.debug_tuple("Env").field(&names).finish()
+                f.debug_struct("Env")
+                    .field("vars", &names)
+                    .field("cli", &cli)
+                    .finish()
             }
         }
     }
@@ -338,7 +511,7 @@ impl std::fmt::Debug for Env {
 impl Env {
     /// The real process environment.
     pub fn process() -> Self {
-        Env { fixed: None }
+        Env::default()
     }
 
     /// A fixed set of variables, with nothing else set.
@@ -349,7 +522,21 @@ impl Env {
                     .map(|(k, v)| (k.into(), v.into()))
                     .collect(),
             )),
+            cli: Arc::default(),
         }
+    }
+
+    /// This environment with values given on the command line, by setting
+    /// key ([`crate::cli::values`]); they win over everything else.
+    pub fn with_cli(mut self, values: HashMap<String, String>) -> Self {
+        self.cli = Arc::new(values);
+        self
+    }
+
+    /// The command-line value for the setting `key`. Unlike a variable, a
+    /// blank one is a value: it was typed on purpose.
+    pub fn cli(&self, key: &str) -> Option<String> {
+        self.cli.get(key).cloned()
     }
 
     /// The variable's value. Unset and blank are the same: a blank

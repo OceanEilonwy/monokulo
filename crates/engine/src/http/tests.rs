@@ -2841,7 +2841,6 @@ async fn engine_that_applies_node_settings() -> (
         store.clone(),
         Some(crate::engine_settings::NodesReloadable {
             daemons: daemons.clone(),
-            strict_tls: false,
         }),
         rate_limiter.clone(),
         live_settings::Env::fixed(Vec::<(String, String)>::new()),

@@ -1,29 +1,27 @@
-//! Every runtime-configurable monokulo setting the admin settings page
-//! exposes (`http/admin_settings.rs`), resolved via the same
-//! `env > database > default` precedence as the engine's, declared once
-//! with the `live-settings` library (admin_settings_v2.md part 1): each
-//! setting's type, range, description and example live in its declaration,
-//! and saving through the registry applies the change to the running
-//! process (part 3).
+//! Every monokulo setting, declared once with the `live-settings` library
+//! (admin_settings_v2.md part 1): each setting's type, range, description
+//! and example live in its declaration. A value comes from its command-line
+//! option, its environment variable, the value saved on the admin settings
+//! page (`http/admin_settings.rs`), or its default, in that order; saving
+//! through the registry applies the change to the running process (part 3).
 //!
-//! **`MONOKULO_ENCRYPTION_KEY` is deliberately not here.** Every other
-//! setting below can be changed at any time with no lasting consequence
-//! beyond "the new value takes effect on the next read" - this one can't:
-//! it's the AES-256-GCM key every `store_connections.tenant_secret_token_encrypted`
-//! row was encrypted with (`crate::crypto`), so rotating it live (or even
-//! exposing its current value on a settings page) would either corrupt
-//! every already-encrypted secret token or leak the key that protects them.
-//! It stays exactly what it always was: a required environment variable,
-//! read once at boot (`main.rs::encryption_key_from_env`), with no database
-//! fallback and no admin-page field.
+//! A few settings can't be saved, only given at start (`sources: [Cli,
+//! Env]`): where the database is, the engine's address and token, and the
+//! log format, which are needed before the database opens, and
+//! `crypto.encryption_key`, the AES-256-GCM key every
+//! `store_connections.tenant_secret_token_encrypted` row is encrypted with
+//! (`crate::crypto`). Keeping it in the database it protects, or changing it
+//! while running, would leak it or make every stored token unreadable. The
+//! admin page shows them locked.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use live_settings::{
-    choice_value, settings, AnySetting, FieldError, HttpUrl, Registry, Section, Setting,
-    SettingValue, Snapshot, Warning,
+    choice_value, settings, AnySetting, BindAddr, Env, FieldError, HttpUrl, Registry, Secret,
+    Section, Snapshot, Warning,
 };
 
 use crate::abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
@@ -54,7 +52,74 @@ fn check_onion_listener(value: &str) -> Result<(), String> {
     crate::abuse::proxy_protocol::validate_onion_listener(value).map(|_| ())
 }
 
+/// 64 hex characters: the 32 bytes of an AES-256-GCM key.
+fn check_encryption_key(value: &Secret) -> Result<(), String> {
+    encryption_key_bytes(value.expose()).map(|_| ())
+}
+
+/// The 32 bytes `value` (64 hex characters) spells.
+pub fn encryption_key_bytes(value: &str) -> Result<[u8; 32], String> {
+    let problem = "Enter 64 hex characters (32 bytes); generate them with `openssl rand -hex 32`.";
+    let bytes = hex::decode(value.trim()).map_err(|_| problem.to_string())?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| problem.to_string())
+}
+
 settings! {
+    DATABASE_PATH: PathBuf {
+        key: "database.path",
+        env: "MONOKULO_DB_PATH",
+        default: PathBuf::from("monokulo.db"),
+        description: "monokulo's database file. Its log store is kept beside it. Given at start only: the settings live inside it.",
+        example: "/var/lib/monokulo/monokulo.db",
+        applies: Restart,
+        sources: [Cli, Env],
+    },
+    SERVER_BIND: BindAddr {
+        key: "server.bind",
+        env: "MONOKULO_BIND",
+        default: live_settings::parsed_default("127.0.0.1:8081"),
+        description: "The address and port monokulo listens on. Takes effect after a restart.",
+        example: "127.0.0.1:8081",
+        applies: Restart,
+    },
+    CRYPTO_ENCRYPTION_KEY: Secret {
+        key: "crypto.encryption_key",
+        env: "MONOKULO_ENCRYPTION_KEY",
+        default: Secret::default(),
+        check: check_encryption_key,
+        description: "The key the engine's secret token for each store is encrypted with in monokulo's database: 64 hex characters, from `openssl rand -hex 32`. Required, given at start only, and never changed once stores are connected: their tokens could no longer be read.",
+        applies: Restart,
+        sources: [Cli, Env],
+        required: true,
+    },
+    ENGINE_URL: HttpUrl {
+        key: "engine.url",
+        env: "MONOKULO_ENGINE_URL",
+        default: live_settings::parsed_default("http://127.0.0.1:8443"),
+        description: "Where monokulo reaches the engine (the engine's server.bind). Given at start only.",
+        example: "http://127.0.0.1:8443",
+        applies: Restart,
+        sources: [Cli, Env],
+    },
+    ENGINE_TOKEN: Secret {
+        key: "engine.token",
+        env: "MONOKULO_ENGINE_TOKEN",
+        default: Secret::default(),
+        check: |token: &Secret| shared::auth::check_engine_token(token.expose()),
+        description: "The engine token, sent with every request to the engine, which refuses anything without it: the engine's ENGINE_TOKEN. Required, at least 32 characters, given at start only.",
+        applies: Restart,
+        sources: [Cli, Env],
+        required: true,
+    },
+    LOGGING_FORMAT: telemetry::LogFormat {
+        key: "logging.format",
+        env: "MONOKULO_LOG_FORMAT",
+        default: telemetry::LogFormat::Auto,
+        description: "How log lines are written to the console: json, pretty, or auto (pretty at a terminal, JSON everywhere else).",
+        example: "json",
+        applies: Restart,
+        sources: [Cli, Env],
+    },
     SIGNUP_MODE: SignupMode {
         key: "signup.mode",
         env: "MONOKULO_SIGNUP_MODE",
@@ -299,32 +364,38 @@ impl Section for LoggingConfig {
     }
 }
 
-/// A setting's effective value for a per-request read: environment, else
-/// saved, else default. A value that doesn't parse (possible only from an
-/// environment variable or a hand-edited row; the admin page refuses them)
-/// gives the default, as the registry resolves it, so the admin page shows
-/// the value requests use.
-pub fn get<T: SettingValue>(db: &Db, setting: &Setting<T>) -> T {
-    if let Some(raw) = shared::settings::env_value(setting.env_var) {
-        if !raw.trim().is_empty() {
-            match setting.parse(&raw) {
-                Ok(value) => return value,
-                Err(e) => {
-                    tracing::warn!(setting = setting.key, env = setting.env_var, error = %e, "settings: the environment variable's value is invalid; using the default");
-                    return setting.default_value();
-                }
-            }
-        }
+/// The command line and environment this process resolves its settings
+/// against, set once at start (`main`); the process environment until then
+/// (and in tests).
+static PROCESS_ENV: OnceLock<Env> = OnceLock::new();
+
+/// Sets the command line and environment per-request reads resolve against,
+/// so a setting given on the command line counts there as everywhere else.
+pub fn set_process_env(env: Env) {
+    let _ = PROCESS_ENV.set(env);
+}
+
+fn process_env() -> Env {
+    PROCESS_ENV.get().cloned().unwrap_or_else(Env::process)
+}
+
+/// The settings read per request, resolved as the registry resolves them:
+/// the command line, the environment, the saved value, the default. An
+/// invalid value gives the default; it was reported when the settings
+/// loaded.
+pub fn per_request(db: &Db) -> PerRequest {
+    let stored = PerRequest::keys()
+        .iter()
+        .filter_map(|setting| {
+            let value = db.get_setting(setting.key()).ok().flatten()?;
+            Some((setting.key().to_string(), value))
+        })
+        .collect();
+    let snapshot = Snapshot::new(stored, process_env());
+    PerRequest {
+        signup_mode: snapshot.get(&SIGNUP_MODE),
+        public_url: snapshot.get(&PUBLIC_URL),
     }
-    if let Some(raw) = db.get_setting(setting.key).ok().flatten() {
-        match setting.parse(&raw) {
-            Ok(value) => return value,
-            Err(e) => {
-                tracing::warn!(setting = setting.key, error = %e, "settings: the saved value is invalid; using the default")
-            }
-        }
-    }
-    setting.default_value()
 }
 
 /// Checks a `public_url` value: this instance's external base URL, the one
@@ -354,7 +425,7 @@ pub fn validate_public_url(value: &str) -> Result<String, String> {
 /// This instance's public base URL (no trailing `/`), or `None` while it
 /// isn't set.
 pub fn public_url(db: &Db) -> Option<String> {
-    let value = get(db, &PUBLIC_URL);
+    let value = per_request(db).public_url;
     if value.trim().is_empty() {
         return None;
     }
@@ -363,40 +434,57 @@ pub fn public_url(db: &Db) -> Option<String> {
 
 /// This instance's current signup mode.
 pub fn signup_mode(db: &Db) -> SignupMode {
-    get(db, &SIGNUP_MODE)
+    per_request(db).signup_mode
 }
 
-/// The environment variable naming the engine's address.
-pub const ENGINE_URL_ENV: &str = "MONOKULO_ENGINE_URL";
-/// The engine's address when [`ENGINE_URL_ENV`] isn't set: an engine on the
-/// same machine with its default `server.bind`.
-pub const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:8443";
-/// The environment variable holding the engine token (the engine's
-/// `ENGINE_TOKEN`).
-pub const ENGINE_TOKEN_ENV: &str = "MONOKULO_ENGINE_TOKEN";
-
-/// How monokulo reaches the engine: its address and the engine token, read from
-/// the environment once at start and never from the admin page, which
-/// shows both locked. The token is required, since the engine refuses
-/// every request without it.
-#[derive(Debug, Clone)]
-pub struct EngineEnv {
-    pub url: String,
-    pub token: shared::auth::RawToken,
+/// What monokulo needs before its database opens, or must never keep in it:
+/// given at start only (`sources: [Cli, Env]`), read in `main`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BootConfig {
+    pub database_path: PathBuf,
+    pub encryption_key: Secret,
+    pub engine_url: HttpUrl,
+    pub engine_token: Secret,
+    pub log_format: telemetry::LogFormat,
 }
 
-impl EngineEnv {
-    pub fn from_env(env: &live_settings::Env) -> Result<Self, String> {
-        let url = match env.get(ENGINE_URL_ENV) {
-            Some(raw) => <live_settings::HttpUrl as live_settings::SettingValue>::parse(&raw)
-                .map_err(|e| format!("{ENGINE_URL_ENV} is not usable: {e}"))?
-                .as_str()
-                .to_string(),
-            None => DEFAULT_ENGINE_URL.to_string(),
-        };
-        let token =
-            shared::auth::engine_token_from_env(ENGINE_TOKEN_ENV, env.get(ENGINE_TOKEN_ENV))?;
-        Ok(EngineEnv { url, token })
+impl Section for BootConfig {
+    const NAME: &'static str = "boot";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[
+            &DATABASE_PATH,
+            &CRYPTO_ENCRYPTION_KEY,
+            &ENGINE_URL,
+            &ENGINE_TOKEN,
+            &LOGGING_FORMAT,
+        ]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(BootConfig {
+            database_path: snapshot.get(&DATABASE_PATH),
+            encryption_key: snapshot.get(&CRYPTO_ENCRYPTION_KEY),
+            engine_url: snapshot.get(&ENGINE_URL),
+            engine_token: snapshot.get(&ENGINE_TOKEN),
+            log_format: snapshot.get(&LOGGING_FORMAT),
+        })
+    }
+}
+
+/// Where monokulo listens: read once at start, after the settings load.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerConfig {
+    pub bind: SocketAddr,
+}
+
+impl Section for ServerConfig {
+    const NAME: &'static str = "server";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&SERVER_BIND]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(ServerConfig {
+            bind: snapshot.get(&SERVER_BIND).0,
+        })
     }
 }
 
@@ -419,8 +507,7 @@ impl Section for EngineConnection {
     }
 }
 
-/// Read per request with [`get`]; grouped so each setting belongs to a
-/// section. Nothing holds it live.
+/// Read per request with [`per_request`]; nothing holds it live.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PerRequest {
     pub signup_mode: SignupMode,
@@ -463,6 +550,7 @@ impl Section for ExchangeRateConfig {
     const NAME: &'static str = "exchange rates";
     fn keys() -> &'static [&'static dyn AnySetting] {
         &[
+            &HTTP_CACHE_MAX_MB,
             &EXCHANGE_RATE_COINGECKO_ENABLED,
             &EXCHANGE_RATE_COINGECKO_BASE_URL,
             &EXCHANGE_RATE_COINMARKETCAP_ENABLED,
@@ -490,6 +578,7 @@ impl Section for ExchangeRateConfig {
                 .as_str()
                 .to_string(),
             cache_seconds: snapshot.get(&EXCHANGE_RATE_CACHE_SECONDS),
+            http_cache_bytes: snapshot.get(&HTTP_CACHE_MAX_MB) * 1024 * 1024,
         })
     }
 }
@@ -794,12 +883,19 @@ impl OnionReloadable {
 /// live sections the process reads.
 pub struct MonokuloSettings {
     pub registry: Option<Registry>,
+    /// Where monokulo listens, read once at start.
+    pub server: live_settings::Live<ServerConfig>,
 }
 
 impl MonokuloSettings {
     /// No registry, for tests that don't use the admin settings page.
     pub fn defaults() -> Arc<Self> {
-        Arc::new(MonokuloSettings { registry: None })
+        Arc::new(MonokuloSettings {
+            registry: None,
+            server: live_settings::Live::new(ServerConfig {
+                bind: SERVER_BIND.default_value().0,
+            }),
+        })
     }
 
     /// Loads every setting and applies it to the given runtime pieces;
@@ -826,11 +922,13 @@ impl MonokuloSettings {
                 builder.section::<OnionListenerConfig>();
             }
         }
-        // Its settings are read per request with `get` (they have no
-        // runtime state to rebuild); the section only groups them.
+        // Its settings are read per request with `per_request` (they have
+        // no runtime state to rebuild); the section only groups them.
         builder.section::<PerRequest>();
         // Read once at start, before the registry exists (`main.rs`).
         builder.section::<DatabaseConfig>();
+        builder.section::<BootConfig>();
+        let server = builder.section::<ServerConfig>();
         builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
         let registry = builder.build().map_err(|e| e.to_string())?;
         let report = registry.boot().await.map_err(|e| e.to_string())?;
@@ -846,6 +944,7 @@ impl MonokuloSettings {
         }
         Ok(Arc::new(MonokuloSettings {
             registry: Some(registry),
+            server,
         }))
     }
 }
@@ -902,17 +1001,6 @@ mod tests {
         assert_eq!(public_url(&db), None);
     }
 
-    #[test]
-    fn a_saved_setting_is_read_back_over_the_default_and_an_env_var_wins() {
-        let db = Db::open_in_memory().unwrap();
-        assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 30);
-        db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3")
-            .unwrap();
-        assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 3);
-        let _env = shared::settings::test_env::set(EXCHANGE_RATE_CACHE_SECONDS.env_var, Some("9"));
-        assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 9);
-    }
-
     /// An environment value that doesn't parse gives the default, as the
     /// registry (and so the admin page) resolves it, not the saved value.
     #[test]
@@ -920,14 +1008,17 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3")
             .unwrap();
-        let _env =
-            shared::settings::test_env::set(EXCHANGE_RATE_CACHE_SECONDS.env_var, Some("lots"));
-        assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 30);
         let resolved = live_settings::read_sync_with_env::<ExchangeRateConfig>(
             db.list_settings().map_err(live_settings::StoreError::new),
             &live_settings::Env::fixed([(EXCHANGE_RATE_CACHE_SECONDS.env_var, "lots")]),
         );
         assert_eq!(resolved.cache_seconds, 30);
+        let resolved = live_settings::read_sync_with_env::<ExchangeRateConfig>(
+            db.list_settings().map_err(live_settings::StoreError::new),
+            &live_settings::Env::fixed(Vec::<(String, String)>::new()),
+        );
+        assert_eq!(resolved.cache_seconds, 3);
+        assert_eq!(resolved.http_cache_bytes, 16 * 1024 * 1024);
     }
 
     /// With nothing saved and nothing in the environment: Coingecko and
@@ -949,12 +1040,17 @@ mod tests {
                 haveno_enabled: false,
                 haveno_base_url: "https://haveno.markets".to_string(),
                 cache_seconds: 30,
+                http_cache_bytes: 16 * 1024 * 1024,
             }
         );
     }
 
+    /// What has to be known at start comes from the command line or the
+    /// environment: the engine's address (defaulting to one on this
+    /// machine), and the engine token and encryption key, without which
+    /// monokulo doesn't start.
     #[test]
-    fn the_engine_connection_comes_from_the_environment_and_needs_a_token() {
+    fn the_start_up_settings_come_from_outside_and_two_are_required() {
         let env = |pairs: &[(&str, &str)]| {
             live_settings::Env::fixed(
                 pairs
@@ -964,37 +1060,52 @@ mod tests {
             )
         };
         let token = "t".repeat(shared::auth::MIN_ENGINE_TOKEN_LEN);
-
-        let defaults = EngineEnv::from_env(&env(&[(ENGINE_TOKEN_ENV, &token)])).unwrap();
-        assert_eq!(defaults.url, DEFAULT_ENGINE_URL);
-        assert_eq!(defaults.token.expose(), token);
-
-        let set = EngineEnv::from_env(&env(&[
-            (ENGINE_URL_ENV, "http://engine:8443/"),
-            (ENGINE_TOKEN_ENV, &token),
-        ]))
-        .unwrap();
+        let none = env(&[]);
         assert_eq!(
-            set.url, "http://engine:8443",
+            ENGINE_URL.require(&none).unwrap().as_str(),
+            "http://127.0.0.1:8443"
+        );
+        let set = env(&[("MONOKULO_ENGINE_URL", "http://engine:8443/")]);
+        assert_eq!(
+            ENGINE_URL.require(&set).unwrap().as_str(),
+            "http://engine:8443",
             "no trailing slash to double up"
         );
+        let flagged =
+            set.with_cli([("engine.url".to_string(), "http://other:8443".to_string())].into());
+        assert_eq!(
+            ENGINE_URL.require(&flagged).unwrap().as_str(),
+            "http://other:8443",
+            "the option wins"
+        );
 
-        let missing = EngineEnv::from_env(&env(&[])).unwrap_err();
+        assert_eq!(
+            ENGINE_TOKEN
+                .require(&env(&[("MONOKULO_ENGINE_TOKEN", &token)]))
+                .unwrap()
+                .expose(),
+            token
+        );
+        let missing = ENGINE_TOKEN.require(&none).unwrap_err();
         assert!(
-            missing.starts_with("MONOKULO_ENGINE_TOKEN is not set"),
+            missing.starts_with("MONOKULO_ENGINE_TOKEN or --engine-token must be set."),
             "{missing}"
         );
-        let short = EngineEnv::from_env(&env(&[(ENGINE_TOKEN_ENV, "short")])).unwrap_err();
-        assert!(short.contains("shorter than"), "{short}");
-        let bad_url = EngineEnv::from_env(&env(&[
-            (ENGINE_URL_ENV, "engine:8443"),
-            (ENGINE_TOKEN_ENV, &token),
-        ]))
-        .unwrap_err();
-        assert!(
-            bad_url.starts_with("MONOKULO_ENGINE_URL is not usable"),
-            "{bad_url}"
-        );
+        let short = ENGINE_TOKEN
+            .require(&env(&[("MONOKULO_ENGINE_TOKEN", "short")]))
+            .unwrap_err();
+        assert!(short.contains("at least 32 characters"), "{short}");
+
+        let key = "ab".repeat(32);
+        assert!(CRYPTO_ENCRYPTION_KEY
+            .require(&env(&[("MONOKULO_ENCRYPTION_KEY", &key)]))
+            .is_ok());
+        assert!(CRYPTO_ENCRYPTION_KEY.require(&none).is_err());
+        let not_hex = CRYPTO_ENCRYPTION_KEY
+            .require(&env(&[("MONOKULO_ENCRYPTION_KEY", "zz")]))
+            .unwrap_err();
+        assert!(not_hex.contains("64 hex characters"), "{not_hex}");
+        assert_eq!(encryption_key_bytes(&key).unwrap(), [0xab; 32]);
     }
 
     #[test]
@@ -1006,19 +1117,26 @@ mod tests {
         assert!(AbuseConfig::from_snapshot(&snapshot).is_ok());
         assert!(OnionListenerConfig::from_snapshot(&snapshot).is_ok());
         assert!(LoggingConfig::from_snapshot(&snapshot).is_ok());
+        assert!(BootConfig::from_snapshot(&snapshot).is_ok());
+        assert!(ServerConfig::from_snapshot(&snapshot).is_ok());
         assert!(DatabaseConfig::from_snapshot(&snapshot).is_ok());
-        let covered: usize = [
-            EngineConnection::keys().len(),
-            PerRequest::keys().len(),
-            ExchangeRateConfig::keys().len(),
-            AbuseConfig::keys().len(),
-            OnionListenerConfig::keys().len(),
-            LoggingConfig::keys().len(),
-            DatabaseConfig::keys().len(),
+        // http_cache.max_mb is read by two (the engine client and the
+        // exchange-rate providers).
+        let covered: std::collections::BTreeSet<&str> = [
+            EngineConnection::keys(),
+            PerRequest::keys(),
+            ExchangeRateConfig::keys(),
+            AbuseConfig::keys(),
+            OnionListenerConfig::keys(),
+            LoggingConfig::keys(),
+            DatabaseConfig::keys(),
+            BootConfig::keys(),
+            ServerConfig::keys(),
         ]
         .iter()
-        .sum();
-        assert_eq!(covered, ALL.len());
+        .flat_map(|keys| keys.iter().map(|setting| setting.key()))
+        .collect();
+        assert_eq!(covered.len(), ALL.len());
     }
 
     async fn loaded(

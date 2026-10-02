@@ -1,21 +1,22 @@
-//! Top-level argv parsing for the `scanner` binary - kept in the lib crate
-//! (not `main.rs`) so it's unit-testable the normal way, and so `main.rs` stays a
+//! The `monokulo-engine` command line, with `clap`: the one-off commands
+//! (`--bootstrap-wallet`, `--rotate-secret`, `--show-tenant`) and an option
+//! for every setting that takes one, with help from the settings' own
+//! declarations (`live_settings::cli`). Kept in the lib crate (not
+//! `main.rs`) so it's unit-testable the normal way, and so `main.rs` stays a
 //! thin wrapper around whatever this decides the process should do.
 //!
-//! No `--config`/config-file concept any more (`config.rs` and the interactive
-//! `--init` wizard it backed are both gone - every setting that used to live in
-//! a TOML file now lives in the `settings` table instead, editable at runtime
-//! over the instance-admin HTTP API rather than only at boot from a file). The
-//! one thing every mode below still needs to agree on is *where the database
-//! is* - see [`database_path`].
+//! A setting comes from its option, then its environment variable, then
+//! the value saved on the admin page, then its default. Every mode below
+//! agrees on where the database is: `database.path` (`--database-path` or
+//! `ENGINE_DB_PATH`).
+
+use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::local_admin::BootstrapWalletArgs;
 
 #[derive(Debug)]
 pub enum Action {
-    RunServer {
-        strict_tls: bool,
-    },
+    RunServer,
     /// Mints a fresh admin secret for a tenant, invalidating the old one - see
     /// `local_admin::rotate_secret`.
     RotateSecret {
@@ -29,7 +30,14 @@ pub enum Action {
     /// used to be the `[wallet]` section of the (now-removed) TOML config file -
     /// see `local_admin::bootstrap_wallet`.
     BootstrapWallet(BootstrapWalletCommand),
-    Help,
+}
+
+/// What the command line asked for: the mode, and the settings it gave,
+/// over the process environment (what the settings resolve against).
+#[derive(Debug)]
+pub struct Invocation {
+    pub action: Action,
+    pub env: live_settings::Env,
 }
 
 /// `--bootstrap-wallet` as parsed: everything `local_admin::bootstrap_wallet`
@@ -82,207 +90,159 @@ impl BootstrapWalletCommand {
     }
 }
 
-pub const HELP_TEXT: &str = "\
-scanner - a self-hosted Monero payment gateway
+const ABOUT: &str = "The engine of Monokulo, a self-hosted Monero payment gateway: it \
+watches each network's chain for stores' payments. Only monokulo should reach it.";
 
-USAGE:
-    scanner [--strict-tls]
-    scanner --bootstrap-wallet --primary-address <ADDR> --view-key-file <PATH> \
---spend-pubkey <HEX> [--network mainnet|stagenet|testnet] \
-[--key-custody-backend plain|socket]
-    scanner --rotate-secret [--pk <PK>]
-    scanner --show-tenant [--pk <PK>]
+const LONG_ABOUT: &str = "The engine of Monokulo, a self-hosted Monero payment gateway: it \
+watches each network's chain for stores' payments. Only monokulo should reach it.
 
-With no other mode, starts the HTTP server. Every runtime-configurable setting
-(Monero node endpoints, confirmation/expiry thresholds, rate limits, webhook
-policy, ...) is read from the database (`env` var overrides win over a stored
-value, which wins over a built-in default) and editable at runtime over the
-instance-admin HTTP API (`GET`/`POST /api/v1/admin/settings`) - see that API's
-own doc comment (`http::instance_admin`) for the full list and how each one's
-environment-variable override is named. This binary itself only ever needs to
-know where its own database file lives - see DATABASE below.
+With none of the one-off commands, it starts the server. Every setting below can be given \
+as an option, as its environment variable, or (unless it says it isn't saved) on the admin \
+settings page, which applies it without a restart. An option wins over the environment \
+variable, which wins over the saved value, which wins over the default. ENGINE_TOKEN (or \
+--server-token) is required.";
 
-DATABASE:
-    Read from ENGINE_DB_PATH if set, otherwise ./engine.db in the current
-    working directory - by every mode below, so a plain `scanner` server run
-    and every one of the commands here always agree on which file they mean.
+const EXAMPLES: &str = "Examples:
+  ENGINE_TOKEN=$(cat engine.token) monokulo-engine
+      Start the server.
+  ENGINE_TOKEN=$(cat engine.token) monokulo-engine --server-bind 10.0.0.2:8443 --monero-node-strict-tls true
+      Start it on a private address, refusing self-signed node certificates.
+  monokulo-engine --bootstrap-wallet --primary-address 4... --view-key-file view.key --spend-pubkey <hex>
+      Provision the one self-hosted tenant.
+  printf '%s' <hex> | monokulo-engine --bootstrap-wallet ... --view-key-file -
+      The same, with the key on standard input.
+  monokulo-engine --rotate-secret
+      Mint a fresh admin secret for the sole tenant.";
 
-OPTIONS:
-    --strict-tls          Require a real CA-signed certificate from every
-                          configured node, overriding that node's own
-                          accept_self_signed_certs setting. Only meaningful
-                          when starting the server.
-    --bootstrap-wallet     Create the one tenant a self-hosted deployment
-                          needs, from a watch-only view key and spend public
-                          key - refuses if a tenant already exists (this is a
-                          one-time action, not an ongoing setting; a hosted
-                          instance creates tenants at runtime via the admin
-                          HTTP API instead and never uses this at all).
-    --primary-address      The wallet's own primary address (bootstrap only).
-    --view-key-file        A file holding the wallet's private view key,
-                          hex-encoded (bootstrap only) - never a spend key.
-                          `-` reads it from standard input. Never an
-                          argument: the argument list is readable by every
-                          user on the machine and kept by the shell's
-                          history.
-    --spend-pubkey         The wallet's public spend key, hex-encoded
-                          (bootstrap only) - the public half only, never the
-                          private spend key.
-    --key-custody-backend  Where the wallet's keys are kept (bootstrap only):
-                          one of the enabled key_custody.enabled_backends;
-                          key_custody.default_backend when not given. The
-                          primary address must be the wallet of the given
-                          keys on the given network, or nothing is created.
-    --network              Which network the bootstrap tenant watches -
-                          mainnet (default), stagenet, or testnet.
-    --rotate-secret        Mint a fresh admin secret (sk_...) for a tenant,
-                          invalidating the old one - the only way back in if
-                          you've lost it. Needs a tenant to already exist.
-    --show-tenant          Print a tenant's current settings (public key,
-                          network, address, allowed origins, thresholds) -
-                          never its keys or secret.
-    --pk <PK>              Which tenant --rotate-secret/--show-tenant act on.
-                          Only needed if more than one tenant is configured -
-                          the common, self-hosted, single-tenant case is found
-                          automatically.
-    --help, -h             Print this help and exit.
+/// The one-off commands' heading in the help.
+const COMMANDS: &str = "One-off commands";
 
-EXAMPLES:
-    scanner                        Start the server.
-    scanner --strict-tls           Start the server, rejecting self-signed node certs.
-    scanner --bootstrap-wallet --primary-address 4... --view-key-file view.key --spend-pubkey <hex>
-                                   Provision the one self-hosted tenant.
-    printf '%s' <hex> | scanner --bootstrap-wallet ... --view-key-file -
-                                   The same, with the key on standard input.
-    scanner --rotate-secret        Mint a fresh admin secret for the sole tenant.
-";
-
-/// The database file every mode below reads from - `ENGINE_DB_PATH` if set,
-/// otherwise `engine.db` in the current working directory. A single,
-/// deliberately simple convention now that there's no config file for a path
-/// to be derived alongside any more (the former `init_wizard::database_path_for`
-/// always placed the database next to whatever config file was in use - this
-/// is that same idea with the "next to a config file" half removed, since
-/// there is no config file to be next to).
-pub fn database_path() -> std::path::PathBuf {
-    database_path_from(std::env::var("ENGINE_DB_PATH").ok().as_deref())
+/// The command line: the one-off commands, then an option per setting.
+pub fn command() -> Command {
+    let only_for_bootstrap = |arg: Arg| arg.requires("bootstrap-wallet").help_heading(COMMANDS);
+    let command = Command::new("monokulo-engine")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about(ABOUT)
+        .long_about(LONG_ABOUT)
+        .after_help(EXAMPLES)
+        .arg(
+            Arg::new("bootstrap-wallet")
+                .long("bootstrap-wallet")
+                .action(ArgAction::SetTrue)
+                .requires_all(["primary-address", "view-key-file", "spend-pubkey"])
+                .conflicts_with_all(["rotate-secret", "show-tenant"])
+                .help_heading(COMMANDS)
+                .help("Create the one tenant a self-hosted deployment needs, from a watch-only view key and spend public key, then exit. Refuses if a tenant already exists."),
+        )
+        .arg(only_for_bootstrap(
+            Arg::new("primary-address")
+                .long("primary-address")
+                .value_name("ADDRESS")
+                .help("The wallet's own primary address. It must be the wallet of the given keys on the given network."),
+        ))
+        .arg(only_for_bootstrap(
+            Arg::new("view-key-file")
+                .long("view-key-file")
+                .value_name("PATH")
+                .help("A file holding the wallet's private view key, hex-encoded; - reads it from standard input. Never the key itself: the argument list is readable by every user on the machine and kept by the shell's history."),
+        ))
+        .arg(
+            Arg::new("view-key")
+                .long("view-key")
+                .hide(true)
+                .value_parser(|_: &str| -> Result<String, String> {
+                    Err("a key in the argument list is readable by every user on the machine - put it in a file and pass --view-key-file <PATH> (or - for standard input)".to_string())
+                }),
+        )
+        .arg(only_for_bootstrap(
+            Arg::new("spend-pubkey")
+                .long("spend-pubkey")
+                .value_name("HEX")
+                .help("The wallet's public spend key, hex-encoded: the public half only, never the private spend key."),
+        ))
+        .arg(only_for_bootstrap(
+            Arg::new("network")
+                .long("network")
+                .value_parser(["mainnet", "stagenet", "testnet"])
+                .default_value("mainnet")
+                .help("Which network the bootstrap tenant watches."),
+        ))
+        .arg(only_for_bootstrap(
+            Arg::new("key-custody-backend")
+                .long("key-custody-backend")
+                .value_name("BACKEND")
+                .help("Where the wallet's keys are kept: one of the enabled key custody backends. key_custody.default_backend when not given."),
+        ))
+        .arg(
+            Arg::new("rotate-secret")
+                .long("rotate-secret")
+                .action(ArgAction::SetTrue)
+                .conflicts_with("show-tenant")
+                .help_heading(COMMANDS)
+                .help("Mint a fresh admin secret (sk_...) for a tenant, invalidating the old one, then exit: the only way back in if it's lost."),
+        )
+        .arg(
+            Arg::new("show-tenant")
+                .long("show-tenant")
+                .action(ArgAction::SetTrue)
+                .help_heading(COMMANDS)
+                .help("Print a tenant's current settings (public key, network, address, thresholds), never its keys or secret, then exit."),
+        )
+        .arg(
+            Arg::new("pk")
+                .long("pk")
+                .value_name("PK")
+                .help_heading(COMMANDS)
+                .help("Which tenant --rotate-secret or --show-tenant act on. Only needed when there is more than one."),
+        );
+    live_settings::cli::with_settings(command, crate::engine_settings::ALL)
 }
 
-/// [`database_path`] for a given `ENGINE_DB_PATH` value (`None` when
-/// unset). Pure, so it is tested without touching the process environment,
-/// which other tests in the same binary read at the same time.
-fn database_path_from(configured: Option<&str>) -> std::path::PathBuf {
-    configured
-        .filter(|path| !path.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("engine.db"))
+/// Parses the full argument list, argv[0] included. Help, the version and
+/// mistakes come back as clap's error, which the caller prints and exits on
+/// (`clap::Error::exit`).
+pub fn parse_args<I, T>(args: I) -> Result<Invocation, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let matches = command().try_get_matches_from(args)?;
+    Ok(invocation(&matches, live_settings::Env::process()))
 }
 
-/// Parses the full process argv (excluding argv[0]). `--help`/`-h` short-circuits
-/// everything else - present anywhere, it wins.
-pub fn parse_args(args: &[String]) -> Result<Action, String> {
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        return Ok(Action::Help);
+fn invocation(matches: &ArgMatches, env: live_settings::Env) -> Invocation {
+    let text = |id: &str| matches.get_one::<String>(id).cloned();
+    let action = if matches.get_flag("bootstrap-wallet") {
+        // `requires_all` above: clap has refused the command without them.
+        Action::BootstrapWallet(BootstrapWalletCommand {
+            primary_address: text("primary-address").unwrap_or_default(),
+            view_key_file: text("view-key-file").unwrap_or_default(),
+            spend_pubkey_hex: text("spend-pubkey").unwrap_or_default(),
+            network: text("network").unwrap_or_else(|| "mainnet".to_string()),
+            key_custody_backend: text("key-custody-backend"),
+        })
+    } else if matches.get_flag("rotate-secret") {
+        Action::RotateSecret { pk: text("pk") }
+    } else if matches.get_flag("show-tenant") {
+        Action::ShowTenant { pk: text("pk") }
+    } else {
+        Action::RunServer
+    };
+    Invocation {
+        action,
+        env: env.with_cli(live_settings::cli::values(
+            matches,
+            crate::engine_settings::ALL,
+        )),
     }
-    if args.iter().any(|a| a == "--bootstrap-wallet") {
-        return parse_bootstrap_wallet_args(args).map(Action::BootstrapWallet);
-    }
-    if args.iter().any(|a| a == "--rotate-secret") {
-        return Ok(Action::RotateSecret {
-            pk: parse_pk_arg("--rotate-secret", args)?,
-        });
-    }
-    if args.iter().any(|a| a == "--show-tenant") {
-        return Ok(Action::ShowTenant {
-            pk: parse_pk_arg("--show-tenant", args)?,
-        });
-    }
-    let mut strict_tls = false;
-    for arg in args {
-        match arg.as_str() {
-            "--strict-tls" => strict_tls = true,
-            other => {
-                return Err(format!(
-                    "unrecognized argument {other:?} - run with --help for usage"
-                ))
-            }
-        }
-    }
-    Ok(Action::RunServer { strict_tls })
 }
 
-/// Shared `--pk` parsing for `--rotate-secret` and `--show-tenant`. Any
-/// other argument is an error, as in every other mode: a mistyped flag must
-/// not act on the default tenant as if nothing had been asked.
-fn parse_pk_arg(mode: &str, args: &[String]) -> Result<Option<String>, String> {
-    let mut pk = None;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--pk" => {
-                pk = Some(
-                    iter.next()
-                        .ok_or_else(|| "--pk needs a value".to_string())?
-                        .clone(),
-                );
-            }
-            flag if flag == mode => {}
-            other => return Err(format!("unrecognized argument {other:?} for {mode}")),
-        }
-    }
-    Ok(pk)
-}
-
-fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletCommand, String> {
-    let mut primary_address = None;
-    let mut view_key_file = None;
-    let mut spend_pubkey_hex = None;
-    let mut network = "mainnet".to_string();
-    let mut key_custody_backend = None;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--primary-address" => {
-                primary_address = Some(
-                    iter.next()
-                        .ok_or("--primary-address needs a value")?
-                        .clone(),
-                )
-            }
-            "--view-key-file" => {
-                view_key_file = Some(iter.next().ok_or("--view-key-file needs a value")?.clone())
-            }
-            "--view-key" => {
-                return Err(
-                    "--view-key is not accepted: a key in the argument list is readable by every user on the machine - put it in a file and pass --view-key-file <PATH> (or - for standard input)".to_string(),
-                )
-            }
-            "--spend-pubkey" => {
-                spend_pubkey_hex = Some(iter.next().ok_or("--spend-pubkey needs a value")?.clone())
-            }
-            "--network" => network = iter.next().ok_or("--network needs a value")?.clone(),
-            "--key-custody-backend" => {
-                key_custody_backend = Some(
-                    iter.next()
-                        .ok_or("--key-custody-backend needs a value")?
-                        .clone(),
-                )
-            }
-            "--bootstrap-wallet" => {}
-            other => {
-                return Err(format!(
-                    "unrecognized argument {other:?} for --bootstrap-wallet"
-                ))
-            }
-        }
-    }
-    Ok(BootstrapWalletCommand {
-        primary_address: primary_address.ok_or("--bootstrap-wallet requires --primary-address")?,
-        view_key_file: view_key_file.ok_or("--bootstrap-wallet requires --view-key-file")?,
-        spend_pubkey_hex: spend_pubkey_hex.ok_or("--bootstrap-wallet requires --spend-pubkey")?,
-        network,
-        key_custody_backend,
-    })
+/// The database file every mode reads: `database.path`, from its option or
+/// `ENGINE_DB_PATH`, otherwise `engine.db` in the current directory.
+pub fn database_path(env: &live_settings::Env) -> std::path::PathBuf {
+    crate::engine_settings::DATABASE_PATH
+        .require(env)
+        .unwrap_or_else(|_| crate::engine_settings::DATABASE_PATH.default_value())
 }
 
 #[cfg(test)]
@@ -290,24 +250,50 @@ fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletCommand
 mod tests {
     use super::*;
 
-    fn args(strs: &[&str]) -> Vec<String> {
-        strs.iter().map(|s| s.to_string()).collect()
+    fn parse(argv: &[&str]) -> Result<Invocation, clap::Error> {
+        let matches = command()
+            .try_get_matches_from(std::iter::once("monokulo-engine").chain(argv.iter().copied()))?;
+        Ok(invocation(
+            &matches,
+            live_settings::Env::fixed(Vec::<(String, String)>::new()),
+        ))
     }
 
     #[test]
-    fn no_arguments_starts_the_server_with_default_options() {
-        match parse_args(&args(&[])).unwrap() {
-            Action::RunServer { strict_tls } => assert!(!strict_tls),
-            _ => panic!("expected RunServer"),
-        }
+    fn the_command_line_is_well_formed() {
+        command().debug_assert();
     }
 
     #[test]
-    fn strict_tls_flag_is_recognized() {
-        match parse_args(&args(&["--strict-tls"])).unwrap() {
-            Action::RunServer { strict_tls } => assert!(strict_tls),
-            _ => panic!("expected RunServer"),
-        }
+    fn no_arguments_starts_the_server() {
+        assert!(matches!(parse(&[]).unwrap().action, Action::RunServer));
+    }
+
+    /// A setting given as an option reaches the settings, checked as it is
+    /// parsed; the old `--strict-tls` is the setting's own option now.
+    #[test]
+    fn a_setting_can_be_given_as_an_option() {
+        let invocation = parse(&[
+            "--monero-node-strict-tls",
+            "true",
+            "--database-path",
+            "/data/e.db",
+        ])
+        .unwrap();
+        assert!(matches!(invocation.action, Action::RunServer));
+        assert_eq!(
+            database_path(&invocation.env),
+            std::path::PathBuf::from("/data/e.db")
+        );
+        assert_eq!(
+            invocation.env.cli("monero_node.strict_tls").as_deref(),
+            Some("true")
+        );
+        let refused = parse(&["--payment-reorg-check-depth", "0"])
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("--payment-reorg-check-depth"), "{refused}");
+        assert!(parse(&["--strict-tls"]).is_err(), "the old flag is gone");
     }
 
     #[test]
@@ -315,34 +301,34 @@ mod tests {
         // A leftover config-file-path-shaped argument (from the removed
         // `--config`/positional-path era) must not be silently accepted and
         // ignored - that would look like it worked while doing nothing.
-        assert!(parse_args(&args(&["moneropay.toml"])).is_err());
+        assert!(parse(&["moneropay.toml"]).is_err());
     }
 
     #[test]
-    fn help_flag_wins_over_everything_else_wherever_it_appears() {
-        assert!(matches!(
-            parse_args(&args(&["--help"])).unwrap(),
-            Action::Help
-        ));
-        assert!(matches!(parse_args(&args(&["-h"])).unwrap(), Action::Help));
-        assert!(matches!(
-            parse_args(&args(&["--bootstrap-wallet", "--help"])).unwrap(),
-            Action::Help
-        ));
-        assert!(matches!(
-            parse_args(&args(&["--rotate-secret", "--help"])).unwrap(),
-            Action::Help
-        ));
-        assert!(matches!(
-            parse_args(&args(&["--show-tenant", "--help"])).unwrap(),
-            Action::Help
-        ));
+    fn help_and_version_are_answered_by_clap() {
+        for argv in [
+            &["--help"][..],
+            &["-h"],
+            &["--rotate-secret", "--help"],
+            &["--version"],
+        ] {
+            let kind = parse(argv).unwrap_err().kind();
+            assert!(
+                matches!(
+                    kind,
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                ),
+                "{argv:?}: {kind:?}"
+            );
+        }
     }
 
+    /// The help names every command and every setting's option, with its
+    /// environment variable.
     #[test]
-    fn help_text_documents_every_real_flag() {
+    fn the_help_documents_the_commands_and_every_setting() {
+        let help = command().render_long_help().to_string();
         for flag in [
-            "--strict-tls",
             "--bootstrap-wallet",
             "--primary-address",
             "--view-key-file",
@@ -353,44 +339,55 @@ mod tests {
             "--pk",
             "--help",
         ] {
-            assert!(HELP_TEXT.contains(flag), "help text should mention {flag}");
+            assert!(help.contains(flag), "help should mention {flag}");
         }
+        for setting in crate::engine_settings::ALL {
+            let flag = format!("--{}", live_settings::cli_flag(setting.key()));
+            assert!(help.contains(&flag), "help should mention {flag}");
+            assert!(
+                help.contains(setting.env_var()),
+                "help should mention {}",
+                setting.env_var()
+            );
+        }
+        assert!(
+            !help.contains("--view-key "),
+            "the refused flag stays hidden"
+        );
     }
 
     #[test]
-    fn rotate_secret_flag_defaults_to_no_pk() {
-        match parse_args(&args(&["--rotate-secret"])).unwrap() {
+    fn rotate_secret_defaults_to_no_pk_and_show_tenant_takes_one() {
+        match parse(&["--rotate-secret"]).unwrap().action {
             Action::RotateSecret { pk } => assert!(pk.is_none()),
-            _ => panic!("expected RotateSecret"),
+            other => panic!("expected RotateSecret, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn show_tenant_flag_accepts_a_pk_override() {
-        match parse_args(&args(&["--show-tenant", "--pk", "pk_abc"])).unwrap() {
+        match parse(&["--show-tenant", "--pk", "pk_abc"]).unwrap().action {
             Action::ShowTenant { pk } => assert_eq!(pk.as_deref(), Some("pk_abc")),
-            _ => panic!("expected ShowTenant"),
+            other => panic!("expected ShowTenant, got {other:?}"),
         }
     }
 
-    /// A mistyped flag with `--rotate-secret`/`--show-tenant` is refused,
-    /// not ignored: ignored, it would act on the default tenant.
+    /// A mistyped flag, or a bootstrap-only one, with `--rotate-secret`/
+    /// `--show-tenant` is refused, not ignored: ignored, it would act on the
+    /// default tenant.
     #[test]
     fn the_local_admin_modes_refuse_unknown_arguments() {
         for argv in [
             &["--rotate-secret", "--pks", "pk_x"][..],
             &["--show-tenant", "--network", "stagenet"][..],
             &["--rotate-secret", "--pk"][..],
+            &["--rotate-secret", "--show-tenant"][..],
         ] {
-            assert!(parse_args(&args(argv)).is_err(), "{argv:?}");
+            assert!(parse(argv).is_err(), "{argv:?}");
         }
     }
 
     #[test]
     fn bootstrap_wallet_requires_the_three_key_material_flags() {
-        assert!(parse_args(&args(&["--bootstrap-wallet"])).is_err());
-        assert!(parse_args(&args(&["--bootstrap-wallet", "--primary-address", "4abc"])).is_err());
-        assert!(parse_args(&args(&[
+        assert!(parse(&["--bootstrap-wallet"]).is_err());
+        assert!(parse(&["--bootstrap-wallet", "--primary-address", "4abc"]).is_err());
+        assert!(parse(&[
             "--bootstrap-wallet",
             "--primary-address",
             "4abc",
@@ -398,7 +395,7 @@ mod tests {
             "view.key",
             "--spend-pubkey",
             "bb",
-        ]))
+        ])
         .is_ok());
     }
 
@@ -407,23 +404,26 @@ mod tests {
     /// the newline an editor leaves trimmed.
     #[test]
     fn the_view_key_comes_from_a_file_never_from_the_argument_list() {
-        let refused = parse_args(&args(&[
+        let refused = parse(&[
             "--bootstrap-wallet",
             "--primary-address",
             "4abc",
             "--view-key",
             "aa",
+            "--view-key-file",
+            "x",
             "--spend-pubkey",
             "bb",
-        ]))
-        .unwrap_err();
+        ])
+        .unwrap_err()
+        .to_string();
         assert!(refused.contains("--view-key-file"), "{refused}");
 
-        let dir = std::env::temp_dir().join(format!("scanner-view-key-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("engine-view-key-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("view.key");
         std::fs::write(&path, "aabb\n").unwrap();
-        let command = match parse_args(&args(&[
+        let command = match parse(&[
             "--bootstrap-wallet",
             "--primary-address",
             "4abc",
@@ -431,8 +431,9 @@ mod tests {
             path.to_str().unwrap(),
             "--spend-pubkey",
             "bb",
-        ]))
+        ])
         .unwrap()
+        .action
         {
             Action::BootstrapWallet(command) => command,
             other => panic!("expected BootstrapWallet, got {other:?}"),
@@ -466,8 +467,9 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_wallet_defaults_network_to_mainnet_and_origins_to_empty() {
-        match parse_args(&args(&[
+    fn bootstrap_wallet_takes_a_network_defaulting_to_mainnet_and_refuses_the_removed_origins_flag()
+    {
+        let bootstrap = [
             "--bootstrap-wallet",
             "--primary-address",
             "4abc",
@@ -475,63 +477,44 @@ mod tests {
             "view.key",
             "--spend-pubkey",
             "bb",
-        ]))
-        .unwrap()
-        {
-            Action::BootstrapWallet(a) => {
-                assert_eq!(a.network, "mainnet");
-            }
-            _ => panic!("expected BootstrapWallet"),
+        ];
+        match parse(&bootstrap).unwrap().action {
+            Action::BootstrapWallet(a) => assert_eq!(a.network, "mainnet"),
+            other => panic!("expected BootstrapWallet, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn bootstrap_wallet_parses_network_and_refuses_the_removed_origins_flag() {
-        match parse_args(&args(&[
-            "--bootstrap-wallet",
-            "--primary-address",
-            "4abc",
-            "--view-key-file",
-            "view.key",
-            "--spend-pubkey",
-            "bb",
-            "--network",
-            "stagenet",
-        ]))
-        .unwrap()
-        {
+        let stagenet: Vec<&str> = bootstrap
+            .iter()
+            .copied()
+            .chain(["--network", "stagenet"])
+            .collect();
+        match parse(&stagenet).unwrap().action {
             Action::BootstrapWallet(a) => assert_eq!(a.network, "stagenet"),
-            _ => panic!("expected BootstrapWallet"),
+            other => panic!("expected BootstrapWallet, got {other:?}"),
         }
         // The engine has no origin list any more (embedding policy is
         // monokulo's), so the old flag is an error rather than silently ignored.
-        let refused = parse_args(&args(&[
-            "--bootstrap-wallet",
-            "--primary-address",
-            "4abc",
-            "--view-key-file",
-            "view.key",
-            "--spend-pubkey",
-            "bb",
-            "--allowed-origins",
-            "https://a.example",
-        ]));
-        assert!(refused.is_err());
+        let origins: Vec<&str> = bootstrap
+            .iter()
+            .copied()
+            .chain(["--allowed-origins", "https://a.example"])
+            .collect();
+        assert!(parse(&origins).is_err());
     }
 
     #[test]
-    fn database_path_defaults_to_a_fixed_relative_path_and_the_env_var_overrides_it() {
+    fn the_database_path_defaults_to_a_fixed_relative_path_and_can_be_given() {
+        let env = |vars: &[(&str, &str)]| live_settings::Env::fixed(vars.iter().copied());
         assert_eq!(
-            database_path_from(None),
+            database_path(&env(&[])),
             std::path::PathBuf::from("engine.db")
         );
         assert_eq!(
-            database_path_from(Some("")),
+            database_path(&env(&[("ENGINE_DB_PATH", "")])),
             std::path::PathBuf::from("engine.db"),
             "blank is unset"
         );
         assert_eq!(
-            database_path_from(Some("/tmp/somewhere/custom.db")),
+            database_path(&env(&[("ENGINE_DB_PATH", "/tmp/somewhere/custom.db")])),
             std::path::PathBuf::from("/tmp/somewhere/custom.db")
         );
     }

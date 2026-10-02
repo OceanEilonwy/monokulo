@@ -840,9 +840,9 @@ impl Db {
 
     /// One runtime-configurable setting's stored value, or `None` if nothing
     /// has ever been saved for `key` - see `crates/engine/src/store.rs`'s
-    /// own `get_setting` (identical shape, identical reasoning) and
-    /// `shared::settings`'s own doc comment for the env > database > default
-    /// precedence this feeds into.
+    /// own `get_setting` (identical shape, identical reasoning). The
+    /// settings registry (`crate::settings`) resolves the command line and
+    /// the environment over it.
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         self.conn
             .query_row(

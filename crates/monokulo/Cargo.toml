@@ -50,13 +50,12 @@ serde_urlencoded = "0.7"
 # The time zone database is built in, so time zones work (and tests pass)
 # on a host without tzdata installed.
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
+clap = "4.6.7"
 
 [dev-dependencies]
 # Turns on `test-support` for this crate's own integration tests and examples.
 monokulo = { path = ".", features = ["test-support"] }
-# Per-thread environment overrides for settings tests
-# (`shared::settings::test_env`), instead of mutating the real process
-# environment that parallel tests share.
+# `shared`'s test helpers (the test engine token).
 shared = { path = "../shared", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }
 http-body-util = "0.1.5"

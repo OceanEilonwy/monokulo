@@ -21,14 +21,19 @@
 //!   changes in one validated, all-or-nothing step, and describes every
 //!   setting for the admin page.
 //!
-//! Values resolve environment over stored over default, per key: an
-//! invalid value falls back to that setting's default and nothing else.
+//! Values resolve the command line over the environment over stored over
+//! default, per key: an invalid value falls back to that setting's default
+//! and nothing else. A setting that can't be saved (its `sources` leave out
+//! the database) is read from the command line and the environment alone,
+//! before any store exists if need be ([`Setting::require`]). [`cli`] turns
+//! the declared settings into command-line options, with help.
 //!
 //! The crate knows nothing about either process or its database. Each
 //! plugs in its own [`SettingsStore`].
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod cli;
 mod registry;
 mod section;
 mod setting;
@@ -41,8 +46,8 @@ pub use registry::{
 };
 pub use section::{BootPolicy, FieldError, Live, Reloadable, Section, Warning};
 pub use setting::{
-    parsed_default, range, AnySetting, Applies, Bounds, Check, Env, Problem, Setting,
-    SettingSource, Snapshot,
+    cli_flag, parsed_default, range, AnySetting, Applies, Bounds, Check, Env, Problem, Setting,
+    SettingSource, Snapshot, Source, Sources,
 };
 pub use store::{MemoryStore, SettingsStore, StoreError};
 pub use value::{BindAddr, CommaList, HttpUrl, Json, Secret, SettingKind, SettingValue, MASK};
@@ -91,7 +96,13 @@ pub use async_trait::async_trait;
 /// `range(min, max)` (whole numbers only; the admin page gets the bounds
 /// too) or a function or closure `fn(&T) -> Result<(), String>`. `example`
 /// is a raw value, checked by `Registry::build`. `applies` is `Live` (the
-/// default) or `Restart`.
+/// default) or `Restart`. `sources: [Cli, Env]` limits where the value may
+/// come from (all of `Cli`, `Env` and `Database` otherwise): a setting that
+/// can't be saved is never stored, refused by a save and shown locked, for
+/// what is needed before the store opens or must never be kept in it.
+/// `required: true` makes such a setting have no usable default: unset, the
+/// process can't start ([`Setting::require`]), and `default` is only a
+/// placeholder.
 ///
 /// The items are `const`, as the plan asked: a `Setting` holds only
 /// `&'static str`s and function pointers, so `const` works, and it lets a
@@ -102,11 +113,13 @@ macro_rules! settings {
     ( $( $(#[$attr:meta])* $name:ident : $ty:ty { $($body:tt)* } ),+ $(,)? ) => {
         $(
             $crate::settings!(@field [$(#[$attr])*] $name [$ty]
-                key=[] env=[] default=[] description=[]
+                {key=[] env=[] default=[] description=[]
                 check=[::core::option::Option::None]
                 bounds=[::core::option::Option::None]
                 example=[::core::option::Option::None]
-                applies=[$crate::Applies::Live];
+                applies=[$crate::Applies::Live]
+                sources=[$crate::Sources::ALL]
+                required=[false]}
                 $($body)*
             );
         )+
@@ -114,44 +127,53 @@ macro_rules! settings {
         pub const ALL: &[&dyn $crate::AnySetting] = &[$(&$name),+];
     };
 
-    (@field $attrs:tt $name:ident $ty:tt key=$k0:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt;
+    (@field $attrs:tt $name:ident $ty:tt {key=$k0:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt sources=$o:tt required=$r:tt}
         key: $v:expr $(, $($rest:tt)*)?) => {
-        $crate::settings!(@field $attrs $name $ty key=[$v] env=$e default=$d description=$ds check=$c bounds=$b example=$x applies=$a; $($($rest)*)?);
+        $crate::settings!(@field $attrs $name $ty {key=[$v] env=$e default=$d description=$ds check=$c bounds=$b example=$x applies=$a sources=$o required=$r} $($($rest)*)?);
     };
-    (@field $attrs:tt $name:ident $ty:tt key=$k:tt env=$e0:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt;
+    (@field $attrs:tt $name:ident $ty:tt {key=$k:tt env=$e0:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt sources=$o:tt required=$r:tt}
         env: $v:expr $(, $($rest:tt)*)?) => {
-        $crate::settings!(@field $attrs $name $ty key=$k env=[$v] default=$d description=$ds check=$c bounds=$b example=$x applies=$a; $($($rest)*)?);
+        $crate::settings!(@field $attrs $name $ty {key=$k env=[$v] default=$d description=$ds check=$c bounds=$b example=$x applies=$a sources=$o required=$r} $($($rest)*)?);
     };
-    (@field $attrs:tt $name:ident $ty:tt key=$k:tt env=$e:tt default=$d0:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt;
+    (@field $attrs:tt $name:ident $ty:tt {key=$k:tt env=$e:tt default=$d0:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt sources=$o:tt required=$r:tt}
         default: $v:expr $(, $($rest:tt)*)?) => {
-        $crate::settings!(@field $attrs $name $ty key=$k env=$e default=[$v] description=$ds check=$c bounds=$b example=$x applies=$a; $($($rest)*)?);
+        $crate::settings!(@field $attrs $name $ty {key=$k env=$e default=[$v] description=$ds check=$c bounds=$b example=$x applies=$a sources=$o required=$r} $($($rest)*)?);
     };
-    (@field $attrs:tt $name:ident $ty:tt key=$k:tt env=$e:tt default=$d:tt description=$ds0:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt;
+    (@field $attrs:tt $name:ident $ty:tt {key=$k:tt env=$e:tt default=$d:tt description=$ds0:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt sources=$o:tt required=$r:tt}
         description: $v:expr $(, $($rest:tt)*)?) => {
-        $crate::settings!(@field $attrs $name $ty key=$k env=$e default=$d description=[$v] check=$c bounds=$b example=$x applies=$a; $($($rest)*)?);
+        $crate::settings!(@field $attrs $name $ty {key=$k env=$e default=$d description=[$v] check=$c bounds=$b example=$x applies=$a sources=$o required=$r} $($($rest)*)?);
     };
     // `range(min, max)` must come before the general `check` rule.
-    (@field $attrs:tt $name:ident $ty:tt key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b0:tt example=$x:tt applies=$a:tt;
+    (@field $attrs:tt $name:ident $ty:tt {key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b0:tt example=$x:tt applies=$a:tt sources=$o:tt required=$r:tt}
         check: range($min:expr, $max:expr) $(, $($rest:tt)*)?) => {
-        $crate::settings!(@field $attrs $name $ty key=$k env=$e default=$d description=$ds check=$c bounds=[$crate::range($min, $max)] example=$x applies=$a; $($($rest)*)?);
+        $crate::settings!(@field $attrs $name $ty {key=$k env=$e default=$d description=$ds check=$c bounds=[$crate::range($min, $max)] example=$x applies=$a sources=$o required=$r} $($($rest)*)?);
     };
-    (@field $attrs:tt $name:ident $ty:tt key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c0:tt bounds=$b:tt example=$x:tt applies=$a:tt;
+    (@field $attrs:tt $name:ident $ty:tt {key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c0:tt bounds=$b:tt example=$x:tt applies=$a:tt sources=$o:tt required=$r:tt}
         check: $v:expr $(, $($rest:tt)*)?) => {
-        $crate::settings!(@field $attrs $name $ty key=$k env=$e default=$d description=$ds check=[::core::option::Option::Some($v)] bounds=$b example=$x applies=$a; $($($rest)*)?);
+        $crate::settings!(@field $attrs $name $ty {key=$k env=$e default=$d description=$ds check=[::core::option::Option::Some($v)] bounds=$b example=$x applies=$a sources=$o required=$r} $($($rest)*)?);
     };
-    (@field $attrs:tt $name:ident $ty:tt key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x0:tt applies=$a:tt;
+    (@field $attrs:tt $name:ident $ty:tt {key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x0:tt applies=$a:tt sources=$o:tt required=$r:tt}
         example: $v:expr $(, $($rest:tt)*)?) => {
-        $crate::settings!(@field $attrs $name $ty key=$k env=$e default=$d description=$ds check=$c bounds=$b example=[::core::option::Option::Some($v)] applies=$a; $($($rest)*)?);
+        $crate::settings!(@field $attrs $name $ty {key=$k env=$e default=$d description=$ds check=$c bounds=$b example=[::core::option::Option::Some($v)] applies=$a sources=$o required=$r} $($($rest)*)?);
     };
-    (@field $attrs:tt $name:ident $ty:tt key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a0:tt;
+    (@field $attrs:tt $name:ident $ty:tt {key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a0:tt sources=$o:tt required=$r:tt}
         applies: $v:ident $(, $($rest:tt)*)?) => {
-        $crate::settings!(@field $attrs $name $ty key=$k env=$e default=$d description=$ds check=$c bounds=$b example=$x applies=[$crate::Applies::$v]; $($($rest)*)?);
+        $crate::settings!(@field $attrs $name $ty {key=$k env=$e default=$d description=$ds check=$c bounds=$b example=$x applies=[$crate::Applies::$v] sources=$o required=$r} $($($rest)*)?);
+    };
+    (@field $attrs:tt $name:ident $ty:tt {key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt sources=$o0:tt required=$r:tt}
+        sources: [$($s:ident),* $(,)?] $(, $($rest:tt)*)?) => {
+        $crate::settings!(@field $attrs $name $ty {key=$k env=$e default=$d description=$ds check=$c bounds=$b example=$x applies=$a sources=[$crate::Sources::of(&[$($crate::Source::$s),*])] required=$r} $($($rest)*)?);
+    };
+    (@field $attrs:tt $name:ident $ty:tt {key=$k:tt env=$e:tt default=$d:tt description=$ds:tt check=$c:tt bounds=$b:tt example=$x:tt applies=$a:tt sources=$o:tt required=$r0:tt}
+        required: $v:expr $(, $($rest:tt)*)?) => {
+        $crate::settings!(@field $attrs $name $ty {key=$k env=$e default=$d description=$ds check=$c bounds=$b example=$x applies=$a sources=$o required=[$v]} $($($rest)*)?);
     };
 
     // Every field consumed.
     (@field [$($attr:tt)*] $name:ident [$ty:ty]
-        key=[$key:expr] env=[$env:expr] default=[$default:expr] description=[$description:expr]
-        check=[$check:expr] bounds=[$bounds:expr] example=[$example:expr] applies=[$applies:expr];) => {
+        {key=[$key:expr] env=[$env:expr] default=[$default:expr] description=[$description:expr]
+        check=[$check:expr] bounds=[$bounds:expr] example=[$example:expr] applies=[$applies:expr]
+        sources=[$sources:expr] required=[$required:expr]}) => {
         $($attr)*
         pub const $name: $crate::Setting<$ty> = $crate::Setting {
             key: $key,
@@ -162,6 +184,8 @@ macro_rules! settings {
             description: $description,
             example: $example,
             applies: $applies,
+            sources: $sources,
+            required: $required,
         };
     };
 }

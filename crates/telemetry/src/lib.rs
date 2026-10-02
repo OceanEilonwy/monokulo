@@ -56,6 +56,12 @@ pub const DEFAULT_LEVEL: &str = "info";
 const DEV_MODE_QUIET: &str =
     "hyper=info,hyper_util=info,h2=info,rustls=info,reqwest=info,tower=info,hickory_proto=warn,hickory_resolver=warn";
 
+live_settings::choice_value! {
+    /// How lines are written to stderr, as the `logging.format` setting
+    /// names it: `auto` is pretty at a terminal and JSON everywhere else.
+    pub enum LogFormat { Auto = "auto", Json = "json", Pretty = "pretty" }
+}
+
 /// How lines are written to stderr.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -69,15 +75,26 @@ impl Format {
     /// `<PREFIX>_LOG_FORMAT` (`json` or `pretty`) if set, otherwise pretty
     /// at a terminal and JSON everywhere else.
     pub fn from_env(env_prefix: &str) -> Format {
-        match std::env::var(format!("{env_prefix}_LOG_FORMAT"))
+        let chosen = match std::env::var(format!("{env_prefix}_LOG_FORMAT"))
             .ok()
             .as_deref()
             .map(str::trim)
         {
-            Some("json") => Format::Json,
-            Some("pretty") => Format::Pretty,
-            _ if std::io::stderr().is_terminal() => Format::Pretty,
-            _ => Format::Json,
+            Some("json") => LogFormat::Json,
+            Some("pretty") => LogFormat::Pretty,
+            _ => LogFormat::Auto,
+        };
+        Format::chosen(chosen)
+    }
+
+    /// The format `choice` names; `auto` is pretty at a terminal and JSON
+    /// everywhere else.
+    pub fn chosen(choice: LogFormat) -> Format {
+        match choice {
+            LogFormat::Json => Format::Json,
+            LogFormat::Pretty => Format::Pretty,
+            LogFormat::Auto if std::io::stderr().is_terminal() => Format::Pretty,
+            LogFormat::Auto => Format::Json,
         }
     }
 }
@@ -222,16 +239,23 @@ static GLOBAL: OnceLock<Arc<Telemetry>> = OnceLock::new();
 ///
 /// Calling it again (tests) returns the first process-wide controls.
 pub fn init(service: &'static str, env_prefix: &str) -> Arc<Telemetry> {
-    if let Some(existing) = GLOBAL.get() {
-        return existing.clone();
-    }
     let level = std::env::var(format!("{env_prefix}_LOG"))
         .ok()
         .filter(|l| check_level(l).is_ok())
         .unwrap_or_else(|| DEFAULT_LEVEL.to_string());
-    let format = Format::from_env(env_prefix);
+    init_with(service, &level, Format::from_env(env_prefix))
+}
+
+/// [`init`] with the starting level and format already read, as the engine
+/// and monokulo do through their settings (`logging.level` and
+/// `logging.format`), so an invalid value is reported by the settings like
+/// any other rather than quietly replaced.
+pub fn init_with(service: &'static str, level: &str, format: Format) -> Arc<Telemetry> {
+    if let Some(existing) = GLOBAL.get() {
+        return existing.clone();
+    }
     let ansi = format == Format::Pretty && std::io::stderr().is_terminal();
-    let (telemetry, subscriber) = build(service, format, ansi, &level, std::io::stderr);
+    let (telemetry, subscriber) = build(service, format, ansi, level, std::io::stderr);
     let telemetry = Arc::new(telemetry);
     // Fails only if something else installed a subscriber first; then the
     // first one keeps its place and these controls do nothing.

@@ -122,7 +122,7 @@ impl RpcDaemonClient {
     /// TLS certificate - not a bug in this client, just the reality of who runs
     /// public Monero infrastructure. This constructor takes no position on the
     /// default; `MoneroNodeConfig::accept_self_signed_certs` does, and it defaults
-    /// **on** for the reason above, with `--strict-tls` (see `main::Args`) as the
+    /// **on** for the reason above, with `monero_node.strict_tls` as the
     /// override that forces it off for every configured node. Note this is
     /// `reqwest`'s blunt flag underneath: it also tolerates expired and
     /// wrong-hostname certificates, so it is not scoped to self-signed

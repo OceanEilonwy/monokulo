@@ -2,7 +2,7 @@
 name = "live-settings"
 version = "0.1.0"
 edition = "2021"
-description = "Typed settings that resolve env > stored > default and can be applied to a running process"
+description = "Typed settings that resolve command line > env > stored > default, with command-line options and help, and can be applied to a running process"
 
 [dependencies]
 zeroize = "1.9.0"
@@ -22,6 +22,9 @@ tracing = "0.1.44"
 tokio = { version = "1.53.1", features = ["sync", "rt"] }
 # `HttpUrl`.
 url = "2.5.8"
+# `cli`: every setting as a command-line option, with help from its
+# declaration. `string` for option names built from the keys.
+clap = { version = "4.6.7", features = ["wrap_help", "string"] }
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["sync", "rt", "rt-multi-thread", "macros", "time", "test-util"] }

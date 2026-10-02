@@ -1179,6 +1179,8 @@ async fn build_fails_on_mistakes_in_the_declarations() {
         description: "",
         example: None,
         applies: Applies::Live,
+        sources: Sources::ALL,
+        required: false,
     };
     const BAD_EXAMPLE: Setting<u32> = Setting {
         key: "bad.example",
@@ -1513,6 +1515,11 @@ fn a_setting_applies_its_range_and_check_on_top_of_its_type() {
 
     assert_eq!(DEPTH.parse("10000").unwrap(), 10_000);
     assert_eq!(
+        DEPTH.parse("x").unwrap_err(),
+        "Enter a whole number from 1 to 10000.",
+        "the setting's own range, not the type's"
+    );
+    assert_eq!(
         DEPTH.parse("10001").unwrap_err(),
         "Enter a whole number from 1 to 10000."
     );
@@ -1550,4 +1557,266 @@ fn live_new_holds_a_fixed_value() {
     let rx = live.subscribe();
     assert_eq!(live.clone().load().depth, 1);
     assert!(!rx.has_changed().unwrap());
+}
+
+/// Where a value may come from: the command line over the environment over
+/// the store, and settings that can't be saved, needed before the store
+/// opens or never to be kept in it.
+mod sources {
+    use super::*;
+    use crate::setting::private::Resolve;
+
+    settings! {
+        DB_PATH: String {
+            key: "boot.db_path",
+            env: "TEST_DB_PATH",
+            default: "app.db".to_string(),
+            description: "Where the database is. Kept beside its logs.",
+            applies: Restart,
+            sources: [Cli, Env],
+        },
+        KEY: Secret {
+            key: "boot.key",
+            env: "TEST_KEY",
+            default: Secret::new(String::new()),
+            check: |v: &Secret| if v.expose().len() == 4 { Ok(()) } else { Err("Enter 4 characters.".to_string()) },
+            description: "The key that protects the store.",
+            applies: Restart,
+            sources: [Cli, Env],
+            required: true,
+        },
+        LIMIT: u32 {
+            key: "scan.limit_per_min",
+            env: "TEST_LIMIT",
+            default: 10,
+            check: range(1, 100),
+            description: "Requests a minute.",
+        },
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Boot {
+        db_path: String,
+    }
+
+    impl Section for Boot {
+        const NAME: &'static str = "boot";
+        fn keys() -> &'static [&'static dyn AnySetting] {
+            &[&DB_PATH, &KEY]
+        }
+        fn from_snapshot(s: &Snapshot) -> Result<Self, Vec<FieldError>> {
+            Ok(Boot {
+                db_path: s.get(&DB_PATH),
+            })
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Rate {
+        limit: u32,
+    }
+
+    impl Section for Rate {
+        const NAME: &'static str = "rate";
+        fn keys() -> &'static [&'static dyn AnySetting] {
+            &[&LIMIT]
+        }
+        fn from_snapshot(s: &Snapshot) -> Result<Self, Vec<FieldError>> {
+            Ok(Rate {
+                limit: s.get(&LIMIT),
+            })
+        }
+    }
+
+    fn cli(values: &[(&str, &str)]) -> HashMap<String, String> {
+        values
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// The command line wins over the environment, which wins over the
+    /// store, and each is reported as the source.
+    #[tokio::test]
+    async fn the_command_line_wins_over_the_environment_and_the_store() {
+        let store: Arc<dyn SettingsStore> = Arc::new(MemoryStore::new());
+        store
+            .write_all(vec![("scan.limit_per_min", Some("30".to_string()))])
+            .await
+            .unwrap();
+        let both = Env::fixed([("TEST_LIMIT", "20"), ("TEST_KEY", "abcd")])
+            .with_cli(cli(&[("scan.limit_per_min", "40")]));
+        let mut builder = Registry::builder_with_env(Arc::clone(&store), ALL, both).await;
+        let rate = builder.section::<Rate>();
+        builder.section::<Boot>();
+        let registry = builder.build().unwrap();
+        assert_eq!(rate.load().limit, 40);
+        assert_eq!(
+            view(&registry.describe(), "scan.limit_per_min").source,
+            SettingSource::Cli
+        );
+        assert_eq!(
+            LIMIT.read_unstored(&Env::fixed([("TEST_LIMIT", "20")])).0,
+            20
+        );
+        assert_eq!(
+            Snapshot::new(
+                HashMap::from([("scan.limit_per_min".to_string(), "30".to_string())]),
+                no_env()
+            )
+            .get(&LIMIT),
+            30
+        );
+    }
+
+    /// Read before any store exists: the command line, the environment or
+    /// the default; a required one that is missing or invalid is an error
+    /// to start on, naming both ways to set it.
+    #[test]
+    fn a_setting_is_read_without_the_store_at_start() {
+        let env = Env::fixed([("TEST_DB_PATH", "/data/app.db"), ("TEST_KEY", "abcd")]);
+        assert_eq!(DB_PATH.require(&env).unwrap(), "/data/app.db");
+        assert_eq!(KEY.require(&env).unwrap().expose(), "abcd");
+        assert_eq!(DB_PATH.require(&no_env()).unwrap(), "app.db");
+        let flagged = env.clone().with_cli(cli(&[("boot.db_path", "/cli.db")]));
+        assert_eq!(DB_PATH.require(&flagged).unwrap(), "/cli.db");
+
+        let missing = KEY.require(&no_env()).unwrap_err();
+        assert_eq!(
+            missing,
+            "TEST_KEY or --boot-key must be set. The key that protects the store."
+        );
+        let invalid = KEY.require(&Env::fixed([("TEST_KEY", "abc")])).unwrap_err();
+        assert_eq!(
+            invalid,
+            "TEST_KEY is set to an invalid value. Enter 4 characters."
+        );
+        let (_, problem) = DB_PATH.read_unstored(&no_env());
+        assert_eq!(problem, None);
+    }
+
+    /// A setting that can't be saved is never taken from the store, is
+    /// refused by a save, and is described with its sources.
+    #[tokio::test]
+    async fn a_setting_that_cannot_be_saved_is_never_stored() {
+        let store: Arc<dyn SettingsStore> = Arc::new(MemoryStore::new());
+        store
+            .write_all(vec![("boot.db_path", Some("/stored.db".to_string()))])
+            .await
+            .unwrap();
+        let env = Env::fixed([("TEST_KEY", "abcd")]);
+        let mut builder = Registry::builder_with_env(Arc::clone(&store), ALL, env).await;
+        let live = builder.section::<Boot>();
+        builder.section::<Rate>();
+        let registry = builder.build().unwrap();
+        registry.boot().await.unwrap();
+        assert_eq!(live.load().db_path, "app.db", "the stored value is ignored");
+
+        let error = registry
+            .save(vec![(
+                "boot.db_path".to_string(),
+                Some("/x.db".to_string()),
+            )])
+            .await
+            .unwrap_err();
+        assert_eq!(invalid_keys(&error), ["boot.db_path"]);
+        assert!(
+            error.to_string().contains("TEST_DB_PATH or --boot-db-path"),
+            "{error}"
+        );
+
+        let views = registry.describe();
+        let db = view(&views, "boot.db_path");
+        assert!(!db.sources.database && db.sources.cli && db.sources.env);
+        assert_eq!(db.cli_flag, "boot-db-path");
+        assert_eq!(view(&views, "boot.key").value, MASK);
+    }
+
+    /// Declarations that can't work are refused.
+    #[test]
+    fn declarations_need_a_source_and_unsaved_ones_apply_on_restart() {
+        let unsaved_live: Setting<u32> = Setting {
+            applies: Applies::Live,
+            ..LIMIT
+        };
+        let unsaved_live = Setting {
+            sources: Sources::of(&[Source::Env]),
+            ..unsaved_live
+        };
+        assert!(unsaved_live.check_declaration().is_err());
+        let saved_required = Setting {
+            required: true,
+            ..LIMIT
+        };
+        assert!(saved_required.check_declaration().is_err());
+        let nowhere = Setting {
+            sources: Sources::of(&[]),
+            applies: Applies::Restart,
+            ..LIMIT
+        };
+        assert!(nowhere.check_declaration().is_err());
+        assert!(
+            KEY.check_declaration().is_ok(),
+            "a required setting's default is a placeholder"
+        );
+    }
+
+    /// Every setting that takes the command line is an option, under its
+    /// key's heading, with its own help, env variable and default; a value
+    /// is checked as it is parsed, and lands in the registry's input.
+    #[test]
+    fn every_setting_is_a_command_line_option_with_help_from_its_declaration() {
+        let command = crate::cli::with_settings(clap::Command::new("app"), ALL);
+        let help = command.clone().render_long_help().to_string();
+        assert!(help.contains("Boot settings:"), "{help}");
+        assert!(help.contains("--boot-db-path <TEXT>"), "{help}");
+        for note in [
+            "[env: TEST_DB_PATH]",
+            "[default: app.db]",
+            "[not saved: give it at every start]",
+        ] {
+            assert!(help.contains(note), "{note}: {help}");
+        }
+        assert!(help.contains("--boot-key <SECRET>"), "{help}");
+        assert!(help.contains("[required]"), "{help}");
+        assert!(
+            help.contains("[an option is visible to other users on this machine: prefer TEST_KEY]"),
+            "a secret on the command line is warned about: {help}"
+        );
+        assert!(help.contains("Scan settings:"), "{help}");
+        assert!(help.contains("--scan-limit-per-min <NUMBER>"), "{help}");
+
+        let matches = command
+            .clone()
+            .try_get_matches_from(["app", "--scan-limit-per-min", "50", "--boot-key", "abcd"])
+            .unwrap();
+        assert_eq!(
+            crate::cli::values(&matches, ALL),
+            cli(&[("scan.limit_per_min", "50"), ("boot.key", "abcd")])
+        );
+        let refused = command
+            .try_get_matches_from(["app", "--scan-limit-per-min", "500"])
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("--scan-limit-per-min"), "{refused}");
+        assert!(
+            refused.contains("Enter a whole number from 1 to 100."),
+            "{refused}"
+        );
+    }
+
+    /// Two settings whose keys give the same option can't both be declared.
+    #[tokio::test]
+    async fn two_settings_with_one_option_are_refused() {
+        settings! {
+            DOTTED: u32 { key: "a.b_c", env: "TEST_A", default: 1, description: "" },
+            UNDERSCORED: u32 { key: "a.b.c", env: "TEST_B", default: 1, description: "" },
+        }
+        let store: Arc<dyn SettingsStore> = Arc::new(MemoryStore::new());
+        let builder = Registry::builder_with_env(store, ALL, no_env()).await;
+        assert!(matches!(
+            builder.build(),
+            Err(BuildError::DuplicateFlag("a.b.c"))
+        ));
+    }
 }
