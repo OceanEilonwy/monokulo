@@ -201,24 +201,56 @@ Everything is rendered on the server (works without JavaScript) and
 refreshes in place with fixi. Charts are small inline SVG with a text
 summary beside them, and use theme roles only.
 
-### Engine resources (top of the tab)
+### Resources (top of the tab)
+
+One figure each for CPU and memory, for monokulo and the engine together,
+with a stacked chart that shows the total and each process's share on the
+same scale:
 
 ```
-Engine        CPU  23 % of 4 cores   ▁▂▂▃▅▃▂▂▁▁▂▃  peak 61 % (last hour)
-              Memory  412 MB of 6.1 GB limit (7 %)  ▂▂▂▃▃▃▃▃▃▄▄▄  peak 455 MB
-Monokulo      CPU 2 %   Memory 96 MB
+CPU      25 % of 4 cores   (engine 23 %, monokulo 2 %)      peak 63 % at 14:02
+         ┌──────────────────────────────────────────────┐
+   100 % │                                              │
+         │            ▄▄                                │   ■ engine
+         │       ▂▄▄▆▆██▆▄▂        ▂▂                   │   ■ monokulo
+     0 % │▁▁▂▂▃▄▅████████▅▄▃▂▂▂▃▄▅██▅▃▂▂▁▁▁▁▂▂▃▃▂▂▁▁▁▁▁▁│
+         └──────────────────────────────────────────────┘
+          -60 min                                    now
+
+Memory   508 MB of 7.6 GB  (engine 412 MB, monokulo 96 MB)  peak 551 MB
+         (same chart, scaled to the machine's memory)
 ```
 
-- **CPU:** the engine process's share of the whole machine, with the core
-  count.
-- **Memory:** the engine's resident memory against the limit it runs under
-  (the smaller of RAM and the cgroup limit), the same limit the budget check
-  uses.
-- **Trend:** one compact chart per measure for the last hour, sampled every
-  10 s and kept in memory (360 points) by the engine. Read with the
-  `sysinfo` crate (Linux and macOS), plus the cgroup limit file on Linux.
-- **Monokulo** shows its own current CPU and memory as plain numbers, so an
-  admin on a shared machine can see whose load is whose.
+- **Total:** the sum of both processes, against the machine's capacity:
+  CPU as a share of all cores, memory against total RAM.
+- **Stacked layers:** each process is its own coloured layer, engine at the
+  bottom and monokulo on top, so the outline is the total and each band is
+  one process's share. A legend names the colours, and the figure line
+  repeats the current split in numbers.
+- **Colours** are two new chart roles in `theme.css` (`--chart-engine`,
+  `--chart-monokulo`), defined for both themes and distinguishable for the
+  common colour-vision deficiencies. No colour is written in the markup.
+- **Peak** is the total's peak in the last hour, with when it was.
+- **Hover detail** (with JavaScript): each 10-second slot shows its total
+  and split. Without JavaScript the page shows the current figures and the
+  peak, and the chart is still drawn.
+- **Container limits:** when either process runs under a cgroup memory
+  limit, a thin line marks it on the memory chart, so an admin can see a
+  process nearing its own limit before the machine fills.
+
+How it's gathered:
+- **Sampling:** each process samples itself every 10 s (process CPU time
+  and resident memory, read with the `sysinfo` crate on Linux and macOS,
+  plus the cgroup files on Linux), keeping the last hour (360 points) in
+  memory. The engine's samples come in its `/status` `scaling` section.
+- **Merging:** monokulo merges the two series by 10-second slot. A slot
+  missing from either process is drawn as a gap, not a zero.
+- **Same machine only:** a total only means something on one machine. Each
+  process reports the host's `boot_id` (`/proc/sys/kernel/random/boot_id`,
+  which containers on one host share; on macOS the host name and total
+  memory). When the two match, they stack as above. When they don't, the
+  panel shows the two processes as separate charts and says they run on
+  different machines.
 
 ### Each node row
 
@@ -247,7 +279,8 @@ Mainnet scanning                                          ● slow
 ### Where the numbers come from
 
 - **Engine:** a new `scaling` section of the engine's `/status` JSON, with
-  per-node measurements, per-network scan figures and the resource samples.
+  per-node measurements, per-network scan figures and the engine's resource
+  samples (with its `boot_id` and cgroup limit).
   Everything on the engine already requires the engine token.
 - **monokulo:** renders it for admins only. Anonymous visitors to the status
   page see the network state and the slow banner, never node addresses or
@@ -259,7 +292,7 @@ Mainnet scanning                                          ● slow
 |---|---|---|
 | 1. Measure and adapt | per-node RTT/TTFB/rate; adaptive per-call timeout and deadline; chunk from memory and time; halving on failure | a fake node with a throttled body and a slow first byte: the scan completes at a low rate; a timeout halves the next chunk; the timeout follows the measured rate; a fallback node gets time after a primary times out |
 | 2. Leaner memory | compact decoded form; response cap; per-block release; budget check against RAM and the cgroup limit; fixed caps removed | peak allocation for a chunk stays within 1.3 × budget (counting allocator in a test); budget validation against a fixed memory figure; the start-up clamp and its alert |
-| 3. Seeing it | resource sampling and charts; node rows; Scanning panel; slow (yellow) state and banner | view tests for each panel state (light and dark gallery screenshots); the slow state starts after 2 minutes on a paused clock and clears when the block completes |
+| 3. Seeing it | resource sampling in both processes and the stacked chart; node rows; Scanning panel; slow (yellow) state and banner | view tests for each panel state (light and dark gallery screenshots, stacked and different-machine charts); merging by slot with gaps; the slow state starts after 2 minutes on a paused clock and clears when the block completes |
 | 4. Large blocks | header-first mode choice; segmented fetch through `/get_transactions` pages; CPU-aware page size; round deadline floor | a fake node serving a 200 MB block: scanned in pages with bounded memory; a payment in the block's last page is found and staged until the hash recheck; mempool detection keeps working mid-block |
 
 Phase 1 closes review finding 30. Each phase is its own commit series and
