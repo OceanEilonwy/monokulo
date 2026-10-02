@@ -1,3 +1,4 @@
+mod rounds;
 mod stress;
 
 use serde_json::{json, Value};
@@ -18,7 +19,7 @@ fn root() -> PathBuf {
 }
 
 fn help() {
-    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|open> [driver]\n\n\
+    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|open> [driver]\n       cargo xtask stress rounds\n\n\
         rust          Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
         browser       Run deterministic Playwright tests and collect authored browser source coverage\n\
         woocommerce   Run default PHPUnit tests in wp-env and collect plugin coverage\n\
@@ -30,6 +31,7 @@ fn help() {
         stress ci     One-CPU scanner capacity sweep and fault recovery (docs/engine_stress.md)\n\
         stress full   The same with larger tenant counts\n\
         stress open   Open target/coverage/stress/index.html\n\
+        stress rounds Round length sweep: throughput, refetches and waits (docs/engine_stress.md)\n\
         [driver]      The scanner entry point to measure (default: the production one)\n\
         --help        Show this help");
 }
@@ -712,6 +714,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         ["coverage", command] => coverage(command),
+        ["stress", "rounds"] => rounds::run(),
         ["stress", profile] => stress::run(profile, None),
         ["stress", profile, driver] => stress::run(profile, Some(driver)),
         _ => {

@@ -18,10 +18,14 @@ use crate::scanner::tests::{
 use crate::status::OrderStatus;
 use crate::store::{Db, SharedStore, Store};
 
-/// A fake node that counts the block-hash lookups made against it.
+/// A fake node that counts the block-hash lookups made against it and the
+/// blocks it sends, and answers as whichever node a test says it is.
 struct CountingDaemon<'a> {
     inner: &'a FakeDaemonClient,
     hash_lookups: AtomicU64,
+    /// How many times each height was sent whole.
+    sent: parking_lot::Mutex<std::collections::HashMap<u64, u32>>,
+    node: parking_lot::Mutex<Option<crate::daemon::NodeKey>>,
 }
 
 impl<'a> CountingDaemon<'a> {
@@ -29,15 +33,35 @@ impl<'a> CountingDaemon<'a> {
         Self {
             inner,
             hash_lookups: AtomicU64::new(0),
+            sent: Default::default(),
+            node: parking_lot::Mutex::new(Some(crate::daemon::NodeKey::default())),
         }
     }
     fn take_hash_lookups(&self) -> u64 {
         self.hash_lookups.swap(0, Ordering::Relaxed)
     }
+    /// Heights sent more than once, lowest first.
+    fn sent_again(&self) -> Vec<u64> {
+        let mut again: Vec<u64> = self
+            .sent
+            .lock()
+            .iter()
+            .filter(|(_, n)| **n > 1)
+            .map(|(h, _)| *h)
+            .collect();
+        again.sort_unstable();
+        again
+    }
+    fn set_node(&self, node: Option<crate::daemon::NodeKey>) {
+        *self.node.lock() = node;
+    }
 }
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for CountingDaemon<'_> {
+    fn node(&self) -> Option<crate::daemon::NodeKey> {
+        *self.node.lock()
+    }
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.inner.get_height().await
     }
@@ -50,7 +74,12 @@ impl MoneroDaemonClient for CountingDaemon<'_> {
         start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
-        self.inner.get_chain_blocks(start_height, count).await
+        let blocks = self.inner.get_chain_blocks(start_height, count).await?;
+        let mut sent = self.sent.lock();
+        for block in &blocks {
+            *sent.entry(block.height).or_default() += 1;
+        }
+        Ok(blocks)
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
@@ -2051,6 +2080,229 @@ async fn a_call_the_node_never_answers_fails_at_the_deadline() {
     assert_eq!(started.elapsed(), CALL_DEADLINE);
 }
 
+/// A node that never answers, behind a client whose own request timeout
+/// starts once the request is on its way (a moment after the call began),
+/// as `RpcDaemonClient`'s does.
+struct TimesOutItself;
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for TimesOutItself {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::time::sleep(crate::daemon_rpc::REQUEST_TIMEOUT).await;
+        Err(DaemonError::TimedOut(
+            "node.example: request timed out".into(),
+        ))
+    }
+    async fn get_block_hash(&self, _: u64) -> Result<String, DaemonError> {
+        unreachable!()
+    }
+    async fn get_chain_blocks(
+        &self,
+        _: u64,
+        _: u64,
+    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        unreachable!()
+    }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        unreachable!()
+    }
+    async fn get_transactions_with_ids(
+        &self,
+        _: &[String],
+    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+        unreachable!()
+    }
+    async fn locate_transaction(&self, _: &str) -> Result<TxLocation, DaemonError> {
+        unreachable!()
+    }
+    async fn is_key_image_spent(&self, _: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        unreachable!()
+    }
+}
+
+/// A unit's call outlasts the node client's own timeout, so the node's own
+/// error arrives first: it names the node, and the node is put in cooldown
+/// for the next round's pick, rather than the call being dropped unrecorded
+/// and the same hung node pinned again.
+#[tokio::test(start_paused = true)]
+async fn a_hung_node_times_out_by_its_own_clock_and_cools_down() {
+    let client = crate::daemon_fallback::FallbackDaemonClient::new(vec![
+        crate::daemon_fallback::FallbackNode {
+            label: "hung".into(),
+            client: std::sync::Arc::new(TimesOutItself),
+        },
+    ]);
+    let pinned = client.pin();
+    let result = bounded(pinned.get_height()).await;
+    assert!(
+        matches!(result, Err(ScannerError::Daemon(DaemonError::TimedOut(ref m))) if m.contains("node.example")),
+        "{result:?}"
+    );
+    assert!(
+        client.in_cooldown(0),
+        "the failure was recorded against the node"
+    );
+}
+
+/// A tier's share follows the round it is a share of: the base round's at
+/// build time, a raised round's when one is raised, and together the shares
+/// cover the round to within a nanosecond a tier.
+#[test]
+fn a_tiers_share_follows_the_round() {
+    assert_eq!(Tier::Blocks.reserved(), Duration::from_secs(4));
+    assert_eq!(Tier::Settlement.reserved(), Duration::from_secs(2));
+    assert_eq!(
+        Tier::Blocks.share_of(Duration::from_secs(120)),
+        Duration::from_secs(48)
+    );
+    for budget in [
+        ROUND_BUDGET,
+        Duration::from_millis(7_777),
+        Duration::from_nanos(1_001),
+    ] {
+        let total: Duration = Tier::ALL.iter().map(|tier| tier.share_of(budget)).sum();
+        assert!(total <= budget && budget - total < Duration::from_nanos(Tier::ALL.len() as u64));
+    }
+}
+
+/// The lowest scan cursor of any tenant.
+fn lowest_cursor(store: &SharedStore) -> u64 {
+    store
+        .lock()
+        .conn_for_test()
+        .query_row(
+            "SELECT MIN(scanned_through_height) FROM tenants",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap() as u64
+}
+
+/// One tenant 1 block into a chain of `tip` blocks: a backlog to catch up.
+async fn backlog(
+    tip: u64,
+) -> (
+    SharedStore,
+    FlakyKeyCustody,
+    FakeDaemonClient,
+    [(crate::store::TenantId, WalletHandle); 1],
+) {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let fake = FakeDaemonClient::new();
+    for h in 1..=tip {
+        fake.push_block(&format!("h{h}"), vec![]);
+    }
+    store
+        .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+        .unwrap();
+    store
+        .execute_raw_for_test("UPDATE tenants SET scanned_through_height = 1")
+        .unwrap();
+    (store.into_shared(), custody, fake, [(tenant, handle)])
+}
+
+/// A run of blocks fetched ahead outlasts the round that fetched it: later
+/// rounds scan on from it, so a backlog's blocks are each sent once, short
+/// of the last `reorg_check_depth` (which may be replaced before the next
+/// round, so aren't kept). A caught-up network holds nothing.
+#[tokio::test]
+async fn blocks_fetched_ahead_are_scanned_in_later_rounds_without_being_sent_again() {
+    let (store, custody, fake, tenants) = backlog(100).await;
+    let daemon = CountingDaemon::new(&fake);
+    let db = Db::over_shared(store.clone());
+    let inputs = inputs(&db, &custody, &daemon, &tenants);
+    let state = ScanState::default();
+    let mut rounds = 0;
+    while lowest_cursor(&store) < 100 {
+        run_round(&state, &inputs, Duration::ZERO).await;
+        rounds += 1;
+        assert!(rounds < 100, "stuck at {}", lowest_cursor(&store));
+        if rounds == 1 {
+            assert!(
+                !state.blocks.carried_heights().is_empty(),
+                "a round with time for one unit leaves the run it fetched"
+            );
+        }
+    }
+    assert!(rounds > 1);
+    let settled = 100 - inputs.reorg_check_depth;
+    assert!(
+        daemon.sent_again().iter().all(|h| *h > settled),
+        "sent again: {:?}",
+        daemon.sent_again()
+    );
+    assert!(state.blocks.carried_heights().is_empty());
+}
+
+/// Blocks from one node aren't kept for another's answers: a round on a
+/// different node, or on a client that may ask any node, starts empty.
+#[tokio::test]
+async fn blocks_are_kept_only_for_the_node_they_came_from() {
+    let (store, custody, fake, tenants) = backlog(100).await;
+    let daemon = CountingDaemon::new(&fake);
+    let db = Db::over_shared(store.clone());
+    let inputs = inputs(&db, &custody, &daemon, &tenants);
+    let state = ScanState::default();
+    run_round(&state, &inputs, Duration::ZERO).await;
+    let held = state.blocks.carried_heights();
+    let next = lowest_cursor(&store) + 1;
+    assert!(held.contains(&next), "{held:?}");
+
+    daemon.set_node(Some(crate::daemon::NodeKey(1)));
+    run_round(&state, &inputs, Duration::ZERO).await;
+    assert!(
+        daemon.sent_again().contains(&next),
+        "another node's answer is asked for again"
+    );
+    assert!(!state.blocks.carried_heights().is_empty());
+
+    daemon.set_node(None);
+    run_round(&state, &inputs, Duration::ZERO).await;
+    assert!(
+        state.blocks.carried_heights().is_empty(),
+        "a client of no one node keeps nothing"
+    );
+}
+
+/// A rewind leaves nothing for the next round: the chain was just found to
+/// differ from what was recorded, so nothing fetched before is trusted.
+#[tokio::test]
+async fn nothing_is_kept_across_a_rewind() {
+    let (store, custody, fake, tenants) = backlog(100).await;
+    let daemon = CountingDaemon::new(&fake);
+    let db = Db::over_shared(store.clone());
+    let inputs = inputs(&db, &custody, &daemon, &tenants);
+    let state = ScanState::default();
+    while lowest_cursor(&store) < 100 {
+        run_round(&state, &inputs, Duration::from_secs(5)).await;
+    }
+    for h in 101..=160 {
+        fake.push_block(&format!("h{h}"), vec![]);
+    }
+    run_round(&state, &inputs, Duration::ZERO).await;
+    assert!(!state.blocks.carried_heights().is_empty());
+    // The recorded tip is replaced: the next round finds it and rewinds.
+    let reached = lowest_cursor(&store);
+    let fork: Vec<String> = (reached..=170).map(|h| format!("b{h}")).collect();
+    fake.reorg_from(
+        reached,
+        fork.iter().map(|hash| (hash.as_str(), vec![])).collect(),
+    );
+    let mut rewound = false;
+    for _ in 0..10 {
+        let report = run_round(&state, &inputs, Duration::ZERO).await;
+        if report.outcome(Tier::Blocks) == TierOutcome::Blocked(Wait::RewoundThisRound) {
+            rewound = true;
+            assert!(state.blocks.carried_heights().is_empty());
+            break;
+        }
+    }
+    assert!(rewound, "the reorg was found and rewound");
+}
+
 /// Tiers and wait reasons read as words in logs and reports, each its own.
 #[test]
 fn tiers_and_wait_reasons_display_distinctly() {
@@ -2703,6 +2955,55 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
             )
             .unwrap(),
         None
+    );
+}
+
+/// A group larger than a page moves together. With no time at all, its
+/// first page of block 21 is scanned a batch a round (checkpointed between);
+/// once that page is done, the same unit gives the block to the rest of the
+/// group whatever the time, rather than moving the first page on and
+/// leaving the rest a block behind, to be fetched again as a catch-up group
+/// of their own.
+#[tokio::test]
+async fn a_group_larger_than_a_page_moves_together() {
+    // A second page of more than one scan batch.
+    let count = super::blocks::GROUP_PAGE + crate::scanner::SCAN_CONCURRENCY + 10;
+    let (store, custody, fake, tenants, _) = seeded_network(count, 20).await;
+    let mut txs = vec![fixture_tx()];
+    txs.extend((0..4u8).map(|i| unrelated_tx(100 + i)));
+    fake.push_block("a21", txs);
+    fake.push_block("a22", vec![]);
+    let cursors = || -> std::collections::BTreeSet<i64> {
+        let s = store.lock();
+        let mut stmt = s
+            .conn_for_test()
+            .prepare("SELECT scanned_through_height FROM tenants")
+            .unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    let mut rounds = 0;
+    while cursors() == [20].into() {
+        run_round(
+            &state,
+            &inputs(&db, &custody, &fake, &tenants),
+            Duration::ZERO,
+        )
+        .await
+        .into_result()
+        .unwrap();
+        rounds += 1;
+        assert!(rounds < 100);
+    }
+    assert!(rounds > 1, "the first page took more than one round");
+    assert_eq!(
+        cursors(),
+        [21].into(),
+        "every page of the group got block 21"
     );
 }
 

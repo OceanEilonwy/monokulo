@@ -100,6 +100,26 @@ Sources are grouped in tiers. The order is the priority within a round:
 Each round has a deadline. Every tier has a **reserved share** of it
 (Chain 20 %, Blocks 40 %, Mempool 15 %, Settlement 20 %, Upkeep 5 %).
 
+The round is 10 s (`ROUND_BUDGET`), measured by the round length sweep
+(docs/engine_stress.md); its comment gives the reasons. The shares are the
+only other times written down. Everything a tier does in one
+call follows from its share (`Tier::reserved()`, worked out at build time
+from `ROUND_BUDGET`), so a change to the round or the shares carries
+through:
+
+| Time | From | Today |
+| --- | --- | --- |
+| A block request's target (`SCAN_CHUNK_TARGET_CALL_SECS`) | Blocks share | 4 s |
+| One store's key-custody scan of a run of a block's transactions | Blocks share | 4 s |
+| One store's scan of a pool transaction (round and fast path) | Mempool share | 1.5 s |
+| One vanished payment's lookups | Settlement share | 2 s |
+
+A round raised for a large block (`work::blocks::round_budget_for`) splits
+its own length by the same shares (`Tier::share_of`). The per-call times
+above stay at the base round's, so a large block's pages stay small.
+Node timeouts don't follow the round: they come from each node's link
+(docs/engine_scaling.md section 2).
+
 - **Pass 1** runs each tier in priority order until its share is used or
   it goes idle.
 - **Pass 2** gives the remaining time to the tiers that still have work, in
@@ -130,10 +150,15 @@ catch-up).
   While the frontier (the group at the network high-water mark) is behind
   the node, turns alternate between it and catch-up. The turn is kept
   across rounds, so even one-unit rounds alternate.
-- **Big groups:** a unit scans at most 256 tenants of a group (in id order).
-  With more at one cursor, the rest stay there and become a catch-up group
-  one block behind, served by the rotation; the block is still held in the
-  round's cache, so it isn't fetched again.
+- **Big groups:** one block scan covers at most 256 tenants of a group (a
+  page, in id order) and one commit moves them. With more at one cursor,
+  the unit scans the same block (held in the cache) for the next page
+  before the group moves on, and a block it has started it finishes for
+  every page whatever the time, so the group moves together. Only past the
+  unit's 8 scans does the rest stay behind as a catch-up group. (When the
+  first page moved on alone, 1000 tenants at one cursor split into groups
+  that fetched the same blocks again: 2.5 blocks a second against 4.9 now,
+  in the round length sweep.)
 - **Idle stores:** a store with nothing that could have been paid from a
   block on (every order closed before the block's time) moves straight to
   the high-water mark, whether it is at the frontier or catching up, even

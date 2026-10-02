@@ -7,6 +7,8 @@
 //! never through engine APIs, so the same measurements stay valid while the
 //! engine's store and scheduling code change underneath them.
 
+mod stress_common;
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::ops::Range;
@@ -21,8 +23,7 @@ use engine::daemon::{
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::engine_settings::{Daemons, EngineSettings};
 use engine::http::{build_router, rate_limit::RateLimiter, AppState};
-use monero::consensus::encode::deserialize;
-use monero::{Network, PrivateKey, PublicKey, Transaction};
+use monero::{Network, Transaction};
 use parking_lot::RwLock;
 
 /// The engine token the fixture's in-process router accepts.
@@ -34,7 +35,6 @@ use engine::key_custody::{
 use engine::scanner_status::new_scanner_status_map;
 use engine::store::{Db, NewOrder, NewTenant, ReadStorePool, Store};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 /// The result format `xtask/src/stress.rs` checks against the scenario file.
@@ -230,40 +230,6 @@ impl KeyCustody for SaturatedCustody {
     }
 }
 
-fn material(seed: u64, index: usize) -> Result<WalletMaterial, Box<dyn Error>> {
-    // Tenant 0 owns the fixture transaction's outputs, so every block has a
-    // real match to record.
-    if index == 0 {
-        let view = hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")?;
-        let spend =
-            hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907")?;
-        let private_spend = PrivateKey::from_slice(&spend)?;
-        return Ok(WalletMaterial::new(
-            PrivateKey::from_slice(&view)?.to_bytes(),
-            PublicKey::from_private_key(&private_spend).to_bytes(),
-        ));
-    }
-    let key = |label: &[u8]| {
-        let mut bytes = Sha256::digest(
-            [
-                seed.to_le_bytes().as_slice(),
-                &(index as u64).to_le_bytes(),
-                label,
-            ]
-            .concat(),
-        )
-        .to_vec();
-        bytes[31] &= 0x0f; // below the curve order, so a valid scalar
-        bytes
-    };
-    let private_view = PrivateKey::from_slice(&key(b"view"))?;
-    let private_spend = PrivateKey::from_slice(&key(b"spend"))?;
-    Ok(WalletMaterial::new(
-        private_view.to_bytes(),
-        PublicKey::from_private_key(&private_spend).to_bytes(),
-    ))
-}
-
 struct Args(Vec<String>);
 
 impl Args {
@@ -441,7 +407,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     let mut handles = HashMap::with_capacity(tenants);
     let now = engine::now_unix();
     for index in 0..tenants {
-        let keys = material(seed, index)?;
+        let keys = stress_common::material(seed, index)?;
         let handle = custody.register_wallet(keys.clone()).await?;
         let sealed = custody.seal(&keys).await?;
         let address = custody
@@ -498,15 +464,10 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         }
     }
     drop(fixture_sql);
-    let tx: Transaction = deserialize(&hex::decode(
-        include_str!("../../tests/fixtures/subaddress_tx.hex").trim(),
-    )?)?;
+    let tx = stress_common::fixture_tx()?;
     let daemon = Arc::new(FixtureDaemon {
         height: AtomicU64::new(0),
-        txid: {
-            use monero::cryptonote::hash::Hashable;
-            hex::encode(tx.hash().to_bytes())
-        },
+        txid: stress_common::txid(&tx),
         tx,
         rpc_delay_ms,
         rpc_fail_until_height,

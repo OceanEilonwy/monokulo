@@ -86,11 +86,30 @@ timeout  = clamp(3 × expected, 15 s, 10 min)
 
   ```
   by_memory = response_cap ÷ avg_block_bytes
-  by_time   = rate × target_call ÷ avg_block_bytes   (target_call ≈ 4 s)
+  by_time   = (target_call − RTT) ÷ (TTFB_per_block + avg_block_bytes ÷ rate)
   chunk     = clamp(min(by_memory, by_time), 1, 500)
   ```
 
-  `response_cap` is defined in section 3 (an eighth of the budget).
+  `response_cap` is defined in section 3 (an eighth of the budget), and
+  divided between catch-up groups (see "As built"). `by_time` counts the
+  same terms as `expected` above (`link::LinkCost`), so a chunk sized to
+  `target_call` is expected to take `target_call`. (As first built, it
+  counted the bytes alone, so a "4 s" request took 4 s plus its round
+  trip and the node's work for every block.)
+- **Why the time limit is in seconds.** The scheduler shares out a round's
+  seconds, not bytes. Each tier has a share of the 10 s round, and a tier
+  always runs at least one unit, which can't stop part-way through a node
+  request. One block request is therefore the smallest delay the Blocks
+  tier can cause the mempool, settlement and upkeep tiers. `target_call`
+  is the Blocks tier's share, 40 % of 10 s, and the code derives it from
+  `work::ROUND_BUDGET` and the tier shares
+  (`scanner::SCAN_CHUNK_TARGET_CALL_SECS`). A limit in bytes alone would
+  be milliseconds on a LAN node and minutes over Tor.
+  The limit doesn't cap throughput. A round that ends with blocks left is
+  followed at once by the next, so a slow link stays about as busy as it
+  would with larger requests, which would only spread the round trip over
+  more bytes. On a fast link `by_memory` binds first. At the default 8 MB
+  budget, `by_time` takes over below about 2 Mbit/s (1 MB ÷ 4 s).
 - **Failure halves, success grows:** a timeout or an over-cap answer halves
   the next chunk (by doubling the bytes-per-block estimate) and halves the
   node's rate. Successes grow both back through the running averages. Any
@@ -317,6 +336,26 @@ left open:
   while it is off costs one refused request, bounded by the response cap
   or the link's timeout, and the next try pages it. The Scanning panel
   says whether it is on, and why.
+- **The block cache outlasts the round (round length sweep).** A run
+  fetched ahead used to be dropped when its round ended and fetched again
+  in the next, so a link-limited catch-up re-sent up to one chunk a round
+  (12 to 19 times the distinct blocks at 2 s rounds, 1.3 to 1.4 at 10 s:
+  `cargo xtask stress rounds`). A round now starts from the cache the last
+  one left and leaves what may serve the next: blocks above every tenant's
+  cursor and at least `reorg_check_depth` below the tip, from the same node
+  (`MoneroDaemonClient::node`), never after a rewind or while a reorg job is
+  open. The cache stays within the scan memory budget at all times, and is
+  trimmed to it again at each round's start in case the setting was
+  lowered. A caught-up network holds nothing. Catch-up groups share the
+  budget: each group's request is capped at its share (the budget divided
+  by the groups and the frontier, within the response cap), so every
+  group's run fetched ahead fits at once, and blocks already scanned are
+  evicted before runs fetched ahead. Without the share, 16 groups at the
+  default budget evicted each other's runs: 4.7 blocks a second and 9 MB
+  discarded, against 13.4 and 130 kB with it. Blocks let go of before a scan of them committed are counted
+  (`discarded_cache_bytes_recent` in `/status`, over the last ten minutes, and on the admin page's Scanning panel). The peak is unchanged, since one
+  round could already fill the budget; only how long it is held changed, so
+  the `budget × networks × 1.25` check stands.
 - **Checkpoints.** A page doesn't write `partial_block_progress` by itself.
   The existing checkpoint is written when a unit runs out of time or a
   page fails, which is when a resume needs it. A crash costs at most the

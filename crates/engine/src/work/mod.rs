@@ -62,6 +62,27 @@ impl Tier {
         }
     }
 
+    /// This tier's share of a round of `budget`: the round's live length,
+    /// which is raised while a large block is scanned in pages.
+    pub const fn share_of(self, budget: Duration) -> Duration {
+        // Whole nanoseconds; a round would need to run for centuries to
+        // overflow the `u64`.
+        Duration::from_nanos((budget.as_nanos() * self.reserved_percent() as u128 / 100) as u64)
+    }
+
+    /// This tier's share of a round of [`ROUND_BUDGET`], worked out at build
+    /// time. The tier always runs at least one unit, so a unit that takes
+    /// longer than this delays every tier after it in the round: what one
+    /// of its calls may take is set from this, not written down beside it.
+    pub const fn reserved(self) -> Duration {
+        self.share_of(ROUND_BUDGET)
+    }
+
+    /// [`Self::reserved`] in seconds, for the sizing arithmetic.
+    pub(crate) const fn reserved_secs(self) -> f64 {
+        self.reserved().as_secs_f64()
+    }
+
     const fn index(self) -> usize {
         self as usize
     }
@@ -256,11 +277,44 @@ pub struct RoundInputs<'a> {
 
 /// The time one round may take. A round ends sooner when every tier runs out
 /// of work; a round that ends with work left is followed at once by the next.
+///
+/// It only matters while there is a backlog: a caught-up round ends in well
+/// under a second and the loop sleeps for the poll interval. Then it sets
+/// two things. Each tier's per-call times are a share of it
+/// ([`Tier::reserved`]), so it sets how much of a node's link one block
+/// request uses. And the mempool and settlement tiers get a turn once a
+/// round, so it is about the longest they wait while blocks catch up
+/// (zero-confirmation detection doesn't wait: the fast mempool path runs
+/// every 250 ms).
+///
+/// 10 s is measured, not guessed (`cargo xtask stress rounds`,
+/// docs/engine_stress.md, round length sweep). Each round pays about one
+/// round trip of its own, and each block request one more on top of its
+/// share of the Blocks tier's time:
+///
+/// - Over a nearby node (50 ms), throughput barely changes from 5 to 20 s
+///   (2 Mbit/s: 17.8 to 18.3 blocks a second). Only the wait changes.
+/// - Over a Tor-like node (800 ms), rounds shorter than 10 s lose 28 % at
+///   5 s and 12 to 14 % at 7 s; 15 and 20 s gain 6 to 22 %.
+/// - Longer rounds cost: the wait grows from about 13 s to 17 to 26 s,
+///   catch-up groups sharing the cache fetch more blocks twice as their
+///   runs grow (16 groups: 1.45 times at 10 s, 2.04 at 20 s), and past
+///   12.5 s a block request sized to the Blocks share no longer fits three
+///   times within the 15 s minimum timeout (checked at build time in
+///   `scanner`).
+///
+/// 10 s keeps a nearby node within 1 % of the longest round tried, a
+/// Tor-like one within 7 to 18 %, and the wait near 13 s.
 pub const ROUND_BUDGET: Duration = Duration::from_secs(10);
 
 /// How long one daemon call inside a unit may take before the unit treats
-/// it as failed.
-pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(15);
+/// it as failed: the client's own request timeout for small calls, and a
+/// margin. The client's timer starts a moment after this one, so without
+/// the margin this deadline could fire first and drop the call before the
+/// node's own error (naming the node) came back and its failure was
+/// recorded: the hung node would be pinned again next round.
+pub(crate) const CALL_DEADLINE: Duration =
+    crate::daemon_rpc::REQUEST_TIMEOUT.saturating_add(crate::daemon_fallback::DEADLINE_MARGIN);
 
 /// A daemon (or other) call with [`CALL_DEADLINE`].
 pub(crate) async fn bounded<T, E>(
@@ -538,7 +592,7 @@ pub async fn run_round(
             .collect(),
         pool_txids: None,
         chain: Default::default(),
-        blocks: Default::default(),
+        blocks: blocks::BlocksRound::resume(&state.blocks, inputs),
         mempool: mempool::MempoolRound::starting(watching, polled),
         settlement: Default::default(),
         upkeep: Default::default(),
@@ -552,9 +606,8 @@ pub async fn run_round(
 
     for pass_end in [None, Some(round_end)] {
         for tier in Tier::ALL {
-            let until = pass_end.unwrap_or_else(|| {
-                (Instant::now() + budget * tier.reserved_percent() / 100).min(round_end)
-            });
+            let until =
+                pass_end.unwrap_or_else(|| (Instant::now() + tier.share_of(budget)).min(round_end));
             while open[tier] {
                 if report.steps[tier] > 0 && Instant::now() >= until {
                     break;
@@ -582,6 +635,7 @@ pub async fn run_round(
             }
         }
     }
+    blocks::carry(&mut round).await;
     report
 }
 

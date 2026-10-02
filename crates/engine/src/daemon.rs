@@ -216,6 +216,13 @@ pub struct FetchedTx {
 /// The mempool's transaction ids, or why they couldn't be read.
 pub type PoolAnswer = Result<Vec<String>, DaemonError>;
 
+/// Which configured node a client's answers come from. Nodes can be at
+/// different heights or on different forks, so what was read from one
+/// isn't kept for use with another's answers (the scan's block cache,
+/// `work::blocks`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct NodeKey(pub usize);
+
 #[async_trait::async_trait]
 pub trait MoneroDaemonClient: Send + Sync {
     /// What this client has asked its node since it was built, by endpoint,
@@ -225,15 +232,23 @@ pub trait MoneroDaemonClient: Send + Sync {
         Vec::new()
     }
 
+    /// The node every answer from this client comes from, or `None` if each
+    /// call may go to a different one (a failover client that isn't
+    /// pinned). A client of one node is always the same node.
+    fn node(&self) -> Option<NodeKey> {
+        Some(NodeKey::default())
+    }
+
     /// What this client has measured of its node's link
     /// (docs/engine_scaling.md section 1), if it measures one.
     fn link(&self) -> Option<crate::link::LinkSnapshot> {
         None
     }
 
-    /// The node's measured transfer rate in bytes a second, for sizing
-    /// requests; `None` when this client doesn't measure.
-    fn transfer_rate(&self) -> Option<f64> {
+    /// What a request to the node costs, as measured (round trip, the
+    /// node's own work per block, transfer rate), for sizing requests;
+    /// `None` when this client doesn't measure.
+    fn link_cost(&self) -> Option<crate::link::LinkCost> {
         None
     }
 

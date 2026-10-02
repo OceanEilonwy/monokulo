@@ -48,15 +48,16 @@ pub struct FallbackNode {
 const FIRST_COOLDOWN: Duration = Duration::from_secs(5);
 const MAX_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 
-/// Longest one call may take across all the nodes it tries, so a call with
-/// every node dead fails in bounded time rather than one full request
-/// timeout per node.
-pub const CALL_DEADLINE: Duration = Duration::from_secs(30);
 /// Longest one node gets within a call: the client's own request timeout
 /// (`daemon_rpc::REQUEST_TIMEOUT`). A node is never cut off short of what
 /// its own client would give it; the shrinking deadline limits how many
 /// nodes a call gets to try instead.
 const MAX_ATTEMPT: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
+/// Longest one call may take across all the nodes it tries, so a call with
+/// every node dead fails in bounded time rather than one full request
+/// timeout per node: two full attempts, so a primary that hangs still
+/// leaves one fallback its turn.
+pub const CALL_DEADLINE: Duration = MAX_ATTEMPT.saturating_mul(2);
 /// Added to a node's own timeout where a layer above waits on it, so the
 /// node's own error (naming the node and the timeout) arrives first.
 pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
@@ -297,6 +298,9 @@ fn outline_bytes(tx_count: Option<u64>) -> u64 {
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for PinnedDaemon<'_> {
+    fn node(&self) -> Option<crate::daemon::NodeKey> {
+        Some(crate::daemon::NodeKey(self.idx))
+    }
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.one(|c| c.get_height()).await
     }
@@ -320,8 +324,8 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
         self.inner.nodes.get(self.idx)?.client.link()
     }
 
-    fn transfer_rate(&self) -> Option<f64> {
-        self.inner.nodes.get(self.idx)?.client.transfer_rate()
+    fn link_cost(&self) -> Option<crate::link::LinkCost> {
+        self.inner.nodes.get(self.idx)?.client.link_cost()
     }
 
     /// The pinned node's own timeout, with a moment over it so the node's
@@ -427,6 +431,11 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for FallbackDaemonClient {
+    /// Each call goes to whichever node answers first.
+    fn node(&self) -> Option<crate::daemon::NodeKey> {
+        None
+    }
+
     /// Every node: whichever is pinned next asks afresh. (One node's
     /// announcement says nothing certain about another's pool, but a poll
     /// asked a moment early costs one small request.)
@@ -469,9 +478,9 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         self.nodes[first].client.link()
     }
 
-    fn transfer_rate(&self) -> Option<f64> {
+    fn link_cost(&self) -> Option<crate::link::LinkCost> {
         let first = *self.attempt_order().first()?;
-        self.nodes[first].client.transfer_rate()
+        self.nodes[first].client.link_cost()
     }
 
     /// Room for the first two nodes in order to try, each with what its own

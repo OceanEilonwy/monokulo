@@ -47,13 +47,20 @@ use crate::store::{BlockCheckpoint, Store};
 
 use super::{bounded, Progress, Round, Wait};
 
-/// Most tenants of one group scanned by one unit. The rest of the group
-/// stays at its cursor and becomes its own catch-up group.
-const GROUP_PAGE: usize = 256;
-/// Most blocks one unit scans for its group before yielding the tier.
+/// Most tenants one block scan covers and one commit moves. A larger group
+/// is given the same block a page at a time before it moves on, within
+/// [`BLOCKS_PER_UNIT`] scans a unit; past that the rest of the group stays
+/// at its cursor and becomes its own catch-up group.
+pub(super) const GROUP_PAGE: usize = 256;
+/// Most block scans (a block for one page of its group's tenants) one unit
+/// makes before yielding the tier.
 const BLOCKS_PER_UNIT: usize = 8;
 /// Most headers fetched at once for blocks recorded without being scanned.
 const HEADERS_PER_FETCH: u64 = 256;
+const _: () = assert!(
+    HEADERS_PER_FETCH <= crate::daemon_rpc::MAX_HEADERS_PER_REQUEST,
+    "a headers fetch must be one request"
+);
 /// Transactions of a block scanned for a tenant in one key-custody call. A
 /// call costs a hop to a worker thread or a round trip to another process,
 /// which a run of transactions shares. It is also how far a unit gets
@@ -65,8 +72,7 @@ pub(super) const TXS_PER_SCAN: usize = 32;
 /// half as much again as the unit, within [`MAX_ROUND_BUDGET`].
 fn round_budget_for(unit_secs: f64) -> std::time::Duration {
     let base = super::ROUND_BUDGET;
-    let share = base.as_secs_f64() * f64::from(super::Tier::Blocks.reserved_percent()) / 100.0;
-    if unit_secs > share {
+    if unit_secs > super::Tier::Blocks.reserved_secs() {
         std::time::Duration::from_secs_f64((unit_secs * 1.5).min(MAX_ROUND_BUDGET.as_secs_f64()))
             .max(base)
     } else {
@@ -77,6 +83,10 @@ fn round_budget_for(unit_secs: f64) -> std::time::Duration {
 /// The most a round may be given for one page of a large block
 /// (docs/engine_scaling.md section 4).
 pub(crate) const MAX_ROUND_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+const _: () = assert!(
+    MAX_ROUND_BUDGET.as_secs() <= shared::scaling::SLOW_BLOCK_SECS as u64,
+    "a raised round must not by itself make a block count as slow"
+);
 /// How far ahead of real time consensus lets a block's timestamp run.
 /// Catch-up windows start this much before a block's own timestamp, so a
 /// forward-dated block can't hide an order that was open when it was mined.
@@ -122,6 +132,10 @@ pub(crate) struct BlockState {
     /// The large block being scanned in pages, kept across rounds so its
     /// outline is fetched once.
     paged: parking_lot::Mutex<Option<Paged>>,
+    /// The block cache the last round left for the next ([`carry`]): taken
+    /// whole at a round's start and put back at its end, never shared while
+    /// a round runs.
+    carried: parking_lot::Mutex<Option<Carried>>,
 }
 
 /// A large block being scanned a page at a time (docs/engine_scaling.md
@@ -143,6 +157,16 @@ impl Default for BlockState {
 }
 
 impl BlockState {
+    /// The heights the last round left for the next, lowest first.
+    #[cfg(test)]
+    pub(super) fn carried_heights(&self) -> Vec<u64> {
+        self.carried
+            .lock()
+            .as_ref()
+            .map(|carried| carried.cache.blocks.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
     /// State whose progress (sizing, the block in progress, recent blocks)
     /// is `progress`, which `/status` reads.
     pub(crate) fn with_progress(progress: crate::scaling::SharedProgress) -> Self {
@@ -150,6 +174,7 @@ impl BlockState {
             catch_up_turn: AtomicBool::new(false),
             progress,
             paged: parking_lot::Mutex::new(None),
+            carried: parking_lot::Mutex::new(None),
         }
     }
 
@@ -168,12 +193,9 @@ impl BlockState {
             self.progress.lock().round_budget = base;
             return base;
         };
-        let link = daemon.link();
-        let fetch = link.as_ref().map_or(0.0, |link| {
-            (link.rtt_ms + link.ttfb_per_block_ms) as f64 / 1000.0
-        }) + daemon
-            .transfer_rate()
-            .map_or(0.0, |rate| avg_tx_bytes / rate.max(1.0));
+        let fetch = daemon
+            .link_cost()
+            .map_or(0.0, |link| link.secs(1, avg_tx_bytes));
         let scan = self.progress.lock().secs_per_tx_scan().unwrap_or(0.0) * stores.max(1) as f64;
         let budget = round_budget_for(fetch + scan);
         self.progress.lock().round_budget = budget;
@@ -184,8 +206,11 @@ impl BlockState {
     fn plan(&self, round: &Round<'_>, from: u64, end: u64) -> crate::scanner::ChunkPlan {
         let mut progress = self.progress.lock();
         let plan = crate::scanner::next_scan_chunk(
-            crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
-            round.inputs.daemon.transfer_rate(),
+            crate::scanner::group_response_cap_bytes(
+                round.inputs.scan_chunk_memory_budget_mb,
+                round.blocks.groups.unwrap_or(1),
+            ),
+            round.inputs.daemon.link_cost(),
             progress.avg_bytes_per_block,
             end.saturating_sub(from) + 1,
         );
@@ -220,14 +245,14 @@ impl BlockState {
     }
 
     /// Fetched blocks of `sizes` bytes: one within a quarter of the size
-    /// that is paged (under a `response_cap` and a link of `rate`) means
-    /// blocks may grow past it, so headers are read first for a while.
-    fn note_sizes(&self, sizes: &[usize], response_cap: u64, rate: Option<f64>) {
+    /// that is paged (under a `response_cap` and over `link`) means blocks
+    /// may grow past it, so headers are read first for a while.
+    fn note_sizes(&self, sizes: &[usize], response_cap: u64, link: Option<crate::link::LinkCost>) {
         let near = sizes.iter().any(|size| {
             crate::scanner::scan_in_pages(
                 Some((*size as u64).saturating_mul(4)),
                 response_cap,
-                rate,
+                link,
             )
         });
         if near {
@@ -291,6 +316,80 @@ pub(crate) struct BlocksRound {
     /// Whether the last new block was recorded from its header alone
     /// (nobody to scan it for). Not yet known at the start of a round.
     frontier_header_only: Option<bool>,
+    /// How many groups share the block cache this round (the catch-up
+    /// groups and the frontier), counted at the tier's first unit.
+    groups: Option<u64>,
+}
+
+impl BlocksRound {
+    /// A round's block state, starting from the cache the last round left,
+    /// if its blocks came from the node this round reads, trimmed to the
+    /// memory budget as it is now (the setting may have been lowered).
+    pub(crate) fn resume(state: &BlockState, inputs: &super::RoundInputs<'_>) -> Self {
+        let mut round = BlocksRound::default();
+        let Some(mut carried) = state.carried.lock().take() else {
+            return round;
+        };
+        let discarded = if inputs.daemon.node() == Some(carried.node) {
+            let budget = budget_bytes(inputs.scan_chunk_memory_budget_mb);
+            let discarded = carried.cache.trim(None, budget);
+            round.cache = carried.cache;
+            discarded
+        } else {
+            carried.cache.clear()
+        };
+        let mut progress = state.progress.lock();
+        progress.discarded(discarded, crate::now_unix());
+        progress.cache_bytes(round.cache.bytes as u64, crate::now_unix());
+        round
+    }
+}
+
+/// Leaves the next round what may serve it: blocks above every tenant's
+/// cursor (below it, nobody needs them again) and at least
+/// `reorg_check_depth` below the tip, where reorg detection treats the
+/// chain as settled; a block nearer the tip may be replaced before the next
+/// round. Nothing is left after a rewind, while a reorg job is open, when
+/// the tip couldn't be read, or from a client that may ask a different node
+/// each call. A caught-up network leaves nothing: every held block is at or
+/// below a cursor, or near the tip.
+pub(super) async fn carry(round: &mut Round<'_>) {
+    let mut cache = std::mem::take(&mut round.blocks.cache);
+    if cache.blocks.is_empty() {
+        return;
+    }
+    let node = round.inputs.daemon.node();
+    let lowest_cursor = match (node, round.tip, round.chain.rewound) {
+        (Some(_), Some(_), false) => round
+            .db(|s, network| -> Result<Option<u64>, ScannerError> {
+                if s.reorg_job(network)?.is_some() {
+                    return Ok(None);
+                }
+                let Some(high_water) = s.max_scanned_height(network)? else {
+                    return Ok(None);
+                };
+                let lowest_group = s.scan_group_cursors(network, high_water, None, 1)?;
+                Ok(Some(lowest_group.first().copied().unwrap_or(high_water)))
+            })
+            .await
+            .ok()
+            .flatten(),
+        _ => None,
+    };
+    let settled = round
+        .tip
+        .map(|tip| tip.saturating_sub(round.inputs.reorg_check_depth));
+    let discarded = match (lowest_cursor, settled) {
+        (Some(lowest), Some(settled)) => cache.retain(lowest.saturating_add(1)..=settled),
+        _ => cache.clear(),
+    };
+    let mut progress = round.state.blocks.progress.lock();
+    progress.discarded(discarded, crate::now_unix());
+    progress.cache_bytes(cache.bytes as u64, crate::now_unix());
+    drop(progress);
+    if let (Some(node), false) = (node, cache.blocks.is_empty()) {
+        *round.state.blocks.carried.lock() = Some(Carried { cache, node });
+    }
 }
 
 /// Which catch-up group is served next. Groups are keyed by cursor height;
@@ -351,43 +450,132 @@ impl Rotation {
     }
 }
 
-/// Blocks fetched this round, bounded by the scan memory budget. Each block
-/// carries its own id, so a cached body can never be paired with another
-/// block's hash; the cache is still per round, so nothing stale is kept.
+/// Blocks fetched for scanning, within the scan memory budget. A round
+/// starts with what the last one left ([`BlockState::resume`]) and leaves
+/// what may serve the next ([`BlocksRound::carry`]), so a run fetched ahead
+/// isn't fetched again because a round ended. Each block carries its own id
+/// and is checked against the recorded chain before it is scanned, so a
+/// cached body can never be paired with another block's hash.
 #[derive(Default)]
 struct BlockCache {
-    blocks: BTreeMap<u64, (Arc<ChainBlock>, usize)>,
+    blocks: BTreeMap<u64, Cached>,
     bytes: usize,
+}
+
+struct Cached {
+    block: Arc<ChainBlock>,
+    /// Its size on the wire: what the memory budget counts.
+    bytes: usize,
+    /// A group's scan of it committed, for the whole group. A block let go
+    /// of before that (not just handed to a scan that was interrupted) was
+    /// fetched for nothing.
+    scanned: bool,
 }
 
 impl BlockCache {
     fn insert(&mut self, block: ChainBlock, bytes: usize) -> Arc<ChainBlock> {
         let block = Arc::new(block);
-        if let Some((_, old)) = self.blocks.insert(block.height, (block.clone(), bytes)) {
-            self.bytes -= old;
+        let cached = Cached {
+            block: block.clone(),
+            bytes,
+            scanned: false,
+        };
+        if let Some(old) = self.blocks.insert(block.height, cached) {
+            self.bytes -= old.bytes;
         }
         self.bytes += bytes;
         block
     }
 
-    /// Evicts the blocks farthest from `keep` until within `budget`; `keep`
-    /// itself always stays.
-    fn trim(&mut self, keep: u64, budget: usize) {
-        // Farthest first; of two as far, the lower (already scanned past).
-        let mut victims: Vec<u64> = self
+    fn contains(&self, height: u64) -> bool {
+        self.blocks.contains_key(&height)
+    }
+
+    /// Block `height`, if held.
+    fn get(&self, height: u64) -> Option<Arc<ChainBlock>> {
+        self.blocks.get(&height).map(|cached| cached.block.clone())
+    }
+
+    /// A group's scan of block `height` committed, for the whole group.
+    fn mark_scanned(&mut self, height: u64) {
+        if let Some(cached) = self.blocks.get_mut(&height) {
+            cached.scanned = true;
+        }
+    }
+
+    /// Lets go of block `height`; returns its bytes if no group's scan of it
+    /// committed.
+    fn remove(&mut self, height: u64) -> u64 {
+        match self.blocks.remove(&height) {
+            Some(cached) => {
+                self.bytes -= cached.bytes;
+                if cached.scanned {
+                    0
+                } else {
+                    cached.bytes as u64
+                }
+            }
+            None => 0,
+        }
+    }
+
+    /// Evicts blocks until within `budget`, `keep` never: first those a
+    /// group has scanned (and moved past), then the rest; of each, the
+    /// farthest from `keep` (the lowest held, without one) first. Returns
+    /// the bytes let go of unscanned.
+    fn trim(&mut self, keep: Option<u64>, budget: usize) -> u64 {
+        let Some(anchor) = keep.or_else(|| self.blocks.keys().next().copied()) else {
+            return 0;
+        };
+        let mut victims: Vec<(bool, u64)> = self
             .blocks
-            .keys()
-            .copied()
-            .filter(|&height| height != keep)
+            .iter()
+            .filter(|(height, _)| Some(**height) != keep)
+            .map(|(height, cached)| (cached.scanned, *height))
             .collect();
-        victims.sort_by_key(|&height| std::cmp::Reverse(height.abs_diff(keep)));
-        for height in victims {
+        victims.sort_by_key(|&(scanned, height)| {
+            (!scanned, std::cmp::Reverse(height.abs_diff(anchor)))
+        });
+        let mut discarded = 0;
+        for (_, height) in victims {
             if self.bytes <= budget {
                 break;
             }
-            self.bytes -= self.blocks.remove(&height).map_or(0, |(_, bytes)| bytes);
+            discarded += self.remove(height);
         }
+        discarded
     }
+
+    /// Lets go of every block; returns the bytes let go of unscanned.
+    fn clear(&mut self) -> u64 {
+        let heights: Vec<u64> = self.blocks.keys().copied().collect();
+        heights.into_iter().map(|height| self.remove(height)).sum()
+    }
+
+    /// Keeps only blocks in `heights`; returns the bytes let go of unscanned.
+    fn retain(&mut self, heights: std::ops::RangeInclusive<u64>) -> u64 {
+        let outside: Vec<u64> = self
+            .blocks
+            .keys()
+            .copied()
+            .filter(|height| !heights.contains(height))
+            .collect();
+        outside.into_iter().map(|height| self.remove(height)).sum()
+    }
+}
+
+/// A scan memory budget of `budget_mb` in bytes.
+fn budget_bytes(budget_mb: u32) -> usize {
+    usize::try_from(budget_mb)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(1024 * 1024)
+}
+
+/// A block cache left by one round for the next, with the node its blocks
+/// came from.
+struct Carried {
+    cache: BlockCache,
+    node: crate::daemon::NodeKey,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -396,8 +584,16 @@ enum Group {
     CatchUp,
 }
 
+/// Which page of a group's tenants a committed block was scanned for.
+enum Page {
+    /// A full page: more of the group may still be at the parent cursor.
+    Full(Vec<TenantId>),
+    /// The last of the group at the parent cursor.
+    Last,
+}
+
 enum BlockOutcome {
-    Committed,
+    Committed(Page),
     /// Out of time partway through; progress is checkpointed.
     Interrupted,
     /// Nobody in the group could be scanned (keys not registered, retry
@@ -436,10 +632,17 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
         return Ok(Progress::Blocked(Wait::RewoundThisRound));
     }
     let repair = !round.blocks.repaired;
-    let (reorg_open, high_water) = round
+    let count_groups = round.blocks.groups.is_none();
+    let (reorg_open, high_water, groups) = round
         .db(move |s, network| -> Result<_, ScannerError> {
             let reorg_open = s.reorg_job(network)?.is_some();
             let high_water = s.max_scanned_height(network)?;
+            // Once a round: the catch-up groups and the frontier, which
+            // share the block cache.
+            let groups = match (count_groups, high_water) {
+                (true, Some(high_water)) => Some(s.count_scan_groups(network, high_water)? + 1),
+                _ => None,
+            };
             if let (false, true, Some(high_water)) = (reorg_open, repair, high_water) {
                 // Cheap repairs whatever happened before: no cursor ahead of
                 // the network, new tenants anchored at it, disabled ones
@@ -448,9 +651,12 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
                 s.anchor_unset_cursors(network, high_water)?;
                 s.snap_disabled_cursors(network, high_water)?;
             }
-            Ok((reorg_open, high_water))
+            Ok((reorg_open, high_water, groups))
         })
         .await?;
+    if groups.is_some() {
+        round.blocks.groups = groups;
+    }
     if reorg_open {
         return Ok(Progress::Blocked(Wait::ReorgBeingReconciled));
     }
@@ -561,12 +767,17 @@ async fn advance_group(
         .db(|s, network| s.max_scanned_height(network))
         .await?
         .unwrap_or(cursor);
+    // Tenants already given block `cursor + 1` this unit, a page at a
+    // time, while the rest of the group at `cursor` waits for its page.
+    let mut given: Vec<TenantId> = Vec::new();
     for scanned in 0..BLOCKS_PER_UNIT {
         let end = match group {
             Group::Frontier => tip,
             Group::CatchUp => high_water,
         };
-        if cursor >= end || (scanned > 0 && Instant::now() >= until) {
+        // Out of time, a unit starts no new block; a block it started, it
+        // finishes for the whole group, so the group doesn't split.
+        if cursor >= end || (given.is_empty() && scanned > 0 && Instant::now() >= until) {
             break;
         }
         // The node's round trip for the next run of blocks overlaps this
@@ -594,9 +805,15 @@ async fn advance_group(
             high_water,
             end,
             until,
-            must_progress: scanned == 0,
+            on_timeout: if !given.is_empty() {
+                OnTimeout::Finish
+            } else if scanned == 0 {
+                OnTimeout::StopAfterProgress
+            } else {
+                OnTimeout::Stop
+            },
         };
-        let (outcome, prefetched) = tokio::join!(scan_block(round, task), async {
+        let (outcome, prefetched) = tokio::join!(scan_block(round, task, &given), async {
             match prefetch {
                 Some((from, count)) => {
                     let started = Instant::now();
@@ -615,7 +832,7 @@ async fn advance_group(
                     chunk,
                     cursor + 2,
                     round.inputs.scan_chunk_memory_budget_mb,
-                    daemon.transfer_rate(),
+                    daemon.link_cost(),
                     &state.blocks,
                 );
             }
@@ -624,7 +841,14 @@ async fn advance_group(
             None => {}
         }
         match outcome? {
-            BlockOutcome::Committed => {
+            // A whole page: the rest of the group at this cursor gets the
+            // same block (held already) before the group moves on, so a
+            // group larger than a page moves together rather than its
+            // first page running ahead of the rest.
+            BlockOutcome::Committed(Page::Full(page)) => given.extend(page),
+            BlockOutcome::Committed(Page::Last) => {
+                round.blocks.cache.mark_scanned(cursor + 1);
+                given.clear();
                 cursor += 1;
                 high_water = high_water.max(cursor);
             }
@@ -660,6 +884,8 @@ struct Reached {
 
 /// What one database read tells a block scan before it starts.
 struct Plan {
+    /// The page of tenants at the parent cursor this scan is for.
+    page: Page,
     /// Tenants at the parent cursor with something in scope, and their
     /// windows.
     members: Vec<(crate::store::TenantId, Vec<u32>)>,
@@ -680,19 +906,38 @@ struct BlockTask {
     /// Where the group's run ends (the tip, or the high-water mark).
     end: u64,
     until: Instant,
-    /// This is the unit's first block: it makes progress even past `until`.
-    must_progress: bool,
+    on_timeout: OnTimeout,
+}
+
+/// What a block scan does once its unit's time is up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnTimeout {
+    /// Stops where it is, with a checkpoint.
+    Stop,
+    /// Stops once it has scanned something: the unit's first block, so
+    /// every unit makes progress however little time it has.
+    StopAfterProgress,
+    /// Doesn't stop: a later page of a block the unit started, so a group
+    /// larger than a page isn't split. Bounded by the page and the unit's
+    /// [`BLOCKS_PER_UNIT`] scans.
+    Finish,
 }
 
 /// Scans block `task.parent + 1` for the tenants at cursor `task.parent`.
-async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutcome, ScannerError> {
+/// Scans block `task.parent + 1` for the next page of tenants at cursor
+/// `task.parent`, leaving out those `given` it already this unit.
+async fn scan_block(
+    round: &mut Round<'_>,
+    task: BlockTask,
+    given: &[TenantId],
+) -> Result<BlockOutcome, ScannerError> {
     let BlockTask {
         group,
         parent,
         high_water,
         end,
         until,
-        must_progress,
+        on_timeout,
     } = task;
     let height = parent + 1;
     let grace = round.inputs.grace_period_seconds;
@@ -703,7 +948,8 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
         .progress
         .lock()
         .start_block(height, crate::now_unix());
-    let waiting = round.state.backoff.waiting();
+    let mut waiting = round.state.backoff.waiting();
+    waiting.extend_from_slice(given);
     // A catch-up group none of whose stores can be scanned (keys not
     // registered, waiting to retry) waits where it is, before anything is
     // fetched. The frontier still records the block for the network.
@@ -737,6 +983,11 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let plan = round
         .db(move |s, network| -> Result<_, ScannerError> {
             let ids = s.tenants_at_cursor(network, parent, &waiting, GROUP_PAGE)?;
+            let page = if ids.len() == GROUP_PAGE {
+                Page::Full(ids.clone())
+            } else {
+                Page::Last
+            };
             let mut windows = s.scan_windows(&ids, since, grace)?;
             let members: Vec<(crate::store::TenantId, Vec<u32>)> = ids
                 .into_iter()
@@ -749,6 +1000,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
                 }
             }
             Ok(Plan {
+                page,
                 members,
                 recorded: s.get_scanned_block_hash(network, height)?,
                 parent: s.get_scanned_block_hash(network, parent)?,
@@ -810,10 +1062,10 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let (hash, prev_hash) = (hash.to_string(), prev_hash.to_string());
 
     let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &hash, source.tx_count());
-    let mut progressed = !must_progress;
+    let mut progressed = on_timeout == OnTimeout::Stop;
     let at = ScanAt {
         height,
-        until,
+        until: (on_timeout != OnTimeout::Finish).then_some(until),
         scannable: &scannable,
     };
     let finished = match &source {
@@ -901,7 +1153,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
         }
     }
     Ok(if committed {
-        BlockOutcome::Committed
+        BlockOutcome::Committed(plan.page)
     } else {
         BlockOutcome::Diverged("the recorded chain changed before commit")
     })
@@ -1140,7 +1392,7 @@ fn commit(
 /// the end of what it has).
 fn prefetch_range(round: &Round<'_>, next: u64, end: u64) -> Option<(u64, u64)> {
     let cache = &round.blocks.cache;
-    if next > end || cache.blocks.contains_key(&next) || !cache.blocks.contains_key(&(next - 1)) {
+    if next > end || cache.contains(next) || !cache.contains(next - 1) {
         return None;
     }
     let count = whole_run(
@@ -1153,17 +1405,17 @@ fn prefetch_range(round: &Round<'_>, next: u64, end: u64) -> Option<(u64, u64)> 
 
 impl BlockCache {
     /// Adds a fetched run of blocks, keeping within the memory budget
-    /// around `keep`. Returns block `keep`, if the run had it.
+    /// around `keep`, which stays.
     fn add_chunk(
         &mut self,
         chunk: Vec<ChainBlock>,
         keep: u64,
         budget_mb: u32,
-        rate: Option<f64>,
+        link: Option<crate::link::LinkCost>,
         state: &BlockState,
-    ) -> Option<Arc<ChainBlock>> {
+    ) {
         if chunk.is_empty() {
-            return None;
+            return;
         }
         // As the blocks came from the node: what requests are sized by.
         let sizes: Vec<usize> = chunk
@@ -1171,25 +1423,14 @@ impl BlockCache {
             .map(|b| usize::try_from(b.wire_bytes).unwrap_or(usize::MAX))
             .collect();
         state.note_fetched(sizes.iter().sum(), chunk.len());
-        state.note_sizes(&sizes, crate::scanner::response_cap_bytes(budget_mb), rate);
-        let mut kept = None;
+        state.note_sizes(&sizes, crate::scanner::response_cap_bytes(budget_mb), link);
         for (block, bytes) in chunk.into_iter().zip(sizes) {
-            let block = self.insert(block, bytes);
-            if block.height == keep {
-                kept = Some(block);
-            }
+            self.insert(block, bytes);
         }
-        self.trim(
-            keep,
-            usize::try_from(budget_mb)
-                .unwrap_or(usize::MAX)
-                .saturating_mul(1024 * 1024),
-        );
-        state
-            .progress
-            .lock()
-            .cache_bytes(self.bytes as u64, crate::now_unix());
-        kept
+        let discarded = self.trim(Some(keep), budget_bytes(budget_mb));
+        let mut progress = state.progress.lock();
+        progress.discarded(discarded, crate::now_unix());
+        progress.cache_bytes(self.bytes as u64, crate::now_unix());
     }
 }
 
@@ -1218,10 +1459,10 @@ impl Source {
 }
 
 /// The block a scan is of, the tenants it is for and when its unit's time
-/// is up.
+/// is up (`None`: it finishes the block whatever the time).
 struct ScanAt<'s> {
     height: u64,
-    until: Instant,
+    until: Option<Instant>,
     scannable: &'s [(crate::store::TenantId, WalletHandle, ScanIndices)],
 }
 
@@ -1245,7 +1486,7 @@ async fn scan_txs(
             .due(at.scannable, offset + start, offset + end)
             .chunks(SCAN_CONCURRENCY)
         {
-            if *progressed && Instant::now() >= at.until {
+            if *progressed && at.until.is_some_and(|until| Instant::now() >= until) {
                 return false;
             }
             let scanning = Instant::now();
@@ -1255,6 +1496,7 @@ async fn scan_txs(
                 &txs[start..end],
                 &inputs[start..end],
                 batch,
+                super::Tier::Blocks.reserved(),
             )
             .await;
             round.state.blocks.progress.lock().spent(
@@ -1303,7 +1545,7 @@ async fn scan_pages(
         .fetched_block(at.height, paged.weight);
     let mut next = scan.first_due(total);
     while next < total {
-        if *progressed && Instant::now() >= at.until {
+        if *progressed && at.until.is_some_and(|until| Instant::now() >= until) {
             return Ok(false);
         }
         let avg_tx_bytes = round
@@ -1349,15 +1591,12 @@ fn page_plan(
     let scan_secs = progress
         .secs_per_tx_scan()
         .map(|secs| secs * stores.max(1) as f64);
-    let share = super::ROUND_BUDGET.as_secs_f64()
-        * f64::from(super::Tier::Blocks.reserved_percent())
-        / 100.0;
     let plan = crate::scanner::next_page(
         crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
-        round.inputs.daemon.transfer_rate(),
+        round.inputs.daemon.link_cost(),
         avg_tx_bytes,
         scan_secs,
-        share,
+        super::Tier::Blocks.reserved_secs(),
         remaining,
     );
     progress.last_chunk = Some(plan);
@@ -1412,7 +1651,7 @@ fn in_pages(round: &Round<'_>, header: &ChainHeader) -> bool {
     crate::scanner::scan_in_pages(
         header.weight,
         crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
-        round.inputs.daemon.transfer_rate(),
+        round.inputs.daemon.link_cost(),
     )
 }
 
@@ -1459,8 +1698,8 @@ async fn known_header(
 /// Block `height` ready to scan: held whole, or, if it is large, its
 /// outline.
 async fn source(round: &mut Round<'_>, height: u64, end: u64) -> Result<Source, ScannerError> {
-    if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
-        return Ok(Source::Whole(block.clone()));
+    if let Some(block) = round.blocks.cache.get(height) {
+        return Ok(Source::Whole(block));
     }
     if round.state.blocks.headers_first() {
         let header = known_header(round, height, end).await?;
@@ -1474,7 +1713,7 @@ async fn source(round: &mut Round<'_>, height: u64, end: u64) -> Result<Source, 
 /// Fetches block `height` whole ahead of its scan, unless it is held
 /// already or is scanned in pages.
 async fn hold(round: &mut Round<'_>, height: u64, end: u64) -> Result<(), ScannerError> {
-    if round.blocks.cache.blocks.contains_key(&height) {
+    if round.blocks.cache.contains(height) {
         return Ok(());
     }
     if round.state.blocks.headers_first() {
@@ -1549,8 +1788,8 @@ async fn block(
     height: u64,
     end: u64,
 ) -> Result<Arc<ChainBlock>, ScannerError> {
-    if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
-        return Ok(block.clone());
+    if let Some(block) = round.blocks.cache.get(height) {
+        return Ok(block);
     }
     let count = round.state.blocks.plan(round, height, end).blocks;
     let count = whole_run(round, height, count).max(1);
@@ -1569,21 +1808,18 @@ async fn block(
     };
     // The block asked for is never evicted by its own fetch.
     let state = round.state;
-    round
-        .blocks
-        .cache
-        .add_chunk(
-            chunk,
-            height,
-            round.inputs.scan_chunk_memory_budget_mb,
-            round.inputs.daemon.transfer_rate(),
-            &state.blocks,
-        )
-        .ok_or_else(|| {
-            ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
-                "the node returned no block at height {height}"
-            )))
-        })
+    round.blocks.cache.add_chunk(
+        chunk,
+        height,
+        round.inputs.scan_chunk_memory_budget_mb,
+        round.inputs.daemon.link_cost(),
+        &state.blocks,
+    );
+    round.blocks.cache.get(height).ok_or_else(|| {
+        ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
+            "the node returned no block at height {height}"
+        )))
+    })
 }
 
 /// Block `height` as its header alone (no transactions), for recording a
@@ -1597,8 +1833,8 @@ async fn header_block(
     height: u64,
     end: u64,
 ) -> Result<Arc<ChainBlock>, ScannerError> {
-    if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
-        return Ok(block.clone());
+    if let Some(block) = round.blocks.cache.get(height) {
+        return Ok(block);
     }
     let header = known_header(round, height, end).await?;
     Ok(Arc::new(ChainBlock {
@@ -1686,16 +1922,88 @@ mod tests {
         }
         cache.insert(block(15), 40);
         assert_eq!(cache.bytes, 10 * 100 + 40);
-        cache.trim(12, 500);
+        assert_eq!(cache.trim(Some(12), 500), 540, "none had been read");
         assert!(cache.bytes <= 500);
         let kept: Vec<u64> = cache.blocks.keys().copied().collect();
         assert!(kept.contains(&12));
         assert!(kept.iter().all(|h| h.abs_diff(12) <= 3), "{kept:?}");
-        cache.trim(12, 0);
+        cache.trim(Some(12), 0);
         assert_eq!(
             cache.blocks.keys().copied().collect::<Vec<_>>(),
             vec![12],
             "the block in use always stays"
         );
+    }
+
+    /// Blocks a group has scanned go before blocks fetched ahead: with many
+    /// groups sharing the budget, one group's run fetched ahead isn't
+    /// evicted while blocks already scanned remain. Handing a block to a
+    /// scan doesn't count: only a committed scan does, so a block whose scan
+    /// was interrupted is kept like an unscanned one, and counts as
+    /// discarded if it goes.
+    #[test]
+    fn the_block_cache_evicts_scanned_blocks_before_the_rest() {
+        let mut cache = BlockCache::default();
+        for h in 10..=20 {
+            cache.insert(block(h), 100);
+        }
+        for h in [11, 19] {
+            cache.mark_scanned(h);
+        }
+        assert!(cache.get(12).is_some(), "handed to a scan, not scanned");
+        assert_eq!(cache.trim(Some(15), 900), 0, "the scanned ones went");
+        assert!(!cache.contains(11) && !cache.contains(19));
+        assert_eq!(
+            cache.trim(Some(15), 800),
+            100,
+            "then the farthest unscanned"
+        );
+        assert!(!cache.contains(10) && cache.contains(20) && cache.contains(12));
+        assert_eq!(cache.retain(12..=16), 300, "17, 18 and 20, unscanned");
+        assert_eq!(cache.bytes, 500);
+        cache.mark_scanned(15);
+        assert_eq!(cache.clear(), 400, "15 was scanned");
+        assert_eq!(cache.bytes, 0);
+    }
+
+    /// A round starts from what the last one left, trimmed to the memory
+    /// budget as it is now, and only on the node the blocks came from. What
+    /// is let go of unscanned is counted for `/status`.
+    #[tokio::test]
+    async fn a_round_resumes_the_cache_within_todays_budget() {
+        let state = BlockState::default();
+        let carry = |state: &BlockState, node| {
+            let mut cache = BlockCache::default();
+            for h in 1..=4 {
+                cache.insert(block(h), 512 * 1024);
+            }
+            *state.carried.lock() = Some(Carried { cache, node });
+        };
+        let store = crate::store::Store::open_in_memory().unwrap().into_shared();
+        let db = crate::store::Db::over_shared(store);
+        let custody = crate::key_custody::PlainKeyCustody::default();
+        let daemon = crate::daemon::fake::FakeDaemonClient::new();
+        let inputs = super::super::RoundInputs {
+            db: &db,
+            custody: &custody,
+            daemon: &daemon,
+            network: monero::Network::Mainnet,
+            tenants: &[],
+            reorg_check_depth: 10,
+            grace_period_seconds: 0,
+            scan_chunk_memory_budget_mb: 1,
+        };
+
+        carry(&state, crate::daemon::NodeKey::default());
+        let round = BlocksRound::resume(&state, &inputs);
+        assert_eq!(round.cache.bytes, 1024 * 1024, "two of four fit 1 MB");
+        assert!(round.cache.contains(1) && round.cache.contains(2));
+        assert!(state.carried.lock().is_none(), "taken, not shared");
+        assert_eq!(state.progress.lock().discarded_cache_bytes, 1024 * 1024);
+
+        carry(&state, crate::daemon::NodeKey(7));
+        let round = BlocksRound::resume(&state, &inputs);
+        assert_eq!(round.cache.bytes, 0, "another node's blocks");
+        assert_eq!(state.progress.lock().discarded_cache_bytes, 3 * 1024 * 1024);
     }
 }
