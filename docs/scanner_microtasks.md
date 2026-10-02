@@ -370,7 +370,7 @@ A pool that can't be read is reported as unreadable, never as empty.
   near-instant detection with the existing RPC client. ZMQ push through
   `libzmq` would be a C dependency the design avoids (`docs/DESIGN.md`);
   an opt-in pure-Rust subscriber that wakes these polls early is
-  prototyped behind the `zmq` feature (`docs/monero_zmq.md`).
+  behind the `zmq` feature (`docs/monero_zmq.md`).
 - **A checkpoint is matched by block hash alone.** The hash names the
   height too.
 

@@ -1,6 +1,7 @@
 # Announcements from the node (ZMQ)
 
-Status: prototype, behind the engine's `zmq` cargo feature (off by default).
+Status: implemented behind the engine's `zmq` cargo feature, which the
+Docker image turns on (a plain `cargo build` leaves it off).
 
 The engine learns about blocks and pool transactions by polling `monerod`
 (`docs/node_rpc_efficiency.md`): a round every `payment.mempool_poll_interval_ms`
@@ -19,7 +20,10 @@ no build script, no dynamic library. With only the TCP and IPC transports it
 adds nine crates to a Linux build (`zeromq`, `futures`, `asynchronous-codec`,
 `crossbeam-queue`, `regex`, `scc`/`saa`/`sdd`, `tokio-util`), and six more
 to the lock file that only Windows builds use (IPC there: `win_uds` and its
-`async-io`). That is still more than nothing, so it stays opt-in.
+`async-io`). That is still more than nothing, so a plain build leaves it out;
+the Docker image builds it in (`ARG ENGINE_FEATURES=zmq`;
+`--build-arg ENGINE_FEATURES=` leaves it out). Built in, it does nothing
+until a node setting names a `zmq_pub`: no socket, no task.
 
 ## How it works
 
@@ -43,7 +47,10 @@ monerod --zmq-pub ──► node_events::run_subscriber ──► NodeWakes ─�
   Only the topic is read, never the JSON. It reconnects after 1 s doubling
   to 60 s, logs a throttled warning while it can't, and wakes both loops
   whenever it (re)connects, for anything missed meanwhile. Saving node
-  settings restarts it with the new list.
+  settings restarts it with the new list. The `zeromq` socket would
+  reconnect by itself, silently; the subscriber watches the socket's events
+  instead, ends the connection when the node goes, and reconnects itself,
+  so a lost connection shows on `/status` within moments.
 - A pool wake-up also calls `MoneroDaemonClient::pool_changed`, so the
   pass asks the node instead of reusing the answer `RpcDaemonClient` keeps
   for 100 ms (`POOL_REUSE`), which would no longer describe the pool.
@@ -59,6 +66,30 @@ announcement only says "ask now". So:
 - reorgs, removed pool transactions and everything else polling handles
   are handled exactly as before.
 
+## What isn't announced (Dandelion++)
+
+From monerod's source (`master`, October 2026):
+
+- `core::add_new_tx` publishes `txpool_add` only when the transaction's
+  relay method `matches_category(relay_category::legacy)`
+  (`cryptonote_core.cpp`). In `blockchain_db.cpp` that is `fluff`,
+  `block` and `none` (submitted by RPC with `do_not_relay`). `stem` (a
+  Dandelion++ stem hop through this node), `local` (submitted to this node
+  by RPC, waiting to go out over Tor or I2P) and `forward` (received over
+  Tor or I2P, on its embargo timer) are not announced.
+- Nothing announces such a transaction later: when this node fluffs it,
+  or its embargo ends, `tx_pool.cpp` changes its relay method but publishes
+  nothing.
+- RPC hides the same transactions until they are public: without
+  `include_sensitive`, the pool is read as `relay_category::broadcasted`.
+
+So a payment whose transaction reaches our node in its stem phase, or over
+Tor or I2P, is never announced; the poll finds it once the node makes it
+public. How long that takes after the transaction goes public is the poll
+interval, which is why polling stays on and why slowing it down (below)
+needs care. Most transactions reach a node already fluffed (a stem is a
+few hops long and our node is on few of them), so most are announced.
+
 ## Configuring it
 
 On the node (its own machine or a private network: ZMQ has no
@@ -71,9 +102,10 @@ monerod --zmq-pub tcp://127.0.0.1:18083
 `--no-zmq` turns the publisher off too (monerod warns and ignores
 `--zmq-pub`).
 
-On the engine, built with `cargo build -p engine --release --features zmq`,
-add `zmq_pub` to the node setting (`monero_node.<network>`, a fallback can
-have its own):
+On the engine (the Docker image, or `cargo build -p engine --release
+--features zmq`), add `zmq_pub` to the node setting
+(`monero_node.<network>`, a fallback can have its own), or fill in
+"Announcements (ZMQ)" on the node's row of the admin nodes form:
 
 ```json
 {"host":"127.0.0.1","port":18081,"zmq_pub":"tcp://127.0.0.1:18083",
@@ -101,27 +133,37 @@ checkout's SSE) is already push, so detection is the only wait left.
 The larger gain is the next step: with announcements arriving, polling only
 has to catch what they miss, so it can be slowed down a lot.
 
+## Seeing it
+
+The engine's `/status` has, for each network with a publisher configured,
+`announcements`: each publisher (its node, endpoint, whether connected and
+since when, connections made, pool and block announcements counted, the
+last one's time, the last failure and when) and how many pool passes and
+scan rounds an announcement started early. monokulo's status page shows
+this to admins only, as an "Announcements (ZMQ)" table under each network;
+anyone else sees nothing of it, as publisher addresses and errors can name
+internal hosts.
+
 ## Not done yet
 
-1. **Slower polling while announcements arrive.** While a subscriber is
-   connected, stretch the fast pool pass (250 ms) and the round (1 s) to,
-   say, 5 s and 10 s: four to ten times fewer requests against one's own
-   node with no loss of latency. Needs the subscriber to report "connected"
-   (the zeromq socket monitor, or "a message in the last N minutes"; a
-   quiet stagenet can go many minutes between transactions, so silence alone
-   doesn't prove a dead link).
-2. **`/status`.** Show per node whether its announcements are connected and
-   when the last one came, beside the RPC counts.
-3. **A test against a real monerod** (`--regtest --zmq-pub`, as in
+1. **Slower polling while announcements arrive.** Today every poll still
+   runs on its own timer (250 ms for the pool, 1 s for a round); with
+   announcements, nearly all of them answer "nothing new". While a
+   publisher is connected the polls only have to catch what isn't
+   announced (the Dandelion++ and Tor cases above, a dropped message,
+   transactions leaving the pool), so they could run every few seconds:
+   four to ten times fewer requests, with announced payments seen as fast.
+   The cost is the unannounced ones: a payment that went through our
+   node's stem would wait up to the slower interval after going public.
+   Something like 2 s for the pool is a fair trade; it should be a setting.
+   "Connected" now comes from the socket's own events, so the switch back
+   to full speed on a lost connection is immediate.
+2. **A test against a real monerod** (`--regtest --zmq-pub`, as in
    `docs/TESTING.md` §10): a payment broadcast and a block mined, each seen
    well inside the poll interval.
-4. **Dandelion++.** Check whether monerod announces a transaction while it
-   is in its stem phase, or only once it fluffs. Either way the RPC poll is
-   what records it; this only changes how early the wake-up comes.
-5. **Packaging.** Decide whether release builds (the Dockerfile, the musl
-   targets) turn the feature on. Building it in costs the nine crates
-   above; a merchant who doesn't set `zmq_pub` gets no socket and no task.
-6. **Tor and remote nodes.** The subscriber dials directly; it is meant for
+3. **The released binaries.** CI's release tarballs are built without the
+   feature; only the Docker image has it.
+4. **Tor and remote nodes.** The subscriber dials directly; it is meant for
    one's own node. A node reached over Tor stays polling-only.
 
 ## Code
@@ -136,6 +178,9 @@ has to catch what they miss, so it can be slowed down a lot.
 - `crates/monokulo/src/admin_nodes.rs`, `views/admin.rs`: an optional
   "Announcements (ZMQ)" box on each node row of the admin nodes form, so
   saving the form keeps a node's `zmq_pub` instead of dropping it.
+- `crates/shared/src/announcements.rs`: what `/status` reports;
+  `crates/engine/src/http/status_page.rs` fills it in,
+  `crates/monokulo/src/http/status_page.rs` and `views/status.rs` show it.
 
-Tests run both ways: `cargo test -p engine` and
-`cargo test -p engine --features zmq`.
+CI runs the tests with the feature (as the Docker image is built), and
+the one test that only exists without it (`test(/without_zmq/)`).

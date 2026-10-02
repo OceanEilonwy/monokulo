@@ -11,8 +11,10 @@
 //! every node configured for a network (monerod's `--zmq-pub`) and wakes
 //! that network's loops through its [`NodeWakes`].
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use shared::announcements::Announcements;
 use tokio::sync::Notify;
 
 /// The shortest gap between two passes, however often the node announces:
@@ -22,10 +24,16 @@ const MIN_GAP: Duration = Duration::from_millis(20);
 /// What a network's node has announced since its loops last looked. Each
 /// is a single stored wake-up: announcements made while a pass is running
 /// end the wait that follows it at once, however many there were.
-#[derive(Default)]
+///
+/// Also what `/status` reports about the announcements: each publisher
+/// listened to, and how many waits they cut short.
+#[derive(Debug, Default)]
 pub struct NodeWakes {
     pool: Notify,
     chain: Notify,
+    pool_passes_woken: AtomicU64,
+    rounds_woken: AtomicU64,
+    publishers: parking_lot::Mutex<Vec<shared::announcements::Publisher>>,
 }
 
 impl NodeWakes {
@@ -42,13 +50,67 @@ impl NodeWakes {
     /// Waits `interval`, or until the pool changes if sooner (but at least
     /// [`MIN_GAP`]). `true` if it was the pool.
     pub async fn pool_or(&self, interval: Duration) -> bool {
-        wait(&self.pool, interval).await
+        counted(&self.pool_passes_woken, wait(&self.pool, interval).await)
     }
 
     /// [`Self::pool_or`] for the chain.
     pub async fn chain_or(&self, interval: Duration) -> bool {
-        wait(&self.chain, interval).await
+        counted(&self.rounds_woken, wait(&self.chain, interval).await)
     }
+
+    /// For `/status`: `None` while no publisher is configured.
+    pub fn announcements(&self) -> Option<Announcements> {
+        let publishers = self.publishers.lock().clone();
+        (!publishers.is_empty()).then(|| Announcements {
+            publishers,
+            pool_passes_woken: self.pool_passes_woken.load(Ordering::Relaxed),
+            rounds_woken: self.rounds_woken.load(Ordering::Relaxed),
+        })
+    }
+
+    /// The publishers now configured, each `(node, endpoint)`: one already
+    /// listened to keeps its figures (marked not connected, as it is about
+    /// to connect again); one no longer configured goes.
+    #[cfg(feature = "zmq")]
+    fn listen_to(&self, configured: &[(String, String)]) {
+        let mut publishers = self.publishers.lock();
+        let mut previous = std::mem::take(&mut *publishers);
+        for (node, endpoint) in configured {
+            let mut publisher = previous
+                .iter()
+                .position(|p| p.endpoint == *endpoint)
+                .map(|at| previous.swap_remove(at))
+                .unwrap_or_default();
+            publisher.node = node.clone();
+            publisher.endpoint = endpoint.clone();
+            publisher.connected = false;
+            publisher.connected_since = None;
+            publishers.push(publisher);
+        }
+    }
+
+    #[cfg(feature = "zmq")]
+    fn publisher(
+        &self,
+        endpoint: &str,
+        update: impl FnOnce(&mut shared::announcements::Publisher),
+    ) {
+        if let Some(publisher) = self
+            .publishers
+            .lock()
+            .iter_mut()
+            .find(|p| p.endpoint == endpoint)
+        {
+            update(publisher);
+        }
+    }
+}
+
+fn counted(counter: &AtomicU64, woke: bool) -> bool {
+    if woke {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+    woke
 }
 
 async fn wait(notify: &Notify, interval: Duration) -> bool {
@@ -69,7 +131,8 @@ mod subscriber {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use zeromq::{Socket, SocketRecv, SubSocket};
+    use futures_util::StreamExt;
+    use zeromq::{Socket, SocketEvent, SocketRecv, SubSocket};
 
     use super::NodeWakes;
     use crate::engine_settings::EngineSettings;
@@ -99,16 +162,22 @@ mod subscriber {
         }
     }
 
-    /// Every `zmq_pub` configured for `network`'s node and its fallbacks.
-    fn publishers(settings: &EngineSettings, network: monero::Network) -> Vec<String> {
+    /// Every `zmq_pub` configured for `network`'s node and its fallbacks,
+    /// with its node's `host:port`; one named twice is listened to once.
+    fn publishers(settings: &EngineSettings, network: monero::Network) -> Vec<(String, String)> {
         let nodes = settings.nodes.load();
         let Some(node) = nodes.nodes.get(crate::network::network_str(network)) else {
             return Vec::new();
         };
-        std::iter::once(node)
-            .chain(&node.fallbacks)
-            .filter_map(|node| node.zmq_pub.clone())
-            .collect()
+        let mut publishers: Vec<(String, String)> = Vec::new();
+        for node in std::iter::once(node).chain(&node.fallbacks) {
+            if let Some(endpoint) = &node.zmq_pub {
+                if !publishers.iter().any(|(_, e)| e == endpoint) {
+                    publishers.push((format!("{}:{}", node.host, node.port), endpoint.clone()));
+                }
+            }
+        }
+        publishers
     }
 
     /// Listens to `network`'s publishers for as long as it runs, starting
@@ -121,9 +190,11 @@ mod subscriber {
     ) {
         let mut saved = settings.nodes.subscribe();
         loop {
-            let listeners: Vec<_> = publishers(&settings, network)
+            let configured = publishers(&settings, network);
+            wakes.listen_to(&configured);
+            let listeners: Vec<_> = configured
                 .into_iter()
-                .map(|endpoint| listen(network, endpoint, wakes.clone()))
+                .map(|(_, endpoint)| listen(network, endpoint, wakes.clone()))
                 .collect();
             // Each listener runs until the settings change; with none, this
             // only waits for that.
@@ -148,6 +219,12 @@ mod subscriber {
         let mut retry = FIRST_RETRY;
         loop {
             let error = session(network, &endpoint, &wakes, &mut retry).await;
+            wakes.publisher(&endpoint, |p| {
+                p.connected = false;
+                p.connected_since = None;
+                p.last_error = Some(error.to_string());
+                p.last_error_at = Some(shared::time::now_unix());
+            });
             shared::throttled!(
                 format!("zmq-failed:{endpoint}"),
                 warn,
@@ -167,30 +244,56 @@ mod subscriber {
         endpoint: &str,
         wakes: &NodeWakes,
         retry: &mut Duration,
-    ) -> zeromq::ZmqError {
+    ) -> String {
         let mut socket = SubSocket::new();
+        // The socket would reconnect by itself, silently: its events say
+        // when the node went, so this session ends and `listen` reconnects
+        // (and `/status` says it was lost meanwhile).
+        let mut events = socket.monitor();
         for topic in [POOL_TOPIC, CHAIN_TOPIC] {
             if let Err(error) = socket.subscribe(topic).await {
-                return error;
+                return error.to_string();
             }
         }
         if let Err(error) = socket.connect(endpoint).await {
-            return error;
+            return error.to_string();
         }
         *retry = FIRST_RETRY;
+        wakes.publisher(endpoint, |p| {
+            p.connected = true;
+            p.connected_since = Some(shared::time::now_unix());
+            p.connections += 1;
+        });
         tracing::info!(network = ?network, endpoint = %endpoint, "listening to the node's ZMQ announcements");
         // Whatever was announced while nobody listened.
         wakes.pool_changed();
         wakes.chain_changed();
         loop {
-            let message = match socket.recv().await {
-                Ok(message) => message,
-                Err(error) => return error,
+            let message = tokio::select! {
+                received = socket.recv() => match received {
+                    Ok(message) => message,
+                    Err(error) => return error.to_string(),
+                },
+                event = events.next() => match event {
+                    Some(SocketEvent::Disconnected(_)) | None => {
+                        return "the node closed the connection".to_string();
+                    }
+                    Some(_) => continue,
+                },
             };
-            match message.get(0).and_then(|frame| announcement(frame)) {
-                Some(Announcement::Pool) => wakes.pool_changed(),
-                Some(Announcement::Chain) => wakes.chain_changed(),
-                None => {}
+            let Some(announced) = message.get(0).and_then(|frame| announcement(frame)) else {
+                continue;
+            };
+            wakes.publisher(endpoint, |p| {
+                match announced {
+                    Announcement::Pool => p.pool_announcements += 1,
+                    Announcement::Chain => p.block_announcements += 1,
+                }
+                p.last_announcement_at = Some(shared::time::now_unix());
+            });
+            match announced {
+                Announcement::Pool => wakes.pool_changed(),
+                Announcement::Chain => wakes.chain_changed(),
             }
         }
     }
@@ -250,6 +353,42 @@ mod tests {
         let started = tokio::time::Instant::now();
         wakes.pool_or(Duration::from_millis(5)).await;
         assert_eq!(started.elapsed(), Duration::from_millis(5));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_waits_cut_short_are_counted_and_only_reported_with_a_publisher() {
+        let wakes = NodeWakes::default();
+        wakes.pool_changed();
+        wakes.pool_or(Duration::from_secs(1)).await;
+        wakes.pool_or(Duration::from_secs(1)).await;
+        wakes.chain_or(Duration::from_secs(1)).await;
+        assert_eq!(
+            wakes.announcements(),
+            None,
+            "nothing to report without a publisher"
+        );
+        wakes.publishers.lock().push(Default::default());
+        let reported = wakes.announcements().unwrap();
+        assert_eq!((reported.pool_passes_woken, reported.rounds_woken), (1, 0));
+    }
+
+    #[cfg(feature = "zmq")]
+    #[test]
+    fn a_publisher_still_configured_keeps_its_figures_and_one_removed_goes() {
+        let wakes = NodeWakes::default();
+        let pair = |node: &str, endpoint: &str| (node.to_string(), endpoint.to_string());
+        wakes.listen_to(&[pair("a:1", "tcp://a:2"), pair("b:1", "tcp://b:2")]);
+        wakes.publisher("tcp://a:2", |p| {
+            p.connected = true;
+            p.pool_announcements = 7;
+        });
+        wakes.listen_to(&[pair("c:1", "tcp://c:2"), pair("a2:1", "tcp://a:2")]);
+        let publishers = wakes.announcements().unwrap().publishers;
+        assert_eq!(publishers.len(), 2);
+        assert_eq!(publishers[0].endpoint, "tcp://c:2");
+        let kept = &publishers[1];
+        assert_eq!((kept.node.as_str(), kept.pool_announcements), ("a2:1", 7));
+        assert!(!kept.connected, "about to connect again");
     }
 
     #[cfg(feature = "zmq")]
@@ -327,6 +466,40 @@ mod tests {
                 wakes.chain_or(Duration::from_secs(5)).await,
                 "connecting wakes the loops"
             );
+            let publisher_status = || wakes.announcements().unwrap().publishers[0].clone();
+            let connected = publisher_status();
+            assert_eq!(connected.node, "127.0.0.1:9", "the fallback's");
+            assert!(connected.connected && connected.connected_since.is_some());
+            assert_eq!(connected.connections, 1);
+            assert_eq!(wakes.announcements().unwrap().rounds_woken, 1);
+
+            // Announcements are counted by kind once they land.
+            for _ in 0..100 {
+                publisher
+                    .send(ZmqMessage::from(format!("{POOL_TOPIC}:[]")))
+                    .await
+                    .unwrap();
+                if wakes.pool_or(Duration::from_millis(50)).await
+                    && publisher_status().pool_announcements > 0
+                {
+                    break;
+                }
+            }
+            let counted = publisher_status();
+            assert!(counted.pool_announcements > 0 && counted.last_announcement_at.is_some());
+            assert_eq!(counted.block_announcements, 0);
+
+            // The publisher goes away: shown as lost, with why.
+            drop(publisher);
+            for _ in 0..100 {
+                if !publisher_status().connected {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let lost = publisher_status();
+            assert!(!lost.connected && lost.last_error.is_some(), "{lost:?}");
+            assert!(lost.pool_announcements > 0, "its figures are kept");
             subscriber.abort();
         }
 

@@ -223,7 +223,8 @@ pub async fn manage_network_loops(
             // Shared by the network's round loop and its fast mempool loop.
             let scan_state = Arc::new(
                 crate::work::ScanState::waking(webhooks.clone())
-                    .with_progress(crate::scanner_status::progress_of(&scanner_status, network)),
+                    .with_progress(crate::scanner_status::progress_of(&scanner_status, network))
+                    .with_wakes(crate::scanner_status::wakes_of(&scanner_status, network)),
             );
             #[cfg(feature = "zmq")]
             {

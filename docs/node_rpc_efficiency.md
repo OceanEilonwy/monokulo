@@ -167,7 +167,7 @@ polls are counted apart from block fetches, as
 
 ## Not done
 
-- ZMQ push from one's own node: prototyped behind the `zmq` feature
+- ZMQ push from one's own node: behind the `zmq` feature (on in the Docker image)
   (pure Rust, no `libzmq`) as a wake-up over polling
   (`docs/monero_zmq.md`). Slowing polling down while it is connected,
   which is where the request savings would come from, is not done.

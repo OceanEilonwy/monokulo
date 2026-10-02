@@ -402,6 +402,12 @@ impl ScanState {
         self.blocks.round_budget(daemon, stores)
     }
 
+    /// This state, its loops woken by `wakes` (shared with `/status`).
+    pub fn with_wakes(mut self, wakes: std::sync::Arc<crate::node_events::NodeWakes>) -> Self {
+        self.node_wakes = wakes;
+        self
+    }
+
     /// What wakes this network's loops early: its loops wait on it, and a
     /// node subscriber pokes it.
     pub fn node_wakes(&self) -> &std::sync::Arc<crate::node_events::NodeWakes> {

@@ -29,7 +29,7 @@ self-hosted deployment is simply a deployment with one tenant.
   possibly other services; this should not compete meaningfully for CPU or memory.
 - **Fast 0-conf detection.** Mempool visibility within about a second of broadcast,
   without pulling in a C dependency (`libzmq`) to get it. Polling does it by
-  default; an opt-in pure-Rust ZMQ subscriber can cut the wait short
+  default; a pure-Rust ZMQ subscriber (the `zmq` feature) can cut the wait short
   (`docs/monero_zmq.md`).
 - **Multi-tenant capable, single-tenant simple.** The tenant abstraction must not add
   ceremony to the one-merchant case.
@@ -48,11 +48,12 @@ would reintroduce them:
 - **Automated refunds or any outbound Monero transaction.** No spend key exists
   anywhere in this system to make one possible. A refund address is recorded for the
   merchant to action manually, forever, not just in v1.
-- **ZMQ-based mempool push notifications by default.** The usual binding requires
-  `libzmq`, a C library, in tension with "no dynamic libraries" and "as small as
-  possible." Mempool polling (~1s) is the mechanism; a pure-Rust ZMQ subscriber
-  that only wakes the polls early is an opt-in feature (`zmq`,
-  `docs/monero_zmq.md`), never a default dependency.
+- **ZMQ push notifications in place of polling, or through `libzmq`.** The usual
+  binding requires `libzmq`, a C library, in tension with "no dynamic libraries"
+  and "as small as possible." Mempool polling (~1s) is the mechanism; a pure-Rust
+  ZMQ subscriber only wakes the polls early, and only for a node configured with
+  a `zmq_pub` (the `zmq` feature: off in a plain build, on in the Docker image;
+  `docs/monero_zmq.md`).
 - **Subaddress index recycling.** Indices are allocated monotonically per tenant and
   never reused. This is a deliberate simplicity/privacy tradeoff (see §8.2); recycling
   is a scaling optimization for a high-volume tenant, not a v1 concern.
@@ -1139,8 +1140,8 @@ this file at all — see §10.4's closing note.
 
 Explicitly avoided: `monero-wallet-rpc` (separate C++ process), OpenSSL, `libzmq`
 — all for the same reason: they conflict with "single static binary, no dynamic
-libraries." (ZMQ itself is available opt-in through the pure-Rust `zeromq` crate:
-`docs/monero_zmq.md`.)
+libraries." (ZMQ itself is available through the pure-Rust `zeromq` crate, behind
+the `zmq` feature: `docs/monero_zmq.md`.)
 
 ## 16. Deferred / Future Work
 
@@ -1148,9 +1149,8 @@ Listed so a future change doesn't have to rediscover why these were left out:
 
 - TEE-backed `KeyCustody` implementation (Nitro/SEV-SNP preferred over SGX; see §6.1).
 - Minor-index recycling/bucketing for high-volume tenants (§8.2).
-- ZMQ push from one's own node: prototyped behind the `zmq` feature as a wake-up
-  over polling, not a replacement (`docs/monero_zmq.md`), with slower polling
-  while it is connected still to do.
+- Slower polling while a node's ZMQ announcements are connected
+  (`docs/monero_zmq.md`, "Not done yet").
 - A platform/operator admin tier for the hosted deployment, with its own route
   namespace and credential type, entirely separate from tenant `sk_` auth.
 - Gated tenant creation (an `operator_token` requirement) for a hosted instance that
