@@ -183,6 +183,9 @@ async fn run(action: Action) {
         }
     };
 
+    // CPU and memory every 10 s, for the admin page (docs/engine_scaling.md 6).
+    shared::resources::start_sampling();
+
     let store = open_store().into_shared();
     // Beside the main database; lines logged since start-up go in too.
     let log_store = telemetry::global().and_then(|t| t.open_store_beside(&cli::database_path()));

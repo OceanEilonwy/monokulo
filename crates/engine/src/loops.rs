@@ -160,6 +160,19 @@ pub fn tick_deadline(poll_interval: Duration) -> Duration {
     (poll_interval * 20).max(Duration::from_secs(120))
 }
 
+/// The outer deadline for one round on `daemon`: [`tick_deadline`], or room
+/// for the largest block request the node's link allows (fetched and
+/// prefetched in one unit) after the round's own budget, whichever is
+/// longer. A slow link's requests aren't abandoned by the round around
+/// them (docs/engine_scaling.md section 2).
+fn round_deadline(
+    poll_interval: Duration,
+    daemon: &dyn crate::daemon::MoneroDaemonClient,
+) -> Duration {
+    let largest = daemon.chain_blocks_timeout(crate::scanner::SCAN_CHUNK_MAX_BLOCKS);
+    tick_deadline(poll_interval).max(largest * 2 + crate::work::ROUND_BUDGET)
+}
+
 /// Starts a scanner loop for each network that has a node configured, and stops them for a network whose node setting is
 /// cleared, whenever node settings are saved (task 2.1). Runs for the life of
 /// the process.
@@ -192,7 +205,10 @@ pub async fn manage_network_loops(
             }
             let (stop, stopped) = tokio::sync::watch::channel(false);
             // Shared by the network's round loop and its fast mempool loop.
-            let scan_state = Arc::new(crate::work::ScanState::waking(webhooks.clone()));
+            let scan_state = Arc::new(
+                crate::work::ScanState::waking(webhooks.clone())
+                    .with_progress(crate::scanner_status::progress_of(&scanner_status, network)),
+            );
             {
                 let (db, key_custody, daemons, wallet_handles, settings, scan_state) = (
                     db.clone(),
@@ -346,8 +362,9 @@ pub async fn run_scanner_loop(
         };
         // The round keeps to its own budget; this outer deadline only catches
         // a unit stuck somewhere no inner deadline reaches.
+        let deadline = round_deadline(scan.poll_interval, &pinned);
         let (result, backlogged) = match tokio::time::timeout(
-            tick_deadline(scan.poll_interval),
+            deadline,
             crate::work::run_round(&scan_state, &inputs, crate::work::ROUND_BUDGET)
                 .instrument(tick.clone()),
         )
@@ -359,8 +376,7 @@ pub async fn run_scanner_loop(
             }
             Err(_) => (
                 Err(crate::scanner::ScannerError::Internal(format!(
-                    "scan round did not finish within {:?} and was abandoned",
-                    tick_deadline(scan.poll_interval)
+                    "scan round did not finish within {deadline:?} and was abandoned"
                 ))),
                 false,
             ),

@@ -89,62 +89,63 @@ impl ScannedBlock {
 /// how big block requests are. Across rounds, not per round, so a round
 /// with time for one unit alternates too, and a request halved after a
 /// failure stays halved in the next round.
-#[derive(Default)]
 pub(crate) struct BlockState {
     catch_up_turn: AtomicBool,
-    sizing: parking_lot::Mutex<Sizing>,
+    progress: crate::scaling::SharedProgress,
 }
 
-/// What block requests are sized from (docs/engine_scaling.md section 2).
-pub(crate) struct Sizing {
-    /// Running average of a block's size, from what was fetched; doubled
-    /// after a request that ran out of time or came back too large.
-    avg_bytes_per_block: f64,
-    /// The last request's plan: for the status page.
-    last_chunk: Option<crate::scanner::ChunkPlan>,
-}
-
-impl Default for Sizing {
+impl Default for BlockState {
     fn default() -> Self {
-        Sizing {
-            avg_bytes_per_block: crate::scanner::SCAN_CHUNK_INITIAL_AVG_BYTES,
-            last_chunk: None,
-        }
+        BlockState::with_progress(crate::scaling::new_progress())
     }
 }
 
 impl BlockState {
+    /// State whose progress (sizing, the block in progress, recent blocks)
+    /// is `progress`, which `/status` reads.
+    pub(crate) fn with_progress(progress: crate::scaling::SharedProgress) -> Self {
+        BlockState {
+            catch_up_turn: AtomicBool::new(false),
+            progress,
+        }
+    }
+
     /// How many blocks to ask for from `from`, up to `end`.
     fn plan(&self, round: &Round<'_>, from: u64, end: u64) -> crate::scanner::ChunkPlan {
-        let mut sizing = self.sizing.lock();
+        let mut progress = self.progress.lock();
         let plan = crate::scanner::next_scan_chunk(
             crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
             round.inputs.daemon.transfer_rate(),
-            sizing.avg_bytes_per_block,
+            progress.avg_bytes_per_block,
             end.saturating_sub(from) + 1,
         );
-        sizing.last_chunk = Some(plan);
+        progress.last_chunk = Some(plan);
         plan
     }
 
-    /// A fetched run of `blocks` blocks totalling `bytes`.
+    /// A fetched run of `blocks` blocks totalling `bytes`, in `secs`.
     fn note_fetched(&self, bytes: usize, blocks: usize) {
         if blocks == 0 {
             return;
         }
-        let mut sizing = self.sizing.lock();
-        sizing.avg_bytes_per_block =
-            crate::scanner::update_avg_bytes_per_block(sizing.avg_bytes_per_block, bytes, blocks);
+        let mut progress = self.progress.lock();
+        progress.avg_bytes_per_block =
+            crate::scanner::update_avg_bytes_per_block(progress.avg_bytes_per_block, bytes, blocks);
     }
 
     /// A block request that failed: one that ran out of time or came back
     /// too large halves the next.
     fn note_failed(&self, error: &ScannerError) {
         if matches!(error, ScannerError::Daemon(e) if e.asks_for_less()) {
-            let mut sizing = self.sizing.lock();
-            sizing.avg_bytes_per_block =
-                crate::scanner::avg_after_failed_fetch(sizing.avg_bytes_per_block);
+            let mut progress = self.progress.lock();
+            progress.avg_bytes_per_block =
+                crate::scanner::avg_after_failed_fetch(progress.avg_bytes_per_block);
         }
+    }
+
+    /// Time spent fetching blocks.
+    fn note_fetch_time(&self, secs: f64) {
+        self.progress.lock().spent(crate::now_unix(), secs, 0.0, 0);
     }
 }
 
@@ -479,7 +480,14 @@ async fn advance_group(
         };
         let (outcome, prefetched) = tokio::join!(scan_block(round, task), async {
             match prefetch {
-                Some((from, count)) => Some(fetch_chunk(daemon, from, count).await),
+                Some((from, count)) => {
+                    let started = Instant::now();
+                    let fetched = fetch_chunk(daemon, from, count).await;
+                    state
+                        .blocks
+                        .note_fetch_time(started.elapsed().as_secs_f64());
+                    Some(fetched)
+                }
                 None => None,
             }
         });
@@ -570,6 +578,12 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let height = parent + 1;
     let grace = round.inputs.grace_period_seconds;
     let frontier = height > high_water;
+    round
+        .state
+        .blocks
+        .progress
+        .lock()
+        .start_block(height, crate::now_unix());
     let waiting = round.state.backoff.waiting();
     // A catch-up group none of whose stores can be scanned (keys not
     // registered, waiting to retry) waits where it is, before anything is
@@ -669,6 +683,12 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
         ));
     }
 
+    round
+        .state
+        .blocks
+        .progress
+        .lock()
+        .fetched_block(height, block.wire_bytes);
     let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &block);
     let inputs: Vec<ScanInput> = block.txs.iter().map(|tx| tx.input.clone()).collect();
     let mut progressed = !must_progress;
@@ -690,6 +710,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
                     .await?;
                 return Ok(BlockOutcome::Interrupted);
             }
+            let scanning = Instant::now();
             let results = scan_txs_for_tenants(
                 round.inputs.custody,
                 &block.txids[start..end],
@@ -698,6 +719,12 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
                 batch,
             )
             .await;
+            round.state.blocks.progress.lock().spent(
+                crate::now_unix(),
+                0.0,
+                scanning.elapsed().as_secs_f64(),
+                ((end - start) * batch.len()) as u64,
+            );
             for (tenant_id, result) in results {
                 match result {
                     Ok(found) => scan.scanned(tenant_id, end, found),
@@ -736,6 +763,14 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let committed = round
         .db(move |s, network| commit(s, network, &commit_block, scanned, now))
         .await?;
+    if committed {
+        round
+            .state
+            .blocks
+            .progress
+            .lock()
+            .finish_block(height, crate::now_unix());
+    }
     Ok(if committed {
         BlockOutcome::Committed
     } else {
@@ -1001,6 +1036,10 @@ impl BlockCache {
                 .unwrap_or(usize::MAX)
                 .saturating_mul(1024 * 1024),
         );
+        state
+            .progress
+            .lock()
+            .cache_bytes(self.bytes as u64, crate::now_unix());
         kept
     }
 }
@@ -1016,7 +1055,13 @@ async fn block(
         return Ok(block.clone());
     }
     let count = round.state.blocks.plan(round, height, end).blocks;
-    let chunk = match fetch_chunk(round.inputs.daemon, height, count).await {
+    let started = Instant::now();
+    let fetched = fetch_chunk(round.inputs.daemon, height, count).await;
+    round
+        .state
+        .blocks
+        .note_fetch_time(started.elapsed().as_secs_f64());
+    let chunk = match fetched {
         Ok(chunk) => chunk,
         Err(e) => {
             round.state.blocks.note_failed(&e);

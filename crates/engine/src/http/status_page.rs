@@ -63,6 +63,9 @@ pub struct NodeStatus {
     /// What the engine has asked this node since the node was configured
     /// (or the engine started), by endpoint, busiest first.
     pub rpc: Vec<crate::daemon::EndpointStats>,
+    /// What has been measured of the node's link (docs/engine_scaling.md
+    /// section 1).
+    pub link: Option<shared::scaling::LinkSnapshot>,
 }
 
 /// One node's height, the error if it couldn't be read, and its network.
@@ -124,6 +127,9 @@ pub struct NetworkStatus {
     pub lagging_tenants: usize,
     /// How far behind the furthest-behind tenant is, in blocks.
     pub max_blocks_behind: u64,
+    /// How the block scan is going and what limits it
+    /// (docs/engine_scaling.md section 6).
+    pub scaling: shared::scaling::NetworkScaling,
 }
 
 #[derive(Serialize)]
@@ -145,6 +151,9 @@ pub struct EngineStatusResponse {
     /// The backend a new store's keys go to unless it asks for another;
     /// `None` when there's no choice (a single backend).
     pub key_custody_default: Option<String>,
+    /// The engine process's CPU and memory over the last hour, and the
+    /// machine it runs on (docs/engine_scaling.md section 6).
+    pub resources: shared::resources::ResourceReport,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -219,6 +228,7 @@ pub async fn status_page(
     let poll_interval_secs = state.settings.scan.load().poll_interval.as_secs();
     networks.sort_by_key(|(network, _)| network_str(*network));
 
+    let configured = u32::try_from(networks.len()).unwrap_or(u32::MAX).max(1);
     let mut network_views = Vec::with_capacity(networks.len());
     for (network, daemon) in networks {
         let current_index = daemon.current_index();
@@ -244,11 +254,13 @@ pub async fn status_page(
                 error,
                 network,
                 rpc: node.client.rpc_stats(),
+                link: node.client.link(),
             })
             .collect();
 
         let scan_status = state.networks.scanner_status.read().get(&network).cloned();
-        let scanner = match scan_status {
+        let progress = scan_status.as_ref().map(|s| s.progress.lock().report(now));
+        let scanner = match scan_status.filter(|s| s.tick_count > 0) {
             None => ScannerStatusView {
                 ever_ticked: false,
                 last_tick_started_at: None,
@@ -274,7 +286,7 @@ pub async fn status_page(
             }
         };
 
-        let (lagging_tenants, max_blocks_behind) = state
+        let (lagging_tenants, max_blocks_behind, high_water) = state
             .db
             .read(move |store| {
                 let high_water = store.max_scanned_height(network)?.unwrap_or(0);
@@ -284,15 +296,23 @@ pub async fn status_page(
                     .map(|(_, cursor)| high_water.saturating_sub(*cursor))
                     .max()
                     .unwrap_or(0);
-                Ok((lagging.len(), behind))
+                Ok((lagging.len(), behind, high_water))
             })
             .await?;
+        let scaling = network_scaling(
+            &state,
+            &nodes,
+            progress.unwrap_or_else(|| crate::scaling::ScanProgress::default().report(now)),
+            high_water,
+            configured,
+        );
         network_views.push(NetworkStatus {
             network: network_str(network).to_string(),
             nodes,
             scanner,
             lagging_tenants,
             max_blocks_behind,
+            scaling,
         });
     }
 
@@ -337,7 +357,64 @@ pub async fn status_page(
         key_custody_default: (!key_custody.is_empty())
             .then(|| state.settings.custody.load().default.as_str().to_string()),
         key_custody,
+        resources: shared::resources::sampler().report(),
     }))
+}
+
+/// One network's scaling figures (docs/engine_scaling.md section 6): how far
+/// behind the node it is and at what pace, what limits it, its memory, and
+/// a block that has taken too long.
+fn network_scaling(
+    state: &AppState,
+    nodes: &[NodeStatus],
+    scan: shared::scaling::ScanReport,
+    high_water: u64,
+    networks: u32,
+) -> shared::scaling::NetworkScaling {
+    use shared::scaling::{NetworkScaling, SlowBlock, SLOW_BLOCK_SECS};
+    let active = nodes.iter().find(|node| node.is_active);
+    let tip = nodes.iter().filter_map(|node| node.height).max();
+    let blocks_behind = tip.map_or(0, |tip| tip.saturating_sub(high_water));
+    let catch_up_secs = (scan.blocks_per_minute > 0.0 && blocks_behind > 0)
+        .then(|| (blocks_behind as f64 / scan.blocks_per_minute * 60.0).round() as u64);
+    let budget_mb = state.settings.scan.load().scan_chunk_memory_budget_mb;
+    // Slow: one block past the threshold while its node answers.
+    let node_answers = active.is_some_and(|node| node.error.is_none());
+    let slow = scan
+        .in_progress
+        .as_ref()
+        .zip(scan.in_progress_secs)
+        .filter(|(_, secs)| *secs >= SLOW_BLOCK_SECS && node_answers)
+        .map(|(block, elapsed_secs)| {
+            let rate = active
+                .and_then(|node| node.link.as_ref())
+                .map(|link| link.rate_bytes_per_sec)
+                .filter(|rate| *rate > 0);
+            SlowBlock {
+                height: block.height,
+                wire_bytes: block.wire_bytes,
+                elapsed_secs,
+                node: active.map(|node| node.label.clone()),
+                rate_bytes_per_sec: rate,
+                remaining_secs: block.wire_bytes.zip(rate).map(|(bytes, rate)| {
+                    (bytes as f64 / rate as f64 - elapsed_secs as f64)
+                        .max(0.0)
+                        .round() as i64
+                }),
+            }
+        });
+    NetworkScaling {
+        pace: NetworkScaling::pace_of(blocks_behind, &scan),
+        scan,
+        blocks_behind,
+        catch_up_secs,
+        budget_mb,
+        max_budget_mb: shared::resources::memory_limit_bytes()
+            .map(|limit| crate::engine_settings::max_scan_budget_mb(limit, networks)),
+        round_deadline_secs: crate::work::ROUND_BUDGET.as_secs(),
+        round_base_secs: crate::work::ROUND_BUDGET.as_secs(),
+        slow,
+    }
 }
 
 /// Stores whose keys are in a backend that is turned off or not answering
@@ -444,6 +521,7 @@ mod tests {
                 error: (!probe_ok).then(|| "timed out".to_string()),
                 network: None,
                 rpc: Vec::new(),
+                link: None,
             }],
             scanner: ScannerStatusView {
                 ever_ticked: true,
@@ -457,6 +535,17 @@ mod tests {
             },
             lagging_tenants: 0,
             max_blocks_behind: 0,
+            scaling: shared::scaling::NetworkScaling {
+                scan: crate::scaling::ScanProgress::default().report(0),
+                blocks_behind: 0,
+                catch_up_secs: None,
+                pace: shared::scaling::Pace::CaughtUp,
+                budget_mb: 8,
+                max_budget_mb: None,
+                round_deadline_secs: 10,
+                round_base_secs: 10,
+                slow: None,
+            },
         }
     }
 

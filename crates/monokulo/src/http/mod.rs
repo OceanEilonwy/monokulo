@@ -809,9 +809,15 @@ pub(crate) async fn page_chrome(
         })
         .await
         .unwrap_or_default();
+    let mut alerts = store_alerts(&unserved, &stores);
+    // An operator also hears about a block that is taking too long
+    // (docs/engine_scaling.md section 5).
+    if user.is_some_and(|user| user.is_admin) {
+        alerts.extend(status_page::known_slow_blocks(&state.engine));
+    }
     let mut chrome = crate::views::PageChrome::from_user(user, current_path)
         .with_health(status_page::known_health(&state.engine))
-        .with_alerts(store_alerts(&unserved, &stores));
+        .with_alerts(alerts);
     // Only a store's own pages depend on its opt-in; every other page keeps
     // `from_user`'s choice.
     if let Some(reports) = browser_reports {

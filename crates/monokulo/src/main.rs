@@ -44,6 +44,8 @@ async fn main() {
     // The engine's address and the engine token: boot-only too, and shown locked
     // on the admin page. The engine answers nothing without the token, so
     // monokulo doesn't start without it.
+    // CPU and memory every 10 s, for the admin page (docs/engine_scaling.md 6).
+    shared::resources::start_sampling();
     let engine_env = match settings::EngineEnv::from_env(&live_settings::Env::process()) {
         Ok(engine_env) => engine_env,
         Err(e) => {

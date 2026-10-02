@@ -980,6 +980,10 @@ pub struct NodeStatus {
     /// from an older engine.
     #[serde(default)]
     pub network: Option<String>,
+    /// What the engine has measured of the node's link
+    /// (docs/engine_scaling.md section 1).
+    #[serde(default)]
+    pub link: Option<shared::scaling::LinkSnapshot>,
 }
 
 /// Mirrors the engine's own `ScannerStatusView`.
@@ -1001,6 +1005,10 @@ pub struct NetworkStatus {
     pub network: String,
     pub nodes: Vec<NodeStatus>,
     pub scanner: ScannerStatusView,
+    /// How the block scan is going and what limits it
+    /// (docs/engine_scaling.md section 6).
+    #[serde(default)]
+    pub scaling: Option<shared::scaling::NetworkScaling>,
 }
 
 /// Mirrors the engine's own `EngineStatusResponse` — the whole body of
@@ -1020,6 +1028,9 @@ pub struct EngineStatusResponse {
     pub key_custody: Vec<CustodyBackendStatus>,
     #[serde(default)]
     pub key_custody_default: Option<String>,
+    /// The engine process's CPU and memory over the last hour.
+    #[serde(default)]
+    pub resources: Option<shared::resources::ResourceReport>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
