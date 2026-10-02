@@ -341,9 +341,13 @@ left open:
   (`MoneroDaemonClient::node`), never after a rewind or while a reorg job is
   open. The cache stays within the scan memory budget at all times, and is
   trimmed to it again at each round's start in case the setting was
-  lowered. A caught-up network holds nothing. With many catch-up groups
-  sharing the budget, blocks already scanned are evicted before runs
-  fetched ahead. Blocks let go of unread are counted
+  lowered. A caught-up network holds nothing. Catch-up groups share the
+  budget: each group's request is capped at its share (the budget divided
+  by the groups and the frontier, within the response cap), so every
+  group's run fetched ahead fits at once, and blocks already scanned are
+  evicted before runs fetched ahead. Without the share, 16 groups at the
+  default budget evicted each other's runs: 4.7 blocks a second and 9 MB
+  discarded, against 13.4 and 130 kB with it. Blocks let go of unread are counted
   (`discarded_cache_bytes` in `/status`). The peak is unchanged, since one
   round could already fill the budget; only how long it is held changed, so
   the `budget × networks × 1.25` check stands.

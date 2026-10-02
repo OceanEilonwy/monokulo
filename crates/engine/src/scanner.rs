@@ -1015,6 +1015,17 @@ pub(crate) fn response_cap_bytes(budget_mb: u32) -> u64 {
     (u64::from(budget_mb) * 1024 * 1024 / RESPONSE_SHARE_OF_BUDGET).max(256 * 1024)
 }
 
+/// The largest block response one group may ask for when `groups` groups
+/// (the catch-up groups and the frontier) share the block cache: its share
+/// of the `budget_mb` scan budget, within [`response_cap_bytes`]. Every
+/// group's run fetched ahead then fits at once, so no group's run is
+/// evicted unread by another's; with many groups, each asks for fewer
+/// blocks at a time (at least one) instead of the cache going over budget.
+pub(crate) fn group_response_cap_bytes(budget_mb: u32, groups: u64) -> u64 {
+    let share = u64::from(budget_mb) * 1024 * 1024 / groups.max(1);
+    response_cap_bytes(budget_mb).min(share)
+}
+
 pub use shared::scaling::{ChunkLimit, ChunkPlan};
 
 /// Pure sizing decision, extracted so it's directly, cheaply unit-testable:
@@ -7262,6 +7273,25 @@ pub(crate) mod tests {
         assert_eq!(response_cap_bytes(8), 1024 * 1024);
         assert_eq!(response_cap_bytes(1), 256 * 1024);
         assert_eq!(response_cap_bytes(4096), 512 * 1024 * 1024);
+    }
+
+    /// Groups sharing the block cache each get their share of the budget,
+    /// never more than one response's cap, so all their runs fetched ahead
+    /// fit at once; many groups ask for less at a time, down to one block.
+    #[test]
+    fn groups_share_the_scan_budget_between_their_requests() {
+        let mb = 1024 * 1024;
+        assert_eq!(group_response_cap_bytes(8, 1), mb, "the cap binds first");
+        assert_eq!(
+            group_response_cap_bytes(8, 0),
+            mb,
+            "no groups counts as one"
+        );
+        assert_eq!(group_response_cap_bytes(8, 8), mb);
+        assert_eq!(group_response_cap_bytes(8, 16), mb / 2);
+        assert_eq!(group_response_cap_bytes(8, 1_000_000), 8);
+        let plan = next_scan_chunk(group_response_cap_bytes(8, 1_000_000), None, 13_000.0, 100);
+        assert_eq!(plan.blocks, 1, "still one block at a time");
     }
 
     #[test]

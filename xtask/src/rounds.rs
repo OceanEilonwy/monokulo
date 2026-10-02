@@ -22,7 +22,7 @@ use crate::{escape_html, root};
 /// The columns of each scenario's table: field, heading, decimals.
 const COLUMNS: [(&str, &str, usize); 9] = [
     ("blocks_per_sec", "Blocks/s", 1),
-    ("served_per_scanned", "Sent per scanned", 2),
+    ("refetch_ratio", "Sent per distinct", 2),
     ("blocks_scanned", "Scanned", 0),
     ("blocks_served", "Sent", 0),
     ("discarded_cache_bytes", "Discarded unread (bytes)", 0),
@@ -141,7 +141,7 @@ pub fn run() -> io::Result<bool> {
 }
 
 fn report(output: &std::path::Path, scenarios: &[Value], results: &[Value]) -> io::Result<()> {
-    let mut page = String::from("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Round length sweep</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:1rem auto;padding:0 1rem;color:#17212b}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ccd3db;text-align:right;padding:.4rem}th:first-child,td:first-child{text-align:left}.bad{color:#a32}</style><h1>Round length sweep</h1><p>Catch-up through a backlog of blocks at each round length (docs/engine_stress.md). \"Sent per scanned\" above 1 is blocks the node sent again: fetched ahead, then dropped when a round ended.</p>");
+    let mut page = String::from("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Round length sweep</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:1rem auto;padding:0 1rem;color:#17212b}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ccd3db;text-align:right;padding:.4rem}th:first-child,td:first-child{text-align:left}.bad{color:#a32}</style><h1>Round length sweep</h1><p>Catch-up through a backlog of blocks at each round length (docs/engine_stress.md). \"Sent per distinct\" above 1 is blocks the node sent again: fetched ahead, then dropped before their scan. Blocks/s counts each group's blocks, averaged over its tenants.</p>");
     for case in scenarios {
         let name = case["name"].as_str().unwrap_or("unnamed");
         page.push_str(&format!(

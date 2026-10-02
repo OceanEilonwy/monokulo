@@ -4,9 +4,10 @@
 //! rounds of a set length run back to back as the engine's own loop runs
 //! them. It measures what the round's length costs:
 //!
-//! - **throughput**: blocks scanned for each group a second;
-//! - **refetches**: blocks the node sent against the blocks that were
-//!   needed (a prefetched block dropped at the end of a round is sent again);
+//! - **throughput**: blocks scanned a second, averaged over tenants, and how
+//!   far the slowest group got;
+//! - **refetches**: blocks the node sent against the distinct blocks it sent
+//!   (a block fetched ahead and dropped before its scan is sent again);
 //! - **the wait between rounds**: settlement and the mempool get a turn once
 //!   a round, so the longest round is the longest they wait;
 //! - **a round's fixed cost**: how long a round with nothing to do takes;
@@ -24,7 +25,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use engine::daemon::{
-    ChainBlock, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, ScanTx, TxLocation,
+    ChainBlock, ChainHeader, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, ScanTx,
+    TxLocation,
 };
 use engine::key_custody::{KeyCustody, PlainKeyCustody, SubaddressIndex, WalletHandle};
 use engine::store::{Db, NewOrder, NewTenant, Store, TenantId};
@@ -72,9 +74,16 @@ struct SweepDaemon {
     blocks_served: AtomicU64,
     bytes_served: AtomicU64,
     block_requests: AtomicU64,
+    header_requests: AtomicU64,
     small_requests: AtomicU64,
     heights_served: Mutex<HashSet<u64>>,
+    /// Prints each block and header request to stderr.
+    trace: bool,
 }
+
+/// What a header costs on the wire, about: its id, its parent's, its time,
+/// weight and transaction count, as JSON.
+const HEADER_BYTES: u64 = 300;
 
 impl SweepDaemon {
     fn hash(height: u64) -> String {
@@ -115,6 +124,9 @@ impl MoneroDaemonClient for SweepDaemon {
             .take_while(|height| *height <= self.tip)
             .collect();
         let served = heights.len() as u64;
+        if self.trace {
+            eprintln!("blocks {start_height} +{count} -> {served}");
+        }
         tokio::time::sleep(self.link.blocks(served, served * self.block_bytes)).await;
         self.block_requests.fetch_add(1, Ordering::Relaxed);
         self.blocks_served.fetch_add(served, Ordering::Relaxed);
@@ -131,6 +143,32 @@ impl MoneroDaemonClient for SweepDaemon {
                 txs: vec![self.tx.clone()],
                 txids: vec![self.txid.clone()],
                 wire_bytes: self.block_bytes,
+            })
+            .collect())
+    }
+    async fn get_chain_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<ChainHeader>, DaemonError> {
+        let heights: Vec<u64> = (start_height..start_height.saturating_add(count))
+            .take_while(|height| *height <= self.tip)
+            .collect();
+        let served = heights.len() as u64;
+        if self.trace {
+            eprintln!("headers {start_height} +{count} -> {served}");
+        }
+        tokio::time::sleep(self.link.blocks(0, served * HEADER_BYTES)).await;
+        self.header_requests.fetch_add(1, Ordering::Relaxed);
+        Ok(heights
+            .into_iter()
+            .map(|height| ChainHeader {
+                height,
+                hash: Self::hash(height),
+                prev_hash: height.checked_sub(1).map(Self::hash).unwrap_or_default(),
+                timestamp: self.tip_time - (self.tip - height) * BLOCK_SECS,
+                weight: Some(self.block_bytes),
+                tx_count: Some(1),
             })
             .collect())
     }
@@ -196,8 +234,8 @@ struct Group {
     tenants: Vec<TenantId>,
 }
 
-/// The lowest cursor of each group's tenants.
-fn group_cursors(conn: &rusqlite::Connection, groups: &[Group]) -> rusqlite::Result<Vec<u64>> {
+/// Every tenant's cursor, by id.
+fn cursors(conn: &rusqlite::Connection) -> rusqlite::Result<HashMap<String, u64>> {
     let mut cursors: HashMap<String, u64> = HashMap::new();
     let mut query = conn.prepare(
         "SELECT id, COALESCE(scanned_through_height, 0) FROM tenants WHERE network = ?1",
@@ -209,7 +247,12 @@ fn group_cursors(conn: &rusqlite::Connection, groups: &[Group]) -> rusqlite::Res
         let (id, cursor) = row?;
         cursors.insert(id, cursor.max(0) as u64);
     }
-    Ok(groups
+    Ok(cursors)
+}
+
+/// The lowest cursor of each group's tenants.
+fn group_cursors(cursors: &HashMap<String, u64>, groups: &[Group]) -> Vec<u64> {
+    groups
         .iter()
         .map(|group| {
             group
@@ -219,7 +262,21 @@ fn group_cursors(conn: &rusqlite::Connection, groups: &[Group]) -> rusqlite::Res
                 .min()
                 .unwrap_or(group.start)
         })
-        .collect())
+        .collect()
+}
+
+/// Blocks scanned for each tenant since it started, summed.
+fn tenant_blocks(cursors: &HashMap<String, u64>, groups: &[Group]) -> u64 {
+    groups
+        .iter()
+        .flat_map(|group| {
+            group.tenants.iter().map(|id| {
+                cursors
+                    .get(id.as_str())
+                    .map_or(0, |cursor| cursor.saturating_sub(group.start))
+            })
+        })
+        .sum()
 }
 
 fn quantile(sorted: &[u64], q: f64) -> u64 {
@@ -342,8 +399,10 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         blocks_served: AtomicU64::new(0),
         bytes_served: AtomicU64::new(0),
         block_requests: AtomicU64::new(0),
+        header_requests: AtomicU64::new(0),
         small_requests: AtomicU64::new(0),
         heights_served: Mutex::new(HashSet::new()),
+        trace: args.0.iter().any(|arg| arg == "--trace-requests"),
     });
     let db = Db::open(&db_path, &store)?;
     let observer = rusqlite::Connection::open_with_flags(
@@ -381,7 +440,10 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
             *steps.entry(tier).or_default() += u64::from(count);
         }
         errors += u64::from(report.error.is_some());
-        if group_cursors(&observer, &groups)?.iter().all(|c| *c >= tip) {
+        if group_cursors(&cursors(&observer)?, &groups)
+            .iter()
+            .all(|c| *c >= tip)
+        {
             break true;
         }
         if started.elapsed() >= max_secs {
@@ -389,11 +451,16 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         }
     };
     let catch_up = started.elapsed();
-    let scanned: u64 = group_cursors(&observer, &groups)?
+    let reached = cursors(&observer)?;
+    let slowest: u64 = group_cursors(&reached, &groups)
         .iter()
         .zip(&groups)
         .map(|(cursor, group)| cursor.saturating_sub(group.start))
         .sum();
+    // Each group's blocks, averaged over its tenants (groups are the same
+    // size): equal to `needed` once every tenant is at the tip.
+    let scanned =
+        tenant_blocks(&reached, &groups) as f64 * group_count as f64 / tenant_count as f64;
 
     // With nothing left to scan: what a round costs by itself.
     let mut idle_ms = Vec::new();
@@ -424,13 +491,15 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         "catch_up_ms": catch_up.as_millis() as u64,
         "blocks_needed": needed,
         "blocks_scanned": scanned,
-        "blocks_per_sec": scanned as f64 / catch_up.as_secs_f64().max(1e-9),
+        "slowest_group_blocks": slowest,
+        "blocks_per_sec": scanned / catch_up.as_secs_f64().max(1e-9),
         "blocks_served": blocks_served,
         "distinct_heights_served": distinct,
         "bytes_served": daemon.bytes_served.load(Ordering::Relaxed),
         "discarded_cache_bytes": progress.lock().discarded_cache_bytes,
-        "served_per_scanned": blocks_served as f64 / scanned.max(1) as f64,
+        "refetch_ratio": blocks_served as f64 / distinct.max(1) as f64,
         "block_requests": daemon.block_requests.load(Ordering::Relaxed),
+        "header_requests": daemon.header_requests.load(Ordering::Relaxed),
         "small_requests": daemon.small_requests.load(Ordering::Relaxed),
         "rounds": round_ms.len(),
         "round_errors": errors,

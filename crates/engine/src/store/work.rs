@@ -691,6 +691,19 @@ impl Store {
         )
     }
 
+    /// How many catch-up groups `network` has: distinct cursor heights below
+    /// `below` held by enabled tenants, as [`Self::scan_group_cursors`]
+    /// lists them.
+    pub fn count_scan_groups(&self, network: monero::Network, below: u64) -> Result<u64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(DISTINCT scanned_through_height) FROM tenants
+             WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height IS NOT NULL
+               AND scanned_through_height < ?2",
+            params![shared::network::SqlNetwork(network), Unsigned(below)],
+            |row| unsigned(row, 0),
+        )?)
+    }
+
     /// Up to `limit` enabled tenants on `network` whose cursor is `cursor`,
     /// leaving out `excluding` (tenants waiting out a retry delay), in id
     /// order.
@@ -1666,6 +1679,49 @@ mod tests {
                 0
             )),
             1
+        );
+    }
+
+    /// Catch-up groups are counted as they are listed: one per distinct
+    /// cursor below the mark, enabled tenants only, on the one network.
+    #[test]
+    fn catch_up_groups_are_counted_as_listed() {
+        let store = Store::open_in_memory().unwrap();
+        let ids: Vec<_> = (0..5).map(|_| tenant(&store, "mainnet")).collect();
+        tenant(&store, "stagenet");
+        for (id, cursor) in ids.iter().zip([3, 3, 7, 20, 9]) {
+            store
+                .execute_raw_for_test(&format!(
+                    "UPDATE tenants SET scanned_through_height = {cursor} WHERE id = '{id}'"
+                ))
+                .unwrap();
+        }
+        store
+            .execute_raw_for_test(&format!(
+                "UPDATE tenants SET disabled_at_utc = 1 WHERE id = '{}'",
+                ids[4]
+            ))
+            .unwrap();
+        store
+            .execute_raw_for_test(
+                "UPDATE tenants SET scanned_through_height = 1 WHERE network = 'stagenet'",
+            )
+            .unwrap();
+        let listed = store
+            .scan_group_cursors(monero::Network::Mainnet, 20, None, 10)
+            .unwrap();
+        assert_eq!(listed, [3, 7]);
+        assert_eq!(
+            store
+                .count_scan_groups(monero::Network::Mainnet, 20)
+                .unwrap(),
+            listed.len() as u64
+        );
+        assert_eq!(
+            store
+                .count_scan_groups(monero::Network::Mainnet, 3)
+                .unwrap(),
+            0
         );
     }
 

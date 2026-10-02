@@ -206,7 +206,10 @@ impl BlockState {
     fn plan(&self, round: &Round<'_>, from: u64, end: u64) -> crate::scanner::ChunkPlan {
         let mut progress = self.progress.lock();
         let plan = crate::scanner::next_scan_chunk(
-            crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
+            crate::scanner::group_response_cap_bytes(
+                round.inputs.scan_chunk_memory_budget_mb,
+                round.blocks.groups.unwrap_or(1),
+            ),
             round.inputs.daemon.transfer_rate(),
             progress.avg_bytes_per_block,
             end.saturating_sub(from) + 1,
@@ -313,6 +316,9 @@ pub(crate) struct BlocksRound {
     /// Whether the last new block was recorded from its header alone
     /// (nobody to scan it for). Not yet known at the start of a round.
     frontier_header_only: Option<bool>,
+    /// How many groups share the block cache this round (the catch-up
+    /// groups and the frontier), counted at the tier's first unit.
+    groups: Option<u64>,
 }
 
 impl BlocksRound {
@@ -610,10 +616,17 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
         return Ok(Progress::Blocked(Wait::RewoundThisRound));
     }
     let repair = !round.blocks.repaired;
-    let (reorg_open, high_water) = round
+    let count_groups = round.blocks.groups.is_none();
+    let (reorg_open, high_water, groups) = round
         .db(move |s, network| -> Result<_, ScannerError> {
             let reorg_open = s.reorg_job(network)?.is_some();
             let high_water = s.max_scanned_height(network)?;
+            // Once a round: the catch-up groups and the frontier, which
+            // share the block cache.
+            let groups = match (count_groups, high_water) {
+                (true, Some(high_water)) => Some(s.count_scan_groups(network, high_water)? + 1),
+                _ => None,
+            };
             if let (false, true, Some(high_water)) = (reorg_open, repair, high_water) {
                 // Cheap repairs whatever happened before: no cursor ahead of
                 // the network, new tenants anchored at it, disabled ones
@@ -622,9 +635,12 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
                 s.anchor_unset_cursors(network, high_water)?;
                 s.snap_disabled_cursors(network, high_water)?;
             }
-            Ok((reorg_open, high_water))
+            Ok((reorg_open, high_water, groups))
         })
         .await?;
+    if groups.is_some() {
+        round.blocks.groups = groups;
+    }
     if reorg_open {
         return Ok(Progress::Blocked(Wait::ReorgBeingReconciled));
     }
