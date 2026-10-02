@@ -62,6 +62,13 @@ impl Tier {
         }
     }
 
+    /// The seconds reserved for this tier in a round of [`ROUND_BUDGET`].
+    /// The tier always runs at least one unit, so a unit that takes longer
+    /// than this delays every tier after it in the round.
+    pub(crate) const fn reserved_secs(self) -> f64 {
+        ROUND_BUDGET.as_secs_f64() * self.reserved_percent() as f64 / 100.0
+    }
+
     const fn index(self) -> usize {
         self as usize
     }

@@ -65,8 +65,7 @@ pub(super) const TXS_PER_SCAN: usize = 32;
 /// half as much again as the unit, within [`MAX_ROUND_BUDGET`].
 fn round_budget_for(unit_secs: f64) -> std::time::Duration {
     let base = super::ROUND_BUDGET;
-    let share = base.as_secs_f64() * f64::from(super::Tier::Blocks.reserved_percent()) / 100.0;
-    if unit_secs > share {
+    if unit_secs > super::Tier::Blocks.reserved_secs() {
         std::time::Duration::from_secs_f64((unit_secs * 1.5).min(MAX_ROUND_BUDGET.as_secs_f64()))
             .max(base)
     } else {
@@ -1349,15 +1348,12 @@ fn page_plan(
     let scan_secs = progress
         .secs_per_tx_scan()
         .map(|secs| secs * stores.max(1) as f64);
-    let share = super::ROUND_BUDGET.as_secs_f64()
-        * f64::from(super::Tier::Blocks.reserved_percent())
-        / 100.0;
     let plan = crate::scanner::next_page(
         crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
         round.inputs.daemon.transfer_rate(),
         avg_tx_bytes,
         scan_secs,
-        share,
+        super::Tier::Blocks.reserved_secs(),
         remaining,
     );
     progress.last_chunk = Some(plan);

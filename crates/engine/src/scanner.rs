@@ -950,10 +950,53 @@ const SCAN_CHUNK_EWMA_ALPHA: f64 = 0.3;
 /// regardless.
 pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = 50_000.0;
 
-/// How long one block request should take on a measured link
-/// (docs/engine_scaling.md section 2): long enough that the round trip is a
-/// small part of it, short enough that a round stays responsive.
-pub(crate) const SCAN_CHUNK_TARGET_CALL_SECS: f64 = 4.0;
+/// How long one block request should take, at the node's measured transfer
+/// rate (docs/engine_scaling.md section 2). This is the Blocks tier's
+/// reserved share of a round, so 4 s today (40 % of the 10 s
+/// [`crate::work::ROUND_BUDGET`]).
+///
+/// It is a time and not a size because the scheduler divides time, not
+/// bytes. A round gives each tier a share of its seconds, and a tier always
+/// runs at least one unit, which can't be stopped part-way through a node
+/// request. One block request is therefore the smallest delay the Blocks
+/// tier can cause the tiers after it: the mempool tier (zero-confirmation
+/// payments), settlement, and upkeep. A request sized in bytes alone takes
+/// milliseconds on a LAN node and minutes over Tor. Sized by the link's
+/// rate, it fits the Blocks tier's share on any link.
+///
+/// It doesn't limit throughput. A round that ends with blocks left is
+/// followed at once by the next, so a catch-up walk keeps the link about
+/// as busy as it would be with larger requests. Larger requests would only
+/// spread the fixed round trip over more bytes. At 4 s, a 1 s round trip
+/// (the cold-start guess) is a fifth of a call, and a typical 100 ms is
+/// 2.5 %.
+///
+/// On a fast link this limit rarely applies: the response cap (an eighth
+/// of `payment.scan_chunk_memory_budget_mb`, 1 MB at the default 8 MB)
+/// binds first. The link limit takes over below the cap divided by this
+/// many seconds, about 2 Mbit/s at the default budget. Slow nodes, Tor
+/// nodes and large budgets all fall below that.
+///
+/// A request's timeout is three times what the link says it needs, and
+/// never under 15 s ([`crate::link::timeout_for`]). Three times this target
+/// fits within that floor (checked below), so a request sized to the target
+/// gets nearly four times as long as it should need. If the rate estimate
+/// is out of date, the request runs slow but doesn't fail.
+///
+/// The target counts transfer time only, not the round trip or the node's
+/// time to first byte for each block. A link-limited request can therefore
+/// take somewhat longer than this. Its timeout
+/// ([`crate::link::Link::timeout_for_blocks`]) counts every term.
+///
+/// Derived from the round so that changing [`crate::work::ROUND_BUDGET`]
+/// or the tier shares can't leave it stale. [`next_page`] uses the same
+/// share for a large block's pages.
+pub(crate) const SCAN_CHUNK_TARGET_CALL_SECS: f64 = crate::work::Tier::Blocks.reserved_secs();
+
+const _: () = assert!(
+    SCAN_CHUNK_TARGET_CALL_SECS * crate::link::SAFETY <= crate::link::MIN_TIMEOUT.as_secs_f64(),
+    "a request sized to the target call must keep the minimum timeout"
+);
 
 /// One response's share of the scan memory budget: the raw answer and its
 /// parse copies are held at once, so each answer is kept to a fraction of

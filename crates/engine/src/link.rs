@@ -37,7 +37,7 @@ pub const MIN_RATE_SAMPLE_BYTES: usize = 256 * 1024;
 /// timeout would always be the ceiling anyway.
 const MIN_RATE_BYTES_PER_SEC: f64 = 1_000.0;
 /// A call may take this many times what it is expected to take.
-const SAFETY: f64 = 3.0;
+pub(crate) const SAFETY: f64 = 3.0;
 /// The shortest timeout any call gets: the old fixed request timeout.
 pub const MIN_TIMEOUT: Duration = Duration::from_secs(15);
 /// The longest timeout any call gets.

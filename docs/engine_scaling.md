@@ -91,6 +91,20 @@ timeout  = clamp(3 × expected, 15 s, 10 min)
   ```
 
   `response_cap` is defined in section 3 (an eighth of the budget).
+- **Why the time limit is in seconds.** The scheduler shares out a round's
+  seconds, not bytes. Each tier has a share of the 10 s round, and a tier
+  always runs at least one unit, which can't stop part-way through a node
+  request. One block request is therefore the smallest delay the Blocks
+  tier can cause the mempool, settlement and upkeep tiers. `target_call`
+  is the Blocks tier's share, 40 % of 10 s, and the code derives it from
+  `work::ROUND_BUDGET` and the tier shares
+  (`scanner::SCAN_CHUNK_TARGET_CALL_SECS`). A limit in bytes alone would
+  be milliseconds on a LAN node and minutes over Tor.
+  The limit doesn't cap throughput. A round that ends with blocks left is
+  followed at once by the next, so a slow link stays about as busy as it
+  would with larger requests, which would only spread the round trip over
+  more bytes. On a fast link `by_memory` binds first. At the default 8 MB
+  budget, `by_time` takes over below about 2 Mbit/s (1 MB ÷ 4 s).
 - **Failure halves, success grows:** a timeout or an over-cap answer halves
   the next chunk (by doubling the bytes-per-block estimate) and halves the
   node's rate. Successes grow both back through the running averages. Any
