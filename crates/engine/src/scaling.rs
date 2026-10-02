@@ -40,6 +40,9 @@ pub struct ScanProgress {
     pub time: VecDeque<TimeSpent>,
     /// The largest the block cache has been, and when (for an hour).
     pub peak_cache: Option<(i64, u64)>,
+    /// The time the last round was given: the base, unless one page of a
+    /// large block needed more (docs/engine_scaling.md section 4).
+    pub round_budget: std::time::Duration,
 }
 
 impl Default for ScanProgress {
@@ -51,6 +54,7 @@ impl Default for ScanProgress {
             recent: VecDeque::new(),
             time: VecDeque::new(),
             peak_cache: None,
+            round_budget: crate::work::ROUND_BUDGET,
         }
     }
 }
@@ -72,6 +76,19 @@ impl ScanProgress {
                 height,
                 started_unix: now_unix,
                 wire_bytes: None,
+                pages: None,
+            });
+        }
+    }
+
+    /// Block `height`, scanned in pages, is `done_txs` of `total_txs`
+    /// transactions through, fetching `page_txs` more.
+    pub fn page(&mut self, height: u64, done_txs: u64, total_txs: u64, page_txs: u64) {
+        if let Some(block) = self.in_progress.as_mut().filter(|b| b.height == height) {
+            block.pages = Some(shared::scaling::PageProgress {
+                done_txs,
+                total_txs,
+                page_txs,
             });
         }
     }
@@ -165,6 +182,7 @@ impl ScanProgress {
                 .peak_cache
                 .filter(|(at, _)| *at >= now_unix - 3600)
                 .map(|(_, bytes)| bytes),
+            round_budget_secs: Some(self.round_budget.as_secs()),
         }
     }
 }

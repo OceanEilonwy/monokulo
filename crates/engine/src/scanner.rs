@@ -1002,6 +1002,152 @@ pub(crate) fn next_scan_chunk(
     ChunkPlan { blocks, limited_by }
 }
 
+/// A block that would take longer than this to fetch whole at its node's
+/// measured rate is scanned a page of transactions at a time instead
+/// (docs/engine_scaling.md section 4): well inside the two minutes after
+/// which a block counts as slow.
+pub(crate) const WHOLE_BLOCK_MAX_SECS: f64 = 30.0;
+
+/// Most transactions on one page of a large block: what monerod's
+/// restricted RPC (a public node's) gives in one `/get_transactions`
+/// answer, so a page is one request.
+pub(crate) const PAGE_MAX_TXS: u64 = 100;
+
+/// Whether a block of `weight` bytes is scanned in pages rather than
+/// fetched whole: it would overrun one response (the cap from the scan
+/// memory budget), or take longer than [`WHOLE_BLOCK_MAX_SECS`] at the
+/// link's measured rate. A block whose weight the node didn't give is
+/// fetched whole, as before.
+pub(crate) fn scan_in_pages(
+    weight: Option<u64>,
+    response_cap_bytes: u64,
+    rate_bytes_per_sec: Option<f64>,
+) -> bool {
+    let Some(weight) = weight else {
+        return false;
+    };
+    weight > response_cap_bytes
+        || rate_bytes_per_sec
+            .is_some_and(|rate| weight as f64 / rate.max(1.0) > WHOLE_BLOCK_MAX_SECS)
+}
+
+/// How many transactions the next page of a large block holds
+/// (docs/engine_scaling.md section 4): the fewest of what fits the response
+/// cap and what the link delivers in a target call, at `avg_tx_bytes` a
+/// transaction, and what the scan gets through in `scan_slice_secs` when a
+/// transaction costs `scan_secs_per_tx` (for every store scanned for);
+/// within 1..=[`PAGE_MAX_TXS`] and the transactions that remain. A link not
+/// measured or a scan cost not known yet doesn't limit.
+pub(crate) fn next_page(
+    response_cap_bytes: u64,
+    rate_bytes_per_sec: Option<f64>,
+    avg_tx_bytes: f64,
+    scan_secs_per_tx: Option<f64>,
+    scan_slice_secs: f64,
+    remaining: u64,
+) -> ChunkPlan {
+    let avg = avg_tx_bytes.max(1.0);
+    let mut wanted = (response_cap_bytes as f64 / avg).floor();
+    let mut limited_by = ChunkLimit::Memory;
+    if let Some(by_time) =
+        rate_bytes_per_sec.map(|rate| (rate * SCAN_CHUNK_TARGET_CALL_SECS / avg).floor())
+    {
+        if by_time < wanted {
+            (wanted, limited_by) = (by_time, ChunkLimit::Link);
+        }
+    }
+    if let Some(by_cpu) = scan_secs_per_tx
+        .filter(|secs| *secs > 0.0)
+        .map(|secs| (scan_slice_secs / secs).floor())
+    {
+        if by_cpu < wanted {
+            (wanted, limited_by) = (by_cpu, ChunkLimit::Cpu);
+        }
+    }
+    let mut txs = if wanted >= PAGE_MAX_TXS as f64 {
+        limited_by = ChunkLimit::Maximum;
+        PAGE_MAX_TXS
+    } else {
+        (wanted as u64).max(1)
+    };
+    if remaining < txs {
+        txs = remaining.max(1);
+        limited_by = ChunkLimit::Remaining;
+    }
+    ChunkPlan {
+        blocks: txs,
+        limited_by,
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+
+    /// A block goes to pages when it would overrun one answer, or take the
+    /// link over 30 seconds; one whose weight isn't known is fetched whole.
+    #[test]
+    fn a_block_is_paged_when_too_large_for_an_answer_or_the_link() {
+        let cap = 32_000_000;
+        assert!(!scan_in_pages(None, cap, Some(1.0)));
+        assert!(!scan_in_pages(Some(300_000), cap, None));
+        assert!(scan_in_pages(Some(200_000_000), cap, None), "over the cap");
+        assert!(
+            scan_in_pages(Some(4_000_000), cap, Some(100_000.0)),
+            "40 s at 100 kB/s"
+        );
+        assert!(
+            !scan_in_pages(Some(2_000_000), cap, Some(100_000.0)),
+            "20 s"
+        );
+    }
+
+    /// A page is the fewest of what fits the cap, what the link sends in a
+    /// target call and what the scan gets through in the round's share,
+    /// from 1 to 100 transactions.
+    #[test]
+    fn a_page_is_sized_by_memory_link_and_cpu() {
+        let page = |cap, rate, avg, cpu, remaining| next_page(cap, rate, avg, cpu, 4.0, remaining);
+        assert_eq!(
+            page(32_000_000, None, 2_000.0, None, 10_000),
+            ChunkPlan {
+                blocks: PAGE_MAX_TXS,
+                limited_by: ChunkLimit::Maximum
+            }
+        );
+        assert_eq!(
+            page(100_000, None, 2_000.0, None, 10_000),
+            ChunkPlan {
+                blocks: 50,
+                limited_by: ChunkLimit::Memory
+            }
+        );
+        assert_eq!(
+            page(32_000_000, Some(10_000.0), 2_000.0, None, 10_000),
+            ChunkPlan {
+                blocks: 20,
+                limited_by: ChunkLimit::Link
+            }
+        );
+        assert_eq!(
+            page(32_000_000, None, 2_000.0, Some(0.5), 10_000),
+            ChunkPlan {
+                blocks: 8,
+                limited_by: ChunkLimit::Cpu
+            }
+        );
+        assert_eq!(
+            page(32_000_000, None, 2_000.0, None, 7),
+            ChunkPlan {
+                blocks: 7,
+                limited_by: ChunkLimit::Remaining
+            }
+        );
+        // A transaction larger than the cap still makes a page of one.
+        assert_eq!(page(256_000, None, 3_000_000.0, None, 10).blocks, 1);
+    }
+}
+
 /// The bytes-per-block estimate after a block request that ran out of time
 /// or came back too large: doubled, so the next request asks for half as
 /// many blocks (docs/engine_scaling.md section 2). Successes bring it back
@@ -1718,6 +1864,15 @@ pub(crate) mod tests {
 
     #[async_trait::async_trait]
     impl<D: MoneroDaemonClient> MoneroDaemonClient for DaemonFailingFrom<D> {
+        /// Headers from the node's own headers, as a real node answers
+        /// them: never through the (counted) block fetch.
+        async fn get_chain_headers(
+            &self,
+            start_height: u64,
+            count: u64,
+        ) -> std::result::Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+            self.inner.get_chain_headers(start_height, count).await
+        }
         async fn get_height(&self) -> std::result::Result<u64, DaemonError> {
             self.gate(DaemonCall::Height).await?;
             self.inner.get_height().await

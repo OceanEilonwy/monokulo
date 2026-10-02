@@ -160,17 +160,18 @@ pub fn tick_deadline(poll_interval: Duration) -> Duration {
     (poll_interval * 20).max(Duration::from_secs(120))
 }
 
-/// The outer deadline for one round on `daemon`: [`tick_deadline`], or room
-/// for the largest block request the node's link allows (fetched and
-/// prefetched in one unit) after the round's own budget, whichever is
-/// longer. A slow link's requests aren't abandoned by the round around
-/// them (docs/engine_scaling.md section 2).
+/// The outer deadline for one round on `daemon` given `budget`:
+/// [`tick_deadline`], or room for the largest block request the node's link
+/// allows (fetched and prefetched in one unit) after the round's own
+/// budget, whichever is longer. A slow link's requests aren't abandoned by
+/// the round around them (docs/engine_scaling.md section 2).
 fn round_deadline(
     poll_interval: Duration,
     daemon: &dyn crate::daemon::MoneroDaemonClient,
+    budget: Duration,
 ) -> Duration {
     let largest = daemon.chain_blocks_timeout(crate::scanner::SCAN_CHUNK_MAX_BLOCKS);
-    tick_deadline(poll_interval).max(largest * 2 + crate::work::ROUND_BUDGET)
+    tick_deadline(poll_interval).max(largest * 2 + budget)
 }
 
 /// Starts a scanner loop for each network that has a node configured, and stops them for a network whose node setting is
@@ -360,13 +361,14 @@ pub async fn run_scanner_loop(
             grace_period_seconds: scan.expired_order_grace_period_seconds,
             scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
         };
-        // The round keeps to its own budget; this outer deadline only catches
-        // a unit stuck somewhere no inner deadline reaches.
-        let deadline = round_deadline(scan.poll_interval, &pinned);
+        // The round keeps to its own budget (more only while one page of a
+        // large block needs it); this outer deadline only catches a unit
+        // stuck somewhere no inner deadline reaches.
+        let budget = scan_state.round_budget(&pinned, tenants.len());
+        let deadline = round_deadline(scan.poll_interval, &pinned, budget);
         let (result, backlogged) = match tokio::time::timeout(
             deadline,
-            crate::work::run_round(&scan_state, &inputs, crate::work::ROUND_BUDGET)
-                .instrument(tick.clone()),
+            crate::work::run_round(&scan_state, &inputs, budget).instrument(tick.clone()),
         )
         .await
         {

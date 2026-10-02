@@ -289,6 +289,12 @@ impl PinnedDaemon<'_> {
     }
 }
 
+/// About how large a block's outline of `tx_count` transactions is: each id
+/// comes three times over in the answer.
+fn outline_bytes(tx_count: Option<u64>) -> u64 {
+    tx_count.unwrap_or(0).saturating_mul(256)
+}
+
 #[async_trait::async_trait]
 impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_height(&self) -> Result<u64, DaemonError> {
@@ -334,6 +340,26 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
         count: u64,
     ) -> Result<Vec<ChainHeader>, DaemonError> {
         self.one(|c| c.get_chain_headers(start_height, count)).await
+    }
+
+    /// The pinned node's own, as [`Self::chain_blocks_timeout`].
+    fn transfer_timeout(&self, bytes: u64) -> Duration {
+        self.inner
+            .nodes
+            .get(self.idx)
+            .map_or(CALL_DEADLINE, |node| {
+                (node.client.transfer_timeout(bytes) + DEADLINE_MARGIN).max(CALL_DEADLINE)
+            })
+    }
+
+    async fn get_block_outline(
+        &self,
+        height: u64,
+        tx_count: Option<u64>,
+    ) -> Result<crate::daemon::BlockOutline, DaemonError> {
+        let deadline = self.transfer_timeout(outline_bytes(tx_count));
+        self.one_within(deadline, |c| c.get_block_outline(height, tx_count))
+            .await
     }
     /// The pinned node's two answers. It is judged by the tip's.
     async fn get_tip_and_mempool(&self) -> (Result<ChainTip, DaemonError>, PoolAnswer) {
@@ -458,6 +484,33 @@ impl MoneroDaemonClient for FallbackDaemonClient {
     ) -> Result<Vec<ChainHeader>, DaemonError> {
         self.failover(|c| c.get_chain_headers(start_height, count))
             .await
+    }
+
+    /// Room for the first two nodes, as [`Self::chain_blocks_timeout`].
+    fn transfer_timeout(&self, bytes: u64) -> Duration {
+        let total: Duration = self
+            .attempt_order()
+            .into_iter()
+            .take(2)
+            .map(|idx| self.nodes[idx].client.transfer_timeout(bytes) + DEADLINE_MARGIN)
+            .sum();
+        total.max(CALL_DEADLINE)
+    }
+
+    /// From the first node that answers, each given what its link needs
+    /// for an outline of `tx_count` transactions.
+    async fn get_block_outline(
+        &self,
+        height: u64,
+        tx_count: Option<u64>,
+    ) -> Result<crate::daemon::BlockOutline, DaemonError> {
+        let bytes = outline_bytes(tx_count);
+        self.failover_within(
+            self.transfer_timeout(bytes),
+            |node| node.transfer_timeout(bytes) + DEADLINE_MARGIN,
+            |c| c.get_block_outline(height, tx_count),
+        )
+        .await
     }
 
     /// One node answers both where it can: the first that gives its tip.
