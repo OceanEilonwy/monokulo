@@ -352,7 +352,7 @@ left open:
   group's run fetched ahead fits at once, and blocks already scanned are
   evicted before runs fetched ahead. Without the share, 16 groups at the
   default budget evicted each other's runs: 4.7 blocks a second and 9 MB
-  discarded, against 13.4 and 130 kB with it. Blocks let go of unread are counted
+  discarded, against 13.4 and 130 kB with it. Blocks let go of before a scan of them committed are counted
   (`discarded_cache_bytes_recent` in `/status`, over the last ten minutes, and on the admin page's Scanning panel). The peak is unchanged, since one
   round could already fill the budget; only how long it is held changed, so
   the `budget × networks × 1.25` check stands.

@@ -57,7 +57,7 @@ const MAX_ATTEMPT: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
 /// every node dead fails in bounded time rather than one full request
 /// timeout per node: two full attempts, so a primary that hangs still
 /// leaves one fallback its turn.
-pub const CALL_DEADLINE: Duration = Duration::from_secs(MAX_ATTEMPT.as_secs() * 2);
+pub const CALL_DEADLINE: Duration = MAX_ATTEMPT.saturating_mul(2);
 /// Added to a node's own timeout where a layer above waits on it, so the
 /// node's own error (naming the node and the timeout) arrives first.
 pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);

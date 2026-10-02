@@ -11,7 +11,7 @@
 //! - **the wait between rounds**: settlement and the mempool get a turn once
 //!   a round, so the longest round is the longest they wait;
 //! - **a round's fixed cost**: how long a round with nothing to do takes;
-//! - **discarded bytes**: blocks the scan's cache let go of unread.
+//! - **discarded bytes**: blocks the scan's cache let go of unscanned.
 //!
 //! Progress is read over the binary's own SQLite connection, as in
 //! `stress_fixture`.

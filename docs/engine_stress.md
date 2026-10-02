@@ -111,7 +111,7 @@ Each point reports:
 - **Round p50 and longest round**: settlement and the mempool get a turn
   once a round, so the longest round is about the longest they wait.
 - **Idle round**: a round with nothing left to scan, the fixed cost.
-- **Discarded**: bytes the block cache let go of unread.
+- **Discarded**: bytes the block cache let go of before a scan of them committed.
 
 `--round-budget-ms` changes the round's length only. Per-call times are
 shares of `ROUND_BUDGET` itself, fixed at build time (`Tier::reserved`). To

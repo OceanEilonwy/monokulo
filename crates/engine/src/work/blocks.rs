@@ -466,9 +466,10 @@ struct Cached {
     block: Arc<ChainBlock>,
     /// Its size on the wire: what the memory budget counts.
     bytes: usize,
-    /// Handed to a scan at least once. A block let go of before that was
+    /// A group's scan of it committed, for the whole group. A block let go
+    /// of before that (not just handed to a scan that was interrupted) was
     /// fetched for nothing.
-    read: bool,
+    scanned: bool,
 }
 
 impl BlockCache {
@@ -477,7 +478,7 @@ impl BlockCache {
         let cached = Cached {
             block: block.clone(),
             bytes,
-            read: false,
+            scanned: false,
         };
         if let Some(old) = self.blocks.insert(block.height, cached) {
             self.bytes -= old.bytes;
@@ -490,20 +491,25 @@ impl BlockCache {
         self.blocks.contains_key(&height)
     }
 
-    /// Block `height`, if held, for a scan to read.
-    fn read(&mut self, height: u64) -> Option<Arc<ChainBlock>> {
-        self.blocks.get_mut(&height).map(|cached| {
-            cached.read = true;
-            cached.block.clone()
-        })
+    /// Block `height`, if held.
+    fn get(&self, height: u64) -> Option<Arc<ChainBlock>> {
+        self.blocks.get(&height).map(|cached| cached.block.clone())
     }
 
-    /// Lets go of block `height`; returns its bytes if no scan read it.
+    /// A group's scan of block `height` committed, for the whole group.
+    fn mark_scanned(&mut self, height: u64) {
+        if let Some(cached) = self.blocks.get_mut(&height) {
+            cached.scanned = true;
+        }
+    }
+
+    /// Lets go of block `height`; returns its bytes if no group's scan of it
+    /// committed.
     fn remove(&mut self, height: u64) -> u64 {
         match self.blocks.remove(&height) {
             Some(cached) => {
                 self.bytes -= cached.bytes;
-                if cached.read {
+                if cached.scanned {
                     0
                 } else {
                     cached.bytes as u64
@@ -513,10 +519,10 @@ impl BlockCache {
         }
     }
 
-    /// Evicts blocks until within `budget`, `keep` never: first those a scan
-    /// has read (their group has moved past them), then unread ones; of
-    /// each, the farthest from `keep` (the lowest held, without one) first.
-    /// Returns the bytes let go of unread.
+    /// Evicts blocks until within `budget`, `keep` never: first those a
+    /// group has scanned (and moved past), then the rest; of each, the
+    /// farthest from `keep` (the lowest held, without one) first. Returns
+    /// the bytes let go of unscanned.
     fn trim(&mut self, keep: Option<u64>, budget: usize) -> u64 {
         let Some(anchor) = keep.or_else(|| self.blocks.keys().next().copied()) else {
             return 0;
@@ -525,9 +531,11 @@ impl BlockCache {
             .blocks
             .iter()
             .filter(|(height, _)| Some(**height) != keep)
-            .map(|(height, cached)| (cached.read, *height))
+            .map(|(height, cached)| (cached.scanned, *height))
             .collect();
-        victims.sort_by_key(|&(read, height)| (!read, std::cmp::Reverse(height.abs_diff(anchor))));
+        victims.sort_by_key(|&(scanned, height)| {
+            (!scanned, std::cmp::Reverse(height.abs_diff(anchor)))
+        });
         let mut discarded = 0;
         for (_, height) in victims {
             if self.bytes <= budget {
@@ -538,13 +546,13 @@ impl BlockCache {
         discarded
     }
 
-    /// Lets go of every block; returns the bytes let go of unread.
+    /// Lets go of every block; returns the bytes let go of unscanned.
     fn clear(&mut self) -> u64 {
         let heights: Vec<u64> = self.blocks.keys().copied().collect();
         heights.into_iter().map(|height| self.remove(height)).sum()
     }
 
-    /// Keeps only blocks in `heights`; returns the bytes let go of unread.
+    /// Keeps only blocks in `heights`; returns the bytes let go of unscanned.
     fn retain(&mut self, heights: std::ops::RangeInclusive<u64>) -> u64 {
         let outside: Vec<u64> = self
             .blocks
@@ -839,6 +847,7 @@ async fn advance_group(
             // first page running ahead of the rest.
             BlockOutcome::Committed(Page::Full(page)) => given.extend(page),
             BlockOutcome::Committed(Page::Last) => {
+                round.blocks.cache.mark_scanned(cursor + 1);
                 given.clear();
                 cursor += 1;
                 high_water = high_water.max(cursor);
@@ -1689,7 +1698,7 @@ async fn known_header(
 /// Block `height` ready to scan: held whole, or, if it is large, its
 /// outline.
 async fn source(round: &mut Round<'_>, height: u64, end: u64) -> Result<Source, ScannerError> {
-    if let Some(block) = round.blocks.cache.read(height) {
+    if let Some(block) = round.blocks.cache.get(height) {
         return Ok(Source::Whole(block));
     }
     if round.state.blocks.headers_first() {
@@ -1779,7 +1788,7 @@ async fn block(
     height: u64,
     end: u64,
 ) -> Result<Arc<ChainBlock>, ScannerError> {
-    if let Some(block) = round.blocks.cache.read(height) {
+    if let Some(block) = round.blocks.cache.get(height) {
         return Ok(block);
     }
     let count = round.state.blocks.plan(round, height, end).blocks;
@@ -1806,7 +1815,7 @@ async fn block(
         round.inputs.daemon.link_cost(),
         &state.blocks,
     );
-    round.blocks.cache.read(height).ok_or_else(|| {
+    round.blocks.cache.get(height).ok_or_else(|| {
         ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
             "the node returned no block at height {height}"
         )))
@@ -1824,7 +1833,7 @@ async fn header_block(
     height: u64,
     end: u64,
 ) -> Result<Arc<ChainBlock>, ScannerError> {
-    if let Some(block) = round.blocks.cache.read(height) {
+    if let Some(block) = round.blocks.cache.get(height) {
         return Ok(block);
     }
     let header = known_header(round, height, end).await?;
@@ -1926,33 +1935,40 @@ mod tests {
         );
     }
 
-    /// Blocks a scan has read go before blocks fetched ahead: with many
+    /// Blocks a group has scanned go before blocks fetched ahead: with many
     /// groups sharing the budget, one group's run fetched ahead isn't
-    /// evicted while blocks already scanned remain. Only unread blocks
-    /// count as discarded.
+    /// evicted while blocks already scanned remain. Handing a block to a
+    /// scan doesn't count: only a committed scan does, so a block whose scan
+    /// was interrupted is kept like an unscanned one, and counts as
+    /// discarded if it goes.
     #[test]
-    fn the_block_cache_evicts_read_blocks_before_unread_ones() {
+    fn the_block_cache_evicts_scanned_blocks_before_the_rest() {
         let mut cache = BlockCache::default();
         for h in 10..=20 {
             cache.insert(block(h), 100);
         }
         for h in [11, 19] {
-            assert!(cache.read(h).is_some());
+            cache.mark_scanned(h);
         }
-        assert_eq!(cache.trim(Some(15), 900), 0, "the read ones went");
+        assert!(cache.get(12).is_some(), "handed to a scan, not scanned");
+        assert_eq!(cache.trim(Some(15), 900), 0, "the scanned ones went");
         assert!(!cache.contains(11) && !cache.contains(19));
-        assert_eq!(cache.trim(Some(15), 800), 100, "then the farthest unread");
-        assert!(!cache.contains(10) && cache.contains(20));
-        assert_eq!(cache.retain(14..=16), 500);
-        assert_eq!(cache.bytes, 300);
-        assert!(cache.read(15).is_some());
-        assert_eq!(cache.clear(), 200, "15 was read");
+        assert_eq!(
+            cache.trim(Some(15), 800),
+            100,
+            "then the farthest unscanned"
+        );
+        assert!(!cache.contains(10) && cache.contains(20) && cache.contains(12));
+        assert_eq!(cache.retain(12..=16), 300, "17, 18 and 20, unscanned");
+        assert_eq!(cache.bytes, 500);
+        cache.mark_scanned(15);
+        assert_eq!(cache.clear(), 400, "15 was scanned");
         assert_eq!(cache.bytes, 0);
     }
 
     /// A round starts from what the last one left, trimmed to the memory
     /// budget as it is now, and only on the node the blocks came from. What
-    /// is let go of unread is counted for `/status`.
+    /// is let go of unscanned is counted for `/status`.
     #[tokio::test]
     async fn a_round_resumes_the_cache_within_todays_budget() {
         let state = BlockState::default();
