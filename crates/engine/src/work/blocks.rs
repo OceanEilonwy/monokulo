@@ -18,6 +18,12 @@
 //! only if the block still extends the recorded chain. If a unit runs out of
 //! time partway through a block, its progress is written down (a checkpoint
 //! with staged matches), to resume from.
+//!
+//! Each block's header comes first (a run of them at a time): a block too
+//! large for one answer, or for the node's link to send in time, is scanned
+//! a page of transactions at a time from its outline (its transactions'
+//! ids), a page per step, across as many units and rounds as it takes
+//! (docs/engine_scaling.md section 4). Blocks around it are fetched whole.
 
 use crate::store::TenantId;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -26,7 +32,7 @@ use std::sync::Arc;
 
 use tokio::time::Instant;
 
-use crate::daemon::{ChainBlock, ChainHeader};
+use crate::daemon::{BlockOutline, ChainBlock, ChainHeader, ScanTx};
 use crate::key_custody::{ScanIndices, ScanInput, WalletHandle};
 use crate::scanner::{
     record_scan_match, scan_txs_for_tenants, stage_block_match, ScanResult, ScannerError,
@@ -50,6 +56,23 @@ const HEADERS_PER_FETCH: u64 = 256;
 /// between looks at the clock, and how much of a block a tenant whose call
 /// fails has to be scanned for again.
 pub(super) const TXS_PER_SCAN: usize = 32;
+/// The time a round needs when the smallest unit of a large block takes
+/// `unit_secs`: the base while that fits the round's share for blocks, else
+/// half as much again as the unit, within [`MAX_ROUND_BUDGET`].
+fn round_budget_for(unit_secs: f64) -> std::time::Duration {
+    let base = super::ROUND_BUDGET;
+    let share = base.as_secs_f64() * f64::from(super::Tier::Blocks.reserved_percent()) / 100.0;
+    if unit_secs > share {
+        std::time::Duration::from_secs_f64((unit_secs * 1.5).min(MAX_ROUND_BUDGET.as_secs_f64()))
+            .max(base)
+    } else {
+        base
+    }
+}
+
+/// The most a round may be given for one page of a large block
+/// (docs/engine_scaling.md section 4).
+pub(crate) const MAX_ROUND_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 /// How far ahead of real time consensus lets a block's timestamp run.
 /// Catch-up windows start this much before a block's own timestamp, so a
 /// forward-dated block can't hide an order that was open when it was mined.
@@ -92,6 +115,21 @@ impl ScannedBlock {
 pub(crate) struct BlockState {
     catch_up_turn: AtomicBool,
     progress: crate::scaling::SharedProgress,
+    /// The large block being scanned in pages, kept across rounds so its
+    /// outline is fetched once.
+    paged: parking_lot::Mutex<Option<Paged>>,
+}
+
+/// A large block being scanned a page at a time (docs/engine_scaling.md
+/// section 4).
+#[derive(Clone)]
+struct Paged {
+    outline: Arc<BlockOutline>,
+    /// Its weight, from its header.
+    weight: u64,
+    /// Bytes a transaction, from the header; doubled after a page that ran
+    /// out of time or came back too large, so the next is half as long.
+    avg_tx_bytes: f64,
 }
 
 impl Default for BlockState {
@@ -107,7 +145,35 @@ impl BlockState {
         BlockState {
             catch_up_turn: AtomicBool::new(false),
             progress,
+            paged: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// The time a round needs (docs/engine_scaling.md section 4): the base,
+    /// unless the smallest unit of a large block in progress (one page of
+    /// one transaction, fetched and scanned for `stores` stores) is
+    /// expected to need more than the round's share for blocks. Then half
+    /// as much again as that unit, within two minutes.
+    pub(crate) fn round_budget(
+        &self,
+        daemon: &dyn crate::daemon::MoneroDaemonClient,
+        stores: usize,
+    ) -> std::time::Duration {
+        let base = super::ROUND_BUDGET;
+        let Some(avg_tx_bytes) = self.paged.lock().as_ref().map(|paged| paged.avg_tx_bytes) else {
+            self.progress.lock().round_budget = base;
+            return base;
+        };
+        let link = daemon.link();
+        let fetch = link.as_ref().map_or(0.0, |link| {
+            (link.rtt_ms + link.ttfb_per_block_ms) as f64 / 1000.0
+        }) + daemon
+            .transfer_rate()
+            .map_or(0.0, |rate| avg_tx_bytes / rate.max(1.0));
+        let scan = self.progress.lock().secs_per_tx_scan().unwrap_or(0.0) * stores.max(1) as f64;
+        let budget = round_budget_for(fetch + scan);
+        self.progress.lock().round_budget = budget;
+        budget
     }
 
     /// How many blocks to ask for from `from`, up to `end`.
@@ -140,6 +206,22 @@ impl BlockState {
             let mut progress = self.progress.lock();
             progress.avg_bytes_per_block =
                 crate::scanner::avg_after_failed_fetch(progress.avg_bytes_per_block);
+        }
+    }
+
+    /// The large block's current bytes-a-transaction estimate, if one is
+    /// being scanned in pages.
+    fn avg_tx_bytes(&self) -> Option<f64> {
+        self.paged.lock().as_ref().map(|paged| paged.avg_tx_bytes)
+    }
+
+    /// A page request that failed: one that ran out of time or came back
+    /// too large halves the next.
+    fn note_page_failed(&self, error: &ScannerError) {
+        if matches!(error, ScannerError::Daemon(e) if e.asks_for_less()) {
+            if let Some(paged) = self.paged.lock().as_mut() {
+                paged.avg_tx_bytes = crate::scanner::avg_after_failed_fetch(paged.avg_tx_bytes);
+            }
         }
     }
 
@@ -465,7 +547,7 @@ async fn advance_group(
             Group::CatchUp => scanned > 0,
         };
         if fetch_first {
-            block(round, cursor + 1, end).await?;
+            hold(round, cursor + 1, end).await?;
         }
         let prefetch = prefetch_range(round, cursor + 2, end);
         let daemon = round.inputs.daemon;
@@ -604,8 +686,8 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let since = if frontier {
         round.now
     } else {
-        let block = block(round, height, end).await?;
-        i64::try_from(block.timestamp)
+        let header = known_header(round, height, end).await?;
+        i64::try_from(header.timestamp)
             .unwrap_or(i64::MAX)
             .saturating_sub(BLOCK_TIMESTAMP_DRIFT_SECONDS)
             .min(round.now)
@@ -659,15 +741,16 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     if group == Group::Frontier {
         round.blocks.frontier_header_only = Some(header_only);
     }
-    let block = if header_only {
-        header_block(round, height, end).await?
+    let source = if header_only {
+        Source::Whole(header_block(round, height, end).await?)
     } else {
-        block(round, height, end).await?
+        source(round, height, end).await?
     };
+    let (hash, prev_hash) = source.identity();
     if plan
         .recorded
         .as_ref()
-        .is_some_and(|recorded| *recorded != block.hash)
+        .is_some_and(|recorded| recorded != hash)
     {
         return Ok(BlockOutcome::Diverged(
             "the node's block differs from the one recorded",
@@ -676,68 +759,68 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     if plan
         .parent
         .as_ref()
-        .is_some_and(|parent| *parent != block.prev_hash)
+        .is_some_and(|parent| parent != prev_hash)
     {
         return Ok(BlockOutcome::Diverged(
             "the node's block doesn't extend the recorded chain",
         ));
     }
+    let (hash, prev_hash) = (hash.to_string(), prev_hash.to_string());
 
-    round
-        .state
-        .blocks
-        .progress
-        .lock()
-        .fetched_block(height, block.wire_bytes);
-    let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &block);
-    let inputs: Vec<ScanInput> = block.txs.iter().map(|tx| tx.input.clone()).collect();
+    let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &hash, source.tx_count());
     let mut progressed = !must_progress;
-    // Each transaction is recorded under the id it came with.
-    if block.txids.len() != block.txs.len() {
-        return Err(ScannerError::Internal(format!(
-            "block {height} has {} transactions and {} ids",
-            block.txs.len(),
-            block.txids.len()
-        )));
-    }
-    for start in (0..block.txs.len()).step_by(TXS_PER_SCAN) {
-        let end = (start + TXS_PER_SCAN).min(block.txs.len());
-        for batch in scan.due(&scannable, start, end).chunks(SCAN_CONCURRENCY) {
-            if progressed && Instant::now() >= until {
-                let (progress, hash, now) = (scan.into_checkpoint(), block.hash.clone(), round.now);
-                round
-                    .db(move |s, network| checkpoint(s, network, height, &hash, progress, now))
-                    .await?;
-                return Ok(BlockOutcome::Interrupted);
+    let at = ScanAt {
+        height,
+        until,
+        scannable: &scannable,
+    };
+    let finished = match &source {
+        Source::Whole(block) => {
+            round
+                .state
+                .blocks
+                .progress
+                .lock()
+                .fetched_block(height, block.wire_bytes);
+            // Each transaction is recorded under the id it came with.
+            if block.txids.len() != block.txs.len() {
+                return Err(ScannerError::Internal(format!(
+                    "block {height} has {} transactions and {} ids",
+                    block.txs.len(),
+                    block.txids.len()
+                )));
             }
-            let scanning = Instant::now();
-            let results = scan_txs_for_tenants(
-                round.inputs.custody,
-                &block.txids[start..end],
-                &block.txs[start..end],
-                &inputs[start..end],
-                batch,
+            scan_txs(
+                round,
+                &mut scan,
+                &at,
+                0,
+                &block.txids,
+                &block.txs,
+                &mut progressed,
             )
-            .await;
-            round.state.blocks.progress.lock().spent(
-                crate::now_unix(),
-                0.0,
-                scanning.elapsed().as_secs_f64(),
-                ((end - start) * batch.len()) as u64,
-            );
-            for (tenant_id, result) in results {
-                match result {
-                    Ok(found) => scan.scanned(tenant_id, end, found),
-                    Err(error) => {
-                        shared::throttled!(format!("block-scan:{tenant_id}"), warn, store.id = %tenant_id, network = crate::network::network_str(round.network()),
-                            height, error = %error, "scanning a block failed for this store; it is caught up later");
-                        round.state.backoff.failed(&tenant_id);
-                        scan.failed(tenant_id);
-                    }
+            .await
+        }
+        Source::Pages(paged) => {
+            match scan_pages(round, &mut scan, &at, paged, &mut progressed).await {
+                Ok(finished) => finished,
+                Err(error) => {
+                    // The pages scanned before the node failed are kept.
+                    let (progress, now, hash) = (scan.into_checkpoint(), round.now, hash.clone());
+                    round
+                        .db(move |s, network| checkpoint(s, network, height, &hash, progress, now))
+                        .await?;
+                    return Err(error);
                 }
             }
-            progressed = true;
         }
+    };
+    if !finished {
+        let (progress, now) = (scan.into_checkpoint(), round.now);
+        round
+            .db(move |s, network| checkpoint(s, network, height, &hash, progress, now))
+            .await?;
+        return Ok(BlockOutcome::Interrupted);
     }
 
     let scanned = scan.into_scanned(height);
@@ -752,8 +835,8 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let commit_block = CommitBlock {
         height,
         checkpointed,
-        hash: block.hash.clone(),
-        prev_hash: block.prev_hash.clone(),
+        hash,
+        prev_hash,
         parent,
         idle_to,
         since,
@@ -770,6 +853,10 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
             .progress
             .lock()
             .finish_block(height, crate::now_unix());
+        let mut paged = round.state.blocks.paged.lock();
+        if paged.as_ref().is_some_and(|p| p.outline.height == height) {
+            *paged = None;
+        }
     }
     Ok(if committed {
         BlockOutcome::Committed
@@ -792,7 +879,8 @@ impl BlockScan {
     fn new(
         scannable: &[(crate::store::TenantId, WalletHandle, ScanIndices)],
         checkpoints: &HashMap<TenantId, BlockCheckpoint>,
-        block: &ChainBlock,
+        hash: &str,
+        tx_count: usize,
     ) -> Self {
         let next_tx = scannable
             .iter()
@@ -800,7 +888,7 @@ impl BlockScan {
                 // A block's hash names it, height and all: a checkpoint
                 // for any other block is stale.
                 let resume = match checkpoints.get(id) {
-                    Some(c) if c.hash == block.hash => c.next_tx.min(block.txs.len()),
+                    Some(c) if c.hash == hash => c.next_tx.min(tx_count),
                     _ => 0,
                 };
                 (id.clone(), resume)
@@ -832,6 +920,18 @@ impl BlockScan {
                 (next < end).then(|| (tenant, next.saturating_sub(start)))
             })
             .collect()
+    }
+
+    /// The first transaction some tenant still has to be scanned for;
+    /// `tx_count` when none has.
+    fn first_due(&self, tx_count: usize) -> usize {
+        self.next_tx
+            .iter()
+            .filter(|(id, _)| !self.failed.contains(*id))
+            .map(|(_, next)| *next)
+            .min()
+            .unwrap_or(tx_count)
+            .min(tx_count)
     }
 
     /// `tenant_id` has now been scanned for every transaction before `next`.
@@ -1001,7 +1101,12 @@ fn prefetch_range(round: &Round<'_>, next: u64, end: u64) -> Option<(u64, u64)> 
     if next > end || cache.blocks.contains_key(&next) || !cache.blocks.contains_key(&(next - 1)) {
         return None;
     }
-    Some((next, round.state.blocks.plan(round, next, end).blocks))
+    let count = whole_run(
+        round,
+        next,
+        round.state.blocks.plan(round, next, end).blocks,
+    );
+    (count > 0).then_some((next, count))
 }
 
 impl BlockCache {
@@ -1044,8 +1149,349 @@ impl BlockCache {
     }
 }
 
+/// Where a block's transactions come from: the block fetched whole, or a
+/// large block's outline, its transactions fetched a page at a time.
+enum Source {
+    Whole(Arc<ChainBlock>),
+    Pages(Paged),
+}
+
+impl Source {
+    /// The block's id and its parent's.
+    fn identity(&self) -> (&str, &str) {
+        match self {
+            Source::Whole(block) => (&block.hash, &block.prev_hash),
+            Source::Pages(paged) => (&paged.outline.hash, &paged.outline.prev_hash),
+        }
+    }
+
+    fn tx_count(&self) -> usize {
+        match self {
+            Source::Whole(block) => block.txs.len(),
+            Source::Pages(paged) => paged.outline.txids.len(),
+        }
+    }
+}
+
+/// The block a scan is of, the tenants it is for and when its unit's time
+/// is up.
+struct ScanAt<'s> {
+    height: u64,
+    until: Instant,
+    scannable: &'s [(crate::store::TenantId, WalletHandle, ScanIndices)],
+}
+
+/// Scans transactions `offset..offset + txs.len()` of the block for every
+/// tenant still due them, [`TXS_PER_SCAN`] at a time. `false` if the unit's
+/// time ran out first (once it had made progress): the caller writes down
+/// how far each tenant got.
+async fn scan_txs(
+    round: &Round<'_>,
+    scan: &mut BlockScan,
+    at: &ScanAt<'_>,
+    offset: usize,
+    txids: &[String],
+    txs: &[ScanTx],
+    progressed: &mut bool,
+) -> bool {
+    let inputs: Vec<ScanInput> = txs.iter().map(|tx| tx.input.clone()).collect();
+    for start in (0..txs.len()).step_by(TXS_PER_SCAN) {
+        let end = (start + TXS_PER_SCAN).min(txs.len());
+        for batch in scan
+            .due(at.scannable, offset + start, offset + end)
+            .chunks(SCAN_CONCURRENCY)
+        {
+            if *progressed && Instant::now() >= at.until {
+                return false;
+            }
+            let scanning = Instant::now();
+            let results = scan_txs_for_tenants(
+                round.inputs.custody,
+                &txids[start..end],
+                &txs[start..end],
+                &inputs[start..end],
+                batch,
+            )
+            .await;
+            round.state.blocks.progress.lock().spent(
+                crate::now_unix(),
+                0.0,
+                scanning.elapsed().as_secs_f64(),
+                ((end - start) * batch.len()) as u64,
+            );
+            let height = at.height;
+            for (tenant_id, result) in results {
+                match result {
+                    Ok(found) => scan.scanned(tenant_id, offset + end, found),
+                    Err(error) => {
+                        shared::throttled!(format!("block-scan:{tenant_id}"), warn, store.id = %tenant_id, network = crate::network::network_str(round.network()),
+                            height, error = %error, "scanning a block failed for this store; it is caught up later");
+                        round.state.backoff.failed(&tenant_id);
+                        scan.failed(tenant_id);
+                    }
+                }
+            }
+            *progressed = true;
+        }
+    }
+    true
+}
+
+/// Scans a large block a page of transactions at a time
+/// (docs/engine_scaling.md section 4), from the first transaction some
+/// tenant still needs: a page is fetched, scanned for every tenant due it
+/// and dropped before the next. `Ok(false)` if the unit's time ran out
+/// first.
+async fn scan_pages(
+    round: &Round<'_>,
+    scan: &mut BlockScan,
+    at: &ScanAt<'_>,
+    paged: &Paged,
+    progressed: &mut bool,
+) -> Result<bool, ScannerError> {
+    let txids = &paged.outline.txids;
+    let total = txids.len();
+    round
+        .state
+        .blocks
+        .progress
+        .lock()
+        .fetched_block(at.height, paged.weight);
+    let mut next = scan.first_due(total);
+    while next < total {
+        if *progressed && Instant::now() >= at.until {
+            return Ok(false);
+        }
+        let avg_tx_bytes = round
+            .state
+            .blocks
+            .avg_tx_bytes()
+            .unwrap_or(paged.avg_tx_bytes);
+        let plan = page_plan(
+            round,
+            avg_tx_bytes,
+            (total - next) as u64,
+            at.scannable.len(),
+        );
+        let len = usize::try_from(plan.blocks)
+            .unwrap_or(usize::MAX)
+            .min(total - next);
+        round
+            .state
+            .blocks
+            .progress
+            .lock()
+            .page(at.height, next as u64, total as u64, len as u64);
+        let ids = &txids[next..next + len];
+        let txs = fetch_page(round, at.height, ids, avg_tx_bytes).await?;
+        if !scan_txs(round, scan, at, next, ids, &txs, progressed).await {
+            return Ok(false);
+        }
+        next = scan.first_due(total).max(next + len);
+    }
+    Ok(true)
+}
+
+/// How many transactions the next page holds: sized to the response cap,
+/// the link and the scan's own cost for this many stores, in the round's
+/// share for blocks (`scanner::next_page`).
+fn page_plan(
+    round: &Round<'_>,
+    avg_tx_bytes: f64,
+    remaining: u64,
+    stores: usize,
+) -> crate::scanner::ChunkPlan {
+    let mut progress = round.state.blocks.progress.lock();
+    let scan_secs = progress
+        .secs_per_tx_scan()
+        .map(|secs| secs * stores.max(1) as f64);
+    let share = super::ROUND_BUDGET.as_secs_f64()
+        * f64::from(super::Tier::Blocks.reserved_percent())
+        / 100.0;
+    let plan = crate::scanner::next_page(
+        crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
+        round.inputs.daemon.transfer_rate(),
+        avg_tx_bytes,
+        scan_secs,
+        share,
+        remaining,
+    );
+    progress.last_chunk = Some(plan);
+    plan
+}
+
+/// One page of a large block's transactions, in the outline's order,
+/// given the time the node's link needs for it. A transaction the node
+/// doesn't send fails the page: the block can't be scanned without it.
+async fn fetch_page(
+    round: &Round<'_>,
+    height: u64,
+    txids: &[String],
+    avg_tx_bytes: f64,
+) -> Result<Vec<ScanTx>, ScannerError> {
+    let daemon = round.inputs.daemon;
+    let bytes = (avg_tx_bytes * txids.len() as f64) as u64;
+    let deadline = (daemon.transfer_timeout(bytes) + crate::daemon_fallback::DEADLINE_MARGIN)
+        .max(super::CALL_DEADLINE);
+    let started = Instant::now();
+    let fetched = super::bounded_by(deadline, daemon.get_transactions_with_ids(txids)).await;
+    round
+        .state
+        .blocks
+        .note_fetch_time(started.elapsed().as_secs_f64());
+    let fetched = match fetched {
+        Ok(fetched) => fetched,
+        Err(e) => {
+            round.state.blocks.note_page_failed(&e);
+            return Err(e);
+        }
+    };
+    let mut by_id: HashMap<String, ScanTx> = fetched
+        .into_iter()
+        .map(|fetched| (fetched.txid, ScanTx::of(&fetched.tx)))
+        .collect();
+    txids
+        .iter()
+        .map(|txid| {
+            by_id.remove(txid).ok_or_else(|| {
+                ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
+                    "the node didn't send transaction {txid} of block {height}"
+                )))
+            })
+        })
+        .collect()
+}
+
+/// Whether a block with this header is scanned in pages rather than
+/// fetched whole (`scanner::scan_in_pages`).
+fn in_pages(round: &Round<'_>, header: &ChainHeader) -> bool {
+    crate::scanner::scan_in_pages(
+        header.weight,
+        crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
+        round.inputs.daemon.transfer_rate(),
+    )
+}
+
+/// How many of `count` blocks from `from` can come whole in one run: up to
+/// the first whose header isn't held this round, or that is scanned in
+/// pages.
+fn whole_run(round: &Round<'_>, from: u64, count: u64) -> u64 {
+    (from..from.saturating_add(count))
+        .take_while(|height| {
+            round
+                .blocks
+                .headers
+                .get(height)
+                .is_some_and(|header| !in_pages(round, header))
+        })
+        .count() as u64
+}
+
+/// Block `height`'s header, fetched with the headers after it (up to `end`)
+/// unless already held this round.
+async fn known_header(
+    round: &mut Round<'_>,
+    height: u64,
+    end: u64,
+) -> Result<ChainHeader, ScannerError> {
+    if !round.blocks.headers.contains_key(&height) {
+        let count = (end.saturating_sub(height) + 1).min(HEADERS_PER_FETCH);
+        let headers = bounded(round.inputs.daemon.get_chain_headers(height, count)).await?;
+        round
+            .blocks
+            .headers
+            .extend(headers.into_iter().map(|header| (header.height, header)));
+    }
+    round.blocks.headers.get(&height).cloned().ok_or_else(|| {
+        ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
+            "the node returned no header at height {height}"
+        )))
+    })
+}
+
+/// Block `height` ready to scan: held whole, or, if it is large, its
+/// outline.
+async fn source(round: &mut Round<'_>, height: u64, end: u64) -> Result<Source, ScannerError> {
+    if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
+        return Ok(Source::Whole(block.clone()));
+    }
+    let header = known_header(round, height, end).await?;
+    if in_pages(round, &header) {
+        return Ok(Source::Pages(paged(round, &header).await?));
+    }
+    Ok(Source::Whole(block(round, height, end).await?))
+}
+
+/// Fetches block `height` whole ahead of its scan, unless it is held
+/// already or is scanned in pages.
+async fn hold(round: &mut Round<'_>, height: u64, end: u64) -> Result<(), ScannerError> {
+    if round.blocks.cache.blocks.contains_key(&height) {
+        return Ok(());
+    }
+    let header = known_header(round, height, end).await?;
+    if !in_pages(round, &header) {
+        block(round, height, end).await?;
+    }
+    Ok(())
+}
+
+/// A large block's outline, fetched once and kept across rounds until the
+/// block is committed. An outline that isn't the block the header named
+/// (the chain moved between the two) is refused; the next round asks again.
+async fn paged(round: &Round<'_>, header: &ChainHeader) -> Result<Paged, ScannerError> {
+    let kept = round
+        .state
+        .blocks
+        .paged
+        .lock()
+        .clone()
+        .filter(|paged| paged.outline.hash == header.hash);
+    if let Some(paged) = kept {
+        return Ok(paged);
+    }
+    let daemon = round.inputs.daemon;
+    let bytes = header.tx_count.unwrap_or(0).saturating_mul(256);
+    let deadline = (daemon.transfer_timeout(bytes) + crate::daemon_fallback::DEADLINE_MARGIN)
+        .max(super::CALL_DEADLINE);
+    let started = Instant::now();
+    let outline = super::bounded_by(
+        deadline,
+        daemon.get_block_outline(header.height, header.tx_count),
+    )
+    .await;
+    round
+        .state
+        .blocks
+        .note_fetch_time(started.elapsed().as_secs_f64());
+    let outline = outline?;
+    if outline.hash != header.hash {
+        return Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
+            format!(
+                "block {} changed between its header and its outline",
+                header.height
+            ),
+        )));
+    }
+    let weight = header.weight.unwrap_or(0);
+    let paged = Paged {
+        avg_tx_bytes: weight as f64 / outline.txids.len().max(1) as f64,
+        outline: Arc::new(outline),
+        weight,
+    };
+    tracing::info!(
+        network = crate::network::network_str(round.network()),
+        height = header.height,
+        weight,
+        transactions = paged.outline.txids.len(),
+        "scanning a large block a page of transactions at a time"
+    );
+    *round.state.blocks.paged.lock() = Some(paged.clone());
+    Ok(paged)
+}
+
 /// Block `height`, fetched with the blocks after it (up to `end`) in one
-/// call sized to the scan memory budget.
+/// call sized to the scan memory budget, stopping before any block scanned
+/// in pages.
 async fn block(
     round: &mut Round<'_>,
     height: u64,
@@ -1055,6 +1501,7 @@ async fn block(
         return Ok(block.clone());
     }
     let count = round.state.blocks.plan(round, height, end).blocks;
+    let count = whole_run(round, height, count).max(1);
     let started = Instant::now();
     let fetched = fetch_chunk(round.inputs.daemon, height, count).await;
     round
@@ -1100,23 +1547,11 @@ async fn header_block(
     if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
         return Ok(block.clone());
     }
-    if !round.blocks.headers.contains_key(&height) {
-        let count = (end.saturating_sub(height) + 1).min(HEADERS_PER_FETCH);
-        let headers = bounded(round.inputs.daemon.get_chain_headers(height, count)).await?;
-        round
-            .blocks
-            .headers
-            .extend(headers.into_iter().map(|header| (header.height, header)));
-    }
-    let header = round.blocks.headers.get(&height).ok_or_else(|| {
-        ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
-            "the node returned no header at height {height}"
-        )))
-    })?;
+    let header = known_header(round, height, end).await?;
     Ok(Arc::new(ChainBlock {
         height,
-        hash: header.hash.clone(),
-        prev_hash: header.prev_hash.clone(),
+        hash: header.hash,
+        prev_hash: header.prev_hash,
         timestamp: header.timestamp,
         txs: Vec::new(),
         txids: Vec::new(),
@@ -1139,6 +1574,31 @@ mod tests {
             txids: Vec::new(),
             wire_bytes: 0,
         }
+    }
+
+    /// A round keeps its base time unless one page of one transaction
+    /// can't fit the share for blocks; then it gets half as much again as
+    /// that page, never past two minutes (docs/engine_scaling.md section 4).
+    #[test]
+    fn the_round_grows_only_for_a_page_that_cannot_fit_its_share() {
+        use std::time::Duration;
+        assert_eq!(round_budget_for(0.0), Duration::from_secs(10));
+        assert_eq!(
+            round_budget_for(4.0),
+            Duration::from_secs(10),
+            "the share is 4 s"
+        );
+        assert_eq!(
+            round_budget_for(5.0),
+            Duration::from_secs(10),
+            "1.5 x 5 s is under the base"
+        );
+        assert_eq!(round_budget_for(20.0), Duration::from_secs(30));
+        assert_eq!(round_budget_for(1_000.0), MAX_ROUND_BUDGET);
+        // Nothing in pages: the base.
+        let state = BlockState::default();
+        let daemon = crate::daemon::fake::FakeDaemonClient::new();
+        assert_eq!(state.round_budget(&daemon, 3), Duration::from_secs(10));
     }
 
     /// Replacing a cached block keeps the byte count exact, and trimming

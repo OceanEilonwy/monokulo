@@ -397,12 +397,23 @@ fn network_scaling(
                 node: active.map(|node| node.label.clone()),
                 rate_bytes_per_sec: rate,
                 remaining_secs: block.wire_bytes.zip(rate).map(|(bytes, rate)| {
-                    (bytes as f64 / rate as f64 - elapsed_secs as f64)
-                        .max(0.0)
-                        .round() as i64
+                    match block.pages.filter(|pages| pages.total_txs > 0) {
+                        // In pages: what is left of it, at the link's rate.
+                        Some(pages) => {
+                            let left = pages.total_txs.saturating_sub(pages.done_txs) as f64
+                                / pages.total_txs as f64;
+                            (bytes as f64 * left / rate as f64).round() as i64
+                        }
+                        None => (bytes as f64 / rate as f64 - elapsed_secs as f64)
+                            .max(0.0)
+                            .round() as i64,
+                    }
                 }),
             }
         });
+    let round_deadline_secs = scan
+        .round_budget_secs
+        .unwrap_or(crate::work::ROUND_BUDGET.as_secs());
     NetworkScaling {
         pace: NetworkScaling::pace_of(blocks_behind, &scan),
         scan,
@@ -411,7 +422,7 @@ fn network_scaling(
         budget_mb,
         max_budget_mb: shared::resources::memory_limit_bytes()
             .map(|limit| crate::engine_settings::max_scan_budget_mb(limit, networks)),
-        round_deadline_secs: crate::work::ROUND_BUDGET.as_secs(),
+        round_deadline_secs,
         round_base_secs: crate::work::ROUND_BUDGET.as_secs(),
         slow,
     }

@@ -17,7 +17,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::Router;
-use engine::daemon::{ChainBlock, KeyImageStatus, MoneroDaemonClient, ScanTx, TxLocation};
+use engine::daemon::{ChainHeader, KeyImageStatus, MoneroDaemonClient, ScanTx, TxLocation};
 use engine::daemon_rpc::RpcDaemonClient;
 use monero::consensus::serialize;
 use monero::cryptonote::hash::Hashable;
@@ -196,11 +196,29 @@ async fn exercise(client: &RpcDaemonClient, node: &str) {
         .expect("known transaction in its block");
     let known_prefix = known.input.prefix();
 
-    // Headers alone say the same about each block as the blocks do.
+    // Headers alone say the same about each block as the blocks do, with
+    // the node's own weight for it (what decides whether a block is
+    // fetched whole or in pages, not its pruned size on the wire).
     let headers = client.get_chain_headers(START, COUNT).await.unwrap();
+    let identity = |header: ChainHeader| {
+        (
+            header.height,
+            header.hash,
+            header.prev_hash,
+            header.timestamp,
+            header.tx_count,
+        )
+    };
     assert_eq!(
-        headers,
-        chain.iter().map(ChainBlock::header).collect::<Vec<_>>()
+        headers.iter().cloned().map(identity).collect::<Vec<_>>(),
+        chain
+            .iter()
+            .map(|block| identity(block.header()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        headers.iter().all(|header| header.weight.is_some()),
+        "{headers:?}"
     );
     // A range past the node's tip gives what there is, not an error.
     let at_tip = client.get_chain_headers(tip.height, 5).await.unwrap();

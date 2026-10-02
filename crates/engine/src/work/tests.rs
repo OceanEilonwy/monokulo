@@ -1443,6 +1443,13 @@ impl MoneroDaemonClient for SlowBlocks<'_> {
         tokio::time::sleep(self.delay).await;
         self.inner.get_chain_blocks(start, count).await
     }
+    async fn get_chain_headers(
+        &self,
+        start: u64,
+        count: u64,
+    ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+        self.inner.get_chain_headers(start, count).await
+    }
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
@@ -4349,7 +4356,9 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     assert_eq!(payments().len(), 1, "seen in the pool");
     assert_eq!(payments()[0].block_height, None);
 
-    // Its block: fetched whole, scanned, and the payment given its height.
+    // Its block: its header first (a block too large for one answer would
+    // be scanned in pages), then fetched whole, scanned, and the payment
+    // given its height.
     fake.set_mempool(vec![]);
     let height = fake.push_block("a4", vec![fixture_tx()]);
     run_round(
@@ -4362,7 +4371,6 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     .unwrap();
     let asked = node.take();
     assert!(asked.contains(&"get_chain_blocks"), "{asked:?}");
-    assert!(!asked.contains(&"get_chain_headers"), "{asked:?}");
     assert_eq!(payments().len(), 1);
     assert_eq!(payments()[0].block_height, Some(height as i64));
     assert_eq!(cursor_of(&store, tenant.as_str()), Some(height));
@@ -4558,4 +4566,247 @@ fn a_round_with_a_tier_blocked_by_the_node_is_a_failed_round_for_status() {
         let error = blocked.into_status_result().unwrap_err().to_string();
         assert!(error.contains("Blocks"), "{error}");
     }
+}
+
+/// A node that notes how a large block is read from it.
+struct PagedNode<'a> {
+    inner: &'a FakeDaemonClient,
+    /// Every `get_chain_blocks` asked: from where, how many.
+    chain_fetches: parking_lot::Mutex<Vec<(u64, u64)>>,
+    outlines: AtomicU64,
+    /// How many transactions each `get_transactions_with_ids` asked for.
+    pages: parking_lot::Mutex<Vec<usize>>,
+    pool_reads: AtomicU64,
+    /// The page (counted from 0) that fails, once.
+    failing_page: AtomicU64,
+}
+
+impl<'a> PagedNode<'a> {
+    fn new(inner: &'a FakeDaemonClient) -> Self {
+        Self {
+            inner,
+            chain_fetches: Default::default(),
+            outlines: AtomicU64::new(0),
+            pages: Default::default(),
+            pool_reads: AtomicU64::new(0),
+            failing_page: AtomicU64::new(u64::MAX),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for PagedNode<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.inner.get_height().await
+    }
+    async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
+        self.inner.get_tip().await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        self.inner.get_block_hash(height).await
+    }
+    async fn get_chain_blocks(
+        &self,
+        start: u64,
+        count: u64,
+    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        self.chain_fetches.lock().push((start, count));
+        self.inner.get_chain_blocks(start, count).await
+    }
+    async fn get_chain_headers(
+        &self,
+        start: u64,
+        count: u64,
+    ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+        self.inner.get_chain_headers(start, count).await
+    }
+    async fn get_block_outline(
+        &self,
+        height: u64,
+        tx_count: Option<u64>,
+    ) -> Result<crate::daemon::BlockOutline, DaemonError> {
+        self.outlines.fetch_add(1, Ordering::Relaxed);
+        self.inner.get_block_outline(height, tx_count).await
+    }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.pool_reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.get_mempool_txids().await
+    }
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+        let page = {
+            let mut pages = self.pages.lock();
+            pages.push(txids.len());
+            pages.len() as u64 - 1
+        };
+        if self
+            .failing_page
+            .compare_exchange(page, u64::MAX, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Err(DaemonError::Request(
+                "the node dropped the connection".into(),
+            ));
+        }
+        self.inner.get_transactions_with_ids(txids).await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        self.inner.locate_transaction(txid).await
+    }
+    async fn is_key_image_spent(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.inner.is_key_image_spent(key_images).await
+    }
+}
+
+/// A block too large to fetch whole (a 200 MB header; the bytes themselves
+/// aren't needed) is scanned a page of transactions at a time across
+/// rounds (docs/engine_scaling.md section 4): it is never asked for whole,
+/// its outline is asked for once, and each page fits the response cap. Its
+/// payment is staged until the whole block is scanned, then recorded at its
+/// height, and the pool is read every round meanwhile. The block after it
+/// is fetched whole again.
+#[tokio::test]
+async fn a_200_mb_block_is_scanned_in_pages_and_its_payment_found() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    let mut txs: Vec<Transaction> = (0..60u8).map(|i| unrelated_tx(100 + i)).collect();
+    txs.insert(30, fixture_tx());
+    let height = fake.push_block("big", txs);
+    fake.set_block_weight(height, 200_000_000);
+    let after = fake.push_block("after", vec![unrelated_tx(7)]);
+    let node = PagedNode::new(&fake);
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    // A 256 MB budget: answers of up to 32 MiB, so ten transactions of
+    // about 3.3 MB a page.
+    let inputs = RoundInputs {
+        scan_chunk_memory_budget_mb: 256,
+        ..inputs(&db, &custody, &node, &tenants)
+    };
+    let payments = || {
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()
+    };
+    let staged = || {
+        let s = store.lock();
+        s.conn_for_test()
+            .query_row("SELECT COUNT(*) FROM partial_block_matches", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    let mut rounds = 0;
+    let mut saw_staged = false;
+    while cursor_of(&store, tenants[0].0.as_str()) < Some(height) {
+        rounds += 1;
+        assert!(rounds < 30, "never finished the block");
+        run_round(&state, &inputs, Duration::ZERO)
+            .await
+            .into_result()
+            .unwrap();
+        if cursor_of(&store, tenants[0].0.as_str()) < Some(height) {
+            assert!(
+                payments().is_empty(),
+                "nothing recorded before the block commits"
+            );
+            saw_staged |= staged() > 0;
+        }
+    }
+    assert!(rounds >= 6, "a page a round: {rounds} rounds");
+    assert!(
+        saw_staged,
+        "the payment waited, staged, for the rest of the block"
+    );
+    assert_eq!(payments().len(), 1);
+    assert_eq!(payments()[0].block_height, Some(height as i64));
+    assert_eq!(staged(), 0);
+
+    assert!(
+        node.chain_fetches
+            .lock()
+            .iter()
+            .all(|(start, count)| !(*start..start + count).contains(&height)),
+        "never asked for whole: {:?}",
+        node.chain_fetches.lock()
+    );
+    assert_eq!(node.outlines.load(Ordering::Relaxed), 1, "its outline once");
+    let pages = node.pages.lock().clone();
+    assert!(pages.iter().all(|page| *page <= 10), "{pages:?}");
+    assert!(pages.iter().sum::<usize>() >= 61, "{pages:?}");
+    assert!(
+        node.pool_reads.load(Ordering::Relaxed) >= rounds,
+        "the pool is read every round meanwhile"
+    );
+
+    // The next block is an ordinary one again.
+    run_round(&state, &inputs, ROUND_BUDGET)
+        .await
+        .into_result()
+        .unwrap();
+    assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(after));
+    assert!(node
+        .chain_fetches
+        .lock()
+        .iter()
+        .any(|(start, _)| *start == after));
+}
+
+/// A page the node fails mid-block costs only that page: the pages scanned
+/// before it in the same unit are written down, and the next round carries
+/// on from there.
+#[tokio::test]
+async fn a_failed_page_keeps_the_pages_before_it() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    let mut txs: Vec<Transaction> = (0..40u8).map(|i| unrelated_tx(100 + i)).collect();
+    txs.push(fixture_tx());
+    let height = fake.push_block("big", txs);
+    fake.set_block_weight(height, 200_000_000);
+    let node = PagedNode::new(&fake);
+    node.failing_page.store(2, Ordering::Relaxed);
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    let inputs = RoundInputs {
+        scan_chunk_memory_budget_mb: 256,
+        ..inputs(&db, &custody, &node, &tenants)
+    };
+    // The whole round's time: two pages, then the third fails.
+    let report = run_round(&state, &inputs, ROUND_BUDGET).await;
+    assert_eq!(
+        report.outcome(Tier::Blocks),
+        TierOutcome::Blocked(Wait::NodeFailed)
+    );
+    let checkpoint = store
+        .lock()
+        .block_checkpoint(
+            monero::Network::Mainnet,
+            &shared::ids::TenantId::new(tenants[0].0.to_string()),
+        )
+        .unwrap()
+        .expect("the pages before the failure are kept");
+    assert_eq!(checkpoint.height, height);
+    // About 4.9 MB a transaction: six to a 32 MiB page.
+    assert_eq!(checkpoint.next_tx, 12, "two pages of six");
+
+    run_round(&state, &inputs, ROUND_BUDGET)
+        .await
+        .into_result()
+        .unwrap();
+    assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(height));
+    let pages = node.pages.lock().clone();
+    assert_eq!(
+        pages.iter().sum::<usize>(),
+        41 + 6,
+        "only the failed page again: {pages:?}"
+    );
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .unwrap();
+    assert_eq!(payments.len(), 1);
 }

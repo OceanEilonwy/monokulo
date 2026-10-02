@@ -41,13 +41,18 @@ pub enum ChunkLimit {
     Memory,
     /// What the node's link delivers in a target call.
     Link,
-    /// The most blocks one request asks for.
+    /// The most blocks (or a large block's transactions) one request asks
+    /// for.
     Maximum,
     /// There were no more blocks to ask for.
     Remaining,
+    /// For a large block's page: what the scan gets through in the round's
+    /// time for blocks.
+    Cpu,
 }
 
-/// How many blocks a request asks for, and why that many.
+/// How many blocks a request asks for, and why that many. For a large
+/// block's page, `blocks` counts its transactions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkPlan {
     pub blocks: u64,
@@ -66,8 +71,22 @@ pub enum Trend {
 pub struct BlockInProgress {
     pub height: u64,
     pub started_unix: i64,
-    /// Its size on the wire, once fetched.
+    /// Its size on the wire, once fetched (for a large block, its weight).
     pub wire_bytes: Option<u64>,
+    /// For a large block scanned a page at a time: how far it has got.
+    #[serde(default)]
+    pub pages: Option<PageProgress>,
+}
+
+/// How far a large block's scan in pages has got
+/// (docs/engine_scaling.md section 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageProgress {
+    /// Transactions scanned for every store.
+    pub done_txs: u64,
+    pub total_txs: u64,
+    /// Transactions on the page being fetched.
+    pub page_txs: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -93,6 +112,9 @@ pub struct ScanReport {
     pub in_progress: Option<BlockInProgress>,
     pub in_progress_secs: Option<i64>,
     pub peak_cache_bytes: Option<u64>,
+    /// The time the last round was given, when known.
+    #[serde(default)]
+    pub round_budget_secs: Option<u64>,
 }
 
 /// What sets a network's scan pace right now: the one thing an admin would
@@ -179,6 +201,7 @@ mod tests {
             in_progress: None,
             in_progress_secs: None,
             peak_cache_bytes: None,
+            round_budget_secs: None,
         }
     }
 
