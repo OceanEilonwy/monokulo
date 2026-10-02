@@ -17,11 +17,10 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::Router;
-use engine::daemon::{ChainBlock, KeyImageStatus, MoneroDaemonClient, TxLocation};
+use engine::daemon::{ChainBlock, KeyImageStatus, MoneroDaemonClient, ScanTx, TxLocation};
 use engine::daemon_rpc::RpcDaemonClient;
 use monero::consensus::serialize;
 use monero::cryptonote::hash::Hashable;
-use monero::TxIn;
 use serde::{Deserialize, Serialize};
 
 const FIXTURE: &str = concat!(
@@ -119,17 +118,6 @@ fn replay_client(port: u16) -> RpcDaemonClient {
         )
 }
 
-fn key_images(tx: &monero::Transaction) -> Vec<String> {
-    tx.prefix
-        .inputs
-        .iter()
-        .filter_map(|input| match input {
-            TxIn::ToKey { k_image, .. } => Some(hex::encode(serialize(k_image))),
-            _ => None,
-        })
-        .collect()
-}
-
 /// The transactions `txids`, whole, asked of the node at `node` with a
 /// request of the test's own (the client only ever asks for them pruned):
 /// what the client's pruned ones are held against.
@@ -183,18 +171,17 @@ async fn exercise(client: &RpcDaemonClient, node: &str) {
         }
         let whole = whole_transactions(node, &block.txids).await;
         assert_eq!(block.txs.len(), whole.len(), "block {height}");
-        for ((pruned, txid), whole) in block.txs.iter().zip(&block.txids).zip(&whole) {
+        // What the scan keeps of each is what the whole transaction says.
+        for ((kept, txid), whole) in block.txs.iter().zip(&block.txids).zip(&whole) {
             assert_eq!(
                 *txid,
                 hex::encode(whole.hash().to_bytes()),
                 "block {height}"
             );
-            assert!(shared::monero_tx::is_pruned(pruned), "block {height}");
-            assert_eq!(pruned.prefix, whole.prefix);
-            assert_eq!(pruned.rct_signatures.sig, whole.rct_signatures.sig);
-            pruned_bytes += serialize(pruned).len();
+            assert_eq!(*kept, ScanTx::of(whole), "block {height}");
             whole_bytes += serialize(whole).len();
         }
+        pruned_bytes += block.wire_bytes as usize;
     }
     assert!(
         pruned_bytes * 3 < whole_bytes,
@@ -207,6 +194,7 @@ async fn exercise(client: &RpcDaemonClient, node: &str) {
         .position(|txid| txid == KNOWN_TX)
         .map(|index| &known_block.txs[index])
         .expect("known transaction in its block");
+    let known_prefix = known.input.prefix();
 
     // Headers alone say the same about each block as the blocks do.
     let headers = client.get_chain_headers(START, COUNT).await.unwrap();
@@ -241,16 +229,16 @@ async fn exercise(client: &RpcDaemonClient, node: &str) {
     assert_eq!(location, TxLocation::InBlock(KNOWN_TX_HEIGHT));
     assert_eq!(found.txid, KNOWN_TX);
     assert!(shared::monero_tx::is_pruned(&found.tx));
-    assert_eq!(found.tx.prefix, known.prefix);
+    assert_eq!(ScanTx::of(&found.tx), *known);
     assert!(client.find_transaction(ABSENT_TX).await.unwrap().is_none());
     // Fetched by id: the one the node has, pruned; the other left out.
     let fetched = client.get_transactions_with_ids(&both).await.unwrap();
     assert_eq!(fetched.len(), 1);
     assert_eq!(fetched[0].txid, KNOWN_TX);
-    assert_eq!(fetched[0].tx.prefix, known.prefix);
+    assert_eq!(ScanTx::of(&fetched[0].tx).input.prefix(), known_prefix);
 
     // Its inputs' key images are spent on chain; a made-up one is not.
-    let mut images = key_images(known);
+    let mut images: Vec<String> = known.key_images.iter().map(hex::encode).collect();
     assert!(!images.is_empty());
     images.push(UNSPENT_KEY_IMAGE.to_string());
     let statuses = client.is_key_image_spent(&images).await.unwrap();

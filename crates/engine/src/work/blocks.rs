@@ -670,7 +670,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     }
 
     let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &block);
-    let inputs: Vec<ScanInput> = block.txs.iter().map(ScanInput::of).collect();
+    let inputs: Vec<ScanInput> = block.txs.iter().map(|tx| tx.input.clone()).collect();
     let mut progressed = !must_progress;
     // Each transaction is recorded under the id it came with.
     if block.txids.len() != block.txs.len() {
@@ -982,14 +982,10 @@ impl BlockCache {
         if chunk.is_empty() {
             return None;
         }
+        // As the blocks came from the node: what requests are sized by.
         let sizes: Vec<usize> = chunk
             .iter()
-            .map(|b| {
-                b.txs
-                    .iter()
-                    .map(|tx| monero::consensus::encode::serialize(tx).len())
-                    .sum()
-            })
+            .map(|b| usize::try_from(b.wire_bytes).unwrap_or(usize::MAX))
             .collect();
         state.note_fetched(sizes.iter().sum(), chunk.len());
         let mut kept = None;
@@ -1079,6 +1075,7 @@ async fn header_block(
         timestamp: header.timestamp,
         txs: Vec::new(),
         txids: Vec::new(),
+        wire_bytes: 0,
     }))
 }
 
@@ -1095,6 +1092,7 @@ mod tests {
             timestamp: 0,
             txs: vec![],
             txids: Vec::new(),
+            wire_bytes: 0,
         }
     }
 
