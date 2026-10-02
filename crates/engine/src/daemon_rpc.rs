@@ -41,6 +41,9 @@ pub struct RpcDaemonClient {
     /// treated as failing rather than being allowed to exhaust memory.
     max_response_bytes: usize,
     stats: parking_lot::Mutex<HashMap<String, EndpointStats>>,
+    /// What has been measured of this node's link: what sizes and times
+    /// block requests (docs/engine_scaling.md sections 1 and 2).
+    link: crate::link::Link,
     /// The mempool as this node last described it. An async lock: one poll
     /// at a time, held across its round trip, so two loops polling at once
     /// can't apply the same changes out of order.
@@ -62,6 +65,26 @@ pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 /// How long one request to a node may take.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// A `reqwest` failure as a [`DaemonError`]: a timeout says so, since a
+/// smaller request may succeed where this one ran out of time.
+fn request_error(context: &str, e: &reqwest::Error) -> DaemonError {
+    if e.is_timeout() {
+        DaemonError::TimedOut(format!("{context}: {e}"))
+    } else {
+        DaemonError::Request(format!("{context}: {e}"))
+    }
+}
+
+/// Bodies at most this size count as round-trip samples.
+const SMALL_RESPONSE_BYTES: usize = 16 * 1024;
+
+/// How one request's time divided: until its first byte, and from there to
+/// its last.
+struct Timing {
+    to_first_byte: Duration,
+    transfer: Duration,
+}
+
 /// Reads a response body, refusing one larger than `cap` bytes, whether or
 /// not it declared its length.
 async fn read_capped(
@@ -73,7 +96,7 @@ async fn read_capped(
         .content_length()
         .is_some_and(|len| len > cap as u64)
     {
-        return Err(DaemonError::Request(format!(
+        return Err(DaemonError::TooLarge(format!(
             "response from {what} is larger than the {cap}-byte limit"
         )));
     }
@@ -81,10 +104,10 @@ async fn read_capped(
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| DaemonError::Request(format!("reading response from {what}: {e}")))?
+        .map_err(|e| request_error(&format!("reading response from {what}"), &e))?
     {
         if body.len() + chunk.len() > cap {
-            return Err(DaemonError::Request(format!(
+            return Err(DaemonError::TooLarge(format!(
                 "response from {what} is larger than the {cap}-byte limit"
             )));
         }
@@ -134,6 +157,7 @@ impl RpcDaemonClient {
             base_url,
             max_response_bytes: MAX_RESPONSE_BYTES,
             stats: Default::default(),
+            link: Default::default(),
             pool: Default::default(),
             pool_reuse: POOL_REUSE,
             pool_resync: POOL_RESYNC_INTERVAL,
@@ -171,7 +195,8 @@ impl RpcDaemonClient {
     }
 
     /// Sends one request body to `path` and reads the (capped) response,
-    /// counting both under `endpoint`.
+    /// counting both under `endpoint`. A small answer is a round-trip
+    /// sample for the link.
     async fn post(
         &self,
         endpoint: &str,
@@ -179,6 +204,47 @@ impl RpcDaemonClient {
         body: Vec<u8>,
         json: bool,
     ) -> Result<Vec<u8>, DaemonError> {
+        let started = Instant::now();
+        let bytes = self
+            .post_timed(endpoint, path, body, json, REQUEST_TIMEOUT)
+            .await?
+            .0;
+        if bytes.len() <= SMALL_RESPONSE_BYTES {
+            self.link.record_small(started.elapsed());
+        }
+        Ok(bytes)
+    }
+
+    /// [`Self::post`] within `timeout`, saying how the time divided. A
+    /// timeout and any other failure are noted against the link.
+    async fn post_timed(
+        &self,
+        endpoint: &str,
+        path: &str,
+        body: Vec<u8>,
+        json: bool,
+        timeout: Duration,
+    ) -> Result<(Vec<u8>, Timing), DaemonError> {
+        let result = self
+            .post_timed_inner(endpoint, path, body, json, timeout)
+            .await;
+        match &result {
+            Err(DaemonError::TimedOut(_)) => self.link.record_timeout(),
+            Err(_) => self.link.record_failure(),
+            Ok(_) => {}
+        }
+        result
+    }
+
+    async fn post_timed_inner(
+        &self,
+        endpoint: &str,
+        path: &str,
+        body: Vec<u8>,
+        json: bool,
+        timeout: Duration,
+    ) -> Result<(Vec<u8>, Timing), DaemonError> {
+        let started = Instant::now();
         let sent = body.len() as u64;
         {
             let mut stats = self.stats.lock();
@@ -191,7 +257,10 @@ impl RpcDaemonClient {
             entry.requests += 1;
             entry.bytes_sent += sent;
         }
-        let mut request = self.client.post(format!("{}{path}", self.base_url));
+        let mut request = self
+            .client
+            .post(format!("{}{path}", self.base_url))
+            .timeout(timeout);
         if json {
             request = request.header(reqwest::header::CONTENT_TYPE, "application/json");
         }
@@ -199,12 +268,17 @@ impl RpcDaemonClient {
             .body(body)
             .send()
             .await
-            .map_err(|e| DaemonError::Request(e.to_string()))?;
+            .map_err(|e| request_error(&format!("{endpoint} after {timeout:?}"), &e))?;
+        let first_byte = Instant::now();
         let bytes = read_capped(response, self.max_response_bytes, endpoint).await?;
         if let Some(entry) = self.stats.lock().get_mut(endpoint) {
             entry.bytes_received += bytes.len() as u64;
         }
-        Ok(bytes)
+        let timing = Timing {
+            to_first_byte: first_byte.duration_since(started),
+            transfer: first_byte.elapsed(),
+        };
+        Ok((bytes, timing))
     }
 
     /// Lowers the response size cap, for tests.
@@ -281,18 +355,6 @@ impl RpcDaemonClient {
         })
     }
 
-    /// Posts a raw (non-JSON) body to one of monerod's binary `.bin` endpoints and
-    /// returns the raw response bytes, unparsed - the epee wire format
-    /// (`get_blocks.bin`'s own request/response, below) has nothing to do with
-    /// `post_json_rpc`/`post_plain`'s JSON envelopes. Relies on the same
-    /// `reqwest::Client` (and its 15s timeout, set once in `new`) every other
-    /// call on this client already does, and the same `max_response_bytes`
-    /// cap: a timeout alone doesn't bound size, since a fast node can send a
-    /// lot in 15s.
-    async fn post_bin(&self, path: &str, body: Vec<u8>) -> Result<Vec<u8>, DaemonError> {
-        self.post(path, path, body, false).await
-    }
-
     /// `/get_transactions` for `hashes`, pruned: each one's prefix and
     /// RingCT base (what a scan reads) with the hash of the rest.
     async fn request_transactions(
@@ -312,8 +374,24 @@ impl RpcDaemonClient {
         max_block_count: u64,
     ) -> Result<Vec<BinBlock>, DaemonError> {
         let request = get_blocks_bin_request(start_height, max_block_count);
-        let response = self.post_bin("/get_blocks.bin", request).await?;
-        parse_get_blocks_bin_response(&response)
+        let timeout = self.link.timeout_for_blocks(max_block_count);
+        let (response, timing) = self
+            .post_timed(
+                "/get_blocks.bin",
+                "/get_blocks.bin",
+                request,
+                false,
+                timeout,
+            )
+            .await?;
+        let blocks = parse_get_blocks_bin_response(&response)?;
+        self.link.record_blocks(
+            blocks.len() as u64,
+            response.len(),
+            timing.to_first_byte,
+            timing.transfer,
+        );
+        Ok(blocks)
     }
 
     /// One header by height (`get_block_header_by_height`): about a
@@ -1338,6 +1416,18 @@ impl RpcDaemonClient {
 impl MoneroDaemonClient for RpcDaemonClient {
     fn rpc_stats(&self) -> Vec<EndpointStats> {
         self.stats()
+    }
+
+    fn link(&self) -> Option<crate::link::LinkSnapshot> {
+        Some(self.link.snapshot())
+    }
+
+    fn transfer_rate(&self) -> Option<f64> {
+        Some(self.link.rate_bytes_per_sec())
+    }
+
+    fn chain_blocks_timeout(&self, count: u64) -> Duration {
+        self.link.timeout_for_blocks(count)
     }
 
     async fn get_height(&self) -> Result<u64, DaemonError> {
@@ -2762,6 +2852,67 @@ mod wire_tests {
         assert!(client.find_transaction(B).await.unwrap().is_none());
     }
 
+    /// A small answer measures the link's round trip
+    /// (docs/engine_scaling.md section 1): the link is measured from then on.
+    #[tokio::test]
+    async fn a_small_answer_measures_the_round_trip() {
+        let (client, node) = scripted().await;
+        let before = client.link().unwrap();
+        assert!(!before.measured);
+        assert_eq!(before.rtt_ms, 1000, "the starting guess");
+        node.answer("/get_height", height_answer(101, B));
+        client.get_tip().await.unwrap();
+        let after = client.link().unwrap();
+        assert!(after.measured);
+        assert!(after.rtt_ms < 1000, "a local answer: {after:?}");
+        assert!(after.last_measured_unix.is_some());
+    }
+
+    /// A request that runs out of time is a timeout, not any failure: the
+    /// scan asks for less next time, and the link's rate estimate halves.
+    #[tokio::test]
+    async fn a_request_that_runs_out_of_time_says_so_and_slows_the_estimate() {
+        let app = axum::Router::new().fallback(|| async {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            "too late"
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap();
+
+        let err = client
+            .post_timed(
+                "/get_blocks.bin",
+                "/get_blocks.bin",
+                Vec::new(),
+                false,
+                Duration::from_millis(200),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(err, DaemonError::TimedOut(_)), "{err:?}");
+        assert!(err.asks_for_less());
+        let link = client.link().unwrap();
+        assert_eq!(link.timeouts_last_hour, 1);
+        assert_eq!(
+            link.rate_bytes_per_sec,
+            (crate::link::COLD_RATE_BYTES_PER_SEC / 2.0) as u64
+        );
+    }
+
+    /// An answer over the cap asks for less too.
+    #[tokio::test]
+    async fn an_answer_over_the_cap_asks_for_less() {
+        let (client, node) = scripted().await;
+        let client = client.with_max_response_bytes(10);
+        node.answer("/get_height", height_answer(101, B));
+        let err = client.get_height().await.unwrap_err();
+        assert!(matches!(err, DaemonError::TooLarge(_)), "{err:?}");
+        assert!(err.asks_for_less());
+    }
+
     /// The tip's id comes with its height, unless it isn't an id.
     #[tokio::test]
     async fn the_tip_comes_with_its_id_when_the_node_gives_one() {
@@ -3117,7 +3268,10 @@ mod live_node_tests {
             ("start_height", EpeeField::U64(start)),
             ("max_block_count", EpeeField::U64(count)),
         ]);
-        let response = c.post_bin("/get_blocks.bin", request).await.unwrap();
+        let response = c
+            .post("/get_blocks.bin", "/get_blocks.bin", request, false)
+            .await
+            .unwrap();
         parse_get_blocks_bin_response(&response)
             .unwrap()
             .iter()

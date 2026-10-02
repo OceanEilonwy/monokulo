@@ -28,6 +28,21 @@ pub enum TxLocation {
 pub enum DaemonError {
     #[error("daemon request failed: {0}")]
     Request(String),
+    /// The node didn't answer in time: the link may be slower than
+    /// estimated, so a smaller request may well succeed.
+    #[error("daemon request timed out: {0}")]
+    TimedOut(String),
+    /// The answer was larger than the cap: a smaller request may succeed.
+    #[error("daemon response too large: {0}")]
+    TooLarge(String),
+}
+
+impl DaemonError {
+    /// Whether asking for less might succeed where this failed: a timeout
+    /// or an answer over the size cap (docs/engine_scaling.md section 2).
+    pub fn asks_for_less(&self) -> bool {
+        matches!(self, DaemonError::TimedOut(_) | DaemonError::TooLarge(_))
+    }
 }
 
 /// What a node says about itself (monerod's `get_info`). Only the network
@@ -149,6 +164,25 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// seen rather than estimated. Nothing for a client that doesn't count.
     fn rpc_stats(&self) -> Vec<EndpointStats> {
         Vec::new()
+    }
+
+    /// What this client has measured of its node's link
+    /// (docs/engine_scaling.md section 1), if it measures one.
+    fn link(&self) -> Option<crate::link::LinkSnapshot> {
+        None
+    }
+
+    /// The node's measured transfer rate in bytes a second, for sizing
+    /// requests; `None` when this client doesn't measure.
+    fn transfer_rate(&self) -> Option<f64> {
+        None
+    }
+
+    /// How long [`Self::get_chain_blocks`] asking for `count` blocks may
+    /// take: what the link's measurements say it needs, with room to spare.
+    /// A client that doesn't measure gets the fixed floor.
+    fn chain_blocks_timeout(&self, _count: u64) -> std::time::Duration {
+        crate::link::MIN_TIMEOUT
     }
 
     async fn get_height(&self) -> Result<u64, DaemonError>;
