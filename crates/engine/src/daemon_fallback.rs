@@ -324,8 +324,8 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
         self.inner.nodes.get(self.idx)?.client.link()
     }
 
-    fn transfer_rate(&self) -> Option<f64> {
-        self.inner.nodes.get(self.idx)?.client.transfer_rate()
+    fn link_cost(&self) -> Option<crate::link::LinkCost> {
+        self.inner.nodes.get(self.idx)?.client.link_cost()
     }
 
     /// The pinned node's own timeout, with a moment over it so the node's
@@ -469,9 +469,9 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         self.nodes[first].client.link()
     }
 
-    fn transfer_rate(&self) -> Option<f64> {
+    fn link_cost(&self) -> Option<crate::link::LinkCost> {
         let first = *self.attempt_order().first()?;
-        self.nodes[first].client.transfer_rate()
+        self.nodes[first].client.link_cost()
     }
 
     /// Room for the first two nodes in order to try, each with what its own

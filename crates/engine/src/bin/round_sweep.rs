@@ -98,8 +98,12 @@ impl SweepDaemon {
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for SweepDaemon {
-    fn transfer_rate(&self) -> Option<f64> {
-        self.link.rate
+    fn link_cost(&self) -> Option<engine::link::LinkCost> {
+        self.link.rate.map(|rate| engine::link::LinkCost {
+            rtt_secs: self.link.rtt.as_secs_f64(),
+            ttfb_per_block_secs: self.link.ttfb_per_block.as_secs_f64(),
+            rate_bytes_per_sec: rate,
+        })
     }
     fn chain_blocks_timeout(&self, count: u64) -> Duration {
         engine::link::timeout_for(self.link.blocks(count, count * self.block_bytes))

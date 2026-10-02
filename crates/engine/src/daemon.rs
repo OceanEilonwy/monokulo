@@ -245,9 +245,10 @@ pub trait MoneroDaemonClient: Send + Sync {
         None
     }
 
-    /// The node's measured transfer rate in bytes a second, for sizing
-    /// requests; `None` when this client doesn't measure.
-    fn transfer_rate(&self) -> Option<f64> {
+    /// What a request to the node costs, as measured (round trip, the
+    /// node's own work per block, transfer rate), for sizing requests;
+    /// `None` when this client doesn't measure.
+    fn link_cost(&self) -> Option<crate::link::LinkCost> {
         None
     }
 

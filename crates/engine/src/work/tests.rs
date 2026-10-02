@@ -2090,7 +2090,9 @@ impl MoneroDaemonClient for TimesOutItself {
     async fn get_height(&self) -> Result<u64, DaemonError> {
         tokio::time::sleep(Duration::from_millis(1)).await;
         tokio::time::sleep(crate::daemon_rpc::REQUEST_TIMEOUT).await;
-        Err(DaemonError::TimedOut("node.example: request timed out".into()))
+        Err(DaemonError::TimedOut(
+            "node.example: request timed out".into(),
+        ))
     }
     async fn get_block_hash(&self, _: u64) -> Result<String, DaemonError> {
         unreachable!()
@@ -2137,7 +2139,10 @@ async fn a_hung_node_times_out_by_its_own_clock_and_cools_down() {
         matches!(result, Err(ScannerError::Daemon(DaemonError::TimedOut(ref m))) if m.contains("node.example")),
         "{result:?}"
     );
-    assert!(client.in_cooldown(0), "the failure was recorded against the node");
+    assert!(
+        client.in_cooldown(0),
+        "the failure was recorded against the node"
+    );
 }
 
 /// A tier's share follows the round it is a share of: the base round's at

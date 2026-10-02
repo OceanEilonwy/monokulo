@@ -86,11 +86,16 @@ timeout  = clamp(3 × expected, 15 s, 10 min)
 
   ```
   by_memory = response_cap ÷ avg_block_bytes
-  by_time   = rate × target_call ÷ avg_block_bytes   (target_call ≈ 4 s)
+  by_time   = (target_call − RTT) ÷ (TTFB_per_block + avg_block_bytes ÷ rate)
   chunk     = clamp(min(by_memory, by_time), 1, 500)
   ```
 
-  `response_cap` is defined in section 3 (an eighth of the budget).
+  `response_cap` is defined in section 3 (an eighth of the budget), and
+  divided between catch-up groups (see "As built"). `by_time` counts the
+  same terms as `expected` above (`link::LinkCost`), so a chunk sized to
+  `target_call` is expected to take `target_call`. (As first built, it
+  counted the bytes alone, so a "4 s" request took 4 s plus its round
+  trip and the node's work for every block.)
 - **Why the time limit is in seconds.** The scheduler shares out a round's
   seconds, not bytes. Each tier has a share of the 10 s round, and a tier
   always runs at least one unit, which can't stop part-way through a node

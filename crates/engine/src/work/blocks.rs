@@ -190,12 +190,9 @@ impl BlockState {
             self.progress.lock().round_budget = base;
             return base;
         };
-        let link = daemon.link();
-        let fetch = link.as_ref().map_or(0.0, |link| {
-            (link.rtt_ms + link.ttfb_per_block_ms) as f64 / 1000.0
-        }) + daemon
-            .transfer_rate()
-            .map_or(0.0, |rate| avg_tx_bytes / rate.max(1.0));
+        let fetch = daemon
+            .link_cost()
+            .map_or(0.0, |link| link.secs(1, avg_tx_bytes));
         let scan = self.progress.lock().secs_per_tx_scan().unwrap_or(0.0) * stores.max(1) as f64;
         let budget = round_budget_for(fetch + scan);
         self.progress.lock().round_budget = budget;
@@ -210,7 +207,7 @@ impl BlockState {
                 round.inputs.scan_chunk_memory_budget_mb,
                 round.blocks.groups.unwrap_or(1),
             ),
-            round.inputs.daemon.transfer_rate(),
+            round.inputs.daemon.link_cost(),
             progress.avg_bytes_per_block,
             end.saturating_sub(from) + 1,
         );
@@ -245,14 +242,14 @@ impl BlockState {
     }
 
     /// Fetched blocks of `sizes` bytes: one within a quarter of the size
-    /// that is paged (under a `response_cap` and a link of `rate`) means
-    /// blocks may grow past it, so headers are read first for a while.
-    fn note_sizes(&self, sizes: &[usize], response_cap: u64, rate: Option<f64>) {
+    /// that is paged (under a `response_cap` and over `link`) means blocks
+    /// may grow past it, so headers are read first for a while.
+    fn note_sizes(&self, sizes: &[usize], response_cap: u64, link: Option<crate::link::LinkCost>) {
         let near = sizes.iter().any(|size| {
             crate::scanner::scan_in_pages(
                 Some((*size as u64).saturating_mul(4)),
                 response_cap,
-                rate,
+                link,
             )
         });
         if near {
@@ -805,7 +802,7 @@ async fn advance_group(
                     chunk,
                     cursor + 2,
                     round.inputs.scan_chunk_memory_budget_mb,
-                    daemon.transfer_rate(),
+                    daemon.link_cost(),
                     &state.blocks,
                 );
             }
@@ -1349,7 +1346,7 @@ impl BlockCache {
         chunk: Vec<ChainBlock>,
         keep: u64,
         budget_mb: u32,
-        rate: Option<f64>,
+        link: Option<crate::link::LinkCost>,
         state: &BlockState,
     ) {
         if chunk.is_empty() {
@@ -1361,7 +1358,7 @@ impl BlockCache {
             .map(|b| usize::try_from(b.wire_bytes).unwrap_or(usize::MAX))
             .collect();
         state.note_fetched(sizes.iter().sum(), chunk.len());
-        state.note_sizes(&sizes, crate::scanner::response_cap_bytes(budget_mb), rate);
+        state.note_sizes(&sizes, crate::scanner::response_cap_bytes(budget_mb), link);
         for (block, bytes) in chunk.into_iter().zip(sizes) {
             self.insert(block, bytes);
         }
@@ -1531,7 +1528,7 @@ fn page_plan(
         .map(|secs| secs * stores.max(1) as f64);
     let plan = crate::scanner::next_page(
         crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
-        round.inputs.daemon.transfer_rate(),
+        round.inputs.daemon.link_cost(),
         avg_tx_bytes,
         scan_secs,
         super::Tier::Blocks.reserved_secs(),
@@ -1589,7 +1586,7 @@ fn in_pages(round: &Round<'_>, header: &ChainHeader) -> bool {
     crate::scanner::scan_in_pages(
         header.weight,
         crate::scanner::response_cap_bytes(round.inputs.scan_chunk_memory_budget_mb),
-        round.inputs.daemon.transfer_rate(),
+        round.inputs.daemon.link_cost(),
     )
 }
 
@@ -1750,7 +1747,7 @@ async fn block(
         chunk,
         height,
         round.inputs.scan_chunk_memory_budget_mb,
-        round.inputs.daemon.transfer_rate(),
+        round.inputs.daemon.link_cost(),
         &state.blocks,
     );
     round.blocks.cache.read(height).ok_or_else(|| {

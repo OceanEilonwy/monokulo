@@ -1492,8 +1492,8 @@ impl MoneroDaemonClient for RpcDaemonClient {
         Some(self.link.snapshot())
     }
 
-    fn transfer_rate(&self) -> Option<f64> {
-        Some(self.link.rate_bytes_per_sec())
+    fn link_cost(&self) -> Option<crate::link::LinkCost> {
+        Some(self.link.cost())
     }
 
     fn chain_blocks_timeout(&self, count: u64) -> Duration {

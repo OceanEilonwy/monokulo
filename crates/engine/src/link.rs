@@ -46,6 +46,47 @@ pub const MAX_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Minutes of history kept, for the admin page's charts.
 const HISTORY_MINUTES: usize = 60;
 
+/// What one request over a link costs, as the link has measured it (or
+/// guessed, before any measurement): a fixed round trip, the node's own
+/// work for each block asked for, and the time each byte takes. Requests
+/// are sized and timed from the same figures, so a request sized to a time
+/// is given a timeout for that time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinkCost {
+    pub rtt_secs: f64,
+    pub ttfb_per_block_secs: f64,
+    pub rate_bytes_per_sec: f64,
+}
+
+impl LinkCost {
+    /// A link that costs only its bytes: no round trip, no work per block.
+    #[cfg(test)]
+    pub(crate) fn transfer_only(rate_bytes_per_sec: f64) -> Self {
+        LinkCost {
+            rtt_secs: 0.0,
+            ttfb_per_block_secs: 0.0,
+            rate_bytes_per_sec,
+        }
+    }
+
+    fn secs_per_byte(&self) -> f64 {
+        1.0 / self.rate_bytes_per_sec.max(MIN_RATE_BYTES_PER_SEC)
+    }
+
+    /// Seconds a request for `blocks` blocks, `bytes` bytes in all, takes.
+    pub fn secs(&self, blocks: u64, bytes: f64) -> f64 {
+        self.rtt_secs + blocks as f64 * self.ttfb_per_block_secs + bytes * self.secs_per_byte()
+    }
+
+    /// How many items one request carries within `secs`, its round trip
+    /// included, when each is `item_bytes` long and costs the node
+    /// `item_node_secs` of its own work: whole items, never negative.
+    pub fn items_within(&self, secs: f64, item_bytes: f64, item_node_secs: f64) -> f64 {
+        let per_item = (item_node_secs + item_bytes * self.secs_per_byte()).max(f64::MIN_POSITIVE);
+        ((secs - self.rtt_secs).max(0.0) / per_item).floor()
+    }
+}
+
 /// `expected`, with room to spare, within [`MIN_TIMEOUT`] and [`MAX_TIMEOUT`].
 pub fn timeout_for(expected: Duration) -> Duration {
     expected.mul_f64(SAFETY).clamp(MIN_TIMEOUT, MAX_TIMEOUT)
@@ -185,20 +226,23 @@ impl Link {
             .in_minute(shared::time::now_unix(), |minute| minute.failures += 1);
     }
 
-    pub fn rate_bytes_per_sec(&self) -> f64 {
-        self.state.lock().rate_bytes_per_sec
-    }
-
     pub fn bytes_per_block(&self) -> f64 {
         self.state.lock().bytes_per_block
     }
 
+    /// What a request over this link costs, as measured so far.
+    pub fn cost(&self) -> LinkCost {
+        let state = self.state.lock();
+        LinkCost {
+            rtt_secs: state.rtt_secs,
+            ttfb_per_block_secs: state.ttfb_per_block_secs,
+            rate_bytes_per_sec: state.rate_bytes_per_sec,
+        }
+    }
+
     /// How long `blocks` blocks of `bytes_per_block` each should take.
     pub fn expected_for_blocks(&self, blocks: u64, bytes_per_block: f64) -> Duration {
-        let state = self.state.lock();
-        let secs = state.rtt_secs
-            + blocks as f64 * state.ttfb_per_block_secs
-            + blocks as f64 * bytes_per_block / state.rate_bytes_per_sec;
+        let secs = self.cost().secs(blocks, blocks as f64 * bytes_per_block);
         Duration::from_secs_f64(secs.max(0.0))
     }
 
@@ -343,7 +387,7 @@ mod tests {
             Duration::from_secs(5),
             T0,
         );
-        assert!(link.rate_bytes_per_sec() > 4_000_000.0);
+        assert!(link.cost().rate_bytes_per_sec > 4_000_000.0);
     }
 
     #[test]
@@ -357,7 +401,7 @@ mod tests {
             link.record_timeout_at(T0);
         }
         assert_eq!(
-            link.rate_bytes_per_sec(),
+            link.cost().rate_bytes_per_sec,
             MIN_RATE_BYTES_PER_SEC,
             "it has a floor"
         );
