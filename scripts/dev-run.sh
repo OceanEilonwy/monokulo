@@ -18,36 +18,29 @@
 # always takes effect.
 #
 # WHERE STATE LIVES: everything this script creates lives under
-# .dev-run/ at the repo root (gitignored) - PID files, logs, the
-# engine's own real SQLite database (settings, tenant, everything - there
-# is no config file any more, see below), the monokulo's own real SQLite
-# database, and two locally-generated secrets (MONOKULO_ENCRYPTION_KEY and
-# the engine token). Nothing here is checked in, and
-# nothing here is a real credential worth protecting beyond your own
-# machine - this is a local dev stack against a real *stagenet* wallet
+# .dev-run/ at the repo root (gitignored) - PID files, logs, each process's
+# options file and SQLite database, and two locally-generated secrets
+# (MONOKULO_ENCRYPTION_KEY and the engine token). Nothing here is checked
+# in, and nothing here is a real credential worth protecting beyond your
+# own machine - this is a local dev stack against a real *stagenet* wallet
 # (worthless XMR only), the same wallet e2e/moneropay-stagenet.toml
 # already uses for the repo's own real end-to-end test.
 #
-# NO CONFIG FILE ANY MORE. The engine used to be started with
-# `--config moneropay.toml`; that flag (and the whole TOML config format)
-# is gone - every setting now lives in the engine's own `settings` table,
-# readable/editable at runtime over its instance-admin HTTP API
-# (`GET`/`POST /api/v1/admin/settings`) rather than only at boot from a
-# file. This script provisions the same dev-friendly values the old TOML
-# had (the same stagenet node, the same fast-iteration payment thresholds)
-# by POSTing them to that API right after the engine's first boot - see
-# ensure_engine_settings() below - and mints/reuses the engine token
-# (ENGINE_TOKEN_FILE), the same "generate once, persist, reuse"
-# treatment this script already gives MONOKULO_ENCRYPTION_KEY. The engine
-# answers no request without it (sent as X-Engine-Token), and neither
-# process starts without it: the engine gets it as ENGINE_TOKEN and
-# monokulo as MONOKULO_ENGINE_TOKEN.
+# SETTINGS. Each process reads its options file, passed with --options:
+# .dev-run/engine/engine.toml and .dev-run/monokulo/monokulo.toml. This
+# script writes each one the first time, with the dev values (the stagenet
+# node, fast-iteration payment thresholds, the plain key custody backend,
+# where each listens and keeps its database), and never again: after that
+# they are yours, edited by hand or on the admin settings page. Delete one
+# to get the dev values back. The secrets are never in them: the engine
+# token goes to the engine as ENGINE_TOKEN and to monokulo as
+# MONOKULO_ENGINE_TOKEN (the engine answers no request without it, and
+# neither process starts without it), the encryption key as
+# MONOKULO_ENCRYPTION_KEY.
 #
-# ENGINE_URL is fixed at 127.0.0.1:8080 here, set on both sides: the engine's
-# ENGINE_SERVER_BIND and monokulo's MONOKULO_ENGINE_URL below. (Left to
-# their defaults, both sides agree on 127.0.0.1:8443 instead; both are
-# real, database-backed settings.) Pinning both keeps this script's pairing
-# correct out of the box without configuring anything in the browser.
+# The engine listens on 127.0.0.1:8080 here, and monokulo's engine.url
+# says so. (Left to their defaults, both sides agree on 127.0.0.1:8443
+# instead.)
 #
 # monokulo's own admin account no longer needs seeding by this script at
 # all: opening http://127.0.0.1:8081 for the first time now redirects
@@ -64,7 +57,8 @@ CP_DIR="$RUN_DIR/monokulo"
 ENGINE_BIN="$REPO_ROOT/target/debug/monokulo-engine"
 CP_BIN="$REPO_ROOT/target/debug/monokulo"
 
-ENGINE_DB="$ENGINE_DIR/engine.db"
+ENGINE_OPTIONS="$ENGINE_DIR/engine.toml"
+CP_OPTIONS="$CP_DIR/monokulo.toml"
 ENGINE_TOKEN_FILE="$ENGINE_DIR/engine_token.txt"
 CP_KEY_FILE="$CP_DIR/encryption_key.txt"
 
@@ -76,21 +70,6 @@ CP_LOG="$RUN_DIR/monokulo.log"
 ENGINE_URL="http://127.0.0.1:8080"
 CONTROL_PLANE_URL="http://127.0.0.1:8081"
 
-# The same real stagenet node + dev-friendly payment thresholds
-# e2e/moneropay-stagenet.toml used to provide via its own TOML sections -
-# see that file (still present, used by the real end-to-end tests) and
-# crates/engine/tests/support/mod.rs's own e2e_fixture module, which
-# extracted these exact same values into Rust constants for the same
-# reason (the TOML file is no longer parsed by the engine itself, only
-# read by humans/tests as a reference).
-STAGENET_NODE_HOST="node.monerodevs.org"
-STAGENET_NODE_PORT=38089
-STAGENET_NODE_FALLBACK_HOST="node2.monerodevs.org"
-STAGENET_NODE_FALLBACK_PORT=38089
-PAYMENT_CONFIRMATIONS_REQUIRED=0
-PAYMENT_ORDER_EXPIRY_MINUTES=30
-PAYMENT_REORG_CHECK_DEPTH=20
-PAYMENT_MEMPOOL_POLL_INTERVAL_MS=2000
 
 usage() {
     cat <<'EOF'
@@ -161,78 +140,74 @@ build() {
     (cd "$REPO_ROOT" && cargo build -p engine --bin monokulo-engine -p monokulo --bin monokulo)
 }
 
-# Provisions the same dev-friendly stagenet node + payment thresholds the
-# old TOML config gave the engine, over its own instance-admin HTTP API -
-# see this script's own header comment on why this replaces a config
-# file. Every setting applies to the running engine as soon as it's saved
-# (no restart): the stagenet node starts being scanned straight away.
-# Key custody is per store; this enables only the in-process `plain`
-# backend, the right choice for a dev stack with no key-custody-server.
-# Safe (and cheap) to re-run on every `start`: every value here is fixed,
-# so re-POSTing it just re-saves the same thing. Retries briefly since this
-# runs right after the server process is spawned - `is_running` only proves
-# the process exists, not that it's finished binding yet.
-ensure_engine_settings() {
-    local token url attempt
-    token="$(cat "$ENGINE_TOKEN_FILE")"
-    url="$ENGINE_URL/api/v1/admin/settings"
-    local body
-    body=$(cat <<EOF
-{
-  "scalars": {
-    "payment.confirmations_required": "$PAYMENT_CONFIRMATIONS_REQUIRED",
-    "payment.order_expiry_minutes": "$PAYMENT_ORDER_EXPIRY_MINUTES",
-    "payment.reorg_check_depth": "$PAYMENT_REORG_CHECK_DEPTH",
-    "payment.mempool_poll_interval_ms": "$PAYMENT_MEMPOOL_POLL_INTERVAL_MS",
-    "key_custody.enabled_backends": "plain",
-    "key_custody.default_backend": "plain"
-  },
-  "monero_node": {
-    "stagenet": {
-      "host": "$STAGENET_NODE_HOST",
-      "port": $STAGENET_NODE_PORT,
-      "ssl": false,
-      "accept_self_signed_certs": true,
-      "fallbacks": [
-        {
-          "host": "$STAGENET_NODE_FALLBACK_HOST",
-          "port": $STAGENET_NODE_FALLBACK_PORT,
-          "ssl": false,
-          "accept_self_signed_certs": true,
-          "fallbacks": []
-        }
-      ]
-    }
-  }
-}
+# Writes each process's options file with the dev values, the first time
+# only: after that it is the developer's, edited by hand or on the admin
+# settings page. The stagenet node and payment thresholds are the ones
+# e2e/moneropay-stagenet.toml and crates/engine/tests/support/mod.rs's
+# e2e_fixture use. Key custody is per store; this enables only the
+# in-process `plain` backend, the right choice for a dev stack with no
+# key-custody-server.
+ensure_options_files() {
+    if [[ ! -f "$ENGINE_OPTIONS" ]]; then
+        echo "==> writing the dev engine options file ($ENGINE_OPTIONS)"
+        cat > "$ENGINE_OPTIONS" <<EOF
+# The dev stack's engine settings, written once by scripts/dev-run.sh.
+# Edit them here or on monokulo's admin settings page; delete this file
+# to get the dev values back. \`monokulo-engine --init --options x.toml\`
+# writes a file describing every setting.
+
+[server]
+bind = "127.0.0.1:8080"
+
+[database]
+path = "$ENGINE_DIR/engine.db"
+
+[payment]
+confirmations_required = 0
+order_expiry_minutes = 30
+reorg_check_depth = 20
+mempool_poll_interval_ms = 2000
+
+[key_custody]
+enabled_backends = ["plain"]
+default_backend = "plain"
+
+[monero_node]
+stagenet = { host = "node.monerodevs.org", port = 38089, ssl = false, accept_self_signed_certs = true, fallbacks = [{ host = "node2.monerodevs.org", port = 38089, ssl = false, accept_self_signed_certs = true, fallbacks = [] }] }
 EOF
-)
-    for attempt in $(seq 1 10); do
-        if curl -sf -o /dev/null -X POST "$url" -H "X-Engine-Token: $token" -H "Content-Type: application/json" -d "$body"; then
-            echo "    engine settings provisioned (stagenet node + dev payment thresholds)"
-            return
-        fi
-        sleep 0.3
-    done
-    echo "    warning: could not reach $url to provision engine settings - is the engine actually up? (see $ENGINE_LOG)" >&2
+    fi
+    if [[ ! -f "$CP_OPTIONS" ]]; then
+        echo "==> writing the dev monokulo options file ($CP_OPTIONS)"
+        cat > "$CP_OPTIONS" <<EOF
+# The dev stack's monokulo settings, written once by scripts/dev-run.sh.
+# Edit them here or on the admin settings page; delete this file to get
+# the dev values back. \`monokulo --init --options x.toml\` writes a file
+# describing every setting.
+
+[server]
+bind = "127.0.0.1:8081"
+
+[database]
+path = "$CP_DIR/monokulo.db"
+
+[engine]
+url = "$ENGINE_URL"
+EOF
+    fi
 }
 
 # Provisions the one self-hosted tenant, from the same watch-only stagenet
 # wallet the repo's own e2e tests use - a one-time action (refuses once a
 # tenant already exists), so this only ever does real work on the very
-# first `start` against a fresh database. Deliberately called *after*
-# ensure_engine_settings, not before: `--bootstrap-wallet` bakes the
-# tenant's own confirmations_required/order_expiry_minutes
-# in from whatever this instance's *current* settings are at the moment it
-# runs (`local_admin::bootstrap_wallet`'s own doc comment) - running it
-# first would bootstrap against the engine's hardcoded defaults instead of
-# this script's dev-friendly overrides.
+# first `start` against a fresh database. It reads the same options file
+# as the engine, so the tenant starts with its confirmations_required and
+# order_expiry_minutes (`local_admin::bootstrap_wallet`'s own doc comment).
 ensure_wallet_bootstrapped() {
     local out
     # The view key goes in on standard input (printf is a shell builtin, so
     # it never shows in the process list), never as an argument.
     if out=$(printf '%s' "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e" \
-        | ENGINE_DB_PATH="$ENGINE_DB" "$ENGINE_BIN" --bootstrap-wallet \
+        | "$ENGINE_BIN" --options "$ENGINE_OPTIONS" --bootstrap-wallet \
         --primary-address "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg" \
         --view-key-file - \
         --spend-pubkey "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335" \
@@ -260,10 +235,8 @@ start_engine() {
         exit 1
     fi
     echo "==> starting engine -> $ENGINE_LOG"
-    ENGINE_DB_PATH="$ENGINE_DB" \
-    ENGINE_SERVER_BIND="127.0.0.1:8080" \
     ENGINE_TOKEN="$(cat "$ENGINE_TOKEN_FILE")" \
-        nohup "$ENGINE_BIN" > "$ENGINE_LOG" 2>&1 &
+        nohup "$ENGINE_BIN" --options "$ENGINE_OPTIONS" > "$ENGINE_LOG" 2>&1 &
     echo $! > "$ENGINE_PID_FILE"
     sleep 1
     if is_running "$ENGINE_PID_FILE"; then
@@ -273,7 +246,6 @@ start_engine() {
         rm -f "$ENGINE_PID_FILE"
         exit 1
     fi
-    ensure_engine_settings
     ensure_wallet_bootstrapped
 }
 
@@ -292,23 +264,10 @@ start_control_plane() {
         exit 1
     fi
     echo "==> starting monokulo -> $CP_LOG"
-    # Run with $CP_DIR as its working directory - monokulo's own
-    # main.rs opens its SQLite database at the relative path
-    # "monokulo.db", so this is what makes it land (and persist
-    # across restarts) under .dev-run/monokulo/ rather than
-    # wherever this script happened to be invoked from.
-    #
-    # MONOKULO_ENGINE_TOKEN/MONOKULO_ENGINE_URL are how monokulo
-    # reaches the engine, read once at start - see this script's own header
-    # comment.
-    (
-        cd "$CP_DIR"
-        MONOKULO_ENCRYPTION_KEY="$(cat "$CP_KEY_FILE")" \
-        MONOKULO_ENGINE_URL="$ENGINE_URL" \
-        MONOKULO_ENGINE_TOKEN="$(cat "$ENGINE_TOKEN_FILE")" \
-            nohup "$CP_BIN" > "$CP_LOG" 2>&1 &
-        echo $! > "$CP_PID_FILE"
-    )
+    MONOKULO_ENCRYPTION_KEY="$(cat "$CP_KEY_FILE")" \
+    MONOKULO_ENGINE_TOKEN="$(cat "$ENGINE_TOKEN_FILE")" \
+        nohup "$CP_BIN" --options "$CP_OPTIONS" > "$CP_LOG" 2>&1 &
+    echo $! > "$CP_PID_FILE"
     sleep 1
     if is_running "$CP_PID_FILE"; then
         echo "    monokulo up (pid $(cat "$CP_PID_FILE")) - $CONTROL_PLANE_URL"
@@ -354,6 +313,7 @@ cmd="${1:-}"
 case "$cmd" in
     start)
         ensure_dirs
+        ensure_options_files
         if [[ "${2:-}" != "--no-build" ]]; then
             build
         fi

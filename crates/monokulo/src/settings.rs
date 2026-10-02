@@ -78,7 +78,7 @@ settings! {
     SERVER_BIND: BindAddr {
         key: "server.bind",
         default: live_settings::parsed_default("127.0.0.1:8081"),
-        description: "The address and port monokulo listens on. Takes effect after a restart.",
+        description: "The address and port monokulo listens on.",
         example: "127.0.0.1:8081",
         applies: Restart,
     },
@@ -95,7 +95,7 @@ settings! {
     ENGINE_URL: HttpUrl {
         key: "engine.url",
         default: live_settings::parsed_default("http://127.0.0.1:8443"),
-        description: "Where monokulo reaches the engine: the engine's server.bind as a URL. Takes effect after monokulo restarts.",
+        description: "Where monokulo reaches the engine: the engine's server.bind as a URL.",
         example: "http://127.0.0.1:8443",
         applies: Restart,
     },
@@ -176,7 +176,7 @@ settings! {
         key: "database.read_connections",
         default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
         check: range(1, 64),
-        description: "Read-only connections monokulo opens to its database, each on its own thread. Reads run side by side, so more help up to the number of CPU cores; each keeps its own cache of about 2 MB. Takes effect after a restart.",
+        description: "Read-only connections monokulo opens to its database, each on its own thread. Reads run side by side, so more help up to the number of CPU cores; each keeps its own cache of about 2 MB.",
         example: "4",
         applies: Restart,
     },

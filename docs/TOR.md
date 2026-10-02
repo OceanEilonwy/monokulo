@@ -61,9 +61,12 @@ After starting, check tor accepted the settings, e.g. through the control port
 
 ## Monokulo settings
 
-- `abuse.onion_listener` (`MONOKULO_ABUSE_ONION_LISTENER`): `127.0.0.1:8082`.
-  Read at startup; restart monokulo after changing it.
-- `public_url` (`MONOKULO_PUBLIC_URL`): `http://<your address>.onion` if the
+Both on the admin settings page (or in monokulo's options file, or as the
+command-line option shown):
+
+- `abuse.onion_listener` (`--abuse-onion-listener`): `127.0.0.1:8082`.
+  Applies when saved: the listener starts, moves or stops at once.
+- `public_url` (`--public-url`): `http://<your address>.onion` if the
   onion address is the one plugins and customers should use.
 - The limits (`abuse.soft_per_min`, `abuse.hard_per_min`, `abuse.stream_cap`,
   ...) then apply per circuit. See `docs/ABUSE_PROTECTION.md`.

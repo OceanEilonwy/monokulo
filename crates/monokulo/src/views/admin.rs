@@ -806,7 +806,7 @@ fn field_status(field: &AdminScalarFieldView) -> Markup {
             span class="field-help" { "Example: " code { (example) } }
         }
         @if field.restart_only {
-            span class="setting-source" { "Applies after a restart." }
+            span class="field-help setting-source" { "Applies after a restart." }
         }
         @if field.pending_restart {
             span class="setting-pending" { "Saved - restart needed for it to take effect." }

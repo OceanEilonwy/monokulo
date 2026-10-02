@@ -20,8 +20,9 @@ Out of the box, with nothing to configure:
 
 - **stderr**, one JSON object per line when stderr isn't a terminal (what
   journald and container runtimes collect), readable text at a terminal.
-  `MONOKULO_LOG_FORMAT`, `ENGINE_LOG_FORMAT` or `KEY_CUSTODY_LOG_FORMAT`
-  (`json` or `pretty`) chooses explicitly.
+  `logging.format` (`json` or `pretty`, in the options file or as
+  `--logging-format`) chooses explicitly for monokulo and the engine, and
+  `KEY_CUSTODY_LOG_FORMAT` for the key custody server.
 - **A local log store**, `<database>.logs.db` next to each process's main
   database (`monokulo.logs.db`, `engine.logs.db`). It holds lines and spans
   for the Logs page, and keeps 14 days or 500 MB, whichever is less
@@ -45,9 +46,10 @@ Both are on the admin settings page's **Logging** tab (monokulo's and the
 engine's, each under its own heading), and apply on save without a restart.
 
 - `logging.level`: `info` by default. A `tracing` filter, so parts of a
-  process can be louder: `info,scanner::loops=debug`. The environment
-  variables `MONOKULO_LOG`, `ENGINE_LOG` and `KEY_CUSTODY_LOG` set it too and
-  win over the saved value.
+  process can be louder: `info,scanner::loops=debug`. Saved in each
+  process's options file; `--logging-level` on the command line wins over
+  it (and locks it on the page). The key custody server takes
+  `KEY_CUSTODY_LOG`.
 - `logging.dev_mode_until`: development logging, chosen as off or on for 1,
   4 or 24 hours. Until then the process logs at `debug` (chatty libraries
   stay at `info`), then goes back by itself. Redaction still applies.
@@ -135,11 +137,11 @@ merchant or customer data.
 
 ## Sending to an OpenTelemetry collector
 
-Set `logging.otlp_endpoint` (and, if the collector needs an API key,
-`logging.otlp_headers`) on the admin settings page's Logging tab, under both
-Monokulo and Engine, or with the environment variables
-`MONOKULO_LOGGING_OTLP_ENDPOINT`, `ENGINE_LOGGING_OTLP_ENDPOINT`,
-`MONOKULO_LOGGING_OTLP_HEADERS` and `ENGINE_LOGGING_OTLP_HEADERS`.
+Set `logging.otlp_endpoint` on the admin settings page's Logging tab, under
+both Monokulo and Engine (or in each options file, or as
+`--logging-otlp-endpoint`). If the collector needs an API key, give the
+headers, a secret, in the environment only: `MONOKULO_LOGGING_OTLP_HEADERS`
+and `ENGINE_LOGGING_OTLP_HEADERS`.
 
 Lines and spans are sent as OTLP over HTTP with protobuf, to
 `{endpoint}/v1/logs` and `{endpoint}/v1/traces`, in batches every two
@@ -171,10 +173,12 @@ A single container with a trace and log viewer, useful next to
 
 ```sh
 docker run --rm -it -p 18888:18888 -p 4318:18890 mcr.microsoft.com/dotnet/aspire-dashboard:latest
-export MONOKULO_LOGGING_OTLP_ENDPOINT=http://127.0.0.1:4318
-export ENGINE_LOGGING_OTLP_ENDPOINT=http://127.0.0.1:4318
-scripts/dev-run.sh
+scripts/dev-run.sh start
 ```
+
+Then set `logging.otlp_endpoint` to `http://127.0.0.1:4318` under both
+Monokulo and Engine on the admin settings page's Logging tab (or add it to
+`.dev-run/*/*.toml` under `[logging]` and press Reload options file).
 
 Open `http://localhost:18888` (the container prints a login link). Port 18890
 inside the container is its OTLP/HTTP receiver.

@@ -11,6 +11,7 @@
 const { test, expect } = require('@playwright/test');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
 const { useRealStack, fixture, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
@@ -37,7 +38,11 @@ test('killing the engine at random moments never loses a confirmed order or reus
   const url = `http://127.0.0.1:${port}`;
   const token = crypto.randomBytes(16).toString('hex');
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ENGINE_')));
-  const env = { ...inherited, ENGINE_DB_PATH: path.join(logs, 'crash.db'), ENGINE_SERVER_BIND: `127.0.0.1:${port}`, ENGINE_TOKEN: token };
+  const env = { ...inherited, ENGINE_TOKEN: token };
+  // Its own options file, which the settings saved below go to, so they
+  // hold across every restart.
+  const options = path.join(logs, 'crash.toml');
+  fs.writeFileSync(options, `[server]\nbind = "127.0.0.1:${port}"\n[database]\npath = ${JSON.stringify(path.join(logs, 'crash.db'))}\n`);
   // The engine answers nothing without the engine token, so every request
   // carries it, as monokulo's do.
   const engineFetch = (pathAndQuery, init = {}) =>
@@ -50,7 +55,7 @@ test('killing the engine at random moments never loses a confirmed order or reus
   });
   let engine = null;
   const start = async () => {
-    engine = spawn(ENGINE_BIN, [], { env, stdio: 'ignore' });
+    engine = spawn(ENGINE_BIN, ['--options', options], { env, stdio: 'ignore' });
     await expect.poll(async () => {
       try { return (await engineFetch(`/status`)).status; } catch { return 0; }
     }, { timeout: 20_000, intervals: [100] }).toBe(200);
