@@ -51,6 +51,9 @@ pub struct RpcDaemonClient {
     /// `POOL_REUSE` and `POOL_RESYNC_INTERVAL`; tests shorten them.
     pool_reuse: Duration,
     pool_resync: Duration,
+    /// Set when the node announced a pool change since the last poll
+    /// (`pool_changed`): the next poll asks, whatever `pool_reuse` says.
+    pool_stale: std::sync::atomic::AtomicBool,
     /// The tip as this node last gave it with its id. A poll of the pool
     /// that names this block learns in the same answer whether the chain
     /// still ends there (`get_tip_and_mempool`).
@@ -161,6 +164,7 @@ impl RpcDaemonClient {
             pool: Default::default(),
             pool_reuse: POOL_REUSE,
             pool_resync: POOL_RESYNC_INTERVAL,
+            pool_stale: Default::default(),
             tip: Default::default(),
         })
     }
@@ -1374,6 +1378,12 @@ impl RpcDaemonClient {
     ) -> Result<(Vec<String>, bool), DaemonError> {
         let mut pool = self.pool.lock().await;
         let now = Instant::now();
+        if self
+            .pool_stale
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            pool.polled_at = None;
+        }
         if pool.follows_changes == Some(false) && pool.retry_changes_at.is_some_and(|at| now >= at)
         {
             pool.follows_changes = None;
@@ -1502,6 +1512,11 @@ impl MoneroDaemonClient for RpcDaemonClient {
 
     fn transfer_timeout(&self, bytes: u64) -> Duration {
         crate::link::timeout_for(self.link.expected_for_blocks(1, bytes as f64))
+    }
+
+    fn pool_changed(&self) {
+        self.pool_stale
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     async fn get_height(&self) -> Result<u64, DaemonError> {
@@ -2614,6 +2629,31 @@ mod wire_tests {
         );
         assert_eq!(node.requests_to("/get_transaction_pool_hashes").len(), 1);
         assert_eq!(node.requests_to("/get_blocks.bin").len(), 1);
+    }
+
+    /// A node that announced a pool change is asked again at once, however
+    /// recent the last answer: it no longer describes the pool.
+    #[tokio::test]
+    async fn an_announced_pool_change_is_asked_about_within_the_reuse_window() {
+        let (client, node) = scripted().await;
+        let client = client.with_pool_timing(Duration::from_secs(3600), Duration::from_secs(3600));
+        node.answer(
+            "/get_blocks.bin",
+            pool_answer(POOL_INFO_FULL, 100, &[], &[B, C], &[]),
+        );
+        client.get_mempool_txids().await.unwrap();
+        client.get_mempool_txids().await.unwrap();
+        assert_eq!(node.requests_to("/get_blocks.bin").len(), 1, "reused");
+
+        client.pool_changed();
+        client.get_mempool_txids().await.unwrap();
+        assert_eq!(node.requests_to("/get_blocks.bin").len(), 2, "asked again");
+        client.get_mempool_txids().await.unwrap();
+        assert_eq!(
+            node.requests_to("/get_blocks.bin").len(),
+            2,
+            "once per announcement"
+        );
     }
 
     /// A node that answers the pool request without describing its pool

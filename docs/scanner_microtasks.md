@@ -392,9 +392,10 @@ A pool that can't be read is reported as unreadable, never as empty.
   contents can't come from a different node or fork than its hash.
 - **Polling, not ZMQ, for the pool.** A 250 ms poll (of what changed in
   the pool since the last one: `docs/node_rpc_efficiency.md`) gives
-  near-instant detection with the existing RPC client; ZMQ push would need
-  `libzmq`, a C dependency the design avoids (`docs/DESIGN.md`). It remains
-  a possible opt-in later.
+  near-instant detection with the existing RPC client. ZMQ push through
+  `libzmq` would be a C dependency the design avoids (`docs/DESIGN.md`);
+  an opt-in pure-Rust subscriber that wakes these polls early is
+  behind the `zmq` feature (`docs/monero_zmq.md`).
 - **A checkpoint is matched by block hash alone.** The hash names the
   height too.
 

@@ -436,6 +436,15 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         None
     }
 
+    /// Every node: whichever is pinned next asks afresh. (One node's
+    /// announcement says nothing certain about another's pool, but a poll
+    /// asked a moment early costs one small request.)
+    fn pool_changed(&self) {
+        for node in &self.nodes {
+            node.client.pool_changed();
+        }
+    }
+
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.failover(|c| c.get_height()).await
     }

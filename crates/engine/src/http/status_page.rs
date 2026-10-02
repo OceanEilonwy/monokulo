@@ -130,6 +130,10 @@ pub struct NetworkStatus {
     /// How the block scan is going and what limits it
     /// (docs/engine_scaling.md section 6).
     pub scaling: shared::scaling::NetworkScaling,
+    /// The nodes' ZMQ announcements (docs/monero_zmq.md); absent while no
+    /// node of this network has a `zmq_pub`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub announcements: Option<shared::announcements::Announcements>,
 }
 
 #[derive(Serialize)]
@@ -260,6 +264,7 @@ pub async fn status_page(
 
         let scan_status = state.networks.scanner_status.read().get(&network).cloned();
         let progress = scan_status.as_ref().map(|s| s.progress.lock().report(now));
+        let announcements = scan_status.as_ref().and_then(|s| s.wakes.announcements());
         let scanner = match scan_status.filter(|s| s.tick_count > 0) {
             None => ScannerStatusView {
                 ever_ticked: false,
@@ -313,6 +318,7 @@ pub async fn status_page(
             lagging_tenants,
             max_blocks_behind,
             scaling,
+            announcements,
         });
     }
 
@@ -557,6 +563,7 @@ mod tests {
                 round_base_secs: 10,
                 slow: None,
             },
+            announcements: None,
         }
     }
 

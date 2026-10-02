@@ -443,6 +443,8 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
             if network.scanner.last_error.is_some() {
                 network.scanner.last_error = Some("the last scan failed".to_string());
             }
+            // Publisher addresses and their errors, likewise.
+            network.announcements = None;
         }
     }
     // Challenge activity is for operators only; anonymous visitors and
@@ -548,6 +550,47 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
             last_error: scanner.last_error,
         },
         headers_first,
+        announcements: network
+            .announcements
+            .map(|announcements| announcements_view(announcements, now)),
+    }
+}
+
+/// A network's announcements as shown to an admin (docs/monero_zmq.md).
+fn announcements_view(
+    announcements: shared::announcements::Announcements,
+    now: i64,
+) -> views::status::AnnouncementsView {
+    let publishers = announcements
+        .publishers
+        .into_iter()
+        .map(|p| views::status::PublisherView {
+            state_display: match (p.connected, p.connected_since, p.last_error_at) {
+                (true, Some(since), _) => format!("since {}", relative_time(now, since)),
+                (false, _, Some(lost)) => format!("since {}", relative_time(now, lost)),
+                (false, _, None) if p.connections == 0 => "never yet".to_string(),
+                _ => String::new(),
+            },
+            last_announcement_display: p
+                .last_announcement_at
+                .map(|at| relative_time(now, at))
+                .unwrap_or_else(|| "none yet".to_string()),
+            last_error: p.last_error.map(|error| match p.last_error_at {
+                Some(at) => format!("Last failure {}: {error}", relative_time(now, at)),
+                None => format!("Last failure: {error}"),
+            }),
+            node: p.node,
+            endpoint: p.endpoint,
+            connected: p.connected,
+            connections: p.connections,
+            pool_announcements: p.pool_announcements,
+            block_announcements: p.block_announcements,
+        })
+        .collect();
+    views::status::AnnouncementsView {
+        publishers,
+        pool_passes_woken: announcements.pool_passes_woken,
+        rounds_woken: announcements.rounds_woken,
     }
 }
 
@@ -624,6 +667,7 @@ mod tests {
                     round_base_secs: 10,
                     slow,
                 }),
+                announcements: None,
             }],
             poll_interval_secs: 2,
             generated_at: 0,
@@ -1066,6 +1110,7 @@ mod tests {
                 ],
                 scanner,
                 scaling: None,
+                announcements: None,
             };
             let view = super::super::build_view_model(EngineStatusResponse {
                 networks: vec![
@@ -1119,6 +1164,72 @@ mod tests {
                     && html.contains("3700000")
                     && html.contains("daemon request failed: timed out"),
                 "got: {html}"
+            );
+        }
+
+        /// A node's ZMQ announcements (docs/monero_zmq.md) are shown to an
+        /// admin, with each publisher's state, and to nobody else: the
+        /// publisher addresses and errors can name internal hosts.
+        #[tokio::test]
+        async fn announcements_are_shown_to_admins_only() {
+            let now = crate::now_unix();
+            let mut status = super::status_with_slow(None);
+            status.networks[0].announcements = Some(shared::announcements::Announcements {
+                publishers: vec![
+                    shared::announcements::Publisher {
+                        node: "node.example:18089".into(),
+                        endpoint: "tcp://10.0.0.5:18083".into(),
+                        connected: true,
+                        connected_since: Some(now - 600),
+                        connections: 2,
+                        pool_announcements: 41,
+                        block_announcements: 3,
+                        last_announcement_at: Some(now - 5),
+                        last_error: Some("the node closed the connection".into()),
+                        last_error_at: Some(now - 700),
+                    },
+                    shared::announcements::Publisher {
+                        node: "backup.example:18089".into(),
+                        endpoint: "tcp://10.0.0.6:18083".into(),
+                        ..Default::default()
+                    },
+                ],
+                pool_passes_woken: 40,
+                rounds_woken: 3,
+            });
+            let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
+            super::super::seed_status_for_tests(&state.engine, status);
+
+            let anonymous = super::super::status_view(&state, false).await;
+            assert!(anonymous.networks[0].announcements.is_none());
+
+            let admin = super::super::status_view(&state, true).await;
+            let shown = admin.networks[0].announcements.as_ref().unwrap();
+            assert_eq!(shown.publishers[0].state_display, "since 10m ago");
+            assert_eq!(shown.publishers[0].last_announcement_display, "5s ago");
+            assert_eq!(
+                shown.publishers[0].last_error.as_deref(),
+                Some("Last failure 11m ago: the node closed the connection")
+            );
+            assert_eq!(shown.publishers[1].state_display, "never yet");
+            assert_eq!(shown.publishers[1].last_announcement_display, "none yet");
+
+            let html = crate::views::status::live_fragment(&admin).into_string();
+            for expected in [
+                "Announcements (ZMQ)",
+                "<code>tcp://10.0.0.5:18083</code>",
+                r#"<span class="tag tag-ok">connected</span>"#,
+                r#"<span class="tag tag-error">not connected</span>"#,
+                "<td>41</td>",
+                "Started early: 40 mempool checks, 3 scan rounds.",
+                "Dandelion++",
+            ] {
+                assert!(html.contains(expected), "{expected} in {html}");
+            }
+            let html = crate::views::status::live_fragment(&anonymous).into_string();
+            assert!(
+                !html.contains("10.0.0.5") && !html.contains("Announcements"),
+                "{html}"
             );
         }
 

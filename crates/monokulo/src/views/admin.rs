@@ -1265,6 +1265,16 @@ fn node_row(
                 }
                 input type="checkbox" name=(name("self_signed")) id=(id("self_signed")) value="on" checked[row.row.self_signed] aria-describedby=(id("self_signed-help"));
             }
+            div class="setting-field node-zmq" {
+                label class="setting-label" for=(id("zmq_pub")) { "Announcements (ZMQ)" }
+                span class="field-help" id=(id("zmq_pub-help")) {
+                    "Optional, for your own node: the address it was started with as " code { "--zmq-pub" } ", like "
+                    code { "tcp://127.0.0.1:18083" } ". Payments are then seen the moment the node sees them, instead of at the next check. "
+                    "Needs an engine built with ZMQ support; leave empty otherwise."
+                }
+                input type="text" name=(name("zmq_pub")) id=(id("zmq_pub")) value=(row.row.zmq_pub) aria-describedby=(id("zmq_pub-help"))
+                    autocomplete="off" spellcheck="false" inputmode="url";
+            }
             @if let Some(status) = &row.status { (node_status(status)) }
             @if let Some((at, count)) = position {
                 div class="node-row-actions" {
@@ -1849,6 +1859,7 @@ mod tests {
             row: crate::admin_nodes::NodeRow {
                 address: address.to_string(),
                 ssl: false,
+                zmq_pub: String::new(),
                 self_signed: true,
                 error: None,
             },

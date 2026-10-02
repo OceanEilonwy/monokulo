@@ -37,6 +37,9 @@ pub struct NetworkScanStatus {
     /// The block scan's live progress (docs/engine_scaling.md section 6),
     /// written by the scan as it works.
     pub progress: crate::scaling::SharedProgress,
+    /// What wakes the network's loops early, and what it has done
+    /// (docs/monero_zmq.md).
+    pub wakes: Arc<crate::node_events::NodeWakes>,
 }
 
 impl Default for NetworkScanStatus {
@@ -49,8 +52,14 @@ impl Default for NetworkScanStatus {
             tick_count: 0,
             tenants_scanned: 0,
             progress: crate::scaling::new_progress(),
+            wakes: Arc::default(),
         }
     }
+}
+
+/// `network`'s wakes, made if it has none yet.
+pub fn wakes_of(map: &ScannerStatusMap, network: Network) -> Arc<crate::node_events::NodeWakes> {
+    map.write().entry(network).or_default().wakes.clone()
 }
 
 /// `network`'s scan progress, made if it has none yet.

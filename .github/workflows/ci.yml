@@ -113,7 +113,13 @@ jobs:
       - name: Run tests
         id: nextest
         continue-on-error: true
-        run: cargo nextest run --workspace --locked --exclude xtask --profile ci
+        # With the engine's `zmq` feature, as the Docker image is built.
+        run: cargo nextest run --workspace --locked --exclude xtask --profile ci --features engine/zmq
+      - name: Run tests of an engine built without ZMQ
+        id: nextest_no_zmq
+        continue-on-error: true
+        # Only what differs: a node setting naming a publisher is refused.
+        run: cargo nextest run -p engine --lib --locked -E 'test(/without_zmq/)'
       - name: Run doctests
         id: doctest
         continue-on-error: true
@@ -126,9 +132,10 @@ jobs:
           python3 scripts/test-summary.py 'Tests (${{ matrix.os }})' \
             rust=target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
           echo "Doctests: ${{ steps.doctest.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Engine without ZMQ: ${{ steps.nextest_no_zmq.outcome }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Fail on test failure
         if: always()
-        run: test '${{ steps.nextest.outcome }}' = success && test '${{ steps.doctest.outcome }}' = success
+        run: test '${{ steps.nextest.outcome }}' = success && test '${{ steps.nextest_no_zmq.outcome }}' = success && test '${{ steps.doctest.outcome }}' = success
 
   coverage-rust:
     runs-on: ubuntu-latest

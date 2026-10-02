@@ -266,6 +266,11 @@ pub trait MoneroDaemonClient: Send + Sync {
         crate::link::MIN_TIMEOUT
     }
 
+    /// The node announced a change to its pool (docs/monero_zmq.md): the
+    /// next poll asks it, rather than reusing an answer from just before.
+    /// Nothing for a client that doesn't reuse answers.
+    fn pool_changed(&self) {}
+
     async fn get_height(&self) -> Result<u64, DaemonError>;
 
     /// The tip's height and, when the node gives both in one answer, its

@@ -140,7 +140,22 @@ pub async fn run_fast_mempool_loop(
                 ),
             }
         }
-        tokio::time::sleep(interval).await;
+        // Sooner when the node announces a new pool transaction
+        // (docs/monero_zmq.md): then its answer from a moment ago won't do.
+        if scan_state.node_wakes().pool_or(interval).await {
+            if let Some(daemon) = daemons.get(network) {
+                crate::daemon::MoneroDaemonClient::pool_changed(daemon.as_ref());
+            }
+        }
+    }
+}
+
+#[cfg(feature = "zmq")]
+pub fn node_events_name(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "node announcements (mainnet)",
+        Network::Stagenet => "node announcements (stagenet)",
+        Network::Testnet => "node announcements (testnet)",
     }
 }
 
@@ -208,8 +223,16 @@ pub async fn manage_network_loops(
             // Shared by the network's round loop and its fast mempool loop.
             let scan_state = Arc::new(
                 crate::work::ScanState::waking(webhooks.clone())
-                    .with_progress(crate::scanner_status::progress_of(&scanner_status, network)),
+                    .with_progress(crate::scanner_status::progress_of(&scanner_status, network))
+                    .with_wakes(crate::scanner_status::wakes_of(&scanner_status, network)),
             );
+            #[cfg(feature = "zmq")]
+            {
+                let (wakes, settings) = (scan_state.node_wakes().clone(), settings.clone());
+                supervise_until(node_events_name(network), stopped.clone(), move || {
+                    crate::node_events::run_subscriber(network, wakes.clone(), settings.clone())
+                });
+            }
             {
                 let (db, key_custody, daemons, wallet_handles, settings, scan_state) = (
                     db.clone(),
@@ -413,10 +436,11 @@ pub async fn run_scanner_loop(
         }
         // Work left over (a catch-up after downtime, a backlog of recomputes):
         // go again at once, yielding so other tasks run first.
+        // Otherwise, sooner when the node announces a new block.
         if backlogged {
             tokio::task::yield_now().await;
         } else {
-            tokio::time::sleep(scan.poll_interval).await;
+            scan_state.node_wakes().chain_or(scan.poll_interval).await;
         }
     }
 }
@@ -620,6 +644,64 @@ mod tests {
             scalar(1),
             monero::PublicKey::from_private_key(&spend).to_bytes(),
         )
+    }
+
+    /// With an hour between polls, a round still runs as soon as the node
+    /// announces a block (docs/monero_zmq.md).
+    #[tokio::test]
+    async fn the_node_s_announcements_cut_the_wait_between_polls_short() {
+        let defaults = EngineSettings::defaults();
+        let scan = crate::engine_settings::ScanConfig {
+            poll_interval: Duration::from_secs(3600),
+            ..(*defaults.scan.load()).clone()
+        };
+        let settings = Arc::new(EngineSettings {
+            registry: None,
+            env: live_settings::Env::fixed(Vec::<(String, String)>::new()),
+            nodes: defaults.nodes.clone(),
+            scan: live_settings::Live::new(scan),
+            webhooks: defaults.webhooks.clone(),
+            limits: defaults.limits.clone(),
+            tenant_defaults: defaults.tenant_defaults.clone(),
+            runtime: defaults.runtime.clone(),
+            custody: defaults.custody.clone(),
+        });
+        let node = Arc::new(FakeDaemonClient::new());
+        node.push_block("h1", vec![]);
+        let daemons = Daemons::fixed(HashMap::from([(
+            Network::Stagenet,
+            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                label: "fake".to_string(),
+                client: node.clone(),
+            }])),
+        )]));
+        let status = scanner_status::new_scanner_status_map();
+        let scan_state: Arc<crate::work::ScanState> = Arc::default();
+        let scan_loop = tokio::spawn(run_scanner_loop(
+            scan_state.clone(),
+            Db::over_shared(Store::open_in_memory().unwrap().into_shared()),
+            Arc::new(PlainKeyCustody::default()),
+            Network::Stagenet,
+            daemons,
+            Arc::default(),
+            status.clone(),
+            settings,
+        ));
+        let ticks = || {
+            status
+                .read()
+                .get(&Network::Stagenet)
+                .map_or(0, |s| s.tick_count)
+        };
+        eventually("the first round", || ticks() == 1).await;
+        // Settled into its hour-long wait.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(ticks(), 1);
+
+        node.push_block("h2", vec![]);
+        scan_state.node_wakes().chain_changed();
+        eventually("a round for the announced block", || ticks() == 2).await;
+        scan_loop.abort();
     }
 
     #[tokio::test]
