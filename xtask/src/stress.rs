@@ -19,7 +19,7 @@ fn read(path: &str) -> String {
         .to_owned()
 }
 
-fn command(name: &str, args: &[&str]) -> String {
+pub(crate) fn command(name: &str, args: &[&str]) -> String {
     Command::new(name)
         .args(args)
         .output()
@@ -56,7 +56,7 @@ fn affinity_cpu_count(allowed: &str) -> usize {
         .sum()
 }
 
-fn profile(database_dir: &Path) -> Value {
+pub(crate) fn profile(database_dir: &Path) -> Value {
     let status = read("/proc/self/status");
     let affinity = status
         .lines()
@@ -112,7 +112,7 @@ fn profile(database_dir: &Path) -> Value {
     })
 }
 
-fn atomic_json(path: &Path, value: &Value) -> io::Result<()> {
+pub(crate) fn atomic_json(path: &Path, value: &Value) -> io::Result<()> {
     let temporary = path.with_extension("json.tmp");
     fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
     fs::rename(temporary, path)
@@ -323,16 +323,9 @@ fn report(
     fs::write(output.join("index.html"), page)
 }
 
-/// The fixture binary, run pinned to `cpu` on Linux, with its output limited
-/// to a bounded log and its JSON result parsed (`Null` when it produced none).
-fn run_fixture(
-    output: &Path,
-    name: &str,
-    cpu: Option<u64>,
-    args: &[String],
-) -> io::Result<(bool, Option<i32>, Value, String)> {
-    // Where cargo builds it: `CARGO_TARGET_DIR` when set.
-    let target = std::env::var_os("CARGO_TARGET_DIR")
+/// Where cargo builds: `CARGO_TARGET_DIR` when set.
+pub(crate) fn target_dir() -> std::path::PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
         .map(std::path::PathBuf::from)
         .map(|dir| {
             if dir.is_absolute() {
@@ -341,8 +334,18 @@ fn run_fixture(
                 root().join(dir)
             }
         })
-        .unwrap_or_else(|| root().join("target"));
-    let binary = target.join("debug/stress_fixture");
+        .unwrap_or_else(|| root().join("target"))
+}
+
+/// The fixture binary, run pinned to `cpu` on Linux, with its output limited
+/// to a bounded log and its JSON result parsed (`Null` when it produced none).
+fn run_fixture(
+    output: &Path,
+    name: &str,
+    cpu: Option<u64>,
+    args: &[String],
+) -> io::Result<(bool, Option<i32>, Value, String)> {
+    let binary = target_dir().join("debug/stress_fixture");
     if !binary.exists() {
         return Err(io::Error::other(format!(
             "{} does not exist: build it first (cargo build -p engine --bin stress_fixture)",
@@ -399,7 +402,7 @@ fn base_args(scenario: &Value, driver: &str, db: &Path, tenants: u64) -> Vec<Str
     args
 }
 
-fn fresh_db(output: &Path, name: &str) -> std::path::PathBuf {
+pub(crate) fn fresh_db(output: &Path, name: &str) -> std::path::PathBuf {
     let db = output.join(format!("{name}.db"));
     for suffix in ["", "-wal", "-shm"] {
         let _ = fs::remove_file(format!("{}{suffix}", db.display()));
