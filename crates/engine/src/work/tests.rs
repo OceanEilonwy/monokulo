@@ -2030,14 +2030,15 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     );
 }
 
-/// A call the node never answers fails at the deadline, as a node failure.
+/// A call the node never answers fails at the deadline, as a timeout: a
+/// smaller request might succeed.
 #[tokio::test(start_paused = true)]
 async fn a_call_the_node_never_answers_fails_at_the_deadline() {
     let never = std::future::pending::<Result<(), DaemonError>>();
     let started = tokio::time::Instant::now();
     let result = bounded(never).await;
     assert!(
-        matches!(result, Err(ScannerError::Daemon(DaemonError::Request(ref m))) if m.contains("no answer within")),
+        matches!(result, Err(ScannerError::Daemon(DaemonError::TimedOut(ref m))) if m.contains("no answer within")),
         "{result:?}"
     );
     assert_eq!(started.elapsed(), CALL_DEADLINE);
@@ -4007,6 +4008,233 @@ impl MoneroDaemonClient for Asked<'_> {
         self.note("is_key_image_spent");
         self.inner.is_key_image_spent(key_images).await
     }
+}
+
+/// A node on a thin link (docs/engine_scaling.md section 2): a block request
+/// for more than `capacity` blocks runs out of time, and every request
+/// takes `delay` (on the test's clock) before it answers. Its client says a
+/// block request may take `timeout`.
+struct ThinLink<'a> {
+    inner: &'a FakeDaemonClient,
+    capacity: u64,
+    delay: Duration,
+    timeout: Duration,
+    asked: parking_lot::Mutex<Vec<(u64, bool)>>,
+}
+
+impl<'a> ThinLink<'a> {
+    fn new(inner: &'a FakeDaemonClient, capacity: u64) -> Self {
+        Self {
+            inner,
+            capacity,
+            delay: Duration::ZERO,
+            timeout: crate::link::MIN_TIMEOUT,
+            asked: Default::default(),
+        }
+    }
+
+    /// Each block request's size, and whether it arrived.
+    fn asked(&self) -> Vec<(u64, bool)> {
+        self.asked.lock().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for ThinLink<'_> {
+    fn chain_blocks_timeout(&self, _count: u64) -> Duration {
+        self.timeout
+    }
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.inner.get_height().await
+    }
+    async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
+        self.inner.get_tip().await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        self.inner.get_block_hash(height).await
+    }
+    async fn get_chain_blocks(
+        &self,
+        start: u64,
+        count: u64,
+    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        tokio::time::sleep(self.delay).await;
+        let arrives = count <= self.capacity;
+        self.asked.lock().push((count, arrives));
+        if arrives {
+            self.inner.get_chain_blocks(start, count).await
+        } else {
+            Err(DaemonError::TimedOut(format!(
+                "{count} blocks didn't arrive"
+            )))
+        }
+    }
+    async fn get_chain_headers(
+        &self,
+        start: u64,
+        count: u64,
+    ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+        self.inner.get_chain_headers(start, count).await
+    }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.inner.get_mempool_txids().await
+    }
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+        self.inner.get_transactions_with_ids(txids).await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        self.inner.locate_transaction(txid).await
+    }
+    async fn is_key_image_spent(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.inner.is_key_image_spent(key_images).await
+    }
+}
+
+/// A link that can't carry the blocks asked for: each request that runs out
+/// of time halves the next, so the scan works its way down to what the link
+/// carries and reaches the tip, finding the payment in the last block. The
+/// halving lasts across rounds.
+#[tokio::test]
+async fn a_slow_link_halves_its_requests_until_they_arrive_and_the_scan_completes() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.push_block("a1", vec![]);
+    fake.push_block("a2", vec![]);
+    let node = ThinLink::new(&fake, 4);
+    let tenants = [(tenant.clone(), handle)];
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    let _ = run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await;
+    let tip = 61;
+    for h in 3..=tip {
+        fake.push_block(
+            &format!("a{h}"),
+            // Every block holds a transaction, so each must be fetched.
+            if h == tip {
+                vec![fixture_tx()]
+            } else {
+                vec![unrelated_tx(h as u8)]
+            },
+        );
+    }
+
+    let mut rounds = 0;
+    while cursor_of(&store, tenant.as_str()) != Some(tip) {
+        rounds += 1;
+        assert!(
+            rounds < 200,
+            "the scan never reached the tip: {:?}",
+            node.asked()
+        );
+        let _ = run_round(
+            &state,
+            &inputs(&db, &custody, &node, &tenants),
+            ROUND_BUDGET,
+        )
+        .await;
+    }
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .unwrap();
+    assert_eq!(payments.len(), 1);
+    assert_eq!(payments[0].block_height, Some(tip as i64));
+
+    let asked = node.asked();
+    let failed: Vec<u64> = asked
+        .iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(n, _)| *n)
+        .collect();
+    assert!(
+        !failed.is_empty(),
+        "the first requests were too big: {asked:?}"
+    );
+    // Each failure halves the next request, never repeating the size
+    // that just failed.
+    for pair in asked.windows(2) {
+        if !pair[0].1 {
+            assert!(pair[1].0 <= pair[0].0 / 2 + 1, "{asked:?}");
+        }
+    }
+    assert!(asked.iter().all(|(n, _)| *n >= 1));
+}
+
+/// A block request is given the time its node's link needs, not the fixed
+/// 15 s every other call gets: a slow-but-working node delivers.
+#[tokio::test(start_paused = true)]
+async fn a_block_request_gets_the_time_its_link_needs() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.push_block("a1", vec![]);
+    let tenants = [(tenant.clone(), handle)];
+    let state = ScanState::default();
+    let db = Db::over_shared(store.clone());
+    let mut node = ThinLink::new(&fake, 500);
+    let _ = run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await;
+    // A first block scanned at full speed, so the store has a cursor.
+    fake.push_block("a2", vec![unrelated_tx(2)]);
+    let _ = run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await;
+    fake.push_block("a3", vec![unrelated_tx(3)]);
+    let before = cursor_of(&store, tenant.as_str()).expect("scanned a2");
+
+    // 40 s for the blocks, past the old 15 s: refused at the fixed floor...
+    node.delay = Duration::from_secs(40);
+    let _ = run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await;
+    assert_eq!(
+        cursor_of(&store, tenant.as_str()),
+        Some(before),
+        "{:?}",
+        node.asked()
+    );
+
+    // ...and delivered when the link's measurements allow a minute.
+    node.timeout = Duration::from_secs(60);
+    tokio::time::advance(Duration::from_secs(120)).await; // past the retry delay
+    let _ = run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await;
+    assert_eq!(
+        cursor_of(&store, tenant.as_str()),
+        Some(before + 1),
+        "{:?}",
+        node.asked()
+    );
 }
 
 fn recorded_height(store: &SharedStore) -> Option<u64> {

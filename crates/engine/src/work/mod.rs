@@ -269,15 +269,27 @@ pub(crate) async fn bounded<T, E>(
 where
     ScannerError: From<E>,
 {
-    match tokio::time::timeout(CALL_DEADLINE, call).await {
+    bounded_by(CALL_DEADLINE, call).await
+}
+
+/// A call with `deadline`: for a block request, what the node's link needs
+/// (docs/engine_scaling.md section 2).
+pub(crate) async fn bounded_by<T, E>(
+    deadline: Duration,
+    call: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, ScannerError>
+where
+    ScannerError: From<E>,
+{
+    match tokio::time::timeout(deadline, call).await {
         Ok(result) => result.map_err(ScannerError::from),
-        Err(_) => Err(ScannerError::Daemon(no_answer())),
+        Err(_) => Err(ScannerError::Daemon(no_answer(deadline))),
     }
 }
 
-/// What a call that outlasted [`CALL_DEADLINE`] failed with.
-fn no_answer() -> crate::daemon::DaemonError {
-    crate::daemon::DaemonError::Request(format!("no answer within {CALL_DEADLINE:?}"))
+/// What a call that outlasted its deadline failed with.
+fn no_answer(deadline: Duration) -> crate::daemon::DaemonError {
+    crate::daemon::DaemonError::TimedOut(format!("no answer within {deadline:?}"))
 }
 
 /// Retry delays for keys whose work keeps failing (a key-custody backend
@@ -458,7 +470,10 @@ pub async fn run_round(
     let (tip_answer, polled) = if matches!(watching, Ok(true)) {
         match tokio::time::timeout(CALL_DEADLINE, inputs.daemon.get_tip_and_mempool()).await {
             Ok((tip, pool)) => (tip.map_err(ScannerError::from), Some(pool)),
-            Err(_) => (Err(no_answer().into()), Some(Err(no_answer()))),
+            Err(_) => (
+                Err(no_answer(CALL_DEADLINE).into()),
+                Some(Err(no_answer(CALL_DEADLINE))),
+            ),
         }
     } else {
         (bounded(inputs.daemon.get_tip()).await, None)
