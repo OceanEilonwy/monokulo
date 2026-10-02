@@ -50,13 +50,27 @@ fn dir_usable(dir: &Path) -> bool {
     dir.is_dir() || std::fs::create_dir_all(dir).is_ok()
 }
 
-/// Whether a file at `path` can be written: an existing one opened for
-/// writing, or a new one created in its directory (made if need be).
+/// The file a write to `path` changes: the target of a symlink (so a
+/// linked options file stays linked), else `path` itself.
+pub fn resolved(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether a file at `path` can be written the way an options file is
+/// saved: an existing one must itself be writable (a read-only file is the
+/// owner saying no), and its directory must take a new file, which is
+/// written beside it and renamed over it. A missing directory is made.
 pub fn writable(path: &Path) -> bool {
-    if path.exists() {
-        return std::fs::OpenOptions::new().append(true).open(path).is_ok();
+    let target = resolved(path);
+    if target.exists()
+        && std::fs::OpenOptions::new()
+            .append(true)
+            .open(&target)
+            .is_err()
+    {
+        return false;
     }
-    let dir = match path.parent() {
+    let dir = match target.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
     };

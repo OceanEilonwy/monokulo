@@ -1822,6 +1822,88 @@ async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// An options file the engine can't write: GET says so and locks what it
+/// holds, with why; a save sent anyway is refused (409) and the file stays
+/// as it was. A runtime switch, in the database, still saves.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_read_only_options_file_is_locked_and_a_save_to_it_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("engine-read-only-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("engine.toml");
+    let text = "[payment]\nconfirmations_required = 4\n";
+    std::fs::write(&path, text).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+    if std::fs::OpenOptions::new().append(true).open(&path).is_ok() {
+        return; // Root: permission bits don't bind it.
+    }
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let settings = crate::engine_settings::EngineSettings::load_full(
+        store.clone(),
+        None,
+        None,
+        Arc::new(RateLimiter::new(10_000)),
+        live_settings::Env::fixed([("ENGINE_TOKEN", shared::auth::TEST_ENGINE_TOKEN)]),
+        live_settings::OptionsFile::at(&path),
+    )
+    .await
+    .unwrap();
+    let router = build_router(
+        AppState {
+            settings,
+            ..AppState::for_tests_with_store(store)
+        },
+        1_000_000,
+    );
+    let body = body_json(
+        router
+            .clone()
+            .oneshot(settings_request("GET", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["options_file"]["writable"], false);
+    let locked = body["scalars"]["payment.confirmations_required"]["locked"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(locked.contains("can't be written by the engine"), "{body}");
+    assert!(
+        body["scalars"]["logging.dev_mode_until"]["locked"].is_null(),
+        "a runtime switch stays editable: {body}"
+    );
+
+    let refused = router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "6" } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let message = body_json(refused).await.to_string();
+    assert!(
+        message.contains("can't be written by this process"),
+        "{message}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+
+    let saved = router
+        .oneshot(settings_request(
+            "POST",
+            Some(serde_json::json!({ "scalars": { "logging.dev_mode_until": "0" } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // -- The engine token ---------------------------------------------------
 
 /// Every route, whatever credential of its own it takes, refuses a request
