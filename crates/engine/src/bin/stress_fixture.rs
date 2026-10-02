@@ -101,12 +101,17 @@ impl MoneroDaemonClient for FixtureDaemon {
                 txs: if height == 0 {
                     vec![]
                 } else {
-                    vec![self.tx.clone()]
+                    vec![engine::daemon::ScanTx::of(&self.tx)]
                 },
                 txids: if height == 0 {
                     vec![]
                 } else {
                     vec![self.txid.clone()]
+                },
+                wire_bytes: if height == 0 {
+                    0
+                } else {
+                    monero::consensus::encode::serialize(&self.tx).len() as u64
                 },
             })
             .collect())

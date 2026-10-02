@@ -130,11 +130,10 @@ settings! {
         key: "payment.scan_chunk_memory_budget_mb",
         env: "ENGINE_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB",
         default: 8,
-        // Under `daemon_rpc::MAX_RESPONSE_BYTES` (64 MB) with room for the
-        // wire format: a chunk the node's answer could never fit in would
-        // be refused, and asked for again, forever.
-        check: range(1, 48),
-        description: "Megabytes of block data fetched at once when catching up on many blocks (at most 48).",
+        // Up to 1 TB here; what this machine allows is checked with the
+        // other networks' budgets (`max_scan_budget_mb`).
+        check: range(1, 1_048_576),
+        description: "Megabytes of block data each network's scan holds at once while catching up. Every network's budget together must fit in 80 % of the engine's memory.",
         example: "8",
     },
     SERVER_BIND: BindAddr {
@@ -341,6 +340,16 @@ impl Section for ScanConfig {
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        let budget_mb = snapshot.get(&PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB);
+        let networks = configured_networks(snapshot);
+        if let Some(limit) = shared::resources::memory_limit_bytes() {
+            if let Some(problem) = scan_budget_problem(budget_mb, networks, limit) {
+                return Err(vec![FieldError::new(
+                    PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key,
+                    problem,
+                )]);
+            }
+        }
         Ok(ScanConfig {
             reorg_check_depth: snapshot.get(&PAYMENT_REORG_CHECK_DEPTH),
             poll_interval: Duration::from_millis(snapshot.get(&PAYMENT_MEMPOOL_POLL_INTERVAL_MS)),
@@ -349,6 +358,56 @@ impl Section for ScanConfig {
                 * 60,
             scan_chunk_memory_budget_mb: snapshot.get(&PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB),
         })
+    }
+}
+
+/// The share of the engine's memory every network's scan budget may take
+/// together (docs/engine_scaling.md section 3).
+const SCAN_MEMORY_SHARE: f64 = 0.8;
+/// What a budget really costs: the block cache, plus a response being
+/// decoded (at most an eighth of the budget, held briefly twice).
+const SCAN_MEMORY_OVERHEAD: f64 = 1.25;
+
+/// The networks with a node configured, at least one: each scans with its
+/// own budget.
+pub fn configured_networks(snapshot: &Snapshot) -> u32 {
+    let configured = NETWORKS
+        .iter()
+        .filter(|(_, setting)| snapshot.get(*setting).is_some())
+        .count();
+    u32::try_from(configured).unwrap_or(u32::MAX).max(1)
+}
+
+/// The largest scan budget, in MB, that `limit_bytes` of memory allows for
+/// each of `networks` networks.
+pub fn max_scan_budget_mb(limit_bytes: u64, networks: u32) -> u32 {
+    let per_network = limit_bytes as f64 * SCAN_MEMORY_SHARE
+        / (f64::from(networks.max(1)) * SCAN_MEMORY_OVERHEAD);
+    (per_network / (1024.0 * 1024.0))
+        .floor()
+        .clamp(1.0, f64::from(u32::MAX)) as u32
+}
+
+/// Why `budget_mb` for each of `networks` networks doesn't fit in
+/// `limit_bytes`, saying what would.
+pub fn scan_budget_problem(budget_mb: u32, networks: u32, limit_bytes: u64) -> Option<String> {
+    let max = max_scan_budget_mb(limit_bytes, networks);
+    (budget_mb > max).then(|| {
+        format!(
+            "At most {max} MB on this machine (80 % of {}, across {networks} network{}).",
+            human_bytes(limit_bytes),
+            if networks == 1 { "" } else { "s" }
+        )
+    })
+}
+
+/// `bytes` as megabytes or gigabytes, for a message.
+fn human_bytes(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1024.0 {
+        format!("{:.1} GB", mb / 1024.0)
+    } else {
+        format!("{} MB", mb.round())
     }
 }
 
@@ -988,6 +1047,50 @@ impl EngineSettings {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scan_budget_fits_in_80_percent_of_memory_across_networks() {
+        let gb = 1024 * 1024 * 1024;
+        // 8 GB: 6.4 GB for scanning, at 1.25 times each budget.
+        assert_eq!(max_scan_budget_mb(8 * gb, 1), 5242);
+        assert_eq!(max_scan_budget_mb(8 * gb, 3), 1747);
+        assert_eq!(scan_budget_problem(5242, 1, 8 * gb), None);
+        assert_eq!(
+            scan_budget_problem(5243, 1, 8 * gb).as_deref(),
+            Some("At most 5242 MB on this machine (80 % of 8.0 GB, across 1 network).")
+        );
+        assert_eq!(
+            scan_budget_problem(2000, 3, 8 * gb).as_deref(),
+            Some("At most 1747 MB on this machine (80 % of 8.0 GB, across 3 networks).")
+        );
+        // A tiny machine still allows the smallest budget.
+        assert_eq!(max_scan_budget_mb(1024 * 1024, 3), 1);
+        assert_eq!(scan_budget_problem(8, 1, 512 * 1024 * 1024), None);
+    }
+
+    #[test]
+    fn a_budget_bigger_than_this_machine_allows_is_refused_with_the_maximum() {
+        let limit = shared::resources::memory_limit_bytes().expect("the test machine's memory");
+        let max = max_scan_budget_mb(limit, 1);
+        let snapshot = |budget: u32| {
+            Snapshot::new(
+                std::collections::HashMap::from([(
+                    PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key.to_string(),
+                    budget.to_string(),
+                )]),
+                live_settings::Env::fixed(Vec::<(String, String)>::new()),
+            )
+        };
+        assert!(ScanConfig::from_snapshot(&snapshot(max)).is_ok());
+        let errors = ScanConfig::from_snapshot(&snapshot(max + 1)).unwrap_err();
+        assert_eq!(errors[0].key, PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key);
+        assert!(
+            errors[0]
+                .message
+                .starts_with(&format!("At most {max} MB on this machine")),
+            "{errors:?}"
+        );
+    }
 
     #[test]
     fn every_section_builds_from_its_defaults_and_the_node_settings_accept_the_stored_format() {

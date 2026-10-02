@@ -24,6 +24,20 @@ use crate::store::Database;
 
 use super::{ApiError, Networks};
 
+/// `base`, the scan budget's own help, with the most this machine allows
+/// for each of `networks` networks.
+fn budget_description(base: &str, networks: usize) -> String {
+    let networks = u32::try_from(networks).unwrap_or(u32::MAX).max(1);
+    match shared::resources::memory_limit_bytes() {
+        Some(limit) => format!(
+            "{base} On this machine: at most {} MB each, across {networks} network{}.",
+            crate::engine_settings::max_scan_budget_mb(limit, networks),
+            if networks == 1 { "" } else { "s" }
+        ),
+        None => base.to_string(),
+    }
+}
+
 /// One setting as the admin page shows it (tasks 4.1, 4.2): its effective
 /// value and where that came from, plus what it's for, what it takes and
 /// when it applies.
@@ -32,7 +46,7 @@ pub struct ScalarSettingView {
     value: String,
     /// `"env"`, `"database"`, or `"default"`.
     source: &'static str,
-    description: &'static str,
+    description: String,
     kind: live_settings::SettingKind,
     example: Option<&'static str>,
     /// `"live"` or `"restart"`.
@@ -116,7 +130,7 @@ pub async fn get_settings(
             ScalarSettingView {
                 value: view.value,
                 source: source_str(view.source),
-                description: view.description,
+                description: view.description.to_string(),
                 kind: view.kind,
                 example: view.example,
                 applies: view.applies,
@@ -124,6 +138,14 @@ pub async fn get_settings(
                 problem: view.problem.map(|p| p.message),
             },
         );
+    }
+    // The budget's help says what this machine allows, for the networks
+    // configured now (docs/engine_scaling.md section 3).
+    if let Some(view) =
+        scalars.get_mut(crate::engine_settings::PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key)
+    {
+        let networks = monero_node.values().filter(|node| node.is_some()).count();
+        view.description = budget_description(&view.description, networks);
     }
     Ok(Json(SettingsView {
         scalars,

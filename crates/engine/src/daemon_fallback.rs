@@ -1212,6 +1212,7 @@ mod tests {
                 timestamp: 0,
                 txs: Vec::new(),
                 txids: Vec::new(),
+                wire_bytes: 0,
             }])
         }
         async fn get_transactions_with_ids(

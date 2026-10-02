@@ -55,21 +55,14 @@ pub(crate) fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
     Ok(images)
 }
 
-fn key_images_of(tx: &Transaction) -> Vec<String> {
-    tx.prefix
-        .inputs
-        .iter()
-        .filter_map(|input| match input {
-            monero::blockdata::transaction::TxIn::ToKey { k_image, .. } => {
-                Some(hex::encode(k_image.image.to_bytes()))
-            }
-            monero::blockdata::transaction::TxIn::Gen { .. } => None,
-        })
-        .collect()
-}
-
-fn key_images_json_of(tx: &Transaction) -> String {
-    serde_json::Value::from(key_images_of(tx)).to_string()
+fn key_images_json_of(tx: &crate::daemon::ScanTx) -> String {
+    serde_json::Value::from(
+        tx.key_images
+            .iter()
+            .map(hex::encode)
+            .collect::<Vec<String>>(),
+    )
+    .to_string()
 }
 
 /// The result of scanning one transaction against one wallet - pure `KeyCustody`
@@ -101,16 +94,17 @@ pub struct ScanResult {
 impl ScanResult {
     /// What `tx`, named `txid`, pays. The id comes with the transaction: it
     /// may be pruned, and then can't be hashed to it.
-    fn of(txid: &str, tx: &Transaction, mut matches: Vec<MatchedOutput>) -> Self {
+    fn of(txid: &str, tx: &crate::daemon::ScanTx, mut matches: Vec<MatchedOutput>) -> Self {
+        let prefix = tx.input.prefix();
         // A locked output is no payment: until its unlock time (a height,
         // or from 500,000,000 up a timestamp) nobody can spend it, and the
         // merchant would be told they were paid with money they can't move.
         // No wallet sends a locked payment by accident, so it is refused
         // rather than held.
-        if !matches.is_empty() && tx.prefix.unlock_time.0 != 0 {
+        if !matches.is_empty() && prefix.unlock_time.0 != 0 {
             tracing::warn!(
                 tx.id = txid,
-                unlock_time = tx.prefix.unlock_time.0,
+                unlock_time = prefix.unlock_time.0,
                 outputs = matches.len(),
                 "a transaction paying a store has a time lock on its outputs - not crediting them"
             );
@@ -120,7 +114,7 @@ impl ScanResult {
             .iter()
             .filter_map(|m| {
                 let (TxOutTarget::ToKey { key } | TxOutTarget::ToTaggedKey { key, .. }) =
-                    &tx.prefix.outputs.get(m.output_index)?.target;
+                    &prefix.outputs.get(m.output_index)?.target;
                 Some((m.output_index, hex::encode(key)))
             })
             .collect();
@@ -142,10 +136,11 @@ pub async fn scan_transaction_as(
     tx: &Transaction,
     minor_range: Range<u32>,
 ) -> Result<ScanResult> {
+    let tx = crate::daemon::ScanTx::of(tx);
     let matches = key_custody
-        .scan_tx_outputs(handle, &ScanInput::of(tx), 0..1, minor_range)
+        .scan_tx_outputs(handle, &tx.input, 0..1, minor_range)
         .await?;
-    Ok(ScanResult::of(txid, tx, matches))
+    Ok(ScanResult::of(txid, &tx, matches))
 }
 
 /// `scan_transaction` for a store's scan window (task 7.3): only the indices
@@ -159,11 +154,12 @@ pub(crate) async fn scan_transaction_in_window(
     tx: &Transaction,
     window: &ScanIndices,
 ) -> Result<ScanResult> {
+    let tx = crate::daemon::ScanTx::of(tx);
     let found = key_custody
-        .scan_txs_for_indices(handle, &[ScanInput::of(tx)], window)
+        .scan_txs_for_indices(handle, std::slice::from_ref(&tx.input), window)
         .await?;
     let matches = found.into_iter().flat_map(|found| found.outputs).collect();
-    Ok(ScanResult::of(txid, tx, matches))
+    Ok(ScanResult::of(txid, &tx, matches))
 }
 
 /// Longest one tenant's scan of one batch of transactions may take before it
@@ -190,7 +186,7 @@ pub(crate) const SCAN_CONCURRENCY: usize = 32;
 pub(crate) async fn scan_txs_for_tenants(
     key_custody: &dyn KeyCustody,
     txids: &[String],
-    txs: &[Transaction],
+    txs: &[crate::daemon::ScanTx],
     inputs: &[ScanInput],
     tenants: &[(&(crate::store::TenantId, WalletHandle, ScanIndices), usize)],
 ) -> Vec<(crate::store::TenantId, Result<Vec<ScanResult>>)> {
@@ -253,12 +249,13 @@ pub(crate) async fn scan_for_tenants(
     tx: &Transaction,
     tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
 ) -> Vec<(crate::store::TenantId, Result<Option<ScanResult>>)> {
-    let inputs = [ScanInput::of(tx)];
+    let tx = crate::daemon::ScanTx::of(tx);
+    let inputs = [tx.input.clone()];
     let tenants: Vec<_> = tenants.iter().map(|tenant| (*tenant, 0)).collect();
     scan_txs_for_tenants(
         key_custody,
         std::slice::from_ref(&txid.to_string()),
-        std::slice::from_ref(tx),
+        std::slice::from_ref(&tx),
         &inputs,
         &tenants,
     )
@@ -1430,6 +1427,15 @@ pub(crate) mod tests {
 
     use super::*;
 
+    /// A transaction's key images, hex, as a payment records them.
+    fn key_images_of(tx: &Transaction) -> Vec<String> {
+        crate::daemon::ScanTx::of(tx)
+            .key_images
+            .iter()
+            .map(hex::encode)
+            .collect()
+    }
+
     #[test]
     fn stored_key_image_evidence_must_be_parseable_and_nonempty() {
         assert!(parse_payment_key_images("not json").is_err());
@@ -2278,10 +2284,11 @@ pub(crate) mod tests {
         };
         let (fresh, resumed, finished) = (store("fresh"), store("resumed"), store("finished"));
 
+        let kept: Vec<crate::daemon::ScanTx> = txs.iter().map(crate::daemon::ScanTx::of).collect();
         let results = scan_txs_for_tenants(
             &custody,
             &txids,
-            &txs,
+            &kept,
             &inputs,
             &[(&fresh, 0), (&resumed, 1), (&finished, 3)],
         )
