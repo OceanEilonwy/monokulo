@@ -167,8 +167,10 @@ polls are counted apart from block fetches, as
 
 ## Not done
 
-- ZMQ push (`libzmq`, a C dependency the design avoids) would replace
-  polling against one's own node.
+- ZMQ push from one's own node: behind the `zmq` feature (on in the Docker image)
+  (pure Rust, no `libzmq`) as a wake-up over polling
+  (`docs/monero_zmq.md`). Slowing polling down while it is connected,
+  which is where the request savings would come from, is not done.
 - Compression: monerod doesn't offer it. A proxy in front of a node might;
   it isn't asked for.
 

@@ -28,7 +28,12 @@ RUN npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
 COPY rust-toolchain.toml ./
 RUN rustup toolchain install
 COPY . .
+# The engine's optional features. `zmq` lets a node's ZMQ announcements wake
+# the scan at once (docs/monero_zmq.md); it does nothing until a node setting
+# names a `zmq_pub`. `--build-arg ENGINE_FEATURES=` builds without it.
+ARG ENGINE_FEATURES=zmq
 RUN cargo build --release --locked \
+        ${ENGINE_FEATURES:+--features engine/${ENGINE_FEATURES}} \
         -p engine --bin monokulo-engine \
         -p monokulo --bin monokulo \
         -p key-custody-server --bin key-custody-server \

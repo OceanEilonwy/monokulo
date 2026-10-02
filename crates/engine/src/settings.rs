@@ -23,6 +23,12 @@ pub struct MoneroNodeSetting {
     pub accept_self_signed_certs: bool,
     #[serde(default)]
     pub fallbacks: Vec<MoneroNodeSetting>,
+    /// The node's ZMQ publisher (monerod's `--zmq-pub`), `tcp://host:port`
+    /// or `ipc:///path`: a block or pool transaction it announces wakes the
+    /// scan at once instead of at the next poll (docs/monero_zmq.md). Needs
+    /// an engine built with the `zmq` feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zmq_pub: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -43,7 +49,40 @@ pub fn check_node(node: &Option<live_settings::Json<MoneroNodeSetting>>) -> Resu
             ));
         }
     }
+    for each in std::iter::once(&node.0).chain(&node.0.fallbacks) {
+        if let Some(zmq_pub) = &each.zmq_pub {
+            check_zmq_pub(zmq_pub)
+                .map_err(|e| format!("node {}:{}: zmq_pub {e}", each.host, each.port))?;
+        }
+    }
     Ok(())
+}
+
+/// A `zmq_pub` this engine can subscribe to: monerod's own forms,
+/// `tcp://host:port` and `ipc:///path`.
+#[cfg(feature = "zmq")]
+fn check_zmq_pub(zmq_pub: &str) -> Result<(), String> {
+    let usage = "must be tcp://host:port or ipc:///path, as given to monerod's --zmq-pub";
+    if let Some(path) = zmq_pub.strip_prefix("ipc://") {
+        return if path.is_empty() {
+            Err(usage.to_string())
+        } else {
+            Ok(())
+        };
+    }
+    let Some(address) = zmq_pub.strip_prefix("tcp://") else {
+        return Err(usage.to_string());
+    };
+    let (host, port) = address.rsplit_once(':').ok_or(usage)?;
+    if host.is_empty() || port.parse::<u16>().is_err() {
+        return Err(usage.to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "zmq"))]
+fn check_zmq_pub(_zmq_pub: &str) -> Result<(), String> {
+    Err("needs an engine built with the `zmq` feature (cargo build --features zmq); this one wasn't".to_string())
 }
 
 /// Whether an address the engine is listening on can only be reached from
@@ -75,6 +114,7 @@ pub fn is_private_bind_address(ip: std::net::IpAddr) -> bool {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use live_settings::Json;
 
     #[test]
     fn the_default_bind_address_is_loopback_only() {
@@ -145,7 +185,9 @@ mod tests {
                 ssl: true,
                 accept_self_signed_certs: false,
                 fallbacks: vec![],
+                zmq_pub: None,
             }],
+            zmq_pub: Some("tcp://127.0.0.1:18083".to_string()),
         };
         let json = serde_json::to_string(&node).unwrap();
         assert_eq!(
@@ -154,8 +196,73 @@ mod tests {
         );
         let minimal: MoneroNodeSetting = serde_json::from_str(r#"{"host":"n","port":1}"#).unwrap();
         assert!(
-            !minimal.ssl && minimal.accept_self_signed_certs && minimal.fallbacks.is_empty(),
+            !minimal.ssl
+                && minimal.accept_self_signed_certs
+                && minimal.fallbacks.is_empty()
+                && minimal.zmq_pub.is_none(),
             "the documented defaults"
         );
+        assert!(
+            !serde_json::to_string(&minimal).unwrap().contains("zmq_pub"),
+            "a node without a publisher saves as it did before"
+        );
+    }
+
+    fn with_zmq(primary: Option<&str>, fallback: Option<&str>) -> Option<Json<MoneroNodeSetting>> {
+        let node = |zmq_pub: Option<&str>| MoneroNodeSetting {
+            host: "node.example".to_string(),
+            port: 18081,
+            ssl: false,
+            accept_self_signed_certs: true,
+            fallbacks: vec![],
+            zmq_pub: zmq_pub.map(str::to_string),
+        };
+        let mut primary = node(primary);
+        primary.fallbacks.push(node(fallback));
+        Some(Json(primary))
+    }
+
+    #[test]
+    fn a_node_without_a_publisher_needs_no_zmq_support() {
+        assert_eq!(check_node(&with_zmq(None, None)), Ok(()));
+    }
+
+    #[cfg(not(feature = "zmq"))]
+    #[test]
+    fn a_publisher_is_refused_by_an_engine_built_without_zmq() {
+        for node in [
+            with_zmq(Some("tcp://127.0.0.1:18083"), None),
+            with_zmq(None, Some("tcp://127.0.0.1:18083")),
+        ] {
+            let error = check_node(&node).unwrap_err();
+            assert!(error.contains("`zmq` feature"), "{error}");
+        }
+    }
+
+    #[cfg(feature = "zmq")]
+    #[test]
+    fn a_publisher_must_be_a_tcp_or_ipc_address() {
+        for good in [
+            "tcp://127.0.0.1:18083",
+            "tcp://[::1]:18083",
+            "tcp://monerod:18083",
+            "ipc:///run/monerod/zmq.sock",
+        ] {
+            assert_eq!(check_node(&with_zmq(Some(good), None)), Ok(()), "{good}");
+            assert_eq!(check_node(&with_zmq(None, Some(good))), Ok(()), "{good}");
+        }
+        for bad in [
+            "",
+            "127.0.0.1:18083",
+            "http://127.0.0.1:18083",
+            "tcp://127.0.0.1",
+            "tcp://:18083",
+            "tcp://host:port",
+            "ipc://",
+            "inproc://x",
+        ] {
+            let error = check_node(&with_zmq(Some(bad), None)).unwrap_err();
+            assert!(error.contains("zmq_pub"), "{bad}: {error}");
+        }
     }
 }

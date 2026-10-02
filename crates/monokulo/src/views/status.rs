@@ -34,6 +34,30 @@ pub struct StatusNetworkView {
     /// While block headers are read first, why and for how long
     /// (docs/engine_scaling.md section 4).
     pub headers_first: Option<String>,
+    /// The nodes' ZMQ announcements (docs/monero_zmq.md): set only for an
+    /// admin, and only when a node of this network has a publisher.
+    pub announcements: Option<AnnouncementsView>,
+}
+
+/// A network's ZMQ announcements, ready to show.
+pub struct AnnouncementsView {
+    pub publishers: Vec<PublisherView>,
+    pub pool_passes_woken: u64,
+    pub rounds_woken: u64,
+}
+
+pub struct PublisherView {
+    pub node: String,
+    pub endpoint: String,
+    pub connected: bool,
+    /// "since 5m ago", or when it was lost.
+    pub state_display: String,
+    pub connections: u64,
+    pub pool_announcements: u64,
+    pub block_announcements: u64,
+    pub last_announcement_display: String,
+    /// The last failure and when, if any.
+    pub last_error: Option<String>,
 }
 
 /// `engine_error`, when set, means the engine itself couldn't be reached at
@@ -141,8 +165,55 @@ pub fn live_fragment(data: &StatusPageViewModel) -> Markup {
                         @if let Some(headers_first) = &network.headers_first {
                             p class="hint headers-first" { (headers_first) }
                         }
+                        @if let Some(announcements) = &network.announcements {
+                            (announcements_section(announcements))
+                        }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// A network's ZMQ publishers and what their announcements did.
+fn announcements_section(announcements: &AnnouncementsView) -> Markup {
+    html! {
+        section class="announcements" {
+            h3 { "Announcements (ZMQ)" }
+            p class="hint" {
+                "Only operators see this. A node's announcements start a check at once instead of at the next poll; "
+                "the regular checks carry on and find anything they miss."
+            }
+            table {
+                thead { tr { th { "Node" } th { "Publisher" } th { "State" } th { "Transactions" } th { "Blocks" } th { "Last" } th { "Connections" } } }
+                tbody {
+                    @for publisher in &announcements.publishers {
+                        tr {
+                            td { code { (publisher.node) } }
+                            td { code { (publisher.endpoint) } }
+                            td {
+                                @if publisher.connected { span class="tag tag-ok" { "connected" } }
+                                @else { span class="tag tag-error" { "not connected" } }
+                                " " span class="muted" { (publisher.state_display) }
+                            }
+                            td { (publisher.pool_announcements) }
+                            td { (publisher.block_announcements) }
+                            td { (publisher.last_announcement_display) }
+                            td { (publisher.connections) }
+                        }
+                        @if let Some(error) = &publisher.last_error {
+                            tr { td colspan="7" class="hint" { (error) } }
+                        }
+                    }
+                }
+            }
+            p {
+                "Started early: " (announcements.pool_passes_woken) " mempool checks, "
+                (announcements.rounds_woken) " scan rounds."
+            }
+            p class="hint" {
+                "A transaction the node relays privately (Dandelion++ stem, or one sent over Tor or I2P) is never announced; "
+                "the regular check finds it once it is public."
             }
         }
     }
@@ -254,6 +325,7 @@ mod tests {
                 headers_first: Some(
                     "Reading block headers first for about 50 minutes more.".to_string(),
                 ),
+                announcements: None,
             }],
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),

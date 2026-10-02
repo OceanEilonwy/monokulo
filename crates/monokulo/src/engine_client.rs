@@ -1005,6 +1005,10 @@ pub struct NetworkStatus {
     /// (docs/engine_scaling.md section 6).
     #[serde(default)]
     pub scaling: Option<shared::scaling::NetworkScaling>,
+    /// The nodes' ZMQ announcements (docs/monero_zmq.md); absent while no
+    /// node of this network has a `zmq_pub`.
+    #[serde(default)]
+    pub announcements: Option<shared::announcements::Announcements>,
 }
 
 /// Mirrors the engine's own `EngineStatusResponse` — the whole body of
