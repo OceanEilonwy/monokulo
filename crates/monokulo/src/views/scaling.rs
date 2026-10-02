@@ -703,6 +703,14 @@ pub fn scanning_panel(
                 thousands(u64::from(max))
             ));
         }
+        // Blocks fetched ahead and let go of before their scan were fetched
+        // for nothing; a larger budget would have kept them.
+        if scan.discarded_cache_bytes_recent > 0 {
+            text.push_str(&format!(
+                " · {} fetched ahead was let go of unscanned in the last ten minutes, to be fetched again (a larger budget keeps more)",
+                bytes(scan.discarded_cache_bytes_recent)
+            ));
+        }
         text
     };
     let round = if scaling.round_deadline_secs > scaling.round_base_secs {
@@ -984,7 +992,7 @@ mod tests {
                 }),
                 in_progress_secs: Some(130),
                 peak_cache_bytes: Some(301_000_000),
-                discarded_cache_bytes: 0,
+                discarded_cache_bytes_recent: 0,
                 round_budget_secs: None,
                 headers_first: None,
             },
@@ -1032,7 +1040,15 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("Average 1.8 MB (rising ↗) · largest recent 412 MB (block 3,411,990), took 18 m 0 s"), "{html}");
-        assert!(html.contains("Budget 256 MB · block cache peak 301 MB in the last hour · this machine allows up to 1,536 MB"), "{html}");
+        assert!(html.contains("Budget 256 MB · block cache peak 301 MB in the last hour · this machine allows up to 1,536 MB<"), "{html}");
+        assert!(
+            !html.contains("let go of"),
+            "nothing discarded: nothing said"
+        );
+        let mut discarding = scaling(Pace::Memory);
+        discarding.scan.discarded_cache_bytes_recent = 9_400_000;
+        let html = scanning_panel("mainnet", &discarding, node()).into_string();
+        assert!(html.contains("this machine allows up to 1,536 MB · 9.4 MB fetched ahead was let go of unscanned in the last ten minutes, to be fetched again (a larger budget keeps more)"), "{html}");
         assert!(html.contains("Deadline 10 s (the base)"), "{html}");
         assert!(
             html.contains("Off: blocks are fetched whole without asking their size first"),

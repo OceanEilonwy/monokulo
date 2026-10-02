@@ -353,7 +353,7 @@ left open:
   evicted before runs fetched ahead. Without the share, 16 groups at the
   default budget evicted each other's runs: 4.7 blocks a second and 9 MB
   discarded, against 13.4 and 130 kB with it. Blocks let go of unread are counted
-  (`discarded_cache_bytes` in `/status`). The peak is unchanged, since one
+  (`discarded_cache_bytes_recent` in `/status`, over the last ten minutes, and on the admin page's Scanning panel). The peak is unchanged, since one
   round could already fill the budget; only how long it is held changed, so
   the `budget × networks × 1.25` check stands.
 - **Checkpoints.** A page doesn't write `partial_block_progress` by itself.

@@ -339,7 +339,7 @@ impl BlocksRound {
             carried.cache.clear()
         };
         let mut progress = state.progress.lock();
-        progress.discarded_cache_bytes += discarded;
+        progress.discarded(discarded, crate::now_unix());
         progress.cache_bytes(round.cache.bytes as u64, crate::now_unix());
         round
     }
@@ -384,7 +384,7 @@ pub(super) async fn carry(round: &mut Round<'_>) {
         _ => cache.clear(),
     };
     let mut progress = round.state.blocks.progress.lock();
-    progress.discarded_cache_bytes += discarded;
+    progress.discarded(discarded, crate::now_unix());
     progress.cache_bytes(cache.bytes as u64, crate::now_unix());
     drop(progress);
     if let (Some(node), false) = (node, cache.blocks.is_empty()) {
@@ -1420,7 +1420,7 @@ impl BlockCache {
         }
         let discarded = self.trim(Some(keep), budget_bytes(budget_mb));
         let mut progress = state.progress.lock();
-        progress.discarded_cache_bytes += discarded;
+        progress.discarded(discarded, crate::now_unix());
         progress.cache_bytes(self.bytes as u64, crate::now_unix());
     }
 }

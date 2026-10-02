@@ -3000,7 +3000,11 @@ async fn a_group_larger_than_a_page_moves_together() {
         assert!(rounds < 100);
     }
     assert!(rounds > 1, "the first page took more than one round");
-    assert_eq!(cursors(), [21].into(), "every page of the group got block 21");
+    assert_eq!(
+        cursors(),
+        [21].into(),
+        "every page of the group got block 21"
+    );
 }
 
 /// More stores in a group than one scan batch, with no time: the first

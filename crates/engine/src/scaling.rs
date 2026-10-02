@@ -50,6 +50,8 @@ pub struct ScanProgress {
     /// Bytes of blocks the cache let go of before any scan read them, since
     /// the engine started: fetched for nothing, and fetched again if needed.
     pub discarded_cache_bytes: u64,
+    /// The same, by when, for the last [`RECENT_SECS`].
+    discarded_recent: VecDeque<(i64, u64)>,
     /// The time the last round was given: the base, unless one page of a
     /// large block needed more (docs/engine_scaling.md section 4).
     pub round_budget: std::time::Duration,
@@ -68,6 +70,7 @@ impl Default for ScanProgress {
             time: VecDeque::new(),
             peak_cache: None,
             discarded_cache_bytes: 0,
+            discarded_recent: VecDeque::new(),
             round_budget: crate::work::ROUND_BUDGET,
             headers_first: None,
         }
@@ -163,6 +166,22 @@ impl ScanProgress {
         }
     }
 
+    /// The block cache let go of `bytes` before any scan read them.
+    pub fn discarded(&mut self, bytes: u64, now_unix: i64) {
+        if bytes == 0 {
+            return;
+        }
+        self.discarded_cache_bytes += bytes;
+        self.discarded_recent.push_back((now_unix, bytes));
+        while self
+            .discarded_recent
+            .front()
+            .is_some_and(|(unix, _)| *unix < now_unix - RECENT_SECS)
+        {
+            self.discarded_recent.pop_front();
+        }
+    }
+
     pub fn cache_bytes(&mut self, bytes: u64, now_unix: i64) {
         let stale = self.peak_cache.is_some_and(|(at, _)| at < now_unix - 3600);
         if stale || self.peak_cache.is_none_or(|(_, peak)| bytes >= peak) {
@@ -209,7 +228,12 @@ impl ScanProgress {
                 .peak_cache
                 .filter(|(at, _)| *at >= now_unix - 3600)
                 .map(|(_, bytes)| bytes),
-            discarded_cache_bytes: self.discarded_cache_bytes,
+            discarded_cache_bytes_recent: self
+                .discarded_recent
+                .iter()
+                .filter(|(unix, _)| *unix >= now_unix - RECENT_SECS)
+                .map(|(_, bytes)| bytes)
+                .sum(),
             round_budget_secs: Some(self.round_budget.as_secs()),
             headers_first: self
                 .headers_first
@@ -326,6 +350,25 @@ mod tests {
             (report.fetch_secs_recent, report.scan_secs_recent),
             (1.0, 3.0),
             "the first aged out"
+        );
+    }
+
+    #[test]
+    fn discarded_bytes_are_reported_for_the_last_ten_minutes() {
+        let mut progress = ScanProgress::default();
+        progress.discarded(0, 1_000);
+        progress.discarded(500, 1_000);
+        progress.discarded(200, 1_500);
+        assert_eq!(progress.report(1_550).discarded_cache_bytes_recent, 700);
+        assert_eq!(
+            progress.report(1_700).discarded_cache_bytes_recent,
+            200,
+            "the first is over ten minutes old"
+        );
+        assert_eq!(progress.report(3_000).discarded_cache_bytes_recent, 0);
+        assert_eq!(
+            progress.discarded_cache_bytes, 700,
+            "the total since start stays"
         );
     }
 
