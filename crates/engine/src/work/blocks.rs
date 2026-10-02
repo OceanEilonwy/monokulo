@@ -19,11 +19,15 @@
 //! time partway through a block, its progress is written down (a checkpoint
 //! with staged matches), to resume from.
 //!
-//! Each block's header comes first (a run of them at a time): a block too
-//! large for one answer, or for the node's link to send in time, is scanned
-//! a page of transactions at a time from its outline (its transactions'
-//! ids), a page per step, across as many units and rounds as it takes
-//! (docs/engine_scaling.md section 4). Blocks around it are fetched whole.
+//! While blocks may be large, each block's header comes first (a run of
+//! them at a time): a block too large for one answer, or for the node's
+//! link to send in time, is scanned a page of transactions at a time from
+//! its outline (its transactions' ids), a page per step, across as many
+//! units and rounds as it takes (docs/engine_scaling.md section 4). Blocks
+//! around it are fetched whole. Headers are read first only for an hour
+//! after a sign that blocks may be large: a block request that ran out of
+//! time or came back too large, or a block within a quarter of the size
+//! that is paged. Otherwise blocks are fetched whole without asking.
 
 use crate::store::TenantId;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -206,7 +210,39 @@ impl BlockState {
             let mut progress = self.progress.lock();
             progress.avg_bytes_per_block =
                 crate::scanner::avg_after_failed_fetch(progress.avg_bytes_per_block);
+            // The block may be too large to fetch whole at all: read
+            // headers first, so the next try can page it.
+            progress.want_headers_first(
+                crate::now_unix(),
+                crate::scaling::HeadersFirstReason::FailedRequest,
+            );
         }
+    }
+
+    /// Fetched blocks of `sizes` bytes: one within a quarter of the size
+    /// that is paged (under a `response_cap` and a link of `rate`) means
+    /// blocks may grow past it, so headers are read first for a while.
+    fn note_sizes(&self, sizes: &[usize], response_cap: u64, rate: Option<f64>) {
+        let near = sizes.iter().any(|size| {
+            crate::scanner::scan_in_pages(
+                Some((*size as u64).saturating_mul(4)),
+                response_cap,
+                rate,
+            )
+        });
+        if near {
+            self.progress.lock().want_headers_first(
+                crate::now_unix(),
+                crate::scaling::HeadersFirstReason::LargeBlock,
+            );
+        }
+    }
+
+    /// Whether blocks' headers are read before the blocks: for a while
+    /// after a sign that blocks may be large, and throughout a block
+    /// scanned in pages.
+    fn headers_first(&self) -> bool {
+        self.paged.lock().is_some() || self.progress.lock().headers_first_on(crate::now_unix())
     }
 
     /// The large block's current bytes-a-transaction estimate, if one is
@@ -579,6 +615,7 @@ async fn advance_group(
                     chunk,
                     cursor + 2,
                     round.inputs.scan_chunk_memory_budget_mb,
+                    daemon.transfer_rate(),
                     &state.blocks,
                 );
             }
@@ -686,8 +723,13 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
     let since = if frontier {
         round.now
     } else {
-        let header = known_header(round, height, end).await?;
-        i64::try_from(header.timestamp)
+        let timestamp =
+            if round.state.blocks.headers_first() || round.blocks.headers.contains_key(&height) {
+                known_header(round, height, end).await?.timestamp
+            } else {
+                block(round, height, end).await?.timestamp
+            };
+        i64::try_from(timestamp)
             .unwrap_or(i64::MAX)
             .saturating_sub(BLOCK_TIMESTAMP_DRIFT_SECONDS)
             .min(round.now)
@@ -1117,6 +1159,7 @@ impl BlockCache {
         chunk: Vec<ChainBlock>,
         keep: u64,
         budget_mb: u32,
+        rate: Option<f64>,
         state: &BlockState,
     ) -> Option<Arc<ChainBlock>> {
         if chunk.is_empty() {
@@ -1128,6 +1171,7 @@ impl BlockCache {
             .map(|b| usize::try_from(b.wire_bytes).unwrap_or(usize::MAX))
             .collect();
         state.note_fetched(sizes.iter().sum(), chunk.len());
+        state.note_sizes(&sizes, crate::scanner::response_cap_bytes(budget_mb), rate);
         let mut kept = None;
         for (block, bytes) in chunk.into_iter().zip(sizes) {
             let block = self.insert(block, bytes);
@@ -1372,10 +1416,13 @@ fn in_pages(round: &Round<'_>, header: &ChainHeader) -> bool {
     )
 }
 
-/// How many of `count` blocks from `from` can come whole in one run: up to
-/// the first whose header isn't held this round, or that is scanned in
-/// pages.
+/// How many of `count` blocks from `from` can come whole in one run: all of
+/// them while headers aren't read first; else up to the first whose header
+/// isn't held this round, or that is scanned in pages.
 fn whole_run(round: &Round<'_>, from: u64, count: u64) -> u64 {
+    if !round.state.blocks.headers_first() {
+        return count;
+    }
     (from..from.saturating_add(count))
         .take_while(|height| {
             round
@@ -1415,9 +1462,11 @@ async fn source(round: &mut Round<'_>, height: u64, end: u64) -> Result<Source, 
     if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
         return Ok(Source::Whole(block.clone()));
     }
-    let header = known_header(round, height, end).await?;
-    if in_pages(round, &header) {
-        return Ok(Source::Pages(paged(round, &header).await?));
+    if round.state.blocks.headers_first() {
+        let header = known_header(round, height, end).await?;
+        if in_pages(round, &header) {
+            return Ok(Source::Pages(paged(round, &header).await?));
+        }
     }
     Ok(Source::Whole(block(round, height, end).await?))
 }
@@ -1428,10 +1477,13 @@ async fn hold(round: &mut Round<'_>, height: u64, end: u64) -> Result<(), Scanne
     if round.blocks.cache.blocks.contains_key(&height) {
         return Ok(());
     }
-    let header = known_header(round, height, end).await?;
-    if !in_pages(round, &header) {
-        block(round, height, end).await?;
+    if round.state.blocks.headers_first() {
+        let header = known_header(round, height, end).await?;
+        if in_pages(round, &header) {
+            return Ok(());
+        }
     }
+    block(round, height, end).await?;
     Ok(())
 }
 
@@ -1524,6 +1576,7 @@ async fn block(
             chunk,
             height,
             round.inputs.scan_chunk_memory_budget_mb,
+            round.inputs.daemon.transfer_rate(),
             &state.blocks,
         )
         .ok_or_else(|| {
@@ -1599,6 +1652,28 @@ mod tests {
         let state = BlockState::default();
         let daemon = crate::daemon::fake::FakeDaemonClient::new();
         assert_eq!(state.round_budget(&daemon, 3), Duration::from_secs(10));
+    }
+
+    /// A fetched block within a quarter of the size that is paged turns
+    /// headers-first on; ordinary blocks and a failure that isn't about
+    /// size or time leave it off.
+    #[test]
+    fn a_block_near_the_paging_size_turns_headers_first_on() {
+        let state = BlockState::default();
+        let cap = 32_000_000;
+        state.note_sizes(&[300_000, 2_000_000], cap, None);
+        state.note_failed(&ScannerError::Daemon(crate::daemon::DaemonError::Request(
+            "refused".into(),
+        )));
+        assert!(!state.headers_first());
+        state.note_sizes(&[300_000, 8_000_001], cap, None);
+        assert!(state.headers_first(), "a quarter of the cap");
+
+        let state = BlockState::default();
+        state.note_failed(&ScannerError::Daemon(crate::daemon::DaemonError::TooLarge(
+            "over the cap".into(),
+        )));
+        assert!(state.headers_first(), "a request refused as too large");
     }
 
     /// Replacing a cached block keeps the byte count exact, and trimming

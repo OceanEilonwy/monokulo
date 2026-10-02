@@ -10,14 +10,21 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 pub use shared::scaling::{
-    BlockInProgress, ChunkPlan, DoneBlock, ScanReport, Trend, SLOW_BLOCK_SECS,
+    BlockInProgress, ChunkPlan, DoneBlock, HeadersFirst, HeadersFirstReason, ScanReport, Trend,
+    SLOW_BLOCK_SECS,
 };
+
 /// Blocks kept for the recent figures.
 const RECENT_BLOCKS: usize = 64;
 /// How far back "recent" reaches for blocks a minute and the time split.
 const RECENT_SECS: i64 = 600;
 
 /// One network's scan progress, shared between its scan loop and `/status`.
+/// How long blocks' headers are read before the blocks after the last sign
+/// that a block may be too large to fetch whole (docs/engine_scaling.md
+/// section 4).
+pub const HEADERS_FIRST_SECS: i64 = 60 * 60;
+
 pub type SharedProgress = Arc<Mutex<ScanProgress>>;
 
 pub fn new_progress() -> SharedProgress {
@@ -43,6 +50,9 @@ pub struct ScanProgress {
     /// The time the last round was given: the base, unless one page of a
     /// large block needed more (docs/engine_scaling.md section 4).
     pub round_budget: std::time::Duration,
+    /// Until when blocks' headers are read before the blocks, and why
+    /// (docs/engine_scaling.md section 4).
+    pub headers_first: Option<(i64, HeadersFirstReason)>,
 }
 
 impl Default for ScanProgress {
@@ -55,6 +65,7 @@ impl Default for ScanProgress {
             time: VecDeque::new(),
             peak_cache: None,
             round_budget: crate::work::ROUND_BUDGET,
+            headers_first: None,
         }
     }
 }
@@ -69,6 +80,18 @@ pub struct TimeSpent {
 }
 
 impl ScanProgress {
+    /// Blocks' headers are read before the blocks for the next
+    /// [`HEADERS_FIRST_SECS`], because of `reason`.
+    pub fn want_headers_first(&mut self, now_unix: i64, reason: HeadersFirstReason) {
+        self.headers_first = Some((now_unix + HEADERS_FIRST_SECS, reason));
+    }
+
+    /// Whether blocks' headers are being read before the blocks.
+    pub fn headers_first_on(&self, now_unix: i64) -> bool {
+        self.headers_first
+            .is_some_and(|(until, _)| until > now_unix)
+    }
+
     /// The scan of block `height` is starting (or carrying on).
     pub fn start_block(&mut self, height: u64, now_unix: i64) {
         if self.in_progress.as_ref().is_none_or(|b| b.height != height) {
@@ -183,6 +206,13 @@ impl ScanProgress {
                 .filter(|(at, _)| *at >= now_unix - 3600)
                 .map(|(_, bytes)| bytes),
             round_budget_secs: Some(self.round_budget.as_secs()),
+            headers_first: self
+                .headers_first
+                .filter(|(until, _)| *until > now_unix)
+                .map(|(until, reason)| HeadersFirst {
+                    remaining_secs: until - now_unix,
+                    reason,
+                }),
         }
     }
 }
@@ -208,6 +238,28 @@ fn trend(sizes: &[u64]) -> Trend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Headers come first for an hour after the last sign that blocks may
+    /// be large, and each sign starts the hour again
+    /// (docs/engine_scaling.md section 4).
+    #[test]
+    fn headers_come_first_for_an_hour_after_each_sign() {
+        let mut progress = ScanProgress::default();
+        assert!(!progress.headers_first_on(1_000));
+        assert_eq!(progress.report(1_000).headers_first, None);
+        progress.want_headers_first(1_000, HeadersFirstReason::FailedRequest);
+        assert!(progress.headers_first_on(1_000 + HEADERS_FIRST_SECS - 1));
+        assert!(!progress.headers_first_on(1_000 + HEADERS_FIRST_SECS));
+        progress.want_headers_first(2_000, HeadersFirstReason::LargeBlock);
+        assert!(progress.headers_first_on(1_000 + HEADERS_FIRST_SECS));
+        assert_eq!(
+            progress.report(2_600).headers_first,
+            Some(HeadersFirst {
+                remaining_secs: HEADERS_FIRST_SECS - 600,
+                reason: HeadersFirstReason::LargeBlock,
+            })
+        );
+    }
 
     #[test]
     fn a_block_is_timed_from_its_start_to_its_commit_across_rounds() {

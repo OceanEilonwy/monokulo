@@ -308,10 +308,15 @@ left open:
   seconds; a block whose header gives no weight is fetched whole. A page
   holds at most 100 transactions, the most a restricted (public) node
   returns from one `/get_transactions`.
-- **Headers before every chunk (the open question).** Settled for always:
-  headers come 256 at a time, so this costs one small call per 256 blocks
-  while catching up, and one per block at the tip. A block that appears
-  suddenly large is caught before it is asked for whole.
+- **Headers first only while blocks may be large (the open question).**
+  Blocks are fetched whole, with no headers call, until something says a
+  block may not fit: a block request that runs out of time or comes back
+  too large, or a fetched block within a quarter of the size that is paged.
+  Each such sign turns headers-first on for an hour; a block being paged
+  keeps it on. Headers then come 256 at a time. A giant block arriving
+  while it is off costs one refused request, bounded by the response cap
+  or the link's timeout, and the next try pages it. The Scanning panel
+  says whether it is on, and why.
 - **Checkpoints.** A page doesn't write `partial_block_progress` by itself.
   The existing checkpoint is written when a unit runs out of time or a
   page fails, which is when a resume needs it. A crash costs at most the
