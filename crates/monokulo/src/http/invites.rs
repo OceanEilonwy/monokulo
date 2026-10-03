@@ -482,7 +482,7 @@ mod tests {
     use axum::Router;
     use tower::ServiceExt;
 
-    use crate::db::{TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD};
+    use crate::http::test_support::admin_session_cookie;
     use crate::http::{build_router, AppState};
 
     fn test_state() -> AppState {
@@ -525,28 +525,6 @@ mod tests {
             .header("cookie", cookie)
             .body(Body::from(body))
             .unwrap()
-    }
-
-    async fn admin_session_cookie(router: &Router) -> String {
-        let response = router
-            .clone()
-            .oneshot(form_request(
-                "POST",
-                "/dashboard/login",
-                &[
-                    ("email", TEST_ADMIN_EMAIL),
-                    ("password", TEST_ADMIN_PASSWORD),
-                ],
-            ))
-            .await
-            .unwrap();
-        let set_cookie = response
-            .headers()
-            .get("set-cookie")
-            .expect("expected a session cookie from a correct admin login")
-            .to_str()
-            .unwrap();
-        set_cookie.split(';').next().unwrap().to_string()
     }
 
     async fn signed_up_session_cookie(

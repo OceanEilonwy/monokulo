@@ -427,6 +427,7 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
             poll_interval_secs: 0,
             generated_at_display: String::new(),
             slow_blocks: Vec::new(),
+            engine_page: false,
         },
     };
     // Node addresses and the raw text of node and scanner errors (which
@@ -449,6 +450,7 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
             network.proof = None;
         }
     }
+    view_model.engine_page = admin;
     // Challenge activity is for operators only; anonymous visitors and
     // merchants don't see it.
     if admin {
@@ -501,6 +503,7 @@ fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageVi
         poll_interval_secs: status.poll_interval_secs,
         generated_at_display: relative_time(now, status.generated_at),
         slow_blocks: Vec::new(),
+        engine_page: false,
     }
 }
 
@@ -1439,6 +1442,16 @@ mod tests {
             let admin = super::super::status_view(&state, true).await;
             let html = crate::views::status::live_fragment(&admin).into_string();
             assert!(html.contains(r#"<span class="tag tag-error">settlement held</span>"#));
+            assert!(
+                html.contains(
+                    r#"<a class="hint" href="/status/engine?network=mainnet">Watch it live</a>"#
+                ),
+                "an admin is linked to the engine page: {html}"
+            );
+            let anonymous = super::super::status_view(&state, false).await;
+            assert!(!crate::views::status::live_fragment(&anonymous)
+                .into_string()
+                .contains("/status/engine"));
             assert!(
                 html.contains(
                     r#"<form method="post" action="/dashboard/admin/proof/mainnet/reanchor">"#

@@ -211,7 +211,7 @@ impl History {
     }
 
     /// Every mark kept, oldest first.
-    pub fn marks(&self) -> impl Iterator<Item = &Mark> {
+    pub fn marks(&self) -> impl DoubleEndedIterator<Item = &Mark> {
         self.marks.iter()
     }
 

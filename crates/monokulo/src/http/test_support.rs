@@ -49,3 +49,33 @@ pub(crate) async fn signed_up_and_logged_in_session_token(
         .unwrap()
         .to_string()
 }
+
+/// Logs in as the harness-seeded admin account (`Db::seed_test_admin`) and
+/// returns its session cookie's `name=value` pair, ready to attach as a
+/// `cookie` header.
+pub(crate) async fn admin_session_cookie(router: &Router) -> String {
+    let body = format!(
+        "email={}&password={}",
+        urlencoding_encode(crate::db::TEST_ADMIN_EMAIL),
+        urlencoding_encode(crate::db::TEST_ADMIN_PASSWORD)
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/login")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let set_cookie = response
+        .headers()
+        .get("set-cookie")
+        .expect("expected a session cookie from a correct admin login")
+        .to_str()
+        .unwrap();
+    set_cookie.split(';').next().unwrap().to_string()
+}

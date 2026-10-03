@@ -653,6 +653,34 @@ impl EngineClient {
     }
 }
 
+/// The engine page's feed (`docs/engine_visualizer.md`).
+impl EngineClient {
+    /// `network`'s activity record from sequence number `from` on; without
+    /// `from`, everything from the oldest snapshot the engine keeps.
+    pub async fn engine_activity(
+        &self,
+        network: &str,
+        from: Option<u64>,
+    ) -> Result<shared::activity::ActivityPage, EngineClientError> {
+        let target = self.target();
+        let mut url = format!(
+            "{}/api/v1/admin/engine/activity?network={}",
+            target.base_url,
+            url::form_urlencoded::byte_serialize(network.as_bytes()).collect::<String>()
+        );
+        if let Some(from) = from {
+            url.push_str(&format!("&from={from}"));
+        }
+        let response = target
+            .http
+            .get(url)
+            .timeout(ENGINE_CALL_TIMEOUT)
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+}
+
 /// The shared "is this a real success" check both `parse_response` (a JSON
 /// body expected) and `set_refund_address` (a bare `200` with no body at
 /// all - the engine's own handler returns `Result<(), ApiError>`, which

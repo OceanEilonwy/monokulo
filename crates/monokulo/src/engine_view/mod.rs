@@ -6,3 +6,4 @@
 pub mod history;
 pub mod machine;
 pub mod present;
+pub mod relay;
