@@ -947,10 +947,24 @@ pub async fn lookup_payment(
             Err(e) => return Err(e.into()),
         }
     };
+    // The block's own list of transactions, so that under proof-of-work
+    // checking the payment settles only if that block is the proven one
+    // (docs/proof_of_work.md).
+    let found_in = match block_height {
+        Some(height) => crate::work::chain::block_holding(daemon.as_ref(), &txid, height).await,
+        None => None,
+    };
     let id = tenant.id.clone();
     let touched = state
         .db
-        .write(move |store| crate::scanner::record_scan_match(store, &id, &scan, now, block_height))
+        .write(move |store| {
+            let touched = crate::scanner::record_scan_match(store, &id, &scan, now, block_height)?;
+            if let (false, Some(height), Some(hash)) = (touched.is_empty(), block_height, &found_in)
+            {
+                store.attest_payment_block(&scan.txid, height, hash)?;
+            }
+            Ok::<_, crate::scanner::ScannerError>(touched)
+        })
         .await?;
 
     if touched.is_empty() {

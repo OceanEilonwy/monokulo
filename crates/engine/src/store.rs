@@ -26,6 +26,7 @@ use crate::auth::{generate_public_key, generate_secret_token, RawToken};
 use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
 
 pub mod db;
+pub mod proof;
 mod work;
 pub use db::{Db, DbMetrics};
 pub use work::{
@@ -115,6 +116,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         23,
         include_str!("../migrations/0023_order_idempotency_key.sql"),
     ),
+    (24, include_str!("../migrations/0024_proof_of_work.sql")),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -511,6 +513,12 @@ struct StatusFacts<'a> {
     tenant_lagging: bool,
     /// A reorg is being reconciled on the order's network.
     settlement_frozen: bool,
+    /// While the order's network checks proof of work
+    /// (docs/proof_of_work.md), the payments as proven: each counted only
+    /// if the block it was found in is the proven block at its height, and
+    /// only with confirmations up to the proven, recorded tip. An order may
+    /// only newly settle on these.
+    proven_views: Option<Vec<PaymentView>>,
     current_height: u64,
     now: i64,
 }
@@ -561,8 +569,28 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     // counted on the losing chain: an order can't newly settle until the
     // rewind. Everything else (expiry, confirmation counts, walking a
     // settlement back) still happens, and it shows where the payment stands.
-    let settlement_deferred =
-        is_settlement(derived) && !is_settlement(order.status) && facts.settlement_frozen;
+    //
+    // Likewise while confirmations above the ceiling are needed: a block
+    // whose proof of work wasn't checked may be made up
+    // (docs/proof_of_work.md).
+    let settles_on_proven_blocks = || match &facts.proven_views {
+        None => true,
+        Some(views) => {
+            let as_of_ceiling = derive_status(
+                views,
+                StatusInputs {
+                    xmr_amount_piconero: order.xmr_amount_piconero,
+                    confirmations_required: facts.confirmations_required,
+                    now: facts.now,
+                    expires_at: order.expires_at,
+                },
+            );
+            is_settlement(as_of_ceiling)
+        }
+    };
+    let settlement_deferred = is_settlement(derived)
+        && !is_settlement(order.status)
+        && (facts.settlement_frozen || !settles_on_proven_blocks());
     let status = if expiry_held {
         order.status
     } else if settlement_deferred {
@@ -1613,6 +1641,10 @@ impl Store {
                 key_images_json, first_seen_at_utc, block_height, output_key)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(order_id, txid, output_index) DO UPDATE SET
+                 block_hash = CASE
+                     WHEN excluded.block_height IS NOT NULL
+                          AND excluded.block_height IS NOT order_payments.block_height
+                     THEN NULL ELSE order_payments.block_hash END,
                  block_height = COALESCE(excluded.block_height, order_payments.block_height),
                  output_key = COALESCE(order_payments.output_key, excluded.output_key)
              WHERE order_payments.voided_at_utc IS NULL",
@@ -1648,7 +1680,9 @@ impl Store {
         new_height: Option<i64>,
     ) -> Result<()> {
         let changed = self.conn.execute(
-            "UPDATE order_payments SET block_height = ?4
+            "UPDATE order_payments
+             SET block_hash = CASE WHEN block_height IS ?4 THEN block_hash ELSE NULL END,
+                 block_height = ?4
              WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NULL",
             params![order_id, txid, output_index, new_height],
         )?;
@@ -1824,6 +1858,7 @@ impl Store {
                 .unwrap_or(confirmations_required),
             tenant_lagging: lagging,
             settlement_frozen: self.settlement_frozen(network)?,
+            proven_views: self.proven_views(network, order_id, current_height)?,
             current_height,
             now,
         });
@@ -2706,6 +2741,7 @@ mod tests {
                 confirmations_required: case.required,
                 tenant_lagging: case.lagging,
                 settlement_frozen: case.frozen,
+                proven_views: None,
                 current_height: 50,
                 now: case.now,
             });
@@ -2721,6 +2757,57 @@ mod tests {
                 case.what
             );
         }
+    }
+
+    /// An order settles only on its payments as proven
+    /// (docs/proof_of_work.md); the counts shown stay the real ones, and an
+    /// order already settled isn't walked back.
+    #[test]
+    fn settlement_waits_for_proven_payments() {
+        use OrderStatus::*;
+        // Ten confirmations required; the payment has 12 recorded. As
+        // proven it has `proven` (0: its block isn't the proven one).
+        for (proven, was, expect, deferred) in [
+            (None, Confirming, Paid, false),
+            (Some(12), Confirming, Paid, false),
+            (Some(10), Confirming, Paid, false),
+            (Some(9), Confirming, Confirming, true),
+            (Some(0), Confirming, Confirming, true),
+            (Some(0), Paid, Paid, false),
+        ] {
+            let order = order(was, 1000);
+            let plan = plan_status(&StatusFacts {
+                order: &order,
+                views: &[mined(100, 12)],
+                confirmations_required: 10,
+                tenant_lagging: false,
+                settlement_frozen: false,
+                proven_views: proven.map(|c| vec![mined(100, c)]),
+                current_height: 50,
+                now: 500,
+            });
+            assert_eq!(
+                (plan.status, plan.keep_obligation, plan.confirmations),
+                (expect, deferred, 12),
+                "proven {proven:?}, was {was:?}"
+            );
+            if deferred {
+                assert_eq!(plan.next_due_at, Some(500), "looked at again next round");
+            }
+        }
+        // Zero-conf acceptance has no block to wait for.
+        let order = order(Pending, 1000);
+        let plan = plan_status(&StatusFacts {
+            order: &order,
+            views: &[pooled(100)],
+            confirmations_required: 0,
+            tenant_lagging: false,
+            settlement_frozen: false,
+            proven_views: Some(vec![pooled(100)]),
+            current_height: 50,
+            now: 500,
+        });
+        assert_eq!(plan.status, Paid);
     }
 
     /// A recompute that changes nothing writes nothing (`updated_at` stays).

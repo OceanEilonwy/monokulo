@@ -318,6 +318,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(admin_settings::reload),
         )
         .route(
+            "/dashboard/admin/proof/{network}/reanchor",
+            axum::routing::post(status_page::take_new_anchor),
+        )
+        .route(
             "/request-invite",
             axum::routing::get(invites::request_invite_form).post(invites::request_invite_submit),
         )

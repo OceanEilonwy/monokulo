@@ -601,6 +601,8 @@ pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, Option
         },
         SettingOwner::Engine => match prefix {
             "monero_node" => (SettingsTab::Nodes, None),
+            // Each network's own, shown in that network's block.
+            "proof_of_work" => (SettingsTab::Nodes, None),
             // How much memory a scan may use is about the machine, not
             // about payments.
             "payment" if key == "payment.scan_chunk_memory_budget_mb" => {
@@ -1303,7 +1305,7 @@ fn capitalized(word: &str) -> String {
 /// One network's block: its rows in order, then a blank "Add a node" row
 /// (adding needs no JavaScript: fill it in and save). A network with no
 /// nodes that no store uses starts closed, as "Add a node for <network>".
-fn network_block(network: &AdminNetworkFieldView) -> Markup {
+fn network_block(network: &AdminNetworkFieldView, proof: Option<&AdminScalarFieldView>) -> Markup {
     let n = &network.network;
     let count = network.rows.len();
     let rows = html! {
@@ -1318,6 +1320,9 @@ fn network_block(network: &AdminNetworkFieldView) -> Markup {
             (node_row(network, count, &NodeRowView { row: crate::admin_nodes::NodeRow { self_signed: true, ..Default::default() }, ..Default::default() }, None))
         }
         button type="button" class="js-only node-add-another" data-node-add-another=(n) { "Add another" }
+        // Whether this network's blocks' proof of work is checked
+        // (`proof_of_work.<network>`).
+        @if let Some(field) = proof { (scalar_field(field)) }
     };
     let used_by = html! {
         p class="setting-source" {
@@ -1359,6 +1364,15 @@ fn active_node(network: &AdminNetworkFieldView) -> Option<super::scaling::Active
     })
 }
 
+/// `network`'s proof-of-work switch (`proof_of_work.<network>`).
+fn proof_field<'a>(
+    data: &'a AdminSettingsViewModel,
+    network: &str,
+) -> Option<&'a AdminScalarFieldView> {
+    let key = format!("proof_of_work.{network}");
+    data.engine_fields.iter().find(|f| f.key == key)
+}
+
 /// The Monero nodes tab's fields: a block per network.
 fn node_fields(data: &AdminSettingsViewModel) -> Markup {
     html! {
@@ -1366,9 +1380,14 @@ fn node_fields(data: &AdminSettingsViewModel) -> Markup {
             "The Monero nodes the engine reads each network's chain from: a primary, and fallbacks tried when it fails. "
             "A network with no nodes isn't used. A node that doesn't answer is still saved; one on another network is refused."
         }
-        @for network in &data.engine_networks { (network_block(network)) }
+        @for network in &data.engine_networks {
+            (network_block(network, proof_field(data, &network.network)))
+        }
         // Settings for every node at once (`monero_node.strict_tls`).
-        @for field in group_fields(data, SettingsTab::Nodes, None, SettingOwner::Engine) {
+        @for field in group_fields(data, SettingsTab::Nodes, None, SettingOwner::Engine)
+            .into_iter()
+            .filter(|f| !f.key.starts_with("proof_of_work."))
+        {
             (scalar_field(field))
         }
     }
@@ -1571,6 +1590,9 @@ mod tests {
             ("monero_node.stagenet", E, Nodes, None),
             ("monero_node.testnet", E, Nodes, None),
             ("monero_node.strict_tls", E, Nodes, None),
+            ("proof_of_work.mainnet", E, Nodes, None),
+            ("proof_of_work.stagenet", E, Nodes, None),
+            ("proof_of_work.testnet", E, Nodes, None),
             ("key_custody.enabled_backends", E, Custody, None),
             ("key_custody.default_backend", E, Custody, None),
             ("key_custody.socket_path", E, Custody, None),
@@ -1884,6 +1906,38 @@ mod tests {
             r##"<a href="{href}" fx-action="{href}" fx-target="#settings-panel" fx-push-url{current}>{}"##,
             tab.label()
         )
+    }
+
+    /// Each network's proof-of-work checkbox (`proof_of_work.<network>`)
+    /// sits in that network's own block, not with the settings for every
+    /// node.
+    #[test]
+    fn each_networks_proof_of_work_switch_is_in_its_own_block() {
+        let html = page(&full_view(SettingsTab::Nodes));
+        let at = |needle: &str| {
+            html.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {html}"))
+        };
+        let networks = ["mainnet", "stagenet", "testnet"];
+        for (i, network) in networks.iter().enumerate() {
+            let field = at(&format!(r#"name="proof_of_work.{network}""#));
+            assert!(
+                field > at(&format!(r#"data-network="{network}""#)),
+                "{network}"
+            );
+            if let Some(next) = networks.get(i + 1) {
+                assert!(
+                    field < at(&format!(r#"data-network="{next}""#)),
+                    "{network}"
+                );
+            }
+            assert_eq!(
+                html.matches(&format!(r#"name="proof_of_work.{network}""#))
+                    .count(),
+                1,
+                "shown once: {network}"
+            );
+        }
     }
 
     #[test]

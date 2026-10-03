@@ -134,6 +134,10 @@ pub struct NetworkStatus {
     /// node of this network has a `zmq_pub`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub announcements: Option<shared::announcements::Announcements>,
+    /// Proof-of-work checking (docs/proof_of_work.md); absent while it is
+    /// off on this network.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<shared::proof::ProofStatus>,
 }
 
 #[derive(Serialize)]
@@ -265,6 +269,7 @@ pub async fn status_page(
         let scan_status = state.networks.scanner_status.read().get(&network).cloned();
         let progress = scan_status.as_ref().map(|s| s.progress.lock().report(now));
         let announcements = scan_status.as_ref().and_then(|s| s.wakes.announcements());
+        let proof = scan_status.as_ref().and_then(|s| s.proof.clone());
         let scanner = match scan_status.filter(|s| s.tick_count > 0) {
             None => ScannerStatusView {
                 ever_ticked: false,
@@ -319,6 +324,7 @@ pub async fn status_page(
             max_blocks_behind,
             scaling,
             announcements,
+            proof,
         });
     }
 
@@ -564,6 +570,7 @@ mod tests {
                 slow: None,
             },
             announcements: None,
+            proof: None,
         }
     }
 

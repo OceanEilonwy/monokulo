@@ -24,6 +24,7 @@ pub mod monero_tx;
 pub mod network;
 pub mod order_status;
 pub mod password;
+pub mod proof;
 pub mod rate_limit;
 pub mod resources;
 pub mod scaling;

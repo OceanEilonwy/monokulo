@@ -13,6 +13,25 @@ use crate::store::{Db, OpenedReorg, OrderPaymentRow, ReorgPhase, Store};
 
 use super::{bounded, Progress, Round, Wait};
 
+/// The id of block `height`, if its own list of transactions holds `txid`
+/// (`get_block`: the id is computed from the block, the list is what the id
+/// commits to). A payment moved to a height on a node's word is stamped
+/// with it, and settles under proof-of-work checking only if that block is
+/// the proven one (docs/proof_of_work.md). `None` if the node can't show
+/// it: the payment then waits for a scan of that block.
+pub(crate) async fn block_holding(
+    daemon: &dyn MoneroDaemonClient,
+    txid: &str,
+    height: u64,
+) -> Option<String> {
+    match bounded(daemon.get_block_outline(height, None)).await {
+        Ok(outline) if outline.height == height && outline.txids.iter().any(|t| t == txid) => {
+            Some(outline.hash)
+        }
+        _ => None,
+    }
+}
+
 /// Candidates collected into the job per unit.
 const COLLECT_PAGE: usize = 256;
 /// Candidates re-examined per unit: each costs a daemon lookup or two.
@@ -322,6 +341,14 @@ impl<'a> Chain<'a> {
             && location == TxLocation::NotFound
             && self.double_spend_proven(&payment).await?;
         let decision = decide(voided, location, proven);
+        let moved_to = match decision {
+            Decision::Move(Some(height)) | Decision::Restore(height) => Some(height),
+            _ => None,
+        };
+        let found_in = match moved_to {
+            Some(height) => block_holding(self.daemon, &payment.txid, height).await,
+            None => None,
+        };
 
         let (order_id, txid, output, now) = (
             payment.order_id.clone(),
@@ -354,6 +381,9 @@ impl<'a> Chain<'a> {
                             true
                         }
                     };
+                    if let (Some(height), Some(hash)) = (moved_to, &found_in) {
+                        s.attest_payment_block(&txid, height, hash)?;
+                    }
                     s.complete_reorg_candidate(network, id)?;
                     Ok(changed)
                 })

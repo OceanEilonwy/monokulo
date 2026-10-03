@@ -443,8 +443,10 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
             if network.scanner.last_error.is_some() {
                 network.scanner.last_error = Some("the last scan failed".to_string());
             }
-            // Publisher addresses and their errors, likewise.
+            // Publisher addresses and their errors, likewise; and what
+            // proof-of-work checking found of each node.
             network.announcements = None;
+            network.proof = None;
         }
     }
     // Challenge activity is for operators only; anonymous visitors and
@@ -553,6 +555,122 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
         announcements: network
             .announcements
             .map(|announcements| announcements_view(announcements, now)),
+        proof: network.proof.map(|proof| proof_view(proof, now)),
+    }
+}
+
+/// A network's proof-of-work checking as shown to an admin
+/// (docs/proof_of_work.md).
+fn proof_view(proof: shared::proof::ProofStatus, now: i64) -> views::status::ProofView {
+    use shared::proof::{NodeVerdict, ProofState};
+    let (tag_label, tag_class) = match proof.state {
+        ProofState::Following => ("checking", "tag-ok"),
+        ProofState::Anchoring => ("anchoring", "tag-unknown"),
+        ProofState::Held => ("settlement held", "tag-error"),
+    };
+    let mut facts = Vec::new();
+    if let Some(anchor) = &proof.anchor {
+        facts.push(format!(
+            "Anchored at block {} ({} of {} node{} agreed), {}.",
+            anchor.height,
+            anchor.agreed,
+            anchor.nodes,
+            if anchor.nodes == 1 { "" } else { "s" },
+            relative_time(now, anchor.anchored_at)
+        ));
+    }
+    if let Some(hashing) = &proof.hashing {
+        facts.push(format!(
+            "{} blocks checked since the engine started, {:.0} ms each ({}); {} RandomX key{} held, 256 MiB each.",
+            proof.blocks_checked,
+            hashing.mean_hash_ms,
+            if hashing.jit {
+                "compiled"
+            } else {
+                "interpreted: RandomX's compiler can't run here"
+            },
+            hashing.keys_held,
+            if hashing.keys_held == 1 { "" } else { "s" },
+        ));
+    }
+    if let Some(at) = proof.checked_at {
+        facts.push(format!("Last checked {}.", relative_time(now, at)));
+    }
+    let nodes = proof
+        .nodes
+        .into_iter()
+        .map(|node| views::status::ProofNodeView {
+            verdict: match node.verdict {
+                NodeVerdict::Unknown => "not looked at yet",
+                NodeVerdict::OnChain => "on the proven chain",
+                NodeVerdict::Ahead => "ahead, being checked",
+                NodeVerdict::Lighter => "on a chain with less work",
+                NodeVerdict::Diverged => "left the proven chain too far back",
+                NodeVerdict::Caught => "served a block that breaks the rules",
+                NodeVerdict::Unreachable => "not answering",
+            }
+            .to_string(),
+            height: node
+                .height
+                .map(|h| h.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            node: node.node,
+            detail: node.detail,
+            excluded: node.excluded,
+        })
+        .collect();
+    views::status::ProofView {
+        tag_label: tag_label.to_string(),
+        tag_class: tag_class.to_string(),
+        summary: proof.summary,
+        facts,
+        nodes,
+        can_take_new_anchor: proof.state == ProofState::Held,
+    }
+}
+
+/// `POST /dashboard/admin/proof/{network}/reanchor` - the "Take a new
+/// anchor" button: the engine forgets the network's anchor and proven
+/// chain and takes a new anchor from its nodes next round
+/// (docs/proof_of_work.md). For after a reorg deeper than the anchor.
+pub async fn take_new_anchor(
+    State(state): State<AppState>,
+    _admin: super::AuthedAdmin,
+    axum::extract::Path(network): axum::extract::Path<String>,
+) -> Response {
+    let Ok(network) = shared::network::parse_network(&network) else {
+        return (axum::http::StatusCode::BAD_REQUEST, "No such network.").into_response();
+    };
+    let path = format!(
+        "/api/v1/admin/proof/{}/anchor",
+        shared::network::network_str(network)
+    );
+    match state
+        .engine
+        .client
+        .request(reqwest::Method::DELETE, &path)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => {
+            tracing::warn!(network = ?network, "an operator asked for a new proof-of-work anchor");
+            invalidate_status_cache(&state.engine);
+            axum::response::Redirect::to("/status").into_response()
+        }
+        Ok(response) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!(
+                "The engine refused ({}): proof-of-work checking may be off on {}.",
+                response.status(),
+                shared::network::network_str(network)
+            ),
+        )
+            .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!("Could not reach the configured engine: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -668,6 +786,7 @@ mod tests {
                     slow,
                 }),
                 announcements: None,
+                proof: None,
             }],
             poll_interval_secs: 2,
             generated_at: 0,
@@ -1111,6 +1230,7 @@ mod tests {
                 scanner,
                 scaling: None,
                 announcements: None,
+                proof: None,
             };
             let view = super::super::build_view_model(EngineStatusResponse {
                 networks: vec![
@@ -1184,7 +1304,7 @@ mod tests {
                         connections: 2,
                         pool_announcements: 41,
                         block_announcements: 3,
-                        last_announcement_at: Some(now - 5),
+                        last_announcement_at: Some(now - 150),
                         last_error: Some("the node closed the connection".into()),
                         last_error_at: Some(now - 700),
                     },
@@ -1206,7 +1326,7 @@ mod tests {
             let admin = super::super::status_view(&state, true).await;
             let shown = admin.networks[0].announcements.as_ref().unwrap();
             assert_eq!(shown.publishers[0].state_display, "since 10m ago");
-            assert_eq!(shown.publishers[0].last_announcement_display, "5s ago");
+            assert_eq!(shown.publishers[0].last_announcement_display, "2m ago");
             assert_eq!(
                 shown.publishers[0].last_error.as_deref(),
                 Some("Last failure 11m ago: the node closed the connection")
@@ -1229,6 +1349,100 @@ mod tests {
             let html = crate::views::status::live_fragment(&anonymous).into_string();
             assert!(
                 !html.contains("10.0.0.5") && !html.contains("Announcements"),
+                "{html}"
+            );
+        }
+
+        /// Proof-of-work checking (docs/proof_of_work.md) is shown to an
+        /// admin, each node with what it was found to serve, and to nobody
+        /// else; a held network offers a new anchor, a following one
+        /// doesn't.
+        #[tokio::test]
+        async fn proof_of_work_checking_is_shown_to_admins_only() {
+            use shared::proof::{
+                AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus,
+            };
+            let now = crate::now_unix();
+            let mut status = super::status_with_slow(None);
+            status.networks[0].proof = Some(ProofStatus {
+                state: ProofState::Following,
+                summary: "Proven up to block 120; orders settle on blocks up to 118.".into(),
+                anchor: Some(AnchorStatus {
+                    height: 100,
+                    hash: "ab".repeat(32),
+                    agreed: 2,
+                    nodes: 3,
+                    anchored_at: now - 7200,
+                }),
+                proven_height: Some(120),
+                proven_hash: Some("cd".repeat(32)),
+                ceiling: Some(118),
+                nodes: vec![
+                    NodeProof {
+                        node: "10.0.0.5:18081".into(),
+                        height: Some(125),
+                        verdict: NodeVerdict::Caught,
+                        detail: Some(
+                            "block 121's proof of work doesn't meet its difficulty 7".into(),
+                        ),
+                        excluded: true,
+                    },
+                    NodeProof {
+                        node: "node.example:18089".into(),
+                        height: Some(120),
+                        verdict: NodeVerdict::OnChain,
+                        detail: None,
+                        excluded: false,
+                    },
+                ],
+                blocks_checked: 20,
+                hashing: Some(Hashing {
+                    jit: true,
+                    mean_hash_ms: 16.2,
+                    mean_key_build_ms: 250.0,
+                    keys_held: 1,
+                }),
+                checked_at: Some(now - 5),
+            });
+            let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
+            super::super::seed_status_for_tests(&state.engine, status.clone());
+
+            let anonymous = super::super::status_view(&state, false).await;
+            assert!(anonymous.networks[0].proof.is_none());
+            let html = crate::views::status::live_fragment(&anonymous).into_string();
+            assert!(
+                !html.contains("10.0.0.5") && !html.contains("Proof of work"),
+                "{html}"
+            );
+
+            let admin = super::super::status_view(&state, true).await;
+            let html = crate::views::status::live_fragment(&admin).into_string();
+            for expected in [
+                "Proof of work",
+                r#"<span class="tag tag-ok">checking</span>"#,
+                "Proven up to block 120; orders settle on blocks up to 118.",
+                "Anchored at block 100 (2 of 3 nodes agreed), 2h ago.",
+                "20 blocks checked since the engine started, 16 ms each (compiled); 1 RandomX key held, 256 MiB each.",
+                "<code>10.0.0.5:18081</code>",
+                "served a block that breaks the rules",
+                r#"<span class="tag tag-error">left out</span>"#,
+                "on the proven chain",
+            ] {
+                assert!(html.contains(expected), "{expected} in {html}");
+            }
+            assert!(!html.contains("Take a new anchor"), "only while held");
+
+            let mut held = status;
+            held.networks[0].proof.as_mut().unwrap().state = ProofState::Held;
+            let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
+            super::super::seed_status_for_tests(&state.engine, held);
+            let admin = super::super::status_view(&state, true).await;
+            let html = crate::views::status::live_fragment(&admin).into_string();
+            assert!(html.contains(r#"<span class="tag tag-error">settlement held</span>"#));
+            assert!(
+                html.contains(
+                    r#"<form method="post" action="/dashboard/admin/proof/mainnet/reanchor">"#
+                ),
                 "{html}"
             );
         }

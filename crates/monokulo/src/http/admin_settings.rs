@@ -1362,6 +1362,68 @@ mod tests {
             .unwrap()
     }
 
+    /// The status page's "Take a new anchor" button (docs/proof_of_work.md):
+    /// for the admin only; the engine forgets the network's anchor and the
+    /// page goes back to the status; refused where checking is off or for no
+    /// network.
+    #[tokio::test]
+    async fn taking_a_new_proof_anchor_is_for_the_admin_and_asks_the_engine() {
+        let engine = spawn_engine().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let uri = |network: &str| format!("/dashboard/admin/proof/{network}/reanchor");
+
+        let anonymous = router
+            .clone()
+            .oneshot(form_request("POST", &uri("mainnet"), &[]))
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+        let cookie = admin_session_cookie(&router).await;
+        let post = |network: &str| authed_form_request("POST", &uri(network), &cookie, &[]);
+        let off = router.clone().oneshot(post("mainnet")).await.unwrap();
+        assert_eq!(
+            off.status(),
+            StatusCode::BAD_GATEWAY,
+            "checking is off there"
+        );
+        let nowhere = router.clone().oneshot(post("moonnet")).await.unwrap();
+        assert_eq!(nowhere.status(), StatusCode::BAD_REQUEST);
+
+        {
+            let store = engine.store().lock();
+            store.enable_proof(monero::Network::Mainnet, 1).unwrap();
+            let block = |height: u64| engine::pow::ProvenBlock {
+                height,
+                id: [height as u8; 32],
+                timestamp: height,
+                cumulative_difficulty: u128::from(height),
+            };
+            store
+                .write_anchor(
+                    monero::Network::Mainnet,
+                    &engine::store::proof::NewAnchor {
+                        agreed: 1,
+                        nodes: 1,
+                        window: (1..=3).map(block).collect(),
+                        seeds: vec![],
+                    },
+                    2,
+                )
+                .unwrap();
+        }
+        let taken = router.clone().oneshot(post("mainnet")).await.unwrap();
+        assert_eq!(taken.status(), StatusCode::SEE_OTHER);
+        assert_eq!(taken.headers()["location"], "/status");
+        let store = engine.store().lock();
+        let state = store
+            .proof_network(monero::Network::Mainnet)
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.anchor, None, "a new one is taken next round");
+    }
+
     #[tokio::test]
     async fn the_settings_page_is_unreachable_without_a_session_at_all() {
         let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
@@ -1601,6 +1663,9 @@ mod tests {
             ("payment.expired_order_grace_period_minutes", "500"),
             ("payment.scan_chunk_memory_budget_mb", "16"),
             ("monero_node.strict_tls", "true"),
+            ("proof_of_work.mainnet", "false"),
+            ("proof_of_work.stagenet", "true"),
+            ("proof_of_work.testnet", "true"),
             // Monokulo has its own server.bind: the engine's is `engine:<key>`.
             ("engine:server.bind", "127.0.0.1:9443"),
             ("server.worker_threads", "4"),

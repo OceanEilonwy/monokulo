@@ -28,6 +28,10 @@ smallest form the node offers, and ask once.
 | A page of unconfirmed payments that left the pool | one `/get_transactions` (pruned) for all of them, then one `/is_key_image_spent` per node for those found nowhere | about 1 kB per transaction |
 | A reorg | `on_get_block_hash`, O(log depth) times; one `/get_transactions` per page of affected payments | |
 | A page of recently voided payments, every five minutes | one `/is_key_image_spent` per node | |
+| Every proof-of-work round (every 5 seconds, or at a block announcement), where checking is on (docs/proof_of_work.md) | `/get_height` from every configured node | about 150 B a node |
+| Such a round, for a node whose tip isn't on the proven chain | `on_get_block_hash` at its tip's height; O(log depth) more if its chain left the proven one | 119 B each |
+| A new block, where checking is on | `get_block` for it, from the first node that has it: its blob only is kept | about 9 kB a block on mainnet |
+| Taking a proof-of-work anchor (once) | `get_block_headers_range` for 736 blocks and `on_get_block_hash` for a RandomX key, from every node; `get_block` for 64 of the blocks | about 660 kB a node, and 0.6 MB |
 | `/status` | `get_info` once per node, all nodes at once | about 1.4 kB a node |
 | Payment lookup by txid (admin) | one `/get_transactions` (pruned), then `/get_height` if it pays an order | |
 

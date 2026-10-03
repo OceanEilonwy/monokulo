@@ -874,6 +874,10 @@ pub(crate) async fn recheck_voided_payment(
             None
         }
     };
+    let found_in = match block_height {
+        Some(height) => crate::work::chain::block_holding(daemon, &payment.txid, height).await,
+        None => None,
+    };
     let (order_id, txid, output) = (
         payment.order_id.clone(),
         payment.txid.clone(),
@@ -881,7 +885,7 @@ pub(crate) async fn recheck_voided_payment(
     );
     let restored = db
         .run(crate::store::db::Class::Scanner, move |s| {
-            unvoid_as_false_positive(
+            let restored = unvoid_as_false_positive(
                 s,
                 &order_id,
                 &txid,
@@ -889,7 +893,11 @@ pub(crate) async fn recheck_voided_payment(
                 block_height,
                 current_height,
                 now,
-            )
+            )?;
+            if let (true, Some(height), Some(hash)) = (restored, block_height, &found_in) {
+                s.attest_payment_block(&txid, height, hash)?;
+            }
+            Ok::<bool, ScannerError>(restored)
         })
         .await?;
     if restored {

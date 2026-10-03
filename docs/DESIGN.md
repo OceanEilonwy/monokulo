@@ -543,6 +543,15 @@ building a second Monero implementation inside a payment gateway. What follows i
 therefore the deliberate trust boundary, written down so it is a decision rather than
 an assumption.
 
+**Narrowed where proof-of-work checking is on** (`proof_of_work.<network>`, on by
+default for mainnet only; docs/proof_of_work.md). There, an order settles only on
+blocks whose proof of work, difficulty and timestamps the engine checked itself, on
+the heaviest valid chain any configured node serves, from an anchor a majority of the
+nodes agreed on. A node can then still delay or hide payments, and lie about the pool,
+but making up the blocks a payment is confirmed in costs real mining at the network's
+difficulty. Transaction signatures are still not checked: a block with a valid proof
+of work is taken to hold valid transactions.
+
 **Trusted, with no cross-check possible:**
 
 - **`get_height`.** Confirmation counts are `current_height - block_height + 1` off

@@ -4170,3 +4170,65 @@ async fn status_says_which_network_each_node_is_on() {
         "a node that doesn't say: {body}"
     );
 }
+
+/// An operator's "take a new anchor" (docs/proof_of_work.md): the anchor
+/// and proven chain go, checking stays on (nothing settles until the next
+/// anchor); refused where checking is off, or for no network.
+#[tokio::test]
+async fn forgetting_a_proof_anchor_keeps_checking_on() {
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let router = build_router(AppState::for_tests_with_store(store.clone()), 1_000_000);
+    let forget = |network: &str| {
+        router.clone().oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/admin/proof/{network}/anchor"))
+                .header(
+                    shared::auth::ENGINE_TOKEN_HEADER,
+                    shared::auth::TEST_ENGINE_TOKEN,
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    assert_eq!(
+        forget("mainnet").await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        forget("moonnet").await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    {
+        let store = store.lock();
+        store.enable_proof(Network::Mainnet, 1).unwrap();
+        let block = |height: u64| crate::pow::ProvenBlock {
+            height,
+            id: [height as u8; 32],
+            timestamp: height,
+            cumulative_difficulty: u128::from(height),
+        };
+        store
+            .write_anchor(
+                Network::Mainnet,
+                &crate::store::proof::NewAnchor {
+                    agreed: 1,
+                    nodes: 1,
+                    window: (1..=3).map(block).collect(),
+                    seeds: vec![],
+                },
+                2,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        forget("mainnet").await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    let store = store.lock();
+    let state = store.proof_network(Network::Mainnet).unwrap().unwrap();
+    assert_eq!(state.anchor, None);
+    assert_eq!(store.proven_tip(Network::Mainnet).unwrap(), None);
+    assert_eq!(store.proof_ceiling(Network::Mainnet).unwrap(), Some(0));
+}

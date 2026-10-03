@@ -46,7 +46,9 @@ step 1.
    the latest nightly Rust (`rust-toolchain.toml`; rustup installs it on
    first use, and `rustup update nightly` keeps it current). Building
    monokulo also builds its POS app, so it needs Node 24 or later and the
-   app's dependencies, installed once from the lockfile:
+   app's dependencies, installed once from the lockfile. The engine builds
+   RandomX (to check blocks' proof of work, docs/proof_of_work.md) from C++,
+   so it needs CMake and a C++ compiler:
 
    ```sh
    (cd crates/monokulo/pos-ui && npm ci)

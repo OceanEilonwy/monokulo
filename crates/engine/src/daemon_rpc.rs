@@ -30,8 +30,8 @@ use serde_json::{json, Value};
 use tokio::time::Instant;
 
 use crate::daemon::{
-    ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, EndpointStats, FetchedTx,
-    KeyImageStatus, MoneroDaemonClient, PoolAnswer, TxLocation,
+    ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, DifficultyHeader, EndpointStats,
+    FetchedTx, KeyImageStatus, MoneroDaemonClient, PoolAnswer, TxLocation,
 };
 
 pub struct RpcDaemonClient {
@@ -1197,6 +1197,16 @@ struct BlockHeader {
     block_weight: Option<u64>,
     #[serde(default)]
     num_txes: Option<u64>,
+    /// The difficulty as two 64-bit halves, as monerod sends it; read only
+    /// for an anchor's window (docs/proof_of_work.md).
+    #[serde(default)]
+    difficulty: u64,
+    #[serde(default)]
+    difficulty_top64: u64,
+    #[serde(default)]
+    cumulative_difficulty: u64,
+    #[serde(default)]
+    cumulative_difficulty_top64: u64,
 }
 
 impl BlockHeader {
@@ -1762,6 +1772,72 @@ impl MoneroDaemonClient for RpcDaemonClient {
             timestamp: block.header.timestamp.0,
             txids: block.tx_hashes.iter().map(|id| hex::encode(id.0)).collect(),
         })
+    }
+
+    /// `get_block` by height, keeping only the blob: about a kilobyte
+    /// plus 32 bytes a transaction, sent hex-encoded with the same ids again
+    /// as JSON (about 9 KB for 30 transactions). The coinbase's height is
+    /// checked by the caller, which decodes it anyway.
+    async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
+        #[derive(Deserialize)]
+        struct GetBlock {
+            blob: String,
+        }
+        let answer: GetBlock = self
+            .post_json_rpc("get_block", json!({ "height": height }))
+            .await?;
+        hex::decode(answer.blob.trim()).map_err(|e| {
+            DaemonError::Request(format!("get_block: block {height}'s blob isn't hex: {e}"))
+        })
+    }
+
+    /// `get_block_headers_range`, with each header's difficulty and
+    /// cumulative difficulty.
+    async fn get_difficulty_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<DifficultyHeader>, DaemonError> {
+        #[derive(Deserialize)]
+        struct Headers {
+            #[serde(default)]
+            headers: Vec<BlockHeader>,
+        }
+        let count = count.clamp(1, MAX_HEADERS_PER_REQUEST);
+        let range = json!({
+            "start_height": start_height,
+            "end_height": start_height.saturating_add(count - 1),
+        });
+        let Headers { headers } = self.post_json_rpc("get_block_headers_range", range).await?;
+        let mut out = Vec::with_capacity(headers.len());
+        for (height, header) in (start_height..).zip(headers.into_iter().take(count as usize)) {
+            if header.height.is_some_and(|own| own != height) {
+                return Err(DaemonError::Request(format!(
+                    "get_block_headers_range: asked for block {height}, the node sent another"
+                )));
+            }
+            let wide = |top: u64, low: u64| (u128::from(top) << 64) | u128::from(low);
+            let difficulty = wide(header.difficulty_top64, header.difficulty);
+            let cumulative_difficulty = wide(
+                header.cumulative_difficulty_top64,
+                header.cumulative_difficulty,
+            );
+            let chain = header.into_chain_header(height)?;
+            out.push(DifficultyHeader {
+                height,
+                hash: chain.hash,
+                prev_hash: chain.prev_hash,
+                timestamp: chain.timestamp,
+                difficulty,
+                cumulative_difficulty,
+            });
+        }
+        if out.is_empty() {
+            return Err(DaemonError::Request(format!(
+                "get_block_headers_range returned no headers from height {start_height}"
+            )));
+        }
+        Ok(out)
     }
 
     /// The pool's transaction ids, followed by its changes where the node
@@ -3300,6 +3376,77 @@ mod wire_tests {
             .get_block_outline(height + 1, Some(2))
             .await
             .unwrap_err();
+        assert!(error.to_string().contains("sent another"), "{error}");
+    }
+
+    /// What proof-of-work checking reads (docs/proof_of_work.md): a block's
+    /// blob as `get_block` sends it, and headers with their difficulties,
+    /// whose two 64-bit halves are joined; a header from another height is
+    /// refused.
+    #[tokio::test]
+    async fn blobs_and_difficulty_headers_are_read_as_monerod_sends_them() {
+        let (client, node) = scripted().await;
+        let blob = crate::daemon_rpc::tests::COINBASE_ONLY_BLOCK_HEX;
+        node.answer(
+            "/json_rpc",
+            rpc_result(json!({ "status": "OK", "blob": blob, "json": "{}" })),
+        );
+        assert_eq!(
+            client.get_block_blob(7).await.unwrap(),
+            hex::decode(blob).unwrap()
+        );
+        let request: Value = serde_json::from_slice(&node.requests_to("/json_rpc")[0]).unwrap();
+        assert_eq!(request["method"], json!("get_block"));
+        assert_eq!(request["params"], json!({ "height": 7 }));
+
+        let (client, node) = scripted().await;
+        let mut wide = header(6, C, B);
+        wide["difficulty"] = json!(5u64);
+        wide["difficulty_top64"] = json!(1u64);
+        wide["cumulative_difficulty"] = json!(9u64);
+        wide["cumulative_difficulty_top64"] = json!(2u64);
+        let mut narrow = header(5, B, D);
+        narrow["difficulty"] = json!(700u64);
+        narrow["cumulative_difficulty"] = json!(u64::MAX);
+        node.answer(
+            "/json_rpc",
+            rpc_result(json!({ "status": "OK", "headers": [narrow, wide] })),
+        );
+        let headers = client.get_difficulty_headers(5, 2).await.unwrap();
+        assert_eq!(
+            headers,
+            vec![
+                DifficultyHeader {
+                    height: 5,
+                    hash: B.to_string(),
+                    prev_hash: D.to_string(),
+                    timestamp: 1_005,
+                    difficulty: 700,
+                    cumulative_difficulty: u128::from(u64::MAX),
+                },
+                DifficultyHeader {
+                    height: 6,
+                    hash: C.to_string(),
+                    prev_hash: B.to_string(),
+                    timestamp: 1_006,
+                    difficulty: (1u128 << 64) + 5,
+                    cumulative_difficulty: (2u128 << 64) + 9,
+                },
+            ]
+        );
+        let request: Value = serde_json::from_slice(&node.requests_to("/json_rpc")[0]).unwrap();
+        assert_eq!(request["method"], json!("get_block_headers_range"));
+        assert_eq!(
+            request["params"],
+            json!({ "start_height": 5, "end_height": 6 })
+        );
+
+        let (client, node) = scripted().await;
+        node.answer(
+            "/json_rpc",
+            rpc_result(json!({ "status": "OK", "headers": [header(9, B, D)] })),
+        );
+        let error = client.get_difficulty_headers(5, 1).await.unwrap_err();
         assert!(error.to_string().contains("sent another"), "{error}");
     }
 

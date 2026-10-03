@@ -159,6 +159,14 @@ pub fn node_events_name(network: Network) -> &'static str {
     }
 }
 
+pub fn proof_loop_name(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "proof of work (mainnet)",
+        Network::Stagenet => "proof of work (stagenet)",
+        Network::Testnet => "proof of work (testnet)",
+    }
+}
+
 pub fn scanner_loop_name(network: Network) -> &'static str {
     match network {
         Network::Mainnet => "chain scanner (mainnet)",
@@ -221,6 +229,20 @@ pub async fn manage_network_loops(
                 continue;
             }
             let (stop, stopped) = tokio::sync::watch::channel(false);
+            // Checking on before any loop starts, so no order settles on
+            // unchecked blocks while the proof loop gets going
+            // (docs/proof_of_work.md). Its own rounds turn it off if not.
+            if settings.scan.load().checks_proof_of_work(network) {
+                let now = now_unix();
+                if let Err(error) = db
+                    .run(crate::store::db::Class::Scanner, move |s| {
+                        s.enable_proof(network, now)
+                    })
+                    .await
+                {
+                    tracing::warn!(network = ?network, error = %error, "couldn't turn proof-of-work checking on before scanning; the proof loop does");
+                }
+            }
             // Shared by the network's round loop and its fast mempool loop.
             let scan_state = Arc::new(
                 crate::work::ScanState::waking(webhooks.clone())
@@ -258,6 +280,26 @@ pub async fn manage_network_loops(
                         )
                     },
                 );
+            }
+            {
+                let (db, daemons, settings, status, wakes) = (
+                    db.clone(),
+                    daemons.clone(),
+                    settings.clone(),
+                    scanner_status.clone(),
+                    scan_state.node_wakes().clone(),
+                );
+                supervise_until(proof_loop_name(network), stopped.clone(), move || {
+                    crate::proof::run_loop(
+                        network,
+                        db.clone(),
+                        daemons.clone(),
+                        settings.clone(),
+                        status.clone(),
+                        wakes.clone(),
+                        crate::proof::ProofTuning::DEFAULT,
+                    )
+                });
             }
             let (db, key_custody, daemons, wallet_handles, scanner_status, settings) = (
                 db.clone(),
