@@ -702,6 +702,20 @@ fn status_from_str(s: &str) -> rusqlite::Result<OrderStatus> {
     })
 }
 
+/// The bytes of an in-memory database with every migration applied, built
+/// on first use. Two first uses at once may each build it; one copy is kept.
+fn migrated_template() -> Result<&'static [u8]> {
+    static TEMPLATE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    if let Some(template) = TEMPLATE.get() {
+        return Ok(template);
+    }
+    let conn = Connection::open_in_memory()?;
+    configure_connection(&conn)?;
+    apply_migrations(&conn)?;
+    let bytes = conn.serialize(rusqlite::MAIN_DB)?.to_vec();
+    Ok(TEMPLATE.get_or_init(|| bytes))
+}
+
 fn new_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::new_v4().simple())
 }
@@ -716,39 +730,14 @@ impl Store {
         }
     }
 
+    /// A fresh in-memory store is a copy of one migrated once per process:
+    /// running every migration costs tens of milliseconds, and tests open
+    /// thousands of stores. `open_file` still migrates, and the migration
+    /// tests run the migrations themselves.
     pub fn open_in_memory() -> Result<Self> {
-        #[cfg(test)]
-        return Self::open_in_memory_from_template();
-        #[cfg(not(test))]
-        {
-            let conn = Connection::open_in_memory()?;
-            configure_connection(&conn)?;
-            apply_migrations(&conn)?;
-            Ok(Self::from_connection(conn))
-        }
-    }
-
-    /// Under test, a fresh in-memory store is a copy of one migrated once
-    /// per test binary: running every migration costs tens of milliseconds,
-    /// and tests open thousands of stores. `open_file` still migrates, and
-    /// the migration tests run the migrations themselves.
-    #[cfg(test)]
-    fn open_in_memory_from_template() -> Result<Self> {
-        static TEMPLATE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
-            let conn = Connection::open_in_memory().expect("an in-memory database");
-            configure_connection(&conn).expect("configured");
-            apply_migrations(&conn).expect("migrated");
-            conn.serialize(rusqlite::MAIN_DB)
-                .expect("serialized")
-                .to_vec()
-        });
+        let template = migrated_template()?;
         let mut conn = Connection::open_in_memory()?;
-        conn.deserialize_read_exact(
-            rusqlite::MAIN_DB,
-            TEMPLATE.as_slice(),
-            TEMPLATE.len(),
-            false,
-        )?;
+        conn.deserialize_read_exact(rusqlite::MAIN_DB, template, template.len(), false)?;
         configure_connection(&conn)?;
         Ok(Self::from_connection(conn))
     }

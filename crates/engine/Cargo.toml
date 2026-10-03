@@ -56,7 +56,8 @@ monero-epee = "0.2.1"
 randomx-rs = "1.6.0"
 rand = "0.10.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+# `serialize`: in-memory stores are copies of one migrated template.
+rusqlite = { version = "0.40.2", features = ["bundled", "serialize"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
@@ -146,8 +147,7 @@ required-features = ["e2e"]
 # `shared`'s test helpers (the test engine token).
 shared = { path = "../shared", features = ["test-support"] }
 tokio = { version = "1.53.1", features = ["rt", "macros", "test-util"] }
-# SQLite's authorizer hook (fault injection) and serialization (a migrated
-# template database) for tests.
+# SQLite's authorizer hook (fault injection) for tests.
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "serialize"] }
 # Captures log events in tests that assert a failure was reported.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt"] }
@@ -179,6 +179,7 @@ unit_bindings = "deny"
 unnameable_types = "deny"
 unreachable_pub = "deny"
 unsafe_attr_outside_unsafe = "deny"
+unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 unused_crate_dependencies = "deny"
 unused_extern_crates = "deny"
@@ -206,9 +207,6 @@ variant_size_differences = "deny"
 #   need a feature gate this crate does not use.
 # - unstable_features: the coverage build turns on `coverage_attribute`
 #   (`lib.rs`), which it would refuse.
-# - unsafe_code: pending a decision on `key_custody/plain.rs`, whose view-key
-#   zeroing on drop is the crate's one `unsafe` block (see clippy's
-#   volatile_composites and cfg_not_test below).
 # - dead_code_pub_in_binary, linker_info, unqualified_local_imports,
 #   resolving_to_items_shadowing_supertrait_items, shadowing_supertrait_items,
 #   raw_borrows_via_references, impl_trait_redundant_captures: diagnostics
@@ -286,12 +284,6 @@ option_if_let_else = "allow"            # nursery; its rewrites read worse
 significant_drop_tightening = "allow"   # nursery; known false positives on guards
 assert_is_empty = "allow"               # its fix, `assert_eq!(v, [] as [T; 0])`,
                                         # is a trivial cast that trivial_casts refuses
-
-# Pending a decision on `key_custody/plain.rs`: its view-key zeroing writes a
-# whole `PrivateKey` with `write_volatile` (volatile_composites), and its
-# derivation counter is compiled only in tests (cfg_not_test).
-volatile_composites = "allow"
-cfg_not_test = "allow"
 
 # Range lints: enabled by step 6 of docs/engine_arithmetic_audit.md, once the
 # unit types (step 5) have removed most sites, so each remaining one gets a
