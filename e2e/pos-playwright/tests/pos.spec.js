@@ -6,7 +6,7 @@
 // The backend (a real, network-bound engine against the real public
 // stagenet node, plus a real, network-bound monokulo with one account/store
 // already connected) is booted once by ../global-setup.js
-// (crates/engine/src/bin/e2e_harness.rs) and shared by both tests below -
+// (crates/e2e-harness/src/main.rs) and shared by both tests below -
 // they run sequentially (see playwright.config.js: fullyParallel: false,
 // workers: 1), never concurrently, since they share one real backend and one
 // real customer wallet.

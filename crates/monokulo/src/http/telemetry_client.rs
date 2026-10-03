@@ -115,7 +115,6 @@ mod tests {
             "https://shop.example.com",
             "pk_1",
             "sk_1",
-            "http://127.0.0.1:1",
             0,
             "XMR",
         )

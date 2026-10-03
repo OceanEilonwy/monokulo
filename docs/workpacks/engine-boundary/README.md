@@ -112,7 +112,7 @@ Facts established during planning (verify each as you go; line numbers may have 
   - `shared::rate_limit::RateLimiter<IpAddr>`, 20/min per IP by default (`RATE_LIMIT_PER_IP_PER_MIN`), layered on the whole `/pay/...` sub-router in `http/mod.rs`.
   - Peer IP comes from `ConnectInfo`, failing open when absent (tests).
   - Monokulo binds `127.0.0.1:8081` (hard-coded in `crates/monokulo/src/main.rs`).
-- **Several places construct monokulo's `AppState` directly:** the `http/*.rs` test modules, `crates/mock-woocommerce/src/lib.rs`, `crates/mock-woocommerce/tests/*.rs` and `crates/engine/src/bin/e2e_harness.rs`. When you add fields, update all of them. `cargo test --workspace` catches it; `-p monokulo` alone does not.
+- **Several places construct monokulo's `AppState` directly:** the `http/*.rs` test modules, `crates/mock-woocommerce/src/lib.rs`, `crates/mock-woocommerce/tests/*.rs` and `crates/e2e-harness/src/main.rs`. When you add fields, update all of them. `cargo clippy --workspace --all-targets --all-features` catches it (the harness builds only with its `e2e` feature); `-p monokulo` alone does not.
 - **Toolchain:** `tor` 0.4.9.12 is installed at `/usr/bin/tor`, built with the proof-of-work module (`tor --list-modules` shows `pow: yes`). `php` 8.5 and `composer` are installed, and so is `docker`.
 
 ---

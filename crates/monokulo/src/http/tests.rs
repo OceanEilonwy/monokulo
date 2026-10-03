@@ -903,7 +903,7 @@ const TEST_SPEND_PUBKEY_HEX: &str =
 async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
     let engine =
         engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-    let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
+    let engine_client = EngineClient::embedded_for_tests(engine.router());
     let state = AppState {
         engine: crate::http::Engine::new(engine_client),
         ..AppState::for_tests()
@@ -1615,7 +1615,6 @@ fn state_with_owner_and_store(
             "https://shop.example.com",
             tenant_public_key,
             "enc",
-            "http://engine",
             1,
             "XMR",
         )
@@ -1855,7 +1854,6 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
             "https://shop.example.com",
             "pk_shop",
             &encrypted,
-            "http://engine",
             1,
             "XMR",
         )

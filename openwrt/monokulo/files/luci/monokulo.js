@@ -4,8 +4,8 @@
 'require rpc';
 'require uci';
 
-// Services > Monokulo: whether monokulo and its engine are running, and the
-// settings they start with. Everything else (Monero nodes, stores, abuse
+// Services > Monokulo: whether monokulo (with the engine inside it) is
+// running, and the settings it starts with. Everything else (Monero nodes, stores, abuse
 // protection...) is on monokulo's own admin page.
 
 var callServiceList = rpc.declare({
@@ -46,7 +46,7 @@ return view.extend({
 		o.cfgvalue = function() {
 			var port = parseInt(uci.get('monokulo', 'main', 'port'), 10) || 8081;
 			var listen = uci.get('monokulo', 'main', 'listen') || 'lan';
-			var text = '<strong>' + state(running, 'monokulo') + '</strong>';
+			var text = '<strong>' + state(running, 'monokulo') + '</strong> &middot; ' + _('the engine runs inside it');
 			if (running.monokulo && running.monokulo.running && listen !== 'loopback') {
 				var url = 'http://' + window.location.hostname + ':' + port + '/';
 				text += ' &middot; <a href="' + url + '" target="_blank" rel="noreferrer">' + _('Open monokulo') + '</a>';
@@ -54,16 +54,10 @@ return view.extend({
 			return text;
 		};
 
-		o = s.option(form.DummyValue, '_engine', _('Engine'));
-		o.rawhtml = true;
-		o.cfgvalue = function() {
-			return '<strong>' + state(running, 'engine') + '</strong> &middot; ' + _('private, on 127.0.0.1');
-		};
-
 		o = s.option(form.DummyValue, '_secrets', _('Secrets'));
 		o.rawhtml = true;
 		o.cfgvalue = function() {
-			return _('The encryption key and engine token are in <code>/etc/monokulo/secrets</code>, made on first start. <strong>Back it up</strong> (for example <code>scp root@router:/etc/monokulo/secrets .</code>): without it, monokulo’s data can’t be read.');
+			return _('The encryption key for monokulo’s data is in <code>/etc/monokulo/secrets</code>, made on first start. <strong>Back it up</strong> (for example <code>scp root@router:/etc/monokulo/secrets .</code>): without it, monokulo’s data can’t be read.');
 		};
 
 		s = m.section(form.NamedSection, 'main', 'monokulo', _('Settings'));
@@ -86,7 +80,7 @@ return view.extend({
 		o.default = 'lan';
 
 		o = s.option(form.Value, 'data_dir', _('Data folder'),
-			_('Databases, logs and the options files monokulo’s admin page saves. Must be on storage, not /tmp. Kept across firmware upgrades if left at the default.'));
+			_('Databases, logs and the options file monokulo’s admin page saves. Must be on storage, not /tmp. Kept across firmware upgrades if left at the default.'));
 		o.placeholder = '/srv/monokulo';
 		o.validate = function(section_id, value) {
 			if (!value)
@@ -98,13 +92,8 @@ return view.extend({
 			return true;
 		};
 
-		o = s.option(form.Value, 'engine_port', _('Engine port'),
-			_('The engine listens on 127.0.0.1 only; change this only if the port is taken.'));
-		o.datatype = 'port';
-		o.placeholder = '8443';
-
 		o = s.option(form.Value, 'engine_cpus', _('Engine CPUs'),
-			_('Which CPUs the engine may use, e.g. <code>2,3</code>. It scans with one thread per CPU it is given, so leaving some out keeps them free for routing while it catches up with the chain. Empty: all of them.'));
+			_('Which CPUs the engine’s threads inside monokulo may use, e.g. <code>2,3</code>. It runs one scan per CPU it is given, so leaving some out keeps them free for routing while it catches up with the chain. Empty: all of them.'));
 		o.placeholder = '2,3';
 		o.validate = function(section_id, value) {
 			if (!value || /^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$/.test(value))
@@ -113,7 +102,7 @@ return view.extend({
 		};
 
 		o = s.option(form.Value, 'engine_nice', _('Engine priority (nice)'),
-			_('0 is normal, 19 the lowest. Higher gives way to everything else the router does.'));
+			_('0 is normal, 19 the lowest. Higher gives way to everything else the router does, monokulo’s own web pages included.'));
 		o.datatype = 'range(0,19)';
 		o.placeholder = '10';
 

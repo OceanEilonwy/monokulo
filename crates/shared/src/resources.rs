@@ -92,6 +92,11 @@ pub struct ResourceSample {
     /// 0 to 100: a share of all the machine's cores together.
     pub cpu_percent: f32,
     pub memory_bytes: u64,
+    /// The part of `cpu_percent` used by the threads of a service running
+    /// inside this process ([`Sampler::host_threads`]): an engine embedded
+    /// in monokulo. `None` when there is none, or it can't be told apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted_cpu_percent: Option<f32>,
 }
 
 /// A process's last hour, with the machine it ran on.
@@ -107,6 +112,44 @@ pub struct ResourceReport {
     pub samples: Vec<ResourceSample>,
 }
 
+impl ResourceReport {
+    /// The hosted service's part of this process ([`Sampler::host_threads`]):
+    /// the CPU its threads used. Memory is the process's, shared, so none
+    /// is given here: the whole is in [`Self::without_hosted`].
+    pub fn hosted(&self) -> ResourceReport {
+        self.split(|sample| sample.hosted_cpu_percent.unwrap_or(0.0), |_| 0)
+    }
+
+    /// The rest of this process: its CPU less the hosted service's, and
+    /// all of its memory, which the two share.
+    pub fn without_hosted(&self) -> ResourceReport {
+        self.split(
+            |sample| (sample.cpu_percent - sample.hosted_cpu_percent.unwrap_or(0.0)).max(0.0),
+            |sample| sample.memory_bytes,
+        )
+    }
+
+    fn split(
+        &self,
+        cpu: impl Fn(&ResourceSample) -> f32,
+        memory: impl Fn(&ResourceSample) -> u64,
+    ) -> ResourceReport {
+        ResourceReport {
+            samples: self
+                .samples
+                .iter()
+                .map(|sample| ResourceSample {
+                    unix: sample.unix,
+                    cpu_percent: cpu(sample),
+                    memory_bytes: memory(sample),
+                    hosted_cpu_percent: None,
+                })
+                .collect(),
+            ..self.clone()
+        }
+    }
+}
+
 /// Samples its own process every [`SAMPLE_EVERY_SECS`], keeping an hour.
 pub struct Sampler {
     state: parking_lot::Mutex<SamplerState>,
@@ -116,6 +159,9 @@ struct SamplerState {
     system: sysinfo::System,
     pid: Option<sysinfo::Pid>,
     samples: std::collections::VecDeque<ResourceSample>,
+    /// The name prefix of a hosted service's threads, and the CPU time
+    /// they had used at the last sample, with when that was.
+    hosted: Option<(&'static str, Option<(u64, std::time::Instant)>)>,
 }
 
 impl Default for Sampler {
@@ -125,12 +171,21 @@ impl Default for Sampler {
                 system: sysinfo::System::new(),
                 pid: sysinfo::get_current_pid().ok(),
                 samples: std::collections::VecDeque::new(),
+                hosted: None,
             }),
         }
     }
 }
 
 impl Sampler {
+    /// Also measures the CPU of this process's threads whose names start
+    /// with `prefix`: a service running inside it (an engine embedded in
+    /// monokulo, its threads `engine-worker`), so its share can be told
+    /// apart from the rest ([`ResourceReport::hosted`]). Linux only.
+    pub fn host_threads(&self, prefix: &'static str) {
+        self.state.lock().hosted = Some((prefix, None));
+    }
+
     /// Takes a sample now. The first one's CPU share is 0: CPU use is
     /// measured between two samples.
     pub fn sample(&self) {
@@ -151,10 +206,17 @@ impl Sampler {
             return;
         };
         let cores = cpu_count() as f32;
+        let cpu_percent = (process.cpu_usage() / cores).clamp(0.0, 100.0);
+        let memory_bytes = process.memory();
+        let hosted_cpu_percent = state
+            .hosted
+            .as_mut()
+            .and_then(|(prefix, last)| hosted_share(prefix, last, cores));
         let sample = ResourceSample {
             unix: now_unix - now_unix.rem_euclid(SAMPLE_EVERY_SECS),
-            cpu_percent: (process.cpu_usage() / cores).clamp(0.0, 100.0),
-            memory_bytes: process.memory(),
+            cpu_percent,
+            memory_bytes,
+            hosted_cpu_percent,
         };
         state.push(sample);
     }
@@ -186,6 +248,57 @@ impl SamplerState {
             self.samples.pop_front();
         }
     }
+}
+
+/// The share of the machine's CPU the threads named `prefix…` used since
+/// `last` (updated to now), from each thread's `/proc/self/task/<id>/stat`.
+/// `None` at the first sample, and where `/proc` isn't there to read.
+fn hosted_share(
+    prefix: &str,
+    last: &mut Option<(u64, std::time::Instant)>,
+    cores: f32,
+) -> Option<f32> {
+    let ticks = threads_cpu_ticks(prefix)?;
+    let now = std::time::Instant::now();
+    let previous = last.replace((ticks, now));
+    let (before, then) = previous?;
+    let seconds = now.duration_since(then).as_secs_f32();
+    if seconds <= 0.0 {
+        return None;
+    }
+    // A thread that ended took its time with it: never below nothing.
+    let used = ticks.saturating_sub(before) as f32 / USER_HZ;
+    Some((used / seconds / cores * 100.0).clamp(0.0, 100.0))
+}
+
+/// Clock ticks per second in `/proc`'s CPU times: `USER_HZ`, which Linux
+/// fixes at 100 for user space on every architecture it runs on.
+const USER_HZ: f32 = 100.0;
+
+/// The user and system CPU time, in ticks, of this process's threads whose
+/// names start with `prefix`.
+fn threads_cpu_ticks(prefix: &str) -> Option<u64> {
+    let tasks = std::fs::read_dir("/proc/self/task").ok()?;
+    let mut total = 0;
+    for task in tasks.flatten() {
+        let Ok(stat) = std::fs::read_to_string(task.path().join("stat")) else {
+            continue;
+        };
+        // `<id> (<name>) <state> ...`: the name may hold spaces, so split
+        // around its parentheses.
+        let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else {
+            continue;
+        };
+        if !stat[open + 1..close].starts_with(prefix) {
+            continue;
+        }
+        let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+        // utime and stime: the 14th and 15th fields, the 12th and 13th
+        // after the name.
+        let time = |at: usize| fields.get(at).and_then(|f| f.parse::<u64>().ok());
+        total += time(11).unwrap_or(0) + time(12).unwrap_or(0);
+    }
+    Some(total)
 }
 
 /// This process's sampler.
@@ -240,6 +353,47 @@ mod tests {
         assert_eq!(samples.len(), KEEP_SAMPLES);
         assert_eq!(samples.last().unwrap().unix, 1_004_000);
         assert!(samples.windows(2).all(|w| w[1].unix - w[0].unix == 10));
+    }
+
+    /// One process holding two services: the hosted one's CPU is measured
+    /// from its threads, so the two shares add up to the process, and
+    /// memory is counted once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_hosted_services_threads_are_measured_apart() {
+        let sampler = Sampler::default();
+        sampler.host_threads("hosted-test");
+        sampler.sample_at(2_000_000);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let busy = {
+            let stop = stop.clone();
+            std::thread::Builder::new()
+                .name("hosted-test-1".to_string())
+                .spawn(move || {
+                    let mut n = 0u64;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        n = n.wrapping_add(1);
+                    }
+                    n
+                })
+                .unwrap()
+        };
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        sampler.sample_at(2_000_010);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        busy.join().unwrap();
+
+        let report = sampler.report();
+        let sample = report.samples.last().unwrap();
+        let hosted = sample.hosted_cpu_percent.expect("measured");
+        assert!(hosted > 0.0, "a busy thread shows: {sample:?}");
+
+        let (guest, rest) = (report.hosted(), report.without_hosted());
+        let (guest, rest) = (guest.samples.last().unwrap(), rest.samples.last().unwrap());
+        assert_eq!(guest.cpu_percent, hosted);
+        assert_eq!(rest.cpu_percent, (sample.cpu_percent - hosted).max(0.0));
+        assert_eq!(guest.memory_bytes, 0, "memory is counted once");
+        assert_eq!(rest.memory_bytes, sample.memory_bytes);
     }
 
     #[test]

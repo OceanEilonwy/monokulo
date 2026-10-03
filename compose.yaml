@@ -1,60 +1,82 @@
-# Monokulo with Docker Compose: the engine and monokulo as two containers from
-# the image the Dockerfile builds. Only monokulo is published; the engine's
-# admin API stays on the compose network.
+# Monokulo with Docker Compose: one container from the image the Dockerfile
+# builds, with the engine running inside monokulo (engine.mode = "embedded",
+# the default; docs/engine_as_library.md).
 #
-# Put the two secrets in a .env file beside this one (never commit it):
+# Put the one secret in a .env file beside this one (never commit it):
 #
 #   MONOKULO_ENCRYPTION_KEY=<openssl rand -hex 32>   # encrypts monokulo's data at rest; keep it
-#   ENGINE_TOKEN=<openssl rand -hex 32>              # the engine token
 #
-# The engine token is required: the engine answers no request without
-# it, and neither container starts without it (at least 32 characters). The
-# engine gets it as ENGINE_TOKEN and monokulo, which sends it with every
-# request to the engine, as MONOKULO_ENGINE_TOKEN. To change the token, edit
-# .env and recreate both containers.
-#
-# Where each listens, where its database is and monokulo's engine address
-# are given as options below, so the admin page shows them locked.
-# Everything else is kept in each container's options file
-# (/var/lib/monokulo/<engine|monokulo>.toml, in its volume), which the
-# admin page saves to; edit it by hand and press Reload options file there.
+# Where monokulo listens and where its database is are given as options
+# below, so the admin page shows them locked. The engine's database goes
+# beside it (/var/lib/monokulo/engine.db). Everything else is kept in the
+# options file (/var/lib/monokulo/monokulo.toml, in the volume), the
+# engine's settings under its [engine.*] tables; the admin page saves to it.
+# Edit it by hand and press Reload options file there.
 #
 # Then `docker compose up -d` and open http://localhost:8081 to create the
 # admin account. Monero nodes and everything else are set on its admin page.
+#
+# To run the engine as a container of its own instead (engine.mode =
+# "remote"), see the commented services at the end.
 
 services:
-  engine:
+  monokulo:
     build: .
     image: monokulo
-    command:
-      - monokulo-engine
-      - --options=/var/lib/monokulo/engine.toml
-      - --server-bind=0.0.0.0:8443
-      - --database-path=/var/lib/monokulo/engine.db
-    environment:
-      ENGINE_TOKEN: ${ENGINE_TOKEN:?set ENGINE_TOKEN in .env}
-    volumes:
-      - engine-data:/var/lib/monokulo
-    restart: unless-stopped
-
-  monokulo:
-    image: monokulo
-    depends_on: [engine]
     command:
       - monokulo
       - --options=/var/lib/monokulo/monokulo.toml
       - --server-bind=0.0.0.0:8081
       - --database-path=/var/lib/monokulo/monokulo.db
-      - --engine-url=http://engine:8443
     environment:
       MONOKULO_ENCRYPTION_KEY: ${MONOKULO_ENCRYPTION_KEY:?set MONOKULO_ENCRYPTION_KEY in .env}
-      MONOKULO_ENGINE_TOKEN: ${ENGINE_TOKEN:?set ENGINE_TOKEN in .env}
     ports:
       - "8081:8081"
     volumes:
       - monokulo-data:/var/lib/monokulo
     restart: unless-stopped
 
+# The engine in a container of its own: replace the service above with these
+# two, and add ENGINE_TOKEN=<openssl rand -hex 32> to .env. The engine
+# answers no request without the token; the engine gets it as ENGINE_TOKEN
+# and monokulo, which sends it with every request, as MONOKULO_ENGINE_TOKEN.
+# Only monokulo is published; the engine's admin API stays on the compose
+# network. Its settings live in its own options file
+# (/var/lib/monokulo/engine.toml, in its volume).
+#
+#  engine:
+#    build: .
+#    image: monokulo
+#    command:
+#      - monokulo-engine
+#      - --options=/var/lib/monokulo/engine.toml
+#      - --server-bind=0.0.0.0:8443
+#      - --database-path=/var/lib/monokulo/engine.db
+#    environment:
+#      ENGINE_TOKEN: ${ENGINE_TOKEN:?set ENGINE_TOKEN in .env}
+#    volumes:
+#      - engine-data:/var/lib/monokulo
+#    restart: unless-stopped
+#
+#  monokulo:
+#    image: monokulo
+#    depends_on: [engine]
+#    command:
+#      - monokulo
+#      - --options=/var/lib/monokulo/monokulo.toml
+#      - --server-bind=0.0.0.0:8081
+#      - --database-path=/var/lib/monokulo/monokulo.db
+#      - --engine-mode=remote
+#      - --engine-url=http://engine:8443
+#    environment:
+#      MONOKULO_ENCRYPTION_KEY: ${MONOKULO_ENCRYPTION_KEY:?set MONOKULO_ENCRYPTION_KEY in .env}
+#      MONOKULO_ENGINE_TOKEN: ${ENGINE_TOKEN:?set ENGINE_TOKEN in .env}
+#    ports:
+#      - "8081:8081"
+#    volumes:
+#      - monokulo-data:/var/lib/monokulo
+#    restart: unless-stopped
+
 volumes:
-  engine-data:
   monokulo-data:
+#  engine-data:

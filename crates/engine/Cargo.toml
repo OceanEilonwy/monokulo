@@ -19,10 +19,9 @@ async-trait = "0.1.92"
 axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing", "macros"] }
 hex = "0.4.3"
 hmac = "0.13.0"
-# Reads response bodies (`.collect().await.to_bytes()`) - both this crate's own
+# Reads response bodies (`.collect().await.to_bytes()`) - this crate's own
 # `src/http/tests.rs` (a plain, always-run lib test, hence unconditional here
-# rather than dev-only/feature-gated) and, later in this file, the `e2e`-gated
-# `e2e-harness` binary's real signup/login/connect setup calls.
+# rather than dev-only/feature-gated).
 http-body = "1.1.0"
 http-body-util = "0.1.5"
 # WBS 2.1.3: `main.rs` needs `SocketKeyCustody` to wire the `[key_custody]
@@ -74,26 +73,6 @@ url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 zeroize = { version = "1.9.0", features = ["derive"] }
 
-# e2e-feature-only, moved out of [dev-dependencies]: a `[[bin]]` target (unlike
-# `tests/*.rs`) only ever sees a package's normal [dependencies], never its
-# [dev-dependencies] - see `src/bin/e2e_harness.rs`'s own doc comment for why
-# it's a `[[bin]]` at all. `monokulo` depends only on `shared` (never on this
-# crate), so this edge (`engine` -> `monokulo`) creates no cycle; `monokulo`'s
-# own [dev-dependencies] (which do pull in `engine-test-support -> engine`)
-# are never built along it - Cargo only ever builds a path dependency's
-# [dependencies], never its own [dev-dependencies], when it's depended on as a
-# library by another crate. Still reaches `tests/e2e_dashboard_stagenet.rs`
-# too - an integration test sees both its package's [dependencies] and
-# [dev-dependencies].
-monokulo = { path = "../monokulo", optional = true }
-# The fast/reliable stagenet test wallet every real e2e test/binary in this
-# crate uses to sign and broadcast real payments - see `cli-wallet`'s
-# own crate doc comment for why it's a separate, narrower wallet from a
-# general-purpose one. This crate no longer needs the real transaction-
-# construction dependencies (`monero-wallet`/`monero-daemon-rpc`/`rand_core`/
-# `curve25519-dalek`) directly at all - they moved to `cli-wallet`'s
-# own Cargo.toml along with the wallet code that used them.
-cli-wallet = { path = "../cli-wallet", optional = true }
 clap = "4.6.7"
 # Push notifications from the operator's own monerod (`--zmq-pub`), behind
 # the `zmq` feature (docs/monero_zmq.md). A pure-Rust ZeroMQ, so the binary
@@ -101,14 +80,9 @@ clap = "4.6.7"
 zeromq = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport", "ipc-transport"], optional = true }
 
 [features]
-# Real-spend-wallet support for the e2e tests and the POS e2e harness binary
-# below. Never enabled by default - keeping `cli-wallet`'s own real
-# transaction-construction dependencies (and the extra `monokulo` needed to
-# drive a whole hosted stack) out of the tree for a normal `cargo build`/
-# `cargo test --workspace` is the point.
-e2e = ["dep:monokulo", "dep:cli-wallet", "test-support", "monokulo/test-support"]
 # The in-thread database pools (`store::Database::inline`) for
-# `engine-test-support` and the e2e harness. Never in production.
+# `engine-test-support` and the e2e harness (`crates/e2e-harness`). Never in
+# production.
 test-support = ["shared/test-support"]
 # Wakes the scan loops when a node configured with `zmq_pub` says a block or
 # a pool transaction arrived (docs/monero_zmq.md). Polling stays on as the
@@ -116,32 +90,11 @@ test-support = ["shared/test-support"]
 # refused, so it can't be saved and silently ignored.
 zmq = ["dep:zeromq"]
 
-[[test]]
-name = "e2e_stagenet"
-path = "tests/e2e_stagenet.rs"
-required-features = ["e2e"]
-
-[[test]]
-name = "e2e_dashboard_stagenet"
-path = "tests/e2e_dashboard_stagenet.rs"
-required-features = ["e2e"]
-
-# The real backend half of the POS screen's own real stagenet+browser e2e
-# suite (`e2e/pos-playwright/`, driven by Playwright, not `cargo test`) -
-# see that directory's own README for how it's actually run, and
-# `src/bin/e2e_harness.rs`'s own module doc comment for everything this one
-# process is actually responsible for (it's not just a wallet bridge - a
-# real engine, a real monokulo, account/store provisioning, and the
-# background scan loop all live here too). A real `[[bin]]` rather than
-# another `#[ignore]`d `#[tokio::test]` (like the two above) specifically so
-# an external process (Playwright, over Node's `child_process`) can
-# spawn/discover/kill it directly by a predictable `target/debug/<name>`
-# path, rather than needing to locate `cargo test`'s own hash-suffixed test
-# binary or manage a `cargo test` process tree.
-[[bin]]
-name = "e2e-harness"
-path = "src/bin/e2e_harness.rs"
-required-features = ["e2e"]
+# Pinning the engine's threads to CPUs and setting their niceness
+# (`threads`, server.cpus and server.nice): Linux's per-thread calls, through
+# rustix's safe wrappers, so the engine keeps no `unsafe` of its own for them.
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.5", features = ["thread", "process"] }
 
 [dev-dependencies]
 # `shared`'s test helpers (the test engine token).

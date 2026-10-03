@@ -99,6 +99,7 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
             // with a padlock and the reason, never saved here.
             let locked = view
                 .locked
+                .or_else(|| only_for_a_remote_engine(state, view.key))
                 .or_else(|| read_only.clone().filter(|_| view.sources.toml));
             AdminScalarFieldView {
                 key: view.key.to_string(),
@@ -116,6 +117,42 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
             }
         })
         .collect()
+}
+
+/// Why monokulo's own `key` can't be set here while the engine runs inside
+/// monokulo: the engine's URL is only for a remote engine, and saved now it
+/// would stop monokulo at its next start.
+fn only_for_a_remote_engine(state: &AppState, key: &str) -> Option<String> {
+    (state.engine.client.is_embedded() && key == crate::settings::ENGINE_URL.key).then(|| {
+        "Only used with a remote engine (engine.mode = remote): the engine runs inside monokulo."
+            .to_string()
+    })
+}
+
+/// The Resources panel's figures. Inside monokulo, the engine's
+/// `/status` reports the same process as monokulo's own sampler, so the
+/// one report is split by thread instead: counted twice, it would double.
+fn resources_view(
+    client: &crate::engine_client::EngineClient,
+    status: &crate::engine_client::EngineStatusResponse,
+    now: i64,
+) -> views::scaling::ResourcesView {
+    let process = shared::resources::sampler().report();
+    if client.is_embedded() {
+        views::scaling::ResourcesView {
+            engine: Some(process.hosted()),
+            monokulo: process.without_hosted(),
+            now_unix: now,
+            one_process: true,
+        }
+    } else {
+        views::scaling::ResourcesView {
+            engine: status.resources.clone(),
+            monokulo: process,
+            now_unix: now,
+            one_process: false,
+        }
+    }
 }
 
 /// Whether `key` is one of monokulo's own settings.
@@ -183,14 +220,13 @@ struct EngineSettings {
     options_file: Option<live_settings::FileInfo>,
 }
 
-/// Fetches the engine's own settings over HTTP; `Err` for a reachability,
-/// auth or parse failure worth showing.
+/// Fetches the engine's own settings through its admin API; `Err` for a
+/// reachability, auth or parse failure worth showing.
 async fn fetch_engine_settings(
     engine: &crate::engine_client::EngineClient,
 ) -> Result<EngineSettings, String> {
     let response = engine
-        .request(reqwest::Method::GET, "/api/v1/admin/settings")
-        .send()
+        .get_settings()
         .await
         .map_err(|e| format!("request failed: {e}"))?;
     if !response.status().is_success() {
@@ -198,7 +234,6 @@ async fn fetch_engine_settings(
     }
     let parsed: RemoteSettingsResponse = response
         .json()
-        .await
         .map_err(|e| format!("could not parse the engine's response: {e}"))?;
 
     let fields = parsed
@@ -392,11 +427,7 @@ async fn build_view_model(
                 Ok(status) => {
                     let now = shared::time::now_unix();
                     attach_node_status(&mut view.engine_networks, &status, now);
-                    view.resources = Some(views::scaling::ResourcesView {
-                        engine: status.resources.clone(),
-                        monokulo: shared::resources::sampler().report(),
-                        now_unix: now,
-                    });
+                    view.resources = Some(resources_view(&state.engine.client, &status, now));
                     status.unserved_tenants
                 }
                 Err(_) => Vec::new(),
@@ -603,6 +634,19 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
     let Some(registry) = state.settings.registry.as_ref() else {
         return SaveOutcome::refused("Settings can't be saved on this instance.".to_string());
     };
+    // Shown locked; a form that sends it anyway is refused.
+    if let Some(why) = form
+        .keys()
+        .find_map(|key| only_for_a_remote_engine(state, key))
+    {
+        return SaveOutcome {
+            error_key: Some((
+                crate::settings::ENGINE_URL.key.to_string(),
+                SettingOwner::Monokulo,
+            )),
+            ..SaveOutcome::refused(why)
+        };
+    }
     let changes: live_settings::Changes = crate::settings::ALL
         .iter()
         .filter_map(|setting| {
@@ -767,16 +811,10 @@ async fn save_engine(state: &AppState, req: RemoteUpdateRequest) -> SaveOutcome 
     if req.is_empty() {
         return SaveOutcome::default();
     }
-    let result = state
-        .engine
-        .client
-        .request(reqwest::Method::POST, "/api/v1/admin/settings")
-        .json(&req)
-        .send()
-        .await;
+    let result = state.engine.client.save_settings(&req).await;
     match result {
         Ok(response) if response.status().is_success() => {
-            let saved: RemoteSaveResponse = match response.json().await {
+            let saved: RemoteSaveResponse = match response.json() {
                 Ok(saved) => saved,
                 Err(e) => {
                     // Saved, but what it said about the save is lost: say
@@ -810,7 +848,7 @@ async fn save_engine(state: &AppState, req: RemoteUpdateRequest) -> SaveOutcome 
         }
         Ok(response) => {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response.text();
             let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
             let field_errors: Vec<(String, String)> = parsed
                 .as_ref()
@@ -1082,12 +1120,11 @@ async fn reload_engine(state: &AppState) -> Result<(String, Vec<Notice>), String
     let response = state
         .engine
         .client
-        .request(reqwest::Method::POST, "/api/v1/admin/settings/reload")
-        .send()
+        .reload_options()
         .await
         .map_err(|e| format!("Could not reach the configured engine: {e}"))?;
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let body = response.text();
     if !status.is_success() {
         let message = serde_json::from_str::<serde_json::Value>(&body)
             .ok()
@@ -1198,10 +1235,21 @@ mod tests {
         engine_addr: std::net::SocketAddr,
         options: live_settings::OptionsFile,
     ) -> AppState {
+        test_app_state_with_client(
+            EngineClient::for_tests(format!("http://{engine_addr}")),
+            options,
+        )
+        .await
+    }
+
+    /// The same, reaching the engine through `engine_client`.
+    async fn test_app_state_with_client(
+        engine_client: EngineClient,
+        options: live_settings::OptionsFile,
+    ) -> AppState {
         let db = Db::open_in_memory().unwrap();
         db.seed_test_admin();
         let db = db.into_shared();
-        let engine_client = EngineClient::for_tests(format!("http://{engine_addr}"));
         let exchange_rate = test_exchange_rate_provider();
         let abuse: std::sync::Arc<crate::abuse::AbuseProtection> = Default::default();
         let settings = crate::settings::MonokuloSettings::load(
@@ -1575,6 +1623,7 @@ mod tests {
             ("logging.otlp_endpoint", "http://127.0.0.1:4318"),
             ("logging.format", "json"),
             ("server.bind", "127.0.0.1:9081"),
+            ("engine.mode", "remote"),
             ("engine.url", "http://127.0.0.1:9443"),
         ];
         // Every monokulo setting the page can save must be covered here, or
@@ -1646,6 +1695,8 @@ mod tests {
             // Monokulo has its own server.bind: the engine's is `engine:<key>`.
             ("engine:server.bind", "127.0.0.1:9443"),
             ("server.worker_threads", "4"),
+            ("server.cpus", "0"),
+            ("server.nice", "5"),
             ("server.rate_limit_per_token_per_min", "200"),
             ("server.max_body_bytes", "16384"),
             // The same key as monokulo's own, so sent as `engine:<key>`.
@@ -1871,6 +1922,49 @@ mod tests {
             "the next request sees it: {after}"
         );
         assert!(after.contains(r#"name="view_key_hex""#), "{after}");
+    }
+
+    #[tokio::test]
+    async fn with_the_engine_inside_monokulo_its_address_is_locked_and_never_saved() {
+        let engine = spawn_engine().await;
+        let state = test_app_state_with_client(
+            EngineClient::embedded_for_tests(engine.router()),
+            live_settings::OptionsFile::in_memory("[signup]\nmode = \"public\"\n"),
+        )
+        .await;
+        let settings = state.settings.clone();
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+
+        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(
+            page.contains("Only used with a remote engine (engine.mode = remote): the engine runs inside monokulo."),
+            "the lock says why: {page}"
+        );
+        assert!(
+            !page.contains(r#"name="engine.url""#),
+            "not editable: {page}"
+        );
+
+        // A hand-made form that sends it anyway is refused, so the next
+        // start isn't stopped by a URL it would refuse.
+        let response = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("tab", "general"), ("engine.url", "http://127.0.0.1:1")],
+            ))
+            .await
+            .unwrap();
+        let said = body_text(response).await;
+        assert!(said.contains("Only used with a remote engine"), "{said}");
+        assert_eq!(
+            monokulo_value(&settings, "engine.url").1,
+            live_settings::SettingSource::Default,
+            "nothing was saved"
+        );
     }
 
     #[tokio::test]

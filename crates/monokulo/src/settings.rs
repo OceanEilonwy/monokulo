@@ -36,6 +36,54 @@ choice_value! {
     pub enum SignupMode { Public = "public", InviteOnly = "invite_only" }
 }
 
+choice_value! {
+    /// Where the engine runs (docs/engine_as_library.md).
+    pub enum EngineMode { Embedded = "embedded", Remote = "remote" }
+}
+
+/// The table of monokulo's options file that holds an embedded engine's
+/// settings: `[engine.payment]` holds its `payment.…`.
+pub const ENGINE_TABLE: &str = "engine";
+
+/// Why `[engine.*]` tables are refused with a remote engine.
+pub const ENGINE_TABLE_HINT: &str = "the engine's own settings go here only when it runs inside monokulo (engine.mode = \"embedded\"); a remote engine keeps them in its own options file";
+
+/// The engine's mode from the settings read at start, checked against the
+/// settings that only make sense for the other mode, so none is set and
+/// silently ignored: a remote engine needs its URL's token, and an embedded
+/// one takes neither its URL nor a token (monokulo makes its own).
+pub fn engine_mode(early: &Snapshot, env: &live_settings::Env) -> Result<EngineMode, String> {
+    let mode = early.get(&ENGINE_MODE);
+    match mode {
+        EngineMode::Remote => match env.get(ENGINE_TOKEN.env_var) {
+            None => {
+                return Err(format!(
+                    "{} must be set: engine.mode is remote, and the engine refuses any request without its token (its ENGINE_TOKEN).",
+                    ENGINE_TOKEN.env_var
+                ))
+            }
+            Some(token) => shared::auth::check_engine_token(&token)
+                .map_err(|e| format!("{}: {e}", ENGINE_TOKEN.env_var))?,
+        },
+        EngineMode::Embedded => {
+            let mut given = Vec::new();
+            if early.source(&ENGINE_URL) != live_settings::SettingSource::Default {
+                given.push("engine.url".to_string());
+            }
+            if env.get(ENGINE_TOKEN.env_var).is_some() {
+                given.push(ENGINE_TOKEN.env_var.to_string());
+            }
+            if !given.is_empty() {
+                return Err(format!(
+                    "{} only apply to a remote engine, but the engine runs inside monokulo (engine.mode is embedded). Remove them, or set engine.mode = \"remote\".",
+                    given.join(" and ")
+                ));
+            }
+        }
+    }
+    Ok(mode)
+}
+
 fn check_public_url(value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         Ok(())
@@ -92,10 +140,17 @@ settings! {
         sources: [Env],
         required: true,
     },
+    ENGINE_MODE: EngineMode {
+        key: "engine.mode",
+        default: EngineMode::Embedded,
+        description: "Where the engine runs. embedded: inside monokulo, one process, its settings in this file's [engine.*] tables. remote: a separate monokulo-engine at engine.url, reached with the engine token (MONOKULO_ENGINE_TOKEN).",
+        example: "embedded",
+        applies: Restart,
+    },
     ENGINE_URL: HttpUrl {
         key: "engine.url",
         default: live_settings::parsed_default("http://127.0.0.1:8443"),
-        description: "Where monokulo reaches the engine: the engine's server.bind as a URL.",
+        description: "With engine.mode = remote: where monokulo reaches the engine, its server.bind as a URL. Refused when the engine is embedded.",
         example: "http://127.0.0.1:8443",
         applies: Restart,
     },
@@ -103,11 +158,11 @@ settings! {
         key: "engine.token",
         env: "MONOKULO_ENGINE_TOKEN",
         default: Secret::default(),
-        check: |token: &Secret| shared::auth::check_engine_token(token.expose()),
-        description: "The engine token, sent with every request to the engine, which refuses anything without it: the engine's ENGINE_TOKEN. Required, at least 32 characters, given at start only.",
+        // Unset is valid: only a remote engine needs it (`engine_mode`).
+        check: |token: &Secret| if token.expose().is_empty() { Ok(()) } else { shared::auth::check_engine_token(token.expose()) },
+        description: "With engine.mode = remote: the engine token, sent with every request to the engine, which refuses anything without it (the engine's ENGINE_TOKEN). At least 32 characters, given at start only. Required for a remote engine, refused for an embedded one, which monokulo gives a token of its own each time it starts.",
         applies: Restart,
         sources: [Env],
-        required: true,
     },
     LOGGING_FORMAT: telemetry::LogFormat {
         key: "logging.format",
@@ -396,17 +451,19 @@ impl Section for BootConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
+    pub engine_mode: EngineMode,
     pub engine_url: HttpUrl,
 }
 
 impl Section for ServerConfig {
     const NAME: &'static str = "server";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&SERVER_BIND, &ENGINE_URL]
+        &[&SERVER_BIND, &ENGINE_MODE, &ENGINE_URL]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(ServerConfig {
             bind: snapshot.get(&SERVER_BIND).0,
+            engine_mode: snapshot.get(&ENGINE_MODE),
             engine_url: snapshot.get(&ENGINE_URL),
         })
     }
@@ -832,6 +889,7 @@ impl MonokuloSettings {
             registry: None,
             server: live_settings::Live::new(ServerConfig {
                 bind: SERVER_BIND.default_value().0,
+                engine_mode: ENGINE_MODE.default_value(),
                 engine_url: ENGINE_URL.default_value(),
             }),
             per_request: live_settings::Live::new(per_request),
@@ -1027,7 +1085,7 @@ mod tests {
     /// token and encryption key, from the environment, without which
     /// monokulo doesn't start.
     #[test]
-    fn the_start_up_settings_come_from_outside_and_two_are_required() {
+    fn the_start_up_settings_come_from_outside_and_the_key_is_required() {
         let env = |pairs: &[(&str, &str)]| {
             live_settings::Env::fixed(
                 pairs
@@ -1058,14 +1116,14 @@ mod tests {
                 .expose(),
             token
         );
-        let missing = ENGINE_TOKEN.require(&none).unwrap_err();
-        assert!(
-            missing.starts_with("MONOKULO_ENGINE_TOKEN must be set."),
-            "{missing}"
-        );
-        let short = ENGINE_TOKEN
-            .require(&env(&[("MONOKULO_ENGINE_TOKEN", "short")]))
-            .unwrap_err();
+        let short = engine_mode(
+            &Snapshot::new(
+                [("engine.mode".to_string(), "remote".to_string())].into(),
+                env(&[("MONOKULO_ENGINE_TOKEN", "short")]),
+            ),
+            &env(&[("MONOKULO_ENGINE_TOKEN", "short")]),
+        )
+        .unwrap_err();
         assert!(short.contains("at least 32 characters"), "{short}");
 
         let key = "ab".repeat(32);
@@ -1078,6 +1136,46 @@ mod tests {
             .unwrap_err();
         assert!(not_hex.contains("64 hex characters"), "{not_hex}");
         assert_eq!(encryption_key_bytes(&key).unwrap(), [0xab; 32]);
+    }
+
+    /// The engine's mode decides what else must, and mustn't, be given: a
+    /// remote engine needs its token; an embedded one (the default) takes
+    /// neither a URL nor a token, which would otherwise be silently unused.
+    #[test]
+    fn the_engine_mode_decides_whether_its_url_and_token_are_wanted() {
+        let token = "t".repeat(shared::auth::MIN_ENGINE_TOKEN_LEN);
+        let with_token =
+            live_settings::Env::fixed([(ENGINE_TOKEN.env_var.to_string(), token.clone())]);
+        let none = live_settings::Env::fixed(Vec::<(String, String)>::new());
+        let file = |pairs: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let mode = |stored: std::collections::HashMap<String, String>, env: &live_settings::Env| {
+            engine_mode(&Snapshot::new(stored, env.clone()), env)
+        };
+
+        assert_eq!(mode(file(&[]), &none), Ok(EngineMode::Embedded));
+        let refused = mode(file(&[]), &with_token).unwrap_err();
+        assert!(
+            refused.starts_with("MONOKULO_ENGINE_TOKEN only apply to a remote engine"),
+            "{refused}"
+        );
+        let refused = mode(file(&[("engine.url", "http://engine:8443")]), &none).unwrap_err();
+        assert!(refused.starts_with("engine.url only apply"), "{refused}");
+
+        let remote = file(&[
+            ("engine.mode", "remote"),
+            ("engine.url", "http://engine:8443"),
+        ]);
+        assert_eq!(mode(remote.clone(), &with_token), Ok(EngineMode::Remote));
+        let missing = mode(remote, &none).unwrap_err();
+        assert!(
+            missing.starts_with("MONOKULO_ENGINE_TOKEN must be set: engine.mode is remote"),
+            "{missing}"
+        );
     }
 
     #[test]
@@ -1143,7 +1241,7 @@ mod tests {
 
     #[tokio::test]
     async fn saved_settings_reach_the_engine_client_exchange_rates_and_abuse_protection() {
-        let (settings, engine, rates, abuse) = loaded(None).await;
+        let (settings, _engine, rates, abuse) = loaded(None).await;
         let registry = settings.registry.as_ref().unwrap();
         // Loading applied the saved (here: default) settings.
         assert_eq!(
@@ -1160,14 +1258,13 @@ mod tests {
             vec!["coingecko", "coinmarketcap", "haveno"]
         );
 
-        // The engine's address is saved for the next start: the running
-        // client keeps the one it started with.
+        // The engine's address is saved for the next start, not applied to
+        // the running client.
         let saved = registry
             .save(change("engine.url", "http://127.0.0.1:2"))
             .await
             .unwrap();
         assert_eq!(saved.restart_required, ["engine.url"]);
-        assert_eq!(engine.base_url(), "http://127.0.0.1:1");
 
         registry
             .save(change("exchange_rate.coingecko_enabled", "false"))

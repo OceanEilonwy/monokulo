@@ -1562,6 +1562,7 @@ mod tests {
                 Payments,
                 Some("Exchange rates"),
             ),
+            ("engine.mode", M, General, None),
             ("engine.url", M, General, None),
             ("engine.token", M, General, None),
             ("http_cache.max_mb", M, Server, None),
@@ -1618,6 +1619,8 @@ mod tests {
             ("webhooks.max_attempts", E, Payments, Some("Webhooks")),
             ("server.bind", E, Server, None),
             ("server.worker_threads", E, Server, None),
+            ("server.cpus", E, Server, None),
+            ("server.nice", E, Server, None),
             ("server.max_body_bytes", E, Server, None),
             ("server.rate_limit_per_token_per_min", E, Server, None),
             ("database.read_connections", E, Server, None),
@@ -2332,6 +2335,7 @@ mod tests {
             engine: Some(report.clone()),
             monokulo: report,
             now_unix: 1_800_000_000,
+            one_process: false,
         });
         let network = &mut data.engine_networks[0];
         network.scaling = Some(shared::scaling::NetworkScaling {

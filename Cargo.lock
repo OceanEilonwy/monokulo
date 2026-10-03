@@ -1011,6 +1011,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
+name = "e2e-harness"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "cli-wallet",
+ "engine",
+ "hex",
+ "http-body-util",
+ "monero",
+ "monokulo",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "shared",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "ecdsa"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1059,7 +1078,6 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
- "cli-wallet",
  "futures-util",
  "hex",
  "hmac 0.13.0",
@@ -1069,12 +1087,12 @@ dependencies = [
  "live-settings",
  "monero",
  "monero-epee",
- "monokulo",
  "parking_lot",
  "rand 0.10.2",
  "randomx-rs",
  "reqwest",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2490,6 +2508,7 @@ dependencies = [
  "aes-gcm",
  "axum",
  "axum-extra",
+ "bytes",
  "clap",
  "engine",
  "engine-test-support",

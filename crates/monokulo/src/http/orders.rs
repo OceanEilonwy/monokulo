@@ -2156,7 +2156,7 @@ mod tests {
             .with_networks(&[monero::Network::Mainnet])
             .spawn()
             .await;
-        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::embedded_for_tests(engine.router());
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
@@ -2175,7 +2175,7 @@ mod tests {
             .with_admin_lookup_daemon()
             .spawn()
             .await;
-        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::embedded_for_tests(engine.router());
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
@@ -3364,10 +3364,7 @@ mod tests {
             .spawn()
             .await;
         let state = AppState {
-            engine: crate::http::Engine::new(EngineClient::for_tests(format!(
-                "http://{}",
-                engine.addr
-            ))),
+            engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
             ..AppState::for_tests()
         };
         let router = build_router(state);
@@ -3899,10 +3896,7 @@ mod tests {
             .spawn()
             .await;
         let state = AppState {
-            engine: crate::http::Engine::new(EngineClient::for_tests(format!(
-                "http://{}",
-                engine.addr
-            ))),
+            engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
             ..AppState::for_tests()
         };
         crate::http::status_page::get_status_cached(&state.engine)

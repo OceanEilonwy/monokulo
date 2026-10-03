@@ -28,12 +28,12 @@
 //! (needs the real transaction-signing dependencies), run explicitly with:
 //!
 //! ```sh
-//! cargo test --test e2e_dashboard_stagenet -- --ignored --nocapture
+//! cargo test -p e2e-harness --features e2e --test e2e_dashboard_stagenet -- --ignored --nocapture
 //! ```
 //!
-//! Run from the repository root, same as `e2e_stagenet.rs` - `e2e/*` paths
-//! below are relative to `cargo test`'s working directory (the package
-//! root).
+//! Wallet files (`e2e/wallets/`) are found relative to the `cli-wallet`
+//! crate, as in `e2e_stagenet.rs`, whatever `cargo test`'s working
+//! directory is.
 
 // An integration test crate: every function in it is test code, which
 // fails by panicking.

@@ -33,34 +33,99 @@ enum Place {
     Memory(Mutex<String>),
 }
 
-/// The options file, and the text it had when it was last read or written:
-/// a save refuses to overwrite edits made since.
-pub struct OptionsFile {
+/// The file itself, shared by every handle on it: where it is, and the
+/// text it had when it was last read or written, so a save refuses to
+/// overwrite edits made since, whichever handle made the save.
+struct Shared {
     place: Place,
     loaded: Mutex<String>,
+}
+
+/// The options file, or one table of it.
+///
+/// A handle is cheap to clone, and clones share the file. Two services in
+/// one process (monokulo and an engine embedded in it,
+/// docs/engine_as_library.md) share one file this way: monokulo's handle
+/// leaves the engine's table alone ([`OptionsFile::leaving`]), and the
+/// engine's handle is that table ([`OptionsFile::scoped`]), where it reads
+/// and writes its own keys under their own names. Saving through either
+/// keeps what the other saved.
+#[derive(Clone)]
+pub struct OptionsFile {
+    shared: Arc<Shared>,
+    /// The table this handle is, if it is one: its keys are named without
+    /// it (`payment.x` for `engine.payment.x`).
+    scope: Option<String>,
+    /// A table another handle owns: its subtables are left alone here.
+    leaves: Option<String>,
+    /// What to add when a key under this table isn't a setting.
+    hint: Option<(String, String)>,
 }
 
 impl OptionsFile {
     /// The file at `path`, which needn't exist yet: the first save creates
     /// it (and its directory).
     pub fn at(path: impl Into<PathBuf>) -> Self {
-        OptionsFile {
-            place: Place::Disk(path.into()),
-            loaded: Mutex::new(String::new()),
-        }
+        Self::new(Place::Disk(path.into()))
     }
 
     /// A file held in memory, starting as `text`.
     pub fn in_memory(text: impl Into<String>) -> Self {
+        Self::new(Place::Memory(Mutex::new(text.into())))
+    }
+
+    fn new(place: Place) -> Self {
         OptionsFile {
-            place: Place::Memory(Mutex::new(text.into())),
-            loaded: Mutex::new(String::new()),
+            shared: Arc::new(Shared {
+                place,
+                loaded: Mutex::new(String::new()),
+            }),
+            scope: None,
+            leaves: None,
+            hint: None,
+        }
+    }
+
+    /// The table `table` of the same file, as a file of its own: its
+    /// subtables are read and written as keys without the table's name.
+    /// Values directly in `table` (not in a subtable) belong to the file's
+    /// other reader and are left alone.
+    pub fn scoped(&self, table: &str) -> Self {
+        OptionsFile {
+            shared: self.shared.clone(),
+            scope: Some(table.to_string()),
+            leaves: None,
+            hint: None,
+        }
+    }
+
+    /// This handle, leaving the subtables of `table` to another handle on
+    /// the same file (one made with [`Self::scoped`]): they aren't read as
+    /// this handle's settings, nor refused as unknown.
+    pub fn leaving(mut self, table: &str) -> Self {
+        self.leaves = Some(table.to_string());
+        self
+    }
+
+    /// This handle, adding `hint` to the problem reported for a key under
+    /// `table` that isn't a setting: why such keys don't belong here.
+    pub fn with_hint(mut self, table: &str, hint: &str) -> Self {
+        self.hint = Some((table.to_string(), hint.to_string()));
+        self
+    }
+
+    /// How [`parse`] reads the file for this handle.
+    fn reading(&self) -> Reading<'_> {
+        Reading {
+            scope: self.scope.as_deref(),
+            leaves: self.leaves.as_deref(),
+            hint: self.hint.as_ref().map(|(t, h)| (t.as_str(), h.as_str())),
         }
     }
 
     /// Where it is and whether it can be written.
     pub fn info(&self) -> FileInfo {
-        match &self.place {
+        match &self.shared.place {
             Place::Disk(path) => FileInfo {
                 path: path.display().to_string(),
                 exists: path.exists(),
@@ -75,14 +140,14 @@ impl OptionsFile {
     }
 
     fn name(&self) -> String {
-        match &self.place {
+        match &self.shared.place {
             Place::Disk(path) => path.display().to_string(),
             Place::Memory(_) => "the options file".to_string(),
         }
     }
 
     fn read_text(&self) -> Result<String, StoreError> {
-        match &self.place {
+        match &self.shared.place {
             Place::Disk(path) if !path.exists() => Ok(String::new()),
             Place::Disk(path) => std::fs::read_to_string(path)
                 .map_err(|e| StoreError::new(format!("{} can't be read: {e}", path.display()))),
@@ -93,7 +158,7 @@ impl OptionsFile {
     /// Replaces the file, by writing a new one beside it and renaming it
     /// over the old, so a crash never leaves half a file.
     fn write_text(&self, text: &str) -> Result<(), StoreError> {
-        match &self.place {
+        match &self.shared.place {
             Place::Disk(path) => write_atomically(path, text)
                 .map_err(|e| StoreError::new(format!("{} can't be written: {e}", path.display()))),
             Place::Memory(memory) => {
@@ -111,10 +176,10 @@ impl OptionsFile {
         declared: &[&'static dyn AnySetting],
     ) -> Result<HashMap<String, String>, StoreError> {
         let text = self.read_text()?;
-        let values = parse(&text, declared).map_err(|problems| {
+        let values = parse(&text, declared, &self.reading()).map_err(|problems| {
             StoreError::new(format!("{}: {}", self.name(), problems.join("; ")))
         })?;
-        *self.loaded.lock() = text;
+        *self.shared.loaded.lock() = text;
         Ok(values)
     }
 
@@ -136,7 +201,7 @@ impl OptionsFile {
     ) -> Result<(), StoreError> {
         // The page locks what this file holds when it can't be written;
         // this refuses a save that comes anyway (a hand-made form, the API).
-        if let Place::Disk(path) = &self.place {
+        if let Place::Disk(path) = &self.shared.place {
             if !crate::paths::writable(path) {
                 return Err(StoreError::new(format!(
                     "{} can't be written by this process: change it by editing it, then reload it.",
@@ -144,7 +209,7 @@ impl OptionsFile {
                 )));
             }
         }
-        let mut loaded = self.loaded.lock();
+        let mut loaded = self.shared.loaded.lock();
         let current = self.read_text()?;
         if current != *loaded {
             return Err(StoreError::new(format!(
@@ -156,9 +221,13 @@ impl OptionsFile {
             .parse()
             .map_err(|e| StoreError::new(format!("{}: {e}", self.name())))?;
         for (setting, raw) in changes {
+            let key = match &self.scope {
+                Some(table) => format!("{table}.{}", setting.key()),
+                None => setting.key().to_string(),
+            };
             match raw.as_deref().filter(|raw| !raw.is_empty()) {
-                Some(raw) => set(&mut doc, setting.key(), toml_value(&setting.kind(), raw)),
-                None => remove(&mut doc, setting.key()),
+                Some(raw) => set(&mut doc, &key, toml_value(&setting.kind(), raw)),
+                None => remove(&mut doc, &key),
             }
         }
         let text = doc.to_string();
@@ -260,25 +329,48 @@ impl SettingsStore for LayeredStore {
     }
 }
 
+/// How a handle reads the file: the whole of it, or one table, and what it
+/// leaves to another handle.
+struct Reading<'a> {
+    scope: Option<&'a str>,
+    leaves: Option<&'a str>,
+    hint: Option<(&'a str, &'a str)>,
+}
+
 /// The values in `text`, by key: one table per key prefix, or the whole
 /// key as a dotted key. Anything that isn't a setting the file may hold,
-/// or a value its setting refuses, is a problem, given with its line.
+/// or a value its setting refuses, is a problem, given with its line and
+/// its full key.
 fn parse(
     text: &str,
     declared: &[&'static dyn AnySetting],
+    reading: &Reading<'_>,
 ) -> Result<HashMap<String, String>, Vec<String>> {
     let doc =
         toml_edit::Document::parse(text).map_err(|e| vec![e.to_string().trim().to_string()])?;
     let mut values = HashMap::new();
     let mut problems = Vec::new();
-    walk(
+    let mut walking = Walk {
         text,
-        doc.as_table(),
-        "",
         declared,
-        &mut values,
-        &mut problems,
-    );
+        reading,
+        values: &mut values,
+        problems: &mut problems,
+    };
+    match reading.scope {
+        None => walking.table(doc.as_table(), ""),
+        Some(scope) => {
+            // Only the table's subtables are this handle's: a value
+            // directly in it is the other reader's (`engine.url`).
+            if let Some(table) = doc.get(scope).and_then(Item::as_table_like) {
+                for (name, item) in table.iter() {
+                    if is_table(item) {
+                        walking.item(name, item, "");
+                    }
+                }
+            }
+        }
+    }
     if problems.is_empty() {
         Ok(values)
     } else {
@@ -286,24 +378,42 @@ fn parse(
     }
 }
 
-fn walk(
-    text: &str,
-    table: &Table,
-    prefix: &str,
-    declared: &[&'static dyn AnySetting],
-    values: &mut HashMap<String, String>,
-    problems: &mut Vec<String>,
-) {
-    for (name, item) in table.iter() {
+fn is_table(item: &Item) -> bool {
+    matches!(item, Item::Table(_) | Item::Value(Value::InlineTable(_)))
+}
+
+struct Walk<'a, 'r> {
+    text: &'a str,
+    declared: &'a [&'static dyn AnySetting],
+    reading: &'a Reading<'r>,
+    values: &'a mut HashMap<String, String>,
+    problems: &'a mut Vec<String>,
+}
+
+impl Walk<'_, '_> {
+    fn table(&mut self, table: &dyn toml_edit::TableLike, prefix: &str) {
+        for (name, item) in table.iter() {
+            self.item(name, item, prefix);
+        }
+    }
+
+    /// `name` in the table at `prefix` (a key relative to the handle's
+    /// scope).
+    fn item(&mut self, name: &str, item: &Item, prefix: &str) {
         let key = if prefix.is_empty() {
             name.to_string()
         } else {
             format!("{prefix}.{name}")
         };
-        let at = line(text, item.span())
+        // As the reader of the file sees it.
+        let shown = match self.reading.scope {
+            Some(scope) => format!("{scope}.{key}"),
+            None => key.clone(),
+        };
+        let at = line(self.text, item.span())
             .map(|n| format!("line {n}: "))
             .unwrap_or_default();
-        match declared.iter().find(|s| s.key() == key) {
+        match self.declared.iter().find(|s| s.key() == key) {
             Some(setting) if !setting.sources().toml => {
                 let instead = if setting.sources().env {
                     format!(
@@ -313,27 +423,33 @@ fn walk(
                 } else if setting.sources().database {
                     "the admin page keeps it".to_string()
                 } else {
-                    format!("give it as --{}", cli_flag(&key))
+                    format!("give it as --{}", cli_flag(&shown))
                 };
-                problems.push(format!("{at}{key} can't be in the options file: {instead}"));
+                self.problems.push(format!(
+                    "{at}{shown} can't be in the options file: {instead}"
+                ));
             }
             Some(setting) => match raw(item).and_then(|raw| setting.normalise(&raw).map(|_| raw)) {
                 Ok(raw) => {
-                    values.insert(key, raw);
+                    self.values.insert(key, raw);
                 }
-                Err(e) => problems.push(format!("{at}{key}: {e}")),
+                Err(e) => self.problems.push(format!("{at}{shown}: {e}")),
             },
+            // Another handle's table.
+            None if is_table(item) && self.reading.leaves.is_some_and(|table| prefix == table) => {}
             None => match item {
-                Item::Table(table) => walk(text, table, &key, declared, values, problems),
-                Item::Value(Value::InlineTable(inline)) => walk(
-                    text,
-                    &inline.clone().into_table(),
-                    &key,
-                    declared,
-                    values,
-                    problems,
-                ),
-                _ => problems.push(format!("{at}there is no setting called {key}")),
+                Item::Table(table) => self.table(table, &key),
+                Item::Value(Value::InlineTable(inline)) => self.table(inline, &key),
+                _ => {
+                    let hint = self
+                        .reading
+                        .hint
+                        .filter(|(table, _)| shown.starts_with(&format!("{table}.")))
+                        .map(|(_, hint)| format!(": {hint}"))
+                        .unwrap_or_default();
+                    self.problems
+                        .push(format!("{at}there is no setting called {shown}{hint}"));
+                }
             },
         }
     }
@@ -465,7 +581,13 @@ fn set(doc: &mut DocumentMut, key: &str, value: Value) {
     };
     let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
     for part in parts {
-        let entry = table.entry(part).or_insert_with(toml_edit::table);
+        // A new table only gets a header if it holds values itself:
+        // `[engine.payment]`, not an empty `[engine]` above it.
+        let entry = table.entry(part).or_insert_with(|| {
+            let mut new = Table::new();
+            new.set_implicit(true);
+            Item::Table(new)
+        });
         let Some(next) = entry.as_table_like_mut() else {
             return;
         };
@@ -520,6 +642,33 @@ pub fn render_init(program: &str, declared: &[&'static dyn AnySetting]) -> Strin
             out.push_str(&format!("#   {}{required}\n", secret.env_var()));
         }
     }
+    push_tables(&mut out, None, declared);
+    out
+}
+
+/// [`render_init`], followed by the settings of a service that runs inside
+/// this process and keeps its options in this file under `[table.…]` (an
+/// embedded engine: `[engine.payment]`), introduced by `about`.
+pub fn render_init_nested(
+    program: &str,
+    declared: &[&'static dyn AnySetting],
+    table: &str,
+    about: &str,
+    nested: &[&'static dyn AnySetting],
+) -> String {
+    let mut out = render_init(program, declared);
+    out.push_str("\n#\n");
+    for line in wrap(about, 76) {
+        out.push_str(&format!("# {line}\n"));
+    }
+    out.push_str("#\n");
+    push_tables(&mut out, Some(table), nested);
+    out
+}
+
+/// Every setting of `declared` the file may hold, one table per key
+/// prefix, each under `table` if given, commented out with its default.
+fn push_tables(out: &mut String, table: Option<&str>, declared: &[&'static dyn AnySetting]) {
     let in_file: Vec<_> = declared.iter().filter(|s| s.sources().toml).collect();
     // Keys without a prefix come before the first table, as TOML needs.
     let mut groups: Vec<(&str, Vec<&&'static dyn AnySetting>)> = Vec::new();
@@ -533,8 +682,11 @@ pub fn render_init(program: &str, declared: &[&'static dyn AnySetting]) -> Strin
     groups.sort_by_key(|(prefix, _)| !prefix.is_empty());
     for (prefix, members) in groups {
         out.push('\n');
-        if !prefix.is_empty() {
-            out.push_str(&format!("[{prefix}]\n"));
+        match (table, prefix.is_empty()) {
+            (None, true) => {}
+            (None, false) => out.push_str(&format!("[{prefix}]\n")),
+            (Some(table), true) => out.push_str(&format!("[{table}]\n")),
+            (Some(table), false) => out.push_str(&format!("[{table}.{prefix}]\n")),
         }
         for (i, setting) in members.into_iter().enumerate() {
             if i > 0 {
@@ -566,7 +718,6 @@ pub fn render_init(program: &str, declared: &[&'static dyn AnySetting]) -> Strin
             out.push_str(&format!("# {name} = {}\n", shown.trim()));
         }
     }
-    out
 }
 
 /// What a setting takes and when it applies, in a sentence or two.

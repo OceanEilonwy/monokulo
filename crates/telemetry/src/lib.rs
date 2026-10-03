@@ -218,6 +218,8 @@ pub struct LogStatus {
 /// The running subscriber's controls.
 pub struct Telemetry {
     service: &'static str,
+    /// Which service each line is from ([`Telemetry::host`]).
+    services: Arc<json::Services>,
     filter: reload::Handle<EnvFilter, Registry>,
     sink: Arc<store::StoreSink>,
     store: OnceLock<store::LogStore>,
@@ -287,14 +289,23 @@ where
         .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LEVEL));
     let (filter, filter_handle) = reload::Layer::new(filter);
     let sink = Arc::new(store::StoreSink::default());
+    let services = Arc::new(json::Services::new(service));
     let output: Output = match format {
-        Format::Json => Box::new(json::EventLayer::new(service, Some(writer), sink.clone())),
+        Format::Json => Box::new(json::EventLayer::new(
+            services.clone(),
+            Some(writer),
+            sink.clone(),
+        )),
         Format::Pretty => Box::new(
             tracing_subscriber::fmt::layer()
                 .with_writer(writer)
                 .with_ansi(ansi)
                 .fmt_fields(PrettyFields)
-                .and_then(json::EventLayer::<W>::new(service, None, sink.clone())),
+                .and_then(json::EventLayer::<W>::new(
+                    services.clone(),
+                    None,
+                    sink.clone(),
+                )),
         ),
     };
     // The level filter applies to what is written out, not to span
@@ -317,6 +328,7 @@ where
         .with(otel);
     let telemetry = Telemetry {
         service,
+        services,
         filter: filter_handle,
         sink,
         store: OnceLock::new(),
@@ -398,6 +410,23 @@ impl tracing::field::Visit for PrettyVisitor<'_> {
 impl Telemetry {
     pub fn service(&self) -> &'static str {
         self.service
+    }
+
+    /// Names lines from a service that runs inside this process after it,
+    /// not after this process's own service: an engine embedded in
+    /// monokulo (docs/engine_as_library.md). A line is the guest's when its
+    /// target is in one of `crates` (`engine` covers `engine::loops`), or
+    /// when it is logged on a thread whose name starts with
+    /// `thread_prefix` (the guest's own runtime, so a shared library's line
+    /// logged for it is its too). Both services' lines go to this process's
+    /// log store, each under its own name.
+    pub fn host(
+        &self,
+        service: &'static str,
+        crates: &'static [&'static str],
+        thread_prefix: &'static str,
+    ) {
+        self.services.host(service, crates, thread_prefix);
     }
 
     /// Opens the log store at `path` (`logs.db` next to the process's main

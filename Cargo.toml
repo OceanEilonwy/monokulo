@@ -8,6 +8,7 @@ members = [
     "crates/monokulo",
     "crates/mock-woocommerce",
     "crates/engine-test-support",
+    "crates/e2e-harness",
     "crates/cli-wallet",
     "crates/key-custody-service",
     "crates/key-custody-server",

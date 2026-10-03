@@ -121,7 +121,10 @@ async function startStack() {
   fs.writeFileSync(monokuloOptions, [
     '[server]',
     `bind = "127.0.0.1:${monokuloPort}"`,
+    // The engine is a process of its own here (real-4-crash kills it), so
+    // monokulo reaches it remotely, not inside itself.
     '[engine]',
+    'mode = "remote"',
     `url = "${engineUrl}"`,
     '[database]',
     `path = ${JSON.stringify(path.join(dir, 'monokulo.db'))}`,

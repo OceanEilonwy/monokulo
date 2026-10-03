@@ -3,10 +3,10 @@
 # (mediatek/filogic, aarch64_cortex-a53), a signed apk repository holding it,
 # and the landing page that explains how to install it.
 #
-# monokulo and monokulo-engine are cross-compiled here with cargo. Their C
+# monokulo, with the engine inside it, is cross-compiled here with cargo. Its C
 # parts (SQLite, aws-lc) are compiled with the gcc from the official OpenWrt
 # SDK image, so they are built exactly as OpenWrt builds C. The same SDK (in
-# Docker) then packages the binaries, the init script and the LuCI page,
+# Docker) then packages the binary, the init script and the LuCI page,
 # signs the packages and the repository index.
 #
 # Needs: docker, rustup (the nightly rust-toolchain.toml names), Node 24 and
@@ -87,7 +87,7 @@ toolchain=$(ls -d "$toolchain_root"/staging_dir/toolchain-aarch64_cortex-a53_gcc
 	npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
 
 # randomx-rs (the engine's proof-of-work check) asks for C++'s standard
-# library as a shared library, which would make the engine a dynamic
+# library as a shared library, which would make monokulo a dynamic
 # executable that OpenWrt can't run. A search directory holding only the
 # toolchain's static libstdc++, searched first, makes -lstdc++ resolve to it.
 static_cxx="$toolchain_root/static-cxx"
@@ -110,19 +110,17 @@ rustup target add "$TARGET"
 	export CARGO_PROFILE_RELEASE_STRIP=symbols
 	# The engine's `zmq` feature, as in the Docker image: a node's ZMQ
 	# announcements wake the scan at once (docs/monero_zmq.md).
+	# The engine is built into monokulo (its default `embedded-engine`
+	# feature), so there is one binary to ship.
 	cargo build --release --locked --target "$TARGET" --features engine/zmq \
-		-p engine --bin monokulo-engine \
 		-p monokulo --bin monokulo
 )
-for bin in monokulo monokulo-engine; do
-	if ! file "target/$TARGET/release/$bin" | grep -q 'statically linked'; then
-		echo "error: $bin isn't a static executable, so it won't run on OpenWrt:" >&2
-		file "target/$TARGET/release/$bin" >&2
-		exit 1
-	fi
-done
+if ! file "target/$TARGET/release/monokulo" | grep -q 'statically linked'; then
+	echo "error: monokulo isn't a static executable, so it won't run on OpenWrt:" >&2
+	file "target/$TARGET/release/monokulo" >&2
+	exit 1
+fi
 install -m 0755 "target/$TARGET/release/monokulo" "$PKG/files/monokulo"
-install -m 0755 "target/$TARGET/release/monokulo-engine" "$PKG/files/monokulo-engine"
 
 rm -rf dist site
 mkdir -p dist/repo

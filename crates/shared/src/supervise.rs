@@ -112,12 +112,15 @@ where
 /// then the running loop is aborted and not restarted. For loops that exist
 /// only while something is configured, such as one network's scanner, which
 /// stops when that network's node setting is cleared (admin_settings_v2.md
-/// task 2.1).
+/// task 2.1), and for an engine's own loops, which stop with it
+/// (`engine::run::Engine::shutdown`). The returned task ends once the loop
+/// is gone, so a caller can wait for that.
 pub fn supervise_until<F, Fut>(
     name: &'static str,
     mut stop: tokio::sync::watch::Receiver<bool>,
     make_loop: F,
-) where
+) -> tokio::task::JoinHandle<()>
+where
     F: Fn() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -135,21 +138,25 @@ pub fn supervise_until<F, Fut>(
                 continue;
             };
             let mut running = tokio::spawn(future);
-            tokio::select! {
-                outcome = &mut running => {
-                    match outcome {
-                        Ok(()) => tracing::error!(task = name, restart_in = ?backoff, "BUG: loop returned; it is not supposed to terminate. Restarting"),
-                        Err(e) if e.is_panic() => {
-                            tracing::error!(task = name, error = %e, restart_in = ?backoff, "loop PANICKED. None of its work is happening until it restarts");
-                        }
-                        Err(e) => {
-                            tracing::warn!(task = name, error = %e, "loop was cancelled. Not restarting");
-                            return;
-                        }
-                    }
+            let outcome = tokio::select! {
+                outcome = &mut running => Some(outcome),
+                _ = stop.wait_for(|stopped| *stopped) => None,
+            };
+            match outcome {
+                Some(Ok(())) => {
+                    tracing::error!(task = name, restart_in = ?backoff, "BUG: loop returned; it is not supposed to terminate. Restarting")
                 }
-                _ = stop.wait_for(|stopped| *stopped) => {
+                Some(Err(e)) if e.is_panic() => {
+                    tracing::error!(task = name, error = %e, restart_in = ?backoff, "loop PANICKED. None of its work is happening until it restarts");
+                }
+                Some(Err(e)) => {
+                    tracing::warn!(task = name, error = %e, "loop was cancelled. Not restarting");
+                    return;
+                }
+                None => {
                     running.abort();
+                    // Gone, not just asked to go, when this task ends.
+                    let _ = running.await;
                     return;
                 }
             }
@@ -163,7 +170,7 @@ pub fn supervise_until<F, Fut>(
             }
             backoff = (backoff * 2).min(MAX_BACKOFF);
         }
-    });
+    })
 }
 
 #[cfg(test)]
@@ -256,5 +263,52 @@ mod tests {
         stop.send(true).unwrap();
         tokio::time::sleep(Duration::from_secs(600)).await;
         assert_eq!(starts.load(Ordering::SeqCst), 1, "stopped for good");
+    }
+
+    /// Whoever stops a supervised loop can wait for it: the returned task
+    /// ends once the loop itself has been dropped, not merely asked to stop.
+    /// An engine's shutdown waits on exactly this.
+    #[tokio::test]
+    async fn the_supervisor_ends_only_once_its_stopped_loop_is_gone() {
+        /// Set when the loop's future is dropped.
+        struct Dropped(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = gone.clone();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let supervisor = supervise_until("until-join-test", stopped, move || {
+            let guard = Dropped(flag.clone());
+            async move {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            }
+        });
+        tokio::task::yield_now().await;
+        assert!(!supervisor.is_finished());
+
+        stop.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .expect("the supervisor ends when stopped")
+            .unwrap();
+        assert!(gone.load(Ordering::SeqCst), "the loop was dropped first");
+    }
+
+    /// Dropping the stop signal's sender stops the loop too: that is how a
+    /// network's loops end when the manager holding their senders stops.
+    #[tokio::test]
+    async fn dropping_the_stop_sender_also_stops_the_loop() {
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let supervisor = supervise_until("until-drop-test", stopped, std::future::pending::<()>);
+        tokio::task::yield_now().await;
+        drop(stop);
+        tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .expect("the supervisor ends when its sender goes")
+            .unwrap();
     }
 }

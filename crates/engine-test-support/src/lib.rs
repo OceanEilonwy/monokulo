@@ -244,6 +244,10 @@ pub struct TestEngineHandle {
     /// The real local address the engine is listening on. Build requests
     /// against `format!("http://{addr}")` with a genuine `reqwest::Client`.
     pub addr: SocketAddr,
+    /// The same engine's admin API as a router, for a client that calls it
+    /// in-process (`EngineClient::embedded`, docs/engine_as_library.md)
+    /// instead of over `addr`. Both reach one engine.
+    router: axum::Router,
     server_task: tokio::task::JoinHandle<()>,
     /// The scanner-tick and webhook-delivery-tick background loops, present only when
     /// [`TestEngineConfig::with_background_loops`] was used. Empty otherwise, so
@@ -269,6 +273,12 @@ pub struct TestEngineHandle {
 }
 
 impl TestEngineHandle {
+    /// This engine's admin API as a router, as an embedded engine hands it
+    /// to monokulo: what `addr` serves over HTTP, called in-process.
+    pub fn router(&self) -> axum::Router {
+        self.router.clone()
+    }
+
     /// `network`'s activity record, which the engine serves at
     /// `/api/v1/admin/engine/activity` (`docs/engine_visualizer.md`): a test
     /// records events into it to see them reach monokulo's engine page.
@@ -904,10 +914,11 @@ impl TestEngineConfig {
             .local_addr()
             .expect("bound listener has no local address");
 
+        let served = router.clone();
         let server_task = tokio::spawn(async move {
             axum::serve(
                 listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
+                served.into_make_service_with_connect_info::<SocketAddr>(),
             )
             .await
             .expect("test engine server error");
@@ -982,6 +993,7 @@ impl TestEngineConfig {
 
         TestEngineHandle {
             addr,
+            router,
             server_task,
             background_tasks,
             store,

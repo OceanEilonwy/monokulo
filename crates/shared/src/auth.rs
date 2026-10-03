@@ -103,6 +103,13 @@ pub fn generate_secret_token() -> RawToken {
     RawToken(format!("sk_{}", random_hex(32)))
 }
 
+/// An engine token for one run of an engine embedded in monokulo
+/// (docs/engine_as_library.md): made at start, held in memory only, and
+/// never the same twice. 64 hex characters, well over the minimum.
+pub fn generate_engine_token() -> RawToken {
+    RawToken(random_hex(32))
+}
+
 /// A monokulo session's bearer token (WBS 1.1.2), shown once at login.
 /// Same underlying generation primitive as `generate_secret_token` - a
 /// high-entropy random hex string - just with a distinct prefix: a

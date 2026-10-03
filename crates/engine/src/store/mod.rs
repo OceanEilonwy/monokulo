@@ -191,7 +191,7 @@ impl ReadStorePool {
         })
         .take(count.max(1))
         .collect::<Result<Vec<_>>>()?;
-        shared::sqlite::Pool::start("scanner-db-read", stores)
+        shared::sqlite::Pool::start("engine-db-read", stores)
             .map(Self)
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))
     }

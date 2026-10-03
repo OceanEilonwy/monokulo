@@ -1,11 +1,12 @@
-# Monokulo for production: one image holding the engine (`monokulo-engine`), the
-# control plane (`monokulo`) and the optional key storage service
-# (`key-custody-server`). Run the engine and monokulo as two containers from
-# it, as compose.yaml does; `docker build -t monokulo .` builds it.
+# Monokulo for production: one image holding monokulo (`monokulo`, with the
+# engine inside it by default), the standalone engine (`monokulo-engine`) and
+# the optional key storage service (`key-custody-server`).
+# `docker build -t monokulo .` builds it; compose.yaml runs it.
 #
-# The default command runs monokulo; `monokulo-engine` and `key-custody-server` are
-# on the PATH for the other containers. Both keep their SQLite databases in
-# /var/lib/monokulo, the image's one volume.
+# The default command runs monokulo, the engine inside it; `monokulo-engine`
+# and `key-custody-server` are on the PATH for setups that run them as
+# containers of their own. The SQLite databases go in /var/lib/monokulo, the
+# image's one volume.
 
 # The base image only supplies rustup: the build installs the latest nightly,
 # as rust-toolchain.toml names it.

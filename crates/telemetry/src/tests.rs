@@ -596,3 +596,54 @@ mod otlp_export {
         );
     }
 }
+
+/// An engine embedded in monokulo logs through monokulo's subscriber: its
+/// lines are named after it, by its crate or by its runtime's threads, and
+/// everything else stays monokulo's.
+#[test]
+fn a_hosted_services_lines_are_named_after_it() {
+    let capture = Capture::default();
+    let writer = capture.clone();
+    let (telemetry, subscriber) = build("monokulo", Format::Json, false, "info", move || {
+        writer.clone()
+    });
+    telemetry.host("engine", &["engine"], "engine-");
+    let dispatch = tracing::Dispatch::new(subscriber);
+    tracing::dispatcher::with_default(&dispatch, || {
+        tracing::info!(target: "engine::loops", "from the engine's crate");
+        tracing::info!(target: "monokulo::http", "from monokulo");
+        tracing::info!(target: "engineering", "a crate that only starts the same");
+    });
+    let on_engine_thread = dispatch.clone();
+    std::thread::Builder::new()
+        .name("engine-worker-1".to_string())
+        .spawn(move || {
+            tracing::dispatcher::with_default(&on_engine_thread, || {
+                tracing::info!(target: "shared::supervise", "a shared crate, for the engine");
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+
+    let services: Vec<(String, String)> = capture
+        .json_lines()
+        .iter()
+        .map(|line| {
+            (
+                line["message"].as_str().unwrap().to_string(),
+                line["service"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        services,
+        [
+            ("from the engine's crate", "engine"),
+            ("from monokulo", "monokulo"),
+            ("a crate that only starts the same", "monokulo"),
+            ("a shared crate, for the engine", "engine"),
+        ]
+        .map(|(m, s)| (m.to_string(), s.to_string()))
+    );
+}

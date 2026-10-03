@@ -29,14 +29,23 @@ pub enum EngineSource {
     },
     /// Not read, for the reason given (a page of monokulo's own lines only).
     Unavailable(String),
+    /// In the local store already: an engine embedded in monokulo logs
+    /// through monokulo's logger, its lines named `engine`
+    /// (`telemetry::Telemetry::host`). Nothing more to read.
+    Local,
 }
 
 impl Sources {
     pub async fn from_state(state: &crate::http::AppState) -> Sources {
+        let client = &state.engine.client;
         Sources {
             local: state.log_store.clone(),
-            engine: EngineSource::Api {
-                client: state.engine.client.clone(),
+            engine: if client.is_embedded() {
+                EngineSource::Local
+            } else {
+                EngineSource::Api {
+                    client: client.clone(),
+                }
             },
         }
     }
@@ -98,6 +107,7 @@ pub async fn read(sources: &Sources, request: &LogsRequest) -> Result<Page, Pars
             match &sources.engine {
                 EngineSource::Api { client } => client.logs(request).await.map_err(engine_problem),
                 EngineSource::Unavailable(why) => Err(why.clone()),
+                EngineSource::Local => Ok(Vec::new()),
             }
         }
     );
@@ -125,6 +135,7 @@ pub async fn trace(sources: &Sources, trace_id: &str) -> (Trace, Option<String>)
                     client.log_trace(trace_id).await.map_err(engine_problem)
                 }
                 EngineSource::Unavailable(why) => Err(why.clone()),
+                EngineSource::Local => Ok(Trace::default()),
             }
         });
     let mut trace = local_trace.unwrap_or_default();
@@ -160,7 +171,7 @@ pub async fn histogram(sources: &Sources, request: &HistogramRequest) -> Vec<u64
         async {
             match &sources.engine {
                 EngineSource::Api { client } => client.log_histogram(request).await.ok(),
-                EngineSource::Unavailable(_) => None,
+                EngineSource::Unavailable(_) | EngineSource::Local => None,
             }
         }
     );
@@ -180,7 +191,7 @@ pub async fn attribute_names(sources: &Sources) -> Vec<String> {
         tokio::join!(local(&sources.local, |s| s.attribute_names()), async {
             match &sources.engine {
                 EngineSource::Api { client } => client.log_attributes().await.ok(),
-                EngineSource::Unavailable(_) => None,
+                EngineSource::Unavailable(_) | EngineSource::Local => None,
             }
         });
     let mut names = local_names.unwrap_or_default();
@@ -333,7 +344,7 @@ mod tests {
         let sources = Sources {
             local: Some(local_store),
             engine: EngineSource::Api {
-                client: EngineClient::for_tests(format!("http://{}", engine.addr)),
+                client: EngineClient::embedded_for_tests(engine.router()),
             },
         };
 

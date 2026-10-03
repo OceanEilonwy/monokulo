@@ -661,9 +661,9 @@ mod tests {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let state = crate::http::AppState {
-            engine: crate::http::Engine::new(crate::engine_client::EngineClient::for_tests(
-                format!("http://{}", engine.addr),
-            )),
+            engine: crate::http::Engine::new(
+                crate::engine_client::EngineClient::embedded_for_tests(engine.router()),
+            ),
             ..crate::http::AppState::for_tests()
         };
         let router = crate::http::build_router(state);

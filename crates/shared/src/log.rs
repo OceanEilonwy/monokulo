@@ -41,17 +41,31 @@ thread_local! {
 /// fields: `throttle_key` and `suppressed`, the number held back since the
 /// last one.
 ///
+/// Keys are kept per crate ([`namespaced`]): the key above, logged by the
+/// engine, is throttled as `engine/tick-failed:Mainnet`, so monokulo and an
+/// engine embedded in the same process can't hold back each other's events
+/// by choosing the same key. Within a crate, the same key from two places is
+/// one kind of event, as before.
+///
 /// ```ignore
 /// shared::throttled!(format!("tick-failed:{network:?}"), warn, network = ?network, error = %e, "scan tick failed");
 /// ```
 #[macro_export]
 macro_rules! throttled {
     ($key:expr, $level:ident, $($rest:tt)+) => {{
-        let key = $key;
+        let key = $crate::log::namespaced(::std::module_path!(), &$key);
         if let Some(suppressed) = $crate::log::admit(&key) {
             $crate::log::tracing::$level!(throttle_key = %key, suppressed, $($rest)+);
         }
     }};
+}
+
+/// `key` as [`throttled!`] keeps it: after the name of the crate whose code
+/// logged it (the first part of `module_path`), so each crate's keys are its
+/// own.
+pub fn namespaced(module_path: &str, key: &str) -> String {
+    let krate = module_path.split("::").next().unwrap_or(module_path);
+    format!("{krate}/{key}")
 }
 
 /// Whether an event with `key` may be logged now, and if so how many were
@@ -124,5 +138,47 @@ mod tests {
         let e = "timeout";
         crate::throttled!(format!("test:macro:{network}"), warn, network, error = %e, "scan tick failed on {network}");
         crate::throttled!("test:macro:plain", error, "no fields");
+    }
+
+    #[test]
+    fn a_key_is_kept_under_the_crate_that_logged_it() {
+        assert_eq!(
+            namespaced("engine::loops", "tick-failed:Mainnet"),
+            "engine/tick-failed:Mainnet"
+        );
+        assert_eq!(
+            namespaced("monokulo", "client-logs-dropped:s1"),
+            "monokulo/client-logs-dropped:s1"
+        );
+    }
+
+    /// Monokulo and an embedded engine share one process: the same key from
+    /// each is two kinds of event, each logged the first time.
+    #[test]
+    fn the_same_key_from_two_crates_is_throttled_separately() {
+        let start = Instant::now();
+        let engine = namespaced("engine::loops", "test:shared-key");
+        let monokulo = namespaced("monokulo::live", "test:shared-key");
+        assert_eq!(admit_at(&engine, start), Some(0));
+        assert_eq!(admit_at(&monokulo, start), Some(0), "not held back");
+        assert_eq!(admit_at(&engine, start + Duration::from_secs(1)), None);
+        assert_eq!(
+            admit_at(&namespaced("engine::work::chain", "test:shared-key"), start),
+            None,
+            "one crate's key, wherever in it"
+        );
+    }
+
+    /// What the macro admits is the namespaced key, so its own event holds
+    /// back the next one with that key from this crate.
+    #[test]
+    fn the_macro_throttles_by_the_namespaced_key() {
+        crate::throttled!("test:macro:namespaced", warn, "first");
+        assert_eq!(admit("shared/test:macro:namespaced"), None, "already seen");
+        assert_eq!(
+            admit("test:macro:namespaced"),
+            Some(0),
+            "the bare key is not"
+        );
     }
 }

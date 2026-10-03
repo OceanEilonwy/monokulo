@@ -484,7 +484,6 @@ mod tests {
             site_url: "https://shop.example.com".to_string(),
             tenant_public_key: "pk_test".to_string(),
             tenant_secret_token_encrypted: "sk_test".to_string(),
-            moneropay_endpoint: "http://127.0.0.1:8080".to_string(),
             created_at: 0,
             fx_providers: fx_providers.iter().map(|p| p.to_string()).collect(),
             base_currency: "XMR".to_string(),

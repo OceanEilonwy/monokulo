@@ -352,7 +352,10 @@ impl Follower {
         let hasher = if let Some(hasher) = &self.hasher {
             hasher.clone()
         } else {
-            let name = format!("randomx {}", shared::network::network_str(self.network));
+            let name = format!(
+                "engine-randomx-{}",
+                shared::network::network_str(self.network)
+            );
             let hasher = Hasher::start(&name)?;
             self.hasher = Some(hasher.clone());
             hasher

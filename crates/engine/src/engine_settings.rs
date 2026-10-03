@@ -189,6 +189,22 @@ settings! {
         example: "2",
         applies: Restart,
     },
+    SERVER_CPUS: String {
+        key: "server.cpus",
+        default: String::new(),
+        check: |cpus: &String| crate::threads::parse_cpu_list(cpus).map(|_| ()),
+        description: "The CPUs the engine's threads may run on, as taskset takes them (2,3 or 1-3); empty for all. One scan runs at a time per CPU listed. On a router, leaving some CPUs out keeps them free for routing while the engine catches up with the chain. Linux only.",
+        example: "2,3",
+        applies: Restart,
+    },
+    SERVER_NICE: u32 {
+        key: "server.nice",
+        default: 0,
+        check: range(0, 19),
+        description: "The niceness of the engine's threads: 0 is normal, 19 the lowest. Higher gives way to everything else on the machine; inside monokulo, to monokulo's own threads too. Linux only.",
+        example: "10",
+        applies: Restart,
+    },
     DATABASE_READ_CONNECTIONS: usize {
         key: "database.read_connections",
         default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
@@ -274,6 +290,40 @@ settings! {
         description: "Headers the collector needs, such as an API key, as name=value pairs separated by commas.",
         sources: [Env],
     },
+}
+
+/// Settings that only mean something for the standalone engine.
+///
+/// They are its listen address, the token its HTTP clients carry, and its
+/// own process's logging (`docs/engine_as_library.md` §4). An engine
+/// embedded in monokulo has no listener, is given a token by monokulo, and
+/// logs through monokulo's logger, so these do nothing there: given to it,
+/// they stop it at start, and its settings API leaves them out.
+pub const STANDALONE_ONLY: &[&'static dyn AnySetting] = &[
+    &SERVER_BIND,
+    &SERVER_TOKEN,
+    &LOGGING_FORMAT,
+    &LOGGING_LEVEL,
+    &LOGGING_DEV_MODE_UNTIL,
+    &LOGGING_RETENTION_DAYS,
+    &LOGGING_MAX_MB,
+    &LOGGING_OTLP_ENDPOINT,
+    &LOGGING_OTLP_HEADERS,
+];
+
+/// Whether `key` is one of [`STANDALONE_ONLY`].
+pub fn standalone_only(key: &str) -> bool {
+    STANDALONE_ONLY.iter().any(|setting| setting.key() == key)
+}
+
+/// Every setting an embedded engine has: [`ALL`] less [`STANDALONE_ONLY`].
+/// What monokulo offers on its command line (`--engine-…`) and in its
+/// options file (`[engine.…]`) for the engine inside it.
+pub fn embedded_settings() -> Vec<&'static dyn AnySetting> {
+    ALL.iter()
+        .copied()
+        .filter(|setting| !standalone_only(setting.key()))
+        .collect()
 }
 
 /// The networks the engine can scan, with their node setting.
@@ -564,6 +614,9 @@ pub struct RuntimeConfig {
     pub bind: std::net::SocketAddr,
     pub worker_threads: usize,
     pub read_connections: usize,
+    /// The engine's threads: `server.worker_threads`, `server.cpus` and
+    /// `server.nice` (`crate::threads`).
+    pub threads: crate::threads::ThreadPlan,
 }
 
 impl Section for RuntimeConfig {
@@ -572,14 +625,25 @@ impl Section for RuntimeConfig {
         &[
             &SERVER_BIND,
             &SERVER_WORKER_THREADS,
+            &SERVER_CPUS,
+            &SERVER_NICE,
             &DATABASE_READ_CONNECTIONS,
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        let worker_threads = snapshot.get(&SERVER_WORKER_THREADS);
         Ok(Self {
             bind: snapshot.get(&SERVER_BIND).0,
-            worker_threads: snapshot.get(&SERVER_WORKER_THREADS),
+            worker_threads,
             read_connections: snapshot.get(&DATABASE_READ_CONNECTIONS),
+            threads: crate::threads::ThreadPlan {
+                workers: worker_threads,
+                // Checked by the setting itself; an invalid value is
+                // reported there and the default (every CPU) used.
+                cpus: crate::threads::parse_cpu_list(&snapshot.get(&SERVER_CPUS))
+                    .unwrap_or_default(),
+                nice: i32::try_from(snapshot.get(&SERVER_NICE)).unwrap_or(0),
+            },
         })
     }
 }
@@ -830,6 +894,10 @@ pub struct EngineSettings {
     pub tenant_defaults: Live<TenantDefaults>,
     pub runtime: Live<RuntimeConfig>,
     pub custody: Live<CustodyConfig>,
+    /// Whether this engine runs inside monokulo: then
+    /// [`STANDALONE_ONLY`] settings do nothing, and its settings API leaves
+    /// them out.
+    pub embedded: bool,
 }
 
 fn defaults_of<S: Section>() -> S {
@@ -867,6 +935,7 @@ impl EngineSettings {
             tenant_defaults: Live::new(defaults_of()),
             runtime: Live::new(defaults_of()),
             custody: Live::new(defaults_of()),
+            embedded: false,
         })
     }
 }
@@ -1012,6 +1081,7 @@ impl EngineSettings {
     /// Loads every setting from `store` (and the environment), builds the
     /// runtime pieces that depend on them, and returns the live sections plus
     /// the registry the settings API saves through.
+    /// `embedded`: the engine runs inside monokulo (see the field).
     pub async fn load(
         store: SharedStore,
         daemons: Daemons,
@@ -1019,6 +1089,7 @@ impl EngineSettings {
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
         options: live_settings::OptionsFile,
+        embedded: bool,
     ) -> Result<Arc<Self>, String> {
         Self::load_full(
             store,
@@ -1027,6 +1098,7 @@ impl EngineSettings {
             rate_limiter,
             env,
             options,
+            embedded,
         )
         .await
     }
@@ -1048,6 +1120,7 @@ impl EngineSettings {
             rate_limiter,
             env.or_var(SERVER_TOKEN.env_var, shared::auth::TEST_ENGINE_TOKEN),
             live_settings::OptionsFile::in_memory(""),
+            false,
         )
         .await
     }
@@ -1062,6 +1135,7 @@ impl EngineSettings {
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
         options: live_settings::OptionsFile,
+        embedded: bool,
     ) -> Result<Arc<Self>, String> {
         // The options file holds the configuration and the database the
         // runtime switches, each key in its own place.
@@ -1080,7 +1154,13 @@ impl EngineSettings {
         // Read at start, before the store opened (`main`); registered so it
         // is described, checked and reported like every other setting.
         builder.section::<BootConfig>();
-        builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
+        if embedded {
+            // monokulo's logger is the process's: its logging settings
+            // govern it, not these (STANDALONE_ONLY).
+            builder.section::<LoggingConfig>();
+        } else {
+            builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
+        }
         let custody = match custody {
             Some(reloadable) => builder.reloadable(reloadable),
             None => builder.section::<CustodyConfig>(),
@@ -1109,6 +1189,7 @@ impl EngineSettings {
             tenant_defaults,
             runtime,
             custody,
+            embedded,
         }))
     }
 }

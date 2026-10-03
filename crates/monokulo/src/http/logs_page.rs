@@ -819,7 +819,8 @@ pub async fn tail(
             local: None,
             engine: sources.engine.clone(),
         }),
-        crate::logs::EngineSource::Unavailable(_) => None,
+        // Embedded, the local store holds the engine's lines too.
+        crate::logs::EngineSource::Unavailable(_) | crate::logs::EngineSource::Local => None,
     };
     let state = Tail {
         local: Sources {

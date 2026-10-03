@@ -446,7 +446,7 @@ async fn main() {
             .spawn()
             .await,
     );
-    let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
+    let engine_client = EngineClient::embedded_for_tests(engine.router());
     let tenant = engine_client
         .create_tenant(CreateTenantRequest {
             view_key_hex: VIEW_KEY_HEX.to_string(),
@@ -510,7 +510,6 @@ async fn main() {
             crypto::Binding::StoreSecret("coverage-store"),
             tenant.secret_token.expose(),
         ),
-        &format!("http://{}", engine.addr),
         0,
         "XMR",
     )

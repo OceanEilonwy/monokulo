@@ -519,10 +519,7 @@ mod tests {
             .await;
         let state = AppState {
             dns,
-            engine: crate::http::Engine::new(EngineClient::for_tests(format!(
-                "http://{}",
-                engine.addr
-            ))),
+            engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
             ..AppState::for_tests()
         };
         (state, engine)

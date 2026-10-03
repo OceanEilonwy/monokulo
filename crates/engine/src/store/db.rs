@@ -144,7 +144,7 @@ impl Db {
         // on this when every queue is empty.
         let (wake, woken) = std::sync::mpsc::sync_channel::<()>(1);
         let counters = Arc::new(Counters::default());
-        let mut builder = std::thread::Builder::new().name("scanner-db".into());
+        let mut builder = std::thread::Builder::new().name("engine-db".into());
         if faults.fail_spawn {
             builder = builder.stack_size(usize::MAX);
         }

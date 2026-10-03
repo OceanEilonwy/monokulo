@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 # A standalone, test-only crate by construction - it exists purely to make
-# the repo's real-stagenet e2e suites (crates/engine/tests/e2e_stagenet.rs,
-# tests/e2e_dashboard_stagenet.rs, crates/engine/src/bin/e2e_harness.rs, and
+# the repo's real-stagenet e2e suites (crates/e2e-harness/tests/e2e_stagenet.rs,
+# tests/e2e_dashboard_stagenet.rs, crates/e2e-harness/src/main.rs, and
 # mock-woocommerce's own two real-stagenet tests) fast and reliable. See
 # src/lib.rs's own module doc comment for the full design rationale (why no
 # chain scanning, why decoy selection is served from a committed cache) and

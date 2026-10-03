@@ -32,6 +32,7 @@ pub mod network;
 pub mod node_events;
 pub mod pow;
 pub mod proof;
+pub mod run;
 pub mod scaling;
 pub mod scanner;
 pub mod scanner_status;
@@ -41,6 +42,7 @@ pub mod store;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod test_log;
+pub mod threads;
 pub mod webhook_delivery;
 pub mod webhook_sign;
 pub mod work;

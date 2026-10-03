@@ -482,9 +482,13 @@ fn describe_engine_error(err: &EngineClientError) -> String {
     match err {
         EngineClientError::Request(_)
         | EngineClientError::Middleware(_)
-        | EngineClientError::InvalidUrl(_) => "the engine could not be reached".to_string(),
+        | EngineClientError::Embedded(_) => "the engine could not be reached".to_string(),
         EngineClientError::EngineError { status, .. } => {
             format!("the engine responded with an error ({status})")
+        }
+        EngineClientError::Unreadable(_) => "the engine's reply could not be read".to_string(),
+        EngineClientError::NotAdminRoute(_) => {
+            "monokulo refused to make the request (a bug)".to_string()
         }
     }
 }
@@ -644,17 +648,7 @@ pub async fn take_new_anchor(
     let Ok(network) = shared::network::parse_network(&network) else {
         return (axum::http::StatusCode::BAD_REQUEST, "No such network.").into_response();
     };
-    let path = format!(
-        "/api/v1/admin/proof/{}/anchor",
-        shared::network::network_str(network)
-    );
-    match state
-        .engine
-        .client
-        .request(reqwest::Method::DELETE, &path)
-        .send()
-        .await
-    {
+    match state.engine.client.take_new_anchor(network).await {
         Ok(response) if response.status().is_success() => {
             tracing::warn!(network = ?network, "an operator asked for a new proof-of-work anchor");
             invalidate_status_cache(&state.engine);
@@ -922,8 +916,7 @@ mod tests {
             let engine =
                 engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                     .await;
-            let state =
-                state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
+            let state = state_with_engine(EngineClient::embedded_for_tests(engine.router()));
 
             let first = get_status_cached(&state.engine)
                 .await
@@ -1048,8 +1041,7 @@ mod tests {
         async fn status_page_is_reachable_with_no_authentication_and_shows_no_configured_networks()
         {
             let engine = engine_test_support::spawn_test_engine().await;
-            let state =
-                state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
+            let state = state_with_engine(EngineClient::embedded_for_tests(engine.router()));
             let router: Router = build_router(state);
 
             let response = router
@@ -1079,8 +1071,7 @@ mod tests {
             let engine =
                 engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                     .await;
-            let state =
-                state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
+            let state = state_with_engine(EngineClient::embedded_for_tests(engine.router()));
             let router: Router = build_router(state);
 
             let response = router
@@ -1144,10 +1135,9 @@ mod tests {
                 .with_admin_lookup_daemon()
                 .spawn()
                 .await;
-            let router: Router = build_router(state_with_engine(EngineClient::for_tests(format!(
-                "http://{}",
-                engine.addr
-            ))));
+            let router: Router = build_router(state_with_engine(EngineClient::embedded_for_tests(
+                engine.router(),
+            )));
             let html = body_text(
                 router
                     .clone()

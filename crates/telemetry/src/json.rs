@@ -30,19 +30,76 @@ use tracing_subscriber::Layer;
 use crate::redact;
 use crate::store::StoreSink;
 
+/// Which service a line is from: the process's own, or one that runs
+/// inside it ([`Telemetry::host`](crate::Telemetry::host)), such as an
+/// engine embedded in monokulo.
+pub(crate) struct Services {
+    own: &'static str,
+    guests: parking_lot::RwLock<Vec<Guest>>,
+}
+
+struct Guest {
+    service: &'static str,
+    crates: &'static [&'static str],
+    thread_prefix: &'static str,
+}
+
+impl Services {
+    pub(crate) fn new(own: &'static str) -> Self {
+        Services {
+            own,
+            guests: parking_lot::RwLock::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn host(
+        &self,
+        service: &'static str,
+        crates: &'static [&'static str],
+        thread_prefix: &'static str,
+    ) {
+        self.guests.write().push(Guest {
+            service,
+            crates,
+            thread_prefix,
+        });
+    }
+
+    /// The service a line logged from `target`, on this thread, is from.
+    pub(crate) fn of(&self, target: &str) -> &'static str {
+        let guests = self.guests.read();
+        if guests.is_empty() {
+            return self.own;
+        }
+        let thread = std::thread::current();
+        let thread = thread.name().unwrap_or("");
+        guests
+            .iter()
+            .find(|guest| {
+                guest.crates.iter().any(|krate| {
+                    target == *krate
+                        || target
+                            .strip_prefix(krate)
+                            .is_some_and(|rest| rest.starts_with("::"))
+                }) || (!guest.thread_prefix.is_empty() && thread.starts_with(guest.thread_prefix))
+            })
+            .map_or(self.own, |guest| guest.service)
+    }
+}
+
 /// Collects span fields, and writes each event as a JSON line (when given
 /// a writer) and to the log store (once one is open).
 pub(crate) struct EventLayer<W> {
-    service: &'static str,
+    services: Arc<Services>,
     json: Option<W>,
     store: Arc<StoreSink>,
     ids: SpanIds,
 }
 
 impl<W> EventLayer<W> {
-    pub(crate) fn new(service: &'static str, json: Option<W>, store: Arc<StoreSink>) -> Self {
+    pub(crate) fn new(services: Arc<Services>, json: Option<W>, store: Arc<StoreSink>) -> Self {
         EventLayer {
-            service,
+            services,
             json,
             store,
             ids: SpanIds::default(),
@@ -252,6 +309,7 @@ where
         attributes.extend(visitor.fields);
 
         let metadata = event.metadata();
+        let service = self.services.of(metadata.target());
         let line = Line {
             timestamp: OffsetDateTime::now_utc(),
             level: *metadata.level(),
@@ -267,8 +325,8 @@ where
             // reported.
             let _ = make_writer
                 .make_writer_for(metadata)
-                .write_all(line.to_json(self.service).as_bytes());
+                .write_all(line.to_json(service).as_bytes());
         }
-        self.store.log(self.service, line);
+        self.store.log(service, line);
     }
 }

@@ -469,6 +469,7 @@ mod tests {
                 tenant_defaults: defaults.tenant_defaults.clone(),
                 runtime: defaults.runtime.clone(),
                 custody: defaults.custody.clone(),
+                embedded: false,
             });
             let wakes = Arc::new(NodeWakes::default());
             let subscriber = tokio::spawn(super::super::run_subscriber(

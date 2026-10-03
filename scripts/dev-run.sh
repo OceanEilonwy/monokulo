@@ -40,7 +40,9 @@
 #
 # The engine listens on 127.0.0.1:8080 here, and monokulo's engine.url
 # says so. (Left to their defaults, both sides agree on 127.0.0.1:8443
-# instead.)
+# instead.) The two run as separate processes, so each can be restarted
+# and debugged on its own: monokulo is started with --engine-mode remote,
+# where its default is the engine inside it.
 #
 # monokulo's own admin account no longer needs seeding by this script at
 # all: opening http://127.0.0.1:8081 for the first time now redirects
@@ -242,7 +244,7 @@ start_control_plane() {
     echo "==> starting monokulo -> $CP_LOG"
     MONOKULO_ENCRYPTION_KEY="$(cat "$CP_KEY_FILE")" \
     MONOKULO_ENGINE_TOKEN="$(cat "$ENGINE_TOKEN_FILE")" \
-        nohup "$CP_BIN" --options "$CP_OPTIONS" > "$CP_LOG" 2>&1 &
+        nohup "$CP_BIN" --options "$CP_OPTIONS" --engine-mode remote > "$CP_LOG" 2>&1 &
     echo $! > "$CP_PID_FILE"
     sleep 1
     if is_running "$CP_PID_FILE"; then

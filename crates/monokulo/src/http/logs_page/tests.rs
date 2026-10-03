@@ -806,7 +806,6 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
             "https://pos-shop.example.com",
             "pk_pos",
             "enc",
-            "http://engine",
             1,
             "XMR",
         )
@@ -976,7 +975,6 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
             "https://who-shop.example.com",
             "pk_who",
             "enc",
-            "http://engine",
             1,
             "XMR",
         )

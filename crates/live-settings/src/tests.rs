@@ -2299,3 +2299,296 @@ fn options_values_for_test(
     let store = LayeredStore::new(file, Arc::new(MemoryStore::new()), declared);
     futures_util::FutureExt::now_or_never(store.read_all()).unwrap_or_else(|| Ok(HashMap::new()))
 }
+
+/// One options file for two services in one process (monokulo and an engine
+/// embedded in it, docs/engine_as_library.md): the outer handle leaves the
+/// `[engine.*]` tables alone, the engine's handle is that table.
+mod nested_options {
+    use super::*;
+
+    settings! {
+        // The outer service's: a value directly in `[engine]`.
+        ENGINE_URL: String {
+            key: "engine.url",
+            default: String::new(),
+            description: "Where the engine is.",
+        },
+        OUTER_BIND: BindAddr {
+            key: "server.bind",
+            default: parsed_default("127.0.0.1:8081"),
+            description: "Listen address.",
+            applies: Restart,
+        },
+    }
+
+    /// The nested service's own settings, by their own keys.
+    mod engine {
+        settings! {
+            CONFIRMATIONS: u32 {
+                key: "payment.confirmations",
+                default: 10,
+                check: range(1, 100),
+                description: "Confirmations a payment needs.",
+            },
+            NODE: String {
+                key: "node.url",
+                default: String::new(),
+                description: "The node.",
+            },
+        }
+    }
+
+    const TEXT: &str = "\
+[server]
+bind = \"0.0.0.0:8081\"
+
+[engine]
+url = \"http://engine:8443\"
+
+[engine.payment]
+confirmations = 3
+
+[engine.node]
+url = \"http://node:18081\"
+";
+
+    fn read(
+        file: &OptionsFile,
+        declared: &[&'static dyn AnySetting],
+    ) -> Result<HashMap<String, String>, String> {
+        file.read(declared).map_err(|e| e.to_string())
+    }
+
+    /// A file of its own in the system's temporary directory.
+    fn temp_file(tag: &str, text: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "live-settings-nested-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("outer.toml");
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn each_handle_reads_only_its_own_keys() {
+        let file = OptionsFile::in_memory(TEXT);
+        let outer = read(&file.clone().leaving("engine"), ALL).unwrap();
+        assert_eq!(
+            outer,
+            HashMap::from([
+                ("server.bind".to_string(), "0.0.0.0:8081".to_string()),
+                ("engine.url".to_string(), "http://engine:8443".to_string()),
+            ])
+        );
+        let nested = read(&file.scoped("engine"), engine::ALL).unwrap();
+        assert_eq!(
+            nested,
+            HashMap::from([
+                ("payment.confirmations".to_string(), "3".to_string()),
+                ("node.url".to_string(), "http://node:18081".to_string()),
+            ])
+        );
+    }
+
+    /// A mistake in the nested service's tables is reported by its reader,
+    /// by the key as written in the file, with its line.
+    #[test]
+    fn a_mistake_in_a_nested_table_names_the_whole_key() {
+        let file =
+            OptionsFile::in_memory("[engine.payment]\nconfirmations = 0\nconfirmatons = 3\n");
+        let problem = read(&file.scoped("engine"), engine::ALL).unwrap_err();
+        assert!(
+            problem.contains("line 2: engine.payment.confirmations: "),
+            "{problem}"
+        );
+        assert!(
+            problem.contains("line 3: there is no setting called engine.payment.confirmatons"),
+            "{problem}"
+        );
+        // The outer reader leaves the table alone, mistakes and all.
+        read(&file.leaving("engine"), ALL).unwrap();
+    }
+
+    /// Without the nested service (monokulo with a remote engine), its
+    /// tables are refused, with why.
+    #[test]
+    fn nested_tables_with_nobody_to_read_them_are_refused_with_the_hint() {
+        let file = OptionsFile::in_memory(TEXT).with_hint(
+            "engine",
+            "the engine's settings go here only when it is embedded",
+        );
+        let problem = read(&file, ALL).unwrap_err();
+        assert!(
+            problem.contains(
+                "there is no setting called engine.payment.confirmations: the engine's settings go here only when it is embedded"
+            ),
+            "{problem}"
+        );
+        assert!(problem.contains("engine.node.url"), "{problem}");
+        assert!(
+            !problem.contains("engine.url:"),
+            "the outer service's own key is fine: {problem}"
+        );
+    }
+
+    /// Both services save into the one file, each keeping the other's
+    /// keys, with no "changed since it was loaded" between them: they share
+    /// what was last read and written.
+    #[tokio::test]
+    async fn saves_through_both_handles_keep_each_others_keys() {
+        let path = temp_file("both", "# kept\n[server]\nbind = \"0.0.0.0:8081\"\n");
+        let file = OptionsFile::at(&path);
+        let outer = LayeredStore::new(
+            file.clone().leaving("engine"),
+            Arc::new(MemoryStore::new()),
+            ALL,
+        );
+        let nested = LayeredStore::new(
+            file.scoped("engine"),
+            Arc::new(MemoryStore::new()),
+            engine::ALL,
+        );
+        outer.read_all().await.unwrap();
+        nested.read_all().await.unwrap();
+
+        nested
+            .write_all(vec![("payment.confirmations", Some("4".to_string()))])
+            .await
+            .unwrap();
+        outer
+            .write_all(vec![(
+                "engine.url",
+                Some("http://elsewhere:8443".to_string()),
+            )])
+            .await
+            .unwrap();
+        nested
+            .write_all(vec![("node.url", Some("http://node:18081".to_string()))])
+            .await
+            .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# kept\n"), "{text}");
+        assert!(text.contains("bind = \"0.0.0.0:8081\""), "{text}");
+        assert!(text.contains("url = \"http://elsewhere:8443\""), "{text}");
+        assert!(
+            text.contains("[engine.payment]\nconfirmations = 4"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[engine.node]\nurl = \"http://node:18081\""),
+            "{text}"
+        );
+        assert_eq!(
+            outer
+                .read_all()
+                .await
+                .unwrap()
+                .get("engine.url")
+                .map(String::as_str),
+            Some("http://elsewhere:8443")
+        );
+        assert_eq!(
+            nested
+                .read_all()
+                .await
+                .unwrap()
+                .get("payment.confirmations")
+                .map(String::as_str),
+            Some("4")
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A nested key saved into a file without the table gets the table's
+    /// header, and no empty `[engine]` above it.
+    #[tokio::test]
+    async fn a_first_nested_save_writes_only_the_table_it_needs() {
+        let path = temp_file("first", "");
+        let file = OptionsFile::at(&path);
+        let nested = LayeredStore::new(
+            file.scoped("engine"),
+            Arc::new(MemoryStore::new()),
+            engine::ALL,
+        );
+        nested.read_all().await.unwrap();
+        nested
+            .write_all(vec![("payment.confirmations", Some("5".to_string()))])
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[engine.payment]\nconfirmations = 5\n"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn nested_settings_get_their_own_options_and_keep_their_own_keys() {
+        let command = cli::with_nested_settings(
+            cli::with_settings(clap::Command::new("outer"), ALL, "outer.toml"),
+            "engine",
+            engine::ALL,
+        );
+        let matches = command
+            .try_get_matches_from([
+                "outer",
+                "--server-bind",
+                "0.0.0.0:9000",
+                "--engine-payment-confirmations",
+                "4",
+            ])
+            .unwrap();
+        assert_eq!(
+            cli::nested_values(&matches, "engine", engine::ALL),
+            HashMap::from([("payment.confirmations".to_string(), "4".to_string())])
+        );
+        assert_eq!(
+            cli::values(&matches, ALL),
+            HashMap::from([("server.bind".to_string(), "0.0.0.0:9000".to_string())])
+        );
+        // Checked by the setting's own rules as it is parsed.
+        let command = cli::with_nested_settings(clap::Command::new("outer"), "engine", engine::ALL);
+        let refused = command
+            .try_get_matches_from(["outer", "--engine-payment-confirmations", "0"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("--engine-payment-confirmations"),
+            "{refused}"
+        );
+    }
+
+    /// `--init` writes the nested service's settings under its table, and
+    /// the file it writes reads back through both handles.
+    #[test]
+    fn init_lists_nested_settings_under_their_table() {
+        let text = render_init_nested(
+            "outer",
+            ALL,
+            "engine",
+            "The engine's settings, when it runs inside outer.",
+            engine::ALL,
+        );
+        assert!(text.contains("[server]\n"), "{text}");
+        assert!(
+            text.contains("# The engine's settings, when it runs inside outer."),
+            "{text}"
+        );
+        assert!(text.contains("[engine.payment]\n"), "{text}");
+        assert!(text.contains("# confirmations = 10\n"), "{text}");
+        let uncommented = text.replace("# confirmations = 10", "confirmations = 7");
+        let file = OptionsFile::in_memory(uncommented);
+        read(&file.clone().leaving("engine"), ALL).unwrap();
+        assert_eq!(
+            read(&file.scoped("engine"), engine::ALL)
+                .unwrap()
+                .get("payment.confirmations")
+                .map(String::as_str),
+            Some("7")
+        );
+    }
+}
