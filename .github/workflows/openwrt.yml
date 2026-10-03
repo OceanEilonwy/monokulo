@@ -1,5 +1,5 @@
 # The OpenWrt package for the GL.iNet Flint 2 (OpenWrt 25.12, mediatek/filogic,
-# aarch64_cortex-a53): monokulo, its engine and its LuCI page in one signed
+# aarch64_cortex-a53): monokulo (the engine inside it) and its LuCI page in one signed
 # .apk, a signed apk repository, and the landing page with install
 # instructions (scripts/build-openwrt.sh does all of it).
 #

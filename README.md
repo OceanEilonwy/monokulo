@@ -55,9 +55,10 @@ GitHub Pages from main. On the router:
   at nice 10, so catching up with the chain leaves the rest for routing).
   These are passed as options, so the admin page shows them locked; every
   other setting is on the admin page as usual.
-- `/etc/monokulo/secrets` holds the encryption key and engine token, made on
-  first start and readable by root only. Back it up.
-- Both processes run as the `monokulo` user; `logread -e monokulo` shows their logs.
+- `/etc/monokulo/secrets` holds the encryption key, made on first start and
+  readable by root only. Back it up.
+- One procd instance runs monokulo, the engine inside it, as the `monokulo`
+  user; `logread -e monokulo` shows its logs.
 
 The design and the CPU and capacity figures are in `docs/flint2_openwrt_apk.md`.
 

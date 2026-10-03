@@ -1,8 +1,8 @@
-# OpenWrt package for monokulo and its engine, with the LuCI page that runs
-# them (Services > Monokulo), as one package.
+# OpenWrt package for monokulo, which runs the engine inside it, with the
+# LuCI page that manages it (Services > Monokulo).
 #
-# The two binaries are cross-compiled with cargo (scripts/build-openwrt.sh)
-# and dropped into files/ before the SDK runs: building Rust inside the SDK
+# The binary is cross-compiled with cargo (scripts/build-openwrt.sh) and
+# dropped into files/ before the SDK runs: building Rust inside the SDK
 # would mean bootstrapping a whole Rust toolchain, and monokulo's build also
 # needs Node for the POS app.
 #
@@ -22,20 +22,21 @@ define Package/monokulo
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
   TITLE:=Monokulo: a self-hosted Monero payment gateway
-  # Static binaries. ca-bundle: TLS to Monero nodes and exchange rate
+  # A static binary. ca-bundle: TLS to Monero nodes and exchange rate
   # services checks certificates against the system's CA store. taskset
-  # (engine CPU pinning) is a BusyBox applet on OpenWrt 25.12.
+  # (the init script's check of the engine's CPUs) is a BusyBox applet on
+  # OpenWrt 25.12.
   DEPENDS:=@(aarch64) +ca-bundle
-  # Both processes run as this user; created on install by the package scripts.
+  # monokulo runs as this user; created on install by the package scripts.
   USERID:=monokulo:monokulo
 endef
 
 define Package/monokulo/description
   Accept Monero on your own router. Monokulo watches the chain with each
   store's view key (never a spend key), tracks orders and tells the store
-  when one is paid. Two static binaries: monokulo, the web app and admin,
-  and monokulo-engine, the private engine that scans the chain. Includes
-  its LuCI page under Services > Monokulo.
+  when one is paid. One static binary: monokulo, the web app and admin,
+  with the private engine that scans the chain running inside it on CPUs
+  of its own. Includes its LuCI page under Services > Monokulo.
 endef
 
 define Package/monokulo/conffiles
@@ -48,9 +49,6 @@ endef
 define Package/monokulo/install
 	$(INSTALL_DIR) $(1)/usr/bin $(1)/etc/init.d $(1)/etc/config $(1)/lib/upgrade/keep.d
 	$(INSTALL_BIN) $(CURDIR)/files/monokulo $(1)/usr/bin/monokulo
-	$(INSTALL_BIN) $(CURDIR)/files/monokulo-engine $(1)/usr/bin/monokulo-engine
-	$(INSTALL_DIR) $(1)/usr/libexec/monokulo
-	$(INSTALL_BIN) $(CURDIR)/files/monokulo-engine.pinned $(1)/usr/libexec/monokulo/monokulo-engine
 	$(INSTALL_BIN) $(CURDIR)/files/monokulo.init $(1)/etc/init.d/monokulo
 	$(INSTALL_CONF) $(CURDIR)/files/monokulo.config $(1)/etc/config/monokulo
 	$(INSTALL_DATA) $(CURDIR)/files/monokulo.keep $(1)/lib/upgrade/keep.d/monokulo

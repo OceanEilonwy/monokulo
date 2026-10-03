@@ -125,13 +125,13 @@ footer{max-width:1040px;margin:0 auto;padding:0 var(--space-lg) var(--space-xl);
   <section id="how">
     <div class="section-title">
       <h2>How it works</h2>
-      <p>Two small programs on the router, a page in LuCI, and a Monero node it can reach.</p>
+      <p>One small program on the router, a page in LuCI, and a Monero node it can reach.</p>
     </div>
     <div class="grid">
       <div class="card"><h3>Watch-only</h3><p>Each store gives Monokulo its view key, never its spend key. Payments go straight to the store’s own wallet; Monokulo just sees them arrive.</p></div>
       <div class="card"><h3>Checkout that works anywhere</h3><p>A hosted checkout page and embed for static sites, a point-of-sale screen, and webhooks when an order is paid. The checkout works without JavaScript.</p></div>
       <div class="card"><h3>Fast detection</h3><p>Payments show up within about a second of reaching the network, and are confirmed as blocks arrive.</p></div>
-      <div class="card"><h3>Easy on the router</h3><p>Two static programs and SQLite. The engine scans on two of the Flint 2’s four cores, at low priority, so routing comes first. Checking each block’s proof of work (on by default for mainnet) takes about 256 MB of memory; turn it off on the admin page if you run your own node.</p></div>
+      <div class="card"><h3>Easy on the router</h3><p>One static program and SQLite. The engine runs inside Monokulo on threads of its own, kept to two of the Flint 2’s four cores at low priority, so routing comes first. Checking each block’s proof of work (on by default for mainnet) takes about 256 MB of memory; turn it off on the admin page if you run your own node.</p></div>
       <div class="card"><h3>Settings in LuCI</h3><p>Start, stop, port, listen address and the engine’s CPUs are under Services → Monokulo. Stores, nodes and everything else are on Monokulo’s own admin page.</p></div>
       <div class="card"><h3>Survives upgrades</h3><p>Its settings, keys and databases are kept across OpenWrt firmware upgrades.</p></div>
     </div>
@@ -184,12 +184,12 @@ footer{max-width:1040px;margin:0 auto;padding:0 var(--space-lg) var(--space-xl);
           <li><span class="num">4</span><div>
             <h3>Install Monokulo</h3>
             <p class="path">System <b>›</b> Software</p>
-            <p>Click <strong>Update lists…</strong> and wait for it to finish. Type <code>monokulo</code> into the <em>Type to filter…</em> box, open the <em>Available</em> tab, and click <strong>Install…</strong> next to <strong>monokulo</strong>. Then confirm with <strong>Install</strong>. It’s one package with both programs and the LuCI page, and it starts straight away.</p>
+            <p>Click <strong>Update lists…</strong> and wait for it to finish. Type <code>monokulo</code> into the <em>Type to filter…</em> box, open the <em>Available</em> tab, and click <strong>Install…</strong> next to <strong>monokulo</strong>. Then confirm with <strong>Install</strong>. It’s one package with the program and the LuCI page, and it starts straight away.</p>
           </div></li>
           <li><span class="num">5</span><div>
             <h3>Open Monokulo</h3>
             <p class="path">Services <b>›</b> Monokulo</p>
-            <p>Reload the page first so the new menu item appears. Both lines should say <em>Running</em>. Click <strong>Open monokulo</strong> (it’s at <code>http://192.168.1.1:8081</code>) and create the admin account: the first account made is the admin.</p>
+            <p>Reload the page first so the new menu item appears. The status should say <em>Running</em>. Click <strong>Open monokulo</strong> (it’s at <code>http://192.168.1.1:8081</code>) and create the admin account: the first account made is the admin.</p>
           </div></li>
           <li><span class="num">6</span><div>
             <h3>Add a Monero node, then a store</h3>
@@ -214,7 +214,7 @@ echo "@PAGES_URL@/@REPO_PATH@/packages.adb" &gt;&gt; /etc/apk/repositories.d/cus
           </div></li>
           <li><span class="num">3</span><div>
             <h3>Install Monokulo</h3>
-            <p>One package: both programs and the LuCI page. It starts straight away.</p>
+            <p>One package: the program and the LuCI page. It starts straight away.</p>
             <div class="cmd"><pre>apk update
 apk add monokulo</pre></div>
           </div></li>
@@ -231,7 +231,7 @@ logread -e monokulo   # what it said</pre></div>
 
     <div class="card">
       <h3>Back up its secrets</h3>
-      <p>On first start Monokulo makes an encryption key for its data and a token for its engine, in <code>/etc/monokulo/secrets</code>. Firmware upgrades keep the file, but if it’s ever lost, Monokulo’s data can’t be read. Copy it somewhere safe from your computer:</p>
+      <p>On first start Monokulo makes an encryption key for its data, in <code>/etc/monokulo/secrets</code>. Firmware upgrades keep the file, but if it’s ever lost, Monokulo’s data can’t be read. Copy it somewhere safe from your computer:</p>
       <div class="cmd" style="margin-top:var(--space-sm)"><pre>scp root@192.168.1.1:/etc/monokulo/secrets monokulo-secrets</pre></div>
       <p class="note" style="margin-top:var(--space-md)">Keep that file private: with it and a copy of the data folder, anyone can read your stores’ details.</p>
     </div>
@@ -278,7 +278,7 @@ rm -rf /srv/monokulo /etc/monokulo   # also delete all data and secrets</pre></d
       <h3>Package files</h3>
       <p class="muted">You don’t need these if you use the repository above. The package is signed with the Monokulo key, so once it’s trusted (step 2) you can also install it directly: upload it in <span class="path inline">System <b>›</b> Software <b>›</b> Upload Package…</span>, or use <code>apk add</code>.</p>
       <ul class="files">
-        <li><a href="@REPO_PATH@/@APK@">@APK@</a> (@APK_SIZE@): monokulo, its engine and the LuCI page</li>
+        <li><a href="@REPO_PATH@/@APK@">@APK@</a> (@APK_SIZE@): monokulo (the engine inside it) and the LuCI page</li>
         <li><a href="@REPO_PATH@/packages.adb">packages.adb</a>: the signed repository index</li>
         <li><a href="monokulo.pem">monokulo.pem</a>: the signing key</li>
       </ul>
