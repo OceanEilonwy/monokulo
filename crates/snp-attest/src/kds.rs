@@ -98,14 +98,7 @@ pub fn crl_url(product: Product) -> String {
     format!("{KDS_BASE}/vcek/v1/{}/crl", product.kds_name())
 }
 
-/// The hwID KDS expects in the VCEK URL path - full 64-byte `chip_id` on
-/// legacy products, first 8 bytes only on Turin+.
-pub fn hw_id_for_product(product: Product, chip_id: &[u8; 64]) -> Vec<u8> {
-    match product {
-        Product::Turin => chip_id[..8].to_vec(),
-        _ => chip_id.to_vec(),
-    }
-}
+pub use crate::report::hw_id_for_product;
 
 /// Fetches the DER-encoded VCEK certificate for the exact reported TCB in
 /// `report` - AMD's KDS issues a VCEK bound to one specific

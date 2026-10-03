@@ -16,6 +16,15 @@ members = [
     "xtask",
 ]
 
+# One version for every crate: a release tag (`v{version}`) names the
+# monokulo, engine and key-custody-cli builds together, and CI refuses a tag
+# that doesn't match. Monokulo builds its key-custody-cli download links from
+# this version and `repository`, so an older instance links to the CLI built
+# with it.
+[workspace.package]
+version = "0.1.0"
+repository = "https://github.com/OceanEilonwy/monokulo"
+
 # Every crate takes these (`[lints] workspace = true`). Clippy's default lints
 # are errors, so `cargo clippy` fails locally exactly as it does in CI (which
 # also runs it with `-D warnings`, for the compiler's own warnings).
