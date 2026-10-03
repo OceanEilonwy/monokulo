@@ -74,7 +74,8 @@ jobs:
       # The latest nightly, as rust-toolchain.toml names it.
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: aarch64-unknown-linux-musl
+          # wasm32: monokulo's build script builds key custody's browser module.
+          targets: aarch64-unknown-linux-musl, wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           key: openwrt-aarch64

@@ -1,6 +1,7 @@
 [package]
 name = "live-settings"
-version = "0.1.0"
+version.workspace = true
+repository.workspace = true
 edition = "2021"
 description = "Typed settings that resolve command line > env > stored > default, with command-line options and help, and can be applied to a running process"
 

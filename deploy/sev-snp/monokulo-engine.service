@@ -1,0 +1,38 @@
+[Unit]
+Description=Monokulo engine (inside an AMD SEV-SNP confidential VM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ENGINE_TOKEN (and anything else secret) comes from here, never from the
+# options file.
+EnvironmentFile=/etc/monokulo/engine.env
+ExecStart=/opt/monokulo/bin/monokulo-engine --options /etc/monokulo/engine.toml
+Restart=on-failure
+RestartSec=2
+StateDirectory=monokulo
+StateDirectoryMode=0750
+User=monokulo
+Group=monokulo
+# The snp key custody backend asks the security processor for reports and
+# sealing keys through the guest kernel's device. Give the monokulo group
+# access to it (a udev rule: KERNEL=="sev-guest", GROUP="monokulo",
+# MODE="0660"), and allow it here.
+DeviceAllow=/dev/sev-guest rw
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+DevicePolicy=closed
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/monokulo /etc/monokulo
+
+[Install]
+WantedBy=multi-user.target

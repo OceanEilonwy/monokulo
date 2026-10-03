@@ -68,10 +68,10 @@ function cleanEnv() {
 }
 
 function buildBinaries() {
-  console.log('[real-binaries] building monokulo-engine, monokulo, fake-monerod and key-custody-server...');
+  console.log('[real-binaries] building monokulo-engine, monokulo and fake-monerod...');
   execFileSync(
     'cargo',
-    ['build', '-p', 'engine', '--bin', 'monokulo-engine', '-p', 'monokulo', '--bin', 'monokulo', '-p', 'engine-test-support', '--bin', 'fake-monerod', '-p', 'key-custody-server', '--bin', 'key-custody-server'],
+    ['build', '-p', 'engine', '--bin', 'monokulo-engine', '-p', 'monokulo', '--bin', 'monokulo', '-p', 'engine-test-support', '--bin', 'fake-monerod'],
     { cwd: REPO_ROOT, stdio: 'inherit' },
   );
 }

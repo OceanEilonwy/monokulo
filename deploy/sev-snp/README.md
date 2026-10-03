@@ -1,14 +1,18 @@
-# Deploying Monokulo on a bare-metal AMD SEV-SNP host
+# Deploying the engine inside an AMD SEV-SNP confidential VM
 
-WBS 2.2: provisioning + attestation (2.2.1) and deploying 2.1's engine +
-`key-custody-server` split inside the confidential VM (2.2.2).
+With the engine in an SEV-SNP confidential VM and the `snp` key custody
+backend enabled (`docs/DESIGN.md` §6.3-6.5), stores' private view keys are:
 
-This directory covers the actual **deployment** once you have a bare-metal
-host with SEV-SNP support (2.2.1's own provisioning step - "provider
-console/API provisioning" - is out of scope for this repo: it's a real
-account/hardware decision, made bare-metal deliberately for hosting
-flexibility given the crypto-adjacent nature of this business, rather than
-locked into one hyperscaler's confidential-VM product). Once you have a box:
+- encrypted in memory by the hardware, against the host and the hypervisor;
+- sealed at rest under a master key only this engine image, on this chip, can
+  unwrap (a stolen `engine.db` gives nothing);
+- sent by merchants encrypted to the engine itself, after their browser or
+  `key-custody-cli` has checked the engine's attestation: monokulo only relays
+  them.
+
+What makes this mean something is the **engine image**: the measurement the
+firmware reports must cover the engine binary, and the image's ID block must be
+signed by the ID key merchants trust. The steps below are in that order.
 
 ## 1. Verify the host is genuinely SEV-SNP-protected, with AMD-SB-3019 fixed
 
@@ -57,115 +61,138 @@ not by trusting the provider's own claim.
 4. **Do not proceed to step 2 below if this fails.** A failure here means
    either the box isn't genuinely SEV-SNP-protected, or its microcode
    predates the fix this WBS item exists to confirm - in both cases,
-   deploying onto it defeats the entire point of this track.
+   deploying onto it defeats the point of this deployment.
 
-## 2. Install the binaries
+## 2. Build a measured engine image
 
-Build `scanner` and `key-custody-server` (this workspace's existing
-release build - `cargo build --release --workspace` from the repo root) and
-copy the two binaries onto the guest:
+The guest's launch measurement covers what the firmware loads: OVMF and, with
+direct boot, the kernel, initrd and kernel command line. For it to name *this
+engine*, the engine must be part of what is measured: build the root
+filesystem (with `/opt/monokulo/bin/monokulo-engine` and its unit) as a
+read-only dm-verity image and put its root hash on the measured kernel command
+line, or put the engine in the measured initrd. An engine installed on an
+unmeasured disk is not attested, whatever the report says.
 
-```
-/opt/moneropay/bin/scanner
-/opt/moneropay/bin/key-custody-server
-```
-
-Create the `moneropay` system user/group and the directories the systemd
-units below reference (`/etc/moneropay`, `/var/lib/moneropay`) if they don't
-already exist:
+Building the image is outside this repository (it depends on your
+distribution and hypervisor). Compute its launch measurement with the image's
+exact launch parameters (vCPU count and type, OVMF, kernel, initrd, command
+line, guest policy), for example with
+[`sev-snp-measure`](https://github.com/virtee/sev-snp-measure):
 
 ```sh
-useradd --system --no-create-home --shell /usr/sbin/nologin moneropay
-mkdir -p /etc/moneropay /var/lib/moneropay
-chown moneropay:moneropay /var/lib/moneropay
+sev-snp-measure --mode snp --vcpus 4 --vcpu-type EPYC-v4 \
+    --ovmf OVMF.fd --kernel vmlinuz --initrd initrd.img --append "$CMDLINE"
 ```
 
-## 3. Configure
+## 3. Sign the image's ID block
 
-Write `/etc/moneropay/moneropay.toml` (see `docs/DESIGN.md` §13 for the full
-configuration surface). The one section this deployment specifically needs,
-beyond whatever a self-hosted install would already have:
+The ID block names the image (its measurement, family and image IDs and
+security version, `guest_svn`) and is signed with the engine **ID key**. Every
+attestation report then carries the ID key's digest, which is what the engine,
+merchants' browsers and `key-custody-cli` trust.
+
+- The official ID key: its digest is built into this repository
+  (`crates/key-custody/src/official_id_key_digest.txt`, made once with
+  `cargo xtask snp-id-key`), and its private key is the repository secret
+  `SNP_ID_KEY`. Sign with the **snp-id-block** workflow (Actions, run it with
+  the measurement and security version); it uploads the signed files.
+- Your own ID key (a fork, or your own builds): `cargo xtask snp-id-key`
+  prints a key and writes its digest; keep the key secret, then sign with
+  `SNP_ID_KEY=<key> cargo xtask snp-id-block --measurement <hex> --guest-svn <n>
+  --out id/`, and set `key_custody.snp_trusted_id_key` (below) to the digest.
+  Merchants pass the same digest to `key-custody-cli` with `--trust-id-key`;
+  give it to them yourself, not through the site.
+
+**Raise `--guest-svn`** with every release that fixes a security problem in the
+image: the engine never hands its master key to a lower version, and
+`key_custody.snp_min_guest_svn` refuses lower versions outright.
+
+Launch the guest with the signed block, e.g. with QEMU:
+
+```sh
+-object sev-snp-guest,id=sev0,policy=0x30000,cbitpos=51,reduced-phys-bits=1,\
+id-block=$(cat id/id-block.b64),id-auth=$(cat id/id-auth.b64)
+```
+
+The `policy` must be the one given to `snp-id-block` (`--policy`, default
+`30000`), and must not allow debugging.
+
+## 4. Configure the engine
+
+`/etc/monokulo/engine.toml` (`monokulo-engine --init --options x.toml` writes
+one describing every setting):
 
 ```toml
 [key_custody]
-backend = "socket"
-socket_path = "/run/moneropay/key-custody.sock"
+enabled_backends = ["plain", "snp"]
+default_backend = "snp"
+snp_product = "Genoa"            # Milan, Genoa or Turin: the host's EPYC generation
+# snp_device = "/dev/sev-guest"
+# snp_trusted_id_key = "..."     # only for your own ID key; empty trusts the official one
+# snp_min_guest_svn = 1
+# snp_handoff_url = "http://10.0.0.5:8443"   # only when upgrading, see §6
 ```
 
-This must exactly match the socket path both systemd units below reference.
-Everything else in `moneropay.toml` (node RPC endpoints, `[server].bind`,
-etc.) is identical to a plain self-hosted deployment - nothing about running
-inside a confidential VM changes any other config surface, per WBS 2.1.3's
-own outcome ("swap which `KeyCustody` implementation the engine constructs...
-behind a config flag").
+`/etc/monokulo/engine.env` holds `ENGINE_TOKEN` (the same value monokulo has as
+`MONOKULO_ENGINE_TOKEN`). The `snp_*` settings apply at a restart and can't be
+changed from monokulo's admin page.
 
-**Keep the engine private.** The engine's `server.bind` defaults to
-`127.0.0.1:8443`, which is what this deployment wants: monokulo is the only
-public address and the only thing that should ever talk to the engine. The
-`moneropay-engine.service` unit sets no bind address of its own, so it keeps
-that default. Only change it (to a private address that monokulo can reach, if
-monokulo runs on another host in a private network) if you have to; never bind
-it to `0.0.0.0` or a public address. The engine logs a `WARNING` at startup if
-it finds itself listening on anything other than a loopback or private address.
+**Keep the engine private.** Its `server.bind` defaults to `127.0.0.1:8443`;
+bind it only to a private address monokulo can reach, never a public one.
+The engine needs outbound HTTPS to `kdsintf.amd.com` (AMD's certificates for
+its own report, which merchants' clients check) and to its Monero nodes.
 
-## 4. Install and start the two units
+## 5. Install and start
 
 ```sh
-cp deploy/sev-snp/moneropay-key-custody.service deploy/sev-snp/moneropay-engine.service \
-   /etc/systemd/system/
+useradd --system --no-create-home --shell /usr/sbin/nologin monokulo
+echo 'KERNEL=="sev-guest", GROUP="monokulo", MODE="0660"' > /etc/udev/rules.d/90-sev-guest.rules
+udevadm trigger
+cp deploy/sev-snp/monokulo-engine.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now moneropay-key-custody.service
-systemctl enable --now moneropay-engine.service
+systemctl enable --now monokulo-engine.service
 ```
 
-Order matters for the *first* start only (start key-custody first so the
-engine's own bounded reconnect loop - see `main.rs`'s
-`connect_socket_key_custody` - has something to connect to right away rather
-than burning its ~5s retry budget); `enable`d, both come up in the right
-order on every subsequent boot regardless, since the engine unit's own
-`Restart=on-failure` plus that reconnect loop tolerate the ordinary boot-time
-race either way.
+(When the engine is part of the measured image, as §2 requires, these belong in
+the image build rather than on a running guest.)
 
-## 5. Confirm it's actually alive, then re-run 2.1.3's regression suite
+At its first start on an empty database the `snp` backend makes the master
+key. Check:
 
-Per this WBS item's own test: "re-run 2.1.3's regression suite against the
-deployed instance over the network." Concretely:
+1. `journalctl -u monokulo-engine`: "fetched AMD's certificates for this
+   engine's report", and no "snp backend can't start".
+2. Monokulo's status page: the `snp` backend answers.
+3. A store connected with SEV-SNP key storage, from a browser and once with
+   `key-custody-cli` (the form links it), takes an order and sees its payment.
 
-1. `systemctl status moneropay-key-custody moneropay-engine` - both `active
-   (running)`, not just `enabled`.
-2. `journalctl -u moneropay-engine -n 50` - look for the real successful
-   startup path: config loaded, `[key_custody] backend = "socket"` dispatch
-   confirmed, a scan-loop tick logged shortly after start (a process that's
-   up but never ticks is not actually working - same standard
-   `docs/INCIDENT_RUNBOOK.md` §5's own recovery checklist holds this
-   deployment to).
-3. Create a real tenant against the deployed instance's admin API and drive
-   one order through it exactly as a self-hosted install's own smoke test
-   would - if key material genuinely round-trips through the
-   now-out-of-process `SocketKeyCustody` (unseal, scan-address derivation,
-   output matching), this is where a wiring mistake would surface, not in
-   any unit test.
-4. `key-custody-server`'s own `tests/socket_key_custody.rs` (17 tests) and
-   the engine's own `http`/`scanner` integration tests that run against
-   `TestEngineConfig::with_socket_key_custody()` were the actual regression
-   suite 2.1.3 shipped - re-running `cargo test --workspace` on a dev box
-   proves the *code path* is still correct, but per this step's own test
-   text ("against the deployed instance over the network") that's not a
-   substitute for step 3 above: those tests exercise the two processes
-   talking to each other on a dev machine, not this specific deployed
-   instance, its real config, and its real systemd process boundary.
+The engine checks its own report before the backend starts: an image
+launched without the ID block, signed by another key, below
+`snp_min_guest_svn`, or debuggable leaves the backend off and says which.
 
-## What this deployment does *not* change
+## 6. Upgrading the engine image
 
-Per `docs/INCIDENT_RUNBOOK.md`: SEV-SNP protects memory confidentiality
-against a host-level/hypervisor attacker who does *not* have a foothold
-inside the guest VM itself. It is not a substitute for the guest's own
-process hardening (the systemd sandboxing directives in both `.service`
-files above), and a compromise that gains code execution *inside* the guest
-still exposes everything `PlainKeyCustody` (running inside
-`key-custody-server`, unchanged by any of this) holds in cleartext memory,
-exactly as `docs/DESIGN.md` §6.1 describes. What SEV-SNP adds is real and
-worth having - it closes the "rogue admin or compromised hypervisor on the
-provider's side" case `docs/DESIGN.md` §6.1 names explicitly - just don't
-describe an incident as "contained because it's on SEV-SNP hardware" if the
-foothold was inside the guest.
+A new image has a new measurement, so it can't unwrap the master key itself:
+the engine it replaces hands it over.
+
+1. Build, measure and sign the new image (§2, §3), with the same or a higher
+   `--guest-svn`.
+2. Start it with a copy of the database and `snp_handoff_url` set to the
+   running engine's private address (same engine token). It waits for the
+   master key, asks for it, and takes it within seconds; the old engine
+   checks against AMD's chain that the new one is a trusted image at its own
+   security version or later before handing over.
+3. Switch monokulo to the new engine, stop the old one, and remove
+   `snp_handoff_url`.
+
+Moving to another machine works the same way: wraps are bound to the chip. If
+no engine can hand over any more, see `docs/INCIDENT_RUNBOOK.md` §7.
+
+## What this does *not* protect against
+
+- **Code execution inside the guest** reads what the engine reads: SEV-SNP
+  protects against the host, not against a compromised engine.
+- **Keys typed into a monokulo page served by a compromised monokulo**: the
+  browser runs the code monokulo serves. `key-custody-cli` checks the engine
+  itself and doesn't have this gap; the key entry forms say so.
+- **Whoever holds the ID key** can sign an image that is trusted with keys.
+  Keep `SNP_ID_KEY` to the release process.

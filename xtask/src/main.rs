@@ -1,4 +1,5 @@
 mod rounds;
+mod snp;
 mod stress;
 
 use serde_json::{json, Value};
@@ -19,7 +20,7 @@ fn root() -> PathBuf {
 }
 
 fn help() {
-    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|open> [driver]\n       cargo xtask stress rounds\n\n\
+    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|open> [driver]\n       cargo xtask stress rounds\n       cargo xtask snp-id-key [--from-env]\n       cargo xtask snp-id-block ...\n\n\
         rust          Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
         browser       Run deterministic Playwright tests and collect authored browser source coverage\n\
         woocommerce   Run default PHPUnit tests in wp-env and collect plugin coverage\n\
@@ -32,6 +33,10 @@ fn help() {
         stress full   The same with larger tenant counts\n\
         stress open   Open target/coverage/stress/index.html\n\
         stress rounds Round length sweep: throughput, refetches and waits (docs/engine_stress.md)\n\
+        snp-id-key    Make the engine image ID key: prints it (for the SNP_ID_KEY secret) and writes its\n\
+                      digest to crates/key-custody; --from-env writes the digest of SNP_ID_KEY's key\n\
+        snp-id-block --measurement HEX --guest-svn N --out DIR [--family-id HEX] [--image-id HEX] [--policy HEX]\n\
+                      Sign an engine image's ID block with SNP_ID_KEY (deploy/sev-snp/README.md)\n\
         [driver]      The scanner entry point to measure (default: the production one)\n\
         --help        Show this help");
 }
@@ -717,6 +722,9 @@ fn main() -> ExitCode {
         ["stress", "rounds"] => rounds::run(),
         ["stress", profile] => stress::run(profile, None),
         ["stress", profile, driver] => stress::run(profile, Some(driver)),
+        ["snp-id-key"] => snp::id_key(&root(), false).map_err(io::Error::other),
+        ["snp-id-key", "--from-env"] => snp::id_key(&root(), true).map_err(io::Error::other),
+        ["snp-id-block", rest @ ..] => snp::id_block(rest).map_err(io::Error::other),
         _ => {
             help();
             return ExitCode::FAILURE;

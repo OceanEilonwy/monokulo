@@ -20,9 +20,9 @@ and a default, and each store can move by entering its keys again.
 ### With Docker
 
 The `Dockerfile` builds one image with the binaries (`monokulo`, and
-`monokulo-engine` and `key-custody-server` for the other setups);
-`compose.yaml` runs monokulo from it, the engine inside it, publishing port
-8081. Put the one secret in a `.env` file beside it:
+`monokulo-engine` for the other setups); `compose.yaml` runs monokulo from
+it, the engine inside it, publishing port 8081. Put the one secret in a
+`.env` file beside it:
 
 ```sh
 printf 'MONOKULO_ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)" > .env
@@ -89,10 +89,12 @@ The design and the CPU and capacity figures are in `docs/flint2_openwrt_apk.md`.
 
 ### From release binaries or source
 
-Each version tag's GitHub release has `monokulo`, `monokulo-engine` and
-`key-custody-server` for Linux (x86_64, aarch64) and macOS (arm64); CI's
-`publish` jobs also keep them for every push to main. With those, skip
-step 1.
+Each version tag's GitHub release has `monokulo` and `monokulo-engine` for
+Linux (x86_64, aarch64) and macOS (arm64), and `key-custody-cli` (what
+merchants run to encrypt their keys for an SEV-SNP engine without a
+browser; monokulo's key entry forms link the release that matches them) for
+Linux, macOS and Windows. CI's `publish` jobs also keep them for every push
+to main. With those, skip step 1.
 
 1. Build a release binary from the repository root. The project builds on
    the latest nightly Rust (`rust-toolchain.toml`; rustup installs it on

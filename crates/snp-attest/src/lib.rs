@@ -9,8 +9,10 @@
 //! - [`pinned_ark`] - the embedded, pinned AMD root certificates.
 //! - [`verify`] - the actual chain-of-trust and signature verification.
 //! - [`guest`] - `/dev/sev-guest`: reports and derived keys.
+//! - [`id_block`] - signing the ID block that names an engine image.
 
 pub mod guest;
+pub mod id_block;
 #[cfg(feature = "kds")]
 pub mod kds;
 pub mod pinned_ark;
