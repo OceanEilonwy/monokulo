@@ -237,6 +237,36 @@ impl MoneroDaemonClient for LookupDaemonClient {
 /// nothing a test sends against this harness should come close to it.
 const MAX_BODY_BYTES: usize = 1_000_000;
 
+/// The variable that turns test logging on: a `tracing` filter, such as
+/// `debug` or `engine=debug,monokulo=info,hyper=warn`.
+pub const TEST_LOG_VAR: &str = "MONOKULO_TEST_LOG";
+
+/// Logs from everything under test (the engine, monokulo, the harness) to
+/// standard error, when [`TEST_LOG_VAR`] is set: for diagnosing a test that
+/// fails or hangs (`MONOKULO_TEST_LOG=debug cargo test -p <crate> <test>`).
+/// Does nothing otherwise, and nothing after the first call or when another
+/// subscriber is already installed (a test capturing logs of its own).
+///
+/// Written straight to standard error rather than through the test
+/// harness's capture, so a test that never finishes still shows how far it
+/// got. Every test engine calls it as it starts ([`TestEngineConfig::spawn`]);
+/// a test that starts no engine can call it itself.
+pub fn init_test_logging() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(filter) = std::env::var(TEST_LOG_VAR) else {
+            return;
+        };
+        let filter = tracing_subscriber::EnvFilter::try_new(&filter)
+            .unwrap_or_else(|e| panic!("{TEST_LOG_VAR}={filter:?} is not a tracing filter: {e}"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_thread_names(true)
+            .try_init();
+    });
+}
+
 /// A running, real (network-bound) `engine` engine instance started by
 /// [`spawn_test_engine`], live for as long as this handle is held.
 pub struct TestEngineHandle {
@@ -808,6 +838,7 @@ impl TestEngineConfig {
     /// that an independent `reqwest::Client` (standing in for a
     /// separately-deployed caller, e.g. the control plane) can connect to.
     pub async fn spawn(self) -> TestEngineHandle {
+        init_test_logging();
         let scanner_status = engine::scanner_status::new_scanner_status_map();
         let store = Store::open_in_memory()
             .expect("failed to open in-memory store for test engine")

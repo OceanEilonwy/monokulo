@@ -22,6 +22,8 @@ serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
 # The id of a transaction a stand-in node holds.
 hex = "0.4.3"
+# Optional test logging (`init_test_logging`, MONOKULO_TEST_LOG).
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter"] }
 
 [lints]
 workspace = true
