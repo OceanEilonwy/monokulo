@@ -1,0 +1,145 @@
+# The OpenWrt package for the GL.iNet Flint 2 (OpenWrt 25.12, mediatek/filogic,
+# aarch64_cortex-a53): monokulo, its engine and its LuCI page in one signed
+# .apk, a signed apk repository, and the landing page with install
+# instructions (scripts/build-openwrt.sh does all of it).
+#
+# Every push to main and every pull request: build, and upload as artifacts
+#   monokulo-openwrt-25.12-aarch64_cortex-a53   the .apk, the repository index
+#                                               (packages.adb), the public key
+#                                               (monokulo.pem) and SHA256SUMS
+#   monokulo-openwrt-site                       the landing page with the
+#                                               repository under it
+# Pushes to main also deploy the site to GitHub Pages, which routers then use
+# as their package repository (Settings > Pages > Source: GitHub Actions).
+#
+# Needs the repository secret APK_SIGNING_KEY: the private key matching
+# openwrt/keys/monokulo.pem (the same key signs kringle). Pull requests from
+# forks (no secret access) still build, with a throwaway key, but nothing
+# they build is deployed.
+
+name: OpenWrt package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'openwrt/**'
+      - 'web/**'
+      - 'scripts/build-openwrt.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/openwrt.yml'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'openwrt/**'
+      - 'web/**'
+      - 'scripts/build-openwrt.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/openwrt.yml'
+  workflow_dispatch:
+
+# A newer push to the same pull request replaces its run still going.
+concurrency:
+  group: openwrt-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The package's release number is the commit count.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: crates/monokulo/pos-ui/package-lock.json
+      - name: Install POS app dependencies
+        # monokulo's build script builds the POS app from them.
+        run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+      # The latest nightly, as rust-toolchain.toml names it.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: openwrt-aarch64
+      - name: Build the package, repository and site
+        env:
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+          SDK_VOLUME: "" # fresh runner every time, no point keeping SDK state
+        run: |
+          if [ -z "$APK_SIGNING_KEY" ] && [ "$GITHUB_EVENT_NAME" = push ]; then
+            echo "::error::Set the APK_SIGNING_KEY secret; routers won't trust a package signed with a throwaway key."
+            exit 1
+          fi
+          scripts/build-openwrt.sh
+      - name: Summary
+        env:
+          SIGNED: ${{ secrets.APK_SIGNING_KEY != '' }}
+        run: |
+          {
+            echo "## OpenWrt package (25.12, aarch64_cortex-a53)"
+            echo
+            echo "| File | Size |"
+            echo "| --- | ---: |"
+            for f in dist/*.apk dist/packages.adb dist/monokulo.pem; do
+              echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
+            done
+            echo
+            if [ "$SIGNED" = true ]; then
+              echo "Signed with the key in \`openwrt/keys/monokulo.pem\`."
+            else
+              echo "Signed with a **throwaway key**: for testing only."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: monokulo-openwrt-25.12-aarch64_cortex-a53
+          path: |
+            dist/*.apk
+            dist/packages.adb
+            dist/monokulo.pem
+            dist/SHA256SUMS
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: monokulo-openwrt-site
+          path: site/
+          include-hidden-files: true
+          if-no-files-found: error
+      - uses: actions/upload-pages-artifact@v5
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          path: site/
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

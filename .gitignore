@@ -16,3 +16,10 @@ moneropay.db-wal
 # temp file an atomic save writes before renaming it into place.
 /e2e/wallets/*.json.lock
 /e2e/wallets/*.json.tmp
+
+# scripts/build-openwrt.sh: the binaries it drops into the package, the
+# packages and repository, and the landing page site.
+/openwrt/monokulo/files/monokulo
+/openwrt/monokulo/files/monokulo-engine
+/dist/
+/site/
