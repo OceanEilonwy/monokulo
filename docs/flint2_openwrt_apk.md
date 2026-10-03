@@ -527,14 +527,17 @@ is not recommended unless space becomes a problem. It is not one today.
 
 ## As built
 
+The package was first built with two binaries and two procd instances (PR
+#36). Once the engine could run inside monokulo (`docs/engine_as_library.md`,
+phase 5) it became one binary and one instance; this section describes that.
+
 The files:
 
 | Path | What it is |
 |---|---|
-| `scripts/build-openwrt.sh` | Builds everything: copies the SDK's cross toolchain out of its image, cross-compiles both binaries with it, has the SDK package and sign them, and renders the landing page. Output in `dist/` and `site/`. |
-| `openwrt/monokulo/Makefile` | The package: both binaries, the init script, the UCI config, the keep list and the LuCI files. |
-| `openwrt/monokulo/files/monokulo.init` | procd service with two instances, `engine` and `monokulo`. |
-| `openwrt/monokulo/files/monokulo-engine.pinned` | Starts the engine on its CPUs (installed as `/usr/libexec/monokulo/monokulo-engine`). |
+| `scripts/build-openwrt.sh` | Builds everything: copies the SDK's cross toolchain out of its image, cross-compiles monokulo (the engine built into it) with it, has the SDK package and sign them, and renders the landing page. Output in `dist/` and `site/`. |
+| `openwrt/monokulo/Makefile` | The package: the binary, the init script, the UCI config, the keep list and the LuCI files. |
+| `openwrt/monokulo/files/monokulo.init` | procd service with one instance, `monokulo`, the engine inside it. |
 | `openwrt/monokulo/files/monokulo.config` | `/etc/config/monokulo`. |
 | `openwrt/monokulo/files/luci/` | The LuCI view (Services › Monokulo), its menu entry and its ACL. |
 | `openwrt/keys/monokulo.pem` | The public signing key. It is the same key as kringle's. |
@@ -574,19 +577,28 @@ Each line gives what was decided, the alternatives, and why.
   interfaces). A payment gateway's admin login shouldn't be on the WAN until
   the owner chooses that. The landing page explains how to open it, and the
   Tor setup.
-- **Engine pinned to CPUs 2 and 3 with BusyBox's `taskset`, at nice 10
-  through procd's own `nice` parameter.** `taskset -c` is in OpenWrt 25.12's
-  default BusyBox, so the package needs no extra dependency. procd names an
-  instance's log lines after the first word of its command, so starting
-  `taskset …` directly would tag every engine line `taskset[pid]`. The engine
-  is therefore started through a three-line wrapper installed as
-  `/usr/libexec/monokulo/monokulo-engine`, which runs `taskset` and then
-  the engine, and the lines still read `monokulo-engine[pid]`. If the
-  CPU list doesn't fit the router, the init script logs that and starts the
-  engine unpinned, rather than leaving it unable to start.
+- **One binary, one procd instance, the engine inside monokulo.** No engine
+  port, no engine token (the secrets file holds only
+  `MONOKULO_ENCRYPTION_KEY`), and no HTTP between the two. One options file,
+  `monokulo.toml` in the data folder, holds the engine's settings under
+  `[engine.*]`. The package is 10.5 MB, against about 15 MB with two
+  binaries (the stripped binary is 24 MB), since tokio, axum, rustls and
+  SQLite are linked once.
+- **The engine's threads on CPUs 2 and 3, at nice 10, set by monokulo
+  itself.** UCI's `engine_cpus` and `engine_nice` become
+  `--engine-server-cpus` and `--engine-server-nice`, which the engine
+  applies to each of its own threads (`engine::threads::ThreadPlan`), so
+  monokulo's web threads keep normal priority on every core. The first build
+  pinned the whole engine process with `taskset` through a wrapper script and
+  procd's `nice`; with one process that would also have pinned and niced
+  monokulo's web pages, so the wrapper is gone. monokulo refuses to start
+  with CPUs that don't exist, so the init script still tries the list with
+  BusyBox's `taskset` first and, if it doesn't fit the router, logs that and
+  starts the engine on all CPUs rather than leaving monokulo unable to
+  start.
 - **RandomX (the engine's proof-of-work check, added on main after the
   proposal) is linked statically.** `randomx-rs` asks for `libstdc++` as a
-  shared library, which made the engine a dynamic executable with glibc's
+  shared library, which made the binary a dynamic executable with glibc's
   loader path, one that can't run on OpenWrt. The build script now puts the
   toolchain's `libstdc++.a` alone in a search directory that is checked
   first, links `libgcc` statically for `__clear_cache`, and refuses to package
@@ -594,7 +606,7 @@ Each line gives what was decided, the alternatives, and why.
   patching `randomx-rs` (a `[patch]` or a fork), which has to be maintained.
 - **Proof-of-work checking stays on for mainnet by default.** It costs 256 MiB
   (512 MiB for a moment around a key change) of the Flint 2's 1 GB. That
-  fits, alongside about 40 MB for the two processes and OpenWrt itself. It
+  fits, alongside about 40 MB for monokulo and OpenWrt itself. It
   is also what keeps a lying node from faking payments. The landing page
   says how to turn it off for someone who runs their own node.
 - **Data in `/srv/monokulo` and everything kept across sysupgrade.** For a
@@ -610,8 +622,8 @@ Each line gives what was decided, the alternatives, and why.
 - **No GitHub release step yet.** Version tags already make a release in
   `ci.yml`. Attaching the `.apk` to it is a small follow-up, best done once
   versions are tagged.
-- **Not done yet from the proposal:** the LuCI logs tab, backup download
-  and token rotation. The LuCI page shows how to back up the secrets with
+- **Not done yet from the proposal:** the LuCI logs tab and backup
+  download. (Token rotation is moot: there is no engine token any more.) The LuCI page shows how to back up the secrets with
   `scp`, and `logread -e monokulo` shows the logs.
 
 ## Sources
