@@ -1,7 +1,8 @@
 # Proposal: the engine as a library inside monokulo
 
-Status: proposal accepted (see "Decisions" at the end), nothing implemented
-yet. Written 2026-10-03 against `1cc17f2` (origin/main).
+Status: proposal accepted (see "Decisions" at the end). Phase 1 is built
+(see "Phase 1, as built"). Written 2026-10-03 against `1cc17f2`
+(origin/main).
 
 ## Summary
 
@@ -433,3 +434,77 @@ Made by the project owner on 2026-10-03:
 3. **The engine gets its own thread pool**, as in section 5: its own Tokio
    runtime on `engine-*` threads, pinned and reniced by `engine.cpus` and
    `engine.nice`.
+
+## Phase 1, as built
+
+`engine::run` (`crates/engine/src/run.rs`) holds the engine as a library:
+
+- `Engine::start(EngineConfig)` takes the options file path, the
+  command-line/environment values and the database path. It opens
+  storage, loads the settings, registers every store's wallet, and starts
+  the webhook delivery loop and the network loop manager.
+- `Engine::router()` returns the admin API; `Engine::bind_address()` returns
+  `server.bind`, for the standalone binary.
+- `Engine::shutdown(grace)` stops the loops and reports `Stopped::Cleanly`
+  or `Stopped::TimedOut`.
+- Start-up failures come back as a `StartError`: no token, a database that
+  can't be opened, settings that don't load, the database worker or read
+  pool. Nothing in the library ends the process.
+
+`main.rs` is now the host: it reads the command line and options file,
+starts logging, the runtime and resource sampling, calls `Engine::start`,
+serves the router on `server.bind`, and on a signal finishes requests in
+flight, shuts the engine down and flushes the logs. Its behaviour is the
+same as before.
+
+`shared::supervise::supervise_until` now returns its task, which ends only
+once the stopped loop has been dropped (it awaits the aborted task). The
+engine's two top-level loops run under it with the engine's stop signal.
+The per-network loops stop with their manager, as before, because dropping
+the manager drops their stop senders.
+
+Tests (`run::tests`, and two in `shared::supervise`) start real engines from
+files in a temporary directory and drive them through the router, as
+monokulo will when embedded:
+- an engine starts, serves `/status`, and shuts down cleanly;
+- the router still refuses a request without the engine token;
+- no token, or a database path that can't be opened, is a `StartError`;
+- a setting saved through the first engine is in the options file and the
+  database the second one starts from;
+- a stopped supervisor ends only after its loop is dropped, including when
+  its stop sender is dropped.
+
+### Phase 1 decisions
+
+Each line gives what was decided, the alternatives, and why.
+
+- **`engine-test-support` keeps its own wiring.** The proposal said it would
+  call `Engine::start`. Reading it, it shares almost nothing with production
+  start-up beyond building `AppState`: it deliberately uses an in-memory
+  store, fixed fake daemons, a fixed rate limit and its own short-interval
+  tick loops instead of the production loops. Moving it onto
+  `Engine::start` would change the engine every monokulo test runs against.
+  It moves in phase 2 instead, where tests have to run over both transports
+  anyway and can use a real `Engine` built from a temporary directory, as
+  `run::tests` does. The duplication this proposal described was overstated.
+- **Resource sampling stays with the host.** `shared::resources::start_sampling`
+  samples the process, and a second call starts a second sampler. An
+  embedded engine shares monokulo's process, so the host starts it, not
+  `Engine::start`.
+- **`Engine::shutdown` waits for the loops; dropping an engine doesn't.**
+  An explicit shutdown with a grace period is what both hosts need. A
+  `Drop` that stopped the loops would make a host that forgets to call
+  `shutdown` behave differently from one that does.
+- **Statics audit:**
+  - `key_custody::plain::SCAN_SLOTS` is one semaphore per process, sized by
+    `available_parallelism()`. Two engines in one process (only in tests)
+    share it, and production has one. It moves into the engine in phase 4,
+    where its size comes from `engine.cpus`.
+  - `shared::password::SLOTS`, `shared::supervise::RESTARTS` and
+    `shared::log::SEEN` are safe to share between two services in one
+    process. Loop names don't collide. The throttled-log keys don't collide
+    today either (monokulo's only key is `client-logs-dropped:`), but
+    nothing namespaces them. Phase 3, where both services log through one
+    subscriber, should prefix each key with its service.
+  - `shared::resources`' `SAMPLER`, `MACHINE` and `HOST` describe the
+    process and the machine, so sharing them is right.
