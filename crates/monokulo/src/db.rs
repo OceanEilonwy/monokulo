@@ -106,6 +106,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         28,
         include_str!("../migrations/0028_store_fx_provider_settings.sql"),
     ),
+    (
+        29,
+        include_str!("../migrations/0029_drop_store_connection_endpoint.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -575,7 +579,6 @@ pub struct StoreConnectionRow {
     pub site_url: String,
     pub tenant_public_key: String,
     pub tenant_secret_token_encrypted: String,
-    pub moneropay_endpoint: String,
     pub created_at: i64,
     /// The exchange-rate providers *this store* has turned on, most
     /// preferred first (`exchange_rate_config::{COINGECKO, COINMARKETCAP}`) -
@@ -1005,7 +1008,6 @@ impl Db {
         site_url: &str,
         tenant_public_key: &str,
         tenant_secret_token_encrypted: &str,
-        moneropay_endpoint: &str,
         created_at: i64,
         base_currency: &str,
     ) -> Result<()> {
@@ -1025,8 +1027,8 @@ impl Db {
         // implicit choice for it.
         self.conn.execute(
             "INSERT INTO store_connections
-                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, json_array('coingecko'), ?9)",
+                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, json_array('coingecko'), ?8)",
             params![
                 id,
                 user_id,
@@ -1034,7 +1036,6 @@ impl Db {
                 site_url,
                 tenant_public_key,
                 tenant_secret_token_encrypted,
-                moneropay_endpoint,
                 created_at,
                 base_currency,
             ],
@@ -1051,7 +1052,7 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings
                  FROM store_connections WHERE id = ?1",
                 params![id],
                 |row| {
@@ -1062,11 +1063,10 @@ impl Db {
                         site_url: row.get(3)?,
                         tenant_public_key: row.get(4)?,
                         tenant_secret_token_encrypted: row.get(5)?,
-                        moneropay_endpoint: row.get(6)?,
-                        created_at: row.get(7)?,
-                        fx_providers: parse_fx_providers(&row.get::<_, String>(8)?),
-                    base_currency: row.get(9)?,
-                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(10)?),
+                        created_at: row.get(6)?,
+                        fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
+                    base_currency: row.get(8)?,
+                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
                     })
                 },
             )
@@ -1109,7 +1109,7 @@ impl Db {
         user_id: &UserId,
     ) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
+            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings
              FROM store_connections WHERE user_id = ?1 ORDER BY created_at_utc DESC",
         )?;
         let rows = stmt
@@ -1121,11 +1121,10 @@ impl Db {
                     site_url: row.get(3)?,
                     tenant_public_key: row.get(4)?,
                     tenant_secret_token_encrypted: row.get(5)?,
-                    moneropay_endpoint: row.get(6)?,
-                    created_at: row.get(7)?,
-                    fx_providers: parse_fx_providers(&row.get::<_, String>(8)?),
-                    base_currency: row.get(9)?,
-                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(10)?),
+                    created_at: row.get(6)?,
+                    fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
+                    base_currency: row.get(8)?,
+                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1317,7 +1316,7 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings
                  FROM store_connections WHERE tenant_public_key = ?1",
                 params![tenant_public_key],
                 |row| {
@@ -1328,11 +1327,10 @@ impl Db {
                         site_url: row.get(3)?,
                         tenant_public_key: row.get(4)?,
                         tenant_secret_token_encrypted: row.get(5)?,
-                        moneropay_endpoint: row.get(6)?,
-                        created_at: row.get(7)?,
-                        fx_providers: parse_fx_providers(&row.get::<_, String>(8)?),
-                    base_currency: row.get(9)?,
-                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(10)?),
+                        created_at: row.get(6)?,
+                        fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
+                    base_currency: row.get(8)?,
+                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
                     })
                 },
             )
@@ -1672,7 +1670,7 @@ impl Db {
     /// into `store_domains` yet (see migration `0020_embed_restriction.sql`).
     pub fn list_store_connections_awaiting_domain_import(&self) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
+            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings
              FROM store_connections WHERE domains_imported = 0",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1683,11 +1681,10 @@ impl Db {
                 site_url: row.get(3)?,
                 tenant_public_key: row.get(4)?,
                 tenant_secret_token_encrypted: row.get(5)?,
-                moneropay_endpoint: row.get(6)?,
-                created_at: row.get(7)?,
-                fx_providers: parse_fx_providers(&row.get::<_, String>(8)?),
-                base_currency: row.get(9)?,
-                fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(10)?),
+                created_at: row.get(6)?,
+                fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
+                base_currency: row.get(8)?,
+                fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -2209,7 +2206,6 @@ mod tests {
                 "https://example.com",
                 pk,
                 "encrypted",
-                "http://engine",
                 1,
                 "XMR",
             )
@@ -2565,7 +2561,6 @@ mod tests {
             "https://shop.example.com",
             "pk_abc",
             "sk_abc",
-            "http://127.0.0.1:8080",
             3000,
             "XMR",
         )
@@ -2580,7 +2575,6 @@ mod tests {
         assert_eq!(row.site_url, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, "pk_abc");
         assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
-        assert_eq!(row.moneropay_endpoint, "http://127.0.0.1:8080");
         assert_eq!(row.created_at, 3000);
         assert_eq!(
             row.fx_providers,
@@ -2607,7 +2601,6 @@ mod tests {
             "https://shop.example.com",
             "pk_abc",
             "sk_abc",
-            "http://127.0.0.1:8080",
             3000,
             "XMR",
         )
@@ -2652,7 +2645,6 @@ mod tests {
             "https://shop.example.com",
             "pk_abc",
             "sk_abc",
-            "http://127.0.0.1:8080",
             3000,
             "XMR",
         )
@@ -2738,7 +2730,6 @@ mod tests {
                 &format!("https://{id}.example.com"),
                 pk,
                 "sk",
-                "http://127.0.0.1:8080",
                 3000,
                 "XMR",
             )
@@ -2933,7 +2924,6 @@ mod tests {
             "https://old-site.example.com",
             "pk_abc",
             "sk_abc",
-            "http://127.0.0.1:8080",
             3000,
             "XMR",
         )
@@ -2974,7 +2964,6 @@ mod tests {
             "https://shop.example.com",
             "pk_cl",
             "sk_cl",
-            "http://127.0.0.1:8080",
             3000,
             "XMR",
         )
@@ -3015,7 +3004,6 @@ mod tests {
             "https://shop.example.com",
             "pk_xyz",
             "sk_xyz",
-            "http://127.0.0.1:8080",
             3000,
             "XMR",
         )
@@ -3054,7 +3042,6 @@ mod tests {
             "https://shop.example.com",
             "pk_ct",
             "sk_ct",
-            "http://127.0.0.1:8080",
             1000,
             "XMR",
         )
@@ -3279,7 +3266,6 @@ mod tests {
             "https://other.example.com",
             "pk_other",
             "sk_other",
-            "http://127.0.0.1:8080",
             1000,
             "XMR",
         )
@@ -3711,7 +3697,6 @@ mod tests {
             "https://b.example.com",
             "pk_b",
             "sk_b",
-            "http://127.0.0.1:8080",
             1000,
             "XMR",
         )
@@ -3809,7 +3794,6 @@ mod tests {
             "https://b.example.com",
             "pk_b",
             "sk_b",
-            "http://127.0.0.1:8080",
             1000,
             "XMR",
         )

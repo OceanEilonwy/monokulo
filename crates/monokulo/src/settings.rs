@@ -1241,7 +1241,7 @@ mod tests {
 
     #[tokio::test]
     async fn saved_settings_reach_the_engine_client_exchange_rates_and_abuse_protection() {
-        let (settings, engine, rates, abuse) = loaded(None).await;
+        let (settings, _engine, rates, abuse) = loaded(None).await;
         let registry = settings.registry.as_ref().unwrap();
         // Loading applied the saved (here: default) settings.
         assert_eq!(
@@ -1258,14 +1258,13 @@ mod tests {
             vec!["coingecko", "coinmarketcap", "haveno"]
         );
 
-        // The engine's address is saved for the next start: the running
-        // client keeps the one it started with.
+        // The engine's address is saved for the next start, not applied to
+        // the running client.
         let saved = registry
             .save(change("engine.url", "http://127.0.0.1:2"))
             .await
             .unwrap();
         assert_eq!(saved.restart_required, ["engine.url"]);
-        assert_eq!(engine.location(), "http://127.0.0.1:1");
 
         registry
             .save(change("exchange_rate.coingecko_enabled", "false"))

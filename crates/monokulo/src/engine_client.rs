@@ -536,16 +536,6 @@ impl EngineClient {
             .await
     }
 
-    /// Where the engine is, for logs and the store's connection record: its
-    /// URL, or `embedded`.
-    pub fn location(&self) -> String {
-        match &self.target().transport {
-            Transport::Remote { base_url, .. } => base_url.clone(),
-            #[cfg(feature = "embedded-engine")]
-            Transport::Embedded { .. } => "embedded".to_string(),
-        }
-    }
-
     async fn send(&self, call: Call<'_>) -> Result<EngineReply, EngineClientError> {
         self.target().send(call).await
     }
@@ -1321,7 +1311,10 @@ mod tests {
             !std::sync::Arc::ptr_eq(&before, &client.target()),
             "a new cache size is a new client"
         );
-        assert_eq!(client.location(), "http://127.0.0.1:8443", "same engine");
+        assert!(
+            matches!(&client.target().transport, Transport::Remote { base_url, .. } if base_url == "http://127.0.0.1:8443"),
+            "same engine"
+        );
         assert_eq!(
             client.target().token,
             RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),

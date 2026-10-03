@@ -1615,7 +1615,6 @@ fn state_with_owner_and_store(
             "https://shop.example.com",
             tenant_public_key,
             "enc",
-            "http://engine",
             1,
             "XMR",
         )
@@ -1855,7 +1854,6 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
             "https://shop.example.com",
             "pk_shop",
             &encrypted,
-            "http://engine",
             1,
             "XMR",
         )

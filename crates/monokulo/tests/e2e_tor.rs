@@ -353,7 +353,6 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
             monokulo::crypto::Binding::StoreSecret("store-1"),
             tenant.secret_token.expose(),
         ),
-        &format!("http://{engine_addr}"),
         0,
         "XMR",
     )

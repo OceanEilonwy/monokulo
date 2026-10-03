@@ -265,7 +265,6 @@ async fn main() {
             crypto::Binding::StoreSecret("coverage-store"),
             tenant.secret_token.expose(),
         ),
-        &format!("http://{}", engine.addr),
         0,
         "XMR",
     )
