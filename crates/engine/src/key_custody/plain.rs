@@ -143,8 +143,8 @@ struct WalletEntry {
     /// and no table is ever copied.
     live: Arc<tokio::sync::Mutex<KeyTable>>,
     lookup: Arc<tokio::sync::Mutex<RangeTable>>,
-    /// Derivations done so far, for tests that check nothing is rebuilt.
-    #[cfg(test)]
+    /// Derivations done so far: how much elliptic-curve work this wallet's
+    /// scan tables have cost, and how tests check nothing is rebuilt.
     derivations: std::sync::atomic::AtomicU64,
 }
 
@@ -154,7 +154,6 @@ impl WalletEntry {
             view_pair,
             live: Arc::new(tokio::sync::Mutex::new(KeyTable::default())),
             lookup: Arc::new(tokio::sync::Mutex::new(RangeTable::default())),
-            #[cfg(test)]
             derivations: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -211,6 +210,13 @@ fn scan_slots() -> Arc<tokio::sync::Semaphore> {
 /// exposes no mutable view of its scalar's bytes, but it is `Copy`, so the
 /// whole value is written at once.
 impl Drop for WalletEntry {
+    #[expect(
+        unsafe_code,
+        clippy::volatile_composites,
+        reason = "the view-key scrub: a volatile write is the only store LLVM may not \
+                  delete, and `PrivateKey` offers no bytes for `zeroize`; the write may \
+                  be split, which is fine, since every byte only has to end up zero"
+    )]
     fn drop(&mut self) {
         if let Ok(zero) = PrivateKey::from_slice(&[0u8; 32]) {
             // SAFETY: `self.view_pair.view` is a valid, aligned, initialised
@@ -394,12 +400,9 @@ impl KeyCustody for PlainKeyCustody {
                 KeyCustodyError::ScanFailed(format!("building the scan table failed: {e}"))
             })?;
             lookup = returned;
-            #[cfg(test)]
             entry
                 .derivations
                 .fetch_add(derived as u64, Ordering::Relaxed);
-            #[cfg(not(test))]
-            let _ = derived;
             if !lookup.complete {
                 tokio::task::yield_now().await;
             }
@@ -461,10 +464,7 @@ impl KeyCustody for PlainKeyCustody {
                 KeyCustodyError::ScanFailed(format!("updating the scan table failed: {e}"))
             })?;
             live = returned;
-            #[cfg(test)]
             entry.derivations.fetch_add(derived, Ordering::Relaxed);
-            #[cfg(not(test))]
-            let _ = derived;
             if live.covers.as_ref() != Some(indices) {
                 tokio::task::yield_now().await;
             }

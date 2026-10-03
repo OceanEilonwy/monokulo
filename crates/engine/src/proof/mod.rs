@@ -529,7 +529,7 @@ impl Follower {
         db: &Db,
         node: &NodeRef<'_>,
         height: u64,
-        hash: Option<String>,
+        hash_at_height: Option<String>,
         tuning: &ProofTuning,
         hasher: &Hasher,
         budget: &mut u64,
@@ -560,7 +560,7 @@ impl Follower {
             );
         }
         let top = height.min(ours.height);
-        let top_hash = match (&hash, top == height) {
+        let top_hash = match (&hash_at_height, top == height) {
             (Some(hash), true) => hash.clone(),
             _ => match node_hash(top).await {
                 Ok(hash) => hash,

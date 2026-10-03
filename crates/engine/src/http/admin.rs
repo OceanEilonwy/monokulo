@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::auth::generate_webhook_secret;
 use crate::daemon::MoneroDaemonClient as _;
 use crate::engine_settings::EngineSettings;
-use crate::key_custody::{KeyCustodyError, SubaddressIndex, WalletMaterial};
+use crate::key_custody::{remove_wallet_logged, KeyCustodyError, SubaddressIndex, WalletMaterial};
 use crate::status::OrderStatus;
 use crate::store::{Database, NewTenant, Order, OrderPaymentRow, TenantConfigPatch, Webhook};
 
@@ -136,7 +136,13 @@ async fn create_tenant_to_completion(
     let sealed = match state.custody.backends.seal_in(&backend, &material).await {
         Ok(sealed) => sealed,
         Err(e) => {
-            let _ = state.custody.backends.remove_wallet(handle).await;
+            remove_wallet_logged(
+                state.custody.backends.as_ref(),
+                handle,
+                None,
+                "creating a store, sealing its keys failed",
+            )
+            .await;
             return Err(key_custody_error_for_new_tenant(e));
         }
     };
@@ -169,7 +175,13 @@ async fn create_tenant_to_completion(
     let created = match created {
         Ok(created) => created,
         Err(e) => {
-            let _ = state.custody.backends.remove_wallet(handle).await;
+            remove_wallet_logged(
+                state.custody.backends.as_ref(),
+                handle,
+                None,
+                "creating a store, saving it failed",
+            )
+            .await;
             return Err(e.into());
         }
     };
@@ -334,7 +346,13 @@ async fn switch_key_custody_to_completion(
     let sealed = match state.custody.backends.seal_in(&backend, &material).await {
         Ok(sealed) => sealed,
         Err(e) => {
-            let _ = state.custody.backends.remove_wallet(handle).await;
+            remove_wallet_logged(
+                state.custody.backends.as_ref(),
+                handle,
+                Some(tenant.id.as_str()),
+                "moving a store's keys, sealing them in the new backend failed",
+            )
+            .await;
             return Err(e.into());
         }
     };
@@ -344,7 +362,13 @@ async fn switch_key_custody_to_completion(
         .write(move |s| s.update_tenant_key_custody(&id, &chosen, &sealed))
         .await;
     if let Err(e) = updated {
-        let _ = state.custody.backends.remove_wallet(handle).await;
+        remove_wallet_logged(
+            state.custody.backends.as_ref(),
+            handle,
+            Some(tenant.id.as_str()),
+            "moving a store's keys, saving the move failed",
+        )
+        .await;
         return Err(e.into());
     }
     let previous = state
@@ -353,10 +377,13 @@ async fn switch_key_custody_to_completion(
         .write()
         .insert(tenant.id.clone(), handle);
     if let Some(previous) = previous.filter(|p| *p != handle) {
-        if let Err(e) = state.custody.backends.remove_wallet(previous).await {
-            // The old backend is down: it loses the copy when it restarts.
-            tracing::warn!(store.id = %tenant.id, error = %e, "moved a store's keys, but removing them from its old key custody backend failed");
-        }
+        remove_wallet_logged(
+            state.custody.backends.as_ref(),
+            previous,
+            Some(tenant.id.as_str()),
+            "moved a store's keys, removing them from its old backend",
+        )
+        .await;
     }
     let id = tenant.id.clone();
     let refetched = state
@@ -427,8 +454,13 @@ pub(super) async fn delete_own_tenant(
     db.write(move |s| s.disable_tenant(&id, now_unix())).await?;
     let removed_handle = custody.wallet_handles.write().remove(&tenant.id);
     if let Some(handle) = removed_handle {
-        // Best-effort: an already-unknown handle is not an error worth surfacing here.
-        let _ = custody.backends.remove_wallet(handle).await;
+        remove_wallet_logged(
+            custody.backends.as_ref(),
+            handle,
+            Some(tenant.id.as_str()),
+            "deleting a store",
+        )
+        .await;
     }
     Ok(StatusCode::NO_CONTENT)
 }

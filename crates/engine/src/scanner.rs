@@ -1344,7 +1344,13 @@ pub async fn register_missing_wallets_reporting(
                 if winner == handle {
                     registered += 1;
                 } else {
-                    let _ = key_custody.remove_wallet(handle).await;
+                    crate::key_custody::remove_wallet_logged(
+                        key_custody,
+                        handle,
+                        Some(tenant.id.as_str()),
+                        "registering a store's keys, another task registered them first",
+                    )
+                    .await;
                 }
             }
             Ok(Err(e)) => {

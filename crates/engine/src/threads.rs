@@ -125,55 +125,40 @@ impl ThreadPlan {
     /// Pins the calling thread to [`Self::cpus`] and sets its niceness.
     #[cfg(target_os = "linux")]
     fn apply_to_this_thread(&self) -> io::Result<()> {
+        use rustix::thread::{gettid, sched_setaffinity, CpuSet};
         if !self.cpus.is_empty() {
-            // SAFETY: `cpu_set_t` is a plain bit array, for which all zeroes
-            // is the empty set.
-            let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-            let capacity = 8 * size_of::<libc::cpu_set_t>();
+            let mut set = CpuSet::new();
             for &cpu in &self.cpus {
-                if cpu >= capacity {
+                if cpu >= CpuSet::MAX_CPU {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("CPU {cpu} is beyond the {capacity} this system can name"),
+                        format!(
+                            "CPU {cpu} is beyond the {} this system can name",
+                            CpuSet::MAX_CPU
+                        ),
                     ));
                 }
-                // SAFETY: `cpu` is below the set's capacity, checked above;
-                // `set` is a valid, owned `cpu_set_t`.
-                unsafe {
-                    libc::CPU_SET(cpu, &mut set);
-                }
+                set.set(cpu);
             }
-            // SAFETY: pid 0 is the calling thread; `set` is a valid
-            // `cpu_set_t` of the size given, read only for the call.
-            let set_affinity =
-                unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) };
-            if set_affinity != 0 {
-                let e = io::Error::last_os_error();
-                return Err(io::Error::new(
+            // `None` is the calling thread: affinity is per thread on Linux.
+            sched_setaffinity(None, &set).map_err(|e| {
+                let e = io::Error::from(e);
+                io::Error::new(
                     e.kind(),
                     format!(
                         "server.cpus {:?}: {e} (are those CPUs on this machine?)",
                         self.cpus
                     ),
-                ));
-            }
+                )
+            })?;
         }
         if self.nice != 0 {
-            // SAFETY: `gettid` takes no arguments and only returns the
-            // calling thread's id.
-            let thread = unsafe { libc::gettid() };
-            let id = libc::id_t::try_from(thread)
-                .map_err(|e| io::Error::other(format!("a negative thread id: {e}")))?;
-            // SAFETY: PRIO_PROCESS with a thread id sets that one thread's
-            // niceness on Linux; nothing is borrowed.
-            let set_nice = unsafe { libc::setpriority(libc::PRIO_PROCESS, id, self.nice) };
-            if set_nice != 0 {
-                let e = io::Error::last_os_error();
-                return Err(io::Error::new(
-                    e.kind(),
-                    format!("server.nice {}: {e}", self.nice),
-                ));
-            }
+            // With a thread id, PRIO_PROCESS sets that one thread's niceness
+            // on Linux, not the whole process's.
+            rustix::process::setpriority_process(Some(gettid()), self.nice).map_err(|e| {
+                let e = io::Error::from(e);
+                io::Error::new(e.kind(), format!("server.nice {}: {e}", self.nice))
+            })?;
         }
         Ok(())
     }

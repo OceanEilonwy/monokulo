@@ -185,8 +185,8 @@ pub async fn get_settings(
     if let Some(view) =
         scalars.get_mut(crate::engine_settings::PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key)
     {
-        let networks = monero_node.values().filter(|node| node.is_some()).count();
-        view.description = budget_description(&view.description, networks);
+        let configured_networks = monero_node.values().filter(|node| node.is_some()).count();
+        view.description = budget_description(&view.description, configured_networks);
     }
     Ok(Json(SettingsView {
         options_file,
@@ -230,17 +230,17 @@ async fn nodes_that_cannot_work(
             continue;
         };
         // Not a node the registry would accept: its own check says why.
-        let Some(node) = value
+        let Some(primary) = value
             .as_ref()
             .and_then(|v| serde_json::from_value::<MoneroNodeSetting>(v.clone()).ok())
         else {
             continue;
         };
-        if current.nodes.get(name) == Some(&node) {
+        if current.nodes.get(name) == Some(&primary) {
             continue;
         }
-        let nodes: Vec<MoneroNodeSetting> = std::iter::once(node.clone())
-            .chain(node.fallbacks.iter().cloned())
+        let nodes: Vec<MoneroNodeSetting> = std::iter::once(primary.clone())
+            .chain(primary.fallbacks.iter().cloned())
             .collect();
         let mut seen = std::collections::HashSet::new();
         if let Some(twice) = nodes
