@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::daemon::{ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer};
+use crate::daemon::{ChainBlock, ChainHeader, ChainTip, DifficultyHeader, FetchedTx, PoolAnswer};
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
@@ -75,6 +75,10 @@ pub struct FallbackDaemonClient {
     /// successfully, for the status page and the failover log. Relaxed
     /// ordering is enough: it is reported, not relied on.
     current: AtomicUsize,
+    /// Nodes proof-of-work checking caught serving blocks that break the
+    /// rules, or a chain with less work than the one proven
+    /// (docs/proof_of_work.md): never pinned or tried while excluded.
+    excluded: Mutex<Vec<bool>>,
 }
 
 impl FallbackDaemonClient {
@@ -87,11 +91,59 @@ impl FallbackDaemonClient {
             .iter()
             .map(|_| Mutex::new(NodeHealth::default()))
             .collect();
+        let excluded = Mutex::new(vec![false; nodes.len()]);
         Self {
             nodes,
             health,
             current: AtomicUsize::new(0),
+            excluded,
         }
+    }
+
+    /// Leaves exactly the nodes at `indices` out of every call from now on
+    /// (proof-of-work checking only, with what it caught). Refused, with
+    /// nothing changed, if it would leave no node: exclusion can make calls
+    /// fail, but never sends them back to a node that was caught.
+    pub fn set_excluded(&self, indices: &[usize]) -> bool {
+        let excluded: Vec<bool> = (0..self.nodes.len())
+            .map(|idx| indices.contains(&idx))
+            .collect();
+        if excluded.iter().all(|&e| e) {
+            return false;
+        }
+        let mut current = self.excluded.lock();
+        for (idx, (&was, &now)) in current.iter().zip(&excluded).enumerate() {
+            if was != now {
+                tracing::warn!(
+                    node = %self.nodes[idx].label,
+                    excluded = now,
+                    "monero daemon fallback: node {idx} {}",
+                    if now {
+                        "excluded: proof-of-work checking caught it off the proven chain"
+                    } else {
+                        "back in use: it is on the proven chain again"
+                    }
+                );
+            }
+        }
+        *current = excluded;
+        true
+    }
+
+    /// Whether node `idx` is excluded (see [`Self::set_excluded`]).
+    pub fn is_excluded(&self, idx: usize) -> bool {
+        self.excluded.lock().get(idx).copied().unwrap_or(false)
+    }
+
+    /// The nodes not excluded, for the calls that ask every node: a caught
+    /// node's word neither puts a payment back in a block nor voids one.
+    fn trusted(&self) -> Vec<&FallbackNode> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| !self.is_excluded(*idx))
+            .map(|(_, node)| node)
+            .collect()
     }
 
     /// Every configured node, in priority order - for a caller that wants to
@@ -123,9 +175,11 @@ impl FallbackDaemonClient {
     /// out of cooldown first, then (so that recovery is never blocked) the
     /// ones in cooldown. The primary is first whenever it is not cooling
     /// down, so a fallback is never kept for good.
+    /// An excluded node is never in it.
     fn attempt_order(&self) -> Vec<usize> {
-        let (ready, cooling): (Vec<usize>, Vec<usize>) =
-            (0..self.nodes.len()).partition(|&idx| !self.in_cooldown(idx));
+        let (ready, cooling): (Vec<usize>, Vec<usize>) = (0..self.nodes.len())
+            .filter(|&idx| !self.is_excluded(idx))
+            .partition(|&idx| !self.in_cooldown(idx));
         ready.into_iter().chain(cooling).collect()
     }
 
@@ -384,6 +438,17 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.one(|c| c.get_mempool_txids()).await
     }
+    async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
+        self.one(|c| c.get_block_blob(height)).await
+    }
+    async fn get_difficulty_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<DifficultyHeader>, DaemonError> {
+        self.one(|c| c.get_difficulty_headers(start_height, count))
+            .await
+    }
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
@@ -552,6 +617,19 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         self.failover(|c| c.get_mempool_txids()).await
     }
 
+    async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
+        self.failover(|c| c.get_block_blob(height)).await
+    }
+
+    async fn get_difficulty_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<DifficultyHeader>, DaemonError> {
+        self.failover(|c| c.get_difficulty_headers(start_height, count))
+            .await
+    }
+
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
@@ -589,17 +667,18 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         &self,
         txid: &str,
     ) -> Result<Option<TxLocation>, DaemonError> {
-        if self.nodes.len() < 2 {
+        let nodes = self.trusted();
+        if nodes.len() < 2 {
             return Ok(None);
         }
         let answers = futures_util::future::join_all(
-            self.nodes
+            nodes
                 .iter()
                 .map(|node| node.client.locate_transaction(txid)),
         )
         .await;
         let mut best: Option<TxLocation> = None;
-        for (node, answer) in self.nodes.iter().zip(answers) {
+        for (node, answer) in nodes.iter().zip(answers) {
             match answer {
                 Ok(location) => {
                     let rank = |location: &TxLocation| match location {
@@ -665,14 +744,15 @@ impl MoneroDaemonClient for FallbackDaemonClient {
     ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
         // Every node at once: the answer waits for the slowest node, not
         // for each in turn.
+        let nodes = self.trusted();
         let answers = futures_util::future::join_all(
-            self.nodes
+            nodes
                 .iter()
                 .map(|node| node.client.is_key_image_spent(key_images)),
         )
         .await;
         let mut responses: Vec<Vec<KeyImageStatus>> = Vec::new();
-        for (node, answer) in self.nodes.iter().zip(answers) {
+        for (node, answer) in nodes.iter().zip(answers) {
             match answer {
                 Ok(statuses) if statuses.len() == key_images.len() => responses.push(statuses),
                 Ok(wrong_length) => tracing::warn!(
@@ -1486,5 +1566,38 @@ mod tests {
         );
         next_tick.get_height().await.unwrap();
         assert_eq!(b.call_count(), 1);
+    }
+
+    /// A node proof-of-work checking caught (docs/proof_of_work.md) is
+    /// never pinned or failed over to, even when every other node is down;
+    /// it is back once let back in; and every node can't be excluded at
+    /// once.
+    #[tokio::test(start_paused = true)]
+    async fn an_excluded_node_is_never_pinned_or_tried() {
+        let (a_node, a) = node("a", Arc::new(FlakyDaemonClient::new(true)));
+        let (b_node, b) = node("b", Arc::new(FlakyDaemonClient::new(true)));
+        let (c_node, _c) = node("c", Arc::new(FlakyDaemonClient::new(true)));
+        let client = FallbackDaemonClient::new(vec![a_node, b_node, c_node]);
+
+        assert!(client.set_excluded(&[0]));
+        assert!(client.is_excluded(0) && !client.is_excluded(1));
+        assert_eq!(client.pin().node_index(), 1, "the primary is skipped");
+        client.get_height().await.unwrap();
+        assert_eq!((a.call_count(), b.call_count()), (0, 1));
+
+        // With the others down, calls fail rather than go to it.
+        assert!(client.set_excluded(&[0, 2]));
+        b.set_healthy(false);
+        assert!(client.get_height().await.is_err());
+        assert_eq!(a.call_count(), 0, "never sent to a caught node");
+
+        assert!(!client.set_excluded(&[0, 1, 2]), "never every node");
+        assert!(
+            client.is_excluded(2) && !client.is_excluded(1),
+            "a refused exclusion changes nothing"
+        );
+
+        assert!(client.set_excluded(&[]));
+        assert_eq!(client.pin().node_index(), 0, "the primary is back");
     }
 }

@@ -196,6 +196,20 @@ pub struct BlockOutline {
     pub txids: Vec<String>,
 }
 
+/// A block header with what the node says of its difficulty
+/// ([`MoneroDaemonClient::get_difficulty_headers`]): taken on the nodes'
+/// word only for an anchor's window (docs/proof_of_work.md).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DifficultyHeader {
+    pub height: u64,
+    pub hash: String,
+    /// The parent block's id; empty for the genesis block.
+    pub prev_hash: String,
+    pub timestamp: u64,
+    pub difficulty: u128,
+    pub cumulative_difficulty: u128,
+}
+
 /// The node's tip ([`MoneroDaemonClient::get_tip`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChainTip {
@@ -374,6 +388,31 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// only for what entered and left since it last asked.
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError>;
 
+    /// Block `height` as the node stores it: its header, coinbase and its
+    /// transactions' ids, without the transactions (docs/proof_of_work.md).
+    /// Nothing in it is taken on trust: its id and its proof of work are
+    /// computed from it. `RpcDaemonClient` asks monerod's `get_block`.
+    async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
+        Err(DaemonError::Request(format!(
+            "this client can't fetch block {height}'s blob"
+        )))
+    }
+
+    /// Up to `count` headers from `start_height`, with what the node says
+    /// of their difficulty: for an anchor's window, the one thing taken on
+    /// the nodes' word (docs/proof_of_work.md). May be shorter than
+    /// `count`; empty only if nothing at `start_height` is available.
+    async fn get_difficulty_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<DifficultyHeader>, DaemonError> {
+        let _ = count;
+        Err(DaemonError::Request(format!(
+            "this client can't fetch difficulty headers from {start_height}"
+        )))
+    }
+
     /// Several transactions by txid, each with its id, in any order; ones
     /// the node doesn't have are left out. The id comes with each because
     /// the transaction may be pruned (`RpcDaemonClient` fetches them so),
@@ -477,6 +516,27 @@ pub mod fake {
         hash: String,
         txs: Vec<Transaction>,
         timestamp: u64,
+        /// Its blob and difficulties, for a block a test made with
+        /// `pow::test_chain`: what proof-of-work checking reads.
+        proof: Option<FakeProof>,
+    }
+
+    #[derive(Clone)]
+    struct FakeProof {
+        blob: Vec<u8>,
+        difficulty: u128,
+        cumulative_difficulty: u128,
+    }
+
+    /// A real block for [`FakeDaemonClient::replace_from`].
+    pub struct ProofBlock {
+        pub height: u64,
+        pub hash: String,
+        pub timestamp: u64,
+        pub txs: Vec<Transaction>,
+        pub blob: Vec<u8>,
+        pub difficulty: u128,
+        pub cumulative_difficulty: u128,
     }
 
     /// A fixed, arbitrary epoch and block spacing for `FakeBlock`'s own
@@ -579,6 +639,7 @@ pub mod fake {
                     hash: hash.to_string(),
                     txs,
                     timestamp: default_fake_timestamp(height),
+                    proof: None,
                 },
             );
             state.height = height;
@@ -604,6 +665,7 @@ pub mod fake {
                     hash: hash.to_string(),
                     txs,
                     timestamp: default_fake_timestamp(height),
+                    proof: None,
                 },
             );
             state.height = state.height.max(height);
@@ -683,6 +745,7 @@ pub mod fake {
                         hash: hash.to_string(),
                         txs,
                         timestamp: default_fake_timestamp(height),
+                        proof: None,
                     },
                 );
             }
@@ -707,6 +770,66 @@ pub mod fake {
         /// the bytes.
         pub fn set_block_weight(&self, height: u64, weight: u64) {
             self.state.lock().weights.insert(height, weight);
+        }
+
+        /// Replaces every block from `from` up with `blocks` (real ones, from
+        /// `pow::test_chain`), as [`Self::reorg_from`] does: the node's chain
+        /// now ends with them. A transaction no longer in a block is gone.
+        pub fn replace_from(&self, from: u64, blocks: Vec<ProofBlock>) {
+            let mut state = self.state.lock();
+            let old_txids: Vec<String> = state
+                .blocks
+                .iter()
+                .filter(|(h, _)| **h >= from)
+                .flat_map(|(_, b)| b.txs.iter().map(tx_id_hex))
+                .collect();
+            state.blocks.retain(|h, _| *h < from);
+            let mut new_txids = Vec::new();
+            let mut top = from.saturating_sub(1);
+            for block in blocks {
+                for tx in &block.txs {
+                    let id = tx_id_hex(tx);
+                    state
+                        .tx_locations
+                        .insert(id.clone(), TxLocation::InBlock(block.height));
+                    new_txids.push(id);
+                }
+                top = block.height;
+                state.blocks.insert(
+                    block.height,
+                    FakeBlock {
+                        hash: block.hash,
+                        txs: block.txs,
+                        timestamp: block.timestamp,
+                        proof: Some(FakeProof {
+                            blob: block.blob,
+                            difficulty: block.difficulty,
+                            cumulative_difficulty: block.cumulative_difficulty,
+                        }),
+                    },
+                );
+            }
+            state.height = top;
+            state.height_override = None;
+            for txid in old_txids {
+                if !new_txids.contains(&txid) {
+                    state.tx_locations.insert(txid, TxLocation::NotFound);
+                }
+            }
+        }
+
+        /// A block known only by its id, at a RandomX key height below a
+        /// test chain: `get_block_hash` answers with it.
+        pub fn seed_key_block(&self, height: u64, hash: &str) {
+            self.state.lock().blocks.insert(
+                height,
+                FakeBlock {
+                    hash: hash.to_string(),
+                    txs: Vec::new(),
+                    timestamp: default_fake_timestamp(height),
+                    proof: None,
+                },
+            );
         }
 
         pub fn drop_from_mempool(&self, tx: &Transaction) {
@@ -834,6 +957,54 @@ pub mod fake {
         async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
             self.require_online()?;
             Ok(self.state.lock().mempool.iter().map(tx_id_hex).collect())
+        }
+
+        async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
+            self.require_online()?;
+            self.state
+                .lock()
+                .blocks
+                .get(&height)
+                .and_then(|b| b.proof.as_ref())
+                .map(|p| p.blob.clone())
+                .ok_or_else(|| DaemonError::Request(format!("no block blob at height {height}")))
+        }
+
+        async fn get_difficulty_headers(
+            &self,
+            start_height: u64,
+            count: u64,
+        ) -> Result<Vec<DifficultyHeader>, DaemonError> {
+            self.require_online()?;
+            let state = self.state.lock();
+            let mut out = Vec::new();
+            for height in start_height..start_height.saturating_add(count) {
+                let Some(block) = state.blocks.get(&height) else {
+                    break;
+                };
+                let Some(proof) = &block.proof else {
+                    break;
+                };
+                let prev_hash = height
+                    .checked_sub(1)
+                    .and_then(|p| state.blocks.get(&p))
+                    .map(|b| b.hash.clone())
+                    .unwrap_or_default();
+                out.push(DifficultyHeader {
+                    height,
+                    hash: block.hash.clone(),
+                    prev_hash,
+                    timestamp: block.timestamp,
+                    difficulty: proof.difficulty,
+                    cumulative_difficulty: proof.cumulative_difficulty,
+                });
+            }
+            if out.is_empty() {
+                return Err(DaemonError::Request(format!(
+                    "no headers from height {start_height}"
+                )));
+            }
+            Ok(out)
         }
 
         /// From the pool or a block, as a real node finds either.

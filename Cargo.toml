@@ -45,3 +45,7 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.sha3]
 opt-level = 3
+# RandomX (its C++ is built at this level too): block proof-of-work tests
+# hash and mine real blocks.
+[profile.dev.package.randomx-rs]
+opt-level = 3

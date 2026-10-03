@@ -26,6 +26,7 @@ use crate::auth::{generate_public_key, generate_secret_token, RawToken};
 use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
 
 pub mod db;
+pub mod proof;
 mod work;
 pub use db::{Db, DbMetrics};
 pub use work::{
@@ -115,6 +116,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         23,
         include_str!("../migrations/0023_order_idempotency_key.sql"),
     ),
+    (24, include_str!("../migrations/0024_proof_of_work.sql")),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -511,6 +513,10 @@ struct StatusFacts<'a> {
     tenant_lagging: bool,
     /// A reorg is being reconciled on the order's network.
     settlement_frozen: bool,
+    /// While the order's network checks proof of work, the highest
+    /// recorded block whose proof was checked (docs/proof_of_work.md): an
+    /// order may only newly settle on confirmations counted up to it.
+    settlement_ceiling: Option<u64>,
     current_height: u64,
     now: i64,
 }
@@ -561,8 +567,37 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     // counted on the losing chain: an order can't newly settle until the
     // rewind. Everything else (expiry, confirmation counts, walking a
     // settlement back) still happens, and it shows where the payment stands.
-    let settlement_deferred =
-        is_settlement(derived) && !is_settlement(order.status) && facts.settlement_frozen;
+    //
+    // Likewise while confirmations above the ceiling are needed: a block
+    // whose proof of work wasn't checked may be made up
+    // (docs/proof_of_work.md).
+    let settles_on_proven_blocks = || match facts.settlement_ceiling {
+        None => true,
+        Some(ceiling) => {
+            let unproven = facts.current_height.saturating_sub(ceiling);
+            let views: Vec<PaymentView> = facts
+                .views
+                .iter()
+                .map(|v| PaymentView {
+                    confirmations: v.confirmations.saturating_sub(unproven),
+                    ..*v
+                })
+                .collect();
+            let as_of_ceiling = derive_status(
+                &views,
+                StatusInputs {
+                    xmr_amount_piconero: order.xmr_amount_piconero,
+                    confirmations_required: facts.confirmations_required,
+                    now: facts.now,
+                    expires_at: order.expires_at,
+                },
+            );
+            is_settlement(as_of_ceiling)
+        }
+    };
+    let settlement_deferred = is_settlement(derived)
+        && !is_settlement(order.status)
+        && (facts.settlement_frozen || !settles_on_proven_blocks());
     let status = if expiry_held {
         order.status
     } else if settlement_deferred {
@@ -1824,6 +1859,7 @@ impl Store {
                 .unwrap_or(confirmations_required),
             tenant_lagging: lagging,
             settlement_frozen: self.settlement_frozen(network)?,
+            settlement_ceiling: self.proof_ceiling(network)?,
             current_height,
             now,
         });
@@ -2706,6 +2742,7 @@ mod tests {
                 confirmations_required: case.required,
                 tenant_lagging: case.lagging,
                 settlement_frozen: case.frozen,
+                settlement_ceiling: None,
                 current_height: 50,
                 now: case.now,
             });
@@ -2721,6 +2758,58 @@ mod tests {
                 case.what
             );
         }
+    }
+
+    /// An order settles only on confirmations counted up to the proof
+    /// ceiling (docs/proof_of_work.md); the counts shown stay the real
+    /// ones, and an order already settled isn't walked back by it.
+    #[test]
+    fn settlement_waits_for_proven_blocks_under_a_ceiling() {
+        use OrderStatus::*;
+        // Ten confirmations required, tip 50: a payment with 12 has its
+        // block at 39 and its tenth confirmation at 48.
+        for (ceiling, was, expect, deferred) in [
+            (None, Confirming, Paid, false),
+            (Some(50), Confirming, Paid, false),
+            (Some(48), Confirming, Paid, false),
+            (Some(47), Confirming, Confirming, true),
+            (Some(39), Confirming, Confirming, true),
+            (Some(0), Confirming, Confirming, true),
+            (Some(0), Paid, Paid, false),
+        ] {
+            let order = order(was, 1000);
+            let plan = plan_status(&StatusFacts {
+                order: &order,
+                views: &[mined(100, 12)],
+                confirmations_required: 10,
+                tenant_lagging: false,
+                settlement_frozen: false,
+                settlement_ceiling: ceiling,
+                current_height: 50,
+                now: 500,
+            });
+            assert_eq!(
+                (plan.status, plan.keep_obligation, plan.confirmations),
+                (expect, deferred, 12),
+                "ceiling {ceiling:?}, was {was:?}"
+            );
+            if deferred {
+                assert_eq!(plan.next_due_at, Some(500), "looked at again next round");
+            }
+        }
+        // Zero-conf acceptance has no block to wait for.
+        let order = order(Pending, 1000);
+        let plan = plan_status(&StatusFacts {
+            order: &order,
+            views: &[pooled(100)],
+            confirmations_required: 0,
+            tenant_lagging: false,
+            settlement_frozen: false,
+            settlement_ceiling: Some(0),
+            current_height: 50,
+            now: 500,
+        });
+        assert_eq!(plan.status, Paid);
     }
 
     /// A recompute that changes nothing writes nothing (`updated_at` stays).

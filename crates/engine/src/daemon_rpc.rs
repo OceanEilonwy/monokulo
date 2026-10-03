@@ -30,8 +30,8 @@ use serde_json::{json, Value};
 use tokio::time::Instant;
 
 use crate::daemon::{
-    ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, EndpointStats, FetchedTx,
-    KeyImageStatus, MoneroDaemonClient, PoolAnswer, TxLocation,
+    ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, DifficultyHeader, EndpointStats,
+    FetchedTx, KeyImageStatus, MoneroDaemonClient, PoolAnswer, TxLocation,
 };
 
 pub struct RpcDaemonClient {
@@ -1197,6 +1197,16 @@ struct BlockHeader {
     block_weight: Option<u64>,
     #[serde(default)]
     num_txes: Option<u64>,
+    /// The difficulty as two 64-bit halves, as monerod sends it; read only
+    /// for an anchor's window (docs/proof_of_work.md).
+    #[serde(default)]
+    difficulty: u64,
+    #[serde(default)]
+    difficulty_top64: u64,
+    #[serde(default)]
+    cumulative_difficulty: u64,
+    #[serde(default)]
+    cumulative_difficulty_top64: u64,
 }
 
 impl BlockHeader {
@@ -1771,6 +1781,72 @@ impl MoneroDaemonClient for RpcDaemonClient {
     /// `POOL_RESYNC_INTERVAL` the node's plain list replaces what was
     /// followed, so a missed change doesn't last. A node that can't say
     /// changes is asked for the plain list each time, as before.
+    /// `get_block` by height, keeping only the blob: about a kilobyte
+    /// plus 32 bytes a transaction, sent hex-encoded with the same ids again
+    /// as JSON (about 9 KB for 30 transactions). The coinbase's height is
+    /// checked by the caller, which decodes it anyway.
+    async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
+        #[derive(Deserialize)]
+        struct GetBlock {
+            blob: String,
+        }
+        let answer: GetBlock = self
+            .post_json_rpc("get_block", json!({ "height": height }))
+            .await?;
+        hex::decode(answer.blob.trim()).map_err(|e| {
+            DaemonError::Request(format!("get_block: block {height}'s blob isn't hex: {e}"))
+        })
+    }
+
+    /// `get_block_headers_range`, with each header's difficulty and
+    /// cumulative difficulty.
+    async fn get_difficulty_headers(
+        &self,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<DifficultyHeader>, DaemonError> {
+        #[derive(Deserialize)]
+        struct Headers {
+            #[serde(default)]
+            headers: Vec<BlockHeader>,
+        }
+        let count = count.clamp(1, MAX_HEADERS_PER_REQUEST);
+        let range = json!({
+            "start_height": start_height,
+            "end_height": start_height.saturating_add(count - 1),
+        });
+        let Headers { headers } = self.post_json_rpc("get_block_headers_range", range).await?;
+        let mut out = Vec::with_capacity(headers.len());
+        for (height, header) in (start_height..).zip(headers.into_iter().take(count as usize)) {
+            if header.height.is_some_and(|own| own != height) {
+                return Err(DaemonError::Request(format!(
+                    "get_block_headers_range: asked for block {height}, the node sent another"
+                )));
+            }
+            let wide = |top: u64, low: u64| (u128::from(top) << 64) | u128::from(low);
+            let difficulty = wide(header.difficulty_top64, header.difficulty);
+            let cumulative_difficulty = wide(
+                header.cumulative_difficulty_top64,
+                header.cumulative_difficulty,
+            );
+            let chain = header.into_chain_header(height)?;
+            out.push(DifficultyHeader {
+                height,
+                hash: chain.hash,
+                prev_hash: chain.prev_hash,
+                timestamp: chain.timestamp,
+                difficulty,
+                cumulative_difficulty,
+            });
+        }
+        if out.is_empty() {
+            return Err(DaemonError::Request(format!(
+                "get_block_headers_range returned no headers from height {start_height}"
+            )));
+        }
+        Ok(out)
+    }
+
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         Ok(self.poll_pool(None).await?.0)
     }
