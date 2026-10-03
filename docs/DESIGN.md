@@ -394,6 +394,14 @@ fresh twice a day for the revocation list), the public key and a single-use
 an hour (`POST /api/v1/admin/key-custody/bundle`,
 `POST /api/v1/admin/tenant/key-custody/bundle`).
 
+Each key entry form monokulo shows takes one. So that one account can't expire
+everyone else's by opening forms over and over, each account holds at most
+`key_custody.snp_bundles_per_user` (20) at once, and opening another drops that
+account's own oldest. It may also open at most `key_custody.snp_bundles_per_user_per_min`
+(30) a minute; past that, the form shows an alert asking them to wait a minute, and
+no challenge is taken from the engine. The engine's own cap (10,000 outstanding, oldest
+first) remains behind them.
+
 The client checks the bundle: the report chains to AMD's pinned root for its product,
 with a revocation list in force; the guest can't be debugged; its image is signed by
 the trusted ID key at the minimum security version or later, on firmware at the minimum

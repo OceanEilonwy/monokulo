@@ -216,6 +216,7 @@ async fn render_confirm_form(
     let snp_entry = if unavailable.is_none() {
         super::key_entry::prepare(
             state,
+            &user.id,
             super::key_entry::Purpose::Create,
             &super::key_entry::offered_backends(state, &custody_choices),
         )

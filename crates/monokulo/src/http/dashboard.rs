@@ -225,6 +225,7 @@ async fn render_connect_form(
     );
     let snp_entry = super::key_entry::prepare(
         state,
+        &user.id,
         super::key_entry::Purpose::Create,
         &super::key_entry::offered_backends(state, &custody_choices),
     )

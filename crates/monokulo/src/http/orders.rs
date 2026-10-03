@@ -996,8 +996,13 @@ pub(super) async fn render_store_settings_page(
     let mut key_storage = key_storage;
     if let Some(view) = key_storage.as_mut() {
         let targets: Vec<String> = view.move_to.iter().map(|c| c.backend.clone()).collect();
-        view.snp_entry =
-            super::key_entry::prepare(state, super::key_entry::Purpose::Move(&sk), &targets).await;
+        view.snp_entry = super::key_entry::prepare(
+            state,
+            &user.id,
+            super::key_entry::Purpose::Move(&sk),
+            &targets,
+        )
+        .await;
     }
     let confirmations_required = tenant_result
         .as_ref()

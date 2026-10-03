@@ -405,3 +405,19 @@ end need a decision.
 - **No warning in monokulo** for a plain `http://` `engine.url` (your call).
 - **Not done:** TLS in the engine (B) and attested TLS (C).
 
+### 41. Per-account limits on key entry forms (you chose option A, with an alert)
+- **Decision:** monokulo tracks which account each bundle was handed to. Each account
+  holds at most `key_custody.snp_bundles_per_user` (default 20) live bundles, and a
+  new one past that drops that account's own oldest, never another's. Each account
+  may open at most `key_custody.snp_bundles_per_user_per_min` (default 30) a minute
+  (the shared fixed-window limiter, keyed by user id). Past that, the form shows a
+  simple alert (`div class="error" role="alert"`: "You've opened SEV-SNP key entry
+  too many times in the last minute. Wait a minute, then reload this page."), and the
+  engine isn't asked for a challenge.
+- **Settings:** both are in the registry, editable and applied at once, in the snp
+  backend's section of the Custody tab.
+- **Remains:** the engine's cap of 10,000 outstanding challenges. Flooding from many
+  accounts is bounded by signup's own abuse protection.
+- **Not done:** issuing bundles only when SEV-SNP is picked (option B), a possible
+  efficiency change later.
+

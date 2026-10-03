@@ -286,6 +286,20 @@ settings! {
         description: "Whether every store's keys must go to the engine's SEV-SNP backend, encrypted in the merchant's browser or with key-custody-cli. On, this site never shows a form for keys in the clear and never sends typed keys to the engine, even if the engine says it has no SEV-SNP backend: key entry is then unavailable, and the status page shows an alert.",
         example: "true",
     },
+    KEY_CUSTODY_SNP_BUNDLES_PER_USER: usize {
+        key: "key_custody.snp_bundles_per_user",
+        default: 20,
+        check: range(1, 10_000),
+        description: "How many SEV-SNP key entry forms one account may have open at once. Each form holds a single-use challenge from the engine; past this, opening another expires that account's oldest, never anyone else's.",
+        example: "20",
+    },
+    KEY_CUSTODY_SNP_BUNDLES_PER_USER_PER_MIN: u32 {
+        key: "key_custody.snp_bundles_per_user_per_min",
+        default: 30,
+        check: range(1, 10_000),
+        description: "How many SEV-SNP key entry forms one account may open per minute. Past this, the form shows an alert asking them to wait a minute, and no challenge is taken from the engine.",
+        example: "30",
+    },
     PUBLIC_URL: String {
         key: "public_url",
         default: String::new(),
@@ -557,6 +571,39 @@ impl Section for CliLinks {
         Ok(CliLinks {
             download: snapshot.get(&KEY_CUSTODY_CLI_DOWNLOAD_URL),
             source: snapshot.get(&KEY_CUSTODY_CLI_SOURCE_URL),
+        })
+    }
+}
+
+/// How many SEV-SNP key entry forms one account may hold and open
+/// (`http::key_entry`), so one account can't expire everyone else's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnpBundleLimits {
+    pub per_user: usize,
+    pub per_user_per_min: u32,
+}
+
+impl Default for SnpBundleLimits {
+    fn default() -> Self {
+        SnpBundleLimits {
+            per_user: KEY_CUSTODY_SNP_BUNDLES_PER_USER.default_value(),
+            per_user_per_min: KEY_CUSTODY_SNP_BUNDLES_PER_USER_PER_MIN.default_value(),
+        }
+    }
+}
+
+impl Section for SnpBundleLimits {
+    const NAME: &'static str = "sev-snp key entry limits";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[
+            &KEY_CUSTODY_SNP_BUNDLES_PER_USER,
+            &KEY_CUSTODY_SNP_BUNDLES_PER_USER_PER_MIN,
+        ]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(SnpBundleLimits {
+            per_user: snapshot.get(&KEY_CUSTODY_SNP_BUNDLES_PER_USER),
+            per_user_per_min: snapshot.get(&KEY_CUSTODY_SNP_BUNDLES_PER_USER_PER_MIN),
         })
     }
 }
@@ -1061,6 +1108,8 @@ pub struct MonokuloSettings {
     /// What the key entry forms check an SEV-SNP engine against: at start
     /// and after every save.
     pub snp_entry: live_settings::Live<SnpEntryPolicy>,
+    /// How many key entry forms one account may hold and open.
+    pub snp_bundle_limits: live_settings::Live<SnpBundleLimits>,
 }
 
 impl MonokuloSettings {
@@ -1106,6 +1155,7 @@ impl MonokuloSettings {
                 source: KEY_CUSTODY_CLI_SOURCE_URL.default_value(),
             }),
             snp_entry: live_settings::Live::new(snp_entry),
+            snp_bundle_limits: live_settings::Live::new(SnpBundleLimits::default()),
         })
     }
 
@@ -1158,6 +1208,7 @@ impl MonokuloSettings {
         let per_request = builder.section::<PerRequest>();
         let cli_links = builder.section::<CliLinks>();
         let snp_entry = builder.section::<SnpEntryPolicy>();
+        let snp_bundle_limits = builder.section::<SnpBundleLimits>();
         // Read once at start, before the registry exists (`main.rs`).
         builder.section::<DatabaseConfig>();
         builder.section::<BootConfig>();
@@ -1181,6 +1232,7 @@ impl MonokuloSettings {
             per_request,
             cli_links,
             snp_entry,
+            snp_bundle_limits,
         }))
     }
 }
@@ -1414,6 +1466,7 @@ mod tests {
             PerRequest::keys(),
             CliLinks::keys(),
             SnpEntryPolicy::keys(),
+            SnpBundleLimits::keys(),
             ExchangeRateConfig::keys(),
             AbuseConfig::keys(),
             OnionListenerConfig::keys(),
