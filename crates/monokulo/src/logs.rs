@@ -386,9 +386,10 @@ mod tests {
         let wrong = Sources {
             local: sources.local.clone(),
             engine: EngineSource::Api {
-                client: EngineClient::new(
-                    format!("http://{}", engine.addr),
+                client: EngineClient::embedded(
+                    engine.router(),
                     shared::auth::RawToken::presented("wrong_engine_token_0123456789abcdef"),
+                    None,
                 ),
             },
         };

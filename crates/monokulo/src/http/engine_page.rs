@@ -331,10 +331,7 @@ mod tests {
             header_only: false,
         });
         let state = AppState {
-            engine: crate::http::Engine::new(EngineClient::for_tests(format!(
-                "http://{}",
-                engine.addr
-            ))),
+            engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
             ..AppState::for_tests()
         };
         let router = crate::http::build_router(state);
@@ -460,7 +457,7 @@ mod tests {
 
     /// An engine that can't be reached is said so on the page, not a 500.
     #[tokio::test]
-    async fn an_unreachable_engine_is_said_so() {
+    async fn an_unreachable_remote_engine_is_said_so_over_http() {
         let state = AppState {
             engine: crate::http::Engine::new(EngineClient::for_tests("http://127.0.0.1:9")),
             ..AppState::for_tests()
@@ -517,7 +514,7 @@ mod tests {
     #[tokio::test]
     async fn scrubbing_and_replay_answer_from_the_history() {
         let (engine, router, cookie) = site().await;
-        let page = EngineClient::for_tests(format!("http://{}", engine.addr))
+        let page = EngineClient::embedded_for_tests(engine.router())
             .engine_activity("stagenet", None)
             .await
             .unwrap();

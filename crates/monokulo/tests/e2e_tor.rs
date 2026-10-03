@@ -310,8 +310,10 @@ struct Store {
     order_id: String,
 }
 
-async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store) {
-    let engine_client = EngineClient::for_tests(format!("http://{engine_addr}"));
+async fn start_monokulo(
+    engine: &engine_test_support::TestEngineHandle,
+) -> (AppState, SocketAddr, Store) {
+    let engine_client = EngineClient::embedded_for_tests(engine.router());
     let tenant = engine_client
         .create_tenant(CreateTenantRequest {
             view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
@@ -411,7 +413,7 @@ fn circuits(state: &AppState) -> Vec<u32> {
 async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slowed() {
     let engine =
         engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-    let (state, onion_listener, store) = start_monokulo(engine.addr).await;
+    let (state, onion_listener, store) = start_monokulo(&engine).await;
     let tor = start_tor(onion_listener.port()).await;
     println!("tor data and log in {}", tor.dir.display());
 

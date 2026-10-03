@@ -984,11 +984,7 @@ mod tests {
                     }),
                 )
             };
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-
-            let state = state_with_engine(EngineClient::for_tests(format!("http://{addr}")));
+            let state = state_with_engine(EngineClient::embedded_for_tests(app));
             let callers: Vec<_> = (0..20)
                 .map(|_| {
                     let engine = state.engine.clone();
@@ -1099,7 +1095,8 @@ mod tests {
         /// listener at all at this port) - the page must show a plain error
         /// banner, not a 500 or a fabricated healthy page.
         #[tokio::test]
-        async fn status_page_shows_a_plain_error_banner_when_the_engine_is_unreachable() {
+        async fn status_page_shows_a_plain_error_banner_when_a_remote_engine_is_unreachable_over_http(
+        ) {
             let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
             let router: Router = build_router(state);
 
@@ -1451,7 +1448,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn status_summary_reports_unhealthy_when_the_engine_is_unreachable() {
+        async fn status_summary_reports_unhealthy_when_a_remote_engine_is_unreachable_over_http() {
             let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
             let router: Router = build_router(state);
 

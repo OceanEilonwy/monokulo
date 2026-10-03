@@ -643,7 +643,7 @@ mod tests {
         assert!(!b.changed.has_changed().unwrap());
     }
     #[tokio::test]
-    async fn a_new_cache_size_ends_live_streams_on_the_old_client() {
+    async fn a_new_cache_size_ends_live_streams_on_the_old_http_client() {
         let engine = crate::engine_client::EngineClient::for_tests("http://127.0.0.1:1");
         let mut subscription = engine.subscribe_order(
             &shared::ids::ConnectionId::new("conn"),

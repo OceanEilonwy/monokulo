@@ -938,12 +938,14 @@ mod tests {
         }
     }
 
-    /// Spawns a real monokulo instance (in-memory `Db`, an
-    /// `EngineClient` pointed at `engine_addr`, the fixed test encryption
+    /// Spawns a real monokulo instance (in-memory `Db`, `engine` inside it
+    /// as by default, the fixed test encryption
     /// key) bound to a real ephemeral local port. No exchange rate/order-
     /// creation setup needed on the engine side - this flow never creates
     /// an order, only a tenant.
-    async fn spawn_test_monokulo(engine_addr: SocketAddr) -> TestControlPlaneHandle {
+    async fn spawn_test_monokulo(
+        engine: &engine_test_support::TestEngineHandle,
+    ) -> TestControlPlaneHandle {
         use monokulo::db::Db;
         use monokulo::engine_client::EngineClient;
         use monokulo::http::{build_router, AppState};
@@ -958,9 +960,7 @@ mod tests {
             .local_addr()
             .expect("bound listener has no local address");
         let state = AppState {
-            engine: monokulo::http::Engine::new(EngineClient::for_tests(format!(
-                "http://{engine_addr}"
-            ))),
+            engine: monokulo::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
             // Public signup (the default is invite-only): every driver in
             // this crate signs up its own fresh test account with no invite
             // token, as a self-hoster's admin would first switch signup to
@@ -992,7 +992,7 @@ mod tests {
     ) {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let monokulo = spawn_test_monokulo(engine.addr).await;
+        let monokulo = spawn_test_monokulo(&engine).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let credentials = run_connect_flow(&monokulo_base_url).await.expect(
@@ -1056,7 +1056,7 @@ mod tests {
     async fn the_flow_without_a_webhook_registers_none() {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let monokulo = spawn_test_monokulo(engine.addr).await;
+        let monokulo = spawn_test_monokulo(&engine).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let credentials = run_connect_flow_without_webhook(&monokulo_base_url)
@@ -1097,7 +1097,7 @@ mod tests {
     async fn create_order_against_a_real_engine_yields_a_working_checkout_redirect() {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let monokulo = spawn_test_monokulo(engine.addr).await;
+        let monokulo = spawn_test_monokulo(&engine).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let credentials = run_connect_flow(&monokulo_base_url).await.expect(
@@ -1152,7 +1152,7 @@ mod tests {
     async fn a_callback_with_a_mismatched_nonce_is_rejected_and_never_consumes_the_token() {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let monokulo = spawn_test_monokulo(engine.addr).await;
+        let monokulo = spawn_test_monokulo(&engine).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let platform = "woocommerce";
@@ -1494,7 +1494,7 @@ mod tests {
             .with_background_loops()
             .spawn()
             .await;
-        let monokulo = spawn_test_monokulo(engine.addr).await;
+        let monokulo = spawn_test_monokulo(&engine).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let credentials = run_connect_flow_with_order_expiry_seconds(&monokulo_base_url, 1)
@@ -1581,7 +1581,7 @@ mod tests {
             .without_background_scan_loop()
             .spawn()
             .await;
-        let monokulo = spawn_test_monokulo(engine.addr).await;
+        let monokulo = spawn_test_monokulo(&engine).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let credentials = run_connect_flow(&monokulo_base_url)

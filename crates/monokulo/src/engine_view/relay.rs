@@ -243,7 +243,7 @@ mod tests {
 
     fn relay(engine: &engine_test_support::TestEngineHandle, linger: Duration) -> Arc<Relay> {
         Arc::new(Relay::with_timing(
-            EngineClient::for_tests(format!("http://{}", engine.addr)),
+            EngineClient::embedded_for_tests(engine.router()),
             Duration::from_millis(20),
             linger,
         ))
