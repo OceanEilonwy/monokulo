@@ -58,7 +58,7 @@ npx playwright install chromium
 ```
 
 The Rust binary this suite drives is built automatically by `global-setup.js`
-(`cargo build -p engine --features e2e --bin e2e-harness`) the first time you run
+(`cargo build -p e2e-harness --features e2e --bin e2e-harness`) the first time you run
 it - that first build pulls in `cli-wallet`'s own real transaction-signing
 dependencies (`monero-wallet`, `monero-daemon-rpc`, `curve25519-dalek`) and can take a
 little while; every run after that is a fast no-op rebuild check.
@@ -78,7 +78,7 @@ screenshots on failure).
 
 ## How it's wired together
 
-- `global-setup.js` builds and spawns `crates/engine/src/bin/e2e_harness.rs`
+- `global-setup.js` builds and spawns `crates/e2e-harness/src/main.rs`
   (`target/debug/e2e-harness`), a real `[[bin]]` (not a `cargo test`) so this script
   can spawn/discover/kill it as a predictable, ordinary child process. That binary
   prints one `POS_E2E_READY {...}` JSON line to stdout once both real servers are up
@@ -104,7 +104,7 @@ screenshots on failure).
   stagenet-only wallet with no chain scanning (informed of its own outputs directly,
   via the committed `e2e/wallets/spender.json` wallet file) and decoy selection
   served from the committed `e2e/stagenet-decoy-distribution.json` snapshot rather than
-  a live fetch. The same spender wallet `../tests/e2e_stagenet.rs` uses.
+  a live fetch. The same spender wallet `../../crates/e2e-harness/tests/e2e_stagenet.rs` uses.
 
 ## If it fails
 

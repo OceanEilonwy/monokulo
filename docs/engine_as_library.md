@@ -1,8 +1,8 @@
 # Proposal: the engine as a library inside monokulo
 
-Status: proposal accepted (see "Decisions" at the end). Phase 1 is built
-(see "Phase 1, as built"). Written 2026-10-03 against `1cc17f2`
-(origin/main).
+Status: proposal accepted (see "Decisions" at the end). Phases 1 and 2 are
+built (see "Phase 1, as built" and "Phase 2, as built"). Written 2026-10-03
+against `1cc17f2` (origin/main).
 
 ## Summary
 
@@ -509,3 +509,89 @@ Each line gives what was decided, the alternatives, and why.
     from the call site's `module_path!()`.
   - `shared::resources`' `SAMPLER`, `MACHINE` and `HOST` describe the
     process and the machine, so sharing them is right.
+
+## Phase 2, as built
+
+**The client** (`crates/monokulo/src/engine_client.rs`). `EngineClient` has
+two transports:
+- `Transport::Remote`: reqwest through `shared::http_cache`, as before;
+- `Transport::Embedded`: the engine's router, called with
+  `tower::ServiceExt::oneshot`.
+
+How the two share one path:
+- Every method builds one `Call` (method, path and query, the store's
+  secret, a JSON body) and sends it through `EngineTarget::send`, or
+  `EngineTarget::stream` for the order-event stream.
+- Embedded, the call carries the same headers the remote client sends (the
+  engine token, the store's bearer secret, `traceparent`) and a loopback
+  `ConnectInfo`. It gets the same 35 s limit, applied with
+  `tokio::time::timeout`.
+- `EngineClient::embedded(router, token)` makes an embedded client, and
+  `EngineClient::embedded_for_tests(router)` its test twin.
+
+The rest of the client changed with it:
+- `request()` and its four raw callers are gone. The admin settings page and
+  the status page use `get_settings`, `save_settings`, `reload_options` and
+  `take_new_anchor`. These return an `EngineReply` (status and body), which
+  the pages read as before.
+- `open_order_events` returns an `EventStream` of bytes. `crate::live` reads
+  it the same way from either transport.
+- `base_url()` is now `location()`: the URL, or `embedded`.
+- `EngineClientError` lost `InvalidUrl` (nothing produced it any more) and
+  gained:
+  - `Unreadable`, for a success whose body doesn't parse;
+  - `Embedded`, for the in-process engine not answering in time;
+  - `NotAdminRoute`.
+
+**The e2e harness moved to its own crate** (`crates/e2e-harness`): the
+`e2e-harness` binary and the `e2e_stagenet` and `e2e_dashboard_stagenet`
+tests. Run them with `cargo build -p e2e-harness --features e2e --bin
+e2e-harness` and `cargo test -p e2e-harness --features e2e --test ...`. The
+POS Playwright suite and the docs use the new commands.
+
+**Monokulo depends on the engine** behind its `embedded-engine` feature, on by
+default. `cargo check -p monokulo --no-default-features` builds a
+remote-only monokulo.
+
+**`engine-test-support`'s `TestEngineHandle::router()`** hands out the same
+engine's router, so one test engine can be reached either way.
+
+Tests:
+- **Contract.** `engine_client::contract_tests` runs every client method
+  against a fresh real engine over each transport: tenant, confirmations,
+  orders (idempotent creation, list, page, by ids, detail, unknown and
+  malformed ids, refund address), webhooks, payment lookup, status, the
+  settings get, save and reload, a new anchor, the log API, the event
+  stream, a wrong engine token, and a deleted tenant. It requires the two
+  transcripts to be identical, and requires the outcomes the API promises.
+  Removing the engine token from the embedded transport fails both contract
+  tests, which shows they can catch a difference.
+- **Live updates.** A change to a watched order arrives over the embedded
+  event stream.
+- **Route guard.** A call to a non-admin route is refused before anything
+  is sent.
+
+### Phase 2 decisions
+
+- **The engine-wide private-route check moved from a source scan to the
+  code.** The old test read `engine_client.rs` for `format!("{}/...")` URLs,
+  which no longer exist. `EngineTarget::allowed` now refuses any path that
+  isn't `/api/v1/admin/...` or `/status`, at the one place every call
+  passes, for both transports, and the test calls it. The check is wired in,
+  not just tested.
+- **Monokulo's other tests stay on the remote transport for now.** The
+  contract tests cover every client method over both transports. Switching
+  the whole suite to embedded belongs with phase 3, when embedded becomes
+  what `main.rs` runs by default. Then the suite will test what production
+  runs.
+- **`EngineClient::embedded` has no production caller until phase 3.** It is
+  this phase's deliverable. Phase 3 wires it into `main.rs` with
+  `engine.mode`, `[engine.*]` in `monokulo.toml` and its own runtime.
+- **`set_refund_address` now checks its order id** with `path_id`, like
+  every other id that goes into an engine path. Before, it went into the
+  path unchecked.
+- **The e2e crate's dependencies are all optional, behind `e2e`.** If they
+  weren't, `cargo build --workspace` would unify `engine/test-support` and
+  `monokulo/test-support` into an ordinary build, through Cargo's feature
+  unification.
+

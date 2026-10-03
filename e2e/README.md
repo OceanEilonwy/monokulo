@@ -1,6 +1,6 @@
 # Real stagenet end-to-end test
 
-The actual test lives in Rust: [`../crates/engine/tests/e2e_stagenet.rs`](../crates/engine/tests/e2e_stagenet.rs),
+The actual test lives in Rust: [`../crates/e2e-harness/tests/e2e_stagenet.rs`](../crates/e2e-harness/tests/e2e_stagenet.rs),
 run via `cargo test` like any other test in this crate. It drives the real
 `scanner` library - config, store, key custody, scanner, router; the same
 pieces `main.rs` wires together - against a real public Monero **stagenet** node,
@@ -29,7 +29,7 @@ the test is `#[ignore]`d so the default `cargo test` run stays hermetic and fast
 run it explicitly, from the repository root:
 
 ```bash
-cargo test --test e2e_stagenet -- --ignored --nocapture
+cargo test -p e2e-harness --features e2e --test e2e_stagenet -- --ignored --nocapture
 ```
 
 Decoy selection is served from the committed cache below rather than fetched live,
@@ -132,7 +132,7 @@ cargo build --manifest-path ../Cargo.toml
 ## Running the test
 
 ```bash
-cargo test --test e2e_stagenet -- --ignored --nocapture
+cargo test -p e2e-harness --features e2e --test e2e_stagenet -- --ignored --nocapture
 ```
 
 This builds the scanner router in-process straight from `moneropay-stagenet.toml`

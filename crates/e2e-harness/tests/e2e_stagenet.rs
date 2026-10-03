@@ -18,7 +18,7 @@
 //! can't be hermetic), run explicitly with:
 //!
 //! ```sh
-//! cargo test --test e2e_stagenet -- --ignored --nocapture
+//! cargo test -p e2e-harness --features e2e --test e2e_stagenet -- --ignored --nocapture
 //! ```
 //!
 //! Wallet files (`e2e/wallets/`) are found relative to the `cli-wallet` crate,

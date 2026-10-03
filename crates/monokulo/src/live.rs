@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt as _};
 use tokio::sync::watch;
 
 use crate::engine_client::{EngineClient, OrderDetailResponse};
@@ -233,18 +233,16 @@ async fn run_upstream(
         if let Err(e) = &opened {
             tracing::warn!(store.id = %connection_id, error = %e, retry_in = ?delay, "could not open the engine's order event stream");
         }
-        if let Ok(mut response) = opened {
+        if let Ok(mut events) = opened {
             let mut parser = SseParser::default();
             loop {
-                let chunk = match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, response.chunk())
-                    .await
-                {
-                    Ok(Ok(Some(chunk))) => chunk,
-                    Ok(Ok(None)) => {
+                let chunk = match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, events.next()).await {
+                    Ok(Some(Ok(chunk))) => chunk,
+                    Ok(None) => {
                         tracing::debug!(store.id = %connection_id, "the engine closed the order event stream");
                         break;
                     }
-                    Ok(Err(e)) => {
+                    Ok(Some(Err(e))) => {
                         tracing::warn!(store.id = %connection_id, error = %e, "reading the engine's order event stream failed");
                         break;
                     }

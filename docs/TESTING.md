@@ -211,7 +211,7 @@ tier is for wiring confidence, not for the reorg scenarios in §3.
   those stay in §3 against the scripted fake.
 - Implemented today against a real public **stagenet** node rather than a local
   `--regtest` instance (simpler to stand up, no local `monerod` build required):
-  [`tests/e2e_stagenet.rs`](../tests/e2e_stagenet.rs) drives the real
+  [`crates/e2e-harness/tests/e2e_stagenet.rs`](../crates/e2e-harness/tests/e2e_stagenet.rs) drives the real
   config → store → key custody → scanner → router pipeline in-process and pays the
   order it creates with a genuine transaction constructed, signed, and broadcast
   entirely in Rust (`tests/support/mod.rs`, no external wallet process). `#[ignore]`d

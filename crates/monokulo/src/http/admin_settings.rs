@@ -183,14 +183,13 @@ struct EngineSettings {
     options_file: Option<live_settings::FileInfo>,
 }
 
-/// Fetches the engine's own settings over HTTP; `Err` for a reachability,
-/// auth or parse failure worth showing.
+/// Fetches the engine's own settings through its admin API; `Err` for a
+/// reachability, auth or parse failure worth showing.
 async fn fetch_engine_settings(
     engine: &crate::engine_client::EngineClient,
 ) -> Result<EngineSettings, String> {
     let response = engine
-        .request(reqwest::Method::GET, "/api/v1/admin/settings")
-        .send()
+        .get_settings()
         .await
         .map_err(|e| format!("request failed: {e}"))?;
     if !response.status().is_success() {
@@ -198,7 +197,6 @@ async fn fetch_engine_settings(
     }
     let parsed: RemoteSettingsResponse = response
         .json()
-        .await
         .map_err(|e| format!("could not parse the engine's response: {e}"))?;
 
     let fields = parsed
@@ -767,16 +765,10 @@ async fn save_engine(state: &AppState, req: RemoteUpdateRequest) -> SaveOutcome 
     if req.is_empty() {
         return SaveOutcome::default();
     }
-    let result = state
-        .engine
-        .client
-        .request(reqwest::Method::POST, "/api/v1/admin/settings")
-        .json(&req)
-        .send()
-        .await;
+    let result = state.engine.client.save_settings(&req).await;
     match result {
         Ok(response) if response.status().is_success() => {
-            let saved: RemoteSaveResponse = match response.json().await {
+            let saved: RemoteSaveResponse = match response.json() {
                 Ok(saved) => saved,
                 Err(e) => {
                     // Saved, but what it said about the save is lost: say
@@ -810,7 +802,7 @@ async fn save_engine(state: &AppState, req: RemoteUpdateRequest) -> SaveOutcome 
         }
         Ok(response) => {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response.text();
             let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
             let field_errors: Vec<(String, String)> = parsed
                 .as_ref()
@@ -1082,12 +1074,11 @@ async fn reload_engine(state: &AppState) -> Result<(String, Vec<Notice>), String
     let response = state
         .engine
         .client
-        .request(reqwest::Method::POST, "/api/v1/admin/settings/reload")
-        .send()
+        .reload_options()
         .await
         .map_err(|e| format!("Could not reach the configured engine: {e}"))?;
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let body = response.text();
     if !status.is_success() {
         let message = serde_json::from_str::<serde_json::Value>(&body)
             .ok()

@@ -9,8 +9,19 @@ edition = "2021"
 # Enabled only from [dev-dependencies] (resolver 2 keeps it out of every
 # normal build), never in production.
 test-support = ["shared/test-support"]
+default = ["embedded-engine"]
+# The engine's own router as a transport for `EngineClient`
+# (docs/engine_as_library.md): the engine runs inside monokulo's process.
+# Without it the client only reaches an engine over HTTP.
+embedded-engine = ["dep:engine", "dep:tower", "dep:http-body-util"]
 
 [dependencies]
+engine = { path = "../engine", optional = true }
+# `ServiceExt::oneshot` and body collection, to call the embedded engine's
+# router in-process.
+tower = { version = "0.5.3", features = ["util"], optional = true }
+http-body-util = { version = "0.1.5", optional = true }
+bytes = "1.12.1"
 zeroize = "1.9.0"
 parking_lot = "0.12.5"
 aes-gcm = "0.11.1"

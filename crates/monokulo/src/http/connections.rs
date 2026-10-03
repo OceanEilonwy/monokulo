@@ -171,7 +171,7 @@ pub(super) async fn create_connection_for_user(
     );
     let (connection_id, user_id, public_key) =
         (id.clone(), user.id.clone(), created.public_key.clone());
-    let engine_url = state.engine.client.base_url();
+    let engine_url = state.engine.client.location();
     let saved = state
         .db
         .write(move |db| {

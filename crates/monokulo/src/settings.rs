@@ -1167,7 +1167,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saved.restart_required, ["engine.url"]);
-        assert_eq!(engine.base_url(), "http://127.0.0.1:1");
+        assert_eq!(engine.location(), "http://127.0.0.1:1");
 
         registry
             .save(change("exchange_rate.coingecko_enabled", "false"))
