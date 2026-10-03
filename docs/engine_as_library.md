@@ -395,6 +395,22 @@ pinning would have to be per process again.
   engine hands out `EngineClient::embedded(&engine)` or an HTTP client to
   the same engine. Any behaviour difference between the modes fails a test.
   This is the main safety net for the "same handlers either way" claim.
+
+  *As built (decided by the owner after phase 5):* the suite is not run
+  twice. Tests reach the engine in-process, as monokulo does by default,
+  through an engine started with `TestEngineConfig::embedded()` where its
+  settings matter. HTTP is covered by a handful of tests, each named for it
+  (`…_over_http…`):
+  - `every_call_has_the_same_outcome_over_http_and_in_process`, the
+    contract, which runs every client method over each transport;
+  - what only a remote engine has: the HTTP response cache, its
+    standalone-only settings (`server.bind`, `logging.*`) and `engine.url`
+    on the admin page, and an engine that can't be reached.
+
+  Placeholder clients for tests that never call the engine
+  (`EngineClient::for_tests("http://127.0.0.1:1")`) aren't HTTP tests and
+  keep their names. The stagenet e2e tests and the Playwright real stack
+  run a separate engine process on purpose.
 - **Settings.** Real-file tests for the scoped options source:
   - saving from both services leaves both sets of keys intact;
   - comments and layout survive a save;

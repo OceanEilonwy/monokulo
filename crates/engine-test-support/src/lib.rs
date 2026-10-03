@@ -565,6 +565,8 @@ pub struct TestEngineConfig {
     log_store: Option<telemetry::store::LogStore>,
     /// `true` when [`TestEngineConfig::with_live_nodes`] has been used.
     live_nodes: bool,
+    /// `true` when [`TestEngineConfig::embedded`] has been used.
+    embedded: bool,
 }
 
 impl TestEngineConfig {
@@ -580,6 +582,16 @@ impl TestEngineConfig {
     /// as a real engine serves its own `logs.db`.
     pub fn with_log_store(mut self, store: telemetry::store::LogStore) -> Self {
         self.log_store = Some(store);
+        self
+    }
+
+    /// Loads the engine's settings as an engine inside monokulo does: the
+    /// standalone-only ones (`server.bind`, `server.token`, `logging.*`) are
+    /// left out of its settings API and refused if saved. For a test that
+    /// reaches this engine in-process ([`TestEngineHandle::router`]) the way
+    /// monokulo does by default.
+    pub fn embedded(mut self) -> Self {
+        self.embedded = true;
         self
     }
 
@@ -857,14 +869,20 @@ impl TestEngineConfig {
                 })
                 .collect::<HashMap<_, _>>()
         });
-        let engine_settings = engine::engine_settings::EngineSettings::load_with(
+        let engine_settings = engine::engine_settings::EngineSettings::load_full(
             store.clone(),
             self.live_nodes
                 .then(|| engine::engine_settings::NodesReloadable {
                     daemons: daemons.clone(),
                 }),
+            None,
             Arc::new(RateLimiter::new(1)),
-            live_settings::Env::fixed(Vec::<(String, String)>::new()),
+            live_settings::Env::fixed(Vec::<(String, String)>::new()).or_var(
+                engine::engine_settings::SERVER_TOKEN.env_var,
+                TEST_ENGINE_TOKEN,
+            ),
+            live_settings::OptionsFile::in_memory(""),
+            self.embedded,
         )
         .await
         .expect("test engine settings load from an empty store");

@@ -1213,16 +1213,38 @@ mod tests {
     }
 
     /// A real engine, which accepts the test engine token every test
-    /// client sends.
+    /// client sends, with the settings an engine inside monokulo has: for
+    /// [`test_app_state_in_process`].
     async fn spawn_engine() -> engine_test_support::TestEngineHandle {
+        engine_test_support::TestEngineConfig::new()
+            .embedded()
+            .spawn()
+            .await
+    }
+
+    /// The same as a standalone engine, with its own `server.bind` and
+    /// `logging.*`: for [`test_app_state_over_http`].
+    async fn spawn_remote_engine() -> engine_test_support::TestEngineHandle {
         engine_test_support::TestEngineConfig::new().spawn().await
     }
 
-    /// A monokulo instance with a seeded admin account and its engine client
-    /// pointed at `engine_addr`:
-    /// what most tests in this module want, since the whole point of this
-    /// page is proxying that connection.
-    async fn test_app_state_connected_to(engine_addr: std::net::SocketAddr) -> AppState {
+    /// A monokulo instance with a seeded admin account and `engine` inside
+    /// it, as monokulo runs by default: what most tests in this module want,
+    /// since the whole point of this page is proxying that connection. The
+    /// HTTP transport is covered once, for every call, by
+    /// `engine_client::contract_tests`.
+    async fn test_app_state_in_process(engine: &engine_test_support::TestEngineHandle) -> AppState {
+        test_app_state_with_client(
+            EngineClient::embedded_for_tests(engine.router()),
+            live_settings::OptionsFile::in_memory("[signup]\nmode = \"public\"\n"),
+        )
+        .await
+    }
+
+    /// The same with a remote engine at `engine_addr`, over HTTP: for what
+    /// only a remote engine has (its standalone-only settings, `engine.url`),
+    /// and for an engine that can't be reached at all.
+    async fn test_app_state_over_http(engine_addr: std::net::SocketAddr) -> AppState {
         test_app_state_with_options(
             engine_addr,
             live_settings::OptionsFile::in_memory("[signup]\nmode = \"public\"\n"),
@@ -1230,7 +1252,7 @@ mod tests {
         .await
     }
 
-    /// [`test_app_state_connected_to`] over the given options file.
+    /// [`test_app_state_over_http`] over the given options file.
     async fn test_app_state_with_options(
         engine_addr: std::net::SocketAddr,
         options: live_settings::OptionsFile,
@@ -1394,7 +1416,7 @@ mod tests {
     #[tokio::test]
     async fn taking_a_new_proof_anchor_is_for_the_admin_and_asks_the_engine() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let uri = |network: &str| format!("/dashboard/admin/proof/{network}/reanchor");
 
@@ -1451,7 +1473,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_settings_page_is_unreachable_without_a_session_at_all() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let response = router
             .oneshot(
@@ -1470,7 +1492,7 @@ mod tests {
     /// isn't the admin account gets `403`, not a redirect or a `401`.
     #[tokio::test]
     async fn a_non_admin_session_is_forbidden_from_the_settings_page() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
 
         let signup = router
@@ -1516,7 +1538,7 @@ mod tests {
     #[tokio::test]
     async fn the_admin_can_reach_the_settings_page_and_see_the_reachable_engine_settings() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -1539,7 +1561,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_saved_monokulo_setting_round_trips_on_the_next_load() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -1587,7 +1609,7 @@ mod tests {
     /// every one individually confirmed to have taken effect.
     #[tokio::test]
     async fn every_monokulo_setting_on_the_admin_page_saves_correctly() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -1669,11 +1691,12 @@ mod tests {
     /// `engine::engine_settings::ALL`'s keys, saved together through the
     /// real proxy `POST` and confirmed to round-trip via a real, separately
     /// spawned scanner instance (this monokulo page holds none of this state
-    /// itself - see this module's own doc comment).
+    /// itself - see this module's own doc comment). Over HTTP: the list
+    /// includes a remote engine's own `server.bind` and `logging.*`.
     #[tokio::test]
-    async fn every_engine_setting_on_the_admin_page_saves_correctly() {
-        let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+    async fn every_remote_engine_setting_on_the_admin_page_saves_correctly_over_http() {
+        let engine = spawn_remote_engine().await;
+        let state = test_app_state_over_http(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -1826,7 +1849,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_saved_signup_mode_applies_to_the_next_signup() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let signup = |email: &'static str| {
@@ -1894,7 +1917,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_saved_public_url_applies_to_the_next_plugin_connection() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let confirm = "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fdone&nonce=n1";
@@ -1967,11 +1990,12 @@ mod tests {
         );
     }
 
+    /// Over HTTP: the engine token and `engine.url` are a remote engine's.
     #[tokio::test]
-    async fn the_engine_token_shows_locked_and_is_never_saved_and_its_address_is_saved_for_a_restart(
+    async fn a_remote_engines_token_shows_locked_and_is_never_saved_and_its_url_is_saved_for_a_restart_over_http(
     ) {
-        let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let engine = spawn_remote_engine().await;
+        let state = test_app_state_over_http(engine.addr).await;
         let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2041,7 +2065,7 @@ mod tests {
     /// locked, as dots, and a hand-made form that sends one is refused.
     #[tokio::test]
     async fn a_secret_is_shown_locked_and_a_form_sending_one_is_refused() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2088,7 +2112,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_invalid_monokulo_setting_is_rejected_and_nothing_is_saved() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -2120,7 +2144,7 @@ mod tests {
     /// is refused with a message naming the setting and what it needs.
     #[tokio::test]
     async fn an_operators_typical_mistakes_are_each_refused_with_what_the_setting_needs() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         for (key, value, expected) in [
@@ -2195,7 +2219,7 @@ mod tests {
     #[tokio::test]
     async fn saving_an_engine_setting_forwards_it_and_the_change_is_visible_on_the_next_load() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -2240,7 +2264,7 @@ mod tests {
     #[tokio::test]
     async fn a_fixi_save_answers_with_the_panel_and_the_banners_and_tab_bar_out_of_band() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -2328,9 +2352,9 @@ mod tests {
     /// Saving a wrong engine token on General with fixi: the engine's tabs
     /// say at once that the engine can't be reached.
     #[tokio::test]
-    async fn a_fixi_tab_link_shows_an_engine_it_cannot_reach_in_the_panel() {
+    async fn a_fixi_tab_link_shows_a_remote_engine_it_cannot_reach_over_http_in_the_panel() {
         // Nothing listens there.
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let tab = router
@@ -2365,7 +2389,7 @@ mod tests {
     #[tokio::test]
     async fn an_invalid_engine_setting_is_rejected_by_the_engine_and_surfaced_as_an_error() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -2450,7 +2474,7 @@ mod tests {
     /// back to its own tab.
     #[tokio::test]
     async fn a_tab_with_only_monokulo_settings_saves_only_monokulo() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2479,7 +2503,7 @@ mod tests {
     #[tokio::test]
     async fn a_tab_with_only_engine_settings_saves_only_the_engine() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let db = state.db.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2508,7 +2532,7 @@ mod tests {
     #[tokio::test]
     async fn a_mixed_tab_saves_both_halves() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2554,7 +2578,7 @@ mod tests {
     #[tokio::test]
     async fn an_invalid_monokulo_value_in_a_mixed_tab_saves_neither_half() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let db = state.db.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2596,7 +2620,7 @@ mod tests {
     #[tokio::test]
     async fn an_engine_refusal_shows_the_engines_own_message() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -2645,7 +2669,7 @@ mod tests {
                 .with_live_nodes(),
         )
         .await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let engine_client = state.engine.client.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2709,7 +2733,7 @@ mod tests {
     /// the banners back.
     #[tokio::test]
     async fn a_saved_banner_is_shown_once() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let save = post_settings(
@@ -2731,7 +2755,7 @@ mod tests {
     #[tokio::test]
     async fn every_tab_opens() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         for tab in crate::views::admin::SettingsTab::ALL {
@@ -2757,11 +2781,11 @@ mod tests {
 
     /// Both processes have `logging.level` and `logging.max_mb`: on the
     /// Logging tab each is sent under its own name, and saved where it
-    /// belongs.
+    /// belongs. Over HTTP: only a remote engine has `logging.*` of its own.
     #[tokio::test]
-    async fn the_logging_tab_keeps_each_processs_settings_apart() {
-        let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+    async fn the_logging_tab_keeps_monokulos_and_a_remote_engines_settings_apart_over_http() {
+        let engine = spawn_remote_engine().await;
+        let state = test_app_state_over_http(engine.addr).await;
         let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2923,7 +2947,7 @@ mod tests {
     #[tokio::test]
     async fn the_engines_options_file_is_reloaded_through_its_api() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let page = body_text(get_settings_page(&router, &cookie).await).await;
@@ -3096,10 +3120,11 @@ mod tests {
             "/api/v1/admin/settings",
             post(|| async { (StatusCode::OK, "not json") }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let state = test_app_state_connected_to(addr).await;
+        let state = test_app_state_with_client(
+            EngineClient::embedded_for_tests(app),
+            live_settings::OptionsFile::in_memory("[signup]\nmode = \"public\"\n"),
+        )
+        .await;
 
         let mut req = super::RemoteUpdateRequest::default();
         req.scalars
@@ -3183,7 +3208,7 @@ mod tests {
     #[tokio::test]
     async fn a_node_is_added_through_the_blank_row_and_ordered_by_its_buttons() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let (a, b, c) = (
@@ -3284,7 +3309,7 @@ mod tests {
     #[tokio::test]
     async fn a_bad_address_is_shown_on_its_row_and_nothing_is_saved() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let good = spawn_node_on("stagenet").await.to_string();
@@ -3346,7 +3371,7 @@ mod tests {
     #[tokio::test]
     async fn a_node_on_another_network_is_refused_on_its_block() {
         let engine = spawn_engine().await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let mainnet = spawn_node_on("mainnet").await;
@@ -3388,7 +3413,7 @@ mod tests {
                 .with_live_nodes(),
         )
         .await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let engine_client = state.engine.client.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -3438,7 +3463,7 @@ mod tests {
         let engine =
             spawn_configured_engine(engine_test_support::TestEngineConfig::new().with_live_nodes())
                 .await;
-        let state = test_app_state_connected_to(engine.addr).await;
+        let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let page = body_text(

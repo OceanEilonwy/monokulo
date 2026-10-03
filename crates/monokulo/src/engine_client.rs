@@ -1371,19 +1371,20 @@ mod tests {
         }
     }
 
-    /// Full round trip against a *real*, network-bound engine instance
-    /// (`engine_test_support::spawn_test_engine`) — genuine `reqwest` over a
-    /// real TCP socket, exactly the case WBS 0.6 built `engine-test-support`
-    /// for. `spawn_test_engine` configures no Monero networks by default, so
+    /// Full round trip against a *real* engine instance
+    /// (`engine_test_support::spawn_test_engine`), reached in-process as
+    /// monokulo reaches it by default (`contract_tests` covers HTTP).
+    /// `spawn_test_engine` configures no Monero networks by default, so
     /// this uses `spawn_test_engine_with_networks` (added alongside this
     /// test — see its doc comment) to get a real `mainnet` tenant through
     /// `create_tenant`'s own network-configured check, rather than working
     /// around it.
+    #[cfg(feature = "embedded-engine")]
     #[tokio::test]
     async fn create_tenant_then_get_tenant_round_trips_against_a_real_engine() {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let client = EngineClient::embedded_for_tests(engine.router());
 
         let created = client
             .create_tenant(test_create_tenant_request())
@@ -1408,11 +1409,12 @@ mod tests {
     /// `signing_secret` come back, and the webhook is genuinely visible afterward via
     /// `list_webhooks` (which this task doesn't touch, but already exists from WBS
     /// 1.3.3) with the exact URL that was registered.
+    #[cfg(feature = "embedded-engine")]
     #[tokio::test]
     async fn create_webhook_then_list_webhooks_round_trips_against_a_real_engine() {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let client = EngineClient::embedded_for_tests(engine.router());
 
         let created = client
             .create_tenant(test_create_tenant_request())
@@ -1444,11 +1446,12 @@ mod tests {
     /// just a plausible guess at its fields. A configured network has a
     /// daemon client (admin_settings_v2.md task 2.1); the test harness gives
     /// it an inert one, so the response lists that network and its node.
+    #[cfg(feature = "embedded-engine")]
     #[tokio::test]
     async fn get_status_round_trips_against_a_real_engine() {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let client = EngineClient::embedded_for_tests(engine.router());
 
         let status = client
             .get_status()
@@ -1500,12 +1503,13 @@ mod tests {
     /// accepted on the wire - reads the real value back via the engine's
     /// own `Store` directly (`engine_test_support::TestEngineHandle::store`),
     /// the same way scanner's own equivalent HTTP-level test does.
+    #[cfg(feature = "embedded-engine")]
     #[tokio::test]
     async fn create_order_with_a_confirmations_required_override_reaches_the_real_engines_stored_order(
     ) {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let client = EngineClient::embedded_for_tests(engine.router());
         let created = client
             .create_tenant(test_create_tenant_request())
             .await
@@ -1540,12 +1544,13 @@ mod tests {
         assert_eq!(stored.confirmations_required_override, Some(3));
     }
 
+    #[cfg(feature = "embedded-engine")]
     #[tokio::test]
     async fn create_order_with_no_confirmations_required_override_leaves_the_real_engines_stored_order_unset(
     ) {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let client = EngineClient::embedded_for_tests(engine.router());
         let created = client
             .create_tenant(test_create_tenant_request())
             .await
@@ -1580,6 +1585,7 @@ mod tests {
         assert_eq!(stored.confirmations_required_override, None);
     }
 
+    #[cfg(feature = "embedded-engine")]
     #[tokio::test]
     async fn lookup_payment_round_trips_against_a_real_engine() {
         // Proves `EngineClient`'s own wire format (request shape, response
@@ -1596,7 +1602,7 @@ mod tests {
             .with_admin_lookup_daemon()
             .spawn()
             .await;
-        let client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let client = EngineClient::embedded_for_tests(engine.router());
         let created = client
             .create_tenant(test_create_tenant_request())
             .await
@@ -1628,11 +1634,11 @@ mod tests {
     /// `EngineClient` itself (not the engine) actually respects that
     /// transport: a second call within the cache window must never reach the
     /// server at all.
-    async fn spawn_counting_server(
+    fn counting_router(
         path: &'static str,
         cache_control: Option<&'static str>,
         body: serde_json::Value,
-    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+    ) -> (axum::Router, std::sync::Arc<std::sync::atomic::AtomicU64>) {
         use axum::response::IntoResponse;
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let calls_for_handler = calls.clone();
@@ -1658,6 +1664,16 @@ mod tests {
                 }
             }),
         );
+        (app, calls)
+    }
+
+    /// [`counting_router`], served over HTTP.
+    async fn spawn_counting_server(
+        path: &'static str,
+        cache_control: Option<&'static str>,
+        body: serde_json::Value,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        let (app, calls) = counting_router(path, cache_control, body);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1667,7 +1683,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_second_call_within_the_cache_window_never_reaches_the_server() {
+    async fn a_second_call_over_http_within_the_cache_window_never_reaches_the_server() {
         let order_body = serde_json::json!({
             "order_id": "pay_1", "merchant_order_id": null, "address": "addr",
             "xmr_amount_piconero": 1, "amount_received_piconero": 0, "status": "pending",
@@ -1713,7 +1729,7 @@ mod tests {
     /// from cache, proven the same way: a real call-count assertion, not just
     /// a claim.
     #[tokio::test]
-    async fn get_order_detail_is_never_cached() {
+    async fn get_order_detail_is_never_cached_over_http() {
         let order_body = serde_json::json!({
             "order_id": "pay_1", "merchant_order_id": null, "address": "addr",
             "xmr_amount_piconero": 1, "amount_received_piconero": 0, "status": "pending",
@@ -1752,15 +1768,15 @@ mod tests {
     /// store's `sk_`) and `/status`. Every call passes `EngineTarget::send`,
     /// which refuses anything else before it reaches either transport; here
     /// a server that would answer anything proves nothing was sent.
+    #[cfg(feature = "embedded-engine")]
     #[tokio::test]
     async fn a_call_to_a_non_admin_route_is_refused_before_it_is_sent() {
-        let (base_url, calls) = spawn_counting_server(
+        let (router, calls) = counting_router(
             concat!("/api/v1/", "t/{key}/orders"),
             None,
             serde_json::json!([]),
-        )
-        .await;
-        let client = EngineClient::for_tests(base_url);
+        );
+        let client = EngineClient::embedded_for_tests(router);
         for path in [
             concat!("/api/v1/", "t/pk_1/orders"),
             "/",
@@ -2080,7 +2096,7 @@ mod contract_tests {
     }
 
     #[tokio::test]
-    async fn every_call_has_the_same_outcome_over_both_transports() {
+    async fn every_call_has_the_same_outcome_over_http_and_in_process() {
         let remote = transcript("remote").await;
         let embedded = transcript("embedded").await;
         let on_its_runtime = transcript("embedded on its runtime").await;

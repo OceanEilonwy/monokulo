@@ -204,23 +204,8 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
             scanner_status: new_scanner_status_map(),
         },
     };
+    // The engine inside monokulo, as by default.
     let engine_router = build_engine_router(engine_state, 1_000_000);
-    let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("failed to bind an ephemeral engine port");
-    let engine_addr = engine_listener
-        .local_addr()
-        .expect("bound engine listener has no local address");
-    tokio::spawn(async move {
-        axum::serve(
-            engine_listener,
-            engine_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await
-        .expect("test engine server error");
-    });
-    let engine_base_url = format!("http://{engine_addr}");
-    println!("real engine bound at {engine_base_url}");
 
     // ---- boot a real monokulo instance in-process (no bind needed - its
     // own router is driven via oneshot below), pointed at the real engine above ----
@@ -245,7 +230,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         // refuse the plain `/dashboard/signup` below (a re-rendered `200`
         // form, not the `302` it asserts on).
         settings: ControlPlaneAppState::test_settings(None),
-        engine: monokulo::http::Engine::new(EngineClient::for_tests(engine_base_url.clone())),
+        engine: monokulo::http::Engine::new(EngineClient::embedded_for_tests(engine_router)),
     };
     let cp_router = build_monokulo_router(cp_state);
 

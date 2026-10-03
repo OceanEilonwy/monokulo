@@ -138,16 +138,16 @@ impl Drop for TestControlPlaneHandle {
     }
 }
 
-async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPlaneHandle {
+async fn spawn_test_monokulo(
+    engine: &engine_test_support::TestEngineHandle,
+) -> TestControlPlaneHandle {
     use monokulo::db::Db;
     use monokulo::engine_client::EngineClient;
     use monokulo::http::{build_router, AppState};
 
     let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
     let state = AppState {
-        engine: monokulo::http::Engine::new(EngineClient::for_tests(format!(
-            "http://{engine_addr}"
-        ))),
+        engine: monokulo::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
         // Public signup, as `mock_woocommerce::spawn_test_monokulo`
         // (`src/lib.rs`) needs - see that call site's own comment.
         settings: AppState::test_settings(None),
@@ -251,7 +251,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .without_background_scan_loop()
         .spawn()
         .await;
-    let monokulo = spawn_test_monokulo(engine.addr).await;
+    let monokulo = spawn_test_monokulo(&engine).await;
     let monokulo_base_url = format!("http://{}", monokulo.addr);
 
     let client = reqwest::Client::new();
