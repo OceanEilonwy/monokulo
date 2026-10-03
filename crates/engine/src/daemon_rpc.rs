@@ -996,8 +996,8 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
             b"current_height" => changes.chain_length = value.to_u64().map_err(epee_err)?,
             b"blocks" => {
                 let mut entries = value.iterate().map_err(epee_err)?;
-                while let Some(entry) = entries.next() {
-                    entry.map_err(epee_err)?;
+                while let Some(item) = entries.next() {
+                    item.map_err(epee_err)?;
                     changes.blocks += 1;
                 }
             }
@@ -1009,8 +1009,8 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
             }
             b"added_pool_txs" => {
                 let mut entries = value.iterate().map_err(epee_err)?;
-                while let Some(entry) = entries.next() {
-                    let mut tx_fields = entry.map_err(epee_err)?.fields().map_err(epee_err)?;
+                while let Some(item) = entries.next() {
+                    let mut tx_fields = item.map_err(epee_err)?.fields().map_err(epee_err)?;
                     let (mut txid, mut blob) = (None, None);
                     while let Some(field) = tx_fields.next() {
                         let (field_key, field_value) = field.map_err(epee_err)?;
