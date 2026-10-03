@@ -239,12 +239,16 @@ pub fn store_keys(
     let encrypted = encrypted_keys
         .map(str::trim)
         .filter(|text| !text.is_empty());
+    // No backend named: the engine's default, from its status. A status
+    // listing no backends is an engine with a single plain one.
+    let status_known = super::status_page::known_status_is_fresh(engine);
     let backend = backend.map(str::to_owned).or_else(|| {
         super::status_page::known_enabled_custody_backends(engine)
             .into_iter()
             .next()
     });
-    if backend.is_none() && encrypted.is_none() && !view_key_hex.trim().is_empty() {
+    if backend.is_none() && !status_known && encrypted.is_none() && !view_key_hex.trim().is_empty()
+    {
         // The engine's default can't be known: it might take keys only
         // encrypted, so typed ones aren't sent on.
         return Err(
@@ -358,6 +362,60 @@ mod tests {
         assert_eq!(release(Some("v1.2.3"), Some("abc")).reference(), "v1.2.3");
         assert_eq!(release(None, Some("abc")).reference(), "abc");
         assert_eq!(release(None, None).reference(), "main");
+    }
+
+    fn status(
+        backends: serde_json::Value,
+        default: Option<&str>,
+    ) -> crate::engine_client::EngineStatusResponse {
+        serde_json::from_value(serde_json::json!({
+            "networks": [],
+            "poll_interval_secs": 5,
+            "generated_at": 0,
+            "key_custody": backends,
+            "key_custody_default": default,
+        }))
+        .unwrap()
+    }
+
+    /// Typed keys go on only where the engine's default is known to take
+    /// them: refused while its status is unknown or its default is snp, sent
+    /// when it lists plain first, or no backends at all (a single plain one).
+    #[test]
+    fn typed_keys_are_sent_only_where_the_default_takes_them() {
+        let view = "07".repeat(32);
+        let spend = "08".repeat(32);
+        let state = AppState::for_tests();
+        let engine = &state.engine;
+        assert!(store_keys(engine, None, &view, &spend, None)
+            .unwrap_err()
+            .contains("isn't answering"));
+
+        super::super::status_page::seed_status_for_tests(
+            engine,
+            status(serde_json::json!([]), None),
+        );
+        let keys = store_keys(engine, None, &view, &spend, None).unwrap();
+        assert_eq!(keys.view_key_hex, view);
+
+        super::super::status_page::seed_status_for_tests(
+            engine,
+            status(
+                serde_json::json!([{ "backend": "plain", "error": null }, { "backend": "snp", "error": null }]),
+                Some("snp"),
+            ),
+        );
+        assert!(store_keys(engine, None, &view, &spend, None)
+            .unwrap_err()
+            .contains("were not sent"));
+        assert!(store_keys(engine, Some("plain"), &view, &spend, None).is_ok());
+        assert_eq!(
+            store_keys(engine, None, "", "", Some("{envelope}"))
+                .unwrap()
+                .encrypted_keys
+                .as_deref(),
+            Some("{envelope}")
+        );
     }
 
     #[test]
