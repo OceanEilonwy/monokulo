@@ -25,6 +25,15 @@
 //! whatever `cargo test`'s working directory is. See `e2e/README.md`
 //! for the full picture.
 
+// An integration test crate: every function in it is test code, which
+// fails by panicking.
+#![expect(
+    clippy::tests_outside_test_module,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "an integration test crate is all test code"
+)]
+
 mod support;
 
 use parking_lot::RwLock;
@@ -34,10 +43,10 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
+use http_body_util::BodyExt as _;
 use monero::Network;
 use serde_json::{json, Value};
-use tower::ServiceExt;
+use tower::ServiceExt as _;
 
 use engine::daemon::MoneroDaemonClient;
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
@@ -101,7 +110,7 @@ async fn oneshot_json(
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "needs the live stagenet node and a funded test wallet"]
 async fn real_stagenet_payment_is_detected_end_to_end() {
     use support::e2e_fixture;
 
@@ -141,11 +150,11 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     let created = store
         .lock()
         .create_tenant(
-            NewTenant {
-                key_custody_backend: "plain".to_string(),
+            &NewTenant {
+                key_custody_backend: "plain".to_owned(),
                 sealed_key_material: sealed,
-                primary_address: e2e_fixture::WALLET_PRIMARY_ADDRESS.to_string(),
-                network: e2e_fixture::WALLET_NETWORK.to_string(),
+                primary_address: e2e_fixture::WALLET_PRIMARY_ADDRESS.to_owned(),
+                network: e2e_fixture::WALLET_NETWORK.to_owned(),
                 confirmations_required: Some(e2e_fixture::PAYMENT_CONFIRMATIONS_REQUIRED),
                 order_expiry_seconds: Some(e2e_fixture::PAYMENT_ORDER_EXPIRY_MINUTES * 60),
             },
@@ -163,16 +172,16 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     )])));
 
     let app_state = AppState {
-        db: engine::store::Database::inline(store.clone()),
+        db: engine::store::Database::inline(Arc::clone(&store)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         settings: engine::engine_settings::EngineSettings::defaults(),
         log_store: None,
-        engine_token: std::sync::Arc::new(
+        engine_token: Arc::new(
             shared::auth::RawToken::presented(shared::auth::TEST_ENGINE_TOKEN).hash(),
         ),
         custody: engine::http::Custody {
-            backends: key_custody.clone(),
-            default_backend: "plain".to_string(),
+            backends: Arc::clone(&key_custody),
+            default_backend: "plain".to_owned(),
             wallet_handles,
         },
         // This test drives scanning directly via `run_scan_tick` below (not
@@ -186,7 +195,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
                 Network::Stagenet,
                 Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
                     label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT),
-                    client: daemon.clone(),
+                    client: Arc::clone(&daemon),
                 }])),
             )])),
             scanner_status: engine::scanner_status::new_scanner_status_map(),
@@ -200,7 +209,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         &router,
         sk.expose(),
         "POST",
-        "/api/v1/admin/tenant/orders".to_string(),
+        "/api/v1/admin/tenant/orders".to_owned(),
         Some(json!({
             "merchant_order_id": format!("rust-e2e-{}", now_unix()),
             "xmr_amount_piconero": 335_000_000u64,
@@ -208,8 +217,8 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "order creation failed: {order:?}");
-    let order_id = order["order_id"].as_str().unwrap().to_string();
-    let address = order["address"].as_str().unwrap().to_string();
+    let order_id = order["order_id"].as_str().unwrap().to_owned();
+    let address = order["address"].as_str().unwrap().to_owned();
     let amount_piconero = order["xmr_amount_piconero"].as_u64().unwrap();
     println!("created order {order_id}: {amount_piconero} piconero to {address}");
 
@@ -250,7 +259,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        last_status = order_status["status"].as_str().unwrap().to_string();
+        last_status = order_status["status"].as_str().unwrap().to_owned();
         println!("[{attempt}/30] status={last_status}");
 
         if matches!(last_status.as_str(), "paid" | "confirming" | "overpaid") {

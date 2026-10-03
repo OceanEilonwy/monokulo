@@ -9,6 +9,16 @@
 //! to a public stagenet node; re-run it only if the client's requests change:
 //! `cargo test -p engine --test daemon_rpc_replay -- --ignored`.
 
+// An integration test crate: every function in it is test code, which
+// fails by panicking.
+#![expect(
+    clippy::tests_outside_test_module,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::missing_assert_message,
+    reason = "an integration test crate is all test code"
+)]
+
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -17,10 +27,10 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::Router;
-use engine::daemon::{ChainHeader, KeyImageStatus, MoneroDaemonClient, ScanTx, TxLocation};
+use engine::daemon::{ChainHeader, KeyImageStatus, MoneroDaemonClient as _, ScanTx, TxLocation};
 use engine::daemon_rpc::RpcDaemonClient;
 use monero::consensus::serialize;
-use monero::cryptonote::hash::Hashable;
+use monero::cryptonote::hash::Hashable as _;
 use serde::{Deserialize, Serialize};
 
 const FIXTURE: &str = concat!(
@@ -73,10 +83,10 @@ async fn replay() -> (RpcDaemonClient, String, tokio::task::JoinHandle<()>) {
     let table: Recorded = Arc::new(Mutex::new(table));
     let router = Router::new()
         .fallback(
-            |State(table): State<Recorded>, uri: Uri, body: Bytes| async move {
+            async |State(table): State<Recorded>, uri: Uri, body: Bytes| {
                 let mut table = table.lock();
                 let response = table
-                    .get_mut(&(uri.path().to_string(), hex::encode(&body)))
+                    .get_mut(&(uri.path().to_owned(), hex::encode(&body)))
                     .and_then(|responses| {
                         if responses.len() > 1 {
                             responses.pop_front()
@@ -234,7 +244,7 @@ async fn exercise(client: &RpcDaemonClient, node: &str) {
         TxLocation::NotFound
     );
     // Several at once: each one placed or affirmatively missed.
-    let both = [KNOWN_TX.to_string(), ABSENT_TX.to_string()];
+    let both = [KNOWN_TX.to_owned(), ABSENT_TX.to_owned()];
     let located = client.locate_transactions(&both).await.unwrap();
     assert_eq!(
         located.get(KNOWN_TX),
@@ -258,7 +268,7 @@ async fn exercise(client: &RpcDaemonClient, node: &str) {
     // Its inputs' key images are spent on chain; a made-up one is not.
     let mut images: Vec<String> = known.key_images.iter().map(hex::encode).collect();
     assert!(!images.is_empty());
-    images.push(UNSPENT_KEY_IMAGE.to_string());
+    images.push(UNSPENT_KEY_IMAGE.to_owned());
     let statuses = client.is_key_image_spent(&images).await.unwrap();
     assert_eq!(statuses.last(), Some(&KeyImageStatus::Unspent));
     assert!(
@@ -325,31 +335,31 @@ async fn scanner_node_client_reports_a_node_that_does_not_answer_as_it_expects()
     // A node (or something in front of it) answering with an error page, not
     // monerod's JSON: every call fails with a readable error rather than
     // being read as empty results.
-    let router = Router::new()
-        .fallback(|| async { (StatusCode::BAD_GATEWAY, "<html>502 Bad Gateway</html>") });
+    let router =
+        Router::new().fallback(async || (StatusCode::BAD_GATEWAY, "<html>502 Bad Gateway</html>"));
     let (port, _server) = serve(router).await;
     let client = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap();
     let error = client.get_height().await.unwrap_err().to_string();
     assert!(error.contains("invalid JSON response"), "{error}");
     let error = client.get_block_hash(1).await.unwrap_err().to_string();
     assert!(error.contains("invalid JSON response"), "{error}");
-    assert!(client.get_chain_blocks(START, COUNT).await.is_err());
-    assert!(client.get_chain_headers(START, COUNT).await.is_err());
-    assert!(client.get_tip().await.is_err());
+    client.get_chain_blocks(START, COUNT).await.unwrap_err();
+    client.get_chain_headers(START, COUNT).await.unwrap_err();
+    client.get_tip().await.unwrap_err();
     // The pool: neither the request for its changes nor the plain list is
     // answered, and that is an error, never an empty pool.
-    assert!(client.get_mempool_txids().await.is_err());
+    client.get_mempool_txids().await.unwrap_err();
     let (tip, pool) = client.get_tip_and_mempool().await;
     assert!(tip.is_err() && pool.is_err());
-    assert!(client
-        .locate_transactions(&[ABSENT_TX.to_string()])
+    client
+        .locate_transactions(&[ABSENT_TX.to_owned()])
         .await
-        .is_err());
-    assert!(client.find_transaction(ABSENT_TX).await.is_err());
-    assert!(client
-        .is_key_image_spent(&[UNSPENT_KEY_IMAGE.to_string()])
+        .unwrap_err();
+    client.find_transaction(ABSENT_TX).await.unwrap_err();
+    client
+        .is_key_image_spent(&[UNSPENT_KEY_IMAGE.to_owned()])
         .await
-        .is_err());
+        .unwrap_err();
 }
 
 #[tokio::test]
@@ -359,9 +369,9 @@ async fn record_stagenet_node() {
     let http = reqwest::Client::new();
     let router = Router::new()
         .fallback(
-            |State((recorded, http)): State<(Arc<Mutex<Vec<Exchange>>>, reqwest::Client)>,
-             uri: Uri,
-             body: Bytes| async move {
+            async |State((recorded, http)): State<(Arc<Mutex<Vec<Exchange>>>, reqwest::Client)>,
+                   uri: Uri,
+                   body: Bytes| {
                 let response = http
                     .post(format!("{NODE}{}", uri.path()))
                     .body(body.clone())
@@ -372,14 +382,14 @@ async fn record_stagenet_node() {
                     .await
                     .unwrap();
                 recorded.lock().push(Exchange {
-                    path: uri.path().to_string(),
+                    path: uri.path().to_owned(),
                     request_hex: hex::encode(&body),
                     response_hex: hex::encode(&response),
                 });
                 (StatusCode::OK, response)
             },
         )
-        .with_state((recorded.clone(), http));
+        .with_state((Arc::clone(&recorded), http));
     let (port, _server) = serve(router).await;
     exercise(&replay_client(port), &format!("http://127.0.0.1:{port}")).await;
     let exchanges = recorded.lock().clone();

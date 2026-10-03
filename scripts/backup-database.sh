@@ -5,7 +5,7 @@
 # database up while the engine is running against it? The engine's writer
 # actor (docs/DESIGN.md §9) holds the one write connection and commits under
 # WAL journal mode (`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL`,
-# set in `src/store.rs::configure_connection`) - so "the database" at any
+# set in `src/store/mod.rs::configure_connection`) - so "the database" at any
 # moment is really *two* files on disk (`moneropay.db` plus a `-wal` file
 # holding not-yet-checkpointed committed frames), and a scan tick or an
 # incoming order can write to it at any second, including the second this

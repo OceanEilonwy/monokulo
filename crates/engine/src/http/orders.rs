@@ -23,7 +23,7 @@ use super::{
 /// its own local `order_fiat_metadata` record - this engine's `orders` table no
 /// longer stores fiat fields at all (see migration `0005_drop_order_fiat_columns.sql`).
 #[derive(Deserialize)]
-pub struct CreateOrderRequest {
+pub(super) struct CreateOrderRequest {
     merchant_order_id: Option<String>,
     xmr_amount_piconero: u64,
     description: Option<String>,
@@ -45,7 +45,7 @@ pub struct CreateOrderRequest {
 }
 
 /// Longest idempotency key accepted.
-pub const MAX_IDEMPOTENCY_KEY_CHARS: usize = 128;
+pub(super) const MAX_IDEMPOTENCY_KEY_CHARS: usize = 128;
 
 /// A key is 1..=128 visible ASCII characters (no spaces or controls).
 fn valid_idempotency_key(key: &str) -> bool {
@@ -57,17 +57,17 @@ fn valid_idempotency_key(key: &str) -> bool {
 /// Most an order can ask for: a million XMR. Far above any purchase, and
 /// well under what SQLite's signed 64-bit integer holds (an amount above
 /// `i64::MAX` would be stored negative and compared as such).
-pub const MAX_ORDER_PICONERO: u64 = 1_000_000 * 1_000_000_000_000;
+pub(super) const MAX_ORDER_PICONERO: u64 = 1_000_000 * 1_000_000_000_000;
 
 #[derive(Serialize)]
-pub struct CreateOrderResponse {
+pub(super) struct CreateOrderResponse {
     order_id: crate::store::OrderId,
     address: String,
     xmr_amount_piconero: u64,
     expires_at: i64,
 }
 
-pub async fn create_order_for_admin(
+pub(super) async fn create_order_for_admin(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
     Json(req): Json<CreateOrderRequest>,
@@ -75,6 +75,10 @@ pub async fn create_order_for_admin(
     create_order_for_tenant(state, tenant, req).await
 }
 
+#[expect(
+    clippy::suspicious_operation_groupings,
+    reason = "the stored override is compared with the requested confirmations, by design"
+)]
 async fn create_order_for_tenant(
     state: AppState,
     tenant: Tenant,
@@ -165,7 +169,7 @@ async fn create_order_for_tenant(
         };
         let order = state
             .db
-            .write(move |s| s.create_order_claiming_minor_index(minor_index, new_order))
+            .write(move |s| s.create_order_claiming_minor_index(minor_index, &new_order))
             .await?;
         if let Some(order) = order {
             created = Some(order);

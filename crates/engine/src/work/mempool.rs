@@ -121,7 +121,7 @@ impl Bodies {
             return;
         }
         self.bytes += size;
-        self.by_txid.insert(txid.to_string(), (tx.clone(), size));
+        self.by_txid.insert(txid.to_owned(), (Arc::clone(tx), size));
     }
 }
 
@@ -156,7 +156,7 @@ impl MempoolState {
         self.inner
             .lock()
             .scanned
-            .entry(txid.to_string())
+            .entry(txid.to_owned())
             .or_default()
             .insert(tenant_id.clone(), generation);
     }
@@ -523,7 +523,7 @@ async fn bodies(
                 .bodies
                 .get(txid)
                 .or_else(|| fetched.get(txid))
-                .map(|tx| (txid.clone(), tx.clone()))
+                .map(|tx| (txid.clone(), Arc::clone(tx)))
         })
         .collect();
     (pool, fetch_failed)
@@ -544,7 +544,7 @@ async fn tenant_page(round: &Round<'_>) -> Result<Vec<TenantWindow>, ScannerErro
                 .collect();
             let full = page.len() == TENANT_PAGE;
             let next_after = if full {
-                page.last().map(|id| id.to_string()).unwrap_or_default()
+                page.last().map_or_default(ToString::to_string)
             } else {
                 String::new()
             };
@@ -583,47 +583,43 @@ async fn all_windows(
         .lock()
         .as_ref()
         .filter(|(at, _)| at.elapsed() < WINDOWS_TTL)
-        .map(|(_, w)| w.clone());
-    let windows = match cached {
-        Some(windows) => windows,
-        None => {
-            let (network, grace, now) = (
-                inputs.network,
-                inputs.grace_period_seconds,
-                crate::now_unix(),
-            );
-            let loaded = inputs
-                .db
-                .run(
-                    Class::Scanner,
-                    move |s| -> Result<Vec<(crate::store::TenantId, Vec<u32>)>, ScannerError> {
-                        let mut ids = Vec::new();
-                        let mut after = String::new();
-                        loop {
-                            let page =
-                                s.active_tenants_page(network, now, grace, &after, TENANT_PAGE)?;
-                            let full = page.len() == TENANT_PAGE;
-                            after = page
-                                .last()
-                                .map(|(id, _)| id.to_string())
-                                .unwrap_or_default();
-                            ids.extend(page.into_iter().map(|(id, _)| id));
-                            if !full {
-                                break;
-                            }
+        .map(|(_, w)| Arc::clone(w));
+    let windows = if let Some(windows) = cached {
+        windows
+    } else {
+        let (network, grace, now) = (
+            inputs.network,
+            inputs.grace_period_seconds,
+            crate::now_unix(),
+        );
+        let loaded = inputs
+            .db
+            .run(
+                Class::Scanner,
+                move |s| -> Result<Vec<(crate::store::TenantId, Vec<u32>)>, ScannerError> {
+                    let mut ids = Vec::new();
+                    let mut after = String::new();
+                    loop {
+                        let page =
+                            s.active_tenants_page(network, now, grace, &after, TENANT_PAGE)?;
+                        let full = page.len() == TENANT_PAGE;
+                        after = page.last().map_or_default(|(id, _)| id.to_string());
+                        ids.extend(page.into_iter().map(|(id, _)| id));
+                        if !full {
+                            break;
                         }
-                        let mut windows = s.scan_windows(&ids, now, grace)?;
-                        Ok(ids
-                            .into_iter()
-                            .filter_map(|id| windows.remove(&id).map(|w| (id, w)))
-                            .collect())
-                    },
-                )
-                .await?;
-            let loaded = Arc::new(loaded);
-            *state.mempool.windows.lock() = Some((Instant::now(), loaded.clone()));
-            loaded
-        }
+                    }
+                    let mut windows = s.scan_windows(&ids, now, grace)?;
+                    Ok(ids
+                        .into_iter()
+                        .filter_map(|id| windows.remove(&id).map(|w| (id, w)))
+                        .collect())
+                },
+            )
+            .await?;
+        let loaded = Arc::new(loaded);
+        *state.mempool.windows.lock() = Some((Instant::now(), Arc::clone(&loaded)));
+        loaded
     };
     let handles: HashMap<&str, WalletHandle> = inputs
         .tenants

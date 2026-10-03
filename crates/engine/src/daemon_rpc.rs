@@ -1,9 +1,11 @@
 //! Real `MoneroDaemonClient` implementation, talking to `monerod`'s actual RPC
-//! surface over `reqwest` + `rustls`. Every endpoint and field name used here was
-//! verified against a live public node (`node.hollingworth.xyz:18089`, restricted
-//! RPC) before being written, the same way `key_custody`'s crypto was verified
-//! against `monero-rs`'s own source rather than assumed from memory - see the
-//! `#[ignore]`d tests at the bottom of this file for the live proof.
+//! surface over `reqwest` + `rustls`.
+//!
+//! Every endpoint and field name used here was verified against a live public
+//! node (`node.hollingworth.xyz:18089`, restricted RPC) before being written, the
+//! same way `key_custody`'s crypto was verified against `monero-rs`'s own source
+//! rather than assumed from memory - see the `#[ignore]`d tests at the bottom of
+//! this file for the live proof.
 //!
 //! Three RPC surfaces are in play: the JSON-RPC envelope at `/json_rpc` (block
 //! hashes and headers, `get_info`), monerod's "other" plain-JSON endpoints
@@ -12,8 +14,8 @@
 //! envelope at all, and the binary (epee) `/get_blocks.bin`, for blocks and
 //! for changes to the mempool.
 //!
-//! What is asked for is kept small (docs/node_rpc_efficiency.md):
-//! transactions come pruned (the prefix and RingCT base a scan reads, about a
+//! What is asked for is kept small (`docs/node_rpc_efficiency.md)`:
+//! transactions come pruned (the prefix and `RingCT` base a scan reads, about a
 //! sixth of the bytes), a block's id comes from the block itself, a lone hash
 //! or header is asked for as just that, and the mempool is followed by its
 //! changes rather than re-listed. [`RpcDaemonClient::stats`] counts every
@@ -23,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use monero::consensus::encode::deserialize;
-use monero::cryptonote::hash::Hashable;
+use monero::cryptonote::hash::Hashable as _;
 use monero::Transaction;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -42,7 +44,7 @@ pub struct RpcDaemonClient {
     max_response_bytes: usize,
     stats: parking_lot::Mutex<HashMap<String, EndpointStats>>,
     /// What has been measured of this node's link: what sizes and times
-    /// block requests (docs/engine_scaling.md sections 1 and 2).
+    /// block requests (`docs/engine_scaling.md` sections 1 and 2).
     link: crate::link::Link,
     /// The mempool as this node last described it. An async lock: one poll
     /// at a time, held across its round trip, so two loops polling at once
@@ -148,30 +150,31 @@ impl RpcDaemonClient {
         let host = if host.contains(':') && !host.starts_with('[') {
             format!("[{host}]")
         } else {
-            host.to_string()
+            host.to_owned()
         };
         let base_url = format!("{scheme}://{host}:{port}");
         url::Url::parse(&base_url)
             .ok()
             .filter(|url| url.host_str().is_some())
             .ok_or_else(|| DaemonError::Request(format!("not a node address: {host}:{port}")))?;
-        Ok(RpcDaemonClient {
+        Ok(Self {
             client,
             base_url,
             max_response_bytes: MAX_RESPONSE_BYTES,
-            stats: Default::default(),
-            link: Default::default(),
-            pool: Default::default(),
+            stats: parking_lot::Mutex::default(),
+            link: crate::link::Link::default(),
+            pool: tokio::sync::Mutex::default(),
             pool_reuse: POOL_REUSE,
             pool_resync: POOL_RESYNC_INTERVAL,
-            pool_stale: Default::default(),
-            tip: Default::default(),
+            pool_stale: std::sync::atomic::AtomicBool::default(),
+            tip: parking_lot::Mutex::default(),
         })
     }
 
     /// Other pool timings, for tests: how long an answer is reused, and how
     /// often the plain list of ids replaces what was followed.
     #[doc(hidden)]
+    #[must_use = "the client with the timing set is returned, not changed in place"]
     pub fn with_pool_timing(mut self, reuse: Duration, resync: Duration) -> Self {
         self.pool_reuse = reuse;
         self.pool_resync = resync;
@@ -262,9 +265,9 @@ impl RpcDaemonClient {
         {
             let mut stats = self.stats.lock();
             let entry = stats
-                .entry(endpoint.to_string())
+                .entry(endpoint.to_owned())
                 .or_insert_with(|| EndpointStats {
-                    endpoint: endpoint.to_string(),
+                    endpoint: endpoint.to_owned(),
                     ..Default::default()
                 });
             entry.requests += 1;
@@ -402,7 +405,7 @@ impl RpcDaemonClient {
     }
 
     /// `/get_transactions` for `hashes`, pruned: each one's prefix and
-    /// RingCT base (what a scan reads) with the hash of the rest.
+    /// `RingCT` base (what a scan reads) with the hash of the rest.
     async fn request_transactions(
         &self,
         hashes: &[String],
@@ -552,7 +555,7 @@ enum EpeeField<'a> {
 /// bytes, 1-byte type tag, value)` per field - see `monero_epee`'s own
 /// module docs for the full format. A count under 64 fits the varint's
 /// 1-byte form (`count << 2`), which is all this ever needs.
-#[allow(
+#[expect(
     clippy::expect_used,
     reason = "only called with a few short field-name literals"
 )]
@@ -569,7 +572,10 @@ fn epee_request(fields: &[(&str, EpeeField<'_>)]) -> Vec<u8> {
     for (name, value) in fields {
         request.push(u8::try_from(name.len()).expect("field name literal longer than 255 bytes"));
         request.extend_from_slice(name.as_bytes());
-        #[expect(clippy::as_conversions)]
+        #[expect(
+            clippy::as_conversions,
+            reason = "epee type tags are the enum discriminants, each below 256"
+        )]
         match value {
             EpeeField::Bool(value) => {
                 request.push(monero_epee::Type::Bool as u8);
@@ -601,7 +607,7 @@ fn epee_request(fields: &[(&str, EpeeField<'_>)]) -> Vec<u8> {
 /// separately-published implementation of the same call, `bin_rpc/blocks_bin.
 /// rs`'s `fetch_contiguous_blocks`, and against live nodes).
 ///
-/// Pruned: each transaction comes as its prefix and RingCT base (what a
+/// Pruned: each transaction comes as its prefix and `RingCT` base (what a
 /// scan reads) with the hash of the rest, from which its id is checked
 /// against the block's own list (`BinBlock::into_chain_block`).
 fn get_blocks_bin_request(start_height: u64, max_block_count: u64) -> Vec<u8> {
@@ -770,8 +776,8 @@ fn decode_tx_blob(
             ))
         }
         (Some(computed), _) => computed,
-        (None, Some(claimed)) if is_txid(claimed) => claimed.to_string(),
-        (None, _) => return Err("a pruned transaction came without an id".to_string()),
+        (None, Some(claimed)) if is_txid(claimed) => claimed.to_owned(),
+        (None, _) => return Err("a pruned transaction came without an id".to_owned()),
     };
     Ok(FetchedTx { txid, tx })
 }
@@ -881,13 +887,22 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonEr
                                     BinTx {
                                         blob: blob.ok_or_else(|| {
                                             DaemonError::Request(
-                                                "get_blocks.bin: a tx entry (object form) had no blob field".to_string(),
+                                                "get_blocks.bin: a tx entry (object form) had no blob field".to_owned(),
                                             )
                                         })?,
                                         prunable_hash,
                                     }
                                 }
-                                other => {
+                                other @ (monero_epee::Type::Int64
+                                | monero_epee::Type::Int32
+                                | monero_epee::Type::Int16
+                                | monero_epee::Type::Int8
+                                | monero_epee::Type::Uint64
+                                | monero_epee::Type::Uint32
+                                | monero_epee::Type::Uint16
+                                | monero_epee::Type::Uint8
+                                | monero_epee::Type::Double
+                                | monero_epee::Type::Bool) => {
                                     return Err(DaemonError::Request(format!(
                                         "get_blocks.bin: txs array held an unexpected element type {other:?}"
                                     )));
@@ -908,22 +923,22 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonEr
     }
 
     match status {
-        Some(ref s) if s == b"OK" => {}
+        Some(s) if s == b"OK" => {}
         Some(s) => {
             return Err(DaemonError::Request(format!(
                 "get_blocks.bin returned status {:?}",
-                std::string::String::from_utf8_lossy(&s)
+                String::from_utf8_lossy(&s)
             )));
         }
         None => {
             return Err(DaemonError::Request(
-                "get_blocks.bin response had no status field".to_string(),
+                "get_blocks.bin response had no status field".to_owned(),
             ))
         }
     }
 
     blocks.ok_or_else(|| {
-        DaemonError::Request("get_blocks.bin response had no blocks field".to_string())
+        DaemonError::Request("get_blocks.bin response had no blocks field".to_owned())
     })
 }
 
@@ -954,7 +969,6 @@ struct PoolChanges {
 /// answered without describing its pool: one that doesn't know the request
 /// (an older monerod), to be asked the old way instead.
 fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> {
-    let epee_err = |e| epee_err("pool get_blocks.bin", e);
     fn ids(blob: &[u8]) -> Result<Vec<String>, DaemonError> {
         let (whole, rest) = blob.as_chunks::<32>();
         if !rest.is_empty() {
@@ -965,6 +979,7 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
         }
         Ok(whole.iter().map(hex::encode).collect())
     }
+    let epee_err = |e| epee_err("pool get_blocks.bin", e);
 
     let mut epee = monero_epee::Epee::new(bytes).map_err(epee_err)?;
     let mut fields = epee.entry().map_err(epee_err)?.fields().map_err(epee_err)?;
@@ -1018,7 +1033,7 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
                         (Some(txid), None) => changes.added_ids.push(txid),
                         (None, _) => {
                             return Err(DaemonError::Request(
-                                "pool get_blocks.bin: an added transaction had no id".to_string(),
+                                "pool get_blocks.bin: an added transaction had no id".to_owned(),
                             ))
                         }
                     }
@@ -1052,7 +1067,7 @@ const POOL_REUSE: Duration = Duration::from_millis(100);
 const POOL_RESYNC_INTERVAL: Duration = Duration::from_secs(60);
 /// How long a node that didn't describe its pool is asked the old way
 /// before it is tried again (it may have been upgraded).
-const POOL_CHANGES_RETRY: Duration = Duration::from_secs(10 * 60);
+const POOL_CHANGES_RETRY: Duration = Duration::from_mins(10);
 /// After this many requests for changes in a row that a node which used to
 /// answer them didn't, it is asked the old way.
 const POOL_CHANGES_GIVE_UP: u32 = 3;
@@ -1171,10 +1186,10 @@ impl GetInfoResult {
     fn nettype(&self) -> String {
         match &self.nettype {
             Some(nettype) if !nettype.trim().is_empty() => nettype.trim().to_ascii_lowercase(),
-            _ if self.mainnet => "mainnet".to_string(),
-            _ if self.stagenet => "stagenet".to_string(),
-            _ if self.testnet => "testnet".to_string(),
-            _ => DaemonInfo::UNKNOWN.to_string(),
+            _ if self.mainnet => "mainnet".to_owned(),
+            _ if self.stagenet => "stagenet".to_owned(),
+            _ if self.testnet => "testnet".to_owned(),
+            _ => DaemonInfo::UNKNOWN.to_owned(),
         }
     }
 }
@@ -1198,7 +1213,7 @@ struct BlockHeader {
     #[serde(default)]
     num_txes: Option<u64>,
     /// The difficulty as two 64-bit halves, as monerod sends it; read only
-    /// for an anchor's window (docs/proof_of_work.md).
+    /// for an anchor's window (`docs/proof_of_work.md`).
     #[serde(default)]
     difficulty: u64,
     #[serde(default)]
@@ -1272,7 +1287,7 @@ struct GetTransactionsResponse {
 /// by `an_in_pool_entry_with_no_block_height_key_at_all_deserializes_as_none` below.
 ///
 /// With `prune` requested, `as_hex` is empty and the transaction comes as
-/// `pruned_as_hex` (its prefix and RingCT base) with `prunable_hash` (the hash
+/// `pruned_as_hex` (its prefix and `RingCT` base) with `prunable_hash` (the hash
 /// of the rest); `tx_hash` names it either way.
 #[derive(Deserialize, Default)]
 struct TxEntry {
@@ -1459,7 +1474,7 @@ impl RpcDaemonClient {
                 if pool.follows_changes == Some(true) && pool.unanswered < POOL_CHANGES_GIVE_UP {
                     return Err(DaemonError::Request(match unanswered {
                         Err(error) => error.to_string(),
-                        _ => "the node did not describe its mempool".to_string(),
+                        _ => "the node did not describe its mempool".to_owned(),
                     }));
                 }
                 if pool.follows_changes == Some(true) {
@@ -1618,8 +1633,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
             return Ok(Vec::new());
         }
         let mut out = Vec::new();
-        let mut from = start_height;
-        if start_height == 0 {
+        let from = if start_height == 0 {
             // Its header names the genesis block and dates it. It holds no
             // transactions but its coinbase, on any network.
             let header = self.block_header(0).await?;
@@ -1632,8 +1646,10 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 txids: Vec::new(),
                 wire_bytes: 0,
             });
-            from = 1;
-        }
+            1
+        } else {
+            start_height
+        };
         let wanted = count - out.len() as u64;
         if wanted > 0 {
             let blocks = self.get_blocks_bin(from, wanted).await?;
@@ -1902,7 +1918,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         let resp = self
-            .request_transactions(std::slice::from_ref(&txid.to_string()))
+            .request_transactions(std::slice::from_ref(&txid.to_owned()))
             .await?;
         classify_located_transaction(txid, resp)
     }
@@ -1947,7 +1963,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
         txid: &str,
     ) -> Result<Option<(FetchedTx, TxLocation)>, DaemonError> {
         let resp = self
-            .request_transactions(std::slice::from_ref(&txid.to_string()))
+            .request_transactions(std::slice::from_ref(&txid.to_owned()))
             .await?;
         let fetched = resp
             .txs
@@ -2030,7 +2046,11 @@ mod tests {
         // The coinbase names the block's height.
         let height = match &decoded.miner_tx.prefix.inputs[0] {
             monero::blockdata::transaction::TxIn::Gen { height } => height.0,
-            _ => unreachable!("a coinbase input"),
+            monero::blockdata::transaction::TxIn::ToKey {
+                amount: _,
+                key_offsets: _,
+                k_image: _,
+            } => unreachable!("a coinbase input"),
         };
         let block = BinBlock {
             block: Some(blob.clone()),
@@ -2065,18 +2085,18 @@ mod tests {
         }
         .into_chain_block(height);
         assert!(extra.is_err(), "a transaction the block doesn't list");
-        assert!(BinBlock {
+        BinBlock {
             block: None,
-            txs: vec![]
+            txs: vec![],
         }
         .into_chain_block(height)
-        .is_err());
-        assert!(BinBlock {
+        .unwrap_err();
+        BinBlock {
             block: Some(vec![1, 2, 3]),
-            txs: vec![]
+            txs: vec![],
         }
         .into_chain_block(height)
-        .is_err());
+        .unwrap_err();
     }
 
     #[test]
@@ -2098,7 +2118,7 @@ mod tests {
         assert_eq!(nettype(json!({ "nettype": "fakechain" })), "fakechain");
         assert_eq!(nettype(json!({ "height": 5 })), "unknown");
         let info = |nettype: &str| DaemonInfo {
-            nettype: nettype.to_string(),
+            nettype: nettype.to_owned(),
             height: None,
         };
         assert_eq!(info("testnet").network(), Some(monero::Network::Testnet));
@@ -2192,14 +2212,14 @@ mod tests {
 
         // ...and a miss reported for some *other* hash is equally not an answer about
         // this one.
-        assert!(classify_located_transaction(
+        classify_located_transaction(
             &txid,
             GetTransactionsResponse {
                 txs: None,
-                missed_tx: vec!["bb".repeat(32)]
+                missed_tx: vec!["bb".repeat(32)],
             },
         )
-        .is_err());
+        .unwrap_err();
 
         // "Confirmed, but I won't say where" is self-contradictory, not a miss.
         let err = classify_located_transaction(
@@ -2310,7 +2330,7 @@ mod wire_tests {
     }
 
     /// The fixture transaction as a node sends it pruned: its id, its
-    /// prefix and RingCT base, and the hash of what was left out.
+    /// prefix and `RingCT` base, and the hash of what was left out.
     /// The fixture transaction whole, with its id.
     fn whole_fixture() -> (String, Vec<u8>) {
         let whole = whole_tx();
@@ -2343,13 +2363,13 @@ mod wire_tests {
         Str(Vec<u8>),
         U8(u8),
         U64(u64),
-        Objects(Vec<Vec<(&'static str, V)>>),
+        Objects(Vec<Vec<(&'static str, Self)>>),
     }
 
     fn varint(n: usize) -> Vec<u8> {
         if n < 64 {
             vec![(n as u8) << 2]
-        } else if n < 16_384 {
+        } else if n < 0x4000 {
             (((n as u16) << 2) | 1).to_le_bytes().to_vec()
         } else {
             (((n as u32) << 2) | 2).to_le_bytes().to_vec()
@@ -2421,8 +2441,8 @@ mod wire_tests {
             fields.push((
                 "blocks",
                 V::Objects(
-                    (0..blocks)
-                        .map(|_| vec![("block", V::Str(vec![1, 2, 3]))])
+                    std::iter::repeat_with(|| vec![("block", V::Str(vec![1, 2, 3]))])
+                        .take(blocks)
                         .collect(),
                 ),
             ));
@@ -2482,7 +2502,7 @@ mod wire_tests {
         fn answer(&self, path: &str, body: impl Into<Vec<u8>>) {
             self.answers
                 .lock()
-                .entry(path.to_string())
+                .entry(path.to_owned())
                 .or_default()
                 .push_back(body.into());
         }
@@ -2502,10 +2522,10 @@ mod wire_tests {
         let script = Arc::new(Script::default());
         let app = axum::Router::new()
             .fallback(
-                |State(script): State<Arc<Script>>,
-                 uri: axum::http::Uri,
-                 body: axum::body::Bytes| async move {
-                    let path = uri.path().to_string();
+                async |State(script): State<Arc<Script>>,
+                       uri: axum::http::Uri,
+                       body: axum::body::Bytes| {
+                    let path = uri.path().to_owned();
                     script.requests.lock().push((path.clone(), body.to_vec()));
                     let mut answers = script.answers.lock();
                     match answers.get_mut(&path) {
@@ -2522,7 +2542,7 @@ mod wire_tests {
                     }
                 },
             )
-            .with_state(script.clone());
+            .with_state(Arc::clone(&script));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -2572,7 +2592,7 @@ mod wire_tests {
     fn tip(height: u64, id: &str) -> ChainTip {
         ChainTip {
             height,
-            hash: Some(id.to_string()),
+            hash: Some(id.to_owned()),
         }
     }
 
@@ -2634,7 +2654,7 @@ mod wire_tests {
 
         assert_eq!(
             sorted(client.get_mempool_txids().await.unwrap()),
-            sorted(vec![a.clone(), B.to_string()])
+            sorted(vec![a.clone(), B.to_owned()])
         );
         // The body came with the pool: no request for it, and it is whole
         // (checked against its id) and carries the id.
@@ -2650,11 +2670,11 @@ mod wire_tests {
 
         assert_eq!(
             sorted(client.get_mempool_txids().await.unwrap()),
-            sorted(vec![a.clone(), C.to_string()])
+            sorted(vec![a.clone(), C.to_owned()])
         );
         assert_eq!(
             sorted(client.get_mempool_txids().await.unwrap()),
-            sorted(vec![a.clone(), C.to_string()]),
+            sorted(vec![a.clone(), C.to_owned()]),
             "nothing changed"
         );
         let polls = node.requests_to("/get_blocks.bin");
@@ -2701,7 +2721,7 @@ mod wire_tests {
         let client = client.with_pool_timing(Duration::ZERO, Duration::ZERO);
         assert_eq!(
             sorted(client.get_mempool_txids().await.unwrap()),
-            sorted(vec![C.to_string(), D.to_string()])
+            sorted(vec![C.to_owned(), D.to_owned()])
         );
         assert_eq!(node.requests_to("/get_transaction_pool_hashes").len(), 1);
         assert_eq!(node.requests_to("/get_blocks.bin").len(), 1);
@@ -2751,7 +2771,7 @@ mod wire_tests {
             for _ in 0..3 {
                 assert_eq!(
                     client.get_mempool_txids().await.unwrap(),
-                    vec![B.to_string()]
+                    vec![B.to_owned()]
                 );
             }
             assert_eq!(node.requests_to("/get_blocks.bin").len(), 1);
@@ -2785,27 +2805,27 @@ mod wire_tests {
         );
         assert_eq!(
             client.get_mempool_txids().await.unwrap(),
-            vec![B.to_string()]
+            vec![B.to_owned()]
         );
         // One bad answer: an error, and nothing forgotten.
-        assert!(client.get_mempool_txids().await.is_err());
+        client.get_mempool_txids().await.unwrap_err();
         assert_eq!(
             sorted(client.get_mempool_txids().await.unwrap()),
-            sorted(vec![B.to_string(), C.to_string()])
+            sorted(vec![B.to_owned(), C.to_owned()])
         );
         assert_eq!(since_of(&node.requests_to("/get_blocks.bin")[2]), 100);
         assert!(node.requests_to("/get_transaction_pool_hashes").is_empty());
         // It keeps happening: the plain list, from then on.
         for _ in 1..POOL_CHANGES_GIVE_UP {
-            assert!(client.get_mempool_txids().await.is_err());
+            client.get_mempool_txids().await.unwrap_err();
         }
         assert_eq!(
             client.get_mempool_txids().await.unwrap(),
-            vec![D.to_string()]
+            vec![D.to_owned()]
         );
         assert_eq!(
             client.get_mempool_txids().await.unwrap(),
-            vec![D.to_string()]
+            vec![D.to_owned()]
         );
         assert_eq!(
             node.requests_to("/get_blocks.bin").len(),
@@ -2817,7 +2837,7 @@ mod wire_tests {
     #[tokio::test]
     async fn a_pool_that_cannot_be_read_is_an_error() {
         let (client, _node) = scripted().await;
-        assert!(client.get_mempool_txids().await.is_err());
+        client.get_mempool_txids().await.unwrap_err();
     }
 
     #[test]
@@ -2831,9 +2851,9 @@ mod wire_tests {
             PoolChanges {
                 full: true,
                 daemon_time: 9,
-                added: vec![(a.clone(), blob.clone())],
-                added_ids: vec![B.to_string()],
-                removed: vec![C.to_string()],
+                added: vec![(a, blob)],
+                added_ids: vec![B.to_owned()],
+                removed: vec![C.to_owned()],
                 ..PoolChanges::default()
             }
         );
@@ -2869,7 +2889,7 @@ mod wire_tests {
         ] {
             assert_eq!(parse_pool_changes(&epee(&fields)).unwrap(), None);
         }
-        assert!(parse_pool_changes(b"not epee").is_err());
+        parse_pool_changes(b"not epee").unwrap_err();
     }
 
     /// The view of the pool: changes applied in order, a whole pool
@@ -2883,12 +2903,12 @@ mod wire_tests {
             full: true,
             daemon_time: 5,
             added: vec![(a.clone(), blob.clone())],
-            added_ids: vec![B.to_string()],
+            added_ids: vec![B.to_owned()],
             removed: vec![],
             ..PoolChanges::default()
         });
         assert_eq!(view.since, 5);
-        assert_eq!(sorted(view.list()), sorted(vec![a.clone(), B.to_string()]));
+        assert_eq!(sorted(view.list()), sorted(vec![a.clone(), B.to_owned()]));
         assert!(view.bodies.contains_key(&a));
         // A body under another id, or a pruned one (nothing to check it
         // against), is a known id without a body.
@@ -2896,7 +2916,7 @@ mod wire_tests {
         view.apply(PoolChanges {
             full: false,
             daemon_time: 5,
-            added: vec![(D.to_string(), blob.clone()), (C.to_string(), pruned)],
+            added: vec![(D.to_owned(), blob), (C.to_owned(), pruned)],
             added_ids: vec![],
             removed: vec![],
             ..PoolChanges::default()
@@ -2909,25 +2929,25 @@ mod wire_tests {
             daemon_time: 5,
             added: vec![],
             added_ids: vec![],
-            removed: vec![C.to_string(), D.to_string()],
+            removed: vec![C.to_owned(), D.to_owned()],
             ..PoolChanges::default()
         });
         // An undecodable body is a known id without a body.
         view.apply(PoolChanges {
             full: false,
             daemon_time: 6,
-            added: vec![(C.to_string(), vec![1, 2, 3])],
+            added: vec![(C.to_owned(), vec![1, 2, 3])],
             added_ids: vec![],
-            removed: vec![B.to_string()],
+            removed: vec![B.to_owned()],
             ..PoolChanges::default()
         });
-        assert_eq!(sorted(view.list()), sorted(vec![a.clone(), C.to_string()]));
+        assert_eq!(sorted(view.list()), sorted(vec![a, C.to_owned()]));
         assert!(!view.bodies.contains_key(C));
         // The plain list drops what it doesn't have, body and all.
-        view.resync(vec![C.to_string(), D.to_string()]);
+        view.resync(vec![C.to_owned(), D.to_owned()]);
         assert_eq!(
             sorted(view.list()),
-            sorted(vec![C.to_string(), D.to_string()])
+            sorted(vec![C.to_owned(), D.to_owned()])
         );
         assert!(view.bodies.is_empty());
         assert_eq!(view.since, 6, "the list doesn't move the clock");
@@ -2936,11 +2956,11 @@ mod wire_tests {
             full: true,
             daemon_time: 7,
             added: vec![],
-            added_ids: vec![B.to_string()],
+            added_ids: vec![B.to_owned()],
             removed: vec![],
             ..PoolChanges::default()
         });
-        assert_eq!(view.list(), vec![B.to_string()]);
+        assert_eq!(view.list(), vec![B.to_owned()]);
     }
 
     /// A pruned transaction is taken under an id only if it hashes to it
@@ -2968,8 +2988,8 @@ mod wire_tests {
                 .txid,
             txid
         );
-        assert!(decode_tx_blob(&blob, Some(&prunable), Some(B)).is_err());
-        assert!(decode_tx_blob(&blob, Some(&[7; 32]), Some(&txid)).is_err());
+        decode_tx_blob(&blob, Some(&prunable), Some(B)).unwrap_err();
+        decode_tx_blob(&blob, Some(&[7; 32]), Some(&txid)).unwrap_err();
         // Pruned, no hash of the rest (or the all-zero "none"): as claimed.
         assert_eq!(decode_tx_blob(&blob, None, Some(&txid)).unwrap().txid, txid);
         assert_eq!(
@@ -2977,9 +2997,9 @@ mod wire_tests {
             B
         );
         // ...and refused with no usable id at all.
-        assert!(decode_tx_blob(&blob, None, None).is_err());
-        assert!(decode_tx_blob(&blob, None, Some("not an id")).is_err());
-        assert!(decode_tx_blob(&[1, 2, 3], None, Some(&txid)).is_err());
+        decode_tx_blob(&blob, None, None).unwrap_err();
+        decode_tx_blob(&blob, None, Some("not an id")).unwrap_err();
+        decode_tx_blob(&[1, 2, 3], None, Some(&txid)).unwrap_err();
     }
 
     fn tx_entry(txid: &str, in_pool: bool, block_height: Option<u64>) -> Value {
@@ -3014,7 +3034,7 @@ mod wire_tests {
             })
             .to_string(),
         );
-        let asked = [a.clone(), B.to_string(), C.to_string(), D.to_string()];
+        let asked = [a.clone(), B.to_owned(), C.to_owned(), D.to_owned()];
         let located = client.locate_transactions(&asked).await.unwrap();
         assert_eq!(located.get(&a), Some(&TxLocation::InBlock(77)));
         assert_eq!(located.get(B), Some(&TxLocation::InPool));
@@ -3035,7 +3055,7 @@ mod wire_tests {
                 .to_string(),
         );
         assert!(client
-            .locate_transactions(&[B.to_string()])
+            .locate_transactions(&[B.to_owned()])
             .await
             .unwrap()
             .is_empty());
@@ -3063,7 +3083,7 @@ mod wire_tests {
             })
             .to_string(),
         );
-        let asked = [a.clone(), B.to_string(), C.to_string()];
+        let asked = [a.clone(), B.to_owned(), C.to_owned()];
         let fetched = client.get_transactions_with_ids(&asked).await.unwrap();
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].txid, a);
@@ -3082,11 +3102,11 @@ mod wire_tests {
         );
         assert_eq!(node.requests_to("/get_transactions").len(), 1);
         // Asked for one transaction and sent another: refused.
-        assert!(client.find_transaction(B).await.is_err());
-        assert!(client
-            .get_transactions_with_ids(&[B.to_string()])
+        client.find_transaction(B).await.unwrap_err();
+        client
+            .get_transactions_with_ids(&[B.to_owned()])
             .await
-            .is_err());
+            .unwrap_err();
         // A named miss is "not found", in one request.
         let (client, node) = scripted().await;
         node.answer(
@@ -3097,7 +3117,7 @@ mod wire_tests {
     }
 
     /// A small answer measures the link's round trip
-    /// (docs/engine_scaling.md section 1): the link is measured from then on.
+    /// (`docs/engine_scaling.md` section 1): the link is measured from then on.
     #[tokio::test]
     async fn a_small_answer_measures_the_round_trip() {
         let (client, node) = scripted().await;
@@ -3116,7 +3136,7 @@ mod wire_tests {
     /// scan asks for less next time, and the link's rate estimate halves.
     #[tokio::test]
     async fn a_request_that_runs_out_of_time_says_so_and_slows_the_estimate() {
-        let app = axum::Router::new().fallback(|| async {
+        let app = axum::Router::new().fallback(async || {
             tokio::time::sleep(Duration::from_secs(2)).await;
             "too late"
         });
@@ -3174,7 +3194,7 @@ mod wire_tests {
     #[tokio::test]
     async fn the_tip_comes_with_its_id_when_the_node_gives_one() {
         for (hash, expected) in [
-            (json!(B.to_uppercase()), Some(B.to_string())),
+            (json!(B.to_uppercase()), Some(B.to_owned())),
             (json!("nonsense"), None),
             (Value::Null, None),
         ] {
@@ -3211,23 +3231,23 @@ mod wire_tests {
         node.answer("/get_blocks.bin", pool_and_chain_answer(105, 101, 0));
         node.answer("/get_blocks.bin", pool_and_chain_answer(110, 102, 1));
         node.answer("/get_blocks.bin", pool_and_chain_answer(115, 102, 0));
-        let ask = || async {
+        let ask = async || {
             let (tip, pool) = client.get_tip_and_mempool().await;
             (tip.unwrap(), pool.unwrap())
         };
         let asked = |path: &str| node.requests_to(path).len();
 
         // Nothing known: the pool, then the tip.
-        assert_eq!(ask().await, (tip(100, C), vec![B.to_string()]));
+        assert_eq!(ask().await, (tip(100, C), vec![B.to_owned()]));
         assert_eq!((asked("/get_blocks.bin"), asked("/get_height")), (1, 1));
         // The tip hasn't moved: one request, naming it.
-        assert_eq!(ask().await, (tip(100, C), vec![B.to_string()]));
+        assert_eq!(ask().await, (tip(100, C), vec![B.to_owned()]));
         assert_eq!((asked("/get_blocks.bin"), asked("/get_height")), (2, 1));
         // It has: the node sends a block, and is asked for its tip.
-        assert_eq!(ask().await, (tip(101, D), vec![B.to_string()]));
+        assert_eq!(ask().await, (tip(101, D), vec![B.to_owned()]));
         assert_eq!((asked("/get_blocks.bin"), asked("/get_height")), (3, 2));
         // The new tip stands in turn.
-        assert_eq!(ask().await, (tip(101, D), vec![B.to_string()]));
+        assert_eq!(ask().await, (tip(101, D), vec![B.to_owned()]));
         assert_eq!((asked("/get_blocks.bin"), asked("/get_height")), (4, 2));
 
         let polls = node.requests_to("/get_blocks.bin");
@@ -3235,9 +3255,9 @@ mod wire_tests {
             polls.iter().map(|r| tip_named(r)).collect::<Vec<_>>(),
             vec![
                 None,
-                Some(C.to_string()),
-                Some(C.to_string()),
-                Some(D.to_string())
+                Some(C.to_owned()),
+                Some(C.to_owned()),
+                Some(D.to_owned())
             ]
         );
         assert_eq!(
@@ -3284,7 +3304,7 @@ mod wire_tests {
                 "/get_blocks.bin",
                 pool_answer(POOL_INFO_INCREMENTAL, 110, &[], &[D], &[]),
             );
-            let ask = || async {
+            let ask = async || {
                 let (tip, pool) = client.get_tip_and_mempool().await;
                 (tip.unwrap(), pool.unwrap())
             };
@@ -3297,10 +3317,10 @@ mod wire_tests {
             assert_eq!(node.requests_to("/get_height").len(), 2);
             // From then on: the pool's changes and the tip, apart.
             let (_, pool) = ask().await;
-            assert!(pool.contains(&D.to_string()), "{pool:?}");
+            assert!(pool.contains(&D.to_owned()), "{pool:?}");
             assert_eq!(node.requests_to("/get_height").len(), 3);
             let polls = node.requests_to("/get_blocks.bin");
-            assert_eq!(tip_named(&polls[1]), Some(C.to_string()));
+            assert_eq!(tip_named(&polls[1]), Some(C.to_owned()));
             assert!(
                 polls[2..].iter().all(|r| tip_named(r).is_none()),
                 "asked together again"
@@ -3317,7 +3337,7 @@ mod wire_tests {
         node.answer("/get_height", height_answer(101, C));
         let (tip_now, pool) = client.get_tip_and_mempool().await;
         assert_eq!(tip_now.unwrap(), tip(100, C));
-        assert!(pool.is_err());
+        pool.unwrap_err();
 
         let (client, node) = scripted().await;
         node.answer(
@@ -3325,8 +3345,8 @@ mod wire_tests {
             pool_answer(POOL_INFO_FULL, 100, &[], &[B], &[]),
         );
         let (tip_now, pool) = client.get_tip_and_mempool().await;
-        assert!(tip_now.is_err());
-        assert_eq!(pool.unwrap(), vec![B.to_string()]);
+        tip_now.unwrap_err();
+        assert_eq!(pool.unwrap(), vec![B.to_owned()]);
     }
 
     fn header(height: u64, hash: &str, prev_hash: &str) -> Value {
@@ -3334,29 +3354,32 @@ mod wire_tests {
             "block_weight": 1_000 * height, "num_txes": height })
     }
 
-    fn rpc_result(result: Value) -> String {
+    fn rpc_result(result: &Value) -> String {
         json!({ "id": "0", "jsonrpc": "2.0", "result": result }).to_string()
     }
 
     /// A large block's outline comes from `get_block`: its id computed from
     /// the blob, its parent and time, and its transactions' ids in order,
     /// with no transaction fetched. A blob from another height is refused
-    /// (docs/engine_scaling.md section 4).
+    /// (`docs/engine_scaling.md` section 4).
     #[tokio::test]
     async fn a_large_blocks_outline_is_read_from_its_own_blob() {
         let (client, node) = scripted().await;
         let mut block: monero::Block =
-            deserialize(&hex::decode(crate::daemon_rpc::tests::COINBASE_ONLY_BLOCK_HEX).unwrap())
-                .unwrap();
+            deserialize(&hex::decode(tests::COINBASE_ONLY_BLOCK_HEX).unwrap()).unwrap();
         block.tx_hashes = vec![monero::Hash([1; 32]), monero::Hash([2; 32])];
         let height = match &block.miner_tx.prefix.inputs[0] {
             monero::blockdata::transaction::TxIn::Gen { height } => height.0,
-            _ => unreachable!("a coinbase input"),
+            monero::blockdata::transaction::TxIn::ToKey {
+                amount: _,
+                key_offsets: _,
+                k_image: _,
+            } => unreachable!("a coinbase input"),
         };
-        let blob = hex::encode(monero::consensus::serialize(&block));
+        let blob = hex::encode(serialize(&block));
         node.answer(
             "/json_rpc",
-            rpc_result(json!({ "status": "OK", "blob": blob })),
+            rpc_result(&json!({ "status": "OK", "blob": blob })),
         );
         let outline = client.get_block_outline(height, Some(2)).await.unwrap();
         assert_eq!(outline.height, height);
@@ -3379,17 +3402,17 @@ mod wire_tests {
         assert!(error.to_string().contains("sent another"), "{error}");
     }
 
-    /// What proof-of-work checking reads (docs/proof_of_work.md): a block's
+    /// What proof-of-work checking reads (`docs/proof_of_work.md)`: a block's
     /// blob as `get_block` sends it, and headers with their difficulties,
     /// whose two 64-bit halves are joined; a header from another height is
     /// refused.
     #[tokio::test]
     async fn blobs_and_difficulty_headers_are_read_as_monerod_sends_them() {
         let (client, node) = scripted().await;
-        let blob = crate::daemon_rpc::tests::COINBASE_ONLY_BLOCK_HEX;
+        let blob = tests::COINBASE_ONLY_BLOCK_HEX;
         node.answer(
             "/json_rpc",
-            rpc_result(json!({ "status": "OK", "blob": blob, "json": "{}" })),
+            rpc_result(&json!({ "status": "OK", "blob": blob, "json": "{}" })),
         );
         assert_eq!(
             client.get_block_blob(7).await.unwrap(),
@@ -3410,7 +3433,7 @@ mod wire_tests {
         narrow["cumulative_difficulty"] = json!(u64::MAX);
         node.answer(
             "/json_rpc",
-            rpc_result(json!({ "status": "OK", "headers": [narrow, wide] })),
+            rpc_result(&json!({ "status": "OK", "headers": [narrow, wide] })),
         );
         let headers = client.get_difficulty_headers(5, 2).await.unwrap();
         assert_eq!(
@@ -3418,16 +3441,16 @@ mod wire_tests {
             vec![
                 DifficultyHeader {
                     height: 5,
-                    hash: B.to_string(),
-                    prev_hash: D.to_string(),
+                    hash: B.to_owned(),
+                    prev_hash: D.to_owned(),
                     timestamp: 1_005,
                     difficulty: 700,
                     cumulative_difficulty: u128::from(u64::MAX),
                 },
                 DifficultyHeader {
                     height: 6,
-                    hash: C.to_string(),
-                    prev_hash: B.to_string(),
+                    hash: C.to_owned(),
+                    prev_hash: B.to_owned(),
                     timestamp: 1_006,
                     difficulty: (1u128 << 64) + 5,
                     cumulative_difficulty: (2u128 << 64) + 9,
@@ -3444,7 +3467,7 @@ mod wire_tests {
         let (client, node) = scripted().await;
         node.answer(
             "/json_rpc",
-            rpc_result(json!({ "status": "OK", "headers": [header(9, B, D)] })),
+            rpc_result(&json!({ "status": "OK", "headers": [header(9, B, D)] })),
         );
         let error = client.get_difficulty_headers(5, 1).await.unwrap_err();
         assert!(error.to_string().contains("sent another"), "{error}");
@@ -3457,7 +3480,7 @@ mod wire_tests {
         let (client, node) = scripted().await;
         node.answer(
             "/json_rpc",
-            rpc_result(json!({ "status": "OK", "headers": [header(5, B, D), header(6, C, B)] })),
+            rpc_result(&json!({ "status": "OK", "headers": [header(5, B, D), header(6, C, B)] })),
         );
         let headers = client.get_chain_headers(5, 2).await.unwrap();
         assert_eq!(
@@ -3465,16 +3488,16 @@ mod wire_tests {
             vec![
                 ChainHeader {
                     height: 5,
-                    hash: B.to_string(),
-                    prev_hash: D.to_string(),
+                    hash: B.to_owned(),
+                    prev_hash: D.to_owned(),
                     timestamp: 1_005,
                     weight: Some(5_000),
                     tx_count: Some(5),
                 },
                 ChainHeader {
                     height: 6,
-                    hash: C.to_string(),
-                    prev_hash: B.to_string(),
+                    hash: C.to_owned(),
+                    prev_hash: B.to_owned(),
                     timestamp: 1_006,
                     weight: Some(6_000),
                     tx_count: Some(6),
@@ -3488,18 +3511,18 @@ mod wire_tests {
             json!({ "start_height": 5, "end_height": 6 })
         );
         // The node answered from another height.
-        assert!(client.get_chain_headers(9, 2).await.is_err());
+        client.get_chain_headers(9, 2).await.unwrap_err();
         assert!(client.get_chain_headers(5, 0).await.unwrap().is_empty());
 
         let (client, node) = scripted().await;
-        node.answer("/json_rpc", rpc_result(json!(B)));
+        node.answer("/json_rpc", rpc_result(&json!(B)));
         assert_eq!(client.get_block_hash(7).await.unwrap(), B);
         let request: Value = serde_json::from_slice(&node.requests_to("/json_rpc")[0]).unwrap();
         assert_eq!(request["method"], json!("on_get_block_hash"));
         assert_eq!(request["params"], json!([7]));
         let (client, node) = scripted().await;
-        node.answer("/json_rpc", rpc_result(json!("not a hash")));
-        assert!(client.get_block_hash(7).await.is_err());
+        node.answer("/json_rpc", rpc_result(&json!("not a hash")));
+        client.get_block_hash(7).await.unwrap_err();
     }
 
     /// A whole `get_blocks.bin` entry with pruned transactions: each
@@ -3509,10 +3532,14 @@ mod wire_tests {
     fn a_blocks_pruned_transactions_are_checked_against_its_own_list() {
         let (txid, blob, prunable) = pruned_fixture();
         let template: monero::Block =
-            deserialize(&hex::decode(super::tests::COINBASE_ONLY_BLOCK_HEX).unwrap()).unwrap();
+            deserialize(&hex::decode(tests::COINBASE_ONLY_BLOCK_HEX).unwrap()).unwrap();
         let height = match &template.miner_tx.prefix.inputs[0] {
             monero::blockdata::transaction::TxIn::Gen { height } => height.0,
-            _ => unreachable!("a coinbase input"),
+            monero::blockdata::transaction::TxIn::ToKey {
+                amount: _,
+                key_offsets: _,
+                k_image: _,
+            } => unreachable!("a coinbase input"),
         };
         let block_listing = |listed: &str| {
             let mut block = template.clone();
@@ -3576,7 +3603,7 @@ mod live_node_tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_get_height_returns_a_plausible_value() {
         let height = client().get_height().await.unwrap();
         // Mainnet passed height 3,700,000 in mid-2026; a sane lower bound that
@@ -3589,7 +3616,7 @@ mod live_node_tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_get_block_hash_matches_a_known_immutable_block() {
         // Captured live against this exact node while building this client - at
         // 5+ confirmations deep at the time, this block's hash is permanent.
@@ -3601,7 +3628,7 @@ mod live_node_tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_header_matches_a_known_immutable_block() {
         // Same block as `real_node_get_block_hash_matches_a_known_immutable_block`
         // above - captured live against this exact node while building this
@@ -3616,7 +3643,7 @@ mod live_node_tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_block_transactions_all_parse_as_valid_monero_transactions() {
         // Proves the real deserialization path handles *current* mainnet
         // transaction formats (view tags, CLSAG, bulletproofs+) - the crate's own
@@ -3667,7 +3694,7 @@ mod live_node_tests {
     /// ids their whole forms hash to, each block names itself as
     /// `on_get_block_hash` names it, and the headers say the same.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_pruned_chain_blocks_match_the_whole_ones() {
         let c = client();
         let (start, count) = (3_755_688, 4);
@@ -3707,7 +3734,7 @@ mod live_node_tests {
     /// The pool as a real node describes it: followed by its changes, the
     /// bodies that came with them handed over under their ids.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_pool_is_followed_by_its_changes() {
         let c = client();
         let pool = c.get_mempool_txids().await.unwrap();
@@ -3735,7 +3762,7 @@ mod live_node_tests {
     /// answers it: while the chain ends where it did, the node says so with
     /// the changes and isn't asked for the tip.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_says_the_tip_has_not_moved_with_the_pools_changes() {
         let c = client().with_pool_timing(Duration::ZERO, Duration::from_secs(3600));
         let requests = |endpoint: &str| {
@@ -3779,7 +3806,7 @@ mod live_node_tests {
     /// changes, or past the bodies it sends with them) come pruned, with the
     /// hash of the rest, and hash to the ids they were asked for by.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_pool_transactions_fetched_by_id_hash_to_their_ids() {
         let c = client();
         let pool: Vec<String> = c
@@ -3803,7 +3830,7 @@ mod live_node_tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_locate_transaction_finds_a_known_confirmed_tx() {
         let location = client().locate_transaction(KNOWN_TX).await.unwrap();
         assert_eq!(location, TxLocation::InBlock(3_755_690));
@@ -3812,7 +3839,7 @@ mod live_node_tests {
     /// A transaction looked up by its id (the admin payment lookup) is the
     /// one its block holds, placed at that block.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_find_transaction_matches_the_same_tx_in_its_block() {
         let c = client();
         let (fetched, location) = c.find_transaction(KNOWN_TX).await.unwrap().unwrap();
@@ -3828,7 +3855,7 @@ mod live_node_tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_find_transaction_finds_nothing_for_a_bogus_hash() {
         let found = client()
             .find_transaction("0000000000000000000000000000000000000000000000000000000000000000")
@@ -3838,7 +3865,7 @@ mod live_node_tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_locate_transaction_reports_not_found_for_a_bogus_hash() {
         let location = client()
             .locate_transaction("0000000000000000000000000000000000000000000000000000000000000000")
@@ -3848,11 +3875,11 @@ mod live_node_tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_is_key_image_spent_reports_unspent_for_a_null_image() {
         let statuses = client()
             .is_key_image_spent(&[
-                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
             ])
             .await
             .unwrap();
@@ -3860,7 +3887,7 @@ mod live_node_tests {
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a live mainnet node"]
     async fn real_node_end_to_end_scan_of_live_mempool_never_panics_and_finds_no_false_matches() {
         // The fullest available proof this pipeline works: real transactions,
         // fresh off a real node's real mempool, run through the actual
@@ -3869,7 +3896,7 @@ mod live_node_tests {
         // zero matches (this key owns nothing) - the point is that scanning
         // diverse, unpredictable real-world transaction shapes never errors or
         // panics, which a single canned fixture can't prove.
-        use crate::key_custody::{KeyCustody, PlainKeyCustody, WalletMaterial};
+        use crate::key_custody::{KeyCustody as _, PlainKeyCustody, WalletMaterial};
         use crate::store::Store;
         use monero::{PrivateKey, PublicKey};
 
@@ -3892,7 +3919,7 @@ mod live_node_tests {
         let store = Store::open_in_memory().unwrap();
         let created = store
             .create_tenant(
-                crate::store::NewTenant {
+                &crate::store::NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4test".into(),
@@ -3929,7 +3956,7 @@ mod live_node_tests {
     async fn a_response_larger_than_the_cap_is_refused_as_a_node_error() {
         use axum::routing::post;
         // Any endpoint: a valid-looking answer padded to 10kB.
-        let app = axum::Router::new().fallback(post(|| async {
+        let app = axum::Router::new().fallback(post(async || {
             format!(
                 "{{\"status\":\"OK\",\"height\":1,\"count\":1,\"pad\":\"{}\"}}",
                 "x".repeat(10_000)

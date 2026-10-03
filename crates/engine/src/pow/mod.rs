@@ -1,10 +1,12 @@
 //! Monero's proof-of-work rules, as monerod applies them to a block
-//! (docs/proof_of_work.md): the RandomX seed a block is hashed with, the
-//! difficulty it must meet (computed from the blocks before it, never taken
-//! from a node), the check of its hash against that difficulty, and the
-//! timestamp rules that keep the difficulty honest.
+//! (`docs/proof_of_work.md`).
 //!
-//! Everything here is pure; [`hasher`] computes the RandomX hashes on a
+//! The `RandomX` seed a block is hashed with, the difficulty it must meet
+//! (computed from the blocks before it, never taken from a node), the check
+//! of its hash against that difficulty, and the timestamp rules that keep
+//! the difficulty honest.
+//!
+//! Everything here is pure; [`hasher`] computes the `RandomX` hashes on a
 //! thread of its own.
 
 use std::collections::VecDeque;
@@ -30,15 +32,17 @@ pub const TIMESTAMP_CHECK_WINDOW: usize = 60;
 /// How far ahead of the clock a block's timestamp may be
 /// (`CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT`).
 pub const FUTURE_TIME_LIMIT_SECS: u64 = 2 * 60 * 60;
-/// Blocks per RandomX key (`SEEDHASH_EPOCH_BLOCKS`).
+/// Blocks per `RandomX` key (`SEEDHASH_EPOCH_BLOCKS`).
 pub const SEEDHASH_EPOCH_BLOCKS: u64 = 2048;
 /// Blocks after a key block before its key is used (`SEEDHASH_EPOCH_LAG`).
 pub const SEEDHASH_EPOCH_LAG: u64 = 64;
-/// The first block version hashed with RandomX (hard fork 12).
+/// The first block version hashed with `RandomX` (hard fork 12).
 pub const RANDOMX_MAJOR_VERSION: u64 = 12;
 
-/// The first block of `network` hashed with RandomX (hard fork 12, from
-/// monerod's `hardforks.cpp`). Blocks before it used CryptoNight variants,
+/// The first block of `network` hashed with `RandomX` (hard fork 12, from
+/// monerod's `hardforks.cpp`).
+///
+/// Blocks before it used `CryptoNight` variants,
 /// which this engine doesn't check: an anchor's window must start at or
 /// after it.
 pub fn randomx_fork_height(network: monero::Network) -> u64 {
@@ -49,7 +53,7 @@ pub fn randomx_fork_height(network: monero::Network) -> u64 {
     }
 }
 
-/// The height of the block whose id is the RandomX key for block `height`
+/// The height of the block whose id is the `RandomX` key for block `height`
 /// (`rx_seedheight`).
 pub fn seed_height(height: u64) -> u64 {
     if height <= SEEDHASH_EPOCH_BLOCKS + SEEDHASH_EPOCH_LAG {
@@ -59,7 +63,8 @@ pub fn seed_height(height: u64) -> u64 {
     }
 }
 
-/// The difficulty of the block after `window`, monerod's `next_difficulty`:
+/// The difficulty of the block after `window`, monerod's `next_difficulty`.
+///
 /// `window` is the blocks before it, oldest first, as (timestamp,
 /// cumulative difficulty), up to [`DIFFICULTY_BLOCKS`] of them. The newest
 /// [`DIFFICULTY_LAG`] are left out, the timestamps sorted and
@@ -101,12 +106,12 @@ pub fn median(timestamps: &[u64]) -> Option<u64> {
         _ if n % 2 == 1 => Some(sorted[n / 2]),
         _ => {
             let (a, b) = (sorted[n / 2 - 1], sorted[n / 2]);
-            Some(a / 2 + b / 2 + (a % 2 + b % 2) / 2)
+            Some(a / 2 + b / 2 + u64::midpoint(a % 2, b % 2))
         }
     }
 }
 
-/// Whether a RandomX `hash` meets `difficulty`: read as a little-endian
+/// Whether a `RandomX` `hash` meets `difficulty`: read as a little-endian
 /// 256-bit number, `hash × difficulty` must fit in 256 bits (monerod's
 /// `check_hash`).
 pub fn check_hash(hash: &[u8; 32], difficulty: u128) -> bool {
@@ -219,7 +224,7 @@ pub struct Candidate {
     pub prev_id: [u8; 32],
     pub timestamp: u64,
     pub major_version: u64,
-    /// What RandomX hashes: the header, the transactions' Merkle root and
+    /// What `RandomX` hashes: the header, the transactions' Merkle root and
     /// their count (`get_block_hashing_blob`).
     pub pow_input: Vec<u8>,
 }
@@ -274,27 +279,63 @@ pub enum Verdict {
 impl Rejection {
     pub fn verdict(&self) -> Verdict {
         match self {
-            Rejection::TimestampInFuture { .. } => Verdict::NotYet,
-            Rejection::DoesNotFollow { .. } => Verdict::Moved,
-            Rejection::Undecodable { .. }
-            | Rejection::WrongHeight { .. }
-            | Rejection::NotRandomX { .. }
-            | Rejection::TimestampBeforeMedian { .. }
-            | Rejection::ProofOfWork { .. }
-            | Rejection::BelowFloor { .. } => Verdict::Invalid,
+            Self::TimestampInFuture {
+                height: _,
+                timestamp: _,
+                now: _,
+            } => Verdict::NotYet,
+            Self::DoesNotFollow { height: _ } => Verdict::Moved,
+            Self::Undecodable {
+                height: _,
+                reason: _,
+            }
+            | Self::WrongHeight { height: _, sent: _ }
+            | Self::NotRandomX {
+                height: _,
+                version: _,
+            }
+            | Self::TimestampBeforeMedian {
+                height: _,
+                timestamp: _,
+                median: _,
+            }
+            | Self::ProofOfWork {
+                height: _,
+                difficulty: _,
+            }
+            | Self::BelowFloor {
+                height: _,
+                difficulty: _,
+                floor: _,
+            } => Verdict::Invalid,
         }
     }
 
     pub fn height(&self) -> u64 {
         match self {
-            Rejection::Undecodable { height, .. }
-            | Rejection::WrongHeight { height, .. }
-            | Rejection::NotRandomX { height, .. }
-            | Rejection::DoesNotFollow { height }
-            | Rejection::TimestampBeforeMedian { height, .. }
-            | Rejection::TimestampInFuture { height, .. }
-            | Rejection::ProofOfWork { height, .. }
-            | Rejection::BelowFloor { height, .. } => *height,
+            Self::Undecodable { height, reason: _ }
+            | Self::WrongHeight { height, sent: _ }
+            | Self::NotRandomX { height, version: _ }
+            | Self::DoesNotFollow { height }
+            | Self::TimestampBeforeMedian {
+                height,
+                timestamp: _,
+                median: _,
+            }
+            | Self::TimestampInFuture {
+                height,
+                timestamp: _,
+                now: _,
+            }
+            | Self::ProofOfWork {
+                height,
+                difficulty: _,
+            }
+            | Self::BelowFloor {
+                height,
+                difficulty: _,
+                floor: _,
+            } => *height,
         }
     }
 }
@@ -318,7 +359,7 @@ pub fn decode(height: u64, blob: &[u8]) -> Result<Candidate, Rejection> {
         _ => {
             return Err(Rejection::Undecodable {
                 height,
-                reason: "no coinbase input".to_string(),
+                reason: "no coinbase input".to_owned(),
             })
         }
     }
@@ -333,9 +374,11 @@ pub fn decode(height: u64, blob: &[u8]) -> Result<Candidate, Rejection> {
 }
 
 /// Checks what about `candidate` the blocks before it decide, against
-/// the proven `window` ending at its parent: it must follow the window's
-/// tip, be a RandomX block, and keep its timestamp at or above their
-/// median. Returns the difficulty its RandomX hash must then meet. The
+/// the proven `window` ending at its parent.
+///
+/// It must follow the window's
+/// tip, be a `RandomX` block, and keep its timestamp at or above their
+/// median. Returns the difficulty its `RandomX` hash must then meet. The
 /// clock is checked last ([`check_time`]), once its proof of work is known
 /// good: a block with a bad proof is invalid whatever its time.
 pub fn check_header(window: &Window, candidate: &Candidate) -> Result<u128, Rejection> {
@@ -377,7 +420,7 @@ pub fn check_time(candidate: &Candidate, now: u64) -> Result<(), Rejection> {
     Ok(())
 }
 
-/// `candidate` with its RandomX `hash`, against `difficulty`: the block
+/// `candidate` with its `RandomX` `hash`, against `difficulty`: the block
 /// that joins the proven chain, or why not.
 pub fn accept(
     window: &Window,

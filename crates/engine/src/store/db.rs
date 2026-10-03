@@ -1,4 +1,4 @@
-//! The engine's database worker (docs/scanner_microtasks.md, "Database
+//! The engine's database worker (`docs/scanner_microtasks.md`, "Database
 //! access"): one thread owns a connection and runs every job sent to it, so
 //! SQLite work never blocks a Tokio worker thread.
 //!
@@ -110,7 +110,7 @@ impl Db {
     /// waits on another thread) and in-memory databases, which can't be
     /// opened twice. Production uses [`Db::open`].
     pub fn over_shared(store: SharedStore) -> Self {
-        Db {
+        Self {
             inner: Inner::Inline {
                 store,
                 yields: false,
@@ -124,7 +124,7 @@ impl Db {
     /// two jobs, where a crash or a cancellation can stop the real thing.
     #[cfg(test)]
     pub fn over_shared_yielding(store: SharedStore) -> Self {
-        Db {
+        Self {
             inner: Inner::Inline {
                 store,
                 yields: true,
@@ -160,13 +160,13 @@ impl Db {
                 {
                     let message = panic
                         .downcast_ref::<&str>()
-                        .map(|m| m.to_string())
+                        .map(ToString::to_string)
                         .or_else(|| panic.downcast_ref::<String>().cloned());
                     tracing::error!(panic = ?message, "the database worker's loop panicked; restarting it");
                 }
             })
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
-        Ok(Db {
+        Ok(Self {
             inner: Inner::Worker {
                 senders: Arc::new(senders),
                 wake,
@@ -202,7 +202,7 @@ impl Db {
             Inner::Worker { senders, wake } => (senders, wake),
         };
         let (reply, answer) = tokio::sync::oneshot::channel();
-        let (counters, queued_at) = (self.counters.clone(), Instant::now());
+        let (counters, queued_at) = (Arc::clone(&self.counters), Instant::now());
         // The job records its own timing before it replies, so a caller that
         // has its answer also sees it in the metrics.
         let job: Job = Box::new(move |store| {
@@ -211,15 +211,14 @@ impl Db {
             record(&counters, queued_at, started);
             let _ = reply.send(result);
         });
-        senders[class.index()]
-            .send(job)
-            .await
-            .map_err(|_| StoreError::WorkerUnavailable("the database worker stopped".into()))?;
+        senders[class.index()].send(job).await.map_err(|e| {
+            StoreError::WorkerUnavailable(format!("the database worker stopped: {e}"))
+        })?;
         let _ = wake.try_send(());
-        answer.await.map_err(|_| {
-            E::from(StoreError::WorkerUnavailable(
-                "the database worker dropped a job".into(),
-            ))
+        answer.await.map_err(|e| {
+            E::from(StoreError::WorkerUnavailable(format!(
+                "the database worker dropped a job: {e}"
+            )))
         })?
     }
 
@@ -228,11 +227,14 @@ impl Db {
     #[cfg(test)]
     pub fn queued(&self, class: Class) -> usize {
         match &self.inner {
-            Inner::Worker { senders, .. } => {
+            Inner::Worker { senders, wake: _ } => {
                 let sender = &senders[class.index()];
                 sender.max_capacity() - sender.capacity()
             }
-            Inner::Inline { .. } => 0,
+            Inner::Inline {
+                store: _,
+                yields: _,
+            } => 0,
         }
     }
 
@@ -306,7 +308,10 @@ fn serve(
             // The job runs first, as a real bug's panic might not let it;
             // the test checks the worker carries on serving.
             job(store);
-            panic!("injected worker loop panic");
+            #[expect(clippy::panic, reason = "a fault only a test injects")]
+            {
+                panic!("injected worker loop panic");
+            }
         }
         // A panicking job loses its own reply (its caller gets an error), not
         // the worker.
@@ -322,21 +327,18 @@ mod tests {
     /// An inline handle whose store is already locked (by a caller that
     /// shouldn't be holding it) fails the job instead of deadlocking.
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // holding it is the point
+    #[expect(clippy::await_holding_lock, reason = "holding it is the point")]
     async fn an_inline_job_on_a_held_store_fails_instead_of_deadlocking() {
         let shared = Store::open_in_memory().unwrap().into_shared();
-        let db = Db::over_shared(shared.clone());
+        let db = Db::over_shared(Arc::clone(&shared));
         let held = shared.lock();
-        let result = db.run(Class::Admin, |s| s.count_tenants()).await;
+        let result = db.run(Class::Admin, Store::count_tenants).await;
         assert!(
             matches!(result, Err(StoreError::WorkerUnavailable(_))),
             "{result:?}"
         );
         drop(held);
-        assert_eq!(
-            db.run(Class::Admin, |s| s.count_tenants()).await.unwrap(),
-            0
-        );
+        assert_eq!(db.run(Class::Admin, Store::count_tenants).await.unwrap(), 0);
     }
 
     /// If the worker's own loop panics, it restarts and keeps serving.
@@ -384,15 +386,15 @@ mod tests {
         };
         let db = Db::start(store.connect_again(&path).unwrap(), faults).unwrap();
         // The loop exits at once and its queues close.
-        let Inner::Worker { senders, .. } = &db.inner else {
+        let Inner::Worker { senders, wake: _ } = &db.inner else {
             unreachable!()
         };
         while !senders[Class::Admin.index()].is_closed() {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        let result = db.run(Class::Admin, |s| s.count_tenants()).await;
+        let result = db.run(Class::Admin, Store::count_tenants).await;
         assert!(
-            matches!(result, Err(StoreError::WorkerUnavailable(ref m)) if m.contains("stopped")),
+            matches!(&result, Err(StoreError::WorkerUnavailable(m)) if m.contains("stopped")),
             "{result:?}"
         );
         drop(db);
@@ -483,7 +485,7 @@ mod tests {
         queued(Class::Scanner, 0).await;
         let mut jobs = Vec::new();
         for i in 0..20 {
-            let (db, order) = (db.clone(), order.clone());
+            let (db, order) = (db.clone(), Arc::clone(&order));
             jobs.push(tokio::spawn(async move {
                 db.run(Class::Scanner, move |_| -> Result<()> {
                     order.lock().push(format!("scanner{i}"));
@@ -494,7 +496,7 @@ mod tests {
         }
         queued(Class::Scanner, 20).await;
         let admin = {
-            let (db, order) = (db.clone(), order.clone());
+            let (db, order) = (db.clone(), Arc::clone(&order));
             tokio::spawn(async move {
                 db.run(Class::Admin, move |_| -> Result<()> {
                     order.lock().push("admin".into());
@@ -527,7 +529,7 @@ mod tests {
         let (store, path) = file_store();
         let tenant = store
             .create_tenant(
-                crate::store::NewTenant {
+                &crate::store::NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![0u8; 64],
                     primary_address: "4db".into(),
@@ -541,7 +543,7 @@ mod tests {
             .tenant;
         let index = store.allocate_minor_index(&tenant.id).unwrap();
         let order = store
-            .create_order(crate::store::NewOrder {
+            .create_order(&crate::store::NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.id.clone(),

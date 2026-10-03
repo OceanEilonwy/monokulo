@@ -2,10 +2,11 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{compiler_fence, Ordering};
+use std::sync::Arc;
 
 use monero::cryptonote::onetime_key::SubKeyChecker;
 use monero::{Address, PrivateKey, PublicKey, ViewPair};
-use zeroize::Zeroize;
+use zeroize::Zeroize as _;
 
 use super::outputs::{owned_outputs, pays};
 use super::{
@@ -140,8 +141,8 @@ struct WalletEntry {
     /// An async mutex: the table is moved into a blocking scan and back, so
     /// scans of one wallet run one at a time (different wallets in parallel)
     /// and no table is ever copied.
-    live: std::sync::Arc<tokio::sync::Mutex<KeyTable>>,
-    lookup: std::sync::Arc<tokio::sync::Mutex<RangeTable>>,
+    live: Arc<tokio::sync::Mutex<KeyTable>>,
+    lookup: Arc<tokio::sync::Mutex<RangeTable>>,
     /// Derivations done so far, for tests that check nothing is rebuilt.
     #[cfg(test)]
     derivations: std::sync::atomic::AtomicU64,
@@ -149,10 +150,10 @@ struct WalletEntry {
 
 impl WalletEntry {
     fn new(view_pair: ViewPair) -> Self {
-        WalletEntry {
+        Self {
             view_pair,
-            live: std::sync::Arc::new(tokio::sync::Mutex::new(KeyTable::default())),
-            lookup: std::sync::Arc::new(tokio::sync::Mutex::new(RangeTable::default())),
+            live: Arc::new(tokio::sync::Mutex::new(KeyTable::default())),
+            lookup: Arc::new(tokio::sync::Mutex::new(RangeTable::default())),
             #[cfg(test)]
             derivations: std::sync::atomic::AtomicU64::new(0),
         }
@@ -162,12 +163,10 @@ impl WalletEntry {
 /// Scans are elliptic-curve work. They run on the blocking pool (task 7.2),
 /// never on the async workers that serve requests, and at most one per core
 /// at a time.
-static SCAN_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+static SCAN_SLOTS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(2);
-        std::sync::Arc::new(tokio::sync::Semaphore::new(cores))
+        let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
+        Arc::new(tokio::sync::Semaphore::new(cores))
     });
 
 /// Best-effort scrub of the one *long-lived* copy of a tenant's view key: the one
@@ -196,7 +195,9 @@ impl Drop for WalletEntry {
             // `PrivateKey` owned by `self` for the whole of `drop`; a
             // volatile write of another `PrivateKey` over it is the same
             // write the assignment would do, only not elidable.
-            unsafe { std::ptr::write_volatile(&mut self.view_pair.view, zero) };
+            unsafe {
+                std::ptr::write_volatile(&raw mut self.view_pair.view, zero);
+            }
         }
         compiler_fence(Ordering::SeqCst);
     }
@@ -204,11 +205,13 @@ impl Drop for WalletEntry {
 
 /// Reference `KeyCustody` implementation: view pairs live in this process's ordinary
 /// memory behind a lock, with no encryption at rest and no isolation from the host
-/// process. See the module-level docs for why that's an acceptable default for a
-/// self-hosted, single-tenant deployment and not for a multi-tenant hosted one.
+/// process.
+///
+/// See the module-level docs for why that's an acceptable default for a self-hosted,
+/// single-tenant deployment and not for a multi-tenant hosted one.
 #[derive(Default)]
 pub struct PlainKeyCustody {
-    wallets: RwLock<HashMap<WalletHandle, std::sync::Arc<WalletEntry>>>,
+    wallets: RwLock<HashMap<WalletHandle, Arc<WalletEntry>>>,
     registration_ids: RwLock<HashMap<String, WalletHandle>>,
 }
 
@@ -222,7 +225,7 @@ impl KeyCustody for PlainKeyCustody {
         let handle = WalletHandle::generate();
         self.wallets
             .write()
-            .insert(handle, std::sync::Arc::new(WalletEntry::new(view_pair)));
+            .insert(handle, Arc::new(WalletEntry::new(view_pair)));
         Ok(handle)
     }
 
@@ -285,8 +288,8 @@ impl KeyCustody for PlainKeyCustody {
             registrations.remove(registration_id);
         }
         let handle = WalletHandle::generate();
-        wallets.insert(handle, std::sync::Arc::new(WalletEntry::new(view_pair)));
-        registrations.insert(registration_id.to_string(), handle);
+        wallets.insert(handle, Arc::new(WalletEntry::new(view_pair)));
+        registrations.insert(registration_id.to_owned(), handle);
         Ok(handle)
     }
 
@@ -345,7 +348,7 @@ impl KeyCustody for PlainKeyCustody {
         // Keep one independent lookup range per wallet. Each completed CPU
         // batch stays in the cache even if the caller is cancelled while the
         // blocking worker runs; a retry resumes instead of starting at zero.
-        let mut lookup = entry.lookup.clone().lock_owned().await;
+        let mut lookup = Arc::clone(&entry.lookup).lock_owned().await;
         while lookup.range
             != Some((
                 major_range.start,
@@ -372,7 +375,7 @@ impl KeyCustody for PlainKeyCustody {
             #[cfg(test)]
             entry
                 .derivations
-                .fetch_add(derived as u64, std::sync::atomic::Ordering::Relaxed);
+                .fetch_add(derived as u64, Ordering::Relaxed);
             #[cfg(not(test))]
             let _ = derived;
             if !lookup.complete {
@@ -421,7 +424,7 @@ impl KeyCustody for PlainKeyCustody {
         // future cannot discard work already running: that task finishes one
         // bounded batch and leaves the table, including partial progress, in
         // the wallet's cache before releasing the guard.
-        let mut live = entry.live.clone().lock_owned().await;
+        let mut live = Arc::clone(&entry.live).lock_owned().await;
         while live.covers.as_ref() != Some(indices) {
             let view_pair = entry.view_pair;
             let wanted = indices.clone();
@@ -437,9 +440,7 @@ impl KeyCustody for PlainKeyCustody {
             })?;
             live = returned;
             #[cfg(test)]
-            entry
-                .derivations
-                .fetch_add(derived, std::sync::atomic::Ordering::Relaxed);
+            entry.derivations.fetch_add(derived, Ordering::Relaxed);
             #[cfg(not(test))]
             let _ = derived;
             if live.covers.as_ref() != Some(indices) {
@@ -489,7 +490,7 @@ impl PlainKeyCustody {
         self.wallets.read().len()
     }
 
-    fn entry(&self, handle: WalletHandle) -> Result<std::sync::Arc<WalletEntry>, KeyCustodyError> {
+    fn entry(&self, handle: WalletHandle) -> Result<Arc<WalletEntry>, KeyCustodyError> {
         self.wallets
             .read()
             .get(&handle)
@@ -502,10 +503,8 @@ impl PlainKeyCustody {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::key_custody::WalletMaterial;
     use monero::consensus::encode::deserialize;
-    use monero::{Network, PrivateKey, Transaction};
-    use std::sync::atomic::Ordering;
+    use monero::Transaction;
 
     fn random_scalar_bytes(seed: u8) -> [u8; 32] {
         // Not cryptographically random - deterministic per-test fixture data only.
@@ -853,7 +852,7 @@ mod tests {
     async fn scans_of_different_wallets_run_in_parallel_off_the_async_workers() {
         let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
-        let custody = std::sync::Arc::new(PlainKeyCustody::default());
+        let custody = Arc::new(PlainKeyCustody::default());
         let mut handles = vec![];
         for seed in 10..18u8 {
             let view = PrivateKey::from_slice(&random_scalar_bytes(seed)).unwrap();
@@ -872,7 +871,7 @@ mod tests {
         // when many wallets scan concurrently through the shared slots.
         let window = ScanIndices::range(0..200);
         let scans = handles.iter().map(|h| {
-            let custody = custody.clone();
+            let custody = Arc::clone(&custody);
             let tx = tx.clone();
             let window = window.clone();
             let h = *h;
@@ -965,7 +964,7 @@ mod tests {
         );
         assert_eq!(
             primary,
-            monero::Address::standard(
+            Address::standard(
                 Network::Mainnet,
                 spend_pubkey,
                 PublicKey::from_private_key(&view_key),
@@ -1223,7 +1222,7 @@ mod tests {
         let mut tasks = Vec::new();
         for (handle, address) in expected.clone() {
             for _ in 0..8 {
-                let custody = custody.clone();
+                let custody = Arc::clone(&custody);
                 tasks.push(tokio::spawn(async move {
                     let index = SubaddressIndex { major: 0, minor: 1 };
                     assert_eq!(
@@ -1240,7 +1239,7 @@ mod tests {
         // Churn the map concurrently with those reads, so the reads are genuinely
         // racing writer acquisitions of the registry lock rather than a quiet map.
         for seed in 60u8..68 {
-            let custody = custody.clone();
+            let custody = Arc::clone(&custody);
             tasks.push(tokio::spawn(async move {
                 let view_key = PrivateKey::from_slice(&random_scalar_bytes(seed)).unwrap();
                 let spend_key = PrivateKey::from_slice(&random_scalar_bytes(seed + 20)).unwrap();

@@ -1,4 +1,4 @@
-//! What the engine has measured of one node's link (docs/engine_scaling.md
+//! What the engine has measured of one node's link (`docs/engine_scaling.md`
 //! section 1), and the timeouts that follow from it (section 2).
 //!
 //! Three running averages, each from the calls that show it best:
@@ -42,15 +42,16 @@ pub(crate) const SAFETY: f64 = 3.0;
 /// small calls, so a measured link never gets less than an unmeasured one.
 pub const MIN_TIMEOUT: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
 /// The longest timeout any call gets.
-pub const MAX_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub const MAX_TIMEOUT: Duration = Duration::from_mins(10);
 /// Minutes of history kept, for the admin page's charts.
 const HISTORY_MINUTES: usize = 60;
 
 /// What one request over a link costs, as the link has measured it (or
 /// guessed, before any measurement): a fixed round trip, the node's own
-/// work for each block asked for, and the time each byte takes. Requests
-/// are sized and timed from the same figures, so a request sized to a time
-/// is given a timeout for that time.
+/// work for each block asked for, and the time each byte takes.
+///
+/// Requests are sized and timed from the same figures, so a request sized
+/// to a time is given a timeout for that time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LinkCost {
     pub rtt_secs: f64,
@@ -62,7 +63,7 @@ impl LinkCost {
     /// A link that costs only its bytes: no round trip, no work per block.
     #[cfg(test)]
     pub(crate) fn transfer_only(rate_bytes_per_sec: f64) -> Self {
-        LinkCost {
+        Self {
             rtt_secs: 0.0,
             ttfb_per_block_secs: 0.0,
             rate_bytes_per_sec,
@@ -75,14 +76,19 @@ impl LinkCost {
 
     /// Seconds a request for `blocks` blocks, `bytes` bytes in all, takes.
     pub fn secs(&self, blocks: u64, bytes: f64) -> f64 {
-        self.rtt_secs + blocks as f64 * self.ttfb_per_block_secs + bytes * self.secs_per_byte()
+        bytes.mul_add(
+            self.secs_per_byte(),
+            (blocks as f64).mul_add(self.ttfb_per_block_secs, self.rtt_secs),
+        )
     }
 
     /// How many items one request carries within `secs`, its round trip
     /// included, when each is `item_bytes` long and costs the node
     /// `item_node_secs` of its own work: whole items, never negative.
     pub fn items_within(&self, secs: f64, item_bytes: f64, item_node_secs: f64) -> f64 {
-        let per_item = (item_node_secs + item_bytes * self.secs_per_byte()).max(f64::MIN_POSITIVE);
+        let per_item = item_bytes
+            .mul_add(self.secs_per_byte(), item_node_secs)
+            .max(f64::MIN_POSITIVE);
         ((secs - self.rtt_secs).max(0.0) / per_item).floor()
     }
 }
@@ -111,7 +117,7 @@ struct State {
 
 impl Default for State {
     fn default() -> Self {
-        State {
+        Self {
             rtt_secs: COLD_RTT_SECS,
             ttfb_per_block_secs: COLD_TTFB_PER_BLOCK_SECS,
             rate_bytes_per_sec: COLD_RATE_BYTES_PER_SEC,
@@ -127,7 +133,7 @@ impl Default for State {
 /// and what went wrong during it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Minute {
-    minute_unix: i64,
+    at_unix: i64,
     rate_bytes_per_sec: f64,
     rtt_secs: f64,
     ttfb_per_block_secs: f64,
@@ -138,7 +144,7 @@ struct Minute {
 pub use shared::scaling::{LinkPoint, LinkSnapshot};
 
 fn ewma(average: f64, sample: f64) -> f64 {
-    ALPHA * sample + (1.0 - ALPHA) * average
+    (1.0 - ALPHA).mul_add(average, ALPHA * sample)
 }
 
 fn ms(secs: f64) -> u64 {
@@ -147,7 +153,7 @@ fn ms(secs: f64) -> u64 {
 
 impl Link {
     pub fn new() -> Self {
-        Link::default()
+        Self::default()
     }
 
     /// A small call answered in `elapsed`: a round-trip sample.
@@ -259,7 +265,7 @@ impl Link {
     fn snapshot_at(&self, now_unix: i64) -> LinkSnapshot {
         let state = self.state.lock();
         let hour_ago = now_unix - 3600;
-        let recent = state.history.iter().filter(|m| m.minute_unix > hour_ago);
+        let recent = state.history.iter().filter(|m| m.at_unix > hour_ago);
         let (timeouts, failures) = recent
             .clone()
             .fold((0, 0), |(t, f), m| (t + m.timeouts, f + m.failures));
@@ -275,7 +281,7 @@ impl Link {
             history: recent
                 .filter(|m| m.rate_bytes_per_sec > 0.0)
                 .map(|m| LinkPoint {
-                    minute_unix: m.minute_unix,
+                    minute_unix: m.at_unix,
                     rate_bytes_per_sec: m.rate_bytes_per_sec.round() as u64,
                     rtt_ms: ms(m.rtt_secs),
                     ttfb_per_block_ms: ms(m.ttfb_per_block_secs),
@@ -304,14 +310,10 @@ impl State {
     /// Applies `f` to the history entry for the minute holding `now_unix`,
     /// started if new.
     fn in_minute(&mut self, now_unix: i64, f: impl FnOnce(&mut Minute)) {
-        let minute_unix = now_unix - now_unix.rem_euclid(60);
-        if self
-            .history
-            .back()
-            .is_none_or(|m| m.minute_unix != minute_unix)
-        {
+        let at_unix = now_unix - now_unix.rem_euclid(60);
+        if self.history.back().is_none_or(|m| m.at_unix != at_unix) {
             self.history.push_back(Minute {
-                minute_unix,
+                at_unix,
                 rate_bytes_per_sec: 0.0,
                 rtt_secs: 0.0,
                 ttfb_per_block_secs: 0.0,
@@ -400,9 +402,10 @@ mod tests {
         for _ in 0..100 {
             link.record_timeout_at(T0);
         }
+        // Clamped to the floor exactly (`max`), so compared bit for bit.
         assert_eq!(
-            link.cost().rate_bytes_per_sec,
-            MIN_RATE_BYTES_PER_SEC,
+            link.cost().rate_bytes_per_sec.to_bits(),
+            MIN_RATE_BYTES_PER_SEC.to_bits(),
             "it has a floor"
         );
         assert_eq!(

@@ -18,32 +18,32 @@
 /// never seals wallet material directly, since its own tenant is provisioned
 /// through a real HTTP connect flow instead) - a constant unused in *one*
 /// binary but used in the other is expected here, not dead code to prune.
-#[allow(dead_code)]
-pub mod e2e_fixture {
+#[expect(dead_code, reason = "each e2e test binary uses part of this module")]
+pub(crate) mod e2e_fixture {
     // Switched to monerodevs.org (the community-curated stagenet node) after
     // stagenet.xmr-tw.org itself proved unreliable during earlier e2e work -
     // real, reproducible mid-request hangs/dropped connections, confirmed
     // independently against both e2e test files, not a fluke of one.
-    pub const NODE_HOST: &str = "node.monerodevs.org";
-    pub const NODE_PORT: u16 = 38089;
-    pub const NODE_SSL: bool = false;
-    pub const NODE_ACCEPT_SELF_SIGNED_CERTS: bool = true;
+    pub(crate) const NODE_HOST: &str = "node.monerodevs.org";
+    pub(crate) const NODE_PORT: u16 = 38089;
+    pub(crate) const NODE_SSL: bool = false;
+    pub(crate) const NODE_ACCEPT_SELF_SIGNED_CERTS: bool = true;
 
-    pub const WALLET_PRIMARY_ADDRESS: &str =
+    pub(crate) const WALLET_PRIMARY_ADDRESS: &str =
         "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg";
-    pub const WALLET_PRIVATE_VIEW_KEY: &str =
+    pub(crate) const WALLET_PRIVATE_VIEW_KEY: &str =
         "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e";
-    pub const WALLET_PUBLIC_SPEND_KEY: &str =
+    pub(crate) const WALLET_PUBLIC_SPEND_KEY: &str =
         "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335";
-    pub const WALLET_NETWORK: &str = "stagenet";
+    pub(crate) const WALLET_NETWORK: &str = "stagenet";
 
     // Real stagenet blocks land roughly every ~2 minutes; requiring any
     // confirmations at all would make these tests spend most of their time
     // waiting on the chain rather than exercising the scanner's own detection
     // logic - native 0-conf (see `status::derive_status`'s own doc comment)
     // settles the tiny test payment the instant it's seen in the mempool.
-    pub const PAYMENT_CONFIRMATIONS_REQUIRED: u64 = 0;
-    pub const PAYMENT_ORDER_EXPIRY_MINUTES: i64 = 30;
-    pub const PAYMENT_REORG_CHECK_DEPTH: u64 = 20;
-    pub const PAYMENT_MEMPOOL_POLL_INTERVAL_MS: u64 = 2000;
+    pub(crate) const PAYMENT_CONFIRMATIONS_REQUIRED: u64 = 0;
+    pub(crate) const PAYMENT_ORDER_EXPIRY_MINUTES: i64 = 30;
+    pub(crate) const PAYMENT_REORG_CHECK_DEPTH: u64 = 20;
+    pub(crate) const PAYMENT_MEMPOOL_POLL_INTERVAL_MS: u64 = 2000;
 }

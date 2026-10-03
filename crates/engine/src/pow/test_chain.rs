@@ -1,4 +1,4 @@
-//! Real Monero blocks for tests: real blobs, ids, RandomX keys and proofs
+//! Real Monero blocks for tests: real blobs, ids, `RandomX` keys and proofs
 //! of work, at difficulties small enough to mine in a few hashes.
 //!
 //! A chain starts with blocks that claim difficulty 1, which any hash
@@ -8,7 +8,7 @@
 //! make as a right one.
 
 use monero::consensus::encode::{serialize, VarInt};
-use monero::cryptonote::hash::Hashable;
+use monero::cryptonote::hash::Hashable as _;
 
 use super::hasher::Hasher;
 use super::{check_hash, seed_height, ProvenBlock, Window, DIFFICULTY_BLOCKS};
@@ -48,10 +48,10 @@ pub struct TestChain {
     hasher: Hasher,
     blocks: Vec<TestBlock>,
     /// Seconds between mined blocks.
-    pub spacing: u64,
+    spacing: u64,
 }
 
-/// The RandomX key for a key height below a chain's first block: made up,
+/// The `RandomX` key for a key height below a chain's first block: made up,
 /// but the same for every chain, so forks share it.
 pub fn made_up_key(height: u64) -> [u8; 32] {
     let mut input = b"test chain key ".to_vec();
@@ -90,9 +90,12 @@ fn block_blob(
     for tx in txs {
         blob.extend_from_slice(&tx.hash().0);
     }
-    #[allow(
-        clippy::expect_used,
-        reason = "test support: the blob is built right above"
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::expect_used,
+            reason = "test support: the blob is built right above"
+        )
     )]
     monero::consensus::deserialize(&blob).expect("a test block decodes")
 }
@@ -115,7 +118,7 @@ impl TestChain {
         last_time: u64,
         difficulty: u128,
     ) -> Self {
-        let mut chain = TestChain {
+        let mut chain = Self {
             hasher,
             blocks: Vec::new(),
             spacing,
@@ -152,7 +155,10 @@ impl TestChain {
         &self.blocks
     }
 
-    #[allow(clippy::expect_used, reason = "test support: a chain is never empty")]
+    #[cfg_attr(
+        not(test),
+        expect(clippy::expect_used, reason = "test support: a chain is never empty")
+    )]
     pub fn tip(&self) -> &TestBlock {
         self.blocks.last().expect("a test chain has blocks")
     }
@@ -163,7 +169,7 @@ impl TestChain {
             .get(usize::try_from(height.checked_sub(first)?).ok()?)
     }
 
-    /// The RandomX key block `height` is hashed with: the id of the block
+    /// The `RandomX` key block `height` is hashed with: the id of the block
     /// at its key height, or a made-up one below the chain.
     pub fn key(&self, height: u64) -> [u8; 32] {
         let at = seed_height(height);
@@ -198,7 +204,10 @@ impl TestChain {
 
     /// The next block at `timestamp`, its proof meeting its difficulty or
     /// (`valid` false) not.
-    #[allow(clippy::expect_used, reason = "test support: hashing can't fail here")]
+    #[cfg_attr(
+        not(test),
+        expect(clippy::expect_used, reason = "test support: hashing can't fail here")
+    )]
     pub fn push(
         &mut self,
         txs: Vec<monero::Transaction>,
@@ -237,7 +246,8 @@ impl TestChain {
     }
 
     /// This chain up to `height`: where a fork starts.
-    pub fn truncated(&self, height: u64) -> TestChain {
+    #[must_use = "a new, shorter chain is returned; this one is unchanged"]
+    pub fn truncated(&self, height: u64) -> Self {
         let mut chain = self.clone();
         chain.blocks.retain(|b| b.height <= height);
         chain

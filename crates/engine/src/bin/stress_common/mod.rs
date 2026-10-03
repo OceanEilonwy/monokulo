@@ -1,4 +1,4 @@
-//! What the scanner's stress binaries share (docs/engine_stress.md): the
+//! What the scanner's stress binaries share (`docs/engine_stress.md)`: the
 //! deterministic wallets and the transaction every scripted block carries.
 
 use std::error::Error;
@@ -6,25 +6,25 @@ use std::error::Error;
 use engine::key_custody::WalletMaterial;
 use monero::consensus::encode::deserialize;
 use monero::{PrivateKey, PublicKey, Transaction};
-use sha2::{Digest, Sha256};
+use sha2::{Digest as _, Sha256};
 
 /// The transaction every scripted block holds. It pays tenant 0's
 /// subaddress (0, 1), so every block has a real match to record.
-pub fn fixture_tx() -> Result<Transaction, Box<dyn Error>> {
+pub(crate) fn fixture_tx() -> Result<Transaction, Box<dyn Error>> {
     Ok(deserialize(&hex::decode(
         include_str!("../../../tests/fixtures/subaddress_tx.hex").trim(),
     )?)?)
 }
 
 /// The id of [`fixture_tx`].
-pub fn txid(tx: &Transaction) -> String {
-    use monero::cryptonote::hash::Hashable;
+pub(crate) fn txid(tx: &Transaction) -> String {
+    use monero::cryptonote::hash::Hashable as _;
     hex::encode(tx.hash().to_bytes())
 }
 
 /// Wallet `index` of the run seeded by `seed`: tenant 0 owns
 /// [`fixture_tx`]'s outputs, the rest are derived from the seed.
-pub fn material(seed: u64, index: usize) -> Result<WalletMaterial, Box<dyn Error>> {
+pub(crate) fn material(seed: u64, index: usize) -> Result<WalletMaterial, Box<dyn Error>> {
     // Tenant 0 owns the fixture transaction's outputs, so every block has a
     // real match to record.
     if index == 0 {

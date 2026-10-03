@@ -1,9 +1,9 @@
-//! Durable state for the scanner's work units (docs/scanner_microtasks.md):
+//! Durable state for the scanner's work units (`docs/scanner_microtasks.md)`:
 //! the reorg job, the recompute schedule, and rotation positions. Every
 //! read here is a bounded page; every multi-row write is one transaction.
 
 use super::{OrderId, TenantId};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension as _};
 
 use super::{OrderPaymentRow, Result, Store, StoreError};
 
@@ -18,7 +18,7 @@ pub fn sql_height(height: u64) -> Result<i64> {
 
 /// A list of ids as a JSON array, for `json_each` in SQL.
 fn json_array<S: AsRef<str>>(ids: &[S]) -> String {
-    serde_json::Value::from(ids.iter().map(|id| id.as_ref()).collect::<Vec<&str>>()).to_string()
+    serde_json::Value::from(ids.iter().map(AsRef::as_ref).collect::<Vec<&str>>()).to_string()
 }
 
 /// Reads an unsigned column.
@@ -69,9 +69,11 @@ pub struct ReorgCandidate {
 }
 
 /// A rotation position the scheduler keeps across restarts, one row per
-/// network per position. Each is a type with its own value type, so a
-/// position can't be read as something it isn't. The set is closed: one
-/// type per rotation, never one per tenant.
+/// network per position.
+///
+/// Each is a type with its own value type, so a position can't be read
+/// as something it isn't. The set is closed: one type per rotation,
+/// never one per tenant.
 pub trait Position {
     const KEY: &'static str;
     type Value: std::str::FromStr + ToString;
@@ -122,7 +124,7 @@ pub mod position {
 /// retries are due at once (the scheduler still tries a candidate at most
 /// once a round), so a blip costs nothing; after that the wait doubles from
 /// one second, up to about four minutes.
-pub fn reorg_retry_delay(attempts: u32) -> i64 {
+pub(super) fn reorg_retry_delay(attempts: u32) -> i64 {
     match attempts {
         0..=2 => 0,
         n => 1i64 << (n - 3).min(8),
@@ -479,10 +481,10 @@ impl Store {
             }
         };
         let share = limit.div_ceil(2);
-        for list in found.iter_mut() {
+        for list in &mut found {
             take(list, share);
         }
-        for list in found.iter_mut() {
+        for list in &mut found {
             take(list, limit);
         }
         Ok(ids)
@@ -503,12 +505,9 @@ impl Store {
                 |row| row.get(0),
             )
             .optional()?;
-        Ok(raw.and_then(|raw| match raw.parse() {
-            Ok(value) => Some(value),
-            Err(_) => {
-                tracing::warn!(network = crate::network::network_str(network), position = P::KEY, value = %raw, "an unreadable scheduler position; starting that rotation over");
-                None
-            }
+        Ok(raw.and_then(|raw| if let Ok(value) = raw.parse() { Some(value) } else {
+            tracing::warn!(network = crate::network::network_str(network), position = P::KEY, value = %raw, "an unreadable scheduler position; starting that rotation over");
+            None
         }))
     }
 
@@ -805,10 +804,10 @@ impl Store {
         let ids: Vec<&TenantId> = scanned
             .iter()
             .filter(|b| b.height() == height)
-            .map(|b| b.tenant_id())
+            .map(crate::work::ScannedBlock::tenant_id)
             .collect();
         if ids.is_empty() {
-            return Ok(Default::default());
+            return Ok(std::collections::HashSet::default());
         }
         let ids = json_array(&ids);
         let moved = self.rows(
@@ -876,7 +875,7 @@ mod tests {
     fn tenant(store: &Store, network: &str) -> String {
         store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![0u8; 64],
                     primary_address: format!("4{}", uuid::Uuid::new_v4().simple()),
@@ -894,10 +893,10 @@ mod tests {
 
     fn order(store: &Store, tenant_id: &str, expires_at: i64) -> String {
         let index = store
-            .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+            .allocate_minor_index(&TenantId::new(tenant_id.to_owned()))
             .unwrap();
         store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant_id.into(),
@@ -917,7 +916,7 @@ mod tests {
     fn pay(store: &Store, order_id: &str, txid: &str, height: Option<i64>) -> i64 {
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &OrderId::new(order_id.to_owned()),
                 txid,
                 0,
                 10,
@@ -928,7 +927,7 @@ mod tests {
             )
             .unwrap();
         store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&OrderId::new(order_id.to_owned()))
             .unwrap()
             .into_iter()
             .find(|p| p.txid == txid)
@@ -975,7 +974,10 @@ mod tests {
         assert!(matches!(
             s.collect_reorg_candidates(monero::Network::Mainnet, 2, 1001)
                 .unwrap(),
-            ReorgPhase::CollectConfirmed { .. }
+            ReorgPhase::CollectConfirmed {
+                after_height: _,
+                after_id: _
+            }
         ));
         let s = reopen(store, &path);
         let mut phase = s
@@ -987,10 +989,10 @@ mod tests {
                 .unwrap();
         }
         let mut collected = work(&s, "mainnet");
-        collected.sort();
+        collected.sort_unstable();
         let mut expected = vec![at, unconfirmed];
         expected.extend(&above);
-        expected.sort();
+        expected.sort_unstable();
         assert_eq!(collected, expected);
         assert!(!collected.contains(&below) && !collected.contains(&late));
         assert!(work(&s, "stagenet").is_empty());
@@ -1027,7 +1029,7 @@ mod tests {
             != ReorgPhase::Process
         {}
         let mut collected = work(s, "mainnet");
-        collected.sort();
+        collected.sort_unstable();
         assert_eq!(collected, vec![deep, shallow]);
         drop(store);
         cleanup(&path);
@@ -1133,7 +1135,7 @@ mod tests {
         assert_eq!(
             s.scanned_blocks_between(monero::Network::Mainnet, 0, 100)
                 .unwrap(),
-            vec![(19, "new19".to_string())]
+            vec![(19, "new19".to_owned())]
         );
         let cursors: Vec<Option<u64>> = s
             .list_active_tenants()
@@ -1168,7 +1170,7 @@ mod tests {
         // Fully paid at height 50 with ten confirmations needed: due again
         // each block until it settles, then never.
         s.record_payment_match(
-            &shared::ids::OrderId::new(expiring.to_string()),
+            &OrderId::new(expiring.clone()),
             "tx",
             0,
             100,
@@ -1178,7 +1180,7 @@ mod tests {
             None,
         )
         .unwrap();
-        s.recompute_order_status(&shared::ids::OrderId::new(expiring.to_string()), 52, 1_000)
+        s.recompute_order_status(&OrderId::new(expiring.clone()), 52, 1_000)
             .unwrap();
         assert!(s
             .due_order_ids(monero::Network::Mainnet, 1_000, 52, 10)
@@ -1195,12 +1197,12 @@ mod tests {
                 .is_empty(),
             "no deadline once fully paid"
         );
-        s.recompute_order_status(&shared::ids::OrderId::new(expiring.to_string()), 59, 1_000)
+        s.recompute_order_status(&OrderId::new(expiring.clone()), 59, 1_000)
             .unwrap();
         assert!(
             !s.due_order_ids(monero::Network::Mainnet, i64::MAX, u64::MAX, 10)
                 .unwrap()
-                .contains(&shared::ids::OrderId::new(expiring.to_string())),
+                .contains(&OrderId::new(expiring)),
             "settled"
         );
         drop(store);
@@ -1215,7 +1217,7 @@ mod tests {
         let s = &store.0;
         let o = order(s, &store.3, 5_000);
         s.record_payment_match(
-            &shared::ids::OrderId::new(o.to_string()),
+            &OrderId::new(o.clone()),
             "tx",
             0,
             100,
@@ -1228,7 +1230,7 @@ mod tests {
         s.open_reorg_job(monero::Network::Mainnet, 70, 1_000)
             .unwrap();
         let (_, frozen) = s
-            .recompute_order_status(&shared::ids::OrderId::new(o.to_string()), 59, 1_000)
+            .recompute_order_status(&OrderId::new(o.clone()), 59, 1_000)
             .unwrap();
         assert_eq!(frozen, crate::status::OrderStatus::Confirming);
         assert_eq!(
@@ -1251,7 +1253,7 @@ mod tests {
         s.finish_reorg(monero::Network::Mainnet, 70, Some((69, "h69")))
             .unwrap();
         let (_, settled) = s
-            .recompute_order_status(&shared::ids::OrderId::new(o.to_string()), 59, 1_000)
+            .recompute_order_status(&OrderId::new(o), 59, 1_000)
             .unwrap();
         assert_eq!(settled, crate::status::OrderStatus::Paid);
         assert!(s
@@ -1337,7 +1339,7 @@ mod tests {
             .unwrap();
         store
             .0
-            .set_scheduler_position::<ScanRange>(monero::Network::Mainnet, &"tn_x".to_string())
+            .set_scheduler_position::<ScanRange>(monero::Network::Mainnet, &"tn_x".to_owned())
             .unwrap();
         let s = reopen(store, &path);
         assert_eq!(
@@ -1421,7 +1423,7 @@ mod tests {
             .unwrap();
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &OrderId::new(order_id.clone()),
                 "tx_confirmed",
                 0,
                 50,
@@ -1433,7 +1435,7 @@ mod tests {
             .unwrap();
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &OrderId::new(order_id.clone()),
                 "tx_pool",
                 0,
                 50,
@@ -1445,7 +1447,7 @@ mod tests {
             .unwrap();
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &OrderId::new(order_id.clone()),
                 "tx_voided",
                 0,
                 50,
@@ -1456,15 +1458,10 @@ mod tests {
             )
             .unwrap();
         store
-            .void_payment(
-                &shared::ids::OrderId::new(order_id.to_string()),
-                "tx_voided",
-                0,
-                160,
-            )
+            .void_payment(&OrderId::new(order_id.clone()), "tx_voided", 0, 160)
             .unwrap();
         let voided_id = store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&OrderId::new(order_id.clone()))
             .unwrap()
             .iter()
             .find(|p| p.txid == "tx_voided")
@@ -1578,8 +1575,8 @@ mod tests {
         assert_eq!(
             sweep(&store, |s| s.scan_windows(
                 &[
-                    shared::ids::TenantId::new(tenant_id.clone()),
-                    shared::ids::TenantId::new(other.clone())
+                    TenantId::new(tenant_id.clone()),
+                    TenantId::new(other.clone())
                 ],
                 150,
                 0
@@ -1609,16 +1606,16 @@ mod tests {
             s.in_transaction(|s| {
                 s.save_block_checkpoint(
                     monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &TenantId::new(tenant_id.clone()),
                     &checkpoint,
                 )
             })
         });
         sweep(&store, |s| {
-            s.stage_partial_match(crate::store::StagedMatch {
+            s.stage_partial_match(&crate::store::StagedMatch {
                 network: monero::Network::Mainnet,
-                tenant_id: &shared::ids::TenantId::new(tenant_id.to_string()),
-                order_id: &shared::ids::OrderId::new(order_id.to_string()),
+                tenant_id: &TenantId::new(tenant_id.clone()),
+                order_id: &OrderId::new(order_id.clone()),
                 txid: "tx_staged",
                 output_index: 0,
                 amount: 70,
@@ -1636,7 +1633,7 @@ mod tests {
             s.in_transaction(|s| {
                 s.save_block_checkpoint(
                     monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &TenantId::new(tenant_id.clone()),
                     &replaced,
                 )
             })
@@ -1644,7 +1641,7 @@ mod tests {
         assert!(
             sweep(&store, |s| s.in_transaction(|s| s.take_staged_payments(
                 monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &TenantId::new(tenant_id.clone()),
                 "c11"
             )))
             .is_empty(),
@@ -1653,12 +1650,12 @@ mod tests {
         assert_eq!(
             sweep(&store, |s| s.block_checkpoint(
                 monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenant_id.to_string())
+                &TenantId::new(tenant_id.clone())
             )),
             None
         );
         let scanned = [crate::work::ScannedBlock::for_test(
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &TenantId::new(tenant_id),
             11,
         )];
         assert_eq!(
@@ -1687,7 +1684,9 @@ mod tests {
     #[test]
     fn catch_up_groups_are_counted_as_listed() {
         let store = Store::open_in_memory().unwrap();
-        let ids: Vec<_> = (0..5).map(|_| tenant(&store, "mainnet")).collect();
+        let ids: Vec<_> = std::iter::repeat_with(|| tenant(&store, "mainnet"))
+            .take(5)
+            .collect();
         tenant(&store, "stagenet");
         for (id, cursor) in ids.iter().zip([3, 3, 7, 20, 9]) {
             store
@@ -1741,7 +1740,7 @@ mod tests {
         let order_id = order(&store, &tenant_id, 10_000);
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &OrderId::new(order_id),
                 "tx",
                 0,
                 1,
@@ -1815,7 +1814,9 @@ mod tests {
     fn due_orders_are_listed_once_up_to_the_limit() {
         let store = Store::open_in_memory().unwrap();
         let tenant_id = tenant(&store, "mainnet");
-        let orders: Vec<String> = (0..3).map(|_| order(&store, &tenant_id, 10_000)).collect();
+        let orders: Vec<String> = std::iter::repeat_with(|| order(&store, &tenant_id, 10_000))
+            .take(3)
+            .collect();
         store
             .execute_raw_for_test("UPDATE orders SET next_due_at_utc = 50, next_due_height = 7")
             .unwrap();
@@ -1825,7 +1826,7 @@ mod tests {
         assert_eq!(due.len(), 3, "each once: {due:?}");
         assert!(orders
             .iter()
-            .all(|o| due.contains(&shared::ids::OrderId::new(o.to_string()))));
+            .all(|o| due.contains(&OrderId::new(o.clone()))));
         assert_eq!(
             store
                 .due_order_ids(monero::Network::Mainnet, 100, 10, 2)
@@ -1842,8 +1843,12 @@ mod tests {
     fn height_due_orders_get_half_the_page_whatever_the_time_due_backlog() {
         let store = Store::open_in_memory().unwrap();
         let tenant_id = tenant(&store, "mainnet");
-        let by_time: Vec<String> = (0..8).map(|_| order(&store, &tenant_id, 10_000)).collect();
-        let by_height: Vec<String> = (0..3).map(|_| order(&store, &tenant_id, 10_000)).collect();
+        let by_time: Vec<String> = std::iter::repeat_with(|| order(&store, &tenant_id, 10_000))
+            .take(8)
+            .collect();
+        let by_height: Vec<String> = std::iter::repeat_with(|| order(&store, &tenant_id, 10_000))
+            .take(3)
+            .collect();
         for id in &by_time {
             store
                 .execute_raw_for_test(&format!(
@@ -1920,11 +1925,11 @@ mod tests {
     // queries these pages replaced, held to the pages themselves. -----------
 
     fn tenant_id(id: &str) -> TenantId {
-        TenantId::new(id.to_string())
+        TenantId::new(id.to_owned())
     }
 
     fn order_id(id: &str) -> OrderId {
-        OrderId::new(id.to_string())
+        OrderId::new(id.to_owned())
     }
 
     /// The stores in scope on `network`, by id.
@@ -2085,7 +2090,7 @@ mod tests {
                 .due_order_ids(network, 5_000, 0, 10)
                 .unwrap()
                 .into_iter()
-                .map(|id| id.into_string())
+                .map(OrderId::into_string)
                 .collect::<Vec<_>>()
         };
         assert_eq!(due(monero::Network::Mainnet), vec![main_order]);
@@ -2131,9 +2136,9 @@ mod tests {
             != ReorgPhase::Process
         {}
         let mut collected = work(&store, "mainnet");
-        collected.sort();
+        collected.sort_unstable();
         let mut expected = vec![pooled_again, voided_mined, voided_pooled];
-        expected.sort();
+        expected.sort_unstable();
         assert_eq!(collected, expected);
         assert!(!collected.contains(&below));
         assert!(work(&store, "stagenet").is_empty());
@@ -2182,7 +2187,7 @@ mod tests {
         assert!(page(monero::Network::Stagenet, 0, 0, 10).is_empty());
     }
 
-    /// (store, mainnet order, stagenet order, mainnet tenant)
+    /// (store, mainnet order, stagenet order, mainnet tenant).
     fn fixture() -> ((Store, String, String, String), String) {
         let (store, path) = file_store();
         let main_tenant = tenant(&store, "mainnet");

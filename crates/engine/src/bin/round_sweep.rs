@@ -1,4 +1,4 @@
-//! One point of `cargo xtask stress rounds` (docs/engine_stress.md): the
+//! One point of `cargo xtask stress rounds` (`docs/engine_stress.md)`: the
 //! production scheduler catching up a backlog of blocks from a scripted node
 //! whose link has a set round trip, time to first byte and rate, with
 //! rounds of a set length run back to back as the engine's own loop runs
@@ -15,6 +15,15 @@
 //!
 //! Progress is read over the binary's own SQLite connection, as in
 //! `stress_fixture`.
+
+// A command-line tool: its result goes to stdout, its progress and errors
+// to stderr, and it runs on one thread.
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::future_not_send,
+    reason = "a command-line tool reports on stdout and stderr, on one thread"
+)]
 
 mod stress_common;
 
@@ -156,7 +165,7 @@ impl MoneroDaemonClient for SweepDaemon {
             .map(|height| ChainBlock {
                 height,
                 hash: Self::hash(height),
-                prev_hash: height.checked_sub(1).map(Self::hash).unwrap_or_default(),
+                prev_hash: height.checked_sub(1).map_or_default(Self::hash),
                 timestamp: self.tip_time - (self.tip - height) * BLOCK_SECS,
                 txs: vec![self.tx.clone()],
                 txids: vec![self.txid.clone()],
@@ -183,7 +192,7 @@ impl MoneroDaemonClient for SweepDaemon {
             .map(|height| ChainHeader {
                 height,
                 hash: Self::hash(height),
-                prev_hash: height.checked_sub(1).map(Self::hash).unwrap_or_default(),
+                prev_hash: height.checked_sub(1).map_or_default(Self::hash),
                 timestamp: self.tip_time - (self.tip - height) * BLOCK_SECS,
                 weight: Some(self.block_bytes),
                 tx_count: Some(1),
@@ -218,10 +227,10 @@ impl MoneroDaemonClient for SweepDaemon {
     }
     async fn is_key_image_spent(
         &self,
-        images: &[String],
+        key_images: &[String],
     ) -> Result<Vec<KeyImageStatus>, DaemonError> {
         self.small().await;
-        Ok(vec![KeyImageStatus::Unspent; images.len()])
+        Ok(vec![KeyImageStatus::Unspent; key_images.len()])
     }
 }
 
@@ -355,7 +364,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
             .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
             .await?;
         let created = store.create_tenant(
-            NewTenant {
+            &NewTenant {
                 key_custody_backend: "plain".into(),
                 sealed_key_material: custody.seal(&keys).await?,
                 primary_address: address.to_string(),
@@ -375,7 +384,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         // tenant is scanned for every block (tenant 0's first one is paid
         // in each).
         for _ in 0..2 {
-            let minor = store.allocate_minor_index(&shared::ids::TenantId::new(id.to_string()))?;
+            let minor = store.allocate_minor_index(&TenantId::new(id.to_string()))?;
             let subaddress = custody
                 .derive_subaddress(
                     handle,
@@ -383,7 +392,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
                     Network::Mainnet,
                 )
                 .await?;
-            store.create_order(NewOrder {
+            store.create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: id.clone(),
@@ -439,7 +448,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         ..ScanTuning::DEFAULT
     };
     let state = ScanState::default()
-        .with_progress(progress.clone())
+        .with_progress(Arc::clone(&progress))
         .with_tuning(tuning)?;
     let inputs = RoundInputs {
         db: &db,

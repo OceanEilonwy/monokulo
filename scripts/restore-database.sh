@@ -45,7 +45,7 @@
 #      before and after is the pass condition, not merely "the restore
 #      command exited 0."
 #   5. Only now start scanner against the new box's config. On boot it
-#      re-applies (already-applied, so harmless - see src/store.rs's own
+#      re-applies (already-applied, so harmless - see src/store/mod.rs's own
 #      comment on why migrations are re-run and re-checked every boot rather
 #      than assumed-already-done) migrations, unseals every non-disabled
 #      tenant's key material into a fresh in-memory KeyCustody registry
