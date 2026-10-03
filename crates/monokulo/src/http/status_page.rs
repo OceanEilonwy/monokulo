@@ -184,15 +184,94 @@ pub fn known_slow_blocks(engine: &Engine) -> Vec<String> {
 }
 
 /// The key custody backends a new store may choose from, with the default
-/// first, from the same cache as [`known_health`] (part 5). Empty unless
-/// the engine offers more than one, so forms only show the choice when
-/// there is one to make.
-pub fn known_custody_choices(engine: &Engine) -> Vec<String> {
-    let choices = known_enabled_custody_backends(engine);
+/// first, from the same cache as [`known_health`] (part 5), less any this
+/// site doesn't offer now (`key_entry::usable_custody_backends`). Empty
+/// unless more than one is left, so forms only show the choice when there
+/// is one to make.
+fn known_custody_choices(state: &AppState) -> Vec<String> {
+    let choices = super::key_entry::usable_custody_backends(state);
     if choices.len() < 2 {
         return Vec::new();
     }
     choices
+}
+
+/// Which images the engine's `snp` backend trusts, from the same cache as
+/// [`known_health`]: `None` while the status isn't known, `Some(None)`
+/// when the engine has no `snp` backend set up.
+pub fn known_snp_trust(engine: &Engine) -> Option<Option<crate::engine_client::SnpTrustStatus>> {
+    let cache = status_cache(engine);
+    cache
+        .cached
+        .as_ref()
+        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
+        .and_then(|cached| cached.result.as_ref().ok())
+        .map(|status| status.key_custody_snp_trust.clone())
+}
+
+/// What an operator must fix for SEV-SNP key entry, from `status` and this
+/// site's policy, each with the setting of monokulo's it is about:
+/// monokulo requires it and the engine has no `snp` backend, or the two
+/// trust different images (so `snp` isn't offered). Empty when neither
+/// uses it, or they agree.
+pub fn snp_policy_problems(
+    policy: &crate::settings::SnpEntryPolicy,
+    status: &EngineStatusResponse,
+) -> Vec<(&'static str, String)> {
+    use crate::settings::{KEY_CUSTODY_SNP_ENTRY_ID_KEY, KEY_CUSTODY_SNP_ENTRY_REQUIRED};
+    let snp_enabled = status
+        .key_custody
+        .iter()
+        .any(|b| super::key_entry::takes_keys_encrypted(&b.backend));
+    if policy.required && !snp_enabled {
+        return vec![(
+            KEY_CUSTODY_SNP_ENTRY_REQUIRED.key,
+            "key_custody.snp_entry_required is on, but the engine has no SEV-SNP backend enabled: no store can enter its keys".to_owned(),
+        )];
+    }
+    if !snp_enabled {
+        return Vec::new();
+    }
+    match (&policy.trust, &status.key_custody_snp_trust) {
+        (None, _) => vec![(
+            KEY_CUSTODY_SNP_ENTRY_ID_KEY.key,
+            "this site has no engine ID key to trust: set key_custody.snp_entry_id_key".to_owned(),
+        )],
+        (Some(_), None) => vec![(
+            KEY_CUSTODY_SNP_ENTRY_ID_KEY.key,
+            "the engine reports no SEV-SNP trust settings".to_owned(),
+        )],
+        (Some(ours), Some(engine)) => super::key_entry::trust_differences(ours, engine),
+    }
+}
+
+/// [`snp_policy_problems`] as one sentence for the status page; `None`
+/// when there are none.
+pub fn snp_policy_alert(
+    policy: &crate::settings::SnpEntryPolicy,
+    status: &EngineStatusResponse,
+) -> Option<String> {
+    let problems = snp_policy_problems(policy, status);
+    if problems.is_empty() {
+        return None;
+    }
+    let problems: Vec<String> = problems.into_iter().map(|(_, problem)| problem).collect();
+    Some(format!(
+        "SEV-SNP key storage can't be chosen: this site's key entry settings don't match the engine's. {}.",
+        problems.join("; ")
+    ))
+}
+
+/// [`snp_policy_alert`] from the cached status, for an operator's alert
+/// bar; nothing while the status isn't known.
+pub fn known_snp_policy_alert(state: &AppState) -> Option<String> {
+    let cache = status_cache(&state.engine);
+    let status = cache
+        .cached
+        .as_ref()
+        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
+        .and_then(|cached| cached.result.as_ref().ok())?;
+    snp_policy_alert(&state.settings.snp_entry.load(), status)
 }
 
 /// Whether a fresh, successful engine status is known.
@@ -231,10 +310,10 @@ pub fn known_enabled_custody_backends(engine: &Engine) -> Vec<String> {
 /// [`known_custody_choices`] as form options, `selected` (or the default)
 /// selected.
 pub fn custody_choice_views(
-    engine: &Engine,
+    state: &AppState,
     selected: Option<&str>,
 ) -> Vec<crate::views::connect::CustodyChoice> {
-    let choices = known_custody_choices(engine);
+    let choices = known_custody_choices(state);
     let selected = selected
         .filter(|s| choices.iter().any(|c| c == s))
         .or(choices.first().map(String::as_str))
@@ -420,8 +499,18 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
     let mut view_model = match get_status_cached(&state.engine).await {
         Ok(status) => {
             let slow = slow_block_messages(&status, admin);
+            // Anyone may know SEV-SNP key storage is off; which settings
+            // differ is for operators.
+            let snp_alert = snp_policy_alert(&state.settings.snp_entry.load(), &status).map(|detail| {
+                if admin {
+                    detail
+                } else {
+                    "SEV-SNP key storage isn't available: this site's settings for it don't match the engine's. Its operator has been alerted.".to_owned()
+                }
+            });
             views::status::StatusPageViewModel {
                 slow_blocks: slow,
+                snp_alert,
                 ..build_view_model(status)
             }
         }
@@ -432,6 +521,7 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
             poll_interval_secs: 0,
             generated_at_display: String::new(),
             slow_blocks: Vec::new(),
+            snp_alert: None,
             engine_page: false,
         },
     };
@@ -512,6 +602,7 @@ fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageVi
         poll_interval_secs: status.poll_interval_secs,
         generated_at_display: relative_time(now, status.generated_at),
         slow_blocks: Vec::new(),
+        snp_alert: None,
         engine_page: false,
     }
 }
@@ -795,6 +886,7 @@ mod tests {
             unserved_tenants: vec![],
             key_custody: vec![],
             key_custody_default: None,
+            key_custody_snp_trust: None,
             resources: None,
         }
     }
@@ -1241,6 +1333,7 @@ mod tests {
                 unserved_tenants: vec![],
                 key_custody: vec![],
                 key_custody_default: None,
+                key_custody_snp_trust: None,
                 resources: None,
             });
             let labels: Vec<(&str, &str)> = view

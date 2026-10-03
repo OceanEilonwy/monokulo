@@ -1448,7 +1448,6 @@ mod tests {
             request = request.bearer_auth(token);
         }
         let answer: serde_json::Value = request.send().await.unwrap().json().await.unwrap();
-        assert_eq!(answer["trust"]["official"], false, "{answer}");
         let bundle = serde_json::from_value(answer["bundle"].clone()).unwrap();
         serde_json::json!({
             "encrypted_keys": engine.seal_keys_for_snp(
@@ -1578,6 +1577,26 @@ mod tests {
             .await;
         let base_url = format!("http://{}", engine.addr);
         let client = engine_http_client();
+
+        // `/status` says which images the backend trusts, for monokulo to
+        // compare with its own key entry policy.
+        let status: serde_json::Value = client
+            .get(format!("{base_url}/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            status["key_custody_snp_trust"],
+            serde_json::json!({
+                "id_key_digest": hex::encode(snp_test_trust().id_key_digest),
+                "min_guest_svn": 0,
+                "min_tcb": "",
+            }),
+            "{status}"
+        );
 
         let created: serde_json::Value = client
             .post(format!("{base_url}/api/v1/admin/tenants"))

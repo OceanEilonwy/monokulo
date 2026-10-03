@@ -965,10 +965,23 @@ fn custody_backend_of<'a>(
         })
 }
 
+/// The backend one of monokulo's own key custody settings is for:
+/// `key_custody.<backend>_...` (`key_custody.snp_entry_id_key`), all but
+/// the key-custody-cli links.
+fn monokulo_custody_backend_of(field: &AdminScalarFieldView) -> Option<&str> {
+    let rest = field.key.strip_prefix("key_custody.")?;
+    if rest.starts_with("cli_") {
+        return None;
+    }
+    rest.split('_').next()
+}
+
 /// A section of its own for each backend, shown only while it's turned on
-/// (at once with JavaScript, after saving without).
+/// (at once with JavaScript, after saving without): the engine's settings
+/// for it, then this site's own (what its key entry forms check).
 fn custody_backend_sections(
-    fields: &[AdminScalarFieldView],
+    engine_fields: &[AdminScalarFieldView],
+    monokulo_fields: &[AdminScalarFieldView],
     backends: &[(String, bool)],
 ) -> Markup {
     html! {
@@ -976,12 +989,30 @@ fn custody_backend_sections(
             section class="custody-backend" data-custody-backend=(backend) hidden[!enabled] {
                 h3 { "Key custody: " (backend) }
                 @let own: Vec<&AdminScalarFieldView> =
-                    fields.iter().filter(|f| custody_backend_of(f, backends) == Some(backend.as_str())).collect();
-                @if own.is_empty() {
+                    engine_fields.iter().filter(|f| custody_backend_of(f, backends) == Some(backend.as_str())).collect();
+                @let ours: Vec<&AdminScalarFieldView> =
+                    monokulo_fields.iter().filter(|f| monokulo_custody_backend_of(f) == Some(backend.as_str())).collect();
+                @if own.is_empty() && ours.is_empty() {
                     p class="hint" { "Nothing to set up for this backend." }
                 }
                 @for field in own { (scalar_field(field)) }
+                (site_custody_fields(&ours))
             }
+        }
+    }
+}
+
+/// This site's own settings for a key custody backend, under their own
+/// heading.
+fn site_custody_fields(fields: &[&AdminScalarFieldView]) -> Markup {
+    html! {
+        @if !fields.is_empty() {
+            h4 { "This site's key entry" }
+            p class="hint" {
+                "What this site's forms check before they encrypt a merchant's keys. They must match the engine's settings above: "
+                "they are checked against the engine when saved, and the status page shows an alert if they ever differ."
+            }
+            @for field in fields { (scalar_field(field)) }
         }
     }
 }
@@ -1421,10 +1452,27 @@ fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
                 @let fields = group_fields(data, tab, *heading, *owner);
                 @if !fields.is_empty() {
                     @if let Some(heading) = heading { h3 { (heading) } }
-                    @for field in fields.iter().filter(|f| custody_backend_of(f, &backends).is_none()) {
+                    @for field in fields.iter().filter(|f| custody_backend_of(f, &backends).is_none() && (*owner == SettingOwner::Engine || monokulo_custody_backend_of(f).is_none())) {
                         (scalar_field(field))
                     }
-                    @if tab == SettingsTab::Custody { (custody_backend_sections(&data.engine_fields, &backends)) }
+                    @if tab == SettingsTab::Custody && *owner == SettingOwner::Engine {
+                        (custody_backend_sections(&data.engine_fields, &data.monokulo_fields, &backends))
+                    }
+                    // This site's own settings for a backend the engine
+                    // shows no section for (it can't be reached, or doesn't
+                    // list it) are still shown.
+                    @if tab == SettingsTab::Custody && *owner == SettingOwner::Monokulo {
+                        @let ours: Vec<&AdminScalarFieldView> = fields
+                            .iter()
+                            .copied()
+                            .filter(|f| {
+                                monokulo_custody_backend_of(f).is_some_and(|backend| {
+                                    engine_down || !backends.iter().any(|(listed, _)| listed == backend)
+                                })
+                            })
+                            .collect();
+                        (site_custody_fields(&ours))
+                    }
                 }
             }
         }
@@ -1614,6 +1662,31 @@ mod tests {
             ),
             (
                 "key_custody.cli_source_url",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            // Shown in the snp backend's own section (`custody_backend_sections`).
+            (
+                "key_custody.snp_entry_id_key",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.snp_entry_min_guest_svn",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.snp_entry_min_tcb",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.snp_entry_required",
                 M,
                 Custody,
                 Some(CLI_DOWNLOADS),

@@ -1045,27 +1045,12 @@ struct SwitchKeyCustodyRequest<'a> {
     keys: &'a StoreKeys,
 }
 
-/// Mirrors the engine's own `KeyBundleResponse`: the bundle (passed on to
-/// the browser or `key-custody-cli` as it is) and which engine images the
-/// client should trust with keys.
+/// Mirrors the engine's own `KeyBundleResponse`: the bundle, passed on to
+/// the browser or `key-custody-cli` as it is. Which images to trust is
+/// monokulo's own policy (`settings::SnpEntryPolicy`), not the engine's.
 #[derive(Debug, Clone, Deserialize)]
 pub struct KeyBundleAnswer {
     pub bundle: serde_json::Value,
-    pub trust: KeyBundleTrust,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct KeyBundleTrust {
-    /// SHA-384 of the ID key engine images must be signed with, hex.
-    pub id_key_digest: String,
-    /// Whether that is the official key, built into the matching
-    /// `key-custody-cli`; if not, merchants pass it with `--trust-id-key`.
-    pub official: bool,
-    pub min_guest_svn: u32,
-    /// The lowest firmware trusted, `bootloader,tee,snp,microcode`; empty
-    /// for none.
-    #[serde(default)]
-    pub min_tcb: String,
 }
 
 /// Mirrors the engine's own `CreateTenantResponse`.
@@ -1325,6 +1310,10 @@ pub struct EngineStatusResponse {
     pub key_custody: Vec<CustodyBackendStatus>,
     #[serde(default)]
     pub key_custody_default: Option<String>,
+    /// Which images the engine's `snp` backend trusts with keys, when it
+    /// is set up: compared with monokulo's own policy.
+    #[serde(default)]
+    pub key_custody_snp_trust: Option<SnpTrustStatus>,
     /// The engine process's CPU and memory over the last hour.
     #[serde(default)]
     pub resources: Option<shared::resources::ResourceReport>,
@@ -1334,6 +1323,16 @@ pub struct EngineStatusResponse {
 pub struct CustodyBackendStatus {
     pub backend: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct SnpTrustStatus {
+    /// SHA-384 of the ID key images must be signed with, hex.
+    pub id_key_digest: String,
+    pub min_guest_svn: u32,
+    /// `bootloader,tee,snp,microcode`, or empty for no floor.
+    #[serde(default)]
+    pub min_tcb: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

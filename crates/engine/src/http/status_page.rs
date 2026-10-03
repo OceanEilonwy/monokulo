@@ -160,6 +160,10 @@ pub(super) struct EngineStatusResponse {
     /// The backend a new store's keys go to unless it asks for another;
     /// `None` when there's no choice (a single backend).
     pub key_custody_default: Option<String>,
+    /// Which engine images the `snp` backend trusts with keys, when it is
+    /// set up: monokulo's key entry forms check bundles against a policy of
+    /// their own, and alert when the two disagree.
+    pub key_custody_snp_trust: Option<SnpTrustStatus>,
     /// The engine process's CPU and memory over the last hour, and the
     /// machine it runs on (`docs/engine_scaling.md` section 6).
     pub resources: shared::resources::ResourceReport,
@@ -169,6 +173,15 @@ pub(super) struct EngineStatusResponse {
 pub(super) struct CustodyBackendStatus {
     pub backend: String,
     pub error: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(super) struct SnpTrustStatus {
+    /// SHA-384 of the ID key images must be signed with, hex.
+    pub id_key_digest: String,
+    pub min_guest_svn: u32,
+    /// `bootloader,tee,snp,microcode`, or empty for no floor.
+    pub min_tcb: String,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -372,6 +385,16 @@ pub(super) async fn status_page(
         key_custody_default: (!key_custody.is_empty())
             .then(|| state.settings.custody.load().default.as_str().to_owned()),
         key_custody,
+        key_custody_snp_trust: state
+            .custody
+            .snp
+            .as_ref()
+            .and_then(|slot| slot.trust())
+            .map(|trust| SnpTrustStatus {
+                id_key_digest: hex::encode(trust.id_key_digest),
+                min_guest_svn: trust.min_guest_svn,
+                min_tcb: trust.min_tcb.to_text(),
+            }),
         resources: shared::resources::sampler().report(),
     }))
 }

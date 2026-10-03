@@ -504,42 +504,9 @@ pub(super) struct KeyBundleRequest {
     backend: Option<String>,
 }
 
-/// Which engine images a client should trust with keys: what it checks a
-/// bundle's report against.
-#[derive(Serialize)]
-pub(super) struct TrustView {
-    /// SHA-384 of the ID key the engine image must be signed with, hex.
-    id_key_digest: String,
-    /// Whether that is the official one built into this release (and so
-    /// into the matching `key-custody-cli`): if not, merchants pass it to
-    /// the CLI with `--trust-id-key`.
-    official: bool,
-    min_guest_svn: u32,
-    /// The lowest firmware trusted: `bootloader,tee,snp,microcode`, or empty.
-    min_tcb: String,
-}
-
 #[derive(Serialize)]
 pub(super) struct KeyBundleResponse {
     bundle: Bundle,
-    trust: TrustView,
-}
-
-fn trust_view(state: &AppState) -> Result<TrustView, ApiError> {
-    let snp = state
-        .custody
-        .snp
-        .as_ref()
-        .and_then(|slot| slot.backend())
-        .ok_or_else(|| ApiError::Unavailable("the snp key custody backend isn't running".into()))?;
-    let trust = snp.config().trust;
-    Ok(TrustView {
-        id_key_digest: hex::encode(trust.id_key_digest),
-        official: crate::key_custody::transport::official_id_key_digest()
-            == Some(trust.id_key_digest),
-        min_guest_svn: trust.min_guest_svn,
-        min_tcb: trust.min_tcb.to_text(),
-    })
 }
 
 async fn key_bundle(
@@ -560,10 +527,7 @@ async fn key_bundle(
             | KeyCustodyError::BackendUnavailable(_)
             | KeyCustodyError::ScanFailed(_)) => other.into(),
         })?;
-    Ok(Json(KeyBundleResponse {
-        bundle,
-        trust: trust_view(state)?,
-    }))
+    Ok(Json(KeyBundleResponse { bundle }))
 }
 
 /// `POST /api/v1/admin/key-custody/bundle` - a bundle to encrypt a new
