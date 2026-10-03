@@ -345,8 +345,8 @@ pub trait KeyCustody: Send + Sync {
     }
     /// Checks whether the backend still holds the wallets registered with it
     /// and returns its "state epoch", which goes up each time the backend is
-    /// found to have lost them (a key-custody sidecar restarted with empty
-    /// memory). Every handle issued before the change is then useless, and
+    /// found to have lost them (a backend in another process restarted with
+    /// empty memory). Every handle issued before the change is then useless, and
     /// the caller must register all its wallets again from their sealed
     /// material (admin_settings_v2.md task 5.8). A backend that can't lose
     /// its wallets independently of this process keeps the default: always 0.

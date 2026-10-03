@@ -1204,8 +1204,8 @@ pub async fn run_scan_tick_with(
 /// at the same time: the losing registration is removed again.
 /// With `handled_epoch`, first asks the key-custody backend whether it still
 /// holds the wallets registered with it (`KeyCustody::check_state`, task
-/// 5.8). If it has lost them since `handled_epoch` (a sidecar that
-/// restarted with empty memory), every handle in `wallet_handles` is
+/// 5.8). If it has lost them since `handled_epoch` (a backend in another
+/// process that restarted with empty memory), every handle in `wallet_handles` is
 /// useless, so the map is cleared (once per epoch, however many network
 /// loops notice) and this network's tenants are registered again from their
 /// sealed material. Nobody has to enter keys again.
