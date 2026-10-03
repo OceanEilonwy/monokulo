@@ -3322,8 +3322,8 @@ async fn saving_nodes_that_dont_answer_for_a_network_stores_use_is_reported() {
 
 // -- Per-store key custody (admin_settings_v2.md part 5) --------------------
 
-/// Two in-process backends, named as the real ones, so a store can be moved
-/// between them without a key-custody-server running.
+/// Two in-process backends, named as the real ones (plain stands in for
+/// snp), so a store can be moved between them without SEV-SNP hardware.
 fn test_app_state_with_two_custody_backends() -> (AppState, Arc<dyn KeyCustody>, Arc<dyn KeyCustody>)
 {
     let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
@@ -3582,8 +3582,8 @@ async fn an_order_made_while_the_backend_has_just_lost_the_store_still_succeeds(
     );
 }
 
-/// A backend that holds wallets but whose health check fails, as a
-/// key-custody-server does once its snp stops answering.
+/// A backend that holds wallets but whose health check fails, as a backend
+/// in another process does once it stops answering.
 #[derive(Default)]
 struct UnansweringKeyCustody {
     inner: PlainKeyCustody,
