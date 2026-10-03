@@ -63,8 +63,9 @@ else
 fi
 
 # The SDK's cross toolchain, copied out of its image once per image tag.
+# Kept outside target/ (about 900 MB), so CI's Rust cache doesn't carry it.
 tag=${SDK_IMAGE##*:}
-toolchain_root="target/openwrt-sdk/$tag"
+toolchain_root="${XDG_CACHE_HOME:-$HOME/.cache}/monokulo/openwrt-sdk/$tag"
 if [ ! -d "$toolchain_root/staging_dir" ]; then
 	rm -rf "$toolchain_root"
 	mkdir -p "$toolchain_root"
@@ -75,7 +76,7 @@ if [ ! -d "$toolchain_root/staging_dir" ]; then
 	trap - EXIT
 	mv "$toolchain_root/staging_dir.partial" "$toolchain_root/staging_dir"
 fi
-toolchain=$(ls -d "$PWD/$toolchain_root"/staging_dir/toolchain-aarch64_cortex-a53_gcc-*_musl | head -n 1)
+toolchain=$(ls -d "$toolchain_root"/staging_dir/toolchain-aarch64_cortex-a53_gcc-*_musl | head -n 1)
 [ -x "$toolchain/bin/aarch64-openwrt-linux-musl-gcc" ] || {
 	echo "error: no aarch64 musl gcc in $SDK_IMAGE" >&2
 	exit 1
@@ -89,13 +90,13 @@ toolchain=$(ls -d "$PWD/$toolchain_root"/staging_dir/toolchain-aarch64_cortex-a5
 # library as a shared library, which would make the engine a dynamic
 # executable that OpenWrt can't run. A search directory holding only the
 # toolchain's static libstdc++, searched first, makes -lstdc++ resolve to it.
-static_cxx="$PWD/$toolchain_root/static-cxx"
+static_cxx="$toolchain_root/static-cxx"
 mkdir -p "$static_cxx"
 ln -sf "$toolchain/lib/libstdc++.a" "$static_cxx/libstdc++.a"
 
 rustup target add "$TARGET"
 (
-	export STAGING_DIR="$PWD/$toolchain_root/staging_dir"
+	export STAGING_DIR="$toolchain_root/staging_dir"
 	export PATH="$toolchain/bin:$PATH"
 	export CC_aarch64_unknown_linux_musl=aarch64-openwrt-linux-musl-gcc
 	export CXX_aarch64_unknown_linux_musl=aarch64-openwrt-linux-musl-g++
