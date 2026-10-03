@@ -65,48 +65,64 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(page.locator('#pills .pill.catchup')).toHaveCount(1);
   await expect(events.locator('tr.now')).toContainText('1 payment found in it');
 
-  // Left and right jump between key events; End returns to live.
-  await page.locator('#tl').focus();
+  // The playback position shows inside the window once off live, with
+  // its moment as a tooltip.
+  const marker = page.locator('#tl-head');
+  await expect(marker).toBeVisible();
+  await expect(marker).toHaveAttribute('aria-valuetext', /^Playback position: .* ago/);
+
+  // Left and right jump between key events; End returns to live, and the
+  // marker goes.
+  await page.locator('#tl-win').focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
   await page.keyboard.press('End');
   await expect(page.locator('#tl-text')).toHaveText(/^Live/);
+  await expect(marker).toBeHidden();
 
-  // A click on the track pauses there; Play replays; Live goes back.
+  // A press in the window goes to that moment; Play replays; Live goes back.
   const track = await page.locator('#tl').boundingBox();
-  await page.mouse.click(track.x + track.width * 0.5, track.y + 8);
+  await page.mouse.click(track.x + track.width * 0.5, track.y + 16);
   await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
+  await expect(marker).toBeVisible();
   await page.locator('#tl-play').click();
   await expect(page.locator('#tl-text')).toHaveText(/^(Replaying|Live)/);
   await page.locator('#tl-live').click();
   await expect(page.locator('#tl-text')).toHaveText(/^Live/);
 
   // Scrolling over the timeline leaves its window alone.
-  const axis = page.locator('#tl-axis');
-  await page.mouse.move(track.x + track.width * 0.5, track.y + 8);
+  const windowBox = page.locator('#tl-win');
+  await page.mouse.move(track.x + track.width * 0.5, track.y + 16);
   for (let i = 0; i < 6; i++) await page.mouse.wheel(0, -120);
-  await expect(axis.locator('span').last()).toHaveText('now');
+  const whole = await windowBox.boundingBox();
+  expect(whole.width).toBeGreaterThan(track.width - 4);
+  await expect(windowBox).toHaveAttribute('aria-valuetext', /to now$/);
 
-  // Dragging the window's right handle back ends it in the past; dragging
-  // its middle moves it; dragging on the timeline scrubs.
+  // Dragging the window's right handle back ends it in the past: playback
+  // pauses at its start. Dragging the middle moves it; dragging the marker
+  // scrubs within it.
   const handle = await page.locator('#tl-to').boundingBox();
   await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
   await page.mouse.down();
-  await page.mouse.move(handle.x - track.width * 0.3, handle.y + handle.height / 2, { steps: 6 });
+  await page.mouse.move(handle.x - track.width * 0.4, handle.y + handle.height / 2, { steps: 6 });
   await page.mouse.up();
-  await expect(axis.locator('span').last()).toHaveText(/ago$/);
-  const resized = await axis.textContent();
-  const box = await page.locator('#tl-win').boundingBox();
+  await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
+  await expect(windowBox).toHaveAttribute('aria-valuetext', /ago to .* ago$/);
+  const resized = await windowBox.getAttribute('style');
+  const box = await windowBox.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2 - 40, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.move(box.x + box.width / 2 + 60, box.y + box.height / 2, { steps: 4 });
   await page.mouse.up();
-  await expect(axis).not.toHaveText(resized);
-  await expect(page.locator('#tl-text')).toHaveText(/^Live/, { message: 'moving the window leaves playback where it was' });
-  await page.mouse.move(track.x + track.width * 0.3, track.y + 8);
+  await expect(windowBox).not.toHaveAttribute('style', resized);
+  const at = await marker.getAttribute('aria-valuetext');
+  const head = await marker.boundingBox();
+  const inside = await windowBox.boundingBox();
+  await page.mouse.move(head.x + head.width / 2, head.y + head.height / 2);
   await page.mouse.down();
-  await page.mouse.move(track.x + track.width * 0.6, track.y + 8, { steps: 5 });
+  await page.mouse.move(inside.x + inside.width - 4, head.y + head.height / 2, { steps: 5 });
   await page.mouse.up();
+  await expect(marker).not.toHaveAttribute('aria-valuetext', at);
   await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
 
   // A filter hides a tier's rows.

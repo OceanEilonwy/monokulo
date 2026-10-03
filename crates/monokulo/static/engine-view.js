@@ -6,10 +6,10 @@
 // (`engine_view::present`), every state from its state machine
 // (`engine_view::machine`). The server sends frames (what the page shows at a
 // moment, and the effects that led there); this script plays them about 1.5 s
-// behind the engine, animates the effects, and runs the timeline: click or
-// drag on it to go to a moment, which it asks the server for
-// (`/status/engine/at`, `/status/engine/replay`); the window under it chooses
-// the part of the history drawn, by its middle and its two handles.
+// behind the engine, animates the effects, and runs the timeline: one bar
+// of the whole history, with a window over it to move and resize, and
+// inside the window, once off live, the playback position; each moment is
+// asked of the server (`/status/engine/at`, `/status/engine/replay`).
 //
 // The page never zooms on the mouse wheel: scrolling scrolls the page.
 (() => {
@@ -80,8 +80,11 @@
       head += 16;
       while (queue.length && queue[0].at_ms <= head) play(queue.shift());
       if (!queue.length && head >= replayTo) fetchReplay();
-      if (head >= engineNow() - LAG) goLive();
-      followPlayhead();
+      // Replay plays the window: it pauses at the window's end, or goes
+      // live when the window ends at now.
+      const [, b] = view_();
+      if (win.end != null && head >= b) { head = b; setMode("paused"); }
+      else if (head >= engineNow() - LAG) goLive();
     }
     if (tlDirty || mode !== "paused") drawTimeline();
     requestAnimationFrame(frameLoop);
@@ -454,34 +457,47 @@
   }
 
   // ---- the timeline ----
+  // One bar: the whole history the page holds, every event on it. The
+  // window over it (orange, full height) is the stretch being looked at:
+  // drag its middle to move it, its handles to resize it. While its right
+  // edge is at now it follows now and the page is live; the playback
+  // position, a marker inside the window, shows only when it isn't.
   const canvas = $("tl"), ctx = canvas.getContext("2d");
-  const win = { span: 5 * 60000, end: null };
-  let hoverX = null, scrubbing = false, tlDirty = true;
+  const win = { span: Infinity, end: null };
+  let hoverX = null, tlDirty = true;
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   function range() {
     const now = engineNow(), start = oldest ?? now - 60000;
-    return [start, now];
+    return [start, Math.max(now, start + MIN_SPAN)];
   }
+  // The window, in engine milliseconds.
   function view_() {
     const [start, now] = range();
-    const span = Math.min(win.span, Math.max(MIN_SPAN, now - start));
+    const span = Math.min(win.span, now - start);
     const end = win.end == null ? now : Math.min(win.end, now);
     return [Math.max(start, end - span), Math.max(start + span, end)];
   }
+  // A window as long as the history stays as long as it while it grows.
   function setWindow(end, span) {
     const [start, now] = range();
-    win.span = Math.max(MIN_SPAN, Math.min(span, Math.max(MIN_SPAN, now - start)));
+    win.span = span >= now - start - 250 ? Infinity : Math.max(MIN_SPAN, span);
     win.end = end == null || end >= now - 250 ? null : Math.max(start + win.span, end);
     tlDirty = true;
   }
-  function followPlayhead() {
+  // Moves the window, keeping its length, so that `t` is inside it.
+  function containPlayhead(t = head) {
     const [a, b] = view_();
-    if (head > b || head < a) setWindow(head + win.span * 0.8, win.span);
+    if (t < a) setWindow(t + (b - a) * 0.8, b - a);
+    else if (t > b) setWindow(t + (b - a) * 0.2, b - a);
   }
-  const xOf = (t, w) => { const [a, b] = view_(); return ((t - a) / (b - a)) * w; };
-  const tOf = (x, w) => { const [a, b] = view_(); return a + (x / w) * (b - a); };
+  const xOf = (t, w) => { const [start, now] = range(); return ((t - start) / (now - start)) * w; };
+  const tOf = (x, w) => { const [start, now] = range(); return start + (x / w) * (now - start); };
   const ago = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? " " + (s % 60) + " s" : ""}`; };
+  const clock = (t) => new Date(t - offset).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   function setReadout(text) { $("tl-text").textContent = text; }
+  function headText() {
+    return `Playback position: ${ago(engineNow() - head)} ago (${clock(head)}). Drag it to scrub; Play replays from here.`;
+  }
   function drawTimeline() {
     tlDirty = false;
     const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
@@ -489,17 +505,15 @@
     if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    const th = h, mid = th / 2;
+    const mid = h / 2, live = mode === "live";
     const [a, b] = view_(), [start, now] = range();
-    ctx.fillStyle = css("--surface-sunken"); ctx.fillRect(0, 0, w, th);
-    const xh = xOf(head, w), xl = xOf(now, w);
-    ctx.fillStyle = css("--line"); ctx.fillRect(Math.max(0, xh), 0, Math.max(0, Math.min(w, xl) - Math.max(0, xh)), th);
+    ctx.fillStyle = css("--surface-sunken"); ctx.fillRect(0, 0, w, h);
     const keys = [];
     ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1;
     for (const past of [true, false]) {
       ctx.beginPath();
       for (const mark of marks) {
-        if (mark.at_ms < a || mark.at_ms > b || (mark.at_ms <= head) !== past) continue;
+        if ((live || mark.at_ms <= head) !== past) continue;
         const x = Math.round(xOf(mark.at_ms, w)) + 0.5;
         if (mark.key) { keys.push([x, mark]); continue; }
         ctx.moveTo(x, mid - 6); ctx.lineTo(x, mid + 6);
@@ -510,69 +524,48 @@
     for (const [x, mark] of keys) {
       ctx.beginPath(); ctx.arc(x, mid, 5, 0, Math.PI * 2);
       ctx.fillStyle = css(`--viz-tier-${mark.tier || "chain"}`);
-      ctx.globalAlpha = mark.at_ms > head ? 0.4 : 1;
+      ctx.globalAlpha = !live && mark.at_ms > head ? 0.4 : 1;
       ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = css("--paper-raised"); ctx.stroke();
     }
     ctx.globalAlpha = 1;
-    ctx.fillStyle = css("--ink");
-    if (xh >= 0 && xh <= w) {
-      ctx.fillRect(Math.round(xh) - 1, 0, 2, th);
-      ctx.beginPath(); ctx.moveTo(xh - 5, 0); ctx.lineTo(xh + 5, 0); ctx.lineTo(xh, 6); ctx.fill();
-    } else {
-      const edge = xh < 0 ? 0 : w, d = xh < 0 ? 9 : -9;
-      ctx.beginPath(); ctx.moveTo(edge, mid); ctx.lineTo(edge + d, mid - 7); ctx.lineTo(edge + d, mid + 7); ctx.fill();
+    ctx.strokeStyle = css("--line-strong"); ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+
+    // The window and the playback position, as elements over the bar.
+    const box = $("tl-win"), marker = $("tl-head");
+    box.style.left = `${(xOf(a, w) / w) * 100}%`;
+    box.style.width = `${((xOf(b, w) - xOf(a, w)) / w) * 100}%`;
+    const windowText = `${ago(now - a)} ago to ${win.end == null ? "now" : ago(now - b) + " ago"}`;
+    for (const id of ["tl-win", "tl-from", "tl-to"]) $(id).setAttribute("aria-valuetext", windowText);
+    marker.hidden = live;
+    if (!live) {
+      marker.style.left = `${(xOf(head, w) / w) * 100}%`;
+      marker.setAttribute("aria-valuetext", headText());
     }
-    ctx.strokeStyle = css("--line-strong"); ctx.strokeRect(0.5, 0.5, w - 1, th - 1);
-    const total = Math.max(1, now - start);
-    drawOverview(start, total, a, b);
+
     const tip = $("tl-tipbox");
     let best = null;
-    if (hoverX != null && !scrubbing) for (const k of keys) if (Math.abs(k[0] - hoverX) < 7 && (!best || Math.abs(k[0] - hoverX) < Math.abs(best[0] - hoverX))) best = k;
-    tip.hidden = !best;
-    if (best) { tip.textContent = best[1].text; tip.style.left = `${Math.max(140, Math.min(w - 140, best[0]))}px`; }
-    const behind = now - head;
-    setReadout(mode === "live" ? "Live, 1.5 s behind" : `${mode === "paused" ? "Paused" : "Replaying"}, ${ago(behind)} behind live`);
-    canvas.setAttribute("aria-valuenow", String(Math.round(((head - start) / total) * 100)));
-    canvas.setAttribute("aria-valuetext", $("tl-text").textContent);
-    const span = b - a;
+    if (hoverX != null && !dragging) for (const k of keys) if (Math.abs(k[0] - hoverX) < 7 && (!best || Math.abs(k[0] - hoverX) < Math.abs(best[0] - hoverX))) best = k;
+    const onHead = !live && hoverX != null && Math.abs(xOf(head, w) - hoverX) < 6;
+    tip.hidden = !best && !onHead;
+    if (onHead) { tip.textContent = headText(); tip.style.left = `${Math.max(180, Math.min(w - 180, xOf(head, w)))}px`; }
+    else if (best) { tip.textContent = best[1].text; tip.style.left = `${Math.max(140, Math.min(w - 140, best[0]))}px`; }
+
+    setReadout(live ? "Live, 1.5 s behind" : `${mode === "paused" ? "Paused" : "Replaying"}, ${ago(now - head)} behind live`);
+    const span = now - start;
     const step = [5e3, 1e4, 15e3, 3e4, 6e4, 12e4, 3e5, 6e5].find((s) => span / s <= 7) || 6e5;
     let axis = "";
-    for (let back = Math.max(step, Math.ceil((now - b) / step) * step); now - back >= a; back += step) {
-      const p = ((now - back - a) / span) * 100;
+    for (let back = step; now - back >= start; back += step) {
+      const p = ((now - back - start) / span) * 100;
       // Clear of the labels at either end.
       if ((p / 100) * w < 90 || ((100 - p) / 100) * w < 60) continue;
-      axis += `<span style="left:${p}%">${back ? ago(back) + " ago" : "now"}</span>`;
+      axis += `<span style="left:${p}%">${ago(back)} ago</span>`;
     }
-    const html = `<span style="left:0">${ago(now - a)} ago</span>${axis}<span style="left:100%">${win.end == null ? "now" : ago(now - b) + " ago"}</span>`;
+    const html = `<span style="left:0">${ago(span)} ago</span>${axis}<span style="left:100%">now</span>`;
     if ($("tl-axis").innerHTML !== html) $("tl-axis").innerHTML = html;
   }
 
-  // The overview under the timeline: the whole history, its key events as
-  // dots, the playback position, and the window drawn above.
-  const over = $("tl-over"), octx = over.getContext("2d");
-  function drawOverview(start, total, a, b) {
-    const dpr = devicePixelRatio || 1, w = over.clientWidth, h = over.clientHeight;
-    if (!w) return;
-    if (over.width !== Math.round(w * dpr) || over.height !== Math.round(h * dpr)) { over.width = Math.round(w * dpr); over.height = Math.round(h * dpr); }
-    octx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    octx.clearRect(0, 0, w, h);
-    octx.fillStyle = css("--surface-sunken"); octx.fillRect(0, 0, w, h);
-    const x = (t) => ((t - start) / total) * w;
-    for (const mark of marks) {
-      if (!mark.key) continue;
-      octx.fillStyle = css(`--viz-tier-${mark.tier || "chain"}`);
-      octx.fillRect(Math.round(x(mark.at_ms)) - 1, h / 2 - 2, 2, 4);
-    }
-    octx.fillStyle = css("--ink"); octx.fillRect(Math.round(x(head)) - 1, 0, 2, h);
-    const box = $("tl-win");
-    box.style.left = `${(x(a) / w) * 100}%`;
-    box.style.width = `${(Math.max(0, x(b) - x(a)) / w) * 100}%`;
-    const label = `${ago(engineNow() - a)} ago to ${win.end == null ? "now" : ago(engineNow() - b) + " ago"}`;
-    for (const id of ["tl-win", "tl-from", "tl-to"]) $(id).setAttribute("aria-valuetext", label);
-  }
-
-  // Moving the window: by its middle, or one end by a handle. `end` null
-  // follows live; the window never gets shorter than MIN_SPAN.
+  // Moving the window: by its middle, or one end by a handle. The window
+  // never gets shorter than MIN_SPAN.
   function moveWindow(part, from, to) {
     const [start, now] = range();
     if (part === "move") setWindow(Math.min(now, Math.max(start + (to - from), to)), to - from);
@@ -580,45 +573,77 @@
     else setWindow(Math.max(from + MIN_SPAN, Math.min(to, now)), Math.max(from + MIN_SPAN, Math.min(to, now)) - from);
   }
 
-  function wireBrush() {
-    const brush = $("tl-brush"), box = $("tl-win");
-    const tAt = (clientX) => {
-      const r = brush.getBoundingClientRect(), [start, now] = range();
-      return start + (Math.max(0, Math.min(r.width, clientX - r.left)) / Math.max(1, r.width)) * (now - start);
-    };
-    let drag = null;
+  // After the window moved: live it stays live only while it ends at now;
+  // a window moved into the past pauses at its start, and a paused
+  // playback position left outside it comes to its nearer edge.
+  function settleWindow() {
+    const [a, b] = view_();
+    if (mode === "live" && win.end != null) { setMode("paused"); seek(a); }
+    else if (mode !== "live" && (head < a || head > b)) seek(Math.max(a, Math.min(b, head)));
+  }
+
+  let dragging = null;
+  function wireTimeline() {
+    const track = $("tl-track"), box = $("tl-win"), marker = $("tl-head");
+    const tip = document.createElement("div");
+    tip.className = "tl-tip"; tip.id = "tl-tipbox"; tip.hidden = true;
+    track.appendChild(tip);
+    const xAt = (e) => { const r = canvas.getBoundingClientRect(); return Math.max(0, Math.min(r.width, e.clientX - r.left)); };
+    const tAt = (e) => tOf(xAt(e), canvas.clientWidth);
+
+    // A drag of the window, a handle or the playback position. A press on
+    // the window that doesn't move goes to that moment.
     const begin = (part) => (e) => {
       e.preventDefault(); e.stopPropagation();
       const [a, b] = view_();
-      drag = { part, t0: tAt(e.clientX), a, b };
+      dragging = { part, t0: tAt(e), x0: e.clientX, a, b, moved: false };
       e.currentTarget.setPointerCapture(e.pointerId);
       box.classList.add("moving");
     };
     const follow = (e) => {
-      if (!drag) return;
-      const dt = tAt(e.clientX) - drag.t0, [start, now] = range();
-      if (drag.part === "move") {
-        const shift = Math.max(start - drag.a, Math.min(now - drag.b, dt));
-        moveWindow("move", drag.a + shift, drag.b + shift);
-      } else if (drag.part === "from") moveWindow("from", drag.a + dt, drag.b);
-      else moveWindow("to", drag.a, drag.b + dt);
+      hoverX = xAt(e); tlDirty = true;
+      if (!dragging) return;
+      if (!dragging.moved && Math.abs(e.clientX - dragging.x0) < 4) return;
+      dragging.moved = true;
+      const dt = tAt(e) - dragging.t0, [start, now] = range();
+      if (dragging.part === "head") {
+        if (mode !== "paused") setMode("paused");
+        seek(Math.max(dragging.a, Math.min(dragging.b, tAt(e))));
+      } else if (dragging.part === "move") {
+        const shift = Math.max(start - dragging.a, Math.min(now - dragging.b, dt));
+        moveWindow("move", dragging.a + shift, dragging.b + shift);
+      } else if (dragging.part === "from") moveWindow("from", dragging.a + dt, dragging.b);
+      else moveWindow("to", dragging.a, dragging.b + dt);
     };
-    const end = () => { drag = null; box.classList.remove("moving"); };
+    const end = (e) => {
+      if (!dragging) return;
+      const { part, moved } = dragging;
+      dragging = null;
+      box.classList.remove("moving");
+      if (part === "move" && !moved) { setMode("paused"); seek(tAt(e)); }
+      else if (part !== "head") settleWindow();
+    };
     box.addEventListener("pointerdown", begin("move"));
     $("tl-from").addEventListener("pointerdown", begin("from"));
     $("tl-to").addEventListener("pointerdown", begin("to"));
-    for (const el of [box, $("tl-from"), $("tl-to")]) {
+    marker.addEventListener("pointerdown", begin("head"));
+    for (const el of [box, $("tl-from"), $("tl-to"), marker]) {
       el.addEventListener("pointermove", follow);
       el.addEventListener("pointerup", end);
       el.addEventListener("pointercancel", end);
     }
-    // A press on the bar outside the window centres the window there.
-    brush.addEventListener("pointerdown", (e) => {
-      if (e.target !== brush && e.target !== over) return;
-      const [a, b] = view_(), t = tAt(e.clientX);
+    // A press on the bar outside the window takes the window there, and
+    // the playback position with it.
+    canvas.addEventListener("pointerdown", (e) => {
+      const [a, b] = view_(), t = tAt(e);
       moveWindow("move", t - (b - a) / 2, t + (b - a) / 2);
+      setMode("paused");
+      seek(t);
     });
-    const keys = (part) => (e) => {
+    track.addEventListener("pointermove", (e) => { hoverX = xAt(e); tlDirty = true; });
+    track.addEventListener("pointerleave", () => { hoverX = null; tlDirty = true; });
+
+    const windowKeys = (part) => (e) => {
       const [a, b] = view_(), step = (b - a) / 10;
       const d = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
       if (!d) return;
@@ -626,37 +651,15 @@
       if (part === "move") { const [start, now] = range(); const s = Math.max(start - a, Math.min(now - b, d)); moveWindow("move", a + s, b + s); }
       else if (part === "from") moveWindow("from", a + d, b);
       else moveWindow("to", a, b + d);
+      settleWindow();
     };
-    box.addEventListener("keydown", keys("move"));
-    $("tl-from").addEventListener("keydown", keys("from"));
-    $("tl-to").addEventListener("keydown", keys("to"));
-  }
-
-  function wireTimeline() {
-    const tip = document.createElement("div");
-    tip.className = "tl-tip"; tip.id = "tl-tipbox"; tip.hidden = true;
-    $("tl-track").appendChild(tip);
-    const at = (e) => { const r = canvas.getBoundingClientRect(); return Math.max(0, Math.min(r.width, e.clientX - r.left)); };
-    // Pressing goes to that moment; dragging scrubs through the moments.
-    canvas.addEventListener("pointerdown", (e) => {
-      scrubbing = true;
-      canvas.setPointerCapture(e.pointerId);
-      canvas.classList.add("scrubbing");
-      setMode("paused");
-      seek(tOf(at(e), canvas.clientWidth));
-    });
-    canvas.addEventListener("pointermove", (e) => {
-      hoverX = at(e); tlDirty = true;
-      if (scrubbing) seek(tOf(hoverX, canvas.clientWidth));
-    });
-    const stop = () => { scrubbing = false; canvas.classList.remove("scrubbing"); };
-    canvas.addEventListener("pointerup", stop);
-    canvas.addEventListener("pointercancel", stop);
-    canvas.addEventListener("pointerleave", () => { hoverX = null; tlDirty = true; });
-    canvas.addEventListener("keydown", (e) => {
+    $("tl-from").addEventListener("keydown", windowKeys("from"));
+    $("tl-to").addEventListener("keydown", windowKeys("to"));
+    box.addEventListener("keydown", (e) => {
+      if (e.target !== box) return;
       const candidates = marks.filter((m) => e.shiftKey || m.key);
-      if (e.key === "ArrowLeft") { const p = candidates.filter((m) => m.at_ms < head - 1).pop(); if (p) { setMode("paused"); seek(p.at_ms); followPlayhead(); } }
-      else if (e.key === "ArrowRight") { const n = candidates.find((m) => m.at_ms > head + 1); if (n) { setMode("paused"); seek(n.at_ms); followPlayhead(); } }
+      if (e.key === "ArrowLeft") { const p = candidates.filter((m) => m.at_ms < head - 1).pop(); if (p) { setMode("paused"); containPlayhead(p.at_ms); seek(p.at_ms); } }
+      else if (e.key === "ArrowRight") { const n = candidates.find((m) => m.at_ms > head + 1); if (n) { setMode("paused"); containPlayhead(n.at_ms); seek(n.at_ms); } }
       else if (e.key === "End") goLive();
       else if (e.key === " ") $("tl-play").click();
       else return;
@@ -671,8 +674,8 @@
       const row = e.target.closest("tr[data-at]");
       if (!row) return;
       setMode("paused");
+      containPlayhead(Number(row.dataset.at));
       seek(Number(row.dataset.at));
-      followPlayhead();
     });
     document.querySelectorAll("#engine-filters input[data-tier]").forEach((input) => {
       input.addEventListener("change", () => {
@@ -688,7 +691,6 @@
   $("engine-filters").hidden = false;
   document.querySelectorAll(".engine-page .reload").forEach((el) => { el.hidden = true; });
   wireTimeline();
-  wireBrush();
   const help = $("engine-help");
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && help.open) { help.open = false; help.querySelector("summary").focus(); } });
   document.addEventListener("pointerdown", (e) => { if (help.open && !help.contains(e.target)) help.open = false; });

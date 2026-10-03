@@ -264,6 +264,31 @@ the page's own classes, so the legend can't drift from what it explains.
 - The buttons' misalignment came from the site-wide button margin; the
   timeline's buttons and readout are now the track's height.
 
+## D27. One bar: the window over the whole history
+
+After trying D24, the reviewer asked for the two bars to become one. The
+bar is the whole history; the orange window lies over it, full height,
+moved and resized as before; the playback position is a marker inside it,
+shown only off live, with its moment as a tooltip. Calls made with it:
+
+- **A window as long as the history keeps growing with it**, so the live
+  page always shows everything; the first window is the whole history (it
+  was the last five minutes).
+- **Moving the window into the past pauses** at the window's start: the
+  window is what is being looked at, so it carries the playback position
+  with it. A paused position the window leaves behind comes to its nearer
+  edge.
+- **Replay plays the window**: it pauses at the window's end, or goes live
+  when the window ends at now. A key-event jump or a click in the events
+  table moves the window, keeping its length, so the moment is inside it.
+- **Presses:** in the window (without dragging) goes to that moment; on
+  the bar outside the window centres the window there and goes there; on
+  the marker, a drag scrubs within the window.
+
+The bar's detail is the cost: thirty minutes across one bar puts rounds a
+pixel or two apart, so single rounds can't be picked out; the key events'
+circles and the events table carry the detail.
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,

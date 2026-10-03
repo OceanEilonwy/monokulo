@@ -67,16 +67,16 @@ const ENGINE_STYLE: &str = r#"
 .engine-timeline .btn { margin: 0; padding: 0 10px; height: 28px; line-height: 26px; font-size: 0.8rem; }
 .engine-timeline canvas { width: 100%; display: block; border-radius: 4px; touch-action: none; }
 #tl { height: 32px; cursor: pointer; }
-#tl.scrubbing { cursor: ew-resize; }
-.tl-brush { position: relative; height: 16px; }
-#tl-over { height: 16px; }
-.tl-win { position: absolute; top: 0; bottom: 0; border: 1.5px solid var(--accent-text); border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, transparent); cursor: grab; touch-action: none; min-width: 14px; }
+.tl-win { position: absolute; top: 0; height: 32px; box-sizing: border-box; border: 1.5px solid var(--accent-text); border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, transparent); cursor: grab; touch-action: none; min-width: 14px; }
+.tl-head { position: absolute; top: -3px; height: 38px; width: 12px; margin-left: -6px; cursor: ew-resize; touch-action: none; z-index: 3; }
+.tl-head::before { content: ""; position: absolute; left: 5px; top: 0; bottom: 0; width: 2px; background: var(--ink); }
+.tl-head::after { content: ""; position: absolute; left: 1px; top: 0; border: 5px solid transparent; border-top-color: var(--ink); }
 .tl-win.moving { cursor: grabbing; }
-.tl-handle { position: absolute; top: -2px; bottom: -2px; width: 10px; border-radius: 3px; background: var(--accent-text); cursor: ew-resize; touch-action: none; }
+.tl-handle { position: absolute; top: 3px; bottom: 3px; width: 10px; border-radius: 3px; background: var(--accent-text); cursor: ew-resize; touch-action: none; }
 .tl-handle::after { content: ""; position: absolute; left: 4px; top: 5px; bottom: 5px; border-left: 2px solid var(--paper-raised); }
 .tl-handle.l { left: -6px; }
 .tl-handle.r { right: -6px; }
-.tl-win:focus-visible, .tl-handle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.tl-win:focus-visible, .tl-handle:focus-visible, .tl-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .tl-axis { position: relative; height: 12px; font-size: 0.62rem; color: var(--muted); }
 .tl-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .tl-axis span:first-child { transform: none; }
@@ -300,18 +300,14 @@ fn timeline() -> Markup {
         section class="engine-card engine-timeline" id="engine-timeline" aria-label="Timeline" hidden {
             div class="tl-buttons" { button class="btn" id="tl-play" type="button" { "Pause" } button class="btn" id="tl-live" type="button" disabled { "Live" } }
             div class="tl-track" id="tl-track" {
-                canvas id="tl" tabindex="0" role="slider"
-                    aria-label="Timeline. Click or drag to move the playback position. Left and right jump between key events, with Shift between any events; End returns to live."
-                    aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" {}
-                div class="tl-axis" id="tl-axis" {}
-                div class="tl-brush" id="tl-brush" title="The whole history this page holds. The window is the part drawn above: drag its middle to move it, its handles to widen or narrow it." {
-                    canvas id="tl-over" aria-hidden="true" {}
-                    div class="tl-win" id="tl-win" tabindex="0" role="group"
-                        aria-label="The part of the history drawn above. Left and right move it; drag it to move it." {
-                        span class="tl-handle l" id="tl-from" tabindex="0" role="slider" aria-label="Start of the window: left and right move it" {}
-                        span class="tl-handle r" id="tl-to" tabindex="0" role="slider" aria-label="End of the window: left and right move it" {}
-                    }
+                canvas id="tl" aria-label="The whole history this page holds, each event a line and each key event a circle. A press outside the window takes the window and the playback position there." {}
+                div class="tl-win" id="tl-win" tabindex="0" role="group"
+                    aria-label="The window: the stretch being looked at. Drag it to move it, a press in it goes to that moment. Left and right jump between key events, with Shift between any events; Space plays; End returns to live." {
+                    span class="tl-handle l" id="tl-from" tabindex="0" role="slider" aria-label="Start of the window: left and right move it" {}
+                    span class="tl-handle r" id="tl-to" tabindex="0" role="slider" aria-label="End of the window: left and right move it" {}
                 }
+                div class="tl-head" id="tl-head" role="slider" aria-label="Playback position" hidden {}
+                div class="tl-axis" id="tl-axis" {}
             }
             div class="tl-read" id="tl-read" { i {} span id="tl-text" { "Live" } }
         }
@@ -492,13 +488,13 @@ fn help() -> Markup {
                     dt { svg width="14" height="14" aria-hidden="true" { circle cx="7" cy="7" r="5" fill="var(--viz-tier-blocks)" {} } }
                     dd { b { "A key event" } ", in its tier's colour: a payment found, a reorganisation, a block's scan saved partway, stores catching up. Hover over it for what it was." }
                     dt { svg width="10" height="16" aria-hidden="true" { rect x="4" y="1" width="2" height="14" fill="var(--ink)" {} } }
-                    dd { b { "The playback position." } " Click or drag on the timeline to go to a moment; Play replays from there, Live returns." }
+                    dd { b { "The playback position" } ", shown once you leave live: the moment the whole page is showing. Drag it to scrub, press anywhere in the window to go there; Play replays from it, Live returns." }
                 }
                 dl {
                     dt { span class="tl-win" style="position:static;display:block;width:22px;height:12px" {} }
-                    dd { b { "The window" } ": the bar under the timeline is the whole history the page holds, the window the part drawn above. Drag its middle to move it, its handles to widen or narrow it." }
+                    dd { b { "The window" } ": the bar is the whole history the page holds (up to 30 minutes), the orange window the stretch you are looking at. Drag its middle to move it, its handles to widen or narrow it. While it ends at now the page is live; move it into the past and playback pauses at its start, and Play replays through it." }
                     dt { kbd { "←" } }
-                    dd { "On the timeline, left and right jump between key events (with Shift, any event), space plays and pauses, End goes live." }
+                    dd { "With the window focused, left and right jump between key events (with Shift, any event), space plays and pauses, End goes live." }
                 }
 
                 h3 { "Summary" }

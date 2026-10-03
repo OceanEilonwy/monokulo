@@ -206,9 +206,8 @@ shows fewer cells.
 
 ### Timeline
 
-One track across the top of the page, showing a **window** of the history
-(the last five minutes at first), and under it the whole history with the
-window marked on it.
+One bar across the top of the page: the whole history the page holds (up
+to 30 minutes), with an orange **window** over it, its full height.
 
 - **Every event is a thin vertical line; key events are a circle** in their
   tier's colour (a payment found, a reorg found and rewound, a group of
@@ -216,26 +215,26 @@ window marked on it.
   New blocks are not key events: they come every two minutes and would
   crowd out everything else. Hovering a circle shows its sentence. The axis
   is labelled in time ago ("6 min ago").
-- **Click or drag on the track to move the playhead.** That pauses and
-  moves the whole page to that moment: chain, round, panels and events
-  table; dragging scrubs through the moments. Events after the playhead are
-  drawn faded, and the stretch from the playhead to now is shaded. A
-  playhead outside the window shows as an arrow at the edge it lies past.
-- **The bar under the track** is the whole history (up to 30 minutes), its
-  key events as dots and the playhead as a tick. The **window** on it is
-  the part the track draws: drag its middle to move it, its left or right
-  handle to widen or narrow it (down to 5 s, about five rounds); a press on
-  the bar outside it centres it there. While its right edge is at now it
-  follows now; once moved into the past it stays there. Moving the window
-  never moves the playhead.
+- **The window** is the stretch being looked at; at first, and after Live,
+  the whole history. Drag its middle to move it, its left or right handle
+  to widen or narrow it (down to 5 s, about five rounds). While its right
+  edge is at now the page is live. Moved into the past, playback pauses at
+  the window's start; Play replays through it and pauses at its end.
+- **The playback position** is a marker inside the window, shown only off
+  live: the moment the whole page shows (chain, round, panels and events
+  table). Its tooltip gives that moment ("Playback position: 2 min 14 s
+  ago (15:42:07)"). Drag it to scrub; a press in the window goes to that
+  moment; a press on the bar outside the window takes the window, and the
+  playback position, there. Events after it are drawn faded.
 - **The mouse wheel scrolls the page**, never the timeline.
 - **Play** replays at real speed from there, sliding the window along when
   the playhead reaches its edge, and turns live on reaching now; **Live**
   jumps to now and sets the window following again.
 - **Keyboard:** the track is a slider. Left and right jump to the previous
-  or next key event, with Shift to any event; End goes live; Space plays
-  or pauses. The window and its two handles take Tab, and left and right
-  move them by a tenth of the window.
+  or next key event, with Shift to any event (moving the window to keep
+  it inside); End goes live; Space plays or pauses. Those keys work with
+  the window focused; its two handles take Tab, and left and right move
+  them by a tenth of the window.
 
 How seeking works: the page keeps the events it has received and a copy of
 its own state every 2 s (a keyframe). To show a moment it takes the
