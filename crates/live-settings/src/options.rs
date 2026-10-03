@@ -62,6 +62,20 @@ pub struct OptionsFile {
     hint: Option<(String, String)>,
 }
 
+/// Which file, and which part of it: not its text.
+impl std::fmt::Debug for OptionsFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut out = f.debug_struct("OptionsFile");
+        match &self.shared.place {
+            Place::Disk(path) => out.field("path", path),
+            Place::Memory(_) => out.field("path", &"in memory"),
+        };
+        out.field("scope", &self.scope)
+            .field("leaves", &self.leaves)
+            .finish_non_exhaustive()
+    }
+}
+
 impl OptionsFile {
     /// The file at `path`, which needn't exist yet: the first save creates
     /// it (and its directory).
@@ -225,7 +239,9 @@ impl OptionsFile {
                 Some(table) => format!("{table}.{}", setting.key()),
                 None => setting.key().to_string(),
             };
-            match raw.as_deref().filter(|raw| !raw.is_empty()) {
+            // An empty value is a value (`key = ""`, or `[]`), kept as the
+            // database keeps it; only taking the value away removes the key.
+            match raw.as_deref() {
                 Some(raw) => set(&mut doc, &key, toml_value(&setting.kind(), raw)),
                 None => remove(&mut doc, &key),
             }

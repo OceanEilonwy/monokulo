@@ -622,9 +622,13 @@ impl Registry {
         let mut changed: Vec<&'static dyn AnySetting> = Vec::new();
         for (setting, value) in parsed {
             let key = setting.key();
-            let differs = match &value {
-                Some(value) => old.get(key) != Some(value),
-                None => old.contains_key(key),
+            // Against the value in effect: a form sends every field of its
+            // tab, and one left at its default (nothing stored) is not a
+            // change, so it isn't written into the file or the database.
+            let differs = match (&value, old.get(key)) {
+                (Some(value), Some(stored)) => stored != value,
+                (Some(value), None) => *value != setting.default_stored(),
+                (None, stored) => stored.is_some(),
             };
             if !differs {
                 continue;
