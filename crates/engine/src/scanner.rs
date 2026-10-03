@@ -608,7 +608,7 @@ pub fn recompute_and_notify(
     order_id: &crate::store::OrderId,
     current_height: u64,
     now: i64,
-) -> Result<()> {
+) -> Result<Option<shared::activity::Transition>> {
     store.in_transaction(|store| recompute_and_notify_in_tx(store, order_id, current_height, now))
 }
 
@@ -621,9 +621,12 @@ pub(crate) fn recompute_and_notify_in_tx(
     order_id: &crate::store::OrderId,
     current_height: u64,
     now: i64,
-) -> Result<()> {
+) -> Result<Option<shared::activity::Transition>> {
     let (old_status, new_status) = store.recompute_order_status(order_id, current_height, now)?;
-    if old_status != new_status {
+    if old_status == new_status {
+        return Ok(None);
+    }
+    {
         enqueue_webhook_event(
             store,
             order_id,
@@ -635,7 +638,10 @@ pub(crate) fn recompute_and_notify_in_tx(
             now,
         )?;
     }
-    Ok(())
+    Ok(Some(shared::activity::Transition {
+        from: old_status,
+        to: new_status,
+    }))
 }
 
 /// Checks whether `payment`'s own key images prove a double-spend and, if so, voids
@@ -1942,6 +1948,7 @@ pub(crate) mod tests {
             {
                 Ok(Some(JobStep::Collected)) => {}
                 Ok(Some(JobStep::Processed {
+                    examined: _,
                     reconciled,
                     failure: page_failure,
                 })) => {
@@ -1951,7 +1958,7 @@ pub(crate) mod tests {
                         failure.get_or_insert(error);
                     }
                 }
-                Ok(None | Some(JobStep::Waiting | JobStep::Rewound)) => break,
+                Ok(None | Some(JobStep::Waiting | JobStep::Rewound { fork: _ })) => break,
                 Err(error) => {
                     failure.get_or_insert(error);
                     break;

@@ -412,6 +412,7 @@ impl TestEngineHandle {
             engine::scanner::ScannerError::Store(e) => e,
             other => panic!("recomputing a test order's status failed: {other}"),
         })
+        .map(|_changed| ())
     }
 
     /// Records a payment of `piconero` to `order_id` the way a scan would,
@@ -455,6 +456,7 @@ impl TestEngineHandle {
             engine::scanner::ScannerError::Store(e) => e,
             other => panic!("recomputing a test order's status failed: {other}"),
         })
+        .map(|_changed| ())
     }
 }
 
@@ -495,6 +497,7 @@ impl TestEngineHandle {
             engine::scanner::ScannerError::Store(e) => e,
             other => panic!("recomputing a test order's status failed: {other}"),
         })
+        .map(|_changed| ())
     }
 }
 

@@ -10,6 +10,7 @@
 mod blocks;
 pub(crate) mod chain;
 mod mempool;
+mod observe;
 mod settlement;
 mod tuning;
 mod upkeep;
@@ -27,48 +28,10 @@ use crate::store::{Db, Store};
 
 pub use blocks::ScannedBlock;
 pub use mempool::{fast_pass, FastReport};
+pub use observe::snapshot;
+use shared::activity::{Event, UnitProgress};
+pub use shared::activity::{Tier, TierOutcome, Wait};
 pub use tuning::{ScanTuning, TierShares, TuningError};
-
-/// The kinds of work, in priority order within a round.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Tier {
-    /// Reorg detection and reconciliation.
-    Chain,
-    /// Scanning blocks for tenants: the new ones first, then catch-up.
-    Blocks,
-    /// Scanning the mempool for zero-confirmation payments.
-    Mempool,
-    /// Payments that left the pool, and order status recomputes.
-    Settlement,
-    /// Bookkeeping that can lag: scanned ranges, void rechecks, pruning.
-    Upkeep,
-}
-
-impl Tier {
-    pub const ALL: [Self; 5] = [
-        Self::Chain,
-        Self::Blocks,
-        Self::Mempool,
-        Self::Settlement,
-        Self::Upkeep,
-    ];
-
-    const fn index(self) -> usize {
-        self as usize
-    }
-}
-
-impl std::fmt::Display for Tier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Chain => "chain",
-            Self::Blocks => "blocks",
-            Self::Mempool => "mempool",
-            Self::Settlement => "settlement",
-            Self::Upkeep => "upkeep",
-        })
-    }
-}
 
 /// One value per tier, indexed by [`Tier`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -99,49 +62,6 @@ impl<T> std::ops::IndexMut<Tier> for PerTier<T> {
     }
 }
 
-/// What a tier is waiting for when it has work it can't do yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Wait {
-    /// The node's chain height couldn't be read this round.
-    ChainHeightUnknown,
-    /// A reorg is being reconciled: blocks wait for the rewind.
-    ReorgBeingReconciled,
-    /// A rewind happened this round: replacement blocks are scanned from
-    /// the next, against a freshly read chain.
-    RewoundThisRound,
-    /// The node failed or didn't answer; retried next round.
-    NodeFailed,
-    /// The node reports a tip it can't serve yet (first run).
-    NodeCannotServeTip,
-    /// The mempool couldn't be read.
-    MempoolUnreadable,
-    /// Every remaining reorg candidate is waiting out a retry delay.
-    ReorgCandidatesRetrying,
-    /// The node's next block doesn't extend the recorded chain: a reorg the
-    /// chain tier hasn't opened a job for yet (it failed this round, or the
-    /// fork happened since it looked).
-    ChainDiverged,
-}
-
-impl std::fmt::Display for Wait {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::ChainHeightUnknown => "the chain height is unknown",
-            Self::ReorgBeingReconciled => "a reorganisation is being reconciled",
-            Self::RewoundThisRound => {
-                "rewound this round; replacement blocks are scanned from the next"
-            }
-            Self::NodeFailed => "the node failed",
-            Self::NodeCannotServeTip => "the node can't serve its own tip yet",
-            Self::MempoolUnreadable => "the mempool couldn't be read",
-            Self::ReorgCandidatesRetrying => "reorg candidates are waiting to be retried",
-            Self::ChainDiverged => {
-                "the node's chain differs from the recorded one; waiting for reorg reconciliation"
-            }
-        })
-    }
-}
-
 /// What one unit of work did. The executor can't mistake "nothing to do"
 /// for "failed".
 #[derive(Debug)]
@@ -155,17 +75,6 @@ pub(crate) enum Progress {
     /// A unit failed; the tier stops for this round and the error is
     /// reported. Its durable state is unchanged, so the next round retries.
     Failed(ScannerError),
-}
-
-/// How a tier ended its round.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TierOutcome {
-    /// Ran out of work.
-    Idle,
-    /// Ran out of time with work left.
-    Backlogged,
-    Blocked(Wait),
-    Failed,
 }
 
 /// What a round did, for the loop and for status reporting.
@@ -363,6 +272,9 @@ pub struct ScanState {
     /// How rounds, units and calls are sized: [`ScanTuning::DEFAULT`] but
     /// in tests and the round length sweep.
     tuning: ScanTuning,
+    /// What the scanner does, recorded for the engine page
+    /// (`docs/engine_visualizer.md`).
+    activity: std::sync::Arc<crate::activity::Activity>,
 }
 
 impl ScanState {
@@ -401,6 +313,19 @@ impl ScanState {
     /// How rounds, units and calls are sized.
     pub fn tuning(&self) -> &ScanTuning {
         &self.tuning
+    }
+
+    /// This state, recording what it does in `activity` (which the admin
+    /// API serves).
+    #[must_use = "the state with an activity record is returned, not changed in place"]
+    pub fn with_activity(mut self, activity: std::sync::Arc<crate::activity::Activity>) -> Self {
+        self.activity = activity;
+        self
+    }
+
+    /// Where this network's scanner records what it does.
+    pub fn activity(&self) -> &crate::activity::Activity {
+        &self.activity
     }
 
     /// This state, its loops woken by `wakes` (shared with `/status`).
@@ -494,6 +419,12 @@ pub async fn run_round(
     let started = Instant::now();
     let round_end = started + budget;
     let now = crate::now_unix();
+    let activity = state.activity();
+    let round_number = activity.next_round();
+    activity.record(Event::RoundStarted {
+        round: round_number,
+        budget_ms: millis(budget),
+    });
     // A round that will look at the pool asks for the tip and the pool
     // together: one request while the chain hasn't moved.
     let watching = mempool::watching(inputs, now).await;
@@ -552,7 +483,7 @@ pub async fn run_round(
     };
     let mut open = PerTier::filled(true);
 
-    for pass_end in [None, Some(round_end)] {
+    for (pass, pass_end) in [(1, None), (2, Some(round_end))] {
         for tier in Tier::ALL {
             let until = pass_end.unwrap_or_else(|| {
                 (Instant::now() + state.tuning.share_of(tier, budget)).min(round_end)
@@ -561,8 +492,16 @@ pub async fn run_round(
                 if report.steps[tier] > 0 && Instant::now() >= until {
                     break;
                 }
+                let unit_start = started.elapsed();
                 let progress = step(tier, &mut round, until).await;
                 report.steps[tier] += 1;
+                activity.record(Event::Unit {
+                    tier,
+                    pass,
+                    start_ms: millis(unit_start),
+                    ms: millis(started.elapsed().saturating_sub(unit_start)),
+                    progress: UnitProgress::from(&progress),
+                });
                 match progress {
                     Progress::Advanced => {}
                     Progress::Idle => {
@@ -581,11 +520,43 @@ pub async fn run_round(
                         report.error.get_or_insert(error);
                     }
                 }
+                if !open[tier] {
+                    activity.record(Event::TierEnded {
+                        tier,
+                        outcome: report.outcomes[tier],
+                    });
+                }
             }
         }
     }
     blocks::carry(&mut round).await;
+    activity.record(Event::RoundFinished {
+        round: round_number,
+        ms: millis(started.elapsed()),
+        backlogged: report.backlogged(),
+    });
     report
+}
+
+/// `n` as a count in the activity record.
+pub(crate) fn count(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+/// `duration` in whole milliseconds, for the activity record.
+pub fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+impl From<&Progress> for UnitProgress {
+    fn from(progress: &Progress) -> Self {
+        match progress {
+            Progress::Advanced => Self::Advanced,
+            Progress::Idle => Self::Idle,
+            Progress::Blocked(wait) => Self::Blocked(*wait),
+            Progress::Failed(_) => Self::Failed,
+        }
+    }
 }
 
 #[cfg(test)]

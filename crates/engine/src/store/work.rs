@@ -854,6 +854,114 @@ impl Store {
     }
 }
 
+/// What the engine page's snapshot reads from the database
+/// (`docs/engine_visualizer.md`): each read is one indexed query.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ActivityFacts {
+    pub high_water: Option<u64>,
+    /// `(cursor, stores)`, highest cursor first, at most the limit asked.
+    pub groups: Vec<(u64, u64)>,
+    /// Distinct cursors in all.
+    pub all_groups: u64,
+    /// Heights with a block scan saved partway.
+    pub checkpoints: Vec<u64>,
+    /// The open reorg job: its fork, whether it is still collecting, and
+    /// the candidates left to re-examine.
+    pub reorg: Option<(u64, bool, u64)>,
+    pub recomputes_pending: u64,
+    pub orders_due: u64,
+    pub webhooks_due: u64,
+    /// When each delivery since the time asked for was made.
+    pub delivered_at: Vec<i64>,
+}
+
+impl Store {
+    /// The engine page's database facts for `network`: groups of stores by
+    /// cursor (up to `groups`), saved partial scans, the reorg job, what
+    /// settlement has waiting, and webhook deliveries due and made since
+    /// `delivered_since`. `tip` is the node's height, for orders due by
+    /// height.
+    pub fn activity_facts(
+        &self,
+        network: monero::Network,
+        now: i64,
+        tip: Option<u64>,
+        groups: usize,
+        delivered_since: i64,
+    ) -> Result<ActivityFacts> {
+        let net = shared::network::SqlNetwork(network);
+        let count = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Result<u64> {
+            Ok(self
+                .conn
+                .prepare_cached(sql)?
+                .query_row(params, |row| unsigned(row, 0))?)
+        };
+        let tip = i64::try_from(tip.unwrap_or(0)).unwrap_or(i64::MAX);
+        let reorg = match self.reorg_job(network)? {
+            Some(job) => Some((
+                job.fork_height,
+                !matches!(job.phase, ReorgPhase::Process),
+                self.reorg_work_remaining(network)?.0,
+            )),
+            None => None,
+        };
+        Ok(ActivityFacts {
+            high_water: self.max_scanned_height(network)?,
+            groups: self.rows(
+                "SELECT scanned_through_height, COUNT(*) FROM tenants
+                 WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height IS NOT NULL
+                 GROUP BY scanned_through_height ORDER BY scanned_through_height DESC LIMIT ?2",
+                params![net, Unsigned(groups)],
+                |row| Ok((unsigned(row, 0)?, unsigned(row, 1)?)),
+            )?,
+            all_groups: count(
+                "SELECT COUNT(DISTINCT scanned_through_height) FROM tenants
+                 WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height IS NOT NULL",
+                &[&net],
+            )?,
+            checkpoints: self.rows(
+                "SELECT DISTINCT height FROM partial_block_progress WHERE network = ?1 ORDER BY height",
+                params![net],
+                |row| unsigned(row, 0),
+            )?,
+            reorg,
+            recomputes_pending: count(
+                "SELECT COUNT(*) FROM pending_payment_recomputes p
+                 JOIN orders o ON o.id = p.order_id JOIN tenants t ON t.id = o.tenant_id
+                 WHERE t.network = ?1",
+                &[&net],
+            )?,
+            // Due by time, then due by height and not by time: each order
+            // once, each count from its own index.
+            orders_due: count(
+                "SELECT COUNT(*) FROM orders o JOIN tenants t ON t.id = o.tenant_id
+                 WHERE o.next_due_at_utc IS NOT NULL AND o.next_due_at_utc <= ?2 AND t.network = ?1",
+                &[&net, &now],
+            )? + count(
+                "SELECT COUNT(*) FROM orders o JOIN tenants t ON t.id = o.tenant_id
+                 WHERE o.next_due_height IS NOT NULL AND o.next_due_height <= ?2 AND t.network = ?1
+                   AND (o.next_due_at_utc IS NULL OR o.next_due_at_utc > ?3)",
+                &[&net, &tip, &now],
+            )?,
+            webhooks_due: count(
+                "SELECT COUNT(*) FROM webhook_deliveries d
+                 JOIN orders o ON o.id = d.order_id JOIN tenants t ON t.id = o.tenant_id
+                 WHERE d.delivered_at_utc IS NULL AND d.gave_up_at_utc IS NULL
+                   AND d.next_attempt_at_utc <= ?2 AND t.network = ?1",
+                &[&net, &now],
+            )?,
+            delivered_at: self.rows(
+                "SELECT d.delivered_at_utc FROM webhook_deliveries d
+                 JOIN orders o ON o.id = d.order_id JOIN tenants t ON t.id = o.tenant_id
+                 WHERE d.delivered_at_utc IS NOT NULL AND d.delivered_at_utc >= ?2 AND t.network = ?1
+                 ORDER BY d.delivered_at_utc",
+                params![net, delivered_since],
+                |row| row.get(0),
+            )?,
+        })
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -1311,6 +1419,19 @@ mod tests {
                 "SELECT op.* FROM order_payments op WHERE op.voided_at_utc IS NOT NULL AND op.voided_at_utc >= 0 AND op.id > 0 \
                  ORDER BY op.id LIMIT 16",
                 "order_payments_voided_idx",
+            ),
+            (
+                "the engine page's groups of stores",
+                "SELECT scanned_through_height, COUNT(*) FROM tenants WHERE network = 'mainnet' AND disabled_at_utc IS NULL \
+                 AND scanned_through_height IS NOT NULL GROUP BY scanned_through_height ORDER BY scanned_through_height DESC LIMIT 32",
+                "tenants_network_cursor_idx",
+            ),
+            (
+                "the engine page's webhook deliveries",
+                "SELECT d.delivered_at_utc FROM webhook_deliveries d JOIN orders o ON o.id = d.order_id \
+                 JOIN tenants t ON t.id = o.tenant_id WHERE d.delivered_at_utc IS NOT NULL AND d.delivered_at_utc >= 5 \
+                 AND t.network = 'mainnet' ORDER BY d.delivered_at_utc",
+                "webhook_deliveries_delivered_idx",
             ),
             (
                 "due by time",
@@ -1834,6 +1955,100 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    /// The engine page's facts: each thing counted once, for its own
+    /// network only, and the groups listed highest first up to the limit.
+    #[test]
+    fn the_engine_page_s_facts_count_each_thing_once_on_its_network() {
+        let store = Store::open_in_memory().unwrap();
+        let (a, b) = (tenant(&store, "mainnet"), tenant(&store, "mainnet"));
+        let elsewhere = tenant(&store, "stagenet");
+        for h in 1..=12u64 {
+            store
+                .set_scanned_block(monero::Network::Mainnet, h, &format!("a{h}"))
+                .unwrap();
+        }
+        store
+            .execute_raw_for_test(&format!(
+                "UPDATE tenants SET scanned_through_height = CASE id WHEN '{a}' THEN 12 WHEN '{b}' THEN 10 ELSE 3 END"
+            ))
+            .unwrap();
+        let (both, by_height) = (order(&store, &a, 10_000), order(&store, &a, 10_000));
+        let other = order(&store, &elsewhere, 10_000);
+        store
+            .execute_raw_for_test(&format!(
+                "UPDATE orders SET next_due_at_utc = NULL, next_due_height = NULL;
+                 UPDATE orders SET next_due_at_utc = 50, next_due_height = 7 WHERE id IN ('{both}', '{other}');
+                 UPDATE orders SET next_due_height = 7 WHERE id = '{by_height}'"
+            ))
+            .unwrap();
+        store
+            .execute_raw_for_test("DELETE FROM pending_payment_recomputes")
+            .unwrap();
+        pay(&store, &both, "t1", None);
+        pay(&store, &other, "t2", None);
+        store
+            .save_block_checkpoint(
+                monero::Network::Mainnet,
+                &TenantId::new(b),
+                &BlockCheckpoint {
+                    height: 11,
+                    hash: "a11".to_owned(),
+                    next_tx: 3,
+                },
+            )
+            .unwrap();
+        let hook = store
+            .create_webhook(
+                &TenantId::new(a),
+                "https://shop.example/hook",
+                "{}",
+                "whsec_x",
+                90,
+            )
+            .unwrap();
+        let order_id = OrderId::new(both);
+        for _ in 0..2 {
+            store
+                .enqueue_webhook_delivery(&hook.id, &order_id, "order.paid", "{}", 90)
+                .unwrap();
+        }
+        store
+            .execute_raw_for_test(
+                "UPDATE webhook_deliveries SET delivered_at_utc = 95 WHERE id = (SELECT MIN(id) FROM webhook_deliveries)",
+            )
+            .unwrap();
+        store
+            .open_reorg_job(monero::Network::Mainnet, 11, 100)
+            .unwrap();
+
+        let facts = store
+            .activity_facts(monero::Network::Mainnet, 100, Some(10), 32, 0)
+            .unwrap();
+        assert_eq!(
+            facts,
+            ActivityFacts {
+                high_water: Some(12),
+                groups: vec![(12, 1), (10, 1)],
+                all_groups: 2,
+                checkpoints: vec![11],
+                reorg: Some((11, true, 0)),
+                recomputes_pending: 1,
+                orders_due: 2,
+                webhooks_due: 1,
+                delivered_at: vec![95],
+            }
+        );
+        let one = store
+            .activity_facts(monero::Network::Mainnet, 100, Some(10), 1, 96)
+            .unwrap();
+        assert_eq!((one.groups, one.all_groups), (vec![(12, 1)], 2));
+        assert!(one.delivered_at.is_empty(), "made before the time asked");
+        let none_due = store
+            .activity_facts(monero::Network::Mainnet, 40, Some(6), 32, 0)
+            .unwrap();
+        assert_eq!(none_due.orders_due, 0, "not yet due by time or height");
     }
 
     /// More time-due orders than a page: the height-due ones still get

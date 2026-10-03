@@ -264,7 +264,8 @@ pub async fn manage_network_loops(
             let scan_state = Arc::new(
                 crate::work::ScanState::waking(Arc::clone(&webhooks))
                     .with_progress(scanner_status::progress_of(&scanner_status, network))
-                    .with_wakes(scanner_status::wakes_of(&scanner_status, network)),
+                    .with_wakes(scanner_status::wakes_of(&scanner_status, network))
+                    .with_activity(scanner_status::activity_of(&scanner_status, network)),
             );
             #[cfg(feature = "zmq")]
             {
@@ -444,6 +445,16 @@ pub async fn run_scanner_loop(
             .map(|(id, h)| (id.clone(), *h))
             .collect();
         let started_at = now_unix();
+        if scan_state.activity().snapshot_due() {
+            record_snapshot(
+                &scan_state,
+                &db,
+                network,
+                &daemon,
+                scan.scan_chunk_memory_budget_mb,
+            )
+            .await;
+        }
         // One node for the whole tick (task 7.6), so answers from nodes at
         // different heights or on different forks are never mixed.
         let pinned = daemon.pin();
@@ -513,8 +524,62 @@ pub async fn run_scanner_loop(
         if backlogged {
             tokio::task::yield_now().await;
         } else {
-            scan_state.node_wakes().chain_or(scan.poll_interval).await;
+            let slept = tokio::time::Instant::now();
+            let woken = scan_state.node_wakes().chain_or(scan.poll_interval).await;
+            scan_state
+                .activity()
+                .record(shared::activity::Event::Slept {
+                    ms: crate::work::millis(slept.elapsed()),
+                    woken_by: if woken {
+                        shared::activity::Wake::NewBlock
+                    } else {
+                        shared::activity::Wake::Interval
+                    },
+                });
         }
+    }
+}
+
+/// Records `network`'s snapshot for the engine page
+/// (`docs/engine_visualizer.md`). One that can't be taken is skipped: the
+/// next is due in seconds, and scanning matters more.
+async fn record_snapshot(
+    scan_state: &crate::work::ScanState,
+    db: &Db,
+    network: Network,
+    daemon: &crate::daemon_fallback::FallbackDaemonClient,
+    scan_chunk_memory_budget_mb: u32,
+) {
+    let nodes = daemon
+        .nodes()
+        .iter()
+        .enumerate()
+        .map(|(i, node)| shared::activity::Node {
+            label: node.label.clone(),
+            active: i == daemon.current_index(),
+            cooling_down: daemon.in_cooldown(i),
+        })
+        .collect();
+    match crate::work::snapshot(
+        scan_state,
+        db,
+        network,
+        nodes,
+        scan_chunk_memory_budget_mb,
+        now_unix(),
+    )
+    .await
+    {
+        Ok(snapshot) => scan_state
+            .activity()
+            .record(shared::activity::Event::Snapshot(Box::new(snapshot))),
+        Err(error) => shared::throttled!(
+            format!("activity-snapshot:{network:?}"),
+            warn,
+            network = ?network,
+            error = %error,
+            "taking the engine page's snapshot failed (skipped)"
+        ),
     }
 }
 
@@ -775,6 +840,26 @@ mod tests {
         scan_state.node_wakes().chain_changed();
         eventually("a round for the announced block", || ticks() == 2).await;
         scan_loop.abort();
+        // The engine page sees the loop's snapshot, and that the wait
+        // between the rounds was cut short by the new block.
+        let recorded: Vec<_> = scan_state
+            .activity()
+            .page(None)
+            .events
+            .into_iter()
+            .map(|recorded| recorded.event)
+            .collect();
+        assert!(
+            matches!(recorded.first(), Some(shared::activity::Event::Snapshot(_))),
+            "{recorded:#?}"
+        );
+        assert!(recorded.iter().any(|event| matches!(
+            event,
+            shared::activity::Event::Slept {
+                woken_by: shared::activity::Wake::NewBlock,
+                ms: _,
+            }
+        )));
     }
 
     #[tokio::test]

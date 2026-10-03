@@ -31,8 +31,8 @@ pub mod proof;
 mod work;
 pub use db::{Db, DbMetrics};
 pub use work::{
-    position, sql_height, BlockCheckpoint, OpenedReorg, Position, ReorgCandidate, ReorgJob,
-    ReorgPhase, StagedPayment,
+    position, sql_height, ActivityFacts, BlockCheckpoint, OpenedReorg, Position, ReorgCandidate,
+    ReorgJob, ReorgPhase, StagedPayment,
 };
 
 /// Every migration file, applied in order, exactly once each - tracked in
@@ -124,6 +124,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../../migrations/0023_order_idempotency_key.sql"),
     ),
     (24, include_str!("../../migrations/0024_proof_of_work.sql")),
+    (
+        25,
+        include_str!("../../migrations/0025_webhook_deliveries_delivered_idx.sql"),
+    ),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -2121,12 +2125,12 @@ impl Store {
         &self,
         network: monero::Network,
         min_height: u64,
-    ) -> Result<()> {
-        self.conn.execute(
+    ) -> Result<u64> {
+        let deleted = self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height < ?2",
             params![shared::network::SqlNetwork(network), min_height as i64],
         )?;
-        Ok(())
+        Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
     }
 
     // -- Per-tenant scan cursors (admin_settings_v2.md task 5.0) ---------

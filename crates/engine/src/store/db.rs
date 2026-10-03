@@ -54,7 +54,7 @@ struct Faults {
 }
 
 /// Jobs queued per class before callers wait for room.
-const QUEUE_CAPACITY: usize = 64;
+pub const QUEUE_CAPACITY: usize = 64;
 
 type Job = Box<dyn FnOnce(&Store) + Send + 'static>;
 
@@ -224,7 +224,6 @@ impl Db {
 
     /// How many jobs of `class` are queued and not yet taken by the worker
     /// (always 0 for an inline handle).
-    #[cfg(test)]
     pub fn queued(&self, class: Class) -> usize {
         match &self.inner {
             Inner::Worker { senders, wake: _ } => {
