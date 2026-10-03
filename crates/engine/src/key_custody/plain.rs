@@ -161,13 +161,35 @@ impl WalletEntry {
 }
 
 /// Scans are elliptic-curve work. They run on the blocking pool (task 7.2),
-/// never on the async workers that serve requests, and at most one per core
-/// at a time.
-static SCAN_SLOTS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| {
-        let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
-        Arc::new(tokio::sync::Semaphore::new(cores))
-    });
+/// never on the async workers that serve requests, and at most one per CPU
+/// the engine may use at a time: its size, and the slots.
+static SCAN_SLOTS: std::sync::OnceLock<(usize, Arc<tokio::sync::Semaphore>)> =
+    std::sync::OnceLock::new();
+
+/// Sets how many scans may run at once, and returns the size in effect.
+///
+/// One per CPU the engine may use (`server.cpus`,
+/// `threads::ThreadPlan::scan_slots`). `Engine::start` calls it before any
+/// scan; the first size stays for the process, which holds one engine.
+pub fn size_scan_slots(slots: usize) -> usize {
+    SCAN_SLOTS
+        .get_or_init(|| {
+            let slots = slots.max(1);
+            (slots, Arc::new(tokio::sync::Semaphore::new(slots)))
+        })
+        .0
+}
+
+/// The slots, one per CPU the process may use unless the engine said
+/// otherwise first (an engine-less test or tool scanning directly).
+fn scan_slots() -> Arc<tokio::sync::Semaphore> {
+    let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
+    size_scan_slots(cores);
+    SCAN_SLOTS.get().map_or_else(
+        || Arc::new(tokio::sync::Semaphore::new(cores)),
+        |(_, slots)| Arc::clone(slots),
+    )
+}
 
 /// Best-effort scrub of the one *long-lived* copy of a tenant's view key: the one
 /// this registry holds for the life of the process, and the one still sitting in
@@ -361,7 +383,7 @@ impl KeyCustody for PlainKeyCustody {
             let view_pair = entry.view_pair;
             let major = major_range.clone();
             let minor = minor_range.clone();
-            let permit = SCAN_SLOTS.clone().acquire_owned().await;
+            let permit = scan_slots().acquire_owned().await;
             let (returned, derived) = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 let derived = lookup.update_batch(&view_pair, &major, &minor);
@@ -384,7 +406,7 @@ impl KeyCustody for PlainKeyCustody {
         }
         let view_pair = entry.view_pair;
         let tx = tx.clone();
-        let permit = SCAN_SLOTS.clone().acquire_owned().await;
+        let permit = scan_slots().acquire_owned().await;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             if !pays(&view_pair, &lookup.table, &tx) {
@@ -428,7 +450,7 @@ impl KeyCustody for PlainKeyCustody {
         while live.covers.as_ref() != Some(indices) {
             let view_pair = entry.view_pair;
             let wanted = indices.clone();
-            let permit = SCAN_SLOTS.clone().acquire_owned().await;
+            let permit = scan_slots().acquire_owned().await;
             let (returned, derived) = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 let derived = live.update_batch_to(&view_pair, &wanted);
@@ -449,7 +471,7 @@ impl KeyCustody for PlainKeyCustody {
         }
         let txs = txs.to_vec();
         let view_pair = entry.view_pair;
-        let permit = SCAN_SLOTS.clone().acquire_owned().await;
+        let permit = scan_slots().acquire_owned().await;
         // The whole batch in one blocking task: the hop to the blocking pool
         // and back costs more than finding that a transaction pays nothing.
         tokio::task::spawn_blocking(move || {
@@ -1278,5 +1300,15 @@ mod tests {
             .unwrap()
             .derivations
             .load(Ordering::Relaxed)
+    }
+
+    /// The engine sizes the scan slots once, from its CPUs; a later size
+    /// changes nothing. (The slots are shared by every test in this binary,
+    /// some scanning right now, so only their size is checked here.)
+    #[test]
+    fn the_scan_slots_keep_the_first_size_they_are_given() {
+        let size = size_scan_slots(3);
+        assert!(size >= 1);
+        assert_eq!(size_scan_slots(size + 5), size, "the first size stays");
     }
 }

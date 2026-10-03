@@ -266,8 +266,9 @@ mod embedded {
     use std::collections::HashMap;
     use std::path::Path;
 
-    use engine::engine_settings::{DATABASE_PATH, SERVER_WORKER_THREADS};
+    use engine::engine_settings::{RuntimeConfig, DATABASE_PATH};
     use engine::run::{Engine, EngineConfig, Host, Stopped};
+    use live_settings::Section as _;
     use live_settings::{Env, OptionsFile, SettingSource, Snapshot};
     use monokulo::engine_client::EngineClient;
 
@@ -294,16 +295,32 @@ mod embedded {
         // Before anything is opened; `Engine::start` checks again.
         engine::run::refuse_standalone_settings(&options, &env).unwrap_or_else(|e| stop(e));
         let early = Snapshot::new(values, env.clone());
-        let workers = early.get(&SERVER_WORKER_THREADS);
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(workers)
-            .thread_name("engine-worker")
-            .enable_all()
-            .build()
+        // How many threads, on which CPUs, at what niceness: only the
+        // engine's threads, never monokulo's (`engine::threads`).
+        let threads = RuntimeConfig::from_snapshot(&early)
+            .unwrap_or_else(|errors| {
+                stop(
+                    errors
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+            })
+            .threads;
+        threads.check().unwrap_or_else(|e| {
+            stop(format!(
+                "the engine's threads can't be set up as asked: {e}"
+            ))
+        });
+        let runtime = threads
+            .build_runtime()
             .unwrap_or_else(|e| stop(format!("failed to start the engine's runtime: {e}")));
         if let Some(telemetry) = telemetry::global() {
-            telemetry.host("engine", &["engine"], "engine-");
+            telemetry.host("engine", &["engine"], engine::threads::THREAD_PREFIX);
         }
+        // Its share of the process's CPU, for the admin page.
+        shared::resources::sampler().host_threads(engine::threads::THREAD_PREFIX);
         Prepared {
             options,
             env,

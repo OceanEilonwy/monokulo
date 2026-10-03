@@ -89,6 +89,11 @@ test-support = ["shared/test-support"]
 # refused, so it can't be saved and silently ignored.
 zmq = ["dep:zeromq"]
 
+# Pinning the engine's threads to CPUs and setting their niceness
+# (`threads`, server.cpus and server.nice): Linux's per-thread calls.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.189"
+
 [dev-dependencies]
 # `shared`'s test helpers (the test engine token).
 shared = { path = "../shared", features = ["test-support"] }

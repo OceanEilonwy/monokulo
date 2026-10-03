@@ -129,6 +129,32 @@ fn only_for_a_remote_engine(state: &AppState, key: &str) -> Option<String> {
     })
 }
 
+/// The Resources panel's figures. Inside monokulo, the engine's
+/// `/status` reports the same process as monokulo's own sampler, so the
+/// one report is split by thread instead: counted twice, it would double.
+fn resources_view(
+    client: &crate::engine_client::EngineClient,
+    status: &crate::engine_client::EngineStatusResponse,
+    now: i64,
+) -> views::scaling::ResourcesView {
+    let process = shared::resources::sampler().report();
+    if client.is_embedded() {
+        views::scaling::ResourcesView {
+            engine: Some(process.hosted()),
+            monokulo: process.without_hosted(),
+            now_unix: now,
+            one_process: true,
+        }
+    } else {
+        views::scaling::ResourcesView {
+            engine: status.resources.clone(),
+            monokulo: process,
+            now_unix: now,
+            one_process: false,
+        }
+    }
+}
+
 /// Whether `key` is one of monokulo's own settings.
 fn is_monokulo_key(key: &str) -> bool {
     crate::settings::ALL.iter().any(|s| s.key() == key)
@@ -401,11 +427,7 @@ async fn build_view_model(
                 Ok(status) => {
                     let now = shared::time::now_unix();
                     attach_node_status(&mut view.engine_networks, &status, now);
-                    view.resources = Some(views::scaling::ResourcesView {
-                        engine: status.resources.clone(),
-                        monokulo: shared::resources::sampler().report(),
-                        now_unix: now,
-                    });
+                    view.resources = Some(resources_view(&state.engine.client, &status, now));
                     status.unserved_tenants
                 }
                 Err(_) => Vec::new(),
@@ -1696,6 +1718,8 @@ mod tests {
             // Monokulo has its own server.bind: the engine's is `engine:<key>`.
             ("engine:server.bind", "127.0.0.1:9443"),
             ("server.worker_threads", "4"),
+            ("server.cpus", "0"),
+            ("server.nice", "5"),
             ("server.rate_limit_per_token_per_min", "200"),
             ("server.max_body_bytes", "16384"),
             // The same key as monokulo's own, so sent as `engine:<key>`.

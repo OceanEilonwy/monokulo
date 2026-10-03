@@ -41,6 +41,7 @@ pub mod store;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod test_log;
+pub mod threads;
 pub mod webhook_delivery;
 pub mod webhook_sign;
 pub mod work;

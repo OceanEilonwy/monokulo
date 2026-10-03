@@ -176,6 +176,11 @@ impl Engine {
             );
         }
         warn_about_stranded_stores(&store, &custody_router);
+        // One scan at a time per CPU the engine may use (`server.cpus`),
+        // set before any scan runs.
+        let scan_slots =
+            crate::key_custody::size_scan_slots(settings.runtime.load().threads.scan_slots());
+        tracing::info!(scan_slots, "scans run at most this many at a time");
 
         let key_custody: Arc<dyn KeyCustody> = Arc::<CustodyRouter>::clone(&custody_router);
         let default_backend = custody_router.default_backend();

@@ -167,6 +167,10 @@ pub struct ResourcesView {
     pub engine: Option<ResourceReport>,
     pub monokulo: ResourceReport,
     pub now_unix: i64,
+    /// The engine runs inside monokulo: one process, its CPU split by
+    /// thread (`ResourceReport::hosted`) and its memory shared, so memory
+    /// is shown once, for both.
+    pub one_process: bool,
 }
 
 /// One process's band in a chart.
@@ -355,8 +359,13 @@ fn memory(value: f64) -> String {
 }
 
 /// The CPU and memory charts for `processes` stacked (first at the
-/// bottom), all on `machine`.
-fn charts(processes: &[(&'static str, &'static str, &ResourceReport)], now: i64) -> Markup {
+/// bottom), all on `machine`. With `shared_memory`, the processes are one
+/// process: memory is the last one's, under that name.
+fn charts(
+    processes: &[(&'static str, &'static str, &ResourceReport)],
+    now: i64,
+    shared_memory: Option<&'static str>,
+) -> Markup {
     let Some((_, _, machine)) = processes.first() else {
         return html! {};
     };
@@ -381,9 +390,17 @@ fn charts(processes: &[(&'static str, &'static str, &ResourceReport)], now: i64)
         now,
     };
     let total_memory = machine.machine_memory_bytes.unwrap_or(0) as f64;
+    let memory_of: Vec<(&'static str, &'static str, &ResourceReport)> = match shared_memory {
+        Some(name) => processes
+            .last()
+            .map(|(_, class, report)| (name, *class, *report))
+            .into_iter()
+            .collect(),
+        None => processes.to_vec(),
+    };
     let ram = Chart {
         what: "Memory",
-        layers: processes
+        layers: memory_of
             .iter()
             .map(|(name, class, report)| Layer {
                 class,
@@ -445,20 +462,25 @@ pub fn resources_panel(view: &ResourcesView, refresh_href: &str) -> Markup {
                 " (unsaved changes on this tab are lost)."
             }
             @match &view.engine {
+                Some(engine) if view.one_process => {
+                    p class="hint" { "The engine runs inside monokulo: CPU is split by their threads, and memory, which they share, is shown once." }
+                    (legend(&[ENGINE, MONOKULO]))
+                    (charts(&[(ENGINE.0, ENGINE.1, engine), (MONOKULO.0, MONOKULO.1, &view.monokulo)], now, Some("monokulo and the engine")))
+                }
                 Some(engine) if engine.host_id == view.monokulo.host_id => {
                     (legend(&[ENGINE, MONOKULO]))
-                    (charts(&[(ENGINE.0, ENGINE.1, engine), (MONOKULO.0, MONOKULO.1, &view.monokulo)], now))
+                    (charts(&[(ENGINE.0, ENGINE.1, engine), (MONOKULO.0, MONOKULO.1, &view.monokulo)], now, None))
                 }
                 Some(engine) => {
                     p class="hint" { "The engine and monokulo run on different machines, so each is shown against its own." }
                     h4 { "Engine" }
-                    (charts(&[(ENGINE.0, ENGINE.1, engine)], now))
+                    (charts(&[(ENGINE.0, ENGINE.1, engine)], now, None))
                     h4 { "Monokulo" }
-                    (charts(&[(MONOKULO.0, MONOKULO.1, &view.monokulo)], now))
+                    (charts(&[(MONOKULO.0, MONOKULO.1, &view.monokulo)], now, None))
                 }
                 None => {
                     p class="hint" { "The engine didn't report its CPU and memory; monokulo's own are below." }
-                    (charts(&[(MONOKULO.0, MONOKULO.1, &view.monokulo)], now))
+                    (charts(&[(MONOKULO.0, MONOKULO.1, &view.monokulo)], now, None))
                 }
             }
         }
@@ -772,6 +794,7 @@ mod tests {
             unix: NOW - NOW % SLOT_SECS - back * SLOT_SECS,
             cpu_percent: cpu,
             memory_bytes: mb * 1_000_000,
+            hosted_cpu_percent: None,
         }
     }
 
@@ -818,6 +841,7 @@ mod tests {
                 vec![sample(7, 3.0, 90), sample(1, 2.0, 96), sample(0, 2.0, 96)],
             ),
             now_unix: NOW,
+            one_process: false,
         };
         let html = resources_panel(&view, "/dashboard/admin/settings?tab=nodes").into_string();
         assert!(
@@ -866,12 +890,54 @@ mod tests {
         assert!(!html.contains("different machines"));
     }
 
+    /// The engine inside monokulo: one process, sampled once. CPU is split
+    /// by the engine's threads, stacked as before; memory, which the two
+    /// share, is one band, counted once.
+    #[test]
+    fn one_process_splits_cpu_and_shows_memory_once() {
+        let process = report(
+            "boot-1",
+            vec![
+                ResourceSample {
+                    hosted_cpu_percent: Some(20.0),
+                    ..sample(1, 25.0, 300)
+                },
+                ResourceSample {
+                    hosted_cpu_percent: Some(20.0),
+                    ..sample(0, 25.0, 300)
+                },
+            ],
+        );
+        let view = ResourcesView {
+            engine: Some(process.hosted()),
+            monokulo: process.without_hosted(),
+            now_unix: NOW,
+            one_process: true,
+        };
+        let html = resources_panel(&view, "/x").into_string();
+        assert!(html.contains("The engine runs inside monokulo"), "{html}");
+        assert!(
+            html.contains("CPU</strong> 25 % (engine 20 %, monokulo 5 %) of 4 cores"),
+            "{html}"
+        );
+        assert!(
+            html.contains("Memory</strong> 300 MB of 8.0 GB"),
+            "once, not 600 MB: {html}"
+        );
+        assert!(
+            html.contains("<title>just now: 300 MB</title>")
+                || html.contains("monokulo and the engine"),
+            "{html}"
+        );
+    }
+
     #[test]
     fn different_machines_are_shown_apart_and_a_silent_engine_says_so() {
         let apart = ResourcesView {
             engine: Some(report("boot-1", vec![sample(0, 23.0, 412)])),
             monokulo: report("boot-2", vec![sample(0, 2.0, 96)]),
             now_unix: NOW,
+            one_process: false,
         };
         let html = resources_panel(&apart, "/x").into_string();
         assert!(html.contains("run on different machines"), "{html}");
@@ -889,6 +955,7 @@ mod tests {
             engine: None,
             monokulo: report("boot-2", vec![]),
             now_unix: NOW,
+            one_process: false,
         };
         let html = resources_panel(&silent, "/x").into_string();
         assert!(

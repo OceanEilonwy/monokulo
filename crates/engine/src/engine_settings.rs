@@ -189,6 +189,22 @@ settings! {
         example: "2",
         applies: Restart,
     },
+    SERVER_CPUS: String {
+        key: "server.cpus",
+        default: String::new(),
+        check: |cpus: &String| crate::threads::parse_cpu_list(cpus).map(|_| ()),
+        description: "The CPUs the engine's threads may run on, as taskset takes them (2,3 or 1-3); empty for all. One scan runs at a time per CPU listed. On a router, leaving some CPUs out keeps them free for routing while the engine catches up with the chain. Linux only.",
+        example: "2,3",
+        applies: Restart,
+    },
+    SERVER_NICE: u32 {
+        key: "server.nice",
+        default: 0,
+        check: range(0, 19),
+        description: "The niceness of the engine's threads: 0 is normal, 19 the lowest. Higher gives way to everything else on the machine; inside monokulo, to monokulo's own threads too. Linux only.",
+        example: "10",
+        applies: Restart,
+    },
     DATABASE_READ_CONNECTIONS: usize {
         key: "database.read_connections",
         default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
@@ -598,6 +614,9 @@ pub struct RuntimeConfig {
     pub bind: std::net::SocketAddr,
     pub worker_threads: usize,
     pub read_connections: usize,
+    /// The engine's threads: `server.worker_threads`, `server.cpus` and
+    /// `server.nice` (`crate::threads`).
+    pub threads: crate::threads::ThreadPlan,
 }
 
 impl Section for RuntimeConfig {
@@ -606,14 +625,25 @@ impl Section for RuntimeConfig {
         &[
             &SERVER_BIND,
             &SERVER_WORKER_THREADS,
+            &SERVER_CPUS,
+            &SERVER_NICE,
             &DATABASE_READ_CONNECTIONS,
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        let worker_threads = snapshot.get(&SERVER_WORKER_THREADS);
         Ok(Self {
             bind: snapshot.get(&SERVER_BIND).0,
-            worker_threads: snapshot.get(&SERVER_WORKER_THREADS),
+            worker_threads,
             read_connections: snapshot.get(&DATABASE_READ_CONNECTIONS),
+            threads: crate::threads::ThreadPlan {
+                workers: worker_threads,
+                // Checked by the setting itself; an invalid value is
+                // reported there and the default (every CPU) used.
+                cpus: crate::threads::parse_cpu_list(&snapshot.get(&SERVER_CPUS))
+                    .unwrap_or_default(),
+                nice: i32::try_from(snapshot.get(&SERVER_NICE)).unwrap_or(0),
+            },
         })
     }
 }

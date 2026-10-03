@@ -26,7 +26,8 @@ use engine::engine_settings::{RuntimeConfig, ALL, LOGGING_FORMAT, LOGGING_LEVEL}
 use engine::run::{Engine, EngineConfig, Host, Stopped};
 use live_settings::{OptionsFile, Snapshot};
 
-/// Builds the runtime with `server.worker_threads` threads (task 2.8: read
+/// Builds the runtime from `server.worker_threads`, `server.cpus` and
+/// `server.nice` (`engine::threads`; task 2.8: read
 /// before the runtime exists, so it applies at the next start), then runs.
 fn main() {
     // The command line first: `--help` and a mistyped option end here, and
@@ -57,22 +58,23 @@ fn main() {
         &early.get(&LOGGING_LEVEL),
         telemetry::Format::chosen(early.get(&LOGGING_FORMAT)),
     );
-    let worker_threads =
-        live_settings::read_sync_with_env::<RuntimeConfig>(Ok(file), &start.env).worker_threads;
+    // The engine's threads: how many, on which CPUs, at what niceness
+    // (`engine::threads`). A plan this machine can't take stops it here.
+    let threads = live_settings::read_sync_with_env::<RuntimeConfig>(Ok(file), &start.env).threads;
+    if let Err(e) = threads.check() {
+        tracing::error!(error = %e, "the engine's threads can't be set up as asked");
+        std::process::exit(1);
+    }
     let config = EngineConfig {
         database_path: cli::database_path(&early),
         options: OptionsFile::at(&start.options),
         env: start.env,
         host: Host::Standalone,
     };
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(worker_threads)
-        .enable_all()
-        .build()
-    {
+    let runtime = match threads.build_runtime() {
         Ok(runtime) => runtime,
         Err(e) => {
-            tracing::error!(worker_threads, error = %e, "failed to start the async runtime");
+            tracing::error!(workers = threads.workers, error = %e, "failed to start the async runtime");
             std::process::exit(1);
         }
     };

@@ -58,7 +58,7 @@ pub fn wallet_matches_address(
         && address.public_spend == pair.spend
         && address.public_view == monero::PublicKey::from_private_key(&pair.view))
 }
-pub use plain::PlainKeyCustody;
+pub use plain::{size_scan_slots, PlainKeyCustody};
 
 pub use shared::key_custody::{
     KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,

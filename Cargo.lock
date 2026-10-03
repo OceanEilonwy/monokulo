@@ -1084,6 +1084,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "key-custody-service",
+ "libc",
  "live-settings",
  "monero",
  "monero-epee",
