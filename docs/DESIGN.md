@@ -450,10 +450,23 @@ project's release workflow built it.
 
 What the `snp` backend does not hide from the host, by design or for now:
 
-- **Which payments are a store's.** The host runs `monerod` and sees what the engine
-  asks for and what it reports to monokulo, so it can feed the engine crafted blocks
-  and learn from the result which outputs belong to a store. The keys stay sealed; the
-  link between a store and its payments doesn't.
+- **Which payments are a store's, and their amounts.** SEV-SNP keeps a store's keys
+  from being read or used anywhere but a trusted engine; it doesn't keep the store's
+  payment history from the host, because the engine scans with the keys for whoever
+  asks, and the host can ask in three ways:
+  - *the node*: the host runs `monerod`, so it can feed the engine crafted blocks and
+    see from what the engine records and reports which outputs it matched;
+  - *the database*: it is on the host's disk, unencrypted. The host reads every
+    recorded payment and amount, and can edit the scan state (add orders at
+    subaddress indices of its choosing, rewind scan cursors) so the engine scans what
+    it wants;
+  - *the admin API*: the engine token crosses the link from monokulo, and the
+    engine's settings and environment are the host's, so the host can create orders
+    itself.
+
+  Authenticating the scan state alone wouldn't close this (the node and the API
+  remain). Encrypting the database inside the guest would hide recorded payments at
+  rest, but not the node route; it isn't done.
 - **Time.** The engine's clock is the host's. Bundle and certificate freshness, the
   revocation list's validity and challenge expiry are checked against it, so a host can
   make a stale revocation list look current. The merchant's client checks a bundle
