@@ -291,6 +291,8 @@ mod embedded {
         let values = options
             .read(engine::engine_settings::ALL)
             .unwrap_or_else(|e| stop(e));
+        // Before anything is opened; `Engine::start` checks again.
+        engine::run::refuse_standalone_settings(&options, &env).unwrap_or_else(|e| stop(e));
         let early = Snapshot::new(values, env.clone());
         let workers = early.get(&SERVER_WORKER_THREADS);
         let runtime = tokio::runtime::Builder::new_multi_thread()

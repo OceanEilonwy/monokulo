@@ -1562,6 +1562,7 @@ mod tests {
                 Payments,
                 Some("Exchange rates"),
             ),
+            ("engine.mode", M, General, None),
             ("engine.url", M, General, None),
             ("engine.token", M, General, None),
             ("http_cache.max_mb", M, Server, None),

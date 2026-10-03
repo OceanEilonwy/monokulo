@@ -1018,7 +1018,7 @@ mod tests {
             .with_networks(&[monero::Network::Mainnet])
             .spawn()
             .await;
-        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::embedded_for_tests(engine.router());
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()

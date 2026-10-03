@@ -280,7 +280,7 @@ mod tests {
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::embedded_for_tests(engine.router());
         let state = AppState {
             engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
@@ -395,7 +395,7 @@ mod tests {
             "decrypted value should be a real sk_ token, got: {decrypted}"
         );
 
-        let engine_client = EngineClient::for_tests(format!("http://{}", engine.addr));
+        let engine_client = EngineClient::embedded_for_tests(engine.router());
         let tenant_view = engine_client
             .get_tenant(&shared::auth::RawToken::presented(&decrypted))
             .await

@@ -1019,7 +1019,7 @@ mod tests {
         // the real spawned engine - same pattern used throughout this
         // workspace's other connect-flow/connection tests.
         let engine_client =
-            monokulo::engine_client::EngineClient::for_tests(format!("http://{}", engine.addr));
+            monokulo::engine_client::EngineClient::embedded_for_tests(engine.router());
         let tenant_view = engine_client
             .get_tenant(&shared::auth::RawToken::presented(&credentials.secret_token))
             .await
@@ -1063,7 +1063,7 @@ mod tests {
             .await
             .unwrap();
         let engine_client =
-            monokulo::engine_client::EngineClient::for_tests(format!("http://{}", engine.addr));
+            monokulo::engine_client::EngineClient::embedded_for_tests(engine.router());
         let webhooks = engine_client
             .list_webhooks(&shared::auth::RawToken::presented(
                 &credentials.secret_token,

@@ -913,8 +913,7 @@ mod tests {
             let engine =
                 engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                     .await;
-            let state =
-                state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
+            let state = state_with_engine(EngineClient::embedded_for_tests(engine.router()));
 
             let first = get_status_cached(&state.engine)
                 .await
@@ -1039,8 +1038,7 @@ mod tests {
         async fn status_page_is_reachable_with_no_authentication_and_shows_no_configured_networks()
         {
             let engine = engine_test_support::spawn_test_engine().await;
-            let state =
-                state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
+            let state = state_with_engine(EngineClient::embedded_for_tests(engine.router()));
             let router: Router = build_router(state);
 
             let response = router
@@ -1070,8 +1068,7 @@ mod tests {
             let engine =
                 engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                     .await;
-            let state =
-                state_with_engine(EngineClient::for_tests(format!("http://{}", engine.addr)));
+            let state = state_with_engine(EngineClient::embedded_for_tests(engine.router()));
             let router: Router = build_router(state);
 
             let response = router
@@ -1135,10 +1132,9 @@ mod tests {
                 .with_admin_lookup_daemon()
                 .spawn()
                 .await;
-            let router: Router = build_router(state_with_engine(EngineClient::for_tests(format!(
-                "http://{}",
-                engine.addr
-            ))));
+            let router: Router = build_router(state_with_engine(EngineClient::embedded_for_tests(
+                engine.router(),
+            )));
             let html = body_text(
                 router
                     .clone()

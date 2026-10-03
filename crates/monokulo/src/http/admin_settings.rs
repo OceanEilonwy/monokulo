@@ -99,6 +99,7 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
             // with a padlock and the reason, never saved here.
             let locked = view
                 .locked
+                .or_else(|| only_for_a_remote_engine(state, view.key))
                 .or_else(|| read_only.clone().filter(|_| view.sources.toml));
             AdminScalarFieldView {
                 key: view.key.to_string(),
@@ -116,6 +117,16 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
             }
         })
         .collect()
+}
+
+/// Why monokulo's own `key` can't be set here while the engine runs inside
+/// monokulo: the engine's URL is only for a remote engine, and saved now it
+/// would stop monokulo at its next start.
+fn only_for_a_remote_engine(state: &AppState, key: &str) -> Option<String> {
+    (state.engine.client.is_embedded() && key == crate::settings::ENGINE_URL.key).then(|| {
+        "Only used with a remote engine (engine.mode = remote): the engine runs inside monokulo."
+            .to_string()
+    })
 }
 
 /// Whether `key` is one of monokulo's own settings.
@@ -601,6 +612,19 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
     let Some(registry) = state.settings.registry.as_ref() else {
         return SaveOutcome::refused("Settings can't be saved on this instance.".to_string());
     };
+    // Shown locked; a form that sends it anyway is refused.
+    if let Some(why) = form
+        .keys()
+        .find_map(|key| only_for_a_remote_engine(state, key))
+    {
+        return SaveOutcome {
+            error_key: Some((
+                crate::settings::ENGINE_URL.key.to_string(),
+                SettingOwner::Monokulo,
+            )),
+            ..SaveOutcome::refused(why)
+        };
+    }
     let changes: live_settings::Changes = crate::settings::ALL
         .iter()
         .filter_map(|setting| {
@@ -1188,10 +1212,21 @@ mod tests {
         engine_addr: std::net::SocketAddr,
         options: live_settings::OptionsFile,
     ) -> AppState {
+        test_app_state_with_client(
+            EngineClient::for_tests(format!("http://{engine_addr}")),
+            options,
+        )
+        .await
+    }
+
+    /// The same, reaching the engine through `engine_client`.
+    async fn test_app_state_with_client(
+        engine_client: EngineClient,
+        options: live_settings::OptionsFile,
+    ) -> AppState {
         let db = Db::open_in_memory().unwrap();
         db.seed_test_admin();
         let db = db.into_shared();
-        let engine_client = EngineClient::for_tests(format!("http://{engine_addr}"));
         let exchange_rate = test_exchange_rate_provider();
         let abuse: std::sync::Arc<crate::abuse::AbuseProtection> = Default::default();
         let settings = crate::settings::MonokuloSettings::load(
@@ -1886,6 +1921,49 @@ mod tests {
             "the next request sees it: {after}"
         );
         assert!(after.contains(r#"name="view_key_hex""#), "{after}");
+    }
+
+    #[tokio::test]
+    async fn with_the_engine_inside_monokulo_its_address_is_locked_and_never_saved() {
+        let engine = spawn_engine().await;
+        let state = test_app_state_with_client(
+            EngineClient::embedded_for_tests(engine.router()),
+            live_settings::OptionsFile::in_memory("[signup]\nmode = \"public\"\n"),
+        )
+        .await;
+        let settings = state.settings.clone();
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+
+        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(
+            page.contains("Only used with a remote engine (engine.mode = remote): the engine runs inside monokulo."),
+            "the lock says why: {page}"
+        );
+        assert!(
+            !page.contains(r#"name="engine.url""#),
+            "not editable: {page}"
+        );
+
+        // A hand-made form that sends it anyway is refused, so the next
+        // start isn't stopped by a URL it would refuse.
+        let response = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                &[("tab", "general"), ("engine.url", "http://127.0.0.1:1")],
+            ))
+            .await
+            .unwrap();
+        let said = body_text(response).await;
+        assert!(said.contains("Only used with a remote engine"), "{said}");
+        assert_eq!(
+            monokulo_value(&settings, "engine.url").1,
+            live_settings::SettingSource::Default,
+            "nothing was saved"
+        );
     }
 
     #[tokio::test]

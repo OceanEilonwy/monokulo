@@ -286,11 +286,13 @@ impl Engine {
     }
 }
 
+/// Refuses any [`STANDALONE_ONLY`] setting given to an embedded engine.
+///
 /// An embedded engine has no listener, is given its token, and logs through
-/// its host's logger: a [`STANDALONE_ONLY`] setting given to it (in the
-/// options file, on the command line or in the environment) would do
-/// nothing, so it is refused rather than ignored.
-fn refuse_standalone_settings(
+/// its host's logger: such a setting (in the options file, on the command
+/// line or in the environment) would do nothing, so it is refused rather
+/// than ignored.
+pub fn refuse_standalone_settings(
     options: &live_settings::OptionsFile,
     env: &live_settings::Env,
 ) -> Result<(), StartError> {

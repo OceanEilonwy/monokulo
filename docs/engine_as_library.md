@@ -1,8 +1,8 @@
 # Proposal: the engine as a library inside monokulo
 
-Status: proposal accepted (see "Decisions" at the end). Phases 1 and 2 are
-built (see "Phase 1, as built" and "Phase 2, as built"). Written 2026-10-03
-against `1cc17f2` (origin/main).
+Status: proposal accepted (see "Decisions" at the end). Phases 1 to 3 are
+built (see the "as built" sections at the end): monokulo runs the engine
+inside it by default. Written 2026-10-03 against `1cc17f2` (origin/main).
 
 ## Summary
 
@@ -594,4 +594,124 @@ Tests:
   weren't, `cargo build --workspace` would unify `engine/test-support` and
   `monokulo/test-support` into an ordinary build, through Cargo's feature
   unification.
+
+## Phase 3, as built
+
+**monokulo runs the engine inside it by default.**
+
+- **`engine.mode`.** It is `embedded` (the default) or `remote`.
+  `settings::engine_mode` checks the mode against everything that only the
+  other mode uses, so no such value is set and silently ignored:
+  - `engine.url` and `MONOKULO_ENGINE_TOKEN` stop an embedded monokulo;
+  - a remote engine needs its token, which is checked as the engine checks
+    it.
+
+  `engine.token` is no longer a required setting.
+- **The options file.** Both services use one file, read through
+  `live_settings::OptionsFile` handles that share it:
+  - monokulo's handle `leaving("engine")` skips the `[engine.*]` tables;
+  - the engine's handle `scoped("engine")` reads and writes them under its
+    own key names;
+  - with a remote engine, monokulo reads the file `with_hint`, so
+    `[engine.*]` tables are refused with the reason.
+
+  Both handles share what was last read and written, so neither refuses the
+  other's save as "changed since it was loaded". `main` reads the file
+  twice, because the mode itself is in it: once leniently to learn the
+  mode, then strictly for a remote engine.
+- **Command line and `--init`.** Every embedded engine setting is a
+  `--engine-…` option (`cli::with_nested_settings`), and `monokulo --init`
+  writes them under `[engine.*]` (`render_init_nested`).
+- **Standalone-only settings.** `engine::engine_settings::STANDALONE_ONLY`
+  is `server.bind`, `server.token` and `logging.*`. An embedded engine
+  refuses any of them, whether given in the file, on the command line or in
+  the environment. It refuses them before anything is opened: `prepare` in
+  monokulo's `main` checks, and so does `Engine::start`. Its settings API
+  leaves them out, refuses saving them, and names monokulo's `--engine-…`
+  options in its "set with" hints.
+- **Starting and stopping.** `main` is synchronous now. It reads the file,
+  starts logging and checks the mode. It then builds the engine's runtime
+  from `server.worker_threads`, with threads named `engine-worker`, and
+  monokulo's runtime. Inside `run`:
+  1. monokulo opens its database and the process's one log store;
+  2. it starts the engine on the engine's runtime, with a token made for
+     this run (`shared::auth::generate_engine_token`) and `engine.db`
+     beside `monokulo.db`, unless the engine's `database.path` says
+     otherwise;
+  3. the embedded `EngineClient` answers each call on the engine's runtime.
+
+  On SIGTERM, requests in flight finish, then the engine's loops stop, then
+  the logs are flushed.
+- **Logs.** `telemetry::Telemetry::host("engine", &["engine"], "engine-")`
+  names a line `engine` when its target is in the engine's crate, or when
+  it is logged on an `engine-` thread. Both services' lines go to
+  `monokulo.logs.db`, and the Logs page reads the engine's lines from there
+  (`EngineSource::Local`) instead of through the engine's log API.
+- **The admin page.** It locks `engine.url` while the engine is embedded,
+  and refuses a form that sends it anyway. Saved, it would stop monokulo at
+  its next start.
+- **Deployment.** `compose.yaml` runs one service, and shows the
+  two-container setup commented out. The README and Dockerfile describe the
+  embedded default.
+
+Tests:
+- **The real binary** (`crates/monokulo/tests/options_file.rs`):
+  - it starts with only the encryption key, the engine's database beside
+    monokulo's;
+  - `--init` lists `[engine.payment]` and no standalone-only table;
+  - each wrong combination of mode and settings stops it before anything
+    opens.
+- **live-settings:** seven tests for the shared file, nested options and
+  nested `--init`.
+- **The engine:** an embedded engine starts on its host's token, keeps its
+  settings in `[engine.*]`, and refuses standalone-only settings, named by
+  where each was given.
+- **telemetry:** lines are named by crate and by thread.
+- **monokulo:**
+  - `engine_mode` in every combination;
+  - the `--engine-…` options;
+  - the admin page's lock on `engine.url`;
+  - the contract test, which now also runs on a runtime of the engine's
+    own, as `main` does.
+- **monokulo's real-engine tests** now reach the engine in-process (24
+  places).
+
+A live run of the real binary showed:
+- one process, with 3 `engine-worker` threads;
+- `/status` answered through the engine in-process;
+- engine lines tagged `engine` in the log and in `monokulo.logs.db`;
+- SIGTERM ending with "the engine stopped" and exit 0.
+
+### Phase 3 decisions
+
+- **The engine's own runtime came in phase 3, not phase 4.** Without it,
+  `server.worker_threads` would do nothing while embedded, which is exactly
+  what the settings rules forbid. Phase 4 keeps `engine.cpus`,
+  `engine.nice`, sizing the scan slots from them, and splitting the
+  resources chart by thread.
+- **Fewer standalone-only settings than the proposal listed.**
+  `server.rate_limit_per_token_per_min` and `server.max_body_bytes` still
+  act on in-process calls (the router's middleware runs either way), so
+  they stay. Only `server.bind`, `server.token` and `logging.*` don't apply
+  when embedded.
+- **The engine's registry still requires `server.token`.** When embedded,
+  the token monokulo made is handed to it as that setting
+  (`Env::with_var`), after the standalone-settings check has looked at the
+  real environment. That keeps one registry declaration for both hosts.
+- **One log store, not two.** The proposal kept an `engine.logs.db` for the
+  embedded engine. A process has one `telemetry` store, and every line
+  already carries its service, so both services share `monokulo.logs.db`
+  and the Logs page reads it once. Spans (traces) are still named after the
+  process: only events are named per service.
+- **Who still runs the engine as a separate process.** `scripts/dev-run.sh`
+  starts monokulo with `--engine-mode remote`, and the Playwright real
+  stack writes `mode = "remote"`. Both run the engine as a process of its
+  own on purpose (the real-stack suite kills and restarts it). The
+  admin-settings tests, and the monokulo inside the WooCommerce mock, also
+  stay on the remote transport, so remote mode stays exercised end to end
+  beyond the contract test.
+- **`store_connections.engine_url`** records `embedded` for stores
+  connected to an embedded engine. Nothing reads it; it goes in phase 5.
+- **The OpenWrt package (PR #36)** still runs two binaries. It moves to the
+  single binary in phase 5, as planned.
 

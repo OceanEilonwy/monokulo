@@ -344,7 +344,7 @@ mod tests {
         let sources = Sources {
             local: Some(local_store),
             engine: EngineSource::Api {
-                client: EngineClient::for_tests(format!("http://{}", engine.addr)),
+                client: EngineClient::embedded_for_tests(engine.router()),
             },
         };
 

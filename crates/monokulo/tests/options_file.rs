@@ -1,6 +1,7 @@
 //! The monokulo binary and its options file, run as an operator runs it:
-//! where the file and the database go when nothing names them, `--init`,
-//! and the start refused for a file it can't use. The settings themselves
+//! where the file and the databases go when nothing names them, `--init`,
+//! the start refused for a file it can't use, and the engine's mode (inside
+//! monokulo by default, docs/engine_as_library.md). The settings themselves
 //! are tested in `live-settings` and on the admin page; this is the wiring
 //! in `main.rs` that only a real process shows.
 
@@ -48,12 +49,11 @@ fn monokulo(dir: &Path) -> Command {
     command
 }
 
-/// [`monokulo`] with both secrets.
+/// [`monokulo`] with its one required secret: the engine runs inside it,
+/// so it needs no engine token.
 fn with_secrets(dir: &Path) -> Command {
     let mut command = monokulo(dir);
-    command
-        .env("MONOKULO_ENCRYPTION_KEY", encryption_key())
-        .env("MONOKULO_ENGINE_TOKEN", ENGINE_TOKEN);
+    command.env("MONOKULO_ENCRYPTION_KEY", encryption_key());
     command
 }
 
@@ -120,6 +120,15 @@ fn init_writes_the_options_file_where_xdg_says_and_never_overwrites_it() {
     assert!(
         !written.contains("under_attack"),
         "a runtime switch: {written}"
+    );
+    assert!(written.contains("# mode = \"embedded\""), "{written}");
+    assert!(
+        written.contains("[engine.payment]\n"),
+        "the engine's own settings, under [engine.*]: {written}"
+    );
+    assert!(
+        !written.contains("[engine.logging]"),
+        "the standalone engine's own: {written}"
     );
 
     let again = monokulo(&dir.0)
@@ -192,7 +201,6 @@ fn monokulo_does_not_start_on_a_file_it_cannot_use() {
 
     std::fs::write(&path, "").unwrap();
     let output = monokulo(&dir.0)
-        .env("MONOKULO_ENGINE_TOKEN", ENGINE_TOKEN)
         .arg("--options")
         .arg(&path)
         .output()
@@ -209,9 +217,10 @@ fn monokulo_does_not_start_on_a_file_it_cannot_use() {
         .exists());
 }
 
-/// A missing options file is no problem: monokulo starts on its defaults
-/// (with no engine to reach), its database where XDG says, writing no file
-/// until a save. A file naming the address and database is followed.
+/// A missing options file is no problem: monokulo starts on its defaults,
+/// the engine inside it, both databases where XDG says, writing no file
+/// until a save. A file naming the address and database is followed, the
+/// engine's database beside monokulo's.
 #[test]
 fn monokulo_starts_without_a_file_and_follows_one() {
     let dir = TempDir::new("start");
@@ -232,6 +241,10 @@ fn monokulo_starts_without_a_file_and_follows_one() {
     stop(child);
     assert!(up, "monokulo started with no options file");
     assert!(data.join("monokulo").join("monokulo.db").exists());
+    assert!(
+        data.join("monokulo").join("engine.db").exists(),
+        "the engine inside it, its database beside monokulo's"
+    );
     assert!(!missing.exists(), "nothing is written until a save");
 
     let path = dir.0.join("monokulo.toml");
@@ -255,4 +268,59 @@ fn monokulo_starts_without_a_file_and_follows_one() {
     stop(child);
     assert!(up, "monokulo listened where its file says");
     assert!(dir.0.join("mine.db").exists());
+    assert!(dir.0.join("engine.db").exists());
+}
+
+/// What only one mode of the engine uses is refused in the other, before
+/// any database opens, rather than ignored: the engine token or URL with
+/// the engine inside monokulo, the standalone engine's own settings in
+/// `[engine.*]`, `[engine.*]` with a remote engine, and a remote engine
+/// without its token.
+#[test]
+fn settings_for_the_other_engine_mode_stop_monokulo() {
+    let dir = TempDir::new("modes");
+    let run = |file: &str, extra: &[(&str, &str)]| {
+        let path = dir.0.join("monokulo.toml");
+        std::fs::write(&path, file).unwrap();
+        let mut command = with_secrets(&dir.0);
+        command.arg("--options").arg(&path);
+        for (name, value) in extra {
+            command.env(name, value);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+        text(&output)
+    };
+    let said = run("", &[("MONOKULO_ENGINE_TOKEN", ENGINE_TOKEN)]);
+    assert!(
+        said.contains("MONOKULO_ENGINE_TOKEN only apply to a remote engine"),
+        "{said}"
+    );
+    let said = run("[engine]\nurl = \"http://engine:8443\"\n", &[]);
+    assert!(
+        said.contains("engine.url only apply to a remote engine"),
+        "{said}"
+    );
+    let said = run("[engine.server]\nbind = \"0.0.0.0:8443\"\n", &[]);
+    assert!(
+        said.contains("engine.server.bind in the options file: these only apply to the engine running on its own"),
+        "{said}"
+    );
+    let said = run(
+        "[engine]\nmode = \"remote\"\n\n[engine.payment]\nconfirmations_required = 3\n",
+        &[("MONOKULO_ENGINE_TOKEN", ENGINE_TOKEN)],
+    );
+    assert!(
+        said.contains("there is no setting called engine.payment.confirmations_required: the engine's own settings go here only when it runs inside monokulo"),
+        "{said}"
+    );
+    let said = run("[engine]\nmode = \"remote\"\n", &[]);
+    assert!(
+        said.contains("MONOKULO_ENGINE_TOKEN must be set: engine.mode is remote"),
+        "{said}"
+    );
+    assert!(
+        !dir.0.join("home/.local/share/monokulo").exists(),
+        "nothing opened"
+    );
 }
