@@ -113,11 +113,10 @@ pub fn check_hash(hash: &[u8; 32], difficulty: u128) -> bool {
     if difficulty == 0 {
         return false;
     }
+    let (words, _) = hash.as_chunks::<8>();
     let mut limbs = [0u64; 4];
-    for (limb, bytes) in limbs.iter_mut().zip(hash.chunks_exact(8)) {
-        let mut word = [0u8; 8];
-        word.copy_from_slice(bytes);
-        *limb = u64::from_le_bytes(word);
+    for (limb, word) in limbs.iter_mut().zip(words) {
+        *limb = u64::from_le_bytes(*word);
     }
     let factors = [difficulty as u64, (difficulty >> 64) as u64];
     // Schoolbook multiplication into six 64-bit limbs.

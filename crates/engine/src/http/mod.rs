@@ -248,6 +248,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             "/api/v1/admin/settings/reload",
             post(instance_admin::reload_settings),
         )
+        .route(
+            "/api/v1/admin/proof/{network}/anchor",
+            delete(instance_admin::forget_anchor),
+        )
         // This engine's logs, for monokulo's Logs page (structured_logging.md 3.3).
         .route("/api/v1/admin/logs", get(logs::list))
         .route("/api/v1/admin/logs/trace/{trace_id}", get(logs::trace))

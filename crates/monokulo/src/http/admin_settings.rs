@@ -1601,6 +1601,9 @@ mod tests {
             ("payment.expired_order_grace_period_minutes", "500"),
             ("payment.scan_chunk_memory_budget_mb", "16"),
             ("monero_node.strict_tls", "true"),
+            ("proof_of_work.mainnet", "false"),
+            ("proof_of_work.stagenet", "true"),
+            ("proof_of_work.testnet", "true"),
             // Monokulo has its own server.bind: the engine's is `engine:<key>`.
             ("engine:server.bind", "127.0.0.1:9443"),
             ("server.worker_threads", "4"),

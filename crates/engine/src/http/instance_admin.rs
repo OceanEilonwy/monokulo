@@ -423,6 +423,34 @@ fn save_refused(error: live_settings::SaveError) -> axum::response::Response {
     }
 }
 
+/// `DELETE /api/v1/admin/proof/{network}/anchor` - forgets `network`'s
+/// proof-of-work anchor and proven chain (docs/proof_of_work.md), keeping
+/// checking on: its next round takes a new anchor from the nodes. For an
+/// operator after a reorg deeper than the anchor, once the nodes are
+/// trusted again; nothing settles until the new anchor is taken. `404`
+/// while checking is off there.
+pub async fn forget_anchor(
+    State(db): State<Database>,
+    axum::extract::Path(network): axum::extract::Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let network =
+        crate::network::parse_network(&network).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let forgotten = db
+        .write(move |s| {
+            if s.proof_network(network)?.is_none() {
+                return Ok(false);
+            }
+            s.forget_anchor(network)?;
+            Ok::<bool, crate::store::StoreError>(true)
+        })
+        .await?;
+    if !forgotten {
+        return Err(ApiError::NotFound);
+    }
+    tracing::warn!(network = ?network, "proof-of-work anchor forgotten by an operator; a new one is taken next round");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST /api/v1/admin/settings/reload` - reads the options file again and
 /// applies what changed in it, as a save would: all of it, or, when
 /// anything in it is wrong, none of it, with every problem named by line.

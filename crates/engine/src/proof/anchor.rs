@@ -52,6 +52,9 @@ pub enum AnchorProblem {
     Failed(String),
 }
 
+/// The window as proven blocks, and the RandomX keys below it.
+type CheckedWindow = (Vec<ProvenBlock>, Vec<(u64, [u8; 32])>);
+
 /// What one node said the window is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Answer {
@@ -197,7 +200,7 @@ fn check_answer(
     start: u64,
     anchor: u64,
     floor: u128,
-) -> Result<(Vec<ProvenBlock>, Vec<(u64, [u8; 32])>), AnchorProblem> {
+) -> Result<CheckedWindow, AnchorProblem> {
     let rows = &answer.rows;
     let expected = (anchor + 2 - start) as usize;
     if rows.len() != expected {

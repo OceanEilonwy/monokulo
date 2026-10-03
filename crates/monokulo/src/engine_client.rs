@@ -1009,6 +1009,10 @@ pub struct NetworkStatus {
     /// node of this network has a `zmq_pub`.
     #[serde(default)]
     pub announcements: Option<shared::announcements::Announcements>,
+    /// Proof-of-work checking (docs/proof_of_work.md); absent while it is
+    /// off on this network.
+    #[serde(default)]
+    pub proof: Option<shared::proof::ProofStatus>,
 }
 
 /// Mirrors the engine's own `EngineStatusResponse` — the whole body of

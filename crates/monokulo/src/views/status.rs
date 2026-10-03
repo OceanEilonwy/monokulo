@@ -37,6 +37,29 @@ pub struct StatusNetworkView {
     /// The nodes' ZMQ announcements (docs/monero_zmq.md): set only for an
     /// admin, and only when a node of this network has a publisher.
     pub announcements: Option<AnnouncementsView>,
+    /// Proof-of-work checking (docs/proof_of_work.md): set only for an
+    /// admin, and only while checking is on for this network.
+    pub proof: Option<ProofView>,
+}
+
+/// A network's proof-of-work checking, ready to show.
+pub struct ProofView {
+    pub tag_label: String,
+    pub tag_class: String,
+    pub summary: String,
+    /// The anchor, the hashing, the last check: a sentence each.
+    pub facts: Vec<String>,
+    pub nodes: Vec<ProofNodeView>,
+    /// Settlement is held: offer to take a new anchor.
+    pub can_take_new_anchor: bool,
+}
+
+pub struct ProofNodeView {
+    pub node: String,
+    pub height: String,
+    pub verdict: String,
+    pub detail: Option<String>,
+    pub excluded: bool,
 }
 
 /// A network's ZMQ announcements, ready to show.
@@ -165,10 +188,59 @@ pub fn live_fragment(data: &StatusPageViewModel) -> Markup {
                         @if let Some(headers_first) = &network.headers_first {
                             p class="hint headers-first" { (headers_first) }
                         }
+                        @if let Some(proof) = &network.proof {
+                            (proof_section(&network.network, proof))
+                        }
                         @if let Some(announcements) = &network.announcements {
                             (announcements_section(announcements))
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// A network's proof-of-work checking: where it stands, and what each
+/// node was found to serve.
+fn proof_section(network: &str, proof: &ProofView) -> Markup {
+    html! {
+        section class="proof" {
+            h3 { "Proof of work" }
+            p class="hint" {
+                "Only operators see this. Orders on this network settle only on blocks whose proof of work the engine checked itself."
+            }
+            p {
+                span class=(format!("tag {}", proof.tag_class)) { (proof.tag_label) }
+                " " (proof.summary)
+            }
+            @for fact in &proof.facts { p class="muted" { (fact) } }
+            table {
+                thead { tr { th { "Node" } th { "Height" } th { "Found" } th { "Scanned" } } }
+                tbody {
+                    @for node in &proof.nodes {
+                        tr {
+                            td { code { (node.node) } }
+                            td { (node.height) }
+                            td { (node.verdict) }
+                            td {
+                                @if node.excluded { span class="tag tag-error" { "left out" } }
+                                @else { span class="tag tag-ok" { "yes" } }
+                            }
+                        }
+                        @if let Some(detail) = &node.detail {
+                            tr { td colspan="4" class="hint" { (detail) } }
+                        }
+                    }
+                }
+            }
+            @if proof.can_take_new_anchor {
+                form method="post" action=(format!("/dashboard/admin/proof/{network}/reanchor")) {
+                    p class="hint" {
+                        "A new anchor is taken on the nodes' word, 720 blocks below their tips. "
+                        "Check that the nodes are your own or ones you trust before taking one."
+                    }
+                    button type="submit" { "Take a new anchor" }
                 }
             }
         }
@@ -326,6 +398,7 @@ mod tests {
                     "Reading block headers first for about 50 minutes more.".to_string(),
                 ),
                 announcements: None,
+                proof: None,
             }],
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),

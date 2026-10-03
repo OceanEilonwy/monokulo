@@ -18,6 +18,11 @@ ARG DEBIAN_VERSION=bookworm
 FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS node
 
 FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS build
+# The engine builds RandomX, to check blocks' proof of work
+# (docs/proof_of_work.md), from C++ with CMake.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends cmake \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
@@ -41,8 +46,9 @@ RUN cargo build --release --locked \
  && cp target/release/monokulo-engine target/release/monokulo target/release/key-custody-server /out/
 
 FROM debian:${DEBIAN_VERSION}-slim
+# libstdc++: the engine's RandomX is C++.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini \
+ && apt-get install -y --no-install-recommends ca-certificates tini libstdc++6 \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --user-group --home-dir /var/lib/monokulo --create-home monokulo
 COPY --from=build /out/ /usr/local/bin/
