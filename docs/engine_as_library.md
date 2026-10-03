@@ -502,9 +502,10 @@ Each line gives what was decided, the alternatives, and why.
     where its size comes from `engine.cpus`.
   - `shared::password::SLOTS`, `shared::supervise::RESTARTS` and
     `shared::log::SEEN` are safe to share between two services in one
-    process. Loop names don't collide. The throttled-log keys don't collide
-    today either (monokulo's only key is `client-logs-dropped:`), but
-    nothing namespaces them. Phase 3, where both services log through one
-    subscriber, should prefix each key with its service.
+    process. Loop names don't collide. The throttled-log keys didn't collide
+    either (monokulo's only key is `client-logs-dropped:`), but nothing
+    namespaced them. Fixed with phase 2: `shared::throttled!` now keeps
+    each key under the crate that logs it (`engine/tick-failed:Mainnet`),
+    from the call site's `module_path!()`.
   - `shared::resources`' `SAMPLER`, `MACHINE` and `HOST` describe the
     process and the machine, so sharing them is right.
