@@ -1,6 +1,6 @@
 # Proposal: the engine as a library inside monokulo
 
-Status: proposal accepted (see "Decisions" at the end). Phases 1 to 3 are
+Status: proposal accepted (see "Decisions" at the end). Phases 1 to 5 are
 built (see the "as built" sections at the end): monokulo runs the engine
 inside it by default. Written 2026-10-03 against `1cc17f2` (origin/main).
 
@@ -715,3 +715,122 @@ A live run of the real binary showed:
 - **The OpenWrt package (PR #36)** still runs two binaries. It moves to the
   single binary in phase 5, as planned.
 
+
+## Phase 4, as built
+
+**The engine's threads run on chosen CPUs, at a chosen niceness.**
+
+- **Two settings, `server.cpus` and `server.nice`.** `server.cpus` is a CPU
+  list as `taskset` takes it (`2,3`, `1-3`), empty for all CPUs.
+  `server.nice` is 0 to 19. Embedded they are `engine.server.cpus` and
+  `engine.server.nice` (`--engine-server-cpus`, `--engine-server-nice`);
+  standalone, `server.cpus` and `server.nice` in `engine.toml`. They are not
+  standalone-only: they mean the same thing in either host.
+- **`engine::threads::ThreadPlan`** builds the engine's runtime for both
+  binaries: `server.worker_threads` workers, every thread (workers and the
+  blocking pool where scans run) named `engine-worker`. Each thread pins and
+  renices itself as it starts (`on_thread_start`): `sched_setaffinity` and
+  `setpriority` on its own thread id, which on Linux act per thread. Inside
+  monokulo only the engine's threads are touched; monokulo's own keep every
+  CPU and normal priority.
+- **A plan the machine can't take stops the engine at start.**
+  `ThreadPlan::check` applies it on a throwaway thread first, so a CPU that
+  doesn't exist (or a nice value the user may not set) is reported before
+  any database opens, and monokulo exits 1 with the reason. Elsewhere than
+  Linux, asking for either setting is refused the same way.
+- **Scan slots are sized by the engine** (`key_custody::size_scan_slots`,
+  called by `Engine::start`): one per CPU in `server.cpus`, or, without a
+  list, one per CPU the process may use. They used to come from
+  `available_parallelism()` on whichever thread first scanned, which
+  inside monokulo would have depended on that thread's affinity.
+- **Every engine thread is named `engine-…`**: `engine-worker`, `engine-db`,
+  `engine-db-read-N` and `engine-randomx-<network>` (they were
+  `scanner-db…` and `randomx-…`). `engine::threads::THREAD_PREFIX` is what
+  logging (`Telemetry::host`) and the resources sampler use to tell the
+  engine's threads apart.
+- **The Resources panel in one process.** `shared::resources::Sampler::
+  host_threads(prefix)` adds up the CPU of the matching threads from
+  `/proc/self/task/*/stat`. `ResourceReport::hosted()` and
+  `without_hosted()` split one process's report in two. With the engine
+  embedded the CPU chart stacks engine over monokulo as before, but memory
+  (which the two share) is drawn once, as "monokulo (with engine)". With a
+  remote engine the panel is unchanged.
+
+Tests: `ThreadPlan` parsing and checking, and a runtime whose threads are
+read back from `/proc/thread-self` (affinity and nice); scan slots sized
+from the plan; the per-thread CPU split in `shared::resources`; the
+Resources view in one-process form; the new settings on the admin page's
+tab list and save coverage.
+
+A live run of the real binary with `--engine-server-cpus 2-3
+--engine-server-nice 10` showed every `engine-worker`, `engine-db` and
+`engine-db-read` thread on CPUs 2-3 at nice 10, monokulo's threads on all
+CPUs at nice 0, and `scan_slots=2` in the log. `--engine-server-cpus 99`
+exited 1 before any database was opened.
+
+### Phase 4 decisions
+
+- **Per-thread, not per-process.** `taskset` or procd's `nice` on the whole
+  process would also have slowed monokulo's pages. That was the reason for
+  the engine's own runtime (decision 3).
+- **The settings are named `server.cpus` and `server.nice`,** beside
+  `server.worker_threads`, rather than the proposal's top-level
+  `engine.cpus` and `engine.nice`: embedded, every engine setting is already
+  under `[engine.*]`, so `engine.server.cpus` reads the same and the
+  standalone engine uses the same name.
+- **A bad value stops the process; it isn't ignored.** This follows the
+  rule that every setting is applied or refused. The OpenWrt init script,
+  which takes the list from the user in LuCI, checks it with `taskset`
+  first and drops a list the router can't honour, with a log line, so a
+  typo there doesn't keep the service down.
+- **Linux only.** macOS has no per-thread affinity of this kind; there the
+  settings must be left empty.
+
+## Phase 5, as built
+
+**The Flint 2 package ships one binary, and the dead store column is gone.**
+
+- **`store_connections.moneropay_endpoint` dropped** (migration 0029). Each
+  store recorded the engine URL it was connected through (`embedded` since
+  phase 3), but nothing read it. `create_store_connection` lost the
+  parameter, and `EngineClient::location()`, left with only test callers,
+  went too.
+- **The OpenWrt package** (stacked on this branch, replacing PR #36's
+  two-binary form):
+  - one binary, `monokulo`, built with the engine in it (and its `zmq`
+    feature); the static-executable check still guards it;
+  - one procd instance; no engine port, no engine token. The secrets file
+    holds only `MONOKULO_ENCRYPTION_KEY`;
+  - UCI's `engine_cpus` and `engine_nice` are passed as
+    `--engine-server-cpus` and `--engine-server-nice`. The `taskset` wrapper
+    and procd's `nice` are gone, so monokulo's pages keep normal priority on
+    every core;
+  - the engine's database is `engine.db` in the data folder, given
+    explicitly (`--engine-database-path`);
+  - LuCI shows one status line ("the engine runs inside it") and no engine
+    port; the landing page and README describe one program.
+- **compose.yaml** already ran one service from phase 3.
+
+The package is 10.5 MB, against about 15 MB with two binaries. In an
+OpenWrt 25.12.5 container (x86-64, with a stand-in binary, since the real
+one is aarch64), it installed from the signed repository and procd ran one
+instance as `monokulo` with the engine options above. A CPU list the
+machine lacks, damaged secrets, a foreign or in-memory data folder and
+`enabled 0` each behaved as in PR #36, and the LuCI page showed the one
+status line. The real binary (x86-64) took the same arguments, an empty CPU
+list included: the engine's threads ran at nice 10 and `engine.db` went
+into the data folder.
+
+### Phase 5 decisions
+
+- **A stacked PR, not a force-push to #36.** The OpenWrt work is
+  cherry-picked onto this branch and changed there, so #36 stays as
+  reviewed; it can be closed in favour of the stacked PR.
+- **Secrets files from the two-binary package still work**: the init script
+  reads only `MONOKULO_ENCRYPTION_KEY` and ignores a leftover
+  `ENGINE_TOKEN` line. Nothing is deployed yet, so no migration was written
+  for it.
+- **The proposal's LuCI "Engine" line from `/status/summary`** was not
+  built. LuCI talks only to procd (the engine is private, and monokulo's
+  admin page already shows the engine's state), so the one status line
+  says the engine runs inside monokulo.
