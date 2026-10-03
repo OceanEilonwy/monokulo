@@ -2,7 +2,8 @@
 
 The calls made while building the engine page (`docs/engine_visualizer.md`)
 without the reviewer at hand, each with what else was possible and why this.
-Newest last.
+In the order they were made. The last section lists what the build does
+differently from the approved design, and what is left for later.
 
 ## D1. One `Tier`, `Wait` and `TierOutcome`, in `shared::activity`
 
@@ -65,3 +66,138 @@ toolchain and a payload for one page). The cost of the server-side machine is
 a round trip per scrub step: a few milliseconds for an admin page. The gain:
 one implementation, tested in Rust, used both for the live page and for the
 page without JavaScript.
+
+## D7. The state machine changes the state in place
+
+`step(&mut State, &Recorded) -> Output`, not `step(State, Event) -> (State,
+Output)`. The same thing (one state in, the next out, nothing else touched)
+without moving a few kilobytes per event; the history clones the state for
+its keyframes, and tests compare states by value.
+
+## D8. Frames carry the whole view, once per poll
+
+What the browser gets per change is a frame: the full `Presented` view
+after the poll's events, and the effects with their events' times, not a
+state per event. A poll is every 500 ms, so the drawn state changes at most
+twice a second; the effects, played at their own times, carry the movement
+between. Sending a view per event would multiply the stream by the number
+of events per poll for no visible gain.
+
+## D9. A commit's smaller move goes first
+
+A commit can move a group's scanned stores to the block and its idle ones
+elsewhere (straight to the high-water mark when catching up). The machine
+moves the smaller part first, so the larger part is what empties the old
+group and keeps its identity: on the page, the pill slides rather than one
+disappearing and another appearing. Found by the machine's tests.
+
+## D10. The cached blocks follow the engine's own rule
+
+After a commit, the machine lets go of cached blocks at or below every
+group's cursor, as the engine's carried cache does. Without it the restart
+panel counted blocks "only in memory" that the engine had already dropped,
+until the next snapshot.
+
+## D11. "Chain" replaces "Pace set by" in the summary
+
+The pace comes from `/status`'s scaling figures, which the activity record
+doesn't carry. Fetching `/status` too would cost a second request per poll
+(it asks every node for its height). The sixth summary figure is the chain
+check instead: agrees, differs, diverged, or reorg (from which block). The
+pace stays on the status page, one click away.
+
+## D12. Scrubbing asks the server, latest wins
+
+A click or drag on the timeline asks `/status/engine/at` for that moment;
+an answer for a moment no longer wanted is dropped. Replay asks for ten
+seconds of frames at a time. Alternative: send the browser the whole
+history's events and a copy of the machine; that is D6's JavaScript
+alternative.
+
+## D13. The timeline's marks are the sentences, not every event
+
+The browser gets marks (an event as a sentence), not the raw events: they
+are what the timeline draws and the table lists. Routine events have no
+mark, so they don't crowd the timeline: a reorg check that agrees, a fast
+pass that found nothing, a round ending, a sleep, a block fetched. Key
+events (the circles): a payment found, a reorg found and rewound, a
+checkpoint, stores catching up onto the frontier, the first run's seed, a
+unit that failed or that the node failed, a payment voided, an order paid.
+New blocks are a line, not a circle (approved in the design review).
+
+## D14. The timeline zooms down to 5 s, not 20 s
+
+The design said 20 s. With rounds about a second apart, 20 s is still a
+blur of lines; 5 s shows single rounds. Found while writing the browser
+test.
+
+## D15. Rounds include the tip request
+
+A round's lanes start at the round's start, and the round first asks the
+node for its tip (and the pool) before any tier runs. Against a remote node
+that is most of a caught-up round (0.4 s of 0.44 s on stagenet), so the
+lanes' units sit at the right. That is the truth about where the time
+goes, so it is drawn as it is rather than hidden.
+
+## D16. The relay lingers a minute and then lets go
+
+A network is polled while anyone watches it and for a minute after the last
+viewer leaves, so a reload doesn't start the history over; then its
+history is let go of, and the next viewer reads the engine's 30 minutes
+again. A viewer's first read is the engine's whole record (up to about
+1.5 MB of JSON on a busy network), once.
+
+## D17. Webhooks due between snapshots are counted from recomputes
+
+A recompute that changes an order's status queues its webhook in the same
+transaction, so the machine adds one to "due" per status change; the next
+snapshot sets the true figure (deliveries since then included).
+
+## D18. The engine's internal changes
+
+To record what the page needs, a few engine functions now say what they
+did: `recompute_and_notify` returns the status change it made (or none);
+`JobStep::Processed` carries how many candidates it examined and
+`JobStep::Rewound` its fork; a block commit returns the payments found and
+the idle stores moved; pruning returns the rows removed. `Db::queued` (was
+test-only) and `QUEUE_CAPACITY` are public for the snapshot, and the block
+cache's carried heights have a live accessor in place of the test-only one.
+Each caller was updated; no behaviour changed.
+
+## D19. Test helpers
+
+`admin_session_cookie` existed twice (admin settings and invites tests);
+it moved to `http::test_support` and the page's tests use it too.
+`TestEngineHandle::activity` lets monokulo's tests (and the coverage
+fixture) record into a real engine's record, so the relay, the routes and
+the browser test run against the engine's real endpoint, not a stand-in.
+
+## D20. No new settings
+
+The poll (500 ms), the linger (60 s), the record's reach (30 minutes,
+50,000 events), the snapshot interval (10 s) and the keyframe interval
+(5 s) are constants with their reasons beside them, as the scanner's own
+timings are. None is something an operator would tune, and each is
+checked by a test at its production value.
+
+## What differs from the design, and what is left
+
+- **Simplified time lens.** The design asked for minimum animation lengths,
+  sleeps shortened to a second, and speeding up to 2x or 4x when behind.
+  Built: frames play at real time 1.5 s behind, each animation has its own
+  length (CSS), sleeps are real (about a second, the poll interval), and a
+  page more than 40 frames behind skips to the newest. On a caught-up
+  engine nothing more was needed; a long catch-up could still use the
+  speed-up.
+- **Merging runs.** A catch-up writes one line per block on the timeline and
+  in the table. Merging runs of header-only or catch-up blocks into one
+  line ("blocks 1,000 to 1,300 recorded") would keep a long catch-up
+  readable; the machine is where it would go.
+- **Pool dots.** The snapshot lists the first 14 remembered pool
+  transactions in id order (the engine's memory keeps no arrival order),
+  plus those the page saw match. "The newest few" would need the engine to
+  remember when each arrived.
+- **Upkeep's detail** shows the rows pruned; the void recheck and scanned
+  ranges are drawn as lit squares without counts, as their units report
+  none.
+

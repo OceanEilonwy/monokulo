@@ -1,6 +1,8 @@
 # Engine page: a live view of the scanner
 
-Status: design, for review. Nothing here is implemented yet.
+Status: implemented. The design below was reviewed and approved; how it was
+built, and the decisions made while building it, are at the end and in
+[engine_visualizer_decisions.md](engine_visualizer_decisions.md).
 
 The animated mockup that goes with this document is
 `docs/engine-visualizer-mockup.html` (open it in a browser). A fake
@@ -253,162 +255,112 @@ accent, saves `--ink`. The new colours become roles in `views/theme.css`
 
 ### Motion
 
-- **Playback, not real time.** The page plays events about 1.5 s behind the
-  engine, so a burst that arrived in one poll plays out in order.
-- **A time lens.** A caught-up round takes tens of milliseconds and then the
-  loop sleeps for seconds. So each animation has a minimum length (a unit
-  bar 150 ms, a token flight 600 ms); sleeps longer than a second are
-  shortened to one second on screen and labelled with their real length;
-  the round lanes are scaled to the round's real length, with the length so
-  far on the playhead's label. While a group is catching up, the lanes are
-  scaled to the full 10 s budget and show each tier's reserved share.
-- **Catching up.** If live playback falls more than 5 s behind, it speeds
-  up (2x, then 4x, shown as a badge); more than 30 s behind, it jumps to
-  now. Nothing is lost: the timeline still holds every event.
-- **Merging.** Runs of the same thing become one animation: 300 header-only
-  blocks are one sweep; fast passes that found nothing are a heartbeat; more
-  than 50 tokens in flight merge into counted ones.
+- **Playback, not real time.** The page plays frames about 1.5 s behind the
+  engine, so a burst that arrived in one poll plays out in order; a frame's
+  effects play staggered by their own events' times.
+- **Rounds to scale.** A caught-up round takes tens of milliseconds, so its
+  lanes are scaled to its real length (with a floor of 120 ms), its length
+  so far on the playhead's label. While a group is catching up or a reorg
+  is open, the lanes are scaled to the full 10 s budget and show each tier's
+  reserved share. The time before a round's first unit is the node
+  answering the round's tip request, and is shown as it is.
+- **Falling behind.** A hidden tab doesn't animate; with more than 40 frames
+  waiting, playback skips to the newest. Nothing is lost: the timeline
+  still holds every mark, and scrubbing rebuilds any moment.
 - **Reduced motion** (`prefers-reduced-motion`): nothing travels; states
-  cross-fade in 150 ms. The timeline and the event table carry the flow.
-- **A hidden tab** stops animating and, when shown again, jumps to live.
+  change in place. The timeline and the event table carry the flow.
 
-## Where the data comes from
+## How it is built
 
-### Engine: an activity recorder
+The decisions behind each part, and what else was possible, are in
+[engine_visualizer_decisions.md](engine_visualizer_decisions.md).
 
-A new module, `crates/engine/src/activity.rs`, with one `Activity` per
-network. It lives where `progress` and `wakes` already live
-(`scanner_status::NetworkScanStatus`, handed to `ScanState` by
-`with_activity`, as `with_progress` and `with_wakes` are), so the loops write
-it and the admin API reads it.
+### Engine: the activity record
 
-- A ring of the last 30 minutes of events (at most 50,000), each with a
-  sequence number and the engine's time in milliseconds, so a page opened
-  now can scrub back over what happened before it was opened.
-- **A snapshot every 10 s** in the same ring, as an event: the in-memory
-  state the page draws (groups, cache, the scan in progress, queues, the
-  reorg job). It is where a page opened later starts its history; events
-  alone can't say what the state was when they begin.
-- **Always recording.** Events are per unit of work, per block and per
-  payment, never per transaction scanned or per SQL statement, so a busy
-  round adds a few dozen. Recording is a mutex push onto the ring.
-- Typed events (`shared::activity`, used by both crates, as
-  `shared::scaling` is):
-  - `round_started { round, budget_ms, woken_by }`, `round_finished { round,
-    ms, steps, outcomes, backlogged }`, `sleeping { until_ms }`
-  - `unit { round, tier, pass, started_ms, ms, progress }` (one per unit,
-    sent when it ends)
-  - `rpc { node, method, ms, ok, bytes }` from the pinned client
-  - `fetched { from, count, bytes, ms, prefetch }`, `cache_dropped { heights,
-    unscanned_bytes }`
-  - `block_scan { height, group, stores, page, txs }`, `block_progress {
-    height, done_txs }` (at most one per call of 32 transactions),
-    `checkpointed { height, stores, done_txs }`, `committed { height,
-    hash, stores_moved, idle_moved, matches }`, `headers_recorded { from, to }`,
-    `diverged { height }`, `idle_advanced { from, to, stores }`
-  - `chain_checked { height, free }`, `fork_found { height }`,
-    `reorg { phase, candidates, keep, moved, restored, voided, retrying }`,
-    `rewound { fork }`
-  - `pool { size, new, deferred, path }`, `tx_matched { txid, path }`,
-    `tx_mined { txid, height }`
-  - `recomputed { orders, transitions: [{ from, to, count }] }`,
-    `vanished { looked, unresolved }`, `webhooks_enqueued { count }`
-  - `upkeep { pruned, checkpointed, voids_rechecked, ranges }`
-  - `webhooks_sent { sent, failed }`
-- No store, order or payment ids, no amounts. Block hashes and txids are
-  shortened to 8 characters.
+`engine::activity::Activity`, one per network, kept in
+`scanner_status::NetworkScanStatus` beside `progress` and `wakes` and handed
+to `ScanState` by `with_activity`; `TestEngineHandle::activity` reaches it
+in tests.
 
-### Engine: the endpoint
+- A ring of the last 30 minutes of events, at most 50,000, each with a
+  sequence number and the engine's time in milliseconds. Always recording:
+  events are per unit, per block and per payment, never per transaction or
+  per SQL statement.
+- A **snapshot every 10 s**, taken by the scan loop before a round
+  (`work::snapshot`): one store call for the database facts
+  (`Store::activity_facts`, each query indexed; migration 0025 indexes
+  webhook deliveries by when they were made) and the scheduler's memory
+  (the carried block cache, the pool it remembers, the database worker's
+  queues, the nodes).
+- The events (`shared::activity::Event`): `round_started` (with the tip it
+  read), `unit` (tier, pass, start, length, progress), `tier_ended`,
+  `round_finished`, `slept` (and what woke it); `chain_checked`,
+  `reorg_found`, `reorg_collected`, `reorg_processed`, `reorg_rewound`;
+  `seeded`, `fetched`, `block_scan_started`, `block_progress` (pages of a
+  large block), `checkpointed`, `committed` (stores moved, payments found,
+  idle stores moved with it), `diverged`, `idle_advanced`; `pool_scanned`
+  and `tx_matched` (fast path or round); `recomputed` (with the status
+  changes), `vanished`; `upkeep`. No store, order or payment ids, no
+  amounts; block hashes and txids shortened to 8 characters.
 
-`GET /api/v1/admin/engine/activity?network=stagenet&after=<seq>` (engine
-token, like every engine route; monokulo is its only caller):
+`GET /api/v1/admin/engine/activity?network=stagenet&from=<seq>` (engine
+token) returns `shared::activity::ActivityPage`: the events from `from` on,
+or, without it (or when it has left the ring, or belongs to another epoch),
+everything from the oldest snapshot, flagged as a `gap`; the record's
+`epoch`, the engine's clock and the scanner's tuning. Memory only.
 
-```json
-{
-  "network": "stagenet",
-  "epoch": "6f2c…",
-  "now_ms": 1790000000123,
-  "tuning": { "round_ms": 10000, "shares": [20, 40, 15, 20, 5],
-              "group_page": 256, "blocks_per_unit": 8,
-              "reorg_check_depth": 20, "poll_ms": 1000, "fast_ms": 250 },
-  "snapshot": { "chain": {}, "groups": [], "cache": {}, "reorg": null,
-                "mempool": {}, "settlement": {}, "upkeep": {}, "db": {},
-                "saved": {}, "memory": {}, "webhooks": {}, "nodes": [],
-                "loop": {} },
-  "events": [ { "seq": 812, "at_ms": 1790000000010, "kind": "committed", "...": "..." } ],
-  "next": 813,
-  "gap": false
-}
-```
+### Monokulo: the state machine, the history, the relay
 
-- `epoch` changes when the engine restarts, so the page knows to start over.
-- `gap` is true when `after` has already left the ring: the page jumps to the
-  snapshot.
-- With no `after`, it returns the whole ring from its oldest snapshot, so a
-  new page has the last 30 minutes to scrub through.
-- The snapshot's in-memory parts are read from the recorder and the
-  `ScanState`; its database parts (groups and their sizes, queue lengths,
-  checkpoints, the reorg job, scheduler positions) are read on the read pool,
-  never the worker, at most once a second however many pollers there are,
-  and capped (the 32 groups nearest the frontier, then "and 14 more").
+- **`engine_view::machine`** is the page's logic: `step(state, event)` gives
+  the next state, the effects that lead to it (a call to the node, a token
+  flying, a save, a flash, blocks arriving or dropping) and a mark (the
+  event as a sentence; key or not). No I/O, no clock, no drawing. A
+  snapshot overrides the events' account; between snapshots the state
+  follows the events (groups of stores keep their identity as they move).
+- **`engine_view::present`** turns a state into the page's words and
+  figures (`Presented`). Every word on the page is written here.
+- **`engine_view::history`** keeps a network's events for 30 minutes with
+  the machine's state every 5 s: the live state, the state at any moment,
+  replay frames (500 ms apart, at most a minute per request).
+- **`engine_view::relay`** polls the engine every 500 ms for each network
+  someone watches (and for a minute after the last viewer leaves), feeds
+  the history and sends every viewer the same frames.
 
-### Monokulo: relay and page
+### Monokulo: the page
 
-- `GET /status/engine`: the page. **Admins only** (it shows node addresses
-  and the shape of every store's progress); the status page links to it for
-  admins, beside each network's "Chain scanner" heading.
-- **Without JavaScript** it is a point-in-time page, rendered in Rust: the
-  summary row, the chain strip and group pills as static HTML, each panel's
-  figures, and the latest events table, with a Reload button (as agreed for
-  every page but the checkout embed).
-- `GET /status/engine/events`: an SSE stream for the page's script. One
-  shared poller per network runs while anyone is watching: it asks the
-  engine every 500 ms, and sends each viewer the same messages, so ten open
-  tabs cost the engine one request every 500 ms. A new viewer gets the
-  history first (the ring, from its oldest snapshot), then live events. Streams count against the
-  abuse stream limit like the status page's.
-- **Rust writes every word.** Each event the relay sends carries its
-  sentence (`"Block 3,412,881 committed for 41 stores"`) and formatted
-  figures, written by monokulo; the script only places and moves things.
-- **The script** is `static/engine-view.js`: plain JavaScript, no library,
-  drawing the scene as HTML and SVG and animating it with the Web Animations
-  API, so it takes the theme's roles through CSS and stays sharp; a budget
-  (about 120 cells, 14 pool dots, 50 tokens in flight) keeps it light. The
-  timeline alone is a canvas, since it may draw thousands of lines; it reads
-  its colours from the same roles.
+- `GET /status/engine?network=` (admins only; the status page links admins
+  to it, "Watch it live", beside each network's Chain scanner heading):
+  the whole page rendered in Rust from the live `Presented`, and the last
+  60 marks. Without JavaScript that is the page, with a Reload button.
+- `GET /status/engine/events?network=`: a `history` event (the live frame,
+  every mark kept, the engine's clock), then a `frame` event per change,
+  `restarted` (the script reconnects) and `unreachable`. Counted against the
+  abuse stream limit.
+- `GET /status/engine/at?network=&ms=` and
+  `GET /status/engine/replay?network=&from=&to=`: what the page drew at a
+  moment, and the frames between two.
+- `static/engine-view.js`: plain JavaScript, no library. It plays frames,
+  animates their effects (Web Animations), and runs the timeline on a
+  canvas. It formats nothing but the timeline's "3 min ago" marks.
+- The page's styles are `views::engine`'s `ENGINE_STYLE`, checked by
+  `views::theme_tests`; its colours are roles in `views/theme.css`
+  (`--viz-tier-*`, `--viz-cell-*`, `--viz-saved`).
 
-## Decisions to review
+### Tests
 
-1. **A JSON stream and a script for the animation.** Our rule is that
-   rendering stays in Rust and pages send HTML fragments. Animating flow
-   needs the browser to know what moved where, so this page streams JSON
-   events with Rust-written text, and its script draws the scene. The no-JS
-   page is still rendered entirely in Rust. Alternative: Rust renders the SVG
-   scene and streams it as fragments through ssexi, with CSS transitions
-   between swaps; that animates state changes but can't fly tokens between
-   panels, so most of the "flow" is lost. Recommended: the script.
-2. **Admins only.** Alternative: public like `/status`, with node labels
-   hidden. Recommended: admins only, as the abuse and announcement sections
-   already are.
-3. **Always recording, 30 minutes kept.** The timeline makes history worth
-   having: an operator opens the page because something just happened.
-   Alternative: record only while a page is open (free when nobody watches,
-   but the timeline starts empty). Recommended: always, 30 minutes. This
-   reverses the first draft, because of the timeline.
-4. **Plain JavaScript, no library.** A charting or animation library would
-   save little here and add a dependency we would vendor. Recommended: none.
-
-## Work, once approved
-
-1. `shared::activity` types; `engine::activity` recorder with its tests
-   (ring, its time and count limits, snapshots, gap and epoch).
-2. Recording in `run_round`, the loops and each tier, with tests that run
-   real rounds on the existing work fixtures and check the event sequence
-   (a catch-up, a mempool payment, a reorg).
-3. The snapshot and the admin endpoint, with its tests.
-4. Monokulo: client call, relay poller, `/status/engine` no-JS page, admin
-   gate, status page link, theme roles.
-5. `static/engine-view.js`: model, keyframes and seeking, scene, timeline,
-   playback, time lens, reduced motion.
-6. Browser coverage: page loads, plays a scripted session from a fake
-   engine, screenshots in the coverage gallery in light and dark.
+- Engine: the ring (bounds, gaps, epochs, snapshots); the paid story (pool,
+  mined, reorged, mined again, confirmed) recorded in order inside its
+  rounds; a big block's checkpoints and commit; idle stores moving on; the
+  fast path's match and status change; the loop's snapshot and its sleep
+  cut short by a new block; the snapshot after the story; the store facts
+  counted once per network, with their query plans checked; the endpoint.
+- Monokulo: the machine, event kind by event kind, and a 20,000-step run of
+  events in any order against its invariants; the presentation's words; the
+  history against brute force (any moment, before and after trimming,
+  replay frames); the relay and the page's routes against the real engine
+  router; the status page's link.
+- Browser (`e2e/pos-playwright/tests/coverage-engine.spec.js`, in the
+  browser coverage suite): a scripted story played into the fixture
+  engine's record, followed live; a click on an event, the keys, replay,
+  zoom and drag, a filter; the page without JavaScript; the admin gate;
+  gallery shots in both themes.
