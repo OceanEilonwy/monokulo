@@ -343,3 +343,42 @@ end need a decision.
 - **Also:** the Custody tab drew the backends' sections once per group; they are drawn
   once now, with monokulo's own settings inside the snp one.
 
+### 38. Firmware bound into the master key, and a floor in every release (you chose option B)
+- **Decision:** the master key's wrap is sealed under a key derived with
+  `FIELD_TCB_VERSION` at the platform's **committed** TCB (the report's
+  `COMMITTED_TCB`, 0x1E0), recorded on its row (`snp_master_keys.tcb`). The firmware
+  refuses to derive for a TCB newer than it has committed, so a firmware rollback
+  can't open it, whatever the settings say. The backend then waits and says the
+  firmware was rolled back. After a firmware update, the next start opens the wrap at
+  its old TCB and wraps it again at the new one, replacing the row. The TCB is also
+  in the wrap's AAD, so a row relabelled with an older TCB doesn't open.
+- **Release floors:** `crates/key-custody/src/release_tcb_floors.txt` gives a floor
+  per product. `transport::check_identity` (the engine at start, handoffs, the
+  browser's WASM, key-custody-cli) holds every report to the higher of it and the
+  policy's floor, so it can't be configured lower. It is part of the measured image,
+  so the host can't change it. The committed TCB is at least the reported one, so
+  nothing is wrapped below the floor.
+- **The values need your check.** AMD's bulletin pages timed out from here. The
+  floors come from AMD-SB-3019 as search results quote it: Milan SNP SPL 0x18 (24)
+  and microcode 0x...DB (219); Genoa SNP 0x17 (23) and microcode 0x...54 (84); Turin
+  microcode 0x...47 (71), its SNP SPL not found. Bootloader and TEE are 0 everywhere,
+  so a real machine isn't wrongly refused. A third-party verifier uses Milan
+  `4,0,29,222` and Turin `1,1,4,88` (fmc 1) for later bulletins, through SB-3033.
+  Raise these from AMD's bulletins before tagging a release; the file says so.
+- **Why committed, not current or reported:** the firmware compares a derived key
+  request's TCB against the committed TCB. Current may be higher until the host
+  commits, and binding it would fail.
+- **Not tested on hardware.** The stand-in security processor models the firmware's
+  rule: it refuses a TCB above the committed one in any byte. The deploy guide asks
+  for a check on first deployment that the master key stays ready across a restart.
+  If the ABI were misread, the backend would wait (it reports why) rather than lose
+  keys.
+- **Limit (documented):** a host holding a database copy from before a firmware
+  update can roll the firmware back to that version and open the older wrap, if the
+  version is at or above the floor of the release it boots. That is the same class as
+  the database-restore limit on image rollback.
+- **Also:** the browser spec `real-2-store-key-storage` expected `snp` to be offered,
+  with an "isn't available" note, while it can't start. Since #37 it isn't offered at
+  all, so the spec now checks that plain stays the only choice. This was CI's only
+  failure on `cc1f97e`.
+

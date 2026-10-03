@@ -24,6 +24,16 @@
 //! image of its own with an ID block it signed itself, carrying the same IDs,
 //! and derive the same key. The measurement it can't fake.
 //!
+//! The derived key is also bound to the platform's **committed TCB** (its
+//! firmware version) at the time of wrapping. The firmware derives a key for
+//! a TCB no newer than the one it has committed to, so a machine whose
+//! firmware was rolled back to an older (perhaps broken) version can't
+//! derive it, whatever the engine's settings say. When the firmware is
+//! updated, the next start opens the wrap at the TCB it was made at and
+//! wraps the key again at the new one, replacing it. This release's own
+//! firmware floor ([`transport::release_tcb_floor`]) is checked at start, so
+//! nothing is wrapped below it.
+//!
 //! A new image (an upgrade) therefore can't unwrap the old image's wrap. It
 //! gets the master key from the engine it replaces instead, by **handoff**:
 //! the new engine sends a bundle for [`Action::Handoff`]; the old one checks,
@@ -36,7 +46,9 @@
 //! keep every store's keys, and nothing else can take them or plant one.
 //!
 //! Which case applies at start:
-//! - a wrap for this image: unwrap it;
+//! - a wrap for this image: unwrap it (waiting instead if it was made on
+//!   newer firmware than this machine's), and wrap it again if the firmware
+//!   has been updated since;
 //! - no wraps at all: a new installation; make a master key;
 //! - only other images' wraps: wait for a handoff
 //!   ([`SnpKeyCustody::handoff_bundle`], [`SnpKeyCustody::accept_handoff`]),
@@ -54,8 +66,10 @@ use aes_gcm::KeyInit as _;
 use hmac::Mac as _;
 use monero::Address;
 use parking_lot::{Mutex, RwLock};
-use snp_attest::guest::{DerivedKeyRequest, GuestDevice, FIELD_MEASUREMENT, FIELD_POLICY};
-use snp_attest::report::{self, AttestationReport, Product};
+use snp_attest::guest::{
+    DerivedKeyRequest, GuestDevice, FIELD_MEASUREMENT, FIELD_POLICY, FIELD_TCB_VERSION,
+};
+use snp_attest::report::{self, AttestationReport, Product, TcbVersion};
 use snp_attest::verify::Evidence;
 use zeroize::Zeroizing;
 
@@ -85,12 +99,15 @@ const MAX_CHALLENGES: usize = 10_000;
 pub struct StoredWrap {
     pub measurement: [u8; 48],
     pub guest_svn: u32,
+    /// The committed TCB (raw `TCB_VERSION`) the wrapping key is bound to.
+    pub tcb: [u8; 8],
     pub wrapped: Vec<u8>,
 }
 
 /// Where the wrapped master keys are kept: the engine's database.
 pub trait WrapStore: Send + Sync {
     fn load(&self) -> Result<Vec<StoredWrap>, String>;
+    /// Stores `wrap`, replacing the one for its image if there is one.
     fn save(&self, wrap: &StoredWrap) -> Result<(), String>;
 }
 
@@ -235,7 +252,7 @@ impl SnpKeyCustody {
             .report(&transport::report_data_for(&receiver.public_key()))
             .map_err(|e| e.to_string())?;
         let report = report::parse(&report_raw, config.product).map_err(|e| e.to_string())?;
-        transport::check_identity(&report, &config.trust)
+        transport::check_identity(config.product, &report, &config.trust)
             .map_err(|e| format!("this engine is not a trusted SEV-SNP image: {e}"))?;
         let backend = SnpKeyCustody {
             registry: PlainKeyCustody::default(),
@@ -254,15 +271,16 @@ impl SnpKeyCustody {
         Ok(backend)
     }
 
-    /// The key this image's wrap of the master key is encrypted under.
-    fn wrapping_key(&self) -> Result<Zeroizing<[u8; 32]>, String> {
+    /// The key this image's wrap of the master key, made at committed TCB
+    /// `tcb`, is encrypted under.
+    fn wrapping_key(&self, tcb: [u8; 8]) -> Result<Zeroizing<[u8; 32]>, String> {
         let derived = self
             .guest
             .derived_key(&DerivedKeyRequest {
-                guest_field_select: FIELD_POLICY | FIELD_MEASUREMENT,
+                guest_field_select: FIELD_POLICY | FIELD_MEASUREMENT | FIELD_TCB_VERSION,
                 vmpl: 0,
                 guest_svn: 0,
-                tcb_version: 0,
+                tcb_version: u64::from_le_bytes(tcb),
             })
             .map_err(|e| e.to_string())?;
         let mut mac = <hmac::Hmac<sha2::Sha256>>::new_from_slice(derived.as_slice())
@@ -274,20 +292,67 @@ impl SnpKeyCustody {
         Ok(Zeroizing::new(mac.finalize().into_bytes().into()))
     }
 
-    fn wrap_aad(&self) -> Vec<u8> {
+    fn wrap_aad(&self, tcb: [u8; 8]) -> Vec<u8> {
         let mut aad = WRAP_LABEL.to_vec();
         aad.extend_from_slice(&self.report.measurement);
+        aad.extend_from_slice(&tcb);
         aad
     }
 
-    /// Wraps `master` for this image and stores it.
+    /// Wraps `master` for this image at the platform's committed TCB and
+    /// stores it, replacing any earlier wrap for this image.
     fn store_master(&self, master: &[u8; 32]) -> Result<(), String> {
-        let wrapped = encrypt(&*self.wrapping_key()?, &self.wrap_aad(), master);
+        let tcb = self.report.committed_tcb.raw;
+        let wrapped = encrypt(&*self.wrapping_key(tcb)?, &self.wrap_aad(tcb), master);
         self.wraps.save(&StoredWrap {
             measurement: self.report.measurement,
             guest_svn: self.report.guest_svn,
+            tcb,
             wrapped,
         })
+    }
+
+    /// Opens this image's own wrap, made at TCB `own.tcb`: refused (waiting)
+    /// when that is newer than this machine's committed firmware, and wrapped
+    /// again at the committed TCB when the firmware has been updated since.
+    fn open_own_wrap(&self, own: &StoredWrap) -> Result<Master, String> {
+        let committed = self.report.committed_tcb;
+        let bound = TcbVersion::decode(own.tcb, self.config.product);
+        if !committed.at_least(&bound) {
+            return Ok(Master::Waiting(format!(
+                "the master key for this engine image was wrapped on firmware {} and this machine's \
+                 committed firmware is {}: it was rolled back. Keys open only on firmware at least \
+                 that new; update it again",
+                bound.to_text(),
+                committed.to_text()
+            )));
+        }
+        let opened = match self.wrapping_key(own.tcb) {
+            Ok(key) => decrypt(&key, &self.wrap_aad(own.tcb), &own.wrapped),
+            Err(e) => {
+                return Ok(Master::Waiting(format!(
+                    "the security processor didn't derive this image's wrapping key ({e})"
+                )))
+            }
+        };
+        let Some(Ok(master)) = opened
+            .as_deref()
+            .map(|key| <[u8; 32]>::try_from(key.as_slice()))
+        else {
+            return Ok(Master::Waiting(
+                "the master key stored for this engine image doesn't open on this chip: \
+                 the database was moved from another machine. Hand the key over from an \
+                 engine that has it, or start afresh (see the incident runbook)"
+                    .into(),
+            ));
+        };
+        let master = Zeroizing::new(master);
+        if own.tcb != committed.raw {
+            // Updated firmware: from now on only firmware at least this new
+            // opens it.
+            self.store_master(&master)?;
+        }
+        Ok(Master::Ready(master))
     }
 
     fn recover_master(&self) -> Result<Master, String> {
@@ -310,21 +375,7 @@ impl SnpKeyCustody {
             .iter()
             .find(|wrap| wrap.measurement == self.report.measurement)
         {
-            let opened = decrypt(&*self.wrapping_key()?, &self.wrap_aad(), &own.wrapped);
-            return Ok(
-                match opened
-                    .as_deref()
-                    .map(|key| <[u8; 32]>::try_from(key.as_slice()))
-                {
-                    Some(Ok(master)) => Master::Ready(Zeroizing::new(master)),
-                    _ => Master::Waiting(
-                        "the master key stored for this engine image doesn't open on this chip: \
-                     the database was moved from another machine. Hand the key over from an \
-                     engine that has it, or start afresh (see the incident runbook)"
-                            .into(),
-                    ),
-                },
-            );
+            return self.open_own_wrap(own);
         }
         if wraps.is_empty() {
             let master = Zeroizing::new(random_bytes::<32>());
@@ -976,6 +1027,69 @@ mod tests {
             .unseal_and_register(&sealed)
             .await
             .unwrap();
+    }
+
+    fn on_firmware(identity: TestIdentity, tcb: [u8; 8]) -> TestIdentity {
+        TestIdentity { tcb, ..identity }
+    }
+
+    /// The master key's wrap is bound to the firmware: a firmware update
+    /// wraps it again at the new version, after which a rollback to the
+    /// older firmware can't open it, whatever the settings say.
+    #[tokio::test]
+    async fn a_firmware_update_rewraps_the_master_key_and_a_rollback_cant_open_it() {
+        let wraps = Arc::new(MemoryWraps::default());
+        let first = engine(1, identity(1, 1), &wraps).await;
+        let material = WalletMaterial::from_raw_bytes(&keys(5)).unwrap();
+        let sealed = first.backend.seal(&material).await.unwrap();
+        let old = TestIdentity::default().tcb;
+        assert_eq!(wraps.load().unwrap()[0].tcb, old);
+
+        let mut new = old;
+        new[7] += 1; // a microcode update
+        let updated = engine(1, on_firmware(identity(1, 1), new), &wraps).await;
+        assert_eq!(updated.backend.status().waiting, None);
+        updated.backend.unseal_and_register(&sealed).await.unwrap();
+        let stored = wraps.load().unwrap();
+        assert_eq!(stored.len(), 1, "the older wrap is replaced");
+        assert_eq!(stored[0].tcb, new);
+
+        let rolled_back = engine(1, on_firmware(identity(1, 1), old), &wraps).await;
+        let waiting = rolled_back.backend.status().waiting.unwrap();
+        assert!(waiting.contains("rolled back"), "{waiting}");
+        assert!(matches!(
+            rolled_back.backend.unseal_and_register(&sealed).await,
+            Err(KeyCustodyError::BackendUnavailable(_))
+        ));
+        assert_eq!(wraps.load().unwrap()[0].tcb, new, "the newer wrap is kept");
+
+        // A wrap claiming an older TCB than it was made at doesn't open.
+        let mut relabelled = wraps.load().unwrap().remove(0);
+        relabelled.tcb = old;
+        wraps.save(&relabelled).unwrap();
+        let fooled = engine(1, on_firmware(identity(1, 1), old), &wraps).await;
+        assert!(fooled.backend.status().waiting.is_some());
+    }
+
+    /// An engine on firmware below this release's floor doesn't start, even
+    /// with no floor configured.
+    #[test]
+    fn an_engine_below_the_release_firmware_floor_doesnt_start() {
+        let guest = TestGuest::new(
+            [1; 32],
+            on_firmware(identity(1, 1), [10, 10, 0, 0, 0, 0, 22, 230]),
+        );
+        let refused = SnpKeyCustody::start(
+            Arc::new(guest),
+            SnpConfig {
+                product: Product::Genoa,
+                trust: trust(),
+            },
+            Arc::new(MemoryWraps::default()),
+        )
+        .err()
+        .unwrap();
+        assert!(refused.contains("firmware"), "{refused}");
     }
 
     /// The old engine hands over only to a trusted image at its own

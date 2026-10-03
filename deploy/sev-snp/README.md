@@ -140,6 +140,21 @@ fix the SEV-SNP issues AMD has published for your EPYC generation (§1 gives the
 levels your host reports): the engine, merchants' key entry and handoffs then
 refuse anything older. The example above is a placeholder, not a recommendation.
 
+Each release also carries its own floor per product
+(`crates/key-custody/src/release_tcb_floors.txt`), which no setting lowers: an
+engine on older firmware doesn't start, and no client sends keys to one. The
+master key is wrapped at the platform's committed firmware version, so a
+firmware rollback leaves the backend waiting (the status page says why) until
+the firmware is updated again. After a firmware update, restart the engine: it
+wraps the key again at the new version, and older firmware can no longer open
+it. **Commit firmware updates** (`snphost commit`, or your provider's
+equivalent) so the old firmware can't be loaded again.
+
+**Check on first deployment** that the engine starts with its master key ready
+(the status page shows the `snp` backend without a "waiting" reason) and that a
+restart keeps it ready: binding the firmware version into the derived key is
+tested against a stand-in security processor, not yet against real hardware.
+
 Then set the same policy in monokulo, whose key entry forms check every
 engine against it (`monokulo.toml`, or the snp section of the admin page's
 Custody tab):

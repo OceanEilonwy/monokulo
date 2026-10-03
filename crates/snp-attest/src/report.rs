@@ -78,11 +78,40 @@ impl Product {
 }
 
 impl TcbVersion {
+    /// The raw 8 bytes as the firmware's `TCB_VERSION` integer, as a derived
+    /// key request carries it.
+    pub fn as_u64(&self) -> u64 {
+        u64::from_le_bytes(self.raw)
+    }
+
+    /// Whether every security patch level is at least `other`'s: firmware
+    /// at `self` is no older than `other` in any part.
+    pub fn at_least(&self, other: &TcbVersion) -> bool {
+        self.fmc.unwrap_or(0) >= other.fmc.unwrap_or(0)
+            && self.bootloader >= other.bootloader
+            && self.tee >= other.tee
+            && self.snp >= other.snp
+            && self.microcode >= other.microcode
+    }
+
+    /// The patch levels as `bootloader,tee,snp,microcode` (with `fmc,`
+    /// first on Turin and later).
+    pub fn to_text(&self) -> String {
+        let levels = format!(
+            "{},{},{},{}",
+            self.bootloader, self.tee, self.snp, self.microcode
+        );
+        match self.fmc {
+            Some(fmc) => format!("fmc {fmc}, {levels}"),
+            None => levels,
+        }
+    }
+
     /// Decodes an 8-byte `TCB_VERSION` per the product's own generation
     /// layout. Legacy (Milan/Genoa/Bergamo/Siena):
     /// `[bootloader, tee, _, _, _, _, snp, microcode]`. Turin+:
     /// `[fmc, bootloader, tee, snp, _, _, _, microcode]`.
-    fn decode(raw: [u8; 8], product: Product) -> Self {
+    pub fn decode(raw: [u8; 8], product: Product) -> Self {
         if product.is_turin_generation() {
             TcbVersion {
                 raw,
@@ -125,6 +154,10 @@ pub struct AttestationReport {
     pub sig_algo: u32,
     pub current_tcb: TcbVersion,
     pub reported_tcb: TcbVersion,
+    /// The TCB the platform has committed to (0x1E0): firmware older than
+    /// it can no longer be loaded, and no derived key can be bound to a TCB
+    /// above it.
+    pub committed_tcb: TcbVersion,
     /// 64 bytes on Milan/Genoa/Bergamo/Siena; only the first 8 are
     /// meaningful on Turin+ (the rest zero) - see `crate::kds`'s hwID
     /// handling, which trims accordingly per AMD's own KDS behavior.
@@ -194,6 +227,7 @@ pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, Report
 
     let current_tcb_raw: [u8; 8] = raw[0x38..0x40].try_into().unwrap();
     let reported_tcb_raw: [u8; 8] = raw[0x180..0x188].try_into().unwrap();
+    let committed_tcb_raw: [u8; 8] = raw[0x1E0..0x1E8].try_into().unwrap();
     let mut chip_id = [0u8; 64];
     chip_id.copy_from_slice(&raw[0x1A0..0x1E0]);
     let policy = u64::from_le_bytes(raw[0x08..0x10].try_into().unwrap());
@@ -218,6 +252,7 @@ pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, Report
         sig_algo,
         current_tcb: TcbVersion::decode(current_tcb_raw, product),
         reported_tcb: TcbVersion::decode(reported_tcb_raw, product),
+        committed_tcb: TcbVersion::decode(committed_tcb_raw, product),
         chip_id,
         policy,
         report_data,

@@ -6,7 +6,7 @@
 // stand-in security processor; here, turning snp on where it can't run is
 // reported, and plain stores carry on.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, reloadUntil, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 useRealStack(test);
 
@@ -36,15 +36,16 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
   await createOrder(page, base, storeId, '0.5');
 
   // snp turned on, on a machine that isn't an SEV-SNP guest: it is saved,
-  // but it can't start, and the forms say encrypted key entry isn't
-  // available rather than offering it.
+  // but it can't start, and the forms don't offer it: plain is still the
+  // only choice.
   await saveEngineSettings(page, {
     'key_custody.enabled_backends': 'plain,snp',
     'key_custody.default_backend': 'plain',
   });
   await expect(page.getByText(/snp backend can.t start/)).toBeVisible();
-  await reloadUntil(page, base + '/dashboard/connect', (html) => html.includes('name="key_custody_backend"'));
-  await expect(page.getByText(/isn.t available right now/)).toBeVisible();
+  await page.goto(base + '/dashboard/connect');
+  await expect(page.locator('input[name="view_key_hex"]')).toBeVisible();
+  await expect(page.locator('select[name="key_custody_backend"]')).toHaveCount(0);
 
   // The plain store carries on.
   await createOrder(page, base, storeId, '0.25');

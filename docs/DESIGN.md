@@ -332,6 +332,12 @@ Invariants every implementation (including future ones) must uphold:
     engine takes only such an answer, from an engine signed by its own ID key. So every
     upgrade signed with the same ID key keeps every store's keys, and nothing else can
     take them or plant a master key.
+  - *Firmware*: the wrapping key is also bound to the platform's committed TCB (its
+    firmware version) when the wrap was made (`FIELD_TCB_VERSION`). The firmware
+    derives a key only for a TCB no newer than the one it has committed to, so after a
+    rollback to older firmware the wrap doesn't open, whatever the settings say; the
+    backend waits and says so. After a firmware update, the next start opens the wrap
+    at its old TCB and wraps the key again at the new one, replacing it.
   - *At start*: a wrap for this image is unwrapped; no wraps at all is a new
     installation (a master key is made); only other images' wraps leaves the backend
     waiting for a handoff, reported unavailable with the reason. A store whose sealed
@@ -340,7 +346,7 @@ Invariants every implementation (including future ones) must uphold:
   - The engine checks its own report at start: launched with an ID block signed by the
     trusted ID key (`key_custody.snp_trusted_id_key`, else the official one), at
     `key_custody.snp_min_guest_svn` or later, on firmware at `key_custody.snp_min_tcb`
-    or later, not debuggable, and with no migration agent allowed (guest policy bit 18,
+    and at this release's own floor or later (below), not debuggable, and with no migration agent allowed (guest policy bit 18,
     which could export its memory). Otherwise the backend doesn't start and a stand-in
     reports why, so `plain` stores carry on.
   - *Rollback*: each wrap records the security version of the image that made it. An
@@ -391,7 +397,8 @@ an hour (`POST /api/v1/admin/key-custody/bundle`,
 The client checks the bundle: the report chains to AMD's pinned root for its product,
 with a revocation list in force; the guest can't be debugged; its image is signed by
 the trusted ID key at the minimum security version or later, on firmware at the minimum
-TCB or later; and the public key is the one the report vouches for. Then it
+TCB and this release's floor or later; and the public key is the one the report
+vouches for. Then it
 encrypts the keys with HPKE (RFC 9180: X25519, HKDF-SHA256, AES-256-GCM), binding the
 challenge, action and store. Monokulo and the engine's HTTP layer only relay the
 **envelope** (`encrypted_keys`); only the backend opens it, once.
@@ -452,9 +459,21 @@ What the `snp` backend does not hide from the host, by design or for now:
   make a stale revocation list look current. The merchant's client checks a bundle
   against its own clock.
 - **The firmware floor.** The engine's `snp_min_tcb` is a setting, and the engine's
-  settings are the host's. Merchants' clients enforce monokulo's
-  (`snp_entry_min_tcb`, which the CLI command carries as `--min-tcb`), not the
-  engine's. The derived key isn't yet bound to a TCB version.
+  settings are the host's. Two things don't depend on it:
+  - each release carries a floor per product
+    (`crates/key-custody/src/release_tcb_floors.txt`, from AMD's security bulletins,
+    raised before each release). The engine (where it is part of the measured image),
+    the browser's WASM and `key-custody-cli` all hold reports to the higher of it and
+    the configured floor, so no setting lowers it;
+  - the master key's wrap is bound to the committed TCB, so firmware rolled back below
+    the version it was last wrapped at can't open it.
+
+  What remains: a host that kept a copy of the database from before a firmware update
+  can roll the firmware back to the older version and open that older wrap, as long as
+  the older version is at or above the floor of the release it boots. A release that
+  raises the floor for a published break closes this for firmware below it; an older
+  release image, with its older floor, can still be booted with such a copy, the same
+  limit as rolling back the image (above).
 
 ## 7. Chain Scanning & Payment Detection
 

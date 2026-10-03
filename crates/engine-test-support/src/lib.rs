@@ -1744,6 +1744,7 @@ mod tests {
                 Ok(vec![StoredWrap {
                     measurement: [0xEE; 48],
                     guest_svn: 1,
+                    tcb: snp_attest::guest::TestIdentity::default().tcb,
                     wrapped: vec![0; 60],
                 }])
             }
