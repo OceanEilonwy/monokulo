@@ -4,8 +4,9 @@ Status: design, for review. Nothing here is implemented yet.
 
 The animated mockup that goes with this document is
 `docs/engine-visualizer-mockup.html` (open it in a browser). A fake
-engine runs behind it; three buttons make a store catch up, a customer pay
-and the chain reorganise, and the timeline scrubs through all of it.
+engine runs behind it, starting with 25 minutes of history (a store catching
+up 20 minutes ago, a payment 13 minutes ago, a reorg 5 to 6 minutes ago);
+three buttons make the same things happen now.
 
 ## Purpose
 
@@ -36,7 +37,7 @@ deliberately left out (see "Left out").
 
 | Engine | Shown as |
 | --- | --- |
-| `loops::run_scanner_loop`: a round, then sleep for the poll interval, or start again at once when the round was backlogged, or wake early on a ZMQ block announcement | Round ribbon: one bar per round, gaps for sleeps, each gap marked with what ended it (timer, node announced a block, backlog) |
+| `loops::run_scanner_loop`: a round, then sleep for the poll interval, or start again at once when the round was backlogged, or wake early on a ZMQ block announcement | Round ribbon: one bar per round, coloured by tier. A sleep is a dotted gap; a sleep cut short by the node announcing a block ends in a small block outline (the same shape as a chain cell); a round that started at once because work was left has no gap |
 | `loops::run_fast_mempool_loop`: every 250 ms, scan new pool transactions against every store in scope | Mempool line: a heartbeat each pass; new transactions appear as dots, filled once scanned |
 | Store key registration retries | A line in the stores summary ("2 stores waiting for their keys to register") |
 
@@ -167,8 +168,12 @@ Top to bottom:
 4. **Two columns.**
    - Left, the animation: the **chain strip** (blocks as cells, the node
      cards beside it, group pills under it) and the **round** (five lanes,
-     each 15 px high, with the reserved share, the units, the playhead and
-     the outcome chip; the recent-rounds ribbon underneath).
+     each 18 px high, with the reserved share, the units, the playhead and
+     the outcome chip; under the lanes, the playhead carries the round's
+     length so far as a label ("0.42 s"); the recent-rounds ribbon
+     underneath). **The round card never changes size**: rows have fixed
+     heights, an outcome chip fills a space that is always there, and the
+     state line is one line that ellipsises.
    - Right, 380 px: **one line per part**, each opening for its detail
      (`<details>`, so it works without JavaScript too). Each line is a
      condensed summary that still moves, and the animations fly to it
@@ -192,22 +197,34 @@ shows fewer cells.
 
 ### Timeline
 
-A track across the top of the page, covering the session (one minute at
-first, growing to the last ten).
+Two tracks across the top of the page.
 
-- **Every event is a thin vertical line; key events are a circle** in their
-  tier's colour: a block announced, a reorg found and rewound, a payment
-  found, a group of stores falling behind or catching up, a block
-  checkpointed, a failure. Hovering a circle shows its sentence.
-- **The playhead** is a dark line. Dragging it, or clicking anywhere on the
-  track, pauses and moves the whole page to that moment: chain, round,
-  panels and events table. Events after the playhead are drawn faded, and
-  the stretch from the playhead to now is shaded.
-- **Play** replays at real speed from there and turns live on reaching now;
-  **Live** jumps to now.
-- **Keyboard:** the track is a slider. Left and right jump to the previous
-  or next key event, with Shift to any event; End goes live; Space plays or
-  pauses.
+- **The overview** (a thin strip): the whole history the page has, up to the
+  last 30 minutes, labelled "25 min ago" at its left and "now" at its right.
+  Every event is a faint tick and key events a coloured one. A highlighted
+  **window** on it marks the part shown below. Drag the window to move it
+  (say, to 4 to 6 minutes ago), drag either edge to resize it, or click
+  elsewhere on the strip to centre it there. While its right edge is at now
+  it follows now; once moved into the past it stays there.
+- **The detail track** shows that window: every event a thin vertical line,
+  **key events a circle** in their tier's colour (a payment found, a reorg
+  found and rewound, a group of stores falling behind or catching up, a
+  block checkpointed, a failure). New blocks are not key events: they come
+  every two minutes and would crowd out everything else. Hovering a circle
+  shows its sentence. Its axis is labelled in time ago ("6 min ago").
+  Scrolling over it zooms the window around the pointer (down to 20 s).
+- **The playhead** is a dark line on both tracks. Clicking or dragging on
+  the detail track pauses and moves the whole page to that moment: chain,
+  round, panels and events table. Events after the playhead are drawn
+  faded, and the stretch from the playhead to now is shaded. A playhead
+  outside the window shows as an arrow at the edge it lies past.
+- **Play** replays at real speed from there, sliding the window along when
+  the playhead reaches its edge, and turns live on reaching now; **Live**
+  jumps to now and sets the window following again.
+- **Keyboard:** the detail track is a slider: left and right jump to the
+  previous or next key event, with Shift to any event; End goes live; Space
+  plays or pauses. The overview takes left and right to move the window,
+  plus and minus to zoom, Home and End to go to either end.
 
 How seeking works: the page keeps the events it has received and a copy of
 its own state every 2 s (a keyframe). To show a moment it takes the
@@ -241,8 +258,8 @@ accent, saves `--ink`. The new colours become roles in `views/theme.css`
   loop sleeps for seconds. So each animation has a minimum length (a unit
   bar 150 ms, a token flight 600 ms); sleeps longer than a second are
   shortened to one second on screen and labelled with their real length;
-  the round lanes are scaled to the round's real length, with its budget as
-  a gauge ("0.42 s of 10 s"). While a group is catching up, the lanes are
+  the round lanes are scaled to the round's real length, with the length so
+  far on the playhead's label. While a group is catching up, the lanes are
   scaled to the full 10 s budget and show each tier's reserved share.
 - **Catching up.** If live playback falls more than 5 s behind, it speeds
   up (2x, then 4x, shown as a badge); more than 30 s behind, it jumps to
@@ -264,7 +281,7 @@ network. It lives where `progress` and `wakes` already live
 `with_activity`, as `with_progress` and `with_wakes` are), so the loops write
 it and the admin API reads it.
 
-- A ring of the last 15 minutes of events (at most 20,000), each with a
+- A ring of the last 30 minutes of events (at most 50,000), each with a
   sequence number and the engine's time in milliseconds, so a page opened
   now can scrub back over what happened before it was opened.
 - **A snapshot every 10 s** in the same ring, as an event: the in-memory
@@ -327,7 +344,7 @@ token, like every engine route; monokulo is its only caller):
 - `gap` is true when `after` has already left the ring: the page jumps to the
   snapshot.
 - With no `after`, it returns the whole ring from its oldest snapshot, so a
-  new page has the last 15 minutes to scrub through.
+  new page has the last 30 minutes to scrub through.
 - The snapshot's in-memory parts are read from the recorder and the
   `ScanState`; its database parts (groups and their sizes, queue lengths,
   checkpoints, the reorg job, scheduler positions) are read on the read pool,
@@ -372,10 +389,10 @@ token, like every engine route; monokulo is its only caller):
 2. **Admins only.** Alternative: public like `/status`, with node labels
    hidden. Recommended: admins only, as the abuse and announcement sections
    already are.
-3. **Always recording, 15 minutes kept.** The timeline makes history worth
+3. **Always recording, 30 minutes kept.** The timeline makes history worth
    having: an operator opens the page because something just happened.
    Alternative: record only while a page is open (free when nobody watches,
-   but the timeline starts empty). Recommended: always, 15 minutes. This
+   but the timeline starts empty). Recommended: always, 30 minutes. This
    reverses the first draft, because of the timeline.
 4. **Plain JavaScript, no library.** A charting or animation library would
    save little here and add a dependency we would vendor. Recommended: none.

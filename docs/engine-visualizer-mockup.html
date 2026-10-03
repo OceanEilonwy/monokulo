@@ -146,8 +146,12 @@ button { font: inherit; }
 /* timeline */
 .timeline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 12px; }
 .tl-controls { display: flex; gap: 6px; align-items: center; }
-.tl-track { position: relative; height: 40px; }
-.tl-track canvas { width: 100%; height: 28px; display: block; cursor: ew-resize; border-radius: 4px; touch-action: none; }
+.tl-track { position: relative; display: grid; gap: 3px; }
+.tl-ov-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; align-items: center; font-size: 10px; color: var(--muted); }
+.tl-track canvas { width: 100%; display: block; border-radius: 4px; touch-action: none; }
+#tl { height: 26px; cursor: ew-resize; }
+#tl-ov { height: 12px; cursor: grab; }
+#tl-ov.dragging { cursor: grabbing; }
 .tl-axis { position: relative; height: 12px; font-size: 10px; color: var(--muted); }
 .tl-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .tl-axis span:last-child { transform: translateX(-100%); }
@@ -228,7 +232,7 @@ button { font: inherit; }
 @keyframes spark { 30% { box-shadow: 0 0 0 4px var(--tint-highlight); } }
 
 /* round */
-.lanes { display: grid; grid-template-columns: 112px minmax(0, 1fr) 250px; gap: 3px 10px; align-items: center; }
+.lanes { display: grid; grid-template-columns: 112px minmax(0, 1fr) 250px; grid-auto-rows: 18px; gap: 2px 10px; align-items: center; }
 .lane-label { font-size: 11px; font-weight: 700; display: flex; justify-content: space-between; }
 .lane-label small { color: var(--muted); font-weight: 600; }
 .track { position: relative; height: 15px; background: var(--surface-sunken); border-radius: 3px; overflow: hidden; }
@@ -238,16 +242,21 @@ button { font: inherit; }
 @keyframes run { to { opacity: .5; } }
 .share { position: absolute; top: 0; bottom: 0; border: 1.5px dashed var(--line-strong); border-radius: 3px; transition: left .3s, width .3s; }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); transition: left .3s; z-index: 2; }
-.outcome { font-size: 11px; min-height: 15px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.gauge { display: inline-block; vertical-align: middle; width: 110px; height: 7px; background: var(--surface-sunken); border-radius: 99px; overflow: hidden; }
-.gauge i { display: block; height: 100%; background: var(--ink); width: 0; transition: width .3s; }
+.outcome { font-size: 11px; height: 18px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; min-width: 0; }
+.outcome .chip { line-height: 14px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.round-head { flex-wrap: nowrap !important; }
+.round-head #round-state { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ruler { position: relative; height: 18px; }
+.ruler-label { position: absolute; top: 3px; transform: translateX(-50%); font: 700 10px/14px var(--font-mono); background: var(--ink); color: var(--paper-raised); padding: 0 5px; border-radius: 3px; white-space: nowrap; transition: left .3s; }
+.ruler-label::before { content: ""; position: absolute; left: 50%; top: -4px; transform: translateX(-50%); border: 4px solid transparent; border-top: 0; border-bottom-color: var(--ink); }
 .ribbon-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) 250px; gap: 10px; align-items: end; margin-top: 6px; }
 .ribbon { display: flex; justify-content: flex-end; align-items: flex-end; height: 30px; overflow: hidden; border-bottom: 1px solid var(--line); }
 .rbar { width: 8px; display: flex; flex-direction: column-reverse; flex: none; border-radius: 2px 2px 0 0; overflow: hidden; }
 .rbar i { display: block; background: var(--tier); }
-.rgap { flex: none; height: 6px; display: flex; justify-content: center; align-items: flex-end; }
-.rgap::after { content: ""; width: 5px; height: 5px; border-radius: 50%; border: 1.5px solid var(--muted); }
-.rgap.node::after { border-radius: 0; transform: rotate(45deg); border-color: var(--accent-text); background: var(--accent-text); }
+.rgap { flex: none; height: 9px; position: relative; display: inline-block; }
+.rgap::before { content: ""; position: absolute; left: 2px; right: 2px; bottom: 1px; border-bottom: 2px dotted var(--muted); }
+.rgap.node::before { right: 8px; }
+.rgap.node::after { content: ""; position: absolute; right: 1px; bottom: 0; width: 5px; height: 7px; border: 1.5px solid var(--viz-tier-chain); border-radius: 1.5px; background: var(--paper-raised); }
 
 /* side: one-line summaries that open for detail */
 .side { display: grid; gap: 5px; }
@@ -378,7 +387,8 @@ tr.now { box-shadow: inset 3px 0 0 var(--accent); }
       <button class="btn" id="golive" type="button" disabled>Live</button>
     </div>
     <div class="tl-track" id="tl-track">
-      <canvas id="tl" tabindex="0" role="slider" aria-label="Playback position. Left and right arrows jump between key events; with Shift, between any events; End returns to live." aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"></canvas>
+      <div class="tl-ov-row"><span id="tl-ov-l">–</span><canvas id="tl-ov" tabindex="0" role="group" aria-label="The whole history, with the part shown below as a window. Drag the window to move it, drag its edges to resize it; left and right move it, plus and minus zoom, End follows now."></canvas><span>now</span></div>
+      <canvas id="tl" tabindex="0" role="slider" aria-label="Playback position. Left and right arrows jump between key events; with Shift, between any events; End returns to live. Scroll to zoom." aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"></canvas>
       <div class="tl-axis" id="tl-axis"></div>
     </div>
     <div class="tl-read" id="tl-read"><i></i><span id="tl-text">Live, 1.5 s behind</span></div>
@@ -425,14 +435,13 @@ tr.now { box-shadow: inset 3px 0 0 var(--accent); }
       </section>
 
       <section class="card" aria-labelledby="h-round">
-        <header><h2 id="h-round">Round <span class="num" id="round-n">–</span></h2>
-          <span class="hint" id="round-state"></span>
-          <span class="right hint"><span class="gauge"><i id="gauge"></i></span> <span id="gauge-text" class="num">0 s of 10 s</span></span></header>
+        <header class="round-head"><h2 id="h-round">Round <span class="num" id="round-n">–</span></h2>
+          <span class="hint" id="round-state"></span></header>
         <div class="lanes" id="lanes"></div>
         <div class="ribbon-row">
           <span class="hint">Last rounds</span>
           <div class="ribbon" id="ribbon" aria-label="Recent rounds"></div>
-          <div class="legend"><span><i class="rgap" style="width:10px" aria-hidden="true"></i>slept</span><span><i class="rgap node" style="width:10px" aria-hidden="true"></i>node woke it</span><span>no gap: work left</span></div>
+          <div class="legend"><span><i class="rgap" style="width:16px" aria-hidden="true"></i>slept</span><span><i class="rgap node" style="width:16px" aria-hidden="true"></i>woken by a new block</span><span>no gap: work left</span></div>
         </div>
       </section>
     </div>
@@ -565,9 +574,32 @@ let tlDirty = true;
    events into LOG, as the real engine's activity recorder would. The
    page below never reads its state.
    ===================================================================== */
-const T0 = performance.now();
-const clock = () => performance.now() - T0;
-const LOG = [];
+// The fake engine first runs 25 minutes of history as fast as it can, then
+// carries on in real time. (The real page gets its history from the
+// engine's ring instead.)
+const HISTORY = 25 * 60000;
+let vnow = 0, realMode = false, realStart = 0, tseq = 0;
+const clock = () => realMode ? HISTORY + performance.now() - realStart : vnow;
+const timers = [];
+const pushTimer = (at, fn) => { timers.push({ at, fn, s: tseq++ }); };
+async function fastForward(script) {
+  for (const [at, fn] of script) pushTimer(at, fn);
+  for (;;) {
+    let k = -1;
+    for (let i = 0; i < timers.length; i++) {
+      const a = timers[i], b = timers[k];
+      if (k < 0 || a.at < b.at || (a.at === b.at && a.s < b.s)) k = i;
+    }
+    if (k < 0 || timers[k].at > HISTORY) break;
+    const t = timers.splice(k, 1)[0];
+    vnow = t.at;
+    t.fn();
+    for (let i = 0; i < 40; i++) await null;
+  }
+  vnow = HISTORY; realStart = performance.now(); realMode = true;
+  for (const t of timers.splice(0)) setTimeout(t.fn, t.at - HISTORY);
+}
+const LOG = [], LOGIDX = [];
 const ES = {
   round: 1284, tip: 3412880, hw: 3412880, pruneBelow: 3412860,
   groups: [{ id: "f", cursor: 3412880, stores: 41, frontier: true }],
@@ -578,8 +610,8 @@ const ES = {
   q: [0, 0, 0], jobs: 0, rangePos: 0, rot: 0, rewound: false, diverged: false, held: false,
 };
 const emit = (k, d = {}) => { LOG.push({ t: clock(), k, ...d }); };
-const say = (tier, text, key = false) => emit("log", { tier, text, key, round: ES.round });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const say = (tier, text, key = false) => { LOGIDX.push(LOG.length); emit("log", { tier, text, key, round: ES.round }); };
+const sleep = (ms) => new Promise((r) => { if (realMode) setTimeout(r, ms); else pushTimer(vnow + ms, r); });
 const frontierG = () => ES.groups.find((g) => g.frontier);
 const catchUps = () => ES.groups.filter((g) => !g.frontier).sort((a, b) => a.cursor - b.cursor);
 const emitChain = () => emit("chain", { tip: ES.tip, hw: ES.hw, pruneBelow: ES.pruneBelow, cached: [...ES.cached], ckpt: { ...ES.ckpt }, reorgCells: [...ES.reorgCells] });
@@ -935,8 +967,8 @@ async function newBlock() {
   ES.tip++;
   emit("block", { tip: ES.tip });
   emitChain();
-  say("chain", `The node announced block ${fmt(ES.tip)}` + (branch ? `, on a branch that replaces block ${fmt(ES.hw)}.` : "."), true);
-  const mined = ES.pool.slice(0, 3);
+  say("chain", `The node announced block ${fmt(ES.tip)}` + (branch ? `, on a branch that replaces block ${fmt(ES.hw)}.` : "."), branch);
+  const mined = ES.pool.slice(0, Math.max(3, ES.pool.length - 8));
   for (const d of mined) {
     const p = ES.payments.find((x) => x.id === d.id);
     if (p) p.mineAt = ES.tip;
@@ -969,20 +1001,23 @@ async function webhookLoop() {
   }
 }
 
-$("sc-catchup").onclick = () => {
+function scCatchUp() {
   if (catchUps().length) return;
   const behind = 42;
   ES.groups.push({ id: "c" + ES.round, cursor: ES.hw - behind, stores: 3, idle: 1, frontier: false });
   ES.big = ES.hw - behind + 12;
   emitGroups();
   say("blocks", `3 stores registered again after downtime, ${behind} blocks behind. 1 of them has nothing in scope.`, true);
-};
-$("sc-pay").onclick = () => { ES.payNext = true; };
-$("sc-reorg").onclick = () => {
+}
+function scPay() { ES.payNext = true; }
+function scReorg() {
   if (ES.reorg || ES.forkPending) return;
   ES.reorgArmed = true;
   newBlock();
-};
+}
+$("sc-catchup").onclick = scCatchUp;
+$("sc-pay").onclick = scPay;
+$("sc-reorg").onclick = scReorg;
 
 /* =====================================================================
    The page: a model built only from events, a player that moves through
@@ -1050,14 +1085,30 @@ let M = initModel();
 let applied = 0, head = 0, mode = "live";
 const keyframes = [{ t: 0, i: 0, m: structuredClone(M) }];
 let lastFrame = performance.now();
+// Applies events up to `to`, keeping a keyframe every 2 s of event time.
+function advance(to, animating) {
+  let changed = false;
+  while (applied < LOG.length && LOG[applied].t <= to) {
+    const e = LOG[applied++];
+    apply(M, e);
+    if (animating && e.t > to - 400) animate(e);
+    changed = true;
+    const last = keyframes[keyframes.length - 1];
+    if (applied > last.i && e.t - last.t >= KEYFRAME_EVERY) keyframes.push({ t: e.t, i: applied, m: structuredClone(M) });
+  }
+  return changed;
+}
 function seek(t) {
   t = Math.max(0, Math.min(t, clock() - LAG));
-  let kf = keyframes[0];
-  for (const k of keyframes) { if (k.t <= t) kf = k; else break; }
+  let lo = 0, hi = keyframes.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (keyframes[mid].t <= t) lo = mid; else hi = mid - 1; }
+  const kf = keyframes[lo];
   M = structuredClone(kf.m);
   applied = kf.i;
-  while (applied < LOG.length && LOG[applied].t <= t) apply(M, LOG[applied++]);
+  advance(t, false);
   head = t;
+  const [a, b] = view();
+  if (t < a || t > b) setWindow(t + (b - a) / 2, b - a);
   clearTransient();
   render(true);
   tlDirty = true;
@@ -1071,21 +1122,17 @@ function setMode(m) {
   tlDirty = true;
 }
 $("play").onclick = () => setMode(mode === "paused" ? "replay" : "paused");
-$("golive").onclick = () => { setMode("live"); seek(clock() - LAG); };
+$("golive").onclick = () => { setMode("live"); setWindow(null, win.span); seek(clock() - LAG); };
 function frame(now) {
   const dt = now - lastFrame; lastFrame = now;
   const live = clock() - LAG;
   if (mode === "live") head = live;
-  else if (mode === "replay") { head += dt; if (head >= live) { head = live; setMode("live"); } }
-  let changed = false;
-  while (applied < LOG.length && LOG[applied].t <= head) {
-    const e = LOG[applied++];
-    apply(M, e);
-    if (mode !== "paused" && e.t > head - 400 && !document.hidden) animate(e);
-    changed = true;
+  else if (mode === "replay") {
+    head += dt;
+    if (head >= live) { head = live; setMode("live"); }
+    else if (win.end != null && head > win.end) setWindow(head + win.span * 0.8, win.span);
   }
-  const last = keyframes[keyframes.length - 1];
-  if (applied > last.i && head - last.t >= KEYFRAME_EVERY) keyframes.push({ t: LOG[applied - 1].t, i: applied, m: structuredClone(M) });
+  const changed = advance(head, mode !== "paused" && !document.hidden);
   if (changed) render(false);
   if (changed || mode !== "paused" || tlDirty) drawTimeline();
   requestAnimationFrame(frame);
@@ -1248,6 +1295,10 @@ const lanes = {};
     $("lanes").append(lab, track, out);
     lanes[t] = { track, out, ph: track.firstChild };
   }
+  const ruler = document.createElement("div");
+  ruler.className = "ruler";
+  ruler.innerHTML = '<span class="ruler-label num" id="ruler-label">0 s</span>';
+  $("lanes").append(document.createElement("div"), ruler, document.createElement("div"));
 })();
 let shownRound = -1;
 function renderRound(full) {
@@ -1281,10 +1332,10 @@ function renderRound(full) {
   }
   $("round-n").textContent = fmt(R.n);
   $("round-state").textContent = R.state;
-  $("gauge").style.width = Math.min(100, R.t / BUDGET * 100) + "%";
-  $("gauge-text").textContent = `${secs(R.t)} of 10 s`;
+  $("ruler-label").style.left = Math.min(99.5, R.t / ax * 100) + "%";
+  $("ruler-label").textContent = secs(R.t);
   $("ribbon").innerHTML = M.ribbon.slice(-90).map((r) => {
-    if (r.gap) return `<i class="rgap${r.gap === "node" ? " node" : ""}" style="width:${r.gap === "node" ? 8 : 12}px" title="${r.gap === "node" ? "woken early by the node" : "slept for the poll interval"}"></i>`;
+    if (r.gap) return `<i class="rgap${r.gap === "node" ? " node" : ""}" style="width:14px" title="${r.gap === "node" ? "slept, woken early by a new block" : "slept for the 1 s poll interval"}"></i>`;
     const h = Math.max(4, Math.min(28, 6 + Math.log10(Math.max(1, r.ms)) * 6));
     const segs = TIERS.filter((t) => r.per[t]).map((t) => `<i class="t-${t}" style="height:${r.per[t] / r.ms * 100}%"></i>`).join("");
     return `<span class="rbar" style="height:${h}px" title="Round ${fmt(r.n)}: ${secs(r.ms)}">${segs}</span>`;
@@ -1375,9 +1426,11 @@ function renderEvents() {
   if (shownLog === M.lastLog) return;
   shownLog = M.lastLog;
   const rows = [];
-  for (let i = applied - 1; i >= 0 && rows.length < 60; i--) {
-    const e = LOG[i];
-    if (e.k === "log" && filter.has(e.tier)) rows.push(e);
+  let lo = 0, hi = LOGIDX.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (LOGIDX[mid] < applied) lo = mid + 1; else hi = mid; }
+  for (let i = lo - 1; i >= 0 && rows.length < 60; i--) {
+    const e = LOG[LOGIDX[i]];
+    if (filter.has(e.tier)) rows.push(e);
   }
   const body = $("ev");
   body.innerHTML = "";
@@ -1391,86 +1444,195 @@ function renderEvents() {
   });
 }
 
-// ---- timeline: every event a thin line, key events a circle ----
-const cv = $("tl"), ctx = cv.getContext("2d");
-let hoverX = null;
-function view() { const end = clock(), span = Math.min(10 * 60000, Math.max(60000, end)); return [end - span, end]; }
+// ---- timeline: the whole history with a movable window above, and the
+// window in detail below: every event a thin line, key events a circle ----
+const cv = $("tl"), ctx = cv.getContext("2d"), ov = $("tl-ov"), octx = ov.getContext("2d");
+const MIN_SPAN = 20000;
+const win = { span: 5 * 60000, end: null }; // end null: the window follows now
+let hoverX = null, ovDrawn = 0;
+function view() {
+  const now = clock(), span = Math.min(win.span, now);
+  const end = win.end == null ? now : Math.min(win.end, now);
+  return [Math.max(0, end - span), Math.max(span, end)];
+}
+function setWindow(end, span) {
+  const now = clock();
+  win.span = Math.max(MIN_SPAN, Math.min(span, now));
+  win.end = end == null || end >= now - 250 ? null : Math.max(win.span, end);
+  tlDirty = true; ovDrawn = 0;
+}
 function xOf(t, w) { const [a, b] = view(); return (t - a) / (b - a) * w; }
 function tOf(x, w) { const [a, b] = view(); return a + x / w * (b - a); }
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function behindText(ms) { const s = Math.round(ms / 1000); return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? " " + (s % 60) + " s" : ""}`; }
+function fit(c, x) {
+  const dpr = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  x.setTransform(dpr, 0, 0, dpr, 0, 0);
+  x.clearRect(0, 0, w, h);
+  return [w, h];
+}
+function logFrom(t) {
+  let lo = 0, hi = LOGIDX.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (LOG[LOGIDX[mid]].t < t) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+const tierColour = (e) => css("--viz-tier-" + (TIERS.includes(e.tier) ? e.tier : "chain"));
+function drawOverview() {
+  ovDrawn = performance.now();
+  const [w, h] = fit(ov, octx);
+  if (!w) return;
+  const now = clock(), x = (t) => t / now * w;
+  octx.fillStyle = css("--surface-sunken"); octx.fillRect(0, 0, w, h);
+  octx.fillStyle = css("--muted"); octx.globalAlpha = .35;
+  let lastX = -1;
+  for (const i of LOGIDX) { const px = Math.round(x(LOG[i].t)); if (px !== lastX) { octx.fillRect(px, 3, 1, h - 6); lastX = px; } }
+  octx.globalAlpha = 1;
+  for (const i of LOGIDX) { const e = LOG[i]; if (!e.key) continue; octx.fillStyle = tierColour(e); octx.fillRect(Math.round(x(e.t)) - 1, 1, 2, h - 2); }
+  const [a, b] = view(), xa = x(a), xb = x(b);
+  octx.fillStyle = css("--tint-highlight"); octx.globalAlpha = .55; octx.fillRect(xa, 0, xb - xa, h); octx.globalAlpha = 1;
+  octx.strokeStyle = css("--accent-text"); octx.lineWidth = 1.5; octx.strokeRect(xa + .75, .75, Math.max(2, xb - xa - 1.5), h - 1.5);
+  octx.fillStyle = css("--accent-text"); octx.fillRect(xa, 2, 3, h - 4); octx.fillRect(xb - 3, 2, 3, h - 4);
+  octx.fillStyle = css("--ink"); octx.fillRect(Math.round(x(head)), 0, 1.5, h);
+  octx.strokeStyle = css("--line-strong"); octx.lineWidth = 1; octx.strokeRect(.5, .5, w - 1, h - 1);
+  $("tl-ov-l").textContent = `${behindText(now)} ago`;
+}
 function drawTimeline() {
   tlDirty = false;
-  const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (performance.now() - ovDrawn > 250) drawOverview();
+  const [w, h] = fit(cv, ctx);
   if (!w) return;
-  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = css("--surface-sunken"); ctx.fillRect(0, 0, w, h);
+  const [a, b] = view();
   const xh = xOf(head, w), xl = xOf(clock(), w);
-  ctx.fillStyle = css("--line"); ctx.fillRect(xh, 0, Math.max(0, xl - xh), h);
-  const mid = h / 2, [a] = view(), keys = [];
+  ctx.fillStyle = css("--line"); ctx.fillRect(Math.max(0, xh), 0, Math.max(0, Math.min(w, xl) - Math.max(0, xh)), h);
+  const mid = h / 2, keys = [];
   ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1;
-  for (const pass of [true, false]) {
+  const from = logFrom(a);
+  for (const past of [true, false]) {
     ctx.beginPath();
-    for (const e of LOG) {
-      if (e.k !== "log" || e.t < a) continue;
-      if ((e.t <= head) !== pass) continue;
+    for (let j = from; j < LOGIDX.length; j++) {
+      const e = LOG[LOGIDX[j]];
+      if (e.t > b) break;
+      if ((e.t <= head) !== past) continue;
       const x = Math.round(xOf(e.t, w)) + .5;
-      if (e.key) { if (pass) keys.push([x, e]); else keys.push([x, e]); continue; }
+      if (e.key) { keys.push([x, e]); continue; }
       ctx.moveTo(x, mid - 6); ctx.lineTo(x, mid + 6);
     }
-    ctx.globalAlpha = pass ? .75 : .3; ctx.stroke();
+    ctx.globalAlpha = past ? .75 : .3; ctx.stroke();
   }
   ctx.globalAlpha = 1;
   for (const [x, e] of keys) {
     ctx.beginPath(); ctx.arc(x, mid, 5, 0, Math.PI * 2);
-    ctx.fillStyle = css("--viz-tier-" + (TIERS.includes(e.tier) ? e.tier : "chain"));
+    ctx.fillStyle = tierColour(e);
     ctx.globalAlpha = e.t > head ? .4 : 1;
     ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = css("--paper-raised"); ctx.stroke();
   }
   ctx.globalAlpha = 1;
-  ctx.fillStyle = css("--ink"); ctx.fillRect(Math.round(xh) - 1, 0, 2, h);
-  ctx.beginPath(); ctx.moveTo(xh - 5, 0); ctx.lineTo(xh + 5, 0); ctx.lineTo(xh, 6); ctx.fill();
+  ctx.fillStyle = css("--ink");
+  if (xh >= 0 && xh <= w) {
+    ctx.fillRect(Math.round(xh) - 1, 0, 2, h);
+    ctx.beginPath(); ctx.moveTo(xh - 5, 0); ctx.lineTo(xh + 5, 0); ctx.lineTo(xh, 6); ctx.fill();
+  } else {
+    // The playhead is outside the window: an arrow at the edge it lies past.
+    const e = xh < 0 ? 0 : w;
+    ctx.beginPath(); ctx.moveTo(e, mid); ctx.lineTo(e + (xh < 0 ? 9 : -9), mid - 7); ctx.lineTo(e + (xh < 0 ? 9 : -9), mid + 7); ctx.fill();
+  }
   ctx.strokeStyle = css("--line-strong"); ctx.lineWidth = 1; ctx.strokeRect(.5, .5, w - 1, h - 1);
   const tip = $("tl-tipbox");
   let best = null;
   if (hoverX != null) for (const k of keys) if (Math.abs(k[0] - hoverX) < 7 && (!best || Math.abs(k[0] - hoverX) < Math.abs(best[0] - hoverX))) best = k;
   tip.hidden = !best;
-  if (best) { tip.textContent = best[1].text; tip.style.left = Math.max(120, Math.min(w - 120, best[0])) + "px"; }
+  if (best) { tip.textContent = best[1].text; tip.style.left = Math.max(140, Math.min(w - 140, best[0])) + "px"; }
   $("tl-text").textContent = mode === "live" ? "Live, 1.5 s behind" : `${mode === "paused" ? "Paused" : "Replaying"}, ${behindText(clock() - head)} behind live`;
-  cv.setAttribute("aria-valuenow", String(Math.round(xh / w * 100)));
+  cv.setAttribute("aria-valuenow", String(Math.round(head / clock() * 100)));
   cv.setAttribute("aria-valuetext", $("tl-text").textContent);
-  const [s, e2] = view(), span = e2 - s, step = span > 300000 ? 120000 : span > 120000 ? 60000 : 15000;
-  let ax = `<span style="left:0">${behindText(span)} ago</span>`;
-  for (let t = step; t < span - step / 2; t += step) ax += `<span style="left:${(1 - t / span) * 100}%">${behindText(t)} ago</span>`;
-  const html = ax + `<span style="left:100%">now</span>`;
+  const now = clock(), span = b - a;
+  const step = [5e3, 1e4, 15e3, 3e4, 6e4, 12e4, 3e5, 6e5].find((s) => span / s <= 7) || 6e5;
+  let ax = "";
+  for (let ago = Math.ceil((now - b) / step) * step; now - ago >= a; ago += step) {
+    const pct = (now - ago - a) / span * 100;
+    if (pct > 97 || pct < 3) continue;
+    ax += `<span style="left:${pct}%">${ago ? behindText(ago) + " ago" : "now"}</span>`;
+  }
+  const html = `<span style="left:0">${behindText(now - a)} ago</span>` + ax + `<span style="left:100%">${win.end == null ? "now" : behindText(now - b) + " ago"}</span>`;
   if ($("tl-axis").innerHTML !== html) $("tl-axis").innerHTML = html;
 }
 (() => {
   const tip = document.createElement("div");
   tip.className = "tl-tip"; tip.id = "tl-tipbox"; tip.hidden = true;
   $("tl-track").appendChild(tip);
+  const at = (c, ev) => { const r = c.getBoundingClientRect(); return Math.max(0, Math.min(r.width, ev.clientX - r.left)); };
+  // The detail track: click or drag to move the playhead, scroll to zoom.
   let dragging = false;
-  const at = (ev) => { const r = cv.getBoundingClientRect(); return Math.max(0, Math.min(r.width, ev.clientX - r.left)); };
-  cv.addEventListener("pointerdown", (ev) => { dragging = true; cv.setPointerCapture(ev.pointerId); setMode("paused"); seek(tOf(at(ev), cv.clientWidth)); });
-  cv.addEventListener("pointermove", (ev) => { hoverX = at(ev); if (dragging) seek(tOf(hoverX, cv.clientWidth)); tlDirty = true; });
+  cv.addEventListener("pointerdown", (ev) => { dragging = true; cv.setPointerCapture(ev.pointerId); setMode("paused"); seek(tOf(at(cv, ev), cv.clientWidth)); });
+  cv.addEventListener("pointermove", (ev) => { hoverX = at(cv, ev); if (dragging) seek(tOf(hoverX, cv.clientWidth)); tlDirty = true; });
   cv.addEventListener("pointerup", () => { dragging = false; });
   cv.addEventListener("pointerleave", () => { hoverX = null; tlDirty = true; });
+  cv.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const [a, b] = view(), tc = tOf(at(cv, ev), cv.clientWidth), f = ev.deltaY > 0 ? 1.25 : 0.8;
+    const span = Math.max(MIN_SPAN, Math.min((b - a) * f, clock()));
+    setWindow(tc + (b - tc) * span / (b - a), span);
+  }, { passive: false });
   cv.addEventListener("keydown", (ev) => {
-    const logs = LOG.filter((e) => e.k === "log" && (ev.shiftKey || e.key));
+    const logs = LOGIDX.map((i) => LOG[i]).filter((e) => ev.shiftKey || e.key);
     if (ev.key === "ArrowLeft") { const p = logs.filter((e) => e.t < head - 1).pop(); if (p) { setMode("paused"); seek(p.t); } ev.preventDefault(); }
     if (ev.key === "ArrowRight") { const n = logs.find((e) => e.t > head + 1 && e.t <= clock() - LAG); if (n) { setMode("paused"); seek(n.t); } ev.preventDefault(); }
     if (ev.key === "End") { $("golive").click(); ev.preventDefault(); }
     if (ev.key === " ") { $("play").click(); ev.preventDefault(); }
+  });
+  // The overview: drag the window to move it, its edges to resize it, or
+  // click elsewhere to centre it there.
+  let drag = null;
+  const ovT = (ev) => at(ov, ev) / ov.clientWidth * clock();
+  ov.addEventListener("pointerdown", (ev) => {
+    const t = ovT(ev), [a, b] = view(), edge = 6 / ov.clientWidth * clock();
+    if (Math.abs(t - a) < edge) drag = { kind: "left" };
+    else if (Math.abs(t - b) < edge) drag = { kind: "right" };
+    else if (t > a && t < b) drag = { kind: "move", off: t - b };
+    else { setWindow(t + (b - a) / 2, b - a); drag = { kind: "move", off: -(b - a) / 2 }; }
+    ov.setPointerCapture(ev.pointerId); ov.classList.add("dragging");
+  });
+  ov.addEventListener("pointermove", (ev) => {
+    const t = ovT(ev), [a, b] = view();
+    if (!drag) {
+      const edge = 6 / ov.clientWidth * clock();
+      ov.style.cursor = Math.abs(t - a) < edge || Math.abs(t - b) < edge ? "ew-resize" : "";
+      return;
+    }
+    if (drag.kind === "move") setWindow(t - drag.off, b - a);
+    if (drag.kind === "left") setWindow(b, b - t);
+    if (drag.kind === "right") setWindow(t, t - a);
+  });
+  ov.addEventListener("pointerup", () => { drag = null; ov.classList.remove("dragging"); });
+  ov.addEventListener("keydown", (ev) => {
+    const [a, b] = view(), span = b - a;
+    if (ev.key === "ArrowLeft") setWindow(b - span / 10, span);
+    else if (ev.key === "ArrowRight") setWindow(b + span / 10, span);
+    else if (ev.key === "+" || ev.key === "=") setWindow(b - span * 0.1, span * 0.8);
+    else if (ev.key === "-") setWindow(b + span * 0.125, span * 1.25);
+    else if (ev.key === "End") setWindow(null, span);
+    else if (ev.key === "Home") setWindow(span, span);
+    else return;
+    ev.preventDefault();
   });
 })();
 
 // ---- start in a realistic working state ----
 for (let i = 0; i < 9; i++) ES.pool.push({ id: (0x1000000 + i * 7919).toString(16), match: false, scanned: true });
 emitPool(); emitChain(); emitGroups();
-addEventListener("resize", () => { render(true); tlDirty = true; });
-requestAnimationFrame(frame);
+addEventListener("resize", () => { render(true); tlDirty = true; ovDrawn = 0; });
+$("tl-text").textContent = "Loading the last 25 minutes";
 roundLoop(); fastLoop(); blockLoop(); webhookLoop();
+// History with something in it to scrub to: a store catching up 20 minutes
+// ago, a payment 13 minutes ago and a reorg 5 to 6 minutes ago.
+fastForward([[5 * 60000, scCatchUp], [12 * 60000, scPay], [19.4 * 60000, scReorg]]).then(() => {
+  head = clock() - LAG;
+  advance(head, false);
+  render(true);
+  lastFrame = performance.now();
+  requestAnimationFrame(frame);
+});
 })();
 </script>
