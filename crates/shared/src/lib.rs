@@ -10,6 +10,7 @@
 //! keep `key-custody-service` and `engine` from forming a cyclic Cargo
 //! dependency once `main.rs` needed to depend on both.
 
+pub mod activity;
 pub mod announcements;
 pub mod auth;
 pub mod coinmarketcap;

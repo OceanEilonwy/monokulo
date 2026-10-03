@@ -880,6 +880,30 @@ impl EngineClient {
     }
 }
 
+/// The engine page's feed (`docs/engine_visualizer.md`).
+impl EngineClient {
+    /// `network`'s activity record from sequence number `from` on; without
+    /// `from`, everything from the oldest snapshot the engine keeps.
+    pub async fn engine_activity(
+        &self,
+        network: &str,
+        from: Option<u64>,
+    ) -> Result<shared::activity::ActivityPage, EngineClientError> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            network: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            from: Option<u64>,
+        }
+        self.send(Call::get(with_query(
+            "/api/v1/admin/engine/activity",
+            &Query { network, from },
+        )))
+        .await?
+        .parsed()
+    }
+}
+
 /// The engine's log API (structured_logging.md 3.3). Never cached: its
 /// responses carry no cache headers.
 impl EngineClient {
@@ -2000,6 +2024,21 @@ mod contract_tests {
                 .status()
         ));
         lines.push(format!("logs: {}", outcome(&client.log_attributes().await)));
+        engine
+            .activity(monero::Network::Mainnet)
+            .record(shared::activity::Event::Snapshot(Box::default()));
+        let activity = client.engine_activity("mainnet", None).await.unwrap();
+        assert!(
+            !activity.events.is_empty(),
+            "the recorded snapshot reaches monokulo over {transport}"
+        );
+        lines.push(format!(
+            "activity: {} events; from 0: {}; a network with no node: {}; an unknown network: {}",
+            activity.events.len(),
+            outcome(&client.engine_activity("mainnet", Some(0)).await),
+            outcome(&client.engine_activity("stagenet", None).await),
+            outcome(&client.engine_activity("nowhere", None).await)
+        ));
 
         let mut events = client.open_order_events(&sk).await.unwrap();
         let first = tokio::time::timeout(std::time::Duration::from_secs(10), events.next())

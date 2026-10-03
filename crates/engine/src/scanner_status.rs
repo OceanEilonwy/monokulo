@@ -46,6 +46,9 @@ pub struct NetworkScanStatus {
     pub wakes: Arc<crate::node_events::NodeWakes>,
     /// Proof-of-work checking (`docs/proof_of_work.md`), while it is on.
     pub proof: Option<shared::proof::ProofStatus>,
+    /// What the scanner has been doing, for the engine page
+    /// (`docs/engine_visualizer.md`).
+    pub activity: Arc<crate::activity::Activity>,
 }
 
 impl Default for NetworkScanStatus {
@@ -60,6 +63,7 @@ impl Default for NetworkScanStatus {
             progress: crate::scaling::new_progress(),
             wakes: Arc::default(),
             proof: None,
+            activity: Arc::default(),
         }
     }
 }
@@ -67,6 +71,11 @@ impl Default for NetworkScanStatus {
 /// `network`'s wakes, made if it has none yet.
 pub fn wakes_of(map: &ScannerStatusMap, network: Network) -> Arc<crate::node_events::NodeWakes> {
     Arc::clone(&map.write().entry(network).or_default().wakes)
+}
+
+/// `network`'s activity record, made if it has none yet.
+pub fn activity_of(map: &ScannerStatusMap, network: Network) -> Arc<crate::activity::Activity> {
+    Arc::clone(&map.write().entry(network).or_default().activity)
 }
 
 /// `network`'s scan progress, made if it has none yet.

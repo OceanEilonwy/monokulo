@@ -18,6 +18,8 @@ use crate::scanner::{
 };
 use crate::store::position::VanishedPayments;
 
+use shared::activity::Event;
+
 use super::{Progress, Round, Wait};
 
 const VANISHED_PAGE: usize = 64;
@@ -105,6 +107,9 @@ async fn vanished(round: &Round<'_>, tip: u64, until: Instant) -> Result<(), Sca
     if page.is_empty() {
         return Ok(());
     }
+    round.state.activity().record(Event::Vanished {
+        looked: super::count(page.len()),
+    });
     let unresolved = &round.state.settlement.unresolved;
     // (Also forgets payments that stopped being looked at long ago.)
     let waiting: HashSet<i64> = unresolved.waiting().into_iter().collect();
@@ -221,6 +226,7 @@ async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, Scanne
     // waits to be retried, and the others carry on.
     let mut succeeded = 0;
     let mut first_failure = None;
+    let mut transitions = Vec::new();
     for chunk in ids.chunks(RECOMPUTES_PER_JOB) {
         let chunk = chunk.to_vec();
         let outcomes = round
@@ -234,8 +240,9 @@ async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, Scanne
             .await?;
         for (id, outcome) in outcomes {
             match outcome {
-                Ok(()) => {
+                Ok(transition) => {
                     succeeded += 1;
+                    transitions.extend(transition);
                     round.state.order_backoff.succeeded(&id);
                 }
                 Err(error) => {
@@ -245,6 +252,12 @@ async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, Scanne
                 }
             }
         }
+    }
+    if count > 0 {
+        round.state.activity().record(Event::Recomputed {
+            orders: super::count(count),
+            transitions,
+        });
     }
     if succeeded > 0 {
         round.state.wake_webhooks();

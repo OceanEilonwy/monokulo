@@ -29,7 +29,7 @@
 //! its start ([`watching`], `run_round`): one request for both.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,7 +40,9 @@ use crate::key_custody::{ScanIndices, WalletHandle};
 use crate::scanner::{record_scan_match, scan_for_tenants, ScannerError};
 use crate::store::db::Class;
 
-use super::{bounded, Progress, Round, RoundInputs, ScanState, Wait};
+use shared::activity::{Event, PoolPath};
+
+use super::{bounded, count, Progress, Round, RoundInputs, ScanState, Wait};
 
 /// Most mempool transaction bodies remembered, by count and by serialized
 /// size; beyond either (a spam wave of many, or of large, transactions)
@@ -78,6 +80,9 @@ pub(crate) struct MempoolState {
     windows: parking_lot::Mutex<Option<(Instant, Windows)>>,
     /// The chain height the last round saw, for the fast path's recomputes.
     pub(crate) last_tip: AtomicU64,
+    /// Whether the last round's tier had anything to look for in the pool:
+    /// for the engine page.
+    watched: AtomicBool,
 }
 
 /// Mempool bodies kept between rounds, with their serialized size.
@@ -138,6 +143,25 @@ impl MempoolState {
         let mut remembered = self.inner.lock();
         remembered.bodies.retain(|txid| in_pool.contains(txid));
         remembered.scanned.retain(|txid, _| in_pool.contains(txid));
+    }
+
+    /// How many pool transactions are remembered, and the first `limit` of
+    /// their ids (shortened), in order: for the engine page.
+    pub(super) fn remembered(&self, limit: usize) -> (usize, Vec<String>) {
+        let remembered = self.inner.lock();
+        let mut txids: Vec<&String> = remembered.scanned.keys().collect();
+        txids.sort_unstable();
+        let listed = txids
+            .into_iter()
+            .take(limit)
+            .map(|txid| shared::activity::short_id(txid))
+            .collect();
+        (remembered.scanned.len(), listed)
+    }
+
+    /// Whether the last round looked at the pool (see the module doc).
+    pub(super) fn watched(&self) -> bool {
+        self.watched.load(Ordering::Relaxed)
     }
 
     /// Drops everything remembered: the pool isn't being watched.
@@ -228,8 +252,9 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     // Nothing to look for in the pool: no store has an order in scope and
     // no payment is waiting for a block. The node isn't asked.
     match round.mempool.watching.take() {
-        Some(Ok(true)) => {}
+        Some(Ok(true)) => state.watched.store(true, Ordering::Relaxed),
         Some(Ok(false)) | None => {
+            state.watched.store(false, Ordering::Relaxed);
             state.forget();
             return Progress::Idle;
         }
@@ -281,6 +306,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         due.rotate_left(offset);
         due.truncate(TENANTS_PER_TX);
         let outcome = scan_and_record(round.state, round.inputs, tx, txid, &due, None).await;
+        record_match(round.state, PoolPath::Round, txid, &outcome);
         failed.extend(outcome.failed);
         if let Some(error) = outcome.store_error {
             tracing::warn!(network = crate::network::network_str(network), error = %error, "recording a mempool match failed (retried next round)");
@@ -295,7 +321,28 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         (attempted, _) => attempted,
     };
     state.next_tx_offset.fetch_add(advance, Ordering::Relaxed);
+    round.state.activity().record(Event::PoolScanned {
+        path: PoolPath::Round,
+        pool: count(round.pool_txids.as_ref().map_or(0, HashSet::len)),
+        scanned: count(attempted),
+    });
     Progress::Advanced
+}
+
+/// Records a pool transaction that pays an order, for the engine page.
+fn record_match(state: &ScanState, path: PoolPath, txid: &str, outcome: &ScanOutcome) {
+    if outcome.touched > 0 {
+        state.activity().record(Event::TxMatched {
+            path,
+            txid: shared::activity::short_id(txid),
+        });
+    }
+    if !outcome.transitions.is_empty() {
+        state.activity().record(Event::Recomputed {
+            orders: count(outcome.transitions.len()),
+            transitions: outcome.transitions.clone(),
+        });
+    }
 }
 
 /// What a fast pass did.
@@ -351,6 +398,7 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
     for (txid, tx) in &pool {
         let due = mempool.due(txid, &tenants, &failed);
         let outcome = scan_and_record(state, inputs, tx, txid, &due, tip).await;
+        record_match(state, PoolPath::Fast, txid, &outcome);
         report.scanned += 1;
         report.paid_orders += outcome.touched;
         failed.extend(outcome.failed);
@@ -358,6 +406,11 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
     if report.paid_orders > 0 {
         state.wake_webhooks();
     }
+    state.activity().record(Event::PoolScanned {
+        path: PoolPath::Fast,
+        pool: count(in_pool.len()),
+        scanned: count(report.scanned),
+    });
     Some(report)
 }
 
@@ -365,6 +418,8 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
 #[derive(Default)]
 struct ScanOutcome {
     touched: usize,
+    /// Orders whose status changed in the same job (the fast path).
+    transitions: Vec<shared::activity::Transition>,
     failed: Vec<crate::store::TenantId>,
     store_error: Option<ScannerError>,
 }
@@ -422,20 +477,24 @@ async fn scan_and_record(
         let recorded = inputs
             .db
             .run(Class::Scanner, move |s| {
-                s.in_transaction(|s| -> Result<usize, ScannerError> {
+                s.in_transaction(|s| -> Result<_, ScannerError> {
                     let touched = record_scan_match(s, &id, &scan, now, None)?;
+                    let mut transitions = Vec::new();
                     if let Some(tip) = tip {
                         for order_id in &touched {
-                            crate::scanner::recompute_and_notify_in_tx(s, order_id, tip, now)?;
+                            transitions.extend(crate::scanner::recompute_and_notify_in_tx(
+                                s, order_id, tip, now,
+                            )?);
                         }
                     }
-                    Ok(touched.len())
+                    Ok((touched.len(), transitions))
                 })
             })
             .await;
         match recorded {
-            Ok(touched) => {
+            Ok((touched, transitions)) => {
                 outcome.touched += touched;
+                outcome.transitions.extend(transitions);
                 state.mempool.mark_scanned(txid, &tenant_id, generation);
             }
             Err(error) => {

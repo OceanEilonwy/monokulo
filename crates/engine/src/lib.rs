@@ -17,6 +17,7 @@
 // Test code is left out of coverage reports (`cargo +nightly llvm-cov`).
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod activity;
 pub mod auth;
 pub mod cli;
 pub mod daemon;

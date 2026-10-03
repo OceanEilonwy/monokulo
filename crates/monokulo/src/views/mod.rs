@@ -27,6 +27,7 @@ pub mod checkout;
 pub mod connect;
 pub mod create_order;
 pub mod dashboard;
+pub mod engine;
 pub mod integration_help;
 pub mod landing;
 pub mod logs;

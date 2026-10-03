@@ -44,7 +44,9 @@ use crate::scanner::{
 use crate::store::position::CatchUpGroup;
 use crate::store::{BlockCheckpoint, Store};
 
-use super::{bounded, Progress, Round, Wait};
+use shared::activity::Event;
+
+use super::{bounded, count, Progress, Round, Wait};
 
 /// How far ahead of real time consensus lets a block's timestamp run.
 /// Catch-up windows start this much before a block's own timestamp, so a
@@ -117,13 +119,15 @@ impl Default for BlockState {
 }
 
 impl BlockState {
-    /// The heights the last round left for the next, lowest first.
-    #[cfg(test)]
-    pub(super) fn carried_heights(&self) -> Vec<u64> {
-        self.carried
-            .lock()
-            .as_ref()
-            .map_or_default(|carried| carried.cache.blocks.keys().copied().collect())
+    /// The blocks the last round left for the next, lowest first, and
+    /// their bytes on the wire.
+    pub(super) fn carried_cache(&self) -> (Vec<u64>, u64) {
+        self.carried.lock().as_ref().map_or_default(|carried| {
+            (
+                carried.cache.blocks.keys().copied().collect(),
+                u64::try_from(carried.cache.bytes).unwrap_or(u64::MAX),
+            )
+        })
     }
 
     /// State whose progress (sizing, the block in progress, recent blocks)
@@ -267,6 +271,19 @@ impl BlockState {
 
 /// Fetches `count` blocks from `from`, given the time the node's link needs
 /// for that many (`docs/engine_scaling.md` section 2).
+/// Records a run of blocks fetched from `from` for the engine page.
+fn record_fetched(state: &super::ScanState, from: u64, chunk: &[ChainBlock], ahead: bool) {
+    state.activity().record(Event::Fetched {
+        from,
+        count: count(chunk.len()),
+        bytes: chunk
+            .iter()
+            .map(|block| block.wire_bytes)
+            .fold(0, u64::saturating_add),
+        ahead,
+    });
+}
+
 async fn fetch_chunk(
     daemon: &dyn crate::daemon::MoneroDaemonClient,
     from: u64,
@@ -567,6 +584,37 @@ enum Group {
     CatchUp,
 }
 
+impl From<Group> for shared::activity::Group {
+    fn from(group: Group) -> Self {
+        match group {
+            Group::Frontier => Self::Frontier,
+            Group::CatchUp => Self::CatchUp,
+        }
+    }
+}
+
+/// Records stores moved straight from `from` to `to` for the engine page.
+fn record_idle(round: &Round<'_>, from: u64, to: u64, moved: usize) {
+    if moved > 0 {
+        round.state.activity().record(Event::IdleAdvanced {
+            from,
+            to,
+            stores: count(moved),
+        });
+    }
+}
+
+/// Records how far a block's scan got before it stopped, for the engine
+/// page.
+fn record_checkpoint(round: &Round<'_>, height: u64, scan: &BlockScan, tx_count: usize) {
+    round.state.activity().record(Event::Checkpointed {
+        height,
+        stores: count(scan.next_tx.len().saturating_sub(scan.failed.len())),
+        done_txs: count(scan.first_due(tx_count)),
+        total_txs: count(tx_count),
+    });
+}
+
 /// Which page of a group's tenants a committed block was scanned for.
 enum Page {
     /// A full page: more of the group may still be at the parent cursor.
@@ -695,9 +743,10 @@ async fn serve_catch_up(
     };
     // Tenants with nothing that could ever have been paid need no block read
     // to decide: straight to the high-water mark.
-    round
+    let idle = round
         .db(move |s, network| s.advance_idle_cursors(network, group, high_water, i64::MIN / 2, 0))
         .await?;
+    record_idle(round, group, high_water, idle);
     // A group that diverged stays where it is; the rotation still moves on
     // past it, so the round's other groups are served.
     let reached = advance_group(round, Group::CatchUp, group, tip, until).await?;
@@ -726,6 +775,10 @@ async fn seed(round: &Round<'_>, tip: u64) -> Result<Progress, ScannerError> {
                 height = seed,
                 "started scanning this network"
             );
+            round
+                .state
+                .activity()
+                .record(Event::Seeded { height: seed });
             Ok(Progress::Advanced)
         }
         Err(_) => Ok(Progress::Blocked(Wait::NodeCannotServeTip)),
@@ -808,6 +861,7 @@ async fn advance_group(
         });
         match prefetched {
             Some(Ok(chunk)) => {
+                record_fetched(state, cursor + 2, &chunk, true);
                 round.blocks.cache.add_chunk(
                     chunk,
                     cursor + 2,
@@ -835,6 +889,10 @@ async fn advance_group(
             }
             BlockOutcome::Interrupted | BlockOutcome::NobodyToScan => break,
             BlockOutcome::Diverged(reason) => {
+                round
+                    .state
+                    .activity()
+                    .record(Event::Diverged { height: cursor + 1 });
                 tracing::warn!(
                     network = crate::network::network_str(round.network()),
                     height = cursor + 1,
@@ -1006,9 +1064,10 @@ async fn scan_block(
         // have been paid from this block on (every order closed before its
         // time) needn't wait: straight to the high-water mark. The others
         // wait for their keys.
-        round
+        let idle = round
             .db(move |s, network| s.advance_idle_cursors(network, parent, high_water, since, grace))
             .await?;
+        record_idle(round, parent, high_water, idle);
         return Ok(BlockOutcome::NobodyToScan);
     }
 
@@ -1044,7 +1103,15 @@ async fn scan_block(
     }
     let (hash, prev_hash) = (hash.to_owned(), prev_hash.to_owned());
 
-    let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &hash, source.tx_count());
+    let tx_count = source.tx_count();
+    round.state.activity().record(Event::BlockScanStarted {
+        height,
+        group: group.into(),
+        stores: count(scannable.len()),
+        txs: count(tx_count),
+        header_only,
+    });
+    let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &hash, tx_count);
     let mut progressed = on_timeout == OnTimeout::Stop;
     let at = ScanAt {
         height,
@@ -1083,6 +1150,7 @@ async fn scan_block(
                 Ok(finished) => finished,
                 Err(error) => {
                     // The pages scanned before the node failed are kept.
+                    record_checkpoint(round, height, &scan, tx_count);
                     let (progress, now, hash) = (scan.into_checkpoint(), round.now, hash.clone());
                     round
                         .db(move |s, network| checkpoint(s, network, height, &hash, progress, now))
@@ -1093,6 +1161,7 @@ async fn scan_block(
         }
     };
     if !finished {
+        record_checkpoint(round, height, &scan, tx_count);
         let (progress, now) = (scan.into_checkpoint(), round.now);
         round
             .db(move |s, network| checkpoint(s, network, height, &hash, progress, now))
@@ -1120,10 +1189,19 @@ async fn scan_block(
         grace,
     };
     let now = round.now;
+    let stores = count(scanned.len());
     let committed = round
         .db(move |s, network| commit(s, network, &commit_block, &scanned, now))
         .await?;
-    if committed {
+    if let Some((matches, idle_moved)) = committed {
+        round.state.activity().record(Event::Committed {
+            height,
+            group: group.into(),
+            stores,
+            matches: count(matches),
+            idle_moved: count(idle_moved),
+            header_only,
+        });
         round
             .state
             .blocks
@@ -1135,7 +1213,7 @@ async fn scan_block(
             *paged = None;
         }
     }
-    Ok(if committed {
+    Ok(if committed.is_some() {
         BlockOutcome::Committed(plan.page)
     } else {
         BlockOutcome::Diverged("the recorded chain changed before commit")
@@ -1298,25 +1376,28 @@ struct CommitBlock {
 /// its payments, staged and new. Idle tenants at the parent move along. The
 /// payments' recompute obligations are left by the payment triggers.
 ///
-/// `false` (nothing written) unless the block still extends the recorded
-/// chain: the recorded hash at its height (if any) is its own, and the
-/// recorded parent (if any) is its parent.
+/// Returns how many payments the block was found to hold for the tenants
+/// that moved (staged from a checkpoint, or found now) and how many idle
+/// tenants moved along, or `None` (nothing
+/// written) unless the block still extends the recorded chain: the
+/// recorded hash at its height (if any) is its own, and the recorded parent
+/// (if any) is its parent.
 fn commit(
     s: &Store,
     network: monero::Network,
     block: &CommitBlock,
     scanned: &[ScannedBlock],
     now: i64,
-) -> Result<bool, ScannerError> {
-    s.in_transaction(|s| -> Result<bool, ScannerError> {
+) -> Result<Option<(usize, usize)>, ScannerError> {
+    s.in_transaction(|s| -> Result<Option<(usize, usize)>, ScannerError> {
         let height = block.height;
         if s.get_scanned_block_hash(network, block.parent)?
             .is_some_and(|parent| parent != block.prev_hash)
         {
-            return Ok(false);
+            return Ok(None);
         }
         match s.get_scanned_block_hash(network, height)? {
-            Some(stored) if stored != block.hash => return Ok(false),
+            Some(stored) if stored != block.hash => return Ok(None),
             Some(_) => {}
             None => {
                 if s.max_scanned_height(network)?
@@ -1327,6 +1408,7 @@ fn commit(
             }
         }
         let moved = s.advance_scanned_cursors(network, height, scanned)?;
+        let mut matches = 0;
         for scanned in scanned {
             // A checkpoint's staged matches go either way: promoted if the
             // cursor moved, dropped if a rewind moved it meanwhile (they are
@@ -1340,6 +1422,7 @@ fn commit(
             if !moved.contains(scanned.tenant_id()) {
                 continue;
             }
+            matches += staged.len() + scanned.scans.len();
             for staged in staged {
                 s.record_payment_match(
                     &staged.order_id,
@@ -1362,14 +1445,14 @@ fn commit(
                 }
             }
         }
-        s.advance_idle_cursors(
+        let idle = s.advance_idle_cursors(
             network,
             block.parent,
             block.idle_to,
             block.since,
             block.grace,
         )?;
-        Ok(true)
+        Ok(Some((matches, idle)))
     })
 }
 
@@ -1557,6 +1640,11 @@ async fn scan_pages(
             .progress
             .lock()
             .page(at.height, next as u64, total as u64, len as u64);
+        round.state.activity().record(Event::BlockProgress {
+            height: at.height,
+            done_txs: count(next),
+            total_txs: count(total),
+        });
         let ids = &txids[next..next + len];
         let txs = fetch_page(round, at.height, ids, avg_tx_bytes).await?;
         if !scan_txs(round, scan, at, next, ids, &txs, progressed).await {
@@ -1800,6 +1888,7 @@ async fn block(
     };
     // The block asked for is never evicted by its own fetch.
     let state = round.state;
+    record_fetched(state, height, &chunk, false);
     round.blocks.cache.add_chunk(
         chunk,
         height,

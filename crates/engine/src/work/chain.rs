@@ -11,7 +11,9 @@ use crate::scanner::{void_and_notify_in_tx, ScannerError};
 use crate::store::db::Class;
 use crate::store::{Db, OpenedReorg, OrderPaymentRow, ReorgPhase, Store};
 
-use super::{bounded, Progress, Round, Wait};
+use shared::activity::Event;
+
+use super::{bounded, count, Progress, Round, Wait};
 
 /// The id of block `height`, if its own list of transactions holds `txid`
 /// (`get_block`: the id is computed from the block, the list is what the id
@@ -76,6 +78,8 @@ pub(crate) struct Chain<'a> {
     now: i64,
     /// The id of the node's tip block, if it came with the tip's height.
     tip_hash: Option<String>,
+    /// Whether [`Self::detect`] asked the node for a block's hash.
+    looked_up: std::sync::atomic::AtomicBool,
 }
 
 impl<'a> Chain<'a> {
@@ -93,7 +97,14 @@ impl<'a> Chain<'a> {
             reorg_check_depth,
             now,
             tip_hash: None,
+            looked_up: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Whether detection asked the node for a block's hash, rather than
+    /// comparing with the tip's hash it already had.
+    pub(crate) fn looked_up(&self) -> bool {
+        self.looked_up.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// With the id the node gave for its tip block along with the height
@@ -173,6 +184,8 @@ impl<'a> Chain<'a> {
     }
 
     async fn node_agrees(&self, (height, stored): &(u64, String)) -> Result<bool, ScannerError> {
+        self.looked_up
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(bounded(self.daemon.get_block_hash(*height)).await? == *stored)
     }
 
@@ -491,6 +504,7 @@ impl<'a> Chain<'a> {
                 let (processed, reconciled, failure) = self.process_page(tip, skip, until).await?;
                 if processed > 0 {
                     return Ok(Some(JobStep::Processed {
+                        examined: processed,
                         reconciled,
                         failure,
                     }));
@@ -500,7 +514,9 @@ impl<'a> Chain<'a> {
                     return Ok(Some(JobStep::Waiting));
                 }
                 self.rewind(job.fork_height).await?;
-                Ok(Some(JobStep::Rewound))
+                Ok(Some(JobStep::Rewound {
+                    fork: job.fork_height,
+                }))
             }
         }
     }
@@ -548,15 +564,17 @@ pub(crate) fn decide(voided: bool, location: TxLocation, double_spend_proven: bo
 pub(crate) enum JobStep {
     /// A page of candidates was queued.
     Collected,
-    /// A page of candidates was re-examined; a failed one is deferred.
+    /// A page of candidates was re-examined (`examined` of them); a
+    /// failed one is deferred.
     Processed {
+        examined: usize,
         reconciled: Reconciled,
         failure: Option<ScannerError>,
     },
     /// Candidates remain, but each is waiting out a retry.
     Waiting,
-    /// Every candidate was handled and the chain was rewound.
-    Rewound,
+    /// Every candidate was handled and the chain was rewound from `fork`.
+    Rewound { fork: u64 },
 }
 
 pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
@@ -592,6 +610,7 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
         round.now,
     )
     .with_tip_hash(round.tip_hash.clone());
+    let activity = round.state.activity();
     // Detection and a step of the job share one unit: even a round with no
     // time to spare moves an open job forward.
     if !round.chain.detected {
@@ -601,8 +620,12 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
                 if let Err(error) = chain.open(fork).await {
                     return Progress::Failed(error);
                 }
+                activity.record(Event::ReorgFound { fork });
             }
-            Ok(None) => {}
+            Ok(None) => activity.record(Event::ChainChecked {
+                agrees: true,
+                looked_up: chain.looked_up(),
+            }),
             Err(error) => return Progress::Failed(error),
         }
     }
@@ -611,10 +634,20 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
         .await
     {
         Ok(None) => Progress::Idle,
+        Ok(Some(JobStep::Collected)) => {
+            activity.record(Event::ReorgCollected);
+            Progress::Advanced
+        }
         Ok(Some(JobStep::Processed {
+            examined,
             reconciled,
             failure,
         })) => {
+            activity.record(Event::ReorgProcessed {
+                examined: count(examined),
+                changed: count(reconciled.dirty_orders.len()),
+                voided: count(reconciled.double_spent_orders.len()),
+            });
             // A void enqueues its webhook in the same transaction.
             if !reconciled.double_spent_orders.is_empty() {
                 round.state.wake_webhooks();
@@ -625,11 +658,11 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
             }
         }
         Ok(Some(JobStep::Waiting)) => Progress::Blocked(Wait::ReorgCandidatesRetrying),
-        Ok(Some(JobStep::Rewound)) => {
+        Ok(Some(JobStep::Rewound { fork })) => {
+            activity.record(Event::ReorgRewound { fork });
             round.chain.rewound = true;
             Progress::Advanced
         }
-        Ok(Some(_)) => Progress::Advanced,
         Err(error) => Progress::Failed(error),
     }
 }

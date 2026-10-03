@@ -264,7 +264,8 @@ pub async fn manage_network_loops(
             let scan_state = Arc::new(
                 crate::work::ScanState::waking(Arc::clone(&webhooks))
                     .with_progress(scanner_status::progress_of(&scanner_status, network))
-                    .with_wakes(scanner_status::wakes_of(&scanner_status, network)),
+                    .with_wakes(scanner_status::wakes_of(&scanner_status, network))
+                    .with_activity(scanner_status::activity_of(&scanner_status, network)),
             );
             #[cfg(feature = "zmq")]
             {
@@ -444,6 +445,22 @@ pub async fn run_scanner_loop(
             .map(|(id, h)| (id.clone(), *h))
             .collect();
         let started_at = now_unix();
+        if scan_state.activity().node_pool_due() {
+            record_node_pool(scan_state.activity(), &daemon);
+        }
+        // Not while scanning work waits on the database: the snapshot's
+        // reads would delay the round. It is taken at the next quiet round.
+        if db.queued(crate::store::db::Class::Scanner) == 0 && scan_state.activity().snapshot_due()
+        {
+            record_snapshot(
+                &scan_state,
+                &db,
+                network,
+                &daemon,
+                scan.scan_chunk_memory_budget_mb,
+            )
+            .await;
+        }
         // One node for the whole tick (task 7.6), so answers from nodes at
         // different heights or on different forks are never mixed.
         let pinned = daemon.pin();
@@ -513,8 +530,80 @@ pub async fn run_scanner_loop(
         if backlogged {
             tokio::task::yield_now().await;
         } else {
-            scan_state.node_wakes().chain_or(scan.poll_interval).await;
+            let slept = tokio::time::Instant::now();
+            let woken = scan_state.node_wakes().chain_or(scan.poll_interval).await;
+            scan_state
+                .activity()
+                .record(shared::activity::Event::Slept {
+                    ms: crate::work::millis(slept.elapsed()),
+                    woken_by: if woken {
+                        shared::activity::Wake::NewBlock
+                    } else {
+                        shared::activity::Wake::Interval
+                    },
+                });
         }
+    }
+}
+
+/// Asks the active node about its whole pool for the engine page, beside
+/// the round rather than before it: the round doesn't wait for the answer.
+fn record_node_pool(
+    activity: &Arc<crate::activity::Activity>,
+    daemon: &Arc<crate::daemon_fallback::FallbackDaemonClient>,
+) {
+    let (activity, daemon) = (Arc::clone(activity), Arc::clone(daemon));
+    tokio::spawn(async move {
+        if let Some(outlook) = daemon.pool_outlook(crate::activity::NODE_POOL_EVERY).await {
+            activity.record(shared::activity::Event::NodePool {
+                txs: outlook.txs,
+                bytes: outlook.bytes,
+                penalty_free: outlook.penalty_free,
+            });
+        }
+    });
+}
+
+/// Records `network`'s snapshot for the engine page
+/// (`docs/engine_visualizer.md`). One that can't be taken is skipped: the
+/// next is due in seconds, and scanning matters more.
+async fn record_snapshot(
+    scan_state: &crate::work::ScanState,
+    db: &Db,
+    network: Network,
+    daemon: &crate::daemon_fallback::FallbackDaemonClient,
+    scan_chunk_memory_budget_mb: u32,
+) {
+    let nodes = daemon
+        .nodes()
+        .iter()
+        .enumerate()
+        .map(|(i, node)| shared::activity::Node {
+            label: node.label.clone(),
+            active: i == daemon.current_index(),
+            cooling_down: daemon.in_cooldown(i),
+        })
+        .collect();
+    match crate::work::snapshot(
+        scan_state,
+        db,
+        network,
+        nodes,
+        scan_chunk_memory_budget_mb,
+        now_unix(),
+    )
+    .await
+    {
+        Ok(snapshot) => scan_state
+            .activity()
+            .record(shared::activity::Event::Snapshot(Box::new(snapshot))),
+        Err(error) => shared::throttled!(
+            format!("activity-snapshot:{network:?}"),
+            warn,
+            network = ?network,
+            error = %error,
+            "taking the engine page's snapshot failed (skipped)"
+        ),
     }
 }
 
@@ -771,11 +860,58 @@ mod tests {
         // Settled into its hour-long wait.
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(ticks(), 1);
+        let node_pool = |events: &[shared::activity::Recorded]| {
+            events.iter().any(|recorded| {
+                matches!(
+                    recorded.event,
+                    shared::activity::Event::NodePool {
+                        txs: 0,
+                        bytes: Some(0),
+                        penalty_free: crate::daemon::PoolOutlook::FULL_REWARD_ZONE,
+                    }
+                )
+            })
+        };
+        assert!(
+            !node_pool(&scan_state.activity().page(None).events),
+            "nobody watched the first round"
+        );
 
+        // Someone is watching now (the read above): the next round has the
+        // node's whole pool recorded beside it.
         node.push_block("h2", vec![]);
         scan_state.node_wakes().chain_changed();
         eventually("a round for the announced block", || ticks() == 2).await;
+        eventually("the node's pool, for the watcher", || {
+            node_pool(&scan_state.activity().page(None).events)
+        })
+        .await;
         scan_loop.abort();
+        // The engine page sees the loop's snapshot, and that the wait
+        // between the rounds was cut short by the new block.
+        let recorded: Vec<_> = scan_state
+            .activity()
+            .page(None)
+            .events
+            .into_iter()
+            .map(|recorded| recorded.event)
+            .collect();
+        // A snapshot (skipped only while the database is busy, which an
+        // idle test engine's isn't at both rounds' starts).
+        assert!(
+            recorded.iter().any(|event| matches!(
+                event,
+                shared::activity::Event::Snapshot(snapshot) if !snapshot.pool.watched
+            )),
+            "no store has anything to look for in the pool: {recorded:#?}"
+        );
+        assert!(recorded.iter().any(|event| matches!(
+            event,
+            shared::activity::Event::Slept {
+                woken_by: shared::activity::Wake::NewBlock,
+                ms: _,
+            }
+        )));
     }
 
     #[tokio::test]

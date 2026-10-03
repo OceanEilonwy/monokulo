@@ -412,6 +412,16 @@ pub async fn ssexi_script(headers: axum::http::HeaderMap) -> Response {
     )
 }
 
+/// The engine page's script (`docs/engine_visualizer.md`).
+pub async fn engine_view_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!("../../static/engine-view.js").as_bytes(),
+    )
+}
+
 pub async fn fx_glue_script(headers: axum::http::HeaderMap) -> Response {
     static_asset(
         &headers,

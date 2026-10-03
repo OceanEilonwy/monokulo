@@ -54,6 +54,7 @@ mod connections;
 pub mod csrf;
 mod dashboard;
 pub mod embed_domains;
+pub mod engine_page;
 pub mod fx;
 mod home;
 mod invites;
@@ -170,12 +171,16 @@ pub struct Engine {
     /// turned "one user browsing the dashboard" into enough engine requests
     /// to trip its own rate limiter).
     pub status_cache: status_page::StatusCache,
+    /// The engine page's link to the engine's activity
+    /// (`docs/engine_visualizer.md`): one poller per watched network.
+    pub activity: Arc<crate::engine_view::relay::Relay>,
 }
 
 impl Engine {
     /// The engine at `client`, with nothing cached yet.
     pub fn new(client: EngineClient) -> Self {
         Engine {
+            activity: Arc::new(crate::engine_view::relay::Relay::new(client.clone())),
             client,
             status_cache: status_page::new_status_cache(),
         }
@@ -383,6 +388,20 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/status/events",
             axum::routing::get(status_page::status_events),
+        )
+        .route("/status/engine", axum::routing::get(engine_page::page))
+        .route(
+            "/status/engine/events",
+            axum::routing::get(engine_page::events),
+        )
+        .route("/status/engine/at", axum::routing::get(engine_page::at))
+        .route(
+            "/status/engine/round",
+            axum::routing::get(engine_page::round),
+        )
+        .route(
+            "/status/engine/replay",
+            axum::routing::get(engine_page::replay),
         )
         .route("/signup", post(signup::signup))
         .route("/login", post(login::login))
@@ -667,6 +686,10 @@ pub fn build_router(state: AppState) -> Router {
         axum::routing::get(pay::telemetry_script),
     );
     let router = router.route("/static/fixi.js", axum::routing::get(pay::fixi_script));
+    let router = router.route(
+        "/static/engine-view.js",
+        axum::routing::get(pay::engine_view_script),
+    );
     let router = router.route("/static/ssexi.js", axum::routing::get(pay::ssexi_script));
     let router = router.route(
         "/static/fx-glue.js",

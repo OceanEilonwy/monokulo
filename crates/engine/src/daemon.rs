@@ -219,6 +219,26 @@ pub struct DifficultyHeader {
     pub cumulative_difficulty: u128,
 }
 
+/// The node's whole pool, as the next block would be mined from it
+/// ([`MoneroDaemonClient::get_pool_outlook`]): for the engine page only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolOutlook {
+    /// Transactions in the pool.
+    pub txs: u64,
+    /// Their size in bytes, when the node said.
+    pub bytes: Option<u64>,
+    /// The block weight a miner can fill without its reward being cut:
+    /// the median of recent blocks, and never under
+    /// [`PoolOutlook::FULL_REWARD_ZONE`].
+    pub penalty_free: u64,
+}
+
+impl PoolOutlook {
+    /// monerod's `CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V5`: the
+    /// penalty-free zone's floor, in bytes of weight.
+    pub const FULL_REWARD_ZONE: u64 = 300_000;
+}
+
 /// The node's tip ([`MoneroDaemonClient::get_tip`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChainTip {
@@ -397,6 +417,14 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// `RpcDaemonClient` follows the pool by its changes, asking monerod
     /// only for what entered and left since it last asked.
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError>;
+
+    /// The node's whole pool and its penalty-free block weight, for the
+    /// engine page. `None` from a client that can't say: the default.
+    /// `RpcDaemonClient` asks monerod's `get_info` and
+    /// `/get_transaction_pool_stats`.
+    async fn get_pool_outlook(&self) -> Result<Option<PoolOutlook>, DaemonError> {
+        Ok(None)
+    }
 
     /// Block `height` as the node stores it: its header, coinbase and its
     /// transactions' ids, without the transactions (`docs/proof_of_work.md`).
@@ -983,6 +1011,23 @@ pub mod fake {
         async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
             self.require_online()?;
             Ok(self.state.lock().mempool.iter().map(tx_id_hex).collect())
+        }
+
+        /// The pool's transactions and their serialized size, against the
+        /// floor of the penalty-free zone.
+        async fn get_pool_outlook(&self) -> Result<Option<PoolOutlook>, DaemonError> {
+            self.require_online()?;
+            let state = self.state.lock();
+            let bytes = state
+                .mempool
+                .iter()
+                .map(|tx| monero::consensus::encode::serialize(tx).len())
+                .sum::<usize>();
+            Ok(Some(PoolOutlook {
+                txs: u64::try_from(state.mempool.len()).unwrap_or(u64::MAX),
+                bytes: Some(u64::try_from(bytes).unwrap_or(u64::MAX)),
+                penalty_free: PoolOutlook::FULL_REWARD_ZONE,
+            }))
         }
 
         async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {

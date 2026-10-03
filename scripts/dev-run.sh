@@ -175,6 +175,7 @@ enabled_backends = ["plain"]
 default_backend = "plain"
 
 [monero_node]
+mainnet = { host = "node.hollingworth.xyz", port = 18089, ssl = false, accept_self_signed_certs = true, fallbacks = [] }
 stagenet = { host = "node.monerodevs.org", port = 38089, ssl = false, accept_self_signed_certs = true, fallbacks = [{ host = "node2.monerodevs.org", port = 38089, ssl = false, accept_self_signed_certs = true, fallbacks = [] }] }
 EOF
     fi
