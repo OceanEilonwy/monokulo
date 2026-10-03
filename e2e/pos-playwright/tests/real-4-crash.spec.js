@@ -72,6 +72,16 @@ test('killing the engine at random moments never loses a confirmed order or reus
     }),
   });
   expect(saved.status).toBe(200);
+  // The store is created once the engine has recorded the fake node's tip,
+  // so the store starts there. Created before, it would start a block
+  // behind, and the fake node can't serve blocks to scan (it has no
+  // get_blocks.bin): every tick would then fail, on a slow machine.
+  const scanned = async () => {
+    const status = await (await engineFetch(`/status`)).json();
+    const stagenet = status.networks.find((n) => n.network === 'stagenet');
+    return Boolean(stagenet && stagenet.scanner.last_tick_ok);
+  };
+  await expect.poll(scanned, { timeout: 20_000 }).toBe(true);
   const created = await (await engineFetch(`/api/v1/admin/tenants`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -125,11 +135,7 @@ test('killing the engine at random moments never loses a confirmed order or reus
     expect(all.length).toBeGreaterThanOrEqual(confirmed.size);
     expect(new Set(all.map((order) => order.address)).size).toBe(all.length);
     // And it's scanning again.
-    await expect.poll(async () => {
-      const status = await (await engineFetch(`/status`)).json();
-      const stagenet = status.networks.find((n) => n.network === 'stagenet');
-      return Boolean(stagenet && stagenet.scanner.last_tick_ok);
-    }, { timeout: 20_000 }).toBe(true);
+    await expect.poll(scanned, { timeout: 20_000 }).toBe(true);
   } finally {
     await kill(engine);
   }

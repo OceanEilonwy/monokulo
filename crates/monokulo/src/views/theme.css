@@ -40,6 +40,15 @@
      common colour-vision deficiencies, each 3:1 against the card. */
   --chart-engine: #0072b2;
   --chart-monokulo: #c25400;
+  /* The engine page's five scanner tiers (docs/engine_visualizer.md): the
+     dataviz reference categorical slots, in tier order. Three are under
+     3:1 on the card in light mode, so the page names a tier wherever it
+     colours one, never colour alone. */
+  --viz-tier-chain: #2a78d6;
+  --viz-tier-blocks: #eb6834;
+  --viz-tier-mempool: #1baf7a;
+  --viz-tier-settlement: #eda100;
+  --viz-tier-upkeep: #e87ba4;
   /* Fixed in both themes: a QR code stays dark on white to scan, and a
      camera preview sits on black. */
   --qr-bg: #ffffff;
@@ -70,6 +79,15 @@
   /* Orange as a ring must clear 3:1 against the page; the brand orange is
      2.6:1 on paper, so the ring takes the orange used for text. */
   --focus-ring: var(--accent-text);
+  /* The engine page's chain strip: a recorded block, its edge, a block
+     held in the scan's cache, the mark of something saved to disk, and the
+     next block: filled by the node's pool, up to the penalty zone. */
+  --viz-cell-recorded: var(--surface-sunken);
+  --viz-cell-edge: var(--line-strong);
+  --viz-cell-cached: color-mix(in srgb, var(--viz-tier-blocks) 22%, var(--paper-raised));
+  --viz-saved: var(--ink);
+  --viz-pool-fill: color-mix(in srgb, var(--viz-tier-chain) 75%, var(--paper-raised));
+  --viz-penalty: var(--error);
 
   /* Soft backgrounds for messages, mixed from the colours above so a status
      colour and its tint can't drift apart. Ink on any tint clears 4.5:1;
@@ -136,6 +154,11 @@
     --warning-ink: #111111;
     --chart-engine: #56b4e9;
     --chart-monokulo: #e69f00;
+    --viz-tier-chain: #3987e5;
+    --viz-tier-blocks: #d95926;
+    --viz-tier-mempool: #199e70;
+    --viz-tier-settlement: #c98500;
+    --viz-tier-upkeep: #d55181;
     --chrome-bg: #181818;
   color-scheme: dark;
     color-scheme: dark;
@@ -169,6 +192,11 @@
   --warning-ink: #111111;
   --chart-engine: #56b4e9;
   --chart-monokulo: #e69f00;
+  --viz-tier-chain: #3987e5;
+  --viz-tier-blocks: #d95926;
+  --viz-tier-mempool: #199e70;
+  --viz-tier-settlement: #c98500;
+  --viz-tier-upkeep: #d55181;
   --chrome-bg: #181818;
   color-scheme: dark;
   --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;

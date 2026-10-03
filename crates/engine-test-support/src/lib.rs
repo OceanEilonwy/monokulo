@@ -264,9 +264,18 @@ pub struct TestEngineHandle {
     tenant_requests: Arc<std::sync::atomic::AtomicUsize>,
     /// The admin lookup node's mempool (see [`LookupDaemonClient`]).
     lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>>,
+    /// What the engine's `/status` and activity API report per network.
+    scanner_status: engine::scanner_status::ScannerStatusMap,
 }
 
 impl TestEngineHandle {
+    /// `network`'s activity record, which the engine serves at
+    /// `/api/v1/admin/engine/activity` (`docs/engine_visualizer.md`): a test
+    /// records events into it to see them reach monokulo's engine page.
+    pub fn activity(&self, network: Network) -> Arc<engine::activity::Activity> {
+        engine::scanner_status::activity_of(&self.scanner_status, network)
+    }
+
     /// Runs exactly one real `run_scan_tick` against this engine's own store/
     /// key-custody and its *current* `wallet_handles` registry (re-read fresh on
     /// every call, same as the background loop) - for a caller that wants precise,
@@ -412,6 +421,7 @@ impl TestEngineHandle {
             engine::scanner::ScannerError::Store(e) => e,
             other => panic!("recomputing a test order's status failed: {other}"),
         })
+        .map(|_changed| ())
     }
 
     /// Records a payment of `piconero` to `order_id` the way a scan would,
@@ -455,6 +465,7 @@ impl TestEngineHandle {
             engine::scanner::ScannerError::Store(e) => e,
             other => panic!("recomputing a test order's status failed: {other}"),
         })
+        .map(|_changed| ())
     }
 }
 
@@ -495,6 +506,7 @@ impl TestEngineHandle {
             engine::scanner::ScannerError::Store(e) => e,
             other => panic!("recomputing a test order's status failed: {other}"),
         })
+        .map(|_changed| ())
     }
 }
 
@@ -747,6 +759,7 @@ impl TestEngineConfig {
     /// that an independent `reqwest::Client` (standing in for a
     /// separately-deployed caller, e.g. the control plane) can connect to.
     pub async fn spawn(self) -> TestEngineHandle {
+        let scanner_status = engine::scanner_status::new_scanner_status_map();
         let store = Store::open_in_memory()
             .expect("failed to open in-memory store for test engine")
             .into_shared();
@@ -870,7 +883,7 @@ impl TestEngineConfig {
             // that wires a lookup fake in instead.
             networks: engine::http::Networks {
                 daemons,
-                scanner_status: engine::scanner_status::new_scanner_status_map(),
+                scanner_status: scanner_status.clone(),
             },
         };
         let tenant_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -976,6 +989,7 @@ impl TestEngineConfig {
             wallet_handles,
             tenant_requests,
             lookup_mempool,
+            scanner_status,
         }
     }
 }

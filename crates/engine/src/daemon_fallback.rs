@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::daemon::{ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer};
+use crate::daemon::{ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer, PoolOutlook};
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
@@ -229,6 +229,18 @@ impl FallbackDaemonClient {
         DaemonError::Request("no Monero daemon nodes configured".to_owned())
     }
 
+    /// The active node's pool outlook, for the engine page. Purely
+    /// observational: within `deadline`, and an answer or a failure leaves
+    /// the nodes' health (and so which node scans) as it was.
+    pub async fn pool_outlook(&self, deadline: Duration) -> Option<PoolOutlook> {
+        let node = self.nodes.get(self.current_index())?;
+        tokio::time::timeout(deadline, node.client.get_pool_outlook())
+            .await
+            .ok()?
+            .ok()
+            .flatten()
+    }
+
     /// A handle that sends every call to one node, for the length of one scan
     /// tick (task 7.6). Different nodes can be at different heights or on
     /// different forks, and one tick mixing their answers (a height from one,
@@ -366,6 +378,7 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
         self.one(MoneroDaemonClient::get_tip).await
     }
+
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.one(|c| c.get_block_hash(height)).await
     }

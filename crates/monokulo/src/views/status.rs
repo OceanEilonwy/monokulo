@@ -104,6 +104,9 @@ pub struct StatusPageViewModel {
     /// A sentence per network with a slow block (docs/engine_scaling.md
     /// section 5).
     pub slow_blocks: Vec<String>,
+    /// Link each network to its engine page (`docs/engine_visualizer.md`):
+    /// only for an admin, who alone may open it.
+    pub engine_page: bool,
 }
 
 /// Everything on the status page below its heading: streamed as a whole
@@ -174,7 +177,12 @@ pub fn live_fragment(data: &StatusPageViewModel) -> Markup {
                             }
                         }
 
-                        h3 { "Chain scanner" }
+                        h3 {
+                            "Chain scanner"
+                            @if data.engine_page {
+                                " " a class="hint" href=(format!("/status/engine?network={}", network.network)) { "Watch it live" }
+                            }
+                        }
                         p {
                             span class=(format!("tag {}", network.scanner.status_tag_class)) { (network.scanner.status_label) }
                             @if network.scanner.ever_ticked {
@@ -325,6 +333,7 @@ mod tests {
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
             slow_blocks: vec![],
+            engine_page: false,
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("the engine could not be reached"));
@@ -347,6 +356,7 @@ mod tests {
             slow_blocks: vec![
                 "Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far.".to_string(),
             ],
+            engine_page: false,
         };
         let html = page(&chrome(), &data).into_string();
         assert!(
@@ -364,6 +374,7 @@ mod tests {
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
             slow_blocks: vec![],
+            engine_page: false,
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html
@@ -403,6 +414,7 @@ mod tests {
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
             slow_blocks: vec![],
+            engine_page: false,
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("node.example.com"));

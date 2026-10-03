@@ -82,17 +82,22 @@ pub(super) async fn step(round: &mut Round<'_>, until: tokio::time::Instant) -> 
 
 async fn prune(round: &Round<'_>) -> Result<(), ScannerError> {
     let depth = round.inputs.reorg_check_depth;
-    round
+    let pruned = round
         .db(move |s, network| -> Result<_, ScannerError> {
-            if let Some(high_water) = s.max_scanned_height(network)? {
-                s.prune_scanned_blocks_below(
+            Ok(match s.max_scanned_height(network)? {
+                Some(high_water) => s.prune_scanned_blocks_below(
                     network,
                     high_water.saturating_sub(depth.saturating_mul(4)),
-                )?;
-            }
-            Ok(())
+                )?,
+                None => 0,
+            })
         })
-        .await
+        .await?;
+    round
+        .state
+        .activity()
+        .record(shared::activity::Event::Upkeep { pruned });
+    Ok(())
 }
 
 /// A passive WAL checkpoint every `CHECKPOINT_INTERVAL` (see

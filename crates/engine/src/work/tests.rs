@@ -17,6 +17,7 @@ use crate::scanner::tests::{
 };
 use crate::status::OrderStatus;
 use crate::store::SharedStore;
+use shared::activity::{Group, PoolPath};
 
 /// A fake node that counts the block-hash lookups made against it and the
 /// blocks it sends, and answers as whichever node a test says it is.
@@ -577,6 +578,19 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
         .into_result()
         .unwrap();
         drop(db);
+        // The engine page sees each stop and the final commit.
+        let recorded = recorded(&state);
+        let stopped = recorded.iter().any(|e| {
+            matches!(e, Event::Checkpointed { height: h, done_txs, total_txs, stores: 1 }
+                if *h == height && *done_txs > 0 && *total_txs == 1 + 4 * ScanTuning::DEFAULT.txs_per_scan as u64)
+        });
+        let committed = recorded.iter().any(|e| {
+            matches!(e, Event::Committed { height: h, matches: 1, stores: 1, group: _, idle_moved: 0, header_only: false } if *h == height)
+        });
+        assert!(
+            stopped != committed,
+            "a round either stops in the block or commits it: {recorded:#?}"
+        );
         if cursor_of(&store, tenant.as_str()).unwrap() == before {
             assert!(
                 store
@@ -1684,12 +1698,41 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     tokio::time::timeout(Duration::from_millis(100), wake.notified())
         .await
         .expect("delivery was woken");
+    // The engine page sees the pass, the match and the status change.
+    let first = recorded(&state);
+    assert!(
+        first.iter().any(|e| matches!(
+            e,
+            Event::PoolScanned {
+                path: PoolPath::Fast,
+                pool: 1,
+                scanned: 1
+            }
+        )),
+        "{first:#?}"
+    );
+    assert!(
+        first.iter().any(|e| matches!(e,
+        Event::TxMatched { path: PoolPath::Fast, txid } if txid.len() == 8)),
+        "{first:#?}"
+    );
+    assert!(
+        first
+            .iter()
+            .any(|e| changed_to(e, OrderStatus::Unconfirmed)),
+        "{first:#?}"
+    );
 
     // Seen: the next pass has nothing new, and the rotation skips it.
     let again = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
         .await
         .unwrap();
     assert_eq!(again, FastReport::default());
+    assert_eq!(
+        recorded(&state).len(),
+        first.len(),
+        "a pass with nothing new records nothing"
+    );
     let before = custody.attempts.lock().get(&handle).copied();
     run_round(
         &state,
@@ -2283,7 +2326,7 @@ async fn blocks_fetched_ahead_are_scanned_in_later_rounds_without_being_sent_aga
         assert!(rounds < 100, "stuck at {}", lowest_cursor(&store));
         if rounds == 1 {
             assert!(
-                !state.blocks.carried_heights().is_empty(),
+                !state.blocks.carried_cache().0.is_empty(),
                 "a round with time for one unit leaves the run it fetched"
             );
         }
@@ -2295,7 +2338,7 @@ async fn blocks_fetched_ahead_are_scanned_in_later_rounds_without_being_sent_aga
         "sent again: {:?}",
         daemon.sent_again()
     );
-    assert!(state.blocks.carried_heights().is_empty());
+    assert!(state.blocks.carried_cache().0.is_empty());
 }
 
 /// Blocks from one node aren't kept for another's answers: a round on a
@@ -2308,7 +2351,7 @@ async fn blocks_are_kept_only_for_the_node_they_came_from() {
     let inputs = inputs(&db, &custody, &daemon, &tenants);
     let state = ScanState::default();
     run_round(&state, &inputs, Duration::ZERO).await;
-    let held = state.blocks.carried_heights();
+    let held = state.blocks.carried_cache().0;
     let next = lowest_cursor(&store) + 1;
     assert!(held.contains(&next), "{held:?}");
 
@@ -2318,12 +2361,12 @@ async fn blocks_are_kept_only_for_the_node_they_came_from() {
         daemon.sent_again().contains(&next),
         "another node's answer is asked for again"
     );
-    assert!(!state.blocks.carried_heights().is_empty());
+    assert!(!state.blocks.carried_cache().0.is_empty());
 
     daemon.set_node(None);
     run_round(&state, &inputs, Duration::ZERO).await;
     assert!(
-        state.blocks.carried_heights().is_empty(),
+        state.blocks.carried_cache().0.is_empty(),
         "a client of no one node keeps nothing"
     );
 }
@@ -2344,7 +2387,7 @@ async fn nothing_is_kept_across_a_rewind() {
         fake.push_block(&format!("h{h}"), vec![]);
     }
     run_round(&state, &inputs, Duration::ZERO).await;
-    assert!(!state.blocks.carried_heights().is_empty());
+    assert!(!state.blocks.carried_cache().0.is_empty());
     // The recorded tip is replaced: the next round finds it and rewinds.
     let reached = lowest_cursor(&store);
     let fork: Vec<String> = (reached..=170).map(|h| format!("b{h}")).collect();
@@ -2357,7 +2400,7 @@ async fn nothing_is_kept_across_a_rewind() {
         let report = run_round(&state, &inputs, Duration::ZERO).await;
         if report.outcome(Tier::Blocks) == TierOutcome::Blocked(Wait::RewoundThisRound) {
             rewound = true;
-            assert!(state.blocks.carried_heights().is_empty());
+            assert!(state.blocks.carried_cache().0.is_empty());
             break;
         }
     }
@@ -2536,14 +2579,16 @@ async fn run_job(chain: &chain::Chain<'_>) -> Vec<&'static str> {
             Some(chain::JobStep::Collected) => "collected",
             Some(chain::JobStep::Processed {
                 failure: None,
+                examined: _,
                 reconciled: _,
             }) => "processed",
             Some(chain::JobStep::Processed {
                 failure: Some(_),
+                examined: _,
                 reconciled: _,
             }) => "failed",
             Some(chain::JobStep::Waiting) => "waiting",
-            Some(chain::JobStep::Rewound) => return steps,
+            Some(chain::JobStep::Rewound { fork: _ }) => return steps,
         });
         assert!(steps.len() < 64, "the job never finished: {steps:?}");
     }
@@ -2579,9 +2624,10 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
         {
             Some(chain::JobStep::Processed {
                 failure: Some(_),
+                examined: _,
                 reconciled: _,
             }) => failed += 1,
-            Some(chain::JobStep::Rewound) => break,
+            Some(chain::JobStep::Rewound { fork: _ }) => break,
             Some(_) => {}
             None => panic!("the job vanished"),
         }
@@ -3315,8 +3361,9 @@ async fn a_store_whose_orders_all_closed_before_the_gap_moves_straight_on() {
         ))
         .unwrap();
     let db = Db::over_shared(Arc::clone(&store));
+    let state = ScanState::default();
     run_round(
-        &ScanState::default(),
+        &state,
         &inputs(&db, &custody, &fake, &tenants),
         ScanTuning::DEFAULT.round_budget,
     )
@@ -3324,6 +3371,17 @@ async fn a_store_whose_orders_all_closed_before_the_gap_moves_straight_on() {
     .into_result()
     .unwrap();
     assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(20));
+    assert!(
+        recorded(&state).iter().any(|e| matches!(
+            e,
+            Event::IdleAdvanced {
+                to: 20,
+                stores: 1,
+                from: _
+            }
+        )),
+        "the engine page sees the store move straight on"
+    );
 }
 
 // -- Mempool tier edge cases --------------------------------------------------
@@ -5219,6 +5277,255 @@ async fn a_failed_page_keeps_the_pages_before_it() {
         .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
         .unwrap();
     assert_eq!(payments.len(), 1);
+}
+
+// -- The engine page's activity record ----------------------------------------
+
+/// Every event `state` has recorded, oldest first.
+fn recorded(state: &ScanState) -> Vec<Event> {
+    state
+        .activity()
+        .page(None)
+        .events
+        .into_iter()
+        .map(|recorded| recorded.event)
+        .collect()
+}
+
+/// Whether `event` is a recompute that moved an order to `status`.
+fn changed_to(event: &Event, status: OrderStatus) -> bool {
+    matches!(event, Event::Recomputed { transitions, orders: _ }
+        if transitions.iter().any(|t| t.to == status))
+}
+
+/// The paid story, as the engine page reads it: each thing that happened
+/// is in the record, in the order it happened, inside the rounds it
+/// happened in.
+#[tokio::test]
+async fn the_activity_record_tells_the_paid_story_in_order() {
+    let story = Story::new().await;
+    for stage in PAID {
+        stage(&story);
+        story.round().await;
+        story.settle().await;
+    }
+    let events = recorded(&story.state);
+
+    // Rounds open and close in pairs, numbered one up; units and tier
+    // endings fall inside them. A round's units and other work are back to
+    // back from its start, so its parts add up to it exactly.
+    let (mut open, mut last, mut unit_end) = (None, 0, 0);
+    for event in &events {
+        if let Event::RoundStarted {
+            round,
+            budget_ms,
+            tip,
+        } = event
+        {
+            assert!(open.is_none(), "a round started inside another");
+            assert_eq!(*round, last + 1);
+            assert_eq!(*budget_ms, 10_000);
+            assert!(tip.is_some(), "the fake node always answers");
+            (open, last, unit_end) = (Some(*round), *round, 0);
+        } else if let Event::RoundFinished {
+            round,
+            ms,
+            backlogged: _,
+        } = event
+        {
+            assert_eq!(open.take(), Some(*round));
+            assert_eq!(*ms, unit_end, "the parts add up to the round");
+        } else if let Event::Unit {
+            pass,
+            start_ms,
+            ms,
+            tier: _,
+            progress: _,
+        } = event
+        {
+            assert!(open.is_some(), "a unit outside a round");
+            assert!(matches!(pass, 1 | 2));
+            assert_eq!(*start_ms, unit_end, "back to back");
+            unit_end = start_ms + ms;
+        } else if let Event::Work {
+            tier,
+            start_ms,
+            ms,
+            what,
+        } = event
+        {
+            assert!(open.is_some(), "work outside a round");
+            assert_eq!(*start_ms, unit_end, "back to back");
+            assert_eq!(
+                *tier,
+                match what {
+                    Work::TipRequest => Tier::Chain,
+                    Work::CacheCarry => Tier::Blocks,
+                }
+            );
+            unit_end = start_ms + ms;
+        } else if let Event::TierEnded {
+            tier: _,
+            outcome: _,
+        } = event
+        {
+            assert!(open.is_some(), "a tier ended outside a round");
+        } else {
+            assert!(
+                event.tier().is_some() || matches!(event, Event::Slept { ms: _, woken_by: _ }),
+                "every other event is a tier's work: {event:?}"
+            );
+        }
+    }
+    assert!(open.is_none(), "every round finished");
+    // The fake node gives its tip's hash with its height: while the
+    // recorded chain ends at the tip, the reorg check asks nothing more.
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::ChainChecked {
+            agrees: true,
+            looked_up: false
+        }
+    )));
+
+    let at = |what: &str, wanted: &dyn Fn(&Event) -> bool| {
+        events
+            .iter()
+            .position(wanted)
+            .unwrap_or_else(|| panic!("no {what} in {events:#?}"))
+    };
+    let seeded = at("seed", &|e| matches!(e, Event::Seeded { height: _ }));
+    let matched = at("pool match", &|e| {
+        matches!(
+            e,
+            Event::TxMatched {
+                path: PoolPath::Round,
+                txid: _
+            }
+        )
+    });
+    let unconfirmed = at("unconfirmed", &|e| changed_to(e, OrderStatus::Unconfirmed));
+    let mined = at("the payment's block", &|e| {
+        matches!(
+            e,
+            Event::Committed {
+                matches: 1,
+                group: Group::Frontier,
+                height: _,
+                stores: 1,
+                idle_moved: 0,
+                header_only: false
+            }
+        )
+    });
+    let found = at("the reorg", &|e| matches!(e, Event::ReorgFound { fork: _ }));
+    let collected = at("collecting", &|e| matches!(e, Event::ReorgCollected));
+    let processed = at(
+        "re-examining",
+        &|e| matches!(e, Event::ReorgProcessed { examined, changed, voided: 0 } if *examined >= 1 && *changed >= 1),
+    );
+    let rewound = at("the rewind", &|e| {
+        matches!(e, Event::ReorgRewound { fork: _ })
+    });
+    let settled = at("the settlement", &|e| changed_to(e, OrderStatus::Overpaid));
+    assert!(
+        seeded < matched
+            && matched < unconfirmed
+            && unconfirmed < mined
+            && mined < found
+            && found < collected
+            && collected < processed
+            && processed < rewound
+            && rewound < settled,
+        "out of order: {events:#?}"
+    );
+    // Blocks waited for the reorg, and the rewind's own round.
+    assert!(events[found..settled].iter().any(|e| matches!(
+        e,
+        Event::TierEnded {
+            tier: Tier::Blocks,
+            outcome: TierOutcome::Blocked(Wait::ReorgBeingReconciled | Wait::RewoundThisRound)
+        }
+    )));
+    // Every tier's work is recorded, and fetched blocks with it.
+    for tier in Tier::ALL {
+        assert!(
+            events.iter().any(|e| e.tier() == Some(tier)),
+            "no {tier} work"
+        );
+    }
+    assert!(events.iter().any(
+        |e| matches!(e, Event::Fetched { count, from: _, bytes: _, ahead: _ } if *count >= 1)
+    ));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::Upkeep { pruned: _ })));
+}
+
+/// The snapshot after the story: one store at the high-water mark, no
+/// reorg left, the webhooks it caused waiting (nothing delivers them here).
+#[tokio::test]
+async fn a_snapshot_after_the_paid_story_shows_where_it_ended() {
+    let story = Story::new().await;
+    let db = Db::over_shared(Arc::clone(&story.store));
+    for (i, stage) in PAID.iter().enumerate() {
+        stage(&story);
+        story.round().await;
+        story.settle().await;
+        if i == 0 {
+            let watching = snapshot(
+                &story.state,
+                &db,
+                monero::Network::Mainnet,
+                Vec::new(),
+                16,
+                crate::now_unix(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                watching.pool.watched,
+                "an order waits to be paid: the pool is looked at"
+            );
+        }
+    }
+    let nodes = vec![shared::activity::Node {
+        label: "fake".to_owned(),
+        active: true,
+        cooling_down: false,
+    }];
+    let snapshot = snapshot(
+        &story.state,
+        &db,
+        monero::Network::Mainnet,
+        nodes.clone(),
+        16,
+        crate::now_unix(),
+    )
+    .await
+    .unwrap();
+    let high_water = snapshot.high_water.expect("blocks recorded");
+    assert_eq!(snapshot.tip, Some(high_water));
+    assert_eq!(
+        snapshot.groups,
+        [shared::activity::StoreGroup {
+            cursor: high_water,
+            stores: 1
+        }]
+    );
+    assert_eq!(snapshot.more_groups, 0);
+    assert_eq!(snapshot.reorg, None);
+    assert!(snapshot.checkpoints.is_empty());
+    assert_eq!(snapshot.recomputes_pending, 0);
+    assert!(snapshot.webhooks.due >= 2, "{snapshot:?}");
+    assert_eq!(
+        snapshot.webhooks.sent,
+        vec![0; shared::activity::Webhooks::BUCKETS]
+    );
+    assert_eq!(snapshot.cache_budget_bytes, 16 * 1024 * 1024);
+    assert_eq!(snapshot.database.capacity, 64);
+    assert_eq!(snapshot.nodes, nodes);
+    assert_eq!(snapshot.round, story.state.activity().round());
 }
 
 /// A payment voided for another sharing its output key (`store::conflicts`)

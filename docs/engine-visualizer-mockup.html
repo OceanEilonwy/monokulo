@@ -1,0 +1,1606 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Engine Live View</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=swap">
+<style>
+/* Layout: one screen on a desktop. A timeline across the top, a summary
+   row, then the chain and the round (the animation) on the left and the
+   less watched parts as one-line summaries on the right that open for
+   detail. Events in words below the fold. Colours are monokulo's
+   theme.css palette and roles, plus the --viz-* roles this design adds. */
+:root {
+  /* ---- monokulo palette (views/theme.css) ---- */
+  --ink: #1a1917;
+  --paper: #f4f1ea;
+  --paper-raised: #ffffff;
+  --surface-sunken: #efeae0;
+  --line: #dcd5c7;
+  --line-strong: #8c8577;
+  --muted: #5a564c;
+  --accent: #ff6600;
+  --accent-ink: #111111;
+  --accent-text: #b34700;
+  --error: #b00020;
+  --success: #1a7f37;
+  --warning: #7d5e00;
+  --chrome-bg: var(--paper-raised);
+  --chrome-ink: var(--ink);
+  --chrome-rule: var(--accent);
+  --btn-bg: var(--paper-raised);
+  --btn-ink: var(--ink);
+  --btn-border: var(--line-strong);
+  --btn-hover-bg: var(--surface-sunken);
+  --focus-ring: var(--accent-text);
+  --tint-error: color-mix(in srgb, var(--error) 14%, var(--paper-raised));
+  --tint-warning: color-mix(in srgb, var(--warning) 14%, var(--paper-raised));
+  --tint-success: color-mix(in srgb, var(--success) 14%, var(--paper-raised));
+  --tint-highlight: color-mix(in srgb, var(--accent) 20%, var(--paper-raised));
+  --state-pending-bg: #fff6d8; --state-pending-border: #ac7600; --state-pending-ink: #634800;
+  --state-unconfirmed-bg: #f0f0ff; --state-unconfirmed-border: #7779bb; --state-unconfirmed-ink: #353683;
+  --state-confirming-bg: #e7e8ff; --state-confirming-border: #5556a4; --state-confirming-ink: #353683;
+  --state-paid-bg: #e3f4e7; --state-paid-border: #1a7f37; --state-paid-ink: #165f2e;
+
+  /* ---- new roles this design adds ---- */
+  /* One colour per tier, in tier order: the dataviz reference categorical
+     slots 1-5, validated against the card in both themes. Never colour
+     alone: every lane, token and chip also names its tier. */
+  --viz-tier-chain: #2a78d6;
+  --viz-tier-blocks: #eb6834;
+  --viz-tier-mempool: #1baf7a;
+  --viz-tier-settlement: #eda100;
+  --viz-tier-upkeep: #e87ba4;
+  --viz-cell-recorded: var(--surface-sunken);
+  --viz-cell-edge: var(--line-strong);
+  --viz-cell-cached: color-mix(in srgb, var(--viz-tier-blocks) 22%, var(--paper-raised));
+  --viz-cell-fill: var(--viz-tier-blocks);
+  --viz-cell-reorg: var(--error);
+  --viz-frontier: var(--accent);
+  --viz-saved: var(--ink);
+
+  --radius-sm: 5px; --radius-md: 9px;
+  --font-ui: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #d4d4d4; --paper: #1e1e1e; --paper-raised: #2a2a2a; --surface-sunken: #333333;
+    --line: #3d3d3d; --line-strong: #7a7a7a; --muted: #9d9d9d;
+    --accent-text: #ff8a3d; --error: #ff6b6b; --success: #4cc27a; --warning: #e0a83d;
+    --chrome-bg: #181818;
+    --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
+    --state-unconfirmed-bg: #272842; --state-unconfirmed-border: #8d8fe0; --state-unconfirmed-ink: #c9caff;
+    --state-confirming-bg: #272842; --state-confirming-border: #8d8fe0; --state-confirming-ink: #c9caff;
+    --state-paid-bg: #17331f; --state-paid-border: #4cc27a; --state-paid-ink: #a8e6bd;
+    --viz-tier-chain: #3987e5; --viz-tier-blocks: #d95926; --viz-tier-mempool: #199e70;
+    --viz-tier-settlement: #c98500; --viz-tier-upkeep: #d55181;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ink: #d4d4d4; --paper: #1e1e1e; --paper-raised: #2a2a2a; --surface-sunken: #333333;
+  --line: #3d3d3d; --line-strong: #7a7a7a; --muted: #9d9d9d;
+  --accent-text: #ff8a3d; --error: #ff6b6b; --success: #4cc27a; --warning: #e0a83d;
+  --chrome-bg: #181818;
+  --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
+  --state-unconfirmed-bg: #272842; --state-unconfirmed-border: #8d8fe0; --state-unconfirmed-ink: #c9caff;
+  --state-confirming-bg: #272842; --state-confirming-border: #8d8fe0; --state-confirming-ink: #c9caff;
+  --state-paid-bg: #17331f; --state-paid-border: #4cc27a; --state-paid-ink: #a8e6bd;
+  --viz-tier-chain: #3987e5; --viz-tier-blocks: #d95926; --viz-tier-mempool: #199e70;
+  --viz-tier-settlement: #c98500; --viz-tier-upkeep: #d55181;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 500 13px/1.4 var(--font-ui); }
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+h1, h2 { margin: 0; text-wrap: balance; }
+h1 { font-size: 20px; font-weight: 800; }
+h2 { font-size: 13px; font-weight: 800; }
+button { font: inherit; }
+
+/* app bar, with monokulo's System / Light / Dark toggle */
+.appbar { background: var(--chrome-bg); color: var(--chrome-ink); border-bottom: 3px solid var(--chrome-rule); padding: 6px 16px; display: flex; gap: 10px; align-items: center; font-weight: 800; }
+.appbar .mark { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); }
+.appbar nav { margin-left: auto; display: flex; gap: 16px; font-weight: 700; font-size: 13px; align-items: center; }
+.appbar nav a { color: inherit; text-decoration: none; }
+.appbar nav a[aria-current] { color: var(--accent-text); }
+.theme-toggle { border: 1px solid var(--line-strong); border-radius: 999px; background: var(--paper-raised); }
+.theme-toggle:hover { border-color: var(--accent); }
+.theme-toggle-track { position: relative; display: flex; align-items: center; width: 5em; height: 2em; padding-inline: .25em; font-size: 13px; }
+.theme-toggle-option { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; width: 33.333%; height: 100%; margin: 0; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.theme-toggle-option svg { width: 1em; height: 1em; display: block; }
+.theme-toggle-option:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: 999px; }
+.theme-toggle-option[aria-pressed="true"] { color: var(--accent-ink); }
+.theme-toggle-thumb { position: absolute; top: .25em; width: 1.5em; height: 1.5em; transform: translateX(-50%); border-radius: 50%; background: var(--accent); transition: left .28s ease; left: 1em; }
+.theme-toggle[data-choice="light"] .theme-toggle-thumb { left: 50%; }
+.theme-toggle[data-choice="dark"] .theme-toggle-thumb { left: calc(100% - 1em); }
+
+#stage { position: relative; }
+.wrap { max-width: 1880px; margin: 0 auto; padding-inline: 16px; padding-block: 8px 24px; display: grid; gap: 8px; }
+.top { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+.crumb { color: var(--accent-text); font-weight: 700; text-decoration: none; font-size: 12px; }
+.tabs { display: flex; gap: 4px; }
+.tab, .btn { border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--btn-ink); border-radius: var(--radius-sm); padding: 3px 9px; font-weight: 700; font-size: 12px; cursor: pointer; }
+.tab[aria-selected="true"] { box-shadow: inset 0 -3px 0 var(--accent-text); }
+.btn:hover, .tab:hover { background: var(--btn-hover-bg); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn:focus-visible, .tab:focus-visible, summary:focus-visible, canvas:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.mock { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); padding: 3px 6px; font-size: 12px; margin-left: auto; }
+
+.card { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 8px 12px; min-width: 0; }
+.card > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 4px; }
+.hint { font-size: 11px; color: var(--muted); }
+.right { margin-left: auto; }
+.chip { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 0 7px; border: 1px solid var(--line-strong); white-space: nowrap; }
+.chip.ok { background: var(--tint-success); border-color: var(--success); }
+.chip.warn { background: var(--tint-warning); border-color: var(--warning); }
+.chip.err { background: var(--tint-error); border-color: var(--error); }
+.chip.hi { background: var(--tint-highlight); border-color: var(--accent); }
+
+/* timeline */
+.timeline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 12px; }
+.tl-controls { display: flex; gap: 6px; align-items: center; }
+.tl-track { position: relative; display: grid; gap: 2px; }
+.tl-track canvas { width: 100%; display: block; border-radius: 4px; touch-action: none; height: 32px; cursor: grab; }
+.tl-track canvas.panning { cursor: grabbing; }
+.tl-axis { position: relative; height: 12px; font-size: 10px; color: var(--muted); }
+.tl-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.tl-axis span:last-child { transform: translateX(-100%); }
+.tl-axis span:first-child { transform: none; }
+.tl-read { font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 6px; white-space: nowrap; min-width: 210px; }
+.tl-read i { width: 9px; height: 9px; border-radius: 50%; background: var(--success); }
+.tl-read.paused i { background: var(--warning); }
+.tl-tip { position: absolute; z-index: 30; pointer-events: none; transform: translate(-50%, -100%); top: -4px; background: var(--ink); color: var(--paper-raised); font-size: 11px; font-weight: 700; padding: 3px 7px; border-radius: 4px; white-space: nowrap; max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+
+/* summary row */
+.summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); padding: 0; }
+.summary > div { padding: 5px 12px; border-left: 1px solid var(--line); min-width: 0; display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: baseline; }
+.summary > div:first-child { border-left: 0; }
+.summary .k { grid-column: 1 / -1; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.summary .v { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.summary .s { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* tier identity */
+.t-chain { --tier: var(--viz-tier-chain); }
+.t-blocks { --tier: var(--viz-tier-blocks); }
+.t-mempool { --tier: var(--viz-tier-mempool); }
+.t-settlement { --tier: var(--viz-tier-settlement); }
+.t-upkeep { --tier: var(--viz-tier-upkeep); }
+.t-loop { --tier: var(--line-strong); }
+.tierchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.tierchip::before { content: ""; width: 9px; height: 9px; border-radius: 3px; background: var(--tier); flex: none; }
+
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 8px; align-items: start; }
+.left { display: grid; gap: 8px; min-width: 0; }
+
+/* chain strip */
+.chain-row { display: grid; grid-template-columns: minmax(0, 1fr) 176px; gap: 10px; align-items: start; }
+.strip-scroll { overflow: hidden; }
+.strip { position: relative; padding-inline: 14px 8px; padding-top: 26px; height: 128px; }
+.cells { display: flex; gap: 4px; align-items: flex-end; height: 28px; }
+.cell { position: relative; width: 22px; height: 26px; border-radius: 4px; border: 1.5px solid var(--viz-cell-edge); background: var(--viz-cell-recorded); overflow: hidden; flex: none; transition: background .3s, border-color .3s, opacity .3s; }
+.cell .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--viz-cell-fill); opacity: .85; transition: width .2s linear; }
+.cell.new { background: var(--paper-raised); border-style: dashed; }
+.cell.cached { background: var(--viz-cell-cached); border-color: var(--viz-tier-blocks); }
+.cell.pruned { opacity: .45; }
+.cell.ghost { border-style: dotted; background: transparent; opacity: .6; }
+.cell.reorg { border-color: var(--viz-cell-reorg); background: repeating-linear-gradient(135deg, var(--tint-error) 0 4px, var(--paper-raised) 4px 8px); }
+.cell.enter { animation: enter .6s cubic-bezier(.3,1.4,.5,1); }
+.cell.flash { box-shadow: 0 0 0 3px var(--tint-highlight); }
+.cell.probe::after { content: ""; position: absolute; inset: -1px; border: 2px solid var(--viz-tier-chain); border-radius: 4px; }
+.cell .save { position: absolute; right: 1px; top: 1px; width: 7px; height: 7px; border-radius: 2px; background: var(--viz-saved); }
+@keyframes enter { from { transform: translateX(60px); opacity: 0; } }
+.brk { width: 60px; height: 26px; flex: none; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: var(--muted); border-inline: 2px dotted var(--line-strong); text-align: center; line-height: 1.1; }
+.axis { position: absolute; left: 0; right: 0; top: 56px; height: 12px; font-size: 10px; color: var(--muted); }
+.axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.marks span { position: absolute; top: 0; font-size: 10px; font-weight: 800; white-space: nowrap; padding: 0 5px; border-radius: 4px; transition: left .5s; }
+.marks span::after { content: ""; position: absolute; top: 15px; height: 11px; border-left: 2px solid currentColor; }
+.marks .m-tip { transform: translateX(-10px); background: var(--paper-raised); border: 1px solid var(--line-strong); }
+.marks .m-tip::after { left: 9px; }
+.marks .m-hw { transform: translateX(calc(-100% + 10px)); color: var(--accent-text); }
+.marks .m-hw::after { right: 9px; }
+.marks .m-win { top: 23px; height: 2px; padding: 0; background: var(--viz-tier-chain); }
+.marks .m-win::after { display: none; }
+.pills { position: absolute; left: 0; right: 0; top: 72px; height: 50px; }
+.pill { position: absolute; top: 0; transform: translateX(-12px); display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 800; padding: 1px 8px 1px 6px; border-radius: 99px; border: 1.5px solid var(--line-strong); background: var(--paper-raised); white-space: nowrap; transition: left .45s cubic-bezier(.4,0,.2,1); }
+.pill::before { content: ""; position: absolute; left: 10px; top: -8px; height: 7px; border-left: 2px solid currentColor; }
+.pill.frontier { transform: translateX(calc(-100% + 12px)); border-color: var(--viz-frontier); background: var(--tint-highlight); }
+.pill.frontier::before { left: auto; right: 10px; }
+.pill.catchup { top: 24px; }
+.pill.catchup::before { top: -32px; height: 31px; }
+.pill.busy { animation: busy .6s ease-in-out infinite alternate; }
+.pill.waiting { opacity: .55; }
+@keyframes busy { to { box-shadow: 0 0 0 4px var(--tint-highlight); } }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 10.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 4px; }
+.legend .cell { width: 11px; height: 13px; border-radius: 3px; }
+.nodes { display: grid; gap: 6px; }
+.node { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 5px 8px; font-size: 11px; }
+.node.active { border-color: var(--line-strong); }
+.node .nm { font-weight: 800; display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.node .call { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node.spark { animation: spark .8s; }
+@keyframes spark { 30% { box-shadow: 0 0 0 4px var(--tint-highlight); } }
+
+/* round */
+.lanes { display: grid; grid-template-columns: 112px minmax(0, 1fr) 250px; grid-auto-rows: 18px; gap: 2px 10px; align-items: center; }
+.lane-label { font-size: 11px; font-weight: 700; display: flex; justify-content: space-between; }
+.lane-label small { color: var(--muted); font-weight: 600; }
+.track { position: relative; height: 15px; background: var(--surface-sunken); border-radius: 3px; overflow: hidden; }
+.bar { position: absolute; top: 2px; bottom: 2px; min-width: 3px; border-radius: 2px; background: var(--tier); transition: left .3s, width .3s; }
+.bar.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 40%, var(--paper-raised)) 4px 7px); }
+.bar.running { animation: run .5s ease-in-out infinite alternate; }
+@keyframes run { to { opacity: .5; } }
+.share { position: absolute; top: 0; bottom: 0; border: 1.5px dashed var(--line-strong); border-radius: 3px; transition: left .3s, width .3s; }
+.playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); transition: left .3s; z-index: 2; }
+.outcome { font-size: 11px; height: 18px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; min-width: 0; }
+.outcome .chip { line-height: 14px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.round-head { flex-wrap: nowrap !important; }
+.round-head #round-state { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ruler { position: relative; height: 18px; }
+.ruler-label { position: absolute; top: 3px; transform: translateX(-50%); font: 700 10px/14px var(--font-mono); background: var(--ink); color: var(--paper-raised); padding: 0 5px; border-radius: 3px; white-space: nowrap; transition: left .3s; }
+.ruler-label::before { content: ""; position: absolute; left: 50%; top: -4px; transform: translateX(-50%); border: 4px solid transparent; border-top: 0; border-bottom-color: var(--ink); }
+.ribbon-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) 250px; gap: 10px; align-items: end; margin-top: 6px; }
+.ribbon { display: flex; justify-content: flex-end; align-items: flex-end; height: 30px; overflow: hidden; border-bottom: 1px solid var(--line); }
+.rbar { width: 8px; display: flex; flex-direction: column-reverse; flex: none; border-radius: 2px 2px 0 0; overflow: hidden; }
+.rbar i { display: block; background: var(--tier); }
+.rgap { flex: none; height: 9px; position: relative; display: inline-block; }
+.rgap::before { content: ""; position: absolute; left: 2px; right: 2px; bottom: 1px; border-bottom: 2px dotted var(--muted); }
+.rgap.node::before { right: 8px; }
+.rgap.node::after { content: ""; position: absolute; right: 1px; bottom: 0; width: 5px; height: 7px; border: 1.5px solid var(--viz-tier-chain); border-radius: 1.5px; background: var(--paper-raised); }
+
+/* side: one-line summaries that open for detail */
+.side { display: grid; gap: 5px; }
+details.mini { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); }
+details.mini > summary { list-style: none; display: grid; grid-template-columns: 96px minmax(0, 1fr) 12px; gap: 8px; align-items: center; padding: 5px 10px; cursor: pointer; min-height: 32px; }
+details.mini > summary::-webkit-details-marker { display: none; }
+details.mini > summary::after { content: ""; width: 6px; height: 6px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform .2s; }
+details.mini[open] > summary::after { transform: rotate(45deg); }
+details.mini > summary .sum { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; overflow: hidden; white-space: nowrap; }
+details.mini > summary .sum > span { overflow: hidden; text-overflow: ellipsis; }
+details.mini .body { padding: 2px 10px 8px; font-size: 12px; border-top: 1px solid var(--line); }
+details.mini.alert { border-color: var(--error); }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding-top: 6px; }
+.kv b { font-variant-numeric: tabular-nums; font-weight: 700; }
+.explain { color: var(--muted); font-size: 11px; margin: 6px 0 0; white-space: normal; }
+.stations { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-top: 6px; }
+.station { text-align: center; font-size: 11px; font-weight: 700; padding: 3px 2px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); }
+.station.on { border-color: var(--tier); color: var(--ink); box-shadow: inset 0 -3px 0 var(--tier); }
+.dots { display: inline-flex; gap: 3px; flex: none; }
+.dot { width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--viz-tier-mempool); background: var(--paper-raised); }
+.dot.scanned { background: color-mix(in srgb, var(--viz-tier-mempool) 40%, var(--paper-raised)); }
+.dot.match { background: var(--accent); border-color: var(--accent-text); }
+.beat { width: 7px; height: 7px; border-radius: 50%; background: var(--viz-tier-mempool); opacity: .25; flex: none; }
+.beat.lit { opacity: 1; }
+.minibars { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; flex: none; }
+.minibars i { width: 5px; background: var(--line-strong); border-radius: 1px; height: 2px; transition: height .2s; }
+.queue { display: flex; gap: 3px; flex-wrap: wrap; min-height: 18px; padding: 3px 5px; border-radius: 4px; background: var(--surface-sunken); }
+.qlabel { font-size: 11px; color: var(--muted); margin: 5px 0 2px; display: flex; justify-content: space-between; }
+.tok { width: 11px; height: 11px; border-radius: 3px; background: var(--viz-tier-settlement); }
+.state { display: inline-block; font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; border: 1px solid; }
+.state-pending { background: var(--state-pending-bg); border-color: var(--state-pending-border); color: var(--state-pending-ink); }
+.state-unconfirmed { background: var(--state-unconfirmed-bg); border-color: var(--state-unconfirmed-border); color: var(--state-unconfirmed-ink); }
+.state-confirming { background: var(--state-confirming-bg); border-color: var(--state-confirming-border); color: var(--state-confirming-ink); }
+.state-paid { background: var(--state-paid-bg); border-color: var(--state-paid-border); color: var(--state-paid-ink); }
+.trow { display: flex; gap: 4px; align-items: center; font-size: 11px; margin-top: 3px; }
+.upd { display: inline-flex; gap: 3px; flex: none; }
+.upd i { width: 7px; height: 7px; border-radius: 2px; background: var(--line); transition: background .3s; }
+.upd i.lit { background: var(--viz-tier-upkeep); }
+.spark { flex: none; }
+.lit-row { transition: background .5s; border-radius: 3px; }
+.lit-row.lit { background: var(--tint-highlight); }
+.cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.cols2 h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 6px 0 2px; }
+.saved-glyph { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--viz-saved); vertical-align: middle; flex: none; }
+
+/* events */
+.events { max-height: 260px; overflow-y: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th { text-align: left; background: var(--surface-sunken); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; padding: 3px 8px; position: sticky; top: 0; }
+td { padding: 2px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--surface-sunken); }
+tr.key td:last-child { font-weight: 700; }
+tr.now { box-shadow: inset 3px 0 0 var(--accent); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.filters label { display: inline-flex; gap: 3px; align-items: center; font-size: 11px; }
+
+/* tokens flying between parts of the page */
+.token { position: absolute; z-index: 20; pointer-events: none; width: 12px; height: 12px; border-radius: 3px; border: 2px solid var(--paper-raised); background: var(--tier, var(--ink)); box-shadow: 0 0 0 1px var(--ink); }
+.token.pkt { width: auto; height: auto; padding: 0 5px; font: 700 10px/15px var(--font-mono); color: var(--paper-raised); background: var(--viz-tier-blocks); border: 0; box-shadow: none; }
+.token.pkt.chain { background: var(--viz-tier-chain); }
+.token.pkt.mempool { background: var(--viz-tier-mempool); }
+.token.save { width: 10px; height: 10px; border-radius: 2px; background: var(--viz-saved); border: 1.5px solid var(--paper-raised); box-shadow: none; }
+.token.envelope { width: 15px; height: 10px; border-radius: 2px; background: var(--paper-raised); border: 1.5px solid var(--ink); box-shadow: none; }
+.token.payment { border-radius: 50%; background: var(--accent); }
+.ghostcell { position: absolute; z-index: 15; pointer-events: none; }
+
+@media (max-width: 1150px) {
+  .main { grid-template-columns: minmax(0, 1fr); }
+  .side { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .summary > div:nth-child(4) { border-left: 0; }
+  .summary > div:nth-child(n+4) { border-top: 1px solid var(--line); }
+  .lanes, .ribbon-row { grid-template-columns: 96px minmax(0, 1fr); }
+  .lanes .outcome { grid-column: 2; margin-top: -2px; }
+  .ribbon-row > :last-child { display: none; }
+}
+@media (max-width: 640px) {
+  .side { grid-template-columns: minmax(0, 1fr); }
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary > div { border-left: 0 !important; border-top: 1px solid var(--line); }
+  .chain-row { grid-template-columns: minmax(0, 1fr); }
+  .nodes { grid-template-columns: 1fr 1fr; }
+  .timeline { grid-template-columns: minmax(0, 1fr); }
+  .appbar nav a { display: none; }
+  .mock { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .15s !important; }
+}
+</style>
+
+<div class="appbar"><span class="mark" aria-hidden="true"></span> Monokulo
+  <nav aria-label="Site"><a href="#">Dashboard</a><a href="#">Logs</a><a href="#" aria-current="page">Status</a><a href="#">Settings</a>
+    <div class="theme-toggle" id="theme" data-choice="system" role="group" aria-label="Theme">
+      <span class="theme-toggle-track">
+        <button type="button" class="theme-toggle-option" data-theme-choice="system" aria-label="System theme" title="System theme" aria-pressed="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="13" rx="2"></rect><line x1="12" y1="16" x2="12" y2="21"></line><line x1="8" y1="21" x2="16" y2="21"></line></svg></button>
+        <button type="button" class="theme-toggle-option" data-theme-choice="light" aria-label="Light theme" title="Light theme" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><line x1="12" y1="2" x2="12" y2="4"></line><line x1="12" y1="20" x2="12" y2="22"></line><line x1="4.2" y1="4.2" x2="5.6" y2="5.6"></line><line x1="18.4" y1="18.4" x2="19.8" y2="19.8"></line><line x1="2" y1="12" x2="4" y2="12"></line><line x1="20" y1="12" x2="22" y2="12"></line><line x1="4.2" y1="19.8" x2="5.6" y2="18.4"></line><line x1="18.4" y1="5.6" x2="19.8" y2="4.2"></line></svg></button>
+        <button type="button" class="theme-toggle-option" data-theme-choice="dark" aria-label="Dark theme" title="Dark theme" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M21 12.5A9 9 0 1 1 11.5 3 7 7 0 0 0 21 12.5Z"></path></svg></button>
+        <span class="theme-toggle-thumb"></span>
+      </span>
+    </div>
+  </nav>
+</div>
+
+<div id="stage">
+<main class="wrap">
+  <div class="top">
+    <a class="crumb" href="#">Status</a>
+    <h1>Engine</h1>
+    <div class="tabs" role="tablist" aria-label="Network">
+      <button class="tab" role="tab" aria-selected="false" type="button">mainnet</button>
+      <button class="tab" role="tab" aria-selected="true" type="button">stagenet</button>
+    </div>
+    <div class="mock" aria-label="Mockup controls"><strong>Mockup, fake engine:</strong>
+      <button class="btn" id="sc-catchup" type="button">A store comes back after downtime</button>
+      <button class="btn" id="sc-pay" type="button">A customer pays</button>
+      <button class="btn" id="sc-reorg" type="button">The chain reorganises</button>
+    </div>
+  </div>
+
+  <section class="card timeline" aria-label="Timeline">
+    <div class="tl-controls">
+      <button class="btn" id="play" type="button">Pause</button>
+      <button class="btn" id="golive" type="button" disabled>Live</button>
+    </div>
+    <div class="tl-track" id="tl-track">
+      <canvas id="tl" tabindex="0" role="slider" aria-label="Timeline. Click to move the playback position, drag to move along the history, scroll to zoom. Left and right jump between key events, with Shift between any events; Page Up and Page Down move along the history; plus and minus zoom; End returns to live." aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"></canvas>
+      <div class="tl-axis" id="tl-axis"></div>
+    </div>
+    <div class="tl-read" id="tl-read"><i></i><span id="tl-text">Live, 1.5 s behind</span></div>
+  </section>
+
+  <section class="card summary" aria-label="Summary">
+    <div><span class="k">Node tip</span><span class="v" id="s-tip">–</span><span class="s">node-a</span></div>
+    <div><span class="k">Scanned to</span><span class="v" id="s-hw">–</span><span class="s">high-water mark</span></div>
+    <div><span class="k">Behind</span><span class="v" id="s-behind">0</span><span class="s" id="s-behind-s">caught up</span></div>
+    <div><span class="k">Stores</span><span class="v" id="s-stores">41</span><span class="s" id="s-stores-s">all at the tip</span></div>
+    <div><span class="k">Last round</span><span class="v" id="s-round">–</span><span class="s" id="s-round-s">of a 10 s budget</span></div>
+    <div><span class="k">Pace set by</span><span class="v" id="s-pace">–</span><span class="s" id="s-pace-s">caught up</span></div>
+  </section>
+
+  <div class="main">
+    <div class="left">
+      <section class="card t-blocks" aria-labelledby="h-chain">
+        <header><h2 id="h-chain">Chain</h2>
+          <div class="legend">
+            <span><i class="cell" aria-hidden="true"></i>recorded</span>
+            <span><i class="cell new" aria-hidden="true"></i>at the node</span>
+            <span><i class="cell cached" aria-hidden="true"></i>in the cache</span>
+            <span><i class="cell" aria-hidden="true" style="background:linear-gradient(90deg,var(--viz-cell-fill) 50%,var(--viz-cell-recorded) 50%)"></i>scanning</span>
+            <span><i class="cell reorg" aria-hidden="true"></i>replaced</span>
+            <span><i class="saved-glyph" aria-hidden="true"></i>saved to disk</span>
+          </div>
+          <span class="chip right" id="cache-chip">cache 0 MB of 64 MB</span></header>
+        <div class="chain-row">
+          <div class="strip-scroll" id="strip-scroll">
+            <div class="strip" id="strip">
+              <div class="marks" id="marks"></div>
+              <div class="cells" id="cells"></div>
+              <div class="axis" id="axis"></div>
+              <div class="pills" id="pills"></div>
+            </div>
+          </div>
+          <div class="nodes">
+            <div class="node active" id="node-a"><div class="nm">node-a <span class="chip ok">active</span></div>
+              <div class="muted">pinned this round, 2.1 MB/s</div><div class="call" id="node-call">–</div></div>
+            <div class="node" id="node-b"><div class="nm">node-b <span class="chip">fallback</span></div>
+              <div class="muted">height <span class="num" id="node-b-h">–</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-round">
+        <header class="round-head"><h2 id="h-round">Round <span class="num" id="round-n">–</span></h2>
+          <span class="hint" id="round-state"></span></header>
+        <div class="lanes" id="lanes"></div>
+        <div class="ribbon-row">
+          <span class="hint">Last rounds</span>
+          <div class="ribbon" id="ribbon" aria-label="Recent rounds"></div>
+          <div class="legend"><span><i class="rgap" style="width:16px" aria-hidden="true"></i>slept</span><span><i class="rgap node" style="width:16px" aria-hidden="true"></i>woken by a new block</span><span>no gap: work left</span></div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="side" aria-label="Details">
+      <details class="mini t-chain" id="d-reorg">
+        <summary><span class="tierchip t-chain">Reorg</span><span class="sum" id="rg-sum"><span id="rg-sum-t">The chain agrees with the node</span></span></summary>
+        <div class="body">
+          <div class="stations"><div class="station" id="st-detect">Detect</div><div class="station" id="st-collect">Collect</div><div class="station" id="st-process">Process</div><div class="station" id="st-rewind">Rewind</div></div>
+          <div class="kv"><span>Fork at</span><b id="rg-fork">–</b><span>Candidates left</span><b id="rg-cand">–</b><span>Kept / moved / restored / voided</span><b id="rg-dec">–</b></div>
+          <p class="explain">Opens by itself while a reorg job is open. Blocks wait, and no order is settled as paid, until the rewind.</p>
+        </div>
+      </details>
+      <details class="mini t-mempool">
+        <summary><span class="tierchip t-mempool">Mempool</span><span class="sum" id="mp-sum"><span class="beat" id="beat" title="fast path pass"></span><span class="dots" id="mp-dots"></span><span id="mp-sum-t">0 in the pool</span></span></summary>
+        <div class="body">
+          <div class="kv">
+            <span>Fast path passes, last minute</span><b id="mp-passes">0</b>
+            <span>New transactions scanned</span><b id="mp-new">0</b>
+            <span>Payments found</span><b id="mp-found">0</b>
+            <span>Bodies remembered</span><b id="mp-bodies">0</b>
+            <span>Left for the rotation</span><b>0</b>
+            <span>Rotation offsets</span><b id="mp-rot">pool 0, stores 0</b>
+          </div>
+          <p class="explain">The fast path checks the pool every 250 ms for transactions it hasn't seen; the round's rotation rescans the rest as a safety net.</p>
+        </div>
+      </details>
+      <details class="mini t-settlement">
+        <summary><span class="tierchip t-settlement">Order status</span><span class="sum" id="or-sum"><span id="or-sum-t">nothing to recompute</span><span id="or-last"></span></span></summary>
+        <div class="body">
+          <p class="explain">The settlement tier: turns what the chain and the pool say into each order's status, and queues the shop's webhook. An order is recomputed when one of its payments changed, when it expires, and on each new block while it is confirming.</p>
+          <div class="qlabel"><span>A payment changed</span><span class="num" id="q-oblig-n">0</span></div>
+          <div class="queue" id="q-oblig"></div>
+          <div class="qlabel"><span>Due by time or height</span><span class="num" id="q-due-n">0</span></div>
+          <div class="queue" id="q-due"></div>
+          <div id="trans"></div>
+          <div class="explain" id="vanished">No unconfirmed payment has left the pool.</div>
+        </div>
+      </details>
+      <details class="mini t-upkeep">
+        <summary><span class="tierchip t-upkeep">Upkeep</span><span class="sum"><span class="upd"><i id="u-prune"></i><i id="u-wal"></i><i id="u-void"></i><i id="u-range"></i></span><span id="up-sum-t">every round, in the background</span></span></summary>
+        <div class="body"><div class="kv">
+          <span>Prune old block hashes</span><b id="up-prune">–</b>
+          <span>Database checkpoint</span><b>next in 6 min</b>
+          <span>Recheck voided payments</span><b>none voided</b>
+          <span>Orders' scanned ranges</span><b id="up-range">–</b>
+        </div></div>
+      </details>
+      <details class="mini">
+        <summary><span class="tierchip t-loop">Database</span><span class="sum" id="db-sum"><span class="minibars" title="Scanner, Webhook and Admin queues"><i id="db-b0"></i><i id="db-b1"></i><i id="db-b2"></i></span><span id="db-sum-t">0 jobs a second</span></span></summary>
+        <div class="body"><div class="kv">
+          <span>Scanner queue</span><b id="db-q0">0 of 64</b>
+          <span>Webhook queue</span><b id="db-q1">0 of 64</b>
+          <span>Admin queue</span><b id="db-q2">0 of 64</b>
+          <span>Next turn</span><b id="db-turn">Scanner</b>
+          <span>Longest job</span><b>34 ms</b>
+        </div><p class="explain">One thread runs every database job; each queue gets a turn in rotation, so no kind of work waits behind another for more than one job.</p></div>
+      </details>
+      <details class="mini">
+        <summary><span class="tierchip t-loop">Webhooks</span><span class="sum" id="wh-sum"><svg class="spark" id="wh-spark" width="90" height="18" viewBox="0 0 90 18" aria-hidden="true"></svg><span id="wh-sum-t">0 a minute</span></span></summary>
+        <div class="body"><div class="kv"><span>Due now</span><b id="wh-due">0</b><span>Sent, last 5 minutes</span><b id="wh-5m">0</b><span>Failed, last 5 minutes</span><b>0</b></div></div>
+      </details>
+      <details class="mini">
+        <summary><span class="tierchip t-loop">Restart safety</span><span class="sum" id="rs-sum"><span class="saved-glyph" aria-hidden="true"></span><span id="rs-sum-t">0 saves a minute</span></span></summary>
+        <div class="body">
+          <p class="explain">A dark square marks each save on the thing saved. A restart loses only the memory column, at the cost of some repeated work.</p>
+          <div class="cols2">
+            <div><h3>Saved</h3><div class="kv" style="padding-top:0">
+              <span class="lit-row" id="sv-cursors">Store cursors</span><b id="sv-cursors-v">0</b>
+              <span class="lit-row" id="sv-blocks">Recorded blocks</span><b id="sv-blocks-v">0</b>
+              <span class="lit-row" id="sv-ckpt">Block checkpoints</span><b id="sv-ckpt-v">0</b>
+              <span class="lit-row" id="sv-reorg">Reorg job</span><b id="sv-reorg-v">0</b>
+              <span class="lit-row" id="sv-recomputes">Recomputes</span><b id="sv-recomputes-v">0</b>
+              <span class="lit-row" id="sv-webhooks">Webhooks</span><b id="sv-webhooks-v">0</b>
+            </div></div>
+            <div><h3>Memory</h3><div class="kv" style="padding-top:0">
+              <span>Block cache</span><b id="mm-cache">0</b>
+              <span>Pool bodies</span><b id="mm-bodies">0</b>
+              <span>Retry delays</span><b>none</b>
+              <span>Rotation offsets</span><b>2</b>
+            </div></div>
+          </div>
+        </div>
+      </details>
+    </aside>
+  </div>
+
+  <section class="card" aria-labelledby="h-ev">
+    <header><h2 id="h-ev">Events</h2><span class="hint">up to the playback position; click one to go there</span>
+      <div class="filters right" id="filters"></div></header>
+    <div class="events"><table><thead><tr><th>Round</th><th>Tier</th><th>What happened</th></tr></thead><tbody id="ev"></tbody></table></div>
+  </section>
+</main>
+</div>
+
+<script>
+(() => {
+"use strict";
+const $ = (id) => document.getElementById(id);
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const fmt = (n) => n.toLocaleString("en-GB");
+const secs = (ms) => ms < 1000 ? (ms / 1000).toFixed(2) + " s" : (ms / 1000).toFixed(1) + " s";
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const range = (a, b) => { const r = []; for (let h = a; h <= b; h++) r.push(h); return r; };
+const TIERS = ["chain", "blocks", "mempool", "settlement", "upkeep"];
+const NAMES = { chain: "Chain", blocks: "Blocks", mempool: "Mempool", settlement: "Settlement", upkeep: "Upkeep", loop: "Loop" };
+const SHARE = { chain: 20, blocks: 40, mempool: 15, settlement: 20, upkeep: 5 };
+const BUDGET = 10000, LAG = 1500, KEYFRAME_EVERY = 2000;
+let tlDirty = true;
+
+// ---- theme toggle (monokulo's System / Light / Dark) ----
+(() => {
+  const box = $("theme");
+  const set = (choice) => {
+    if (choice === "system") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = choice;
+    box.dataset.choice = choice;
+    box.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeChoice === choice)));
+    try { localStorage.setItem("engine-mock-theme", choice); } catch (e) {}
+    tlDirty = true;
+  };
+  box.querySelectorAll("button").forEach((b) => { b.onclick = () => set(b.dataset.themeChoice); });
+  let saved = "system";
+  try { saved = localStorage.getItem("engine-mock-theme") || "system"; } catch (e) {}
+  set(saved);
+})();
+
+/* =====================================================================
+   The fake engine. It runs on its own, in real time, and only emits
+   events into LOG, as the real engine's activity recorder would. The
+   page below never reads its state.
+   ===================================================================== */
+// The fake engine first runs 25 minutes of history as fast as it can, then
+// carries on in real time. (The real page gets its history from the
+// engine's ring instead.)
+const HISTORY = 25 * 60000;
+let vnow = 0, realMode = false, realStart = 0, tseq = 0;
+const clock = () => realMode ? HISTORY + performance.now() - realStart : vnow;
+const timers = [];
+const pushTimer = (at, fn) => { timers.push({ at, fn, s: tseq++ }); };
+async function fastForward(script) {
+  for (const [at, fn] of script) pushTimer(at, fn);
+  for (;;) {
+    let k = -1;
+    for (let i = 0; i < timers.length; i++) {
+      const a = timers[i], b = timers[k];
+      if (k < 0 || a.at < b.at || (a.at === b.at && a.s < b.s)) k = i;
+    }
+    if (k < 0 || timers[k].at > HISTORY) break;
+    const t = timers.splice(k, 1)[0];
+    vnow = t.at;
+    t.fn();
+    for (let i = 0; i < 40; i++) await null;
+  }
+  vnow = HISTORY; realStart = performance.now(); realMode = true;
+  for (const t of timers.splice(0)) setTimeout(t.fn, t.at - HISTORY);
+}
+const LOG = [], LOGIDX = [];
+const ES = {
+  round: 1284, tip: 3412880, hw: 3412880, pruneBelow: 3412860,
+  groups: [{ id: "f", cursor: 3412880, stores: 41, frontier: true }],
+  cached: new Set(), ckpt: {}, reorgCells: new Set(), big: null,
+  pool: [], oblig: [], due: [], payments: [], hooksDue: 0,
+  reorg: null, forkPending: false, reorgArmed: false, payNext: false, turn: "frontier",
+  uid: 0, rt: 0, cur: null, steps: {}, outcomes: {}, tierStart: {}, per: {},
+  q: [0, 0, 0], jobs: 0, rangePos: 0, rot: 0, rewound: false, diverged: false, held: false,
+};
+const emit = (k, d = {}) => { LOG.push({ t: clock(), k, ...d }); };
+const say = (tier, text, key = false) => { LOGIDX.push(LOG.length); emit("log", { tier, text, key, round: ES.round }); };
+const sleep = (ms) => new Promise((r) => { if (realMode) setTimeout(r, ms); else pushTimer(vnow + ms, r); });
+const frontierG = () => ES.groups.find((g) => g.frontier);
+const catchUps = () => ES.groups.filter((g) => !g.frontier).sort((a, b) => a.cursor - b.cursor);
+const emitChain = () => emit("chain", { tip: ES.tip, hw: ES.hw, pruneBelow: ES.pruneBelow, cached: [...ES.cached], ckpt: { ...ES.ckpt }, reorgCells: [...ES.reorgCells] });
+const emitGroups = () => emit("groups", { groups: ES.groups.map((g) => ({ ...g })) });
+const emitQueues = () => emit("queues", { oblig: ES.oblig.length, due: ES.due.length });
+const emitPool = () => emit("pool", { pool: ES.pool.map((d) => ({ ...d })) });
+
+async function unit(tier, pass, ms, body) {
+  const id = ++ES.uid;
+  ES.cur = { id, extra: 0 };
+  emit("unit", { tier, pass, at: ES.rt, id });
+  if (body) await body(); else await sleep(140);
+  const total = ms + ES.cur.extra;
+  ES.rt += total;
+  ES.per[tier] = (ES.per[tier] || 0) + total;
+  ES.steps[tier] = (ES.steps[tier] || 0) + 1;
+  emit("unit_end", { id, ms: total, rt: ES.rt });
+}
+const charge = (ms) => { ES.cur.extra += ms; };
+const outcome = (tier, kind, text = "") => { ES.outcomes[tier] = kind; emit("outcome", { tier, kind, text }); };
+const beginTier = (tier) => { ES.tierStart[tier] = ES.rt; emit("tier", { tier, at: ES.rt }); };
+async function db(cls, saved = [], at = null) {
+  ES.q[cls]++;
+  emit("db", { q: [...ES.q], jobs: ES.jobs, saved, at });
+  await sleep(150);
+  ES.q[cls]--; ES.jobs++;
+  emit("db", { q: [...ES.q], jobs: ES.jobs, turn: (cls + 1) % 3 });
+}
+
+async function chainTier() {
+  beginTier("chain");
+  if (!ES.reorg && ES.forkPending) {
+    await unit("chain", 140, 1, async () => {
+      emit("call", { method: "on_get_block_hash x4", to: "cell:" + ES.hw, label: "hash", cls: "chain" });
+      for (const h of [ES.hw, ES.hw - 4, ES.hw - 2, ES.hw - 1]) { emit("probe", { h }); await sleep(300); }
+      const fork = ES.hw;
+      ES.forkPending = false;
+      ES.reorg = { fork, phase: "collect", cand: 0, keep: 0, move: 0, restore: 0, void: 0 };
+      ES.reorgCells = new Set(range(fork, ES.hw));
+      emit("reorg", { job: { ...ES.reorg } }); emitChain();
+      say("chain", `The node's block ${fmt(fork)} differs from the recorded one: a reorg from ${fmt(fork)}. Job opened.`, true);
+      await db(0, ["reorg"], "reorg");
+      const cand = ES.payments.filter((p) => p.height && p.height >= fork).length;
+      ES.reorg.cand = cand; ES.reorg.phase = "process";
+      emit("reorg", { job: { ...ES.reorg } });
+      say("chain", `Collected ${plural(cand, "payment")} at or above the fork to re-examine.`);
+      await db(0, ["reorg"], "reorg");
+    });
+    outcome("chain", "Backlogged", "reorg job open");
+    return;
+  }
+  if (ES.reorg && ES.reorg.phase === "process") {
+    await unit("chain", 320, 1, async () => {
+      emit("call", { method: "get_transactions", to: "reorg", label: "txs", cls: "chain" });
+      await sleep(600);
+      for (const p of ES.payments) if (p.height && p.height >= ES.reorg.fork) {
+        if (p.status !== "unconfirmed") emit("trans", { from: p.status, to: "unconfirmed" });
+        p.height = null; p.status = "unconfirmed"; p.mineAt = ES.reorg.fork; ES.reorg.move++;
+        ES.oblig.push(p.id);
+      }
+      ES.reorg.cand = 0; ES.reorg.phase = "rewind";
+      emit("reorg", { job: { ...ES.reorg } }); emitQueues();
+      say("chain", ES.reorg.move ? `Re-examined: ${plural(ES.reorg.move, "payment")} moved back to the pool.` : "Re-examined: nothing to change.");
+      await db(0, ["reorg", "recomputes"], "reorg");
+    });
+    outcome("chain", "Backlogged", "rewind next");
+    return;
+  }
+  if (ES.reorg && ES.reorg.phase === "rewind") {
+    await unit("chain", 60, 1, async () => {
+      const fork = ES.reorg.fork, was = ES.hw;
+      emit("rewound", { fork, was });
+      ES.hw = fork - 1;
+      for (const g of ES.groups) g.cursor = Math.min(g.cursor, ES.hw);
+      for (const h of [...ES.cached]) if (h >= fork) ES.cached.delete(h);
+      ES.reorgCells.clear(); ES.rewound = true; ES.reorg = null; ES.held = false;
+      emitChain(); emitGroups(); emit("reorg", { job: null }); emit("held", { on: false });
+      say("chain", `Rewound: ${fork === was ? "block " + fmt(fork) : "blocks " + fmt(fork) + " to " + fmt(was)} deleted, cursors back to ${fmt(ES.hw)}. Replacement blocks are scanned next round.`, true);
+      await sleep(700);
+      await db(0, ["reorg", "blocks", "cursors"], "reorg");
+    });
+    outcome("chain", "Idle");
+    return;
+  }
+  await unit("chain", ES.hw === ES.tip ? 2 : 48, 1, async () => {
+    if (ES.hw !== ES.tip) emit("call", { method: "on_get_block_hash", to: "cell:" + ES.hw, label: "hash", cls: "chain" });
+    emit("probe", { h: ES.hw, free: ES.hw === ES.tip });
+    await sleep(ES.hw === ES.tip ? 220 : 420);
+  });
+  outcome("chain", "Idle");
+}
+
+async function blocksTier(pass) {
+  if (pass === 1) beginTier("blocks");
+  if (ES.reorg) { await unit("blocks", 1, pass, () => sleep(160)); outcome("blocks", "Waiting", "a reorg is being reconciled"); return; }
+  if (ES.rewound) { await unit("blocks", 1, pass, () => sleep(160)); outcome("blocks", "Waiting", "rewound this round"); return; }
+  for (let i = 0; i < 8; i++) {
+    const cu = catchUps();
+    const behind = ES.hw < ES.tip && !ES.diverged;
+    if (behind && ES.forkPending) {
+      ES.diverged = true;
+      await unit("blocks", 30, pass, async () => {
+        const h = ES.hw + 1;
+        emit("call", { method: `get_blocks.bin from ${fmt(h)}`, to: "cell:" + h, label: "1 block" });
+        await sleep(520);
+        ES.reorgCells.add(h); emitChain();
+        say("blocks", `Block ${fmt(h)} doesn't extend the recorded chain: nothing recorded, the frontier waits for the chain tier.`, true);
+      });
+      if (!cu.length) { outcome("blocks", "Waiting", "the node's chain differs from the recorded one"); return; }
+      continue;
+    }
+    if (behind && (ES.turn === "frontier" || !cu.length)) { ES.turn = "catchup"; await unit("blocks", 0, pass, frontierUnit); }
+    else if (cu.length) { ES.turn = "frontier"; await unit("blocks", 0, pass, () => catchUpUnit(cu[0])); }
+    else {
+      if (!ES.steps.blocks || pass === 2) await unit("blocks", 1, pass, () => sleep(90));
+      outcome("blocks", "Idle");
+      return;
+    }
+    if (pass === 1 && ES.rt - ES.tierStart.blocks >= BUDGET * SHARE.blocks / 100) break;
+    if (pass === 2 && ES.rt >= BUDGET) break;
+  }
+  const left = catchUps().length > 0 || (ES.hw < ES.tip && !ES.diverged);
+  outcome("blocks", left ? "Backlogged" : "Idle", left ? "out of time with blocks left" : "");
+}
+
+async function frontierUnit() {
+  const f = frontierG();
+  let n = 0;
+  while (ES.hw < ES.tip && n < 8) {
+    const h = ES.hw + 1;
+    if (!ES.cached.has(h)) {
+      emit("call", { method: `get_blocks.bin from ${fmt(h)}`, to: "cell:" + h, label: "1 block" });
+      await sleep(520);
+      ES.cached.add(h); emitChain();
+    }
+    for (let p = 1; p <= 4; p++) { emit("scan", { h, p: p / 4, gid: "f" }); await sleep(100); }
+    ES.hw = h; f.cursor = h; ES.cached.delete(h);
+    emit("scan", { h: null });
+    emitChain(); emitGroups();
+    const pay = ES.payments.find((p) => p.mineAt === h);
+    charge(180);
+    emit("committed", { h });
+    say("blocks", `Block ${fmt(h)} scanned for ${f.stores} stores and committed` + (pay ? ": a payment found in it." : "."), !!pay);
+    await db(0, ["cursors", "blocks"], "cell:" + h);
+    if (pay) {
+      pay.height = h; pay.mineAt = null;
+      ES.oblig.push(pay.id); emitQueues();
+      emit("flow", { from: "cell:" + h, to: "orders", cls: "payment" });
+    }
+    n++;
+  }
+}
+
+async function catchUpUnit(g) {
+  const f = frontierG();
+  if (g.idle) {
+    const moving = g.idle; g.idle = 0;
+    emit("flow", { from: "pill:" + g.id, to: "pill:f", cls: "token", tier: "blocks" });
+    await sleep(600);
+    g.stores -= moving; f.stores += moving;
+    emitGroups();
+    say("blocks", `${plural(moving, "store")} with nothing that could have been paid moved straight to ${fmt(ES.hw)}.`);
+    await db(0, ["cursors"], "pill:f");
+  }
+  const need = range(g.cursor + 1, Math.min(ES.hw, g.cursor + 8)).filter((h) => !ES.cached.has(h));
+  if (need.length) {
+    emit("call", { method: `get_blocks.bin ${need.length} from ${fmt(need[0])}`, to: "cell:" + need[Math.floor(need.length / 2)], label: `${need.length} blocks` });
+    await sleep(650);
+    need.forEach((h) => ES.cached.add(h));
+    charge(420);
+    emitChain();
+  }
+  let n = 0;
+  while (g.cursor < ES.hw && n < 8) {
+    const h = g.cursor + 1;
+    const big = ES.big === h;
+    const startP = ES.ckpt[h] || 0;
+    const stopAt = big && startP === 0 ? 0.4 : 1;
+    const steps = big ? 6 : 2;
+    for (let s = 1; s <= steps; s++) {
+      const p = Math.min(stopAt, startP + (1 - startP) * s / steps);
+      emit("scan", { h, p, gid: g.id });
+      await sleep(big ? 150 : 60);
+      if (p >= stopAt) break;
+    }
+    if (stopAt < 1) {
+      ES.ckpt[h] = 0.4;
+      emit("scan", { h: null });
+      charge(2600);
+      emitChain();
+      say("blocks", `Block ${fmt(h)} has 3,000 transactions: out of time at 1,200, progress saved for ${plural(g.stores, "store")}.`, true);
+      await db(0, ["ckpt"], "cell:" + h);
+      return;
+    }
+    delete ES.ckpt[h];
+    g.cursor = h;
+    emit("scan", { h: null });
+    charge(big ? 2200 : 460);
+    emitChain(); emitGroups();
+    if (n === 0 || big) say("blocks", big ? `Block ${fmt(h)} finished from its saved point and committed for ${plural(g.stores, "store")}.` : `Catching up from ${fmt(h)} for ${plural(g.stores, "store")}.`);
+    await db(0, ["cursors"], "pill:" + g.id);
+    n++;
+    if (ES.rt + ES.cur.extra - ES.tierStart.blocks > BUDGET * SHARE.blocks / 100) break;
+  }
+  const lowest = Math.min(...ES.groups.map((x) => x.cursor));
+  for (const h of [...ES.cached]) if (h <= lowest) ES.cached.delete(h);
+  if (g.cursor >= ES.hw) {
+    emit("flow", { from: "pill:" + g.id, to: "pill:f", cls: "token", tier: "blocks" });
+    await sleep(500);
+    ES.groups = ES.groups.filter((x) => x !== g);
+    f.stores += g.stores;
+    ES.big = null;
+    emitGroups();
+    say("blocks", `${plural(g.stores, "store")} caught up and joined the frontier at ${fmt(ES.hw)}.`, true);
+  }
+  emitChain();
+}
+
+async function mempoolTier() {
+  beginTier("mempool");
+  if (!ES.pool.length) { await unit("mempool", 3, 1, () => sleep(110)); outcome("mempool", "Idle"); return; }
+  await unit("mempool", 28, 1, async () => {
+    emit("call", { method: "get_transaction_pool_hashes", to: "pool", label: "pool", cls: "mempool" });
+    await sleep(320);
+    ES.rot++;
+    emit("rotation", { text: `pool ${ES.rot * 6}, stores ${ES.rot * 16 % 41}` });
+  });
+  outcome("mempool", "Idle");
+}
+
+function transition(p) {
+  if (p.status === "unconfirmed" && p.height) return "confirming";
+  if (p.status === "confirming" && p.height && ES.hw - p.height + 1 >= 2) {
+    if (ES.reorg) { ES.due.push(p.id); if (!ES.held) { ES.held = true; emit("held", { on: true }); } return "held"; }
+    return "paid";
+  }
+  return null;
+}
+async function settlementTier() {
+  beginTier("settlement");
+  const work = [...ES.oblig, ...ES.due];
+  if (!work.length) {
+    await unit("settlement", 4, 1, () => sleep(110));
+    emit("vanished", { text: ES.payments.some((p) => !p.height && p.status !== "paid") ? "1 unconfirmed payment looked at: still in the pool." : "No unconfirmed payment has left the pool." });
+    outcome("settlement", "Idle");
+    return;
+  }
+  await unit("settlement", 12 + work.length * 6, 1, async () => {
+    ES.oblig = []; ES.due = [];
+    emitQueues();
+    await db(0, ["recomputes"], "orders");
+    for (const id of work) {
+      const p = ES.payments.find((x) => x.id === id);
+      const next = transition(p);
+      if (!next || next === "held") continue;
+      const from = p.status;
+      p.status = next;
+      emit("trans", { from, to: next });
+      say("settlement", `Order recomputed: ${from} to ${next}. Webhook queued.`, next === "paid");
+      ES.hooksDue++;
+      emit("hooks", { due: ES.hooksDue });
+      emit("flow", { from: "orders", to: "hooks", cls: "envelope" });
+      await db(0, ["webhooks"], "orders");
+    }
+    emitQueues();
+  });
+  outcome("settlement", ES.due.length ? "Waiting" : "Idle", ES.due.length ? "paid held while the reorg is open" : "");
+}
+
+async function upkeepTier() {
+  beginTier("upkeep");
+  await unit("upkeep", 9, 1, async () => {
+    let pruned = 0;
+    while (ES.hw - ES.pruneBelow > 20) { ES.pruneBelow++; pruned++; }
+    ES.rangePos = (ES.rangePos + 16) % 41;
+    emit("upkeep", { prune: pruned ? `${pruned} removed` : "nothing to remove", range: `stores ${ES.rangePos} to ${Math.min(41, ES.rangePos + 16)}` });
+    await sleep(240);
+    if (pruned) { emitChain(); await db(0, ["blocks"], null); }
+  });
+  outcome("upkeep", "Idle");
+}
+
+let wake = null;
+function sleepOrWake(ms) {
+  return new Promise((res) => {
+    let done = false;
+    wake = (why) => { if (!done) { done = true; res(why); } };
+    sleep(ms).then(() => { if (!done) { done = true; res("timer"); } });
+  });
+}
+async function roundLoop() {
+  let woke = "";
+  for (;;) {
+    ES.round++; ES.rt = 0; ES.steps = {}; ES.outcomes = {}; ES.per = {}; ES.rewound = false; ES.diverged = false;
+    emit("round_start", { n: ES.round, long: catchUps().length > 0 || !!ES.reorg, woke });
+    await chainTier();
+    await blocksTier(1);
+    await mempoolTier();
+    await settlementTier();
+    await upkeepTier();
+    if (ES.outcomes.blocks === "Backlogged" && ES.rt < BUDGET) {
+      emit("round_state", { text: "Pass 2: the time left goes to tiers with work" });
+      await blocksTier(2);
+    }
+    const backlog = Object.values(ES.outcomes).includes("Backlogged");
+    emit("round_end", { ms: ES.rt, backlog, per: { ...ES.per } });
+    if (backlog) {
+      say("loop", `Round ${fmt(ES.round)} took ${secs(ES.rt)} with work left: the next starts at once.`);
+      await sleep(450);
+      woke = "started at once: work was left";
+      continue;
+    }
+    const why = await sleepOrWake(1600);
+    emit("slept", { why });
+    woke = why === "node" ? "woken by the node announcing a block" : "after the 1 s poll interval";
+  }
+}
+
+async function fastLoop() {
+  for (;;) {
+    await sleep(650);
+    emit("beat");
+    const arrive = ES.payNext || Math.random() < 0.28;
+    if (!arrive) continue;
+    const match = ES.payNext; ES.payNext = false;
+    const id = (Math.random() * 1e8 | 0).toString(16).padStart(8, "0");
+    const d = { id, match, scanned: false };
+    ES.pool.push(d);
+    emit("call", { method: "get_transaction_pool_hashes", to: "pool", label: "tx", cls: "mempool" });
+    await sleep(500);
+    emitPool();
+    await sleep(250);
+    d.scanned = true; emitPool();
+    emit("fast", { scanned: 1 });
+    if (match) {
+      const p = { id, status: "unconfirmed", height: null, mineAt: null };
+      ES.payments.push(p);
+      say("mempool", `Transaction ${id} pays an order: recorded at once by the fast path.`, true);
+      emit("payment");
+      await db(0, ["recomputes"], "pool");
+      emit("trans", { from: "pending", to: "unconfirmed" });
+      say("settlement", "Order recomputed in the same job: pending to unconfirmed. Webhook queued.");
+      ES.hooksDue++; emit("hooks", { due: ES.hooksDue });
+      emit("flow", { from: "pool", to: "hooks", cls: "envelope" });
+    } else {
+      say("mempool", `Transaction ${id} scanned for 41 stores by the fast path: no match.`);
+    }
+  }
+}
+async function newBlock() {
+  const branch = ES.reorgArmed;
+  if (ES.reorgArmed) { ES.reorgArmed = false; ES.forkPending = true; }
+  ES.tip++;
+  emit("block", { tip: ES.tip });
+  emitChain();
+  say("chain", `The node announced block ${fmt(ES.tip)}` + (branch ? `, on a branch that replaces block ${fmt(ES.hw)}.` : "."), branch);
+  const mined = ES.pool.slice(0, Math.max(3, ES.pool.length - 8));
+  for (const d of mined) {
+    const p = ES.payments.find((x) => x.id === d.id);
+    if (p) p.mineAt = ES.tip;
+  }
+  if (mined.length) {
+    emit("tx_mined", { ids: mined.map((d) => d.id), h: ES.tip });
+    ES.pool = ES.pool.filter((d) => !mined.includes(d));
+    emitPool();
+  }
+  for (const p of ES.payments) if (p.status === "confirming" && !ES.due.includes(p.id)) ES.due.push(p.id);
+  emitQueues();
+  if (wake) wake("node");
+}
+async function blockLoop() {
+  for (;;) { await sleep(9000 + Math.random() * 5000); await newBlock(); }
+}
+async function webhookLoop() {
+  let quiet = 0;
+  for (;;) {
+    await sleep(900);
+    quiet++;
+    // Other stores' orders: a little background traffic.
+    if (quiet % 4 === 0 && Math.random() < 0.7) emit("hooks_sent", { n: 1 + (Math.random() * 3 | 0) });
+    if (!ES.hooksDue) continue;
+    await db(1, ["webhooks"], "hooks");
+    const n = ES.hooksDue; ES.hooksDue = 0;
+    emit("hooks", { due: 0 });
+    emit("hooks_sent", { n });
+    say("loop", `${plural(n, "webhook")} delivered.`);
+  }
+}
+
+function scCatchUp() {
+  if (catchUps().length) return;
+  const behind = 42;
+  ES.groups.push({ id: "c" + ES.round, cursor: ES.hw - behind, stores: 3, idle: 1, frontier: false });
+  ES.big = ES.hw - behind + 12;
+  emitGroups();
+  say("blocks", `3 stores registered again after downtime, ${behind} blocks behind. 1 of them has nothing in scope.`, true);
+}
+function scPay() { ES.payNext = true; }
+function scReorg() {
+  if (ES.reorg || ES.forkPending) return;
+  ES.reorgArmed = true;
+  newBlock();
+}
+$("sc-catchup").onclick = scCatchUp;
+$("sc-pay").onclick = scPay;
+$("sc-reorg").onclick = scReorg;
+
+/* =====================================================================
+   The page: a model built only from events, a player that moves through
+   them (live, paused, replaying, scrubbed), and the view.
+   ===================================================================== */
+function initModel() {
+  return {
+    tip: ES.tip, hw: ES.hw, pruneBelow: ES.pruneBelow, cached: [], ckpt: {}, reorgCells: [],
+    groups: ES.groups.map((g) => ({ ...g })), scan: null,
+    round: { n: ES.round, t: 0, long: false, bars: [], shares: [], outcomes: {}, state: "" },
+    lastRound: null, ribbon: [], reorg: null, probe: "The chain agrees with the node", call: "–",
+    pool: [], beats: [], fastNew: 0, found: 0, rot: "pool 0, stores 0",
+    oblig: 0, due: 0, trans: [], held: false, vanished: "No unconfirmed payment has left the pool.",
+    upkeep: { prune: "–", range: "–", ran: false }, db: { q: [0, 0, 0], jobs: 0, turn: 0, rate: [] },
+    hooksDue: 0, sent: [], saves: [], savedCount: {}, lastLog: -1,
+  };
+}
+function apply(M, e) {
+  switch (e.k) {
+    case "chain": Object.assign(M, { tip: e.tip, hw: e.hw, pruneBelow: e.pruneBelow, cached: e.cached, ckpt: e.ckpt, reorgCells: e.reorgCells }); break;
+    case "groups": M.groups = e.groups; break;
+    case "scan": M.scan = e.h == null ? null : { h: e.h, p: e.p, gid: e.gid }; break;
+    case "round_start": M.round = { n: e.n, t: 0, long: e.long, bars: [], shares: [], outcomes: {}, state: "Running" + (e.woke ? ", " + e.woke : "") }; break;
+    case "round_state": M.round.state = e.text; break;
+    case "tier": if (M.round.long) M.round.shares.push({ tier: e.tier, at: e.at, ms: BUDGET * SHARE[e.tier] / 100 }); break;
+    case "unit": M.round.bars.push({ id: e.id, tier: e.tier, pass: e.pass, at: e.at, ms: 0, running: true }); break;
+    case "unit_end": { const b = M.round.bars.find((x) => x.id === e.id); if (b) { b.ms = e.ms; b.running = false; } M.round.t = e.rt; break; }
+    case "outcome": M.round.outcomes[e.tier] = [e.kind, e.text]; break;
+    case "round_end":
+      M.lastRound = { ms: e.ms, backlog: e.backlog };
+      M.ribbon.push({ ms: e.ms, per: e.per, n: M.round.n });
+      M.round.state = e.backlog ? `Ended at ${secs(e.ms)} with work left: the next starts at once.` : `Ended at ${secs(e.ms)}. Sleeping 1 s, or until the node announces a block.`;
+      if (M.ribbon.length > 120) M.ribbon.shift();
+      break;
+    case "slept": M.ribbon.push({ gap: e.why }); break;
+    case "call": M.call = e.method; break;
+    case "probe": if (!M.reorg) M.probe = `Agrees at ${fmt(e.h)}` + (e.free ? ", free: the tip's hash came with its height" : ", one lookup"); break;
+    case "reorg": M.reorg = e.job; if (!e.job) M.probe = "The chain agrees with the node"; break;
+    case "held": M.held = e.on; break;
+    case "pool": M.pool = e.pool; break;
+    case "beat": M.beats.push(e.t); while (M.beats.length && M.beats[0] < e.t - 60000) M.beats.shift(); break;
+    case "fast": M.fastNew += e.scanned; break;
+    case "payment": M.found++; break;
+    case "rotation": M.rot = e.text; break;
+    case "queues": M.oblig = e.oblig; M.due = e.due; break;
+    case "trans": M.trans.unshift([e.from, e.to]); M.trans.length = Math.min(M.trans.length, 3); break;
+    case "vanished": M.vanished = e.text; break;
+    case "upkeep": M.upkeep = { prune: e.prune, range: e.range, ran: true }; break;
+    case "db":
+      M.db.q = e.q; M.db.jobs = e.jobs; if (e.turn != null) M.db.turn = e.turn;
+      M.db.rate.push(e.t); while (M.db.rate.length && M.db.rate[0] < e.t - 10000) M.db.rate.shift();
+      if (e.saved && e.saved.length) {
+        M.saves.push(e.t); while (M.saves.length && M.saves[0] < e.t - 60000) M.saves.shift();
+        for (const s of e.saved) M.savedCount[s] = (M.savedCount[s] || 0) + 1;
+      }
+      break;
+    case "hooks": M.hooksDue = e.due; break;
+    case "hooks_sent": M.sent.push([e.t, e.n]); while (M.sent.length && M.sent[0][0] < e.t - 300000) M.sent.shift(); break;
+    case "log": M.lastLog = e.t; break;
+  }
+}
+
+// ---- player ----
+let M = initModel();
+let applied = 0, head = 0, mode = "live";
+const keyframes = [{ t: 0, i: 0, m: structuredClone(M) }];
+let lastFrame = performance.now();
+// Applies events up to `to`, keeping a keyframe every 2 s of event time.
+function advance(to, animating) {
+  let changed = false;
+  while (applied < LOG.length && LOG[applied].t <= to) {
+    const e = LOG[applied++];
+    apply(M, e);
+    if (animating && e.t > to - 400) animate(e);
+    changed = true;
+    const last = keyframes[keyframes.length - 1];
+    if (applied > last.i && e.t - last.t >= KEYFRAME_EVERY) keyframes.push({ t: e.t, i: applied, m: structuredClone(M) });
+  }
+  return changed;
+}
+function seek(t) {
+  t = Math.max(0, Math.min(t, clock() - LAG));
+  let lo = 0, hi = keyframes.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (keyframes[mid].t <= t) lo = mid; else hi = mid - 1; }
+  const kf = keyframes[lo];
+  M = structuredClone(kf.m);
+  applied = kf.i;
+  advance(t, false);
+  head = t;
+  const [a, b] = view();
+  if (t < a || t > b) setWindow(t + (b - a) / 2, b - a);
+  clearTransient();
+  render(true);
+  tlDirty = true;
+}
+function setMode(m) {
+  mode = m;
+  $("play").textContent = m === "paused" ? "Play" : "Pause";
+  $("golive").disabled = m === "live";
+  $("tl-read").classList.toggle("paused", m !== "live");
+  stage.querySelectorAll(".token").forEach((t) => t.getAnimations().forEach((a) => (m === "paused" ? a.pause() : a.play())));
+  tlDirty = true;
+}
+$("play").onclick = () => setMode(mode === "paused" ? "replay" : "paused");
+$("golive").onclick = () => { setMode("live"); setWindow(null, win.span); seek(clock() - LAG); };
+function frame(now) {
+  const dt = now - lastFrame; lastFrame = now;
+  const live = clock() - LAG;
+  if (mode === "live") head = live;
+  else if (mode === "replay") {
+    head += dt;
+    if (head >= live) { head = live; setMode("live"); }
+    else if (win.end != null && head > win.end) setWindow(head + win.span * 0.8, win.span);
+  }
+  const changed = advance(head, mode !== "paused" && !document.hidden);
+  if (changed) render(false);
+  if (changed || mode !== "paused" || tlDirty) drawTimeline();
+  requestAnimationFrame(frame);
+}
+
+// ---- transient animations (never part of the model) ----
+const stage = $("stage");
+function anchor(name) {
+  if (!name) return null;
+  if (name.startsWith("cell:")) return cellEls.get(name.slice(5)) || cellEls.get("brk");
+  if (name.startsWith("pill:")) return pillEls.get(name.slice(5));
+  return { node: $("node-a"), pool: $("mp-dots"), orders: $("or-sum"), hooks: $("wh-sum"), reorg: $("rg-sum"), db: $("db-sum") }[name];
+}
+function centre(el) {
+  const s = stage.getBoundingClientRect(), r = el.getBoundingClientRect();
+  return [r.left + r.width / 2 - s.left, r.top + r.height / 2 - s.top];
+}
+function fly(from, to, cls, label, ms = 650, tier) {
+  if (reduced || !from || !to) return;
+  const [x0, y0] = centre(from), [x1, y1] = centre(to);
+  const t = document.createElement("div");
+  t.className = "token " + cls + (tier ? " t-" + tier : "");
+  if (label) t.textContent = label;
+  t.style.left = x0 + "px"; t.style.top = y0 + "px";
+  stage.appendChild(t);
+  const dx = x1 - x0, dy = y1 - y0, lift = Math.min(70, 16 + Math.abs(dx) / 10);
+  const a = t.animate([
+    { transform: "translate(-50%,-50%)", opacity: 0 },
+    { transform: `translate(-50%,-50%) translate(${dx * .5}px,${dy * .5 - lift}px)`, opacity: 1, offset: .5 },
+    { transform: `translate(-50%,-50%) translate(${dx}px,${dy}px)`, opacity: 1 },
+  ], { duration: ms, easing: "cubic-bezier(.45,0,.35,1)" });
+  a.finished.then(() => t.remove(), () => t.remove());
+}
+function pop(el, cls) {
+  if (!el) return;
+  el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), 700);
+}
+function clearTransient() { stage.querySelectorAll(".token, .ghostcell").forEach((t) => t.remove()); }
+function animate(e) {
+  switch (e.k) {
+    case "call": if (e.to) fly($("node-a"), anchor(e.to), "pkt" + (e.cls ? " " + e.cls : ""), e.label, 520); break;
+    case "flow": fly(anchor(e.from), anchor(e.to), e.cls, "", 650, e.tier); break;
+    case "block": pop($("node-a"), "spark"); requestAnimationFrame(() => { const c = cellEls.get(String(e.tip)); if (c) pop(c, "enter"); }); break;
+    case "probe": { const c = cellEls.get(String(e.h)); if (c) pop(c, "probe"); break; }
+    case "committed": { const c = cellEls.get(String(e.h)); if (c) pop(c, "flash"); break; }
+    case "beat": pop($("beat"), "lit"); break;
+    case "db": if (e.saved && e.saved.length) { const a = anchor(e.at); if (a) fly(a, $("db-sum"), "save", "", 450); e.saved.forEach((s) => pop($("sv-" + s), "lit")); } break;
+    case "tx_mined": {
+      const cell = cellEls.get(String(e.h));
+      for (const id of e.ids) { const d = dotEls.get(id); if (d) fly(d, cell, "token", "", 600, "mempool"); }
+      break;
+    }
+    case "hooks_sent": fly($("wh-spark"), $("wh-sum-t"), "envelope", "", 450); break;
+    case "upkeep": ["u-prune", "u-wal", "u-void", "u-range"].forEach((id, i) => setTimeout(() => pop($(id), "lit"), i * 80)); break;
+    case "rewound": {
+      for (let h = e.fork; h <= e.was; h++) {
+        const c = cellEls.get(String(h));
+        if (!c || reduced) continue;
+        const [x, y] = centre(c);
+        const g = c.cloneNode(true);
+        g.classList.add("ghostcell");
+        g.style.left = (x - c.offsetWidth / 2) + "px"; g.style.top = (y - c.offsetHeight / 2) + "px";
+        stage.appendChild(g);
+        g.animate([{ transform: "none", opacity: 1 }, { transform: "translateY(40px) rotate(8deg)", opacity: 0 }], { duration: 750, easing: "ease-in" }).finished.then(() => g.remove(), () => g.remove());
+      }
+      break;
+    }
+  }
+}
+
+// ---- view ----
+const cellEls = new Map(), pillEls = new Map(), dotEls = new Map(), barEls = new Map();
+function render(full) {
+  renderChain();
+  renderRound(full);
+  renderSide();
+  renderSummary();
+  renderEvents();
+}
+function maxCells() { return Math.max(12, Math.floor(($("strip-scroll").clientWidth - 30) / 26)); }
+function visibleHeights() {
+  const lowest = Math.min(...M.groups.map((g) => g.cursor));
+  const right = M.tip + 1, max = maxCells();
+  let left = Math.min(lowest - 1, right - max + 1);
+  if (M.reorg) left = Math.min(left, M.reorg.fork - 3);
+  if (right - left + 1 <= max) return range(left, right);
+  return [...range(lowest - 1, lowest + 5), "brk", ...range(right - (max - 11), right)];
+}
+function cellX(h) {
+  const el = cellEls.get(String(h));
+  if (el && el.isConnected) return el.offsetLeft + el.offsetWidth / 2;
+  const b = cellEls.get("brk");
+  return b && b.isConnected ? b.offsetLeft + b.offsetWidth / 2 : 0;
+}
+function renderChain() {
+  const list = visibleHeights();
+  const cells = $("cells");
+  const keep = new Set(list.map(String));
+  for (const [k, el] of cellEls) if (!keep.has(k)) { el.remove(); cellEls.delete(k); }
+  const cached = new Set(M.cached), reorg = new Set(M.reorgCells);
+  let prev = null;
+  for (const h of list) {
+    const key = String(h);
+    let el = cellEls.get(key);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = h === "brk" ? "brk" : "cell";
+      if (h !== "brk") el.innerHTML = '<span class="fill"></span>';
+      cellEls.set(key, el);
+    }
+    if ((prev ? prev.nextSibling : cells.firstChild) !== el) cells.insertBefore(el, prev ? prev.nextSibling : cells.firstChild);
+    prev = el;
+    if (h === "brk") {
+      const lowest = Math.min(...M.groups.map((g) => g.cursor));
+      const shown = list[list.indexOf("brk") + 1];
+      el.textContent = `${fmt(shown - (lowest + 5) - 1)} blocks`;
+      continue;
+    }
+    const st = h > M.tip ? "ghost" : reorg.has(h) ? "reorg" : h > M.hw ? (cached.has(h) ? "cached" : "new") : cached.has(h) ? "cached" : "";
+    const keepAnim = ["enter", "flash", "probe"].filter((c) => el.classList.contains(c));
+    el.className = ["cell", st, h < M.pruneBelow && h <= M.hw ? "pruned" : "", ...keepAnim].filter(Boolean).join(" ");
+    const fill = M.scan && M.scan.h === h ? M.scan.p : M.ckpt[h] || 0;
+    el.firstChild.style.width = (fill * 100) + "%";
+    let save = el.querySelector(".save");
+    if (M.ckpt[h] && !save) { save = document.createElement("span"); save.className = "save"; el.appendChild(save); }
+    if (!M.ckpt[h] && save) save.remove();
+    el.title = `Block ${fmt(h)}` + (h > M.tip ? ": the next block" : h > M.hw ? ": at the node, not recorded yet" : ": recorded") + (M.ckpt[h] ? ", scan saved part-way" : "");
+  }
+  const first = list.find((h) => h !== "brk");
+  const win0 = Math.max(M.hw - 19, first);
+  $("marks").innerHTML = `<span class="m-tip" style="left:${cellX(M.tip)}px">node tip</span>` +
+    (M.hw < M.tip ? `<span class="m-hw" style="left:${cellX(M.hw)}px">scanned to</span>` : "") +
+    `<span class="m-win" title="Reorg window: the last 20 recorded blocks, checked each round" style="left:${cellX(win0) - 11}px;width:${cellX(M.hw) - cellX(win0) + 22}px"></span>`;
+  $("axis").innerHTML = list.filter((h) => h !== "brk" && h % 5 === 0 && h <= M.tip).map((h) => `<span style="left:${cellX(h)}px">${fmt(h)}</span>`).join("");
+  const box = $("pills"), seen = new Set();
+  for (const g of M.groups) {
+    seen.add(g.id);
+    let el = pillEls.get(g.id);
+    if (!el) { el = document.createElement("div"); pillEls.set(g.id, el); box.appendChild(el); }
+    el.className = "pill " + (g.frontier ? "frontier" : "catchup") + (M.scan && M.scan.gid === g.id ? " busy" : "") + (M.reorg ? " waiting" : "");
+    el.textContent = (g.frontier ? "Frontier" : "Catching up") + `, ${plural(g.stores, "store")}` + (g.stores > 256 ? ` (${Math.ceil(g.stores / 256)} pages)` : "");
+    el.title = `${plural(g.stores, "store")} whose scan has reached block ${fmt(g.cursor)}`;
+    el.style.left = cellX(g.cursor) + "px";
+  }
+  for (const [id, el] of pillEls) if (!seen.has(id)) { el.remove(); pillEls.delete(id); }
+  $("cache-chip").textContent = `cache ${(M.cached.length * 0.4).toFixed(1)} MB of 64 MB`;
+}
+const lanes = {};
+(() => {
+  for (const t of TIERS) {
+    const lab = document.createElement("div");
+    lab.className = "lane-label";
+    lab.innerHTML = `<span class="tierchip t-${t}">${NAMES[t]}</span><small>${SHARE[t]} %</small>`;
+    const track = document.createElement("div");
+    track.className = "track t-" + t;
+    track.innerHTML = '<div class="playhead"></div>';
+    const out = document.createElement("div");
+    out.className = "outcome";
+    $("lanes").append(lab, track, out);
+    lanes[t] = { track, out, ph: track.firstChild };
+  }
+  const ruler = document.createElement("div");
+  ruler.className = "ruler";
+  ruler.innerHTML = '<span class="ruler-label num" id="ruler-label">0 s</span>';
+  $("lanes").append(document.createElement("div"), ruler, document.createElement("div"));
+})();
+let shownRound = -1;
+function renderRound(full) {
+  const R = M.round;
+  if (R.n !== shownRound || full) {
+    shownRound = R.n;
+    for (const t of TIERS) lanes[t].track.querySelectorAll(".bar, .share").forEach((x) => x.remove());
+    barEls.clear();
+  }
+  const ax = R.long ? Math.max(BUDGET, R.t) : Math.max(R.t * 1.15, 120);
+  for (const s of R.shares) {
+    let el = barEls.get("s" + s.tier);
+    if (!el) { el = document.createElement("div"); el.className = "share"; el.title = `${NAMES[s.tier]}'s reserved share`; lanes[s.tier].track.prepend(el); barEls.set("s" + s.tier, el); }
+    el.style.left = (s.at / ax * 100) + "%"; el.style.width = (s.ms / ax * 100) + "%";
+  }
+  for (const b of R.bars) {
+    let el = barEls.get(b.id);
+    if (!el) { el = document.createElement("div"); lanes[b.tier].track.appendChild(el); barEls.set(b.id, el); }
+    el.className = "bar" + (b.pass === 2 ? " p2" : "") + (b.running ? " running" : "");
+    el.style.left = (b.at / ax * 100) + "%";
+    el.style.width = Math.max(0.5, b.ms / ax * 100) + "%";
+  }
+  for (const t of TIERS) {
+    lanes[t].ph.style.left = Math.min(99.5, R.t / ax * 100) + "%";
+    const o = R.outcomes[t];
+    if (!o) { lanes[t].out.innerHTML = ""; continue; }
+    const text = o[0] + (o[1] ? ": " + o[1] : "");
+    lanes[t].out.innerHTML = `<span class="chip ${({ Idle: "ok", Backlogged: "hi", Waiting: "warn", Failed: "err" })[o[0]]}"></span>`;
+    lanes[t].out.firstChild.textContent = text;
+    lanes[t].out.title = text;
+  }
+  $("round-n").textContent = fmt(R.n);
+  $("round-state").textContent = R.state;
+  $("ruler-label").style.left = Math.min(99.5, R.t / ax * 100) + "%";
+  $("ruler-label").textContent = secs(R.t);
+  $("ribbon").innerHTML = M.ribbon.slice(-90).map((r) => {
+    if (r.gap) return `<i class="rgap${r.gap === "node" ? " node" : ""}" style="width:14px" title="${r.gap === "node" ? "slept, woken early by a new block" : "slept for the 1 s poll interval"}"></i>`;
+    const h = Math.max(4, Math.min(28, 6 + Math.log10(Math.max(1, r.ms)) * 6));
+    const segs = TIERS.filter((t) => r.per[t]).map((t) => `<i class="t-${t}" style="height:${r.per[t] / r.ms * 100}%"></i>`).join("");
+    return `<span class="rbar" style="height:${h}px" title="Round ${fmt(r.n)}: ${secs(r.ms)}">${segs}</span>`;
+  }).join("");
+}
+function renderSide() {
+  const r = M.reorg, d = $("d-reorg");
+  $("rg-sum-t").textContent = r ? `Reorg from ${fmt(r.fork)}: ${r.phase}` : M.probe;
+  d.classList.toggle("alert", !!r);
+  if (r && !d.dataset.auto) { d.open = true; d.dataset.auto = "1"; }
+  if (!r && d.dataset.auto) { d.open = false; delete d.dataset.auto; }
+  for (const s of ["detect", "collect", "process", "rewind"]) $("st-" + s).classList.toggle("on", !!r && r.phase === s);
+  $("rg-fork").textContent = r ? fmt(r.fork) : "–";
+  $("rg-cand").textContent = r ? r.cand : "–";
+  $("rg-dec").textContent = r ? `${r.keep} / ${r.move} / ${r.restore} / ${r.void}` : "–";
+  const dots = $("mp-dots"), want = M.pool.slice(-14), ids = new Set(want.map((x) => x.id));
+  for (const [id, el] of dotEls) if (!ids.has(id)) { el.remove(); dotEls.delete(id); }
+  for (const x of want) {
+    let el = dotEls.get(x.id);
+    if (!el) { el = document.createElement("span"); dotEls.set(x.id, el); dots.appendChild(el); }
+    el.className = "dot" + (x.scanned ? " scanned" : "") + (x.match ? " match" : "");
+    el.title = "Transaction " + x.id;
+  }
+  $("mp-sum-t").textContent = `${M.pool.length} in the pool` + (M.found ? `, ${plural(M.found, "payment")} found` : "");
+  $("mp-passes").textContent = fmt(M.beats.length * 2.6 | 0);
+  $("mp-new").textContent = M.fastNew; $("mp-found").textContent = M.found;
+  $("mp-bodies").textContent = `${M.pool.length}, ${M.pool.length * 3} KB`;
+  $("mp-rot").textContent = M.rot;
+  $("mm-bodies").textContent = `${M.pool.length}, ${M.pool.length * 3} KB`;
+  const waiting = M.oblig + M.due;
+  $("or-sum-t").textContent = M.held ? "paid held: reorg open" : waiting ? `${waiting} to recompute` : "nothing to recompute";
+  const lt = M.trans[0];
+  $("or-last").innerHTML = lt ? `<span class="muted">last</span> <span class="state state-${lt[1]}">${lt[1]}</span>` : "";
+  $("or-last").title = lt ? `last: ${lt[0]} to ${lt[1]}` : "";
+  const toks = (id, n) => { const q = $(id); if (q.childElementCount !== n) q.innerHTML = '<span class="tok"></span>'.repeat(n); };
+  toks("q-oblig", M.oblig); toks("q-due", M.due);
+  $("q-oblig-n").textContent = M.oblig; $("q-due-n").textContent = M.due;
+  $("trans").innerHTML = M.trans.map(([f, t]) => `<div class="trow"><span class="state state-${f}">${f}</span> to <span class="state state-${t}">${t}</span></div>`).join("");
+  $("vanished").textContent = M.vanished;
+  $("up-prune").textContent = M.upkeep.prune; $("up-range").textContent = M.upkeep.range;
+  $("up-sum-t").textContent = M.upkeep.ran ? `ran in round ${fmt(M.round.n)}` : "every round, in the background";
+  M.db.q.forEach((q, i) => { $("db-b" + i).style.height = Math.min(14, 2 + q * 6) + "px"; $("db-q" + i).textContent = `${q} of 64`; });
+  $("db-turn").textContent = ["Scanner", "Webhook", "Admin"][M.db.turn];
+  $("db-sum-t").textContent = `${(M.db.rate.length / 20).toFixed(1)} jobs a second, longest wait 1.7 ms`;
+  const buckets = new Array(30).fill(0);
+  for (const [t, n] of M.sent) { const i = 29 - Math.floor((head - t) / 10000); if (i >= 0 && i < 30) buckets[i] += n; }
+  const perMin = M.sent.filter(([t]) => t > head - 60000).reduce((s, [, n]) => s + n, 0);
+  $("wh-sum-t").textContent = `${perMin} a minute` + (M.hooksDue ? `, ${M.hooksDue} due` : "");
+  $("wh-due").textContent = M.hooksDue;
+  $("wh-5m").textContent = M.sent.reduce((s, [, n]) => s + n, 0);
+  const mx = Math.max(3, ...buckets);
+  const y = (v) => (16 - v / mx * 14).toFixed(1);
+  const pts = buckets.map((v, i) => `${(i * 3 + 1).toFixed(1)},${y(v)}`).join(" ");
+  $("wh-spark").innerHTML = `<line x1="1" y1="16.5" x2="89" y2="16.5" stroke="var(--line)" stroke-width="1"/><polygon points="1,16 ${pts} 88,16" fill="color-mix(in srgb, var(--ink) 12%, transparent)"/><polyline points="${pts}" stroke="var(--ink)" stroke-width="1.5" fill="none" stroke-linejoin="round"/><circle cx="88" cy="${y(buckets[29])}" r="2" fill="var(--ink)"/>`;
+  $("rs-sum-t").textContent = `${M.saves.length} saves a minute; ${M.cached.length} blocks and ${M.pool.length} pool bodies only in memory`;
+  for (const s of ["cursors", "blocks", "ckpt", "reorg", "recomputes", "webhooks"]) $("sv-" + s + "-v").textContent = fmt(M.savedCount[s] || 0);
+  $("mm-cache").textContent = `${M.cached.length} blocks, ${(M.cached.length * 0.4).toFixed(1)} MB`;
+}
+function renderSummary() {
+  $("s-tip").textContent = fmt(M.tip);
+  $("node-b-h").textContent = fmt(M.tip - 1);
+  $("node-call").textContent = M.call;
+  $("s-hw").textContent = fmt(M.hw);
+  const lowest = Math.min(...M.groups.map((g) => g.cursor));
+  const behind = M.tip - lowest;
+  const cu = M.groups.filter((g) => !g.frontier);
+  $("s-behind").textContent = fmt(behind);
+  $("s-behind-s").textContent = behind === 0 ? "caught up" : cu.length ? `about ${Math.max(1, Math.round(behind / 9))} s to catch up` : "a new block to scan";
+  const all = M.groups.reduce((n, g) => n + g.stores, 0), lag = cu.reduce((n, g) => n + g.stores, 0);
+  $("s-stores").textContent = all;
+  $("s-stores-s").textContent = lag ? `${lag} catching up` : "all at the tip";
+  $("s-round").textContent = M.lastRound ? secs(M.lastRound.ms) : "–";
+  $("s-round-s").textContent = M.lastRound && M.lastRound.backlog ? "work was left" : "of a 10 s budget";
+  $("s-pace").textContent = M.reorg ? "Reorg" : cu.length ? "Link" : "Nothing";
+  $("s-pace-s").textContent = M.reorg ? "blocks wait for the rewind" : cu.length ? "the node's link" : "caught up";
+}
+const filter = new Set([...TIERS, "loop"]);
+let shownLog = -2;
+(() => {
+  for (const t of [...TIERS, "loop"]) {
+    const l = document.createElement("label");
+    l.innerHTML = `<input type="checkbox" checked id="f-${t}"> <span class="tierchip t-${t}">${NAMES[t]}</span>`;
+    l.querySelector("input").onchange = (e) => { if (e.target.checked) filter.add(t); else filter.delete(t); shownLog = -2; renderEvents(); };
+    $("filters").appendChild(l);
+  }
+})();
+function renderEvents() {
+  if (shownLog === M.lastLog) return;
+  shownLog = M.lastLog;
+  const rows = [];
+  let lo = 0, hi = LOGIDX.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (LOGIDX[mid] < applied) lo = mid + 1; else hi = mid; }
+  for (let i = lo - 1; i >= 0 && rows.length < 60; i--) {
+    const e = LOG[LOGIDX[i]];
+    if (filter.has(e.tier)) rows.push(e);
+  }
+  const body = $("ev");
+  body.innerHTML = "";
+  rows.forEach((e, i) => {
+    const tr = document.createElement("tr");
+    tr.className = (e.key ? "key" : "") + (i === 0 && mode !== "live" ? " now" : "");
+    tr.innerHTML = `<td class="num muted">${fmt(e.round)}</td><td><span class="tierchip t-${e.tier}">${NAMES[e.tier]}</span></td><td></td>`;
+    tr.lastChild.textContent = e.text;
+    tr.onclick = () => { setMode("paused"); seek(e.t); };
+    body.appendChild(tr);
+  });
+}
+
+// ---- timeline: one track showing a window of the history. Drag to move
+// along the history, scroll to zoom, click to seek. Every event a thin line,
+// key events a circle; a thin bar along the bottom shows where the window
+// is in the whole history. ----
+const cv = $("tl"), ctx = cv.getContext("2d");
+const MIN_SPAN = 20000, BAR = 4;
+const win = { span: 5 * 60000, end: null }; // end null: the window follows now
+let hoverX = null;
+function view() {
+  const now = clock(), span = Math.min(win.span, now);
+  const end = win.end == null ? now : Math.min(win.end, now);
+  return [Math.max(0, end - span), Math.max(span, end)];
+}
+function setWindow(end, span) {
+  const now = clock();
+  win.span = Math.max(MIN_SPAN, Math.min(span, now));
+  win.end = end == null || end >= now - 250 ? null : Math.max(win.span, end);
+  tlDirty = true;
+}
+function xOf(t, w) { const [a, b] = view(); return (t - a) / (b - a) * w; }
+function tOf(x, w) { const [a, b] = view(); return a + x / w * (b - a); }
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function behindText(ms) { const s = Math.round(ms / 1000); return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? " " + (s % 60) + " s" : ""}`; }
+function logFrom(t) {
+  let lo = 0, hi = LOGIDX.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (LOG[LOGIDX[mid]].t < t) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+const tierColour = (e) => css("--viz-tier-" + (TIERS.includes(e.tier) ? e.tier : "chain"));
+function drawTimeline() {
+  tlDirty = false;
+  const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (!w) return;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const th = h - BAR - 1; // the events area, above the history bar
+  ctx.fillStyle = css("--surface-sunken"); ctx.fillRect(0, 0, w, th);
+  const [a, b] = view(), now = clock();
+  const xh = xOf(head, w), xl = xOf(now, w);
+  ctx.fillStyle = css("--line"); ctx.fillRect(Math.max(0, xh), 0, Math.max(0, Math.min(w, xl) - Math.max(0, xh)), th);
+  const mid = th / 2, keys = [];
+  ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1;
+  const from = logFrom(a);
+  for (const past of [true, false]) {
+    ctx.beginPath();
+    for (let j = from; j < LOGIDX.length; j++) {
+      const e = LOG[LOGIDX[j]];
+      if (e.t > b) break;
+      if ((e.t <= head) !== past) continue;
+      const x = Math.round(xOf(e.t, w)) + .5;
+      if (e.key) { keys.push([x, e]); continue; }
+      ctx.moveTo(x, mid - 6); ctx.lineTo(x, mid + 6);
+    }
+    ctx.globalAlpha = past ? .75 : .3; ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  for (const [x, e] of keys) {
+    ctx.beginPath(); ctx.arc(x, mid, 5, 0, Math.PI * 2);
+    ctx.fillStyle = tierColour(e);
+    ctx.globalAlpha = e.t > head ? .4 : 1;
+    ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = css("--paper-raised"); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = css("--ink");
+  if (xh >= 0 && xh <= w) {
+    ctx.fillRect(Math.round(xh) - 1, 0, 2, th);
+    ctx.beginPath(); ctx.moveTo(xh - 5, 0); ctx.lineTo(xh + 5, 0); ctx.lineTo(xh, 6); ctx.fill();
+  } else {
+    // The playhead is outside the window: an arrow at the edge it lies past.
+    const e = xh < 0 ? 0 : w, d = xh < 0 ? 9 : -9;
+    ctx.beginPath(); ctx.moveTo(e, mid); ctx.lineTo(e + d, mid - 7); ctx.lineTo(e + d, mid + 7); ctx.fill();
+  }
+  ctx.strokeStyle = css("--line-strong"); ctx.lineWidth = 1; ctx.strokeRect(.5, .5, w - 1, th - 1);
+  // The history bar: the whole history along the bottom edge, the window
+  // shown on it, and the playhead's place.
+  const y = h - BAR;
+  ctx.fillStyle = css("--line"); ctx.fillRect(0, y, w, BAR);
+  ctx.fillStyle = css("--accent-text"); ctx.fillRect(a / now * w, y, Math.max(3, (b - a) / now * w), BAR);
+  ctx.fillStyle = css("--ink"); ctx.fillRect(Math.round(head / now * w) - 1, y - 1, 2, BAR + 1);
+  const tip = $("tl-tipbox");
+  let best = null;
+  if (hoverX != null && !pan) for (const k of keys) if (Math.abs(k[0] - hoverX) < 7 && (!best || Math.abs(k[0] - hoverX) < Math.abs(best[0] - hoverX))) best = k;
+  tip.hidden = !best;
+  if (best) { tip.textContent = best[1].text; tip.style.left = Math.max(140, Math.min(w - 140, best[0])) + "px"; }
+  $("tl-text").textContent = mode === "live" ? "Live, 1.5 s behind" : `${mode === "paused" ? "Paused" : "Replaying"}, ${behindText(now - head)} behind live`;
+  cv.setAttribute("aria-valuenow", String(Math.round(head / now * 100)));
+  cv.setAttribute("aria-valuetext", $("tl-text").textContent);
+  const span = b - a;
+  const step = [5e3, 1e4, 15e3, 3e4, 6e4, 12e4, 3e5, 6e5].find((st) => span / st <= 7) || 6e5;
+  let ax = "";
+  for (let ago = Math.ceil((now - b) / step) * step; now - ago >= a; ago += step) {
+    const pct = (now - ago - a) / span * 100;
+    if (pct > 94 || pct < 6) continue;
+    ax += `<span style="left:${pct}%">${ago ? behindText(ago) + " ago" : "now"}</span>`;
+  }
+  const html = `<span style="left:0">${behindText(now - a)} ago</span>` + ax + `<span style="left:100%">${win.end == null ? "now" : behindText(now - b) + " ago"}</span>`;
+  if ($("tl-axis").innerHTML !== html) $("tl-axis").innerHTML = html;
+}
+let pan = null;
+(() => {
+  const tip = document.createElement("div");
+  tip.className = "tl-tip"; tip.id = "tl-tipbox"; tip.hidden = true;
+  $("tl-track").appendChild(tip);
+  const at = (ev) => { const r = cv.getBoundingClientRect(); return Math.max(0, Math.min(r.width, ev.clientX - r.left)); };
+  // A press that moves more than a few pixels drags the window along the
+  // history; one that doesn't is a click, and moves the playhead there.
+  cv.addEventListener("pointerdown", (ev) => {
+    const [a, b] = view();
+    pan = { x: at(ev), end: b, span: b - a, moved: false };
+    cv.setPointerCapture(ev.pointerId);
+  });
+  cv.addEventListener("pointermove", (ev) => {
+    hoverX = at(ev); tlDirty = true;
+    if (!pan) return;
+    const dx = hoverX - pan.x;
+    if (!pan.moved && Math.abs(dx) < 4) return;
+    pan.moved = true; cv.classList.add("panning");
+    setWindow(pan.end - dx / cv.clientWidth * pan.span, pan.span);
+  });
+  cv.addEventListener("pointerup", (ev) => {
+    if (pan && !pan.moved) { setMode("paused"); seek(tOf(at(ev), cv.clientWidth)); }
+    pan = null; cv.classList.remove("panning");
+  });
+  cv.addEventListener("pointerleave", () => { hoverX = null; tlDirty = true; });
+  cv.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const [a, b] = view(), tc = tOf(at(ev), cv.clientWidth), f = ev.deltaY > 0 ? 1.25 : 0.8;
+    const span = Math.max(MIN_SPAN, Math.min((b - a) * f, clock()));
+    setWindow(tc + (b - tc) * span / (b - a), span);
+  }, { passive: false });
+  cv.addEventListener("keydown", (ev) => {
+    const [a, b] = view(), span = b - a;
+    const logs = LOGIDX.map((i) => LOG[i]).filter((e) => ev.shiftKey || e.key);
+    if (ev.key === "ArrowLeft") { const p = logs.filter((e) => e.t < head - 1).pop(); if (p) { setMode("paused"); seek(p.t); } }
+    else if (ev.key === "ArrowRight") { const n = logs.find((e) => e.t > head + 1 && e.t <= clock() - LAG); if (n) { setMode("paused"); seek(n.t); } }
+    else if (ev.key === "PageUp") setWindow(b - span / 2, span);
+    else if (ev.key === "PageDown") setWindow(b + span / 2, span);
+    else if (ev.key === "+" || ev.key === "=") setWindow(b - span * 0.1, span * 0.8);
+    else if (ev.key === "-") setWindow(b + span * 0.125, span * 1.25);
+    else if (ev.key === "End") $("golive").click();
+    else if (ev.key === " ") $("play").click();
+    else return;
+    ev.preventDefault();
+  });
+})();
+
+// ---- start in a realistic working state ----
+for (let i = 0; i < 9; i++) ES.pool.push({ id: (0x1000000 + i * 7919).toString(16), match: false, scanned: true });
+emitPool(); emitChain(); emitGroups();
+addEventListener("resize", () => { render(true); tlDirty = true; });
+$("tl-text").textContent = "Loading the last 25 minutes";
+roundLoop(); fastLoop(); blockLoop(); webhookLoop();
+// History with something in it to scrub to: a store catching up 20 minutes
+// ago, a payment 13 minutes ago and a reorg 5 to 6 minutes ago.
+fastForward([[5 * 60000, scCatchUp], [12 * 60000, scPay], [19.4 * 60000, scReorg]]).then(() => {
+  head = clock() - LAG;
+  advance(head, false);
+  render(true);
+  lastFrame = performance.now();
+  requestAnimationFrame(frame);
+});
+})();
+</script>

@@ -1165,8 +1165,9 @@ mod tests {
     use axum::Router;
     use tower::ServiceExt;
 
-    use crate::db::{Db, TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD};
+    use crate::db::Db;
     use crate::engine_client::EngineClient;
+    use crate::http::test_support::admin_session_cookie;
     use crate::http::{build_router, AppState};
 
     fn test_exchange_rate_provider(
@@ -1288,30 +1289,6 @@ mod tests {
             .header("cookie", cookie)
             .body(Body::from(body))
             .unwrap()
-    }
-
-    /// Logs in as the harness-seeded admin account and returns its session
-    /// cookie's `name=value` pair, ready to attach as a `cookie` header.
-    async fn admin_session_cookie(router: &Router) -> String {
-        let response = router
-            .clone()
-            .oneshot(form_request(
-                "POST",
-                "/dashboard/login",
-                &[
-                    ("email", TEST_ADMIN_EMAIL),
-                    ("password", TEST_ADMIN_PASSWORD),
-                ],
-            ))
-            .await
-            .unwrap();
-        let set_cookie = response
-            .headers()
-            .get("set-cookie")
-            .expect("expected a session cookie from a correct admin login")
-            .to_str()
-            .unwrap();
-        set_cookie.split(';').next().unwrap().to_string()
     }
 
     /// The page a save leads to: the redirect's target after a successful

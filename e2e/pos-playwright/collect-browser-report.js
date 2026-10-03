@@ -34,8 +34,8 @@ async function main() {
     if (!fs.statSync(path.join(gallery, entry.image)).size) throw new Error(`empty screenshot ${entry.image}`);
     if (entry.stage !== 'failure') groups.add(entry.group);
   }
-  if (!(stagenet ? ['pos'] : ['checkout', 'pos', 'challenge', 'logs', 'pos-timeline']).every(group => groups.has(group))) {
-    throw new Error('browser screenshots lack a required checkout, POS, challenge, Logs or POS timeline stage');
+  if (!(stagenet ? ['pos'] : ['checkout', 'pos', 'challenge', 'logs', 'pos-timeline', 'engine']).every(group => groups.has(group))) {
+    throw new Error('browser screenshots lack a required checkout, POS, challenge, Logs, POS timeline or engine page stage');
   }
   if (!fs.existsSync(path.join(gallery, 'index.html'))) throw new Error('browser screenshot gallery is missing');
   const transformed = await sourceMaps.createSourceMapStore().transformCoverage(map);
@@ -46,6 +46,7 @@ async function main() {
     'crates/monokulo/static/checkout.js',
     'crates/monokulo/static/challenge.js',
     'crates/monokulo/static/monokulo-client.js',
+    'crates/monokulo/static/engine-view.js',
     'crates/monokulo/pos-ui/src/main.tsx',
     'crates/monokulo/pos-ui/src/timeline.ts',
   ];

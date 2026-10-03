@@ -18,11 +18,18 @@ use monokulo::{
     http::{build_router, AppState},
     views,
 };
+use shared::activity::{
+    Event, Group, Node, PoolPath, Snapshot, StoreGroup, Tier, TierOutcome, Transition,
+    UnitProgress, Wake,
+};
+use shared::order_status::OrderStatus;
 
 const ENCRYPTION_KEY: crypto::AtRestKey = crypto::AtRestKey::new([7; 32]);
 const VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
 const SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 const SESSION: &str = "coverage-session-token";
+/// An admin's session: the engine page is for admins only.
+const ADMIN_SESSION: &str = "coverage-admin-session-token";
 
 #[derive(Clone)]
 struct Controls {
@@ -36,6 +43,229 @@ struct Controls {
 
 async fn ready() -> &'static str {
     "ready"
+}
+
+/// What the fixture engine's mainnet scanner has been doing before the
+/// browser looks: a snapshot, a caught-up round and one with a store
+/// catching up, so the engine page has something to draw.
+fn record_baseline(engine: &TestEngineHandle) {
+    let activity = engine.activity(monero::Network::Mainnet);
+    activity.record(Event::Snapshot(Box::new(Snapshot {
+        round: 0,
+        tip: Some(3_412_880),
+        high_water: Some(3_412_880),
+        groups: vec![
+            StoreGroup {
+                cursor: 3_412_880,
+                stores: 41,
+            },
+            StoreGroup {
+                cursor: 3_412_838,
+                stores: 3,
+            },
+        ],
+        cache_budget_bytes: 64 * 1024 * 1024,
+        pool: shared::activity::Pool {
+            watched: true,
+            size: 4,
+            txids: vec![
+                "0a1b2c3d".into(),
+                "4e5f6a7b".into(),
+                "8c9d0e1f".into(),
+                "2a3b4c5d".into(),
+            ],
+        },
+        nodes: vec![
+            Node {
+                label: "node-a.example:18081".into(),
+                active: true,
+                cooling_down: false,
+            },
+            Node {
+                label: "node-b.example:18081".into(),
+                active: false,
+                cooling_down: false,
+            },
+        ],
+        database: shared::activity::Database {
+            queued: [1, 0, 0],
+            capacity: 64,
+            completed: 4_210,
+            max_queue_wait_us: 1_700,
+            max_run_us: 34_000,
+        },
+        ..Snapshot::default()
+    })));
+    // The node's whole pool, as the engine asks while the page is open.
+    activity.record(Event::NodePool {
+        txs: 23,
+        bytes: Some(96_000),
+        penalty_free: 300_000,
+    });
+    for event in round(1, Some(3_412_880), false) {
+        activity.record(event);
+    }
+}
+
+/// A round's own events: the chain checked, each tier's unit, its end.
+fn round(number: u64, tip: Option<u64>, backlogged: bool) -> Vec<Event> {
+    use shared::activity::Work;
+    let mut events = vec![
+        Event::RoundStarted {
+            round: number,
+            budget_ms: 10_000,
+            tip,
+        },
+        Event::Work {
+            tier: Tier::Chain,
+            start_ms: 0,
+            ms: 40,
+            what: Work::TipRequest,
+        },
+        Event::ChainChecked {
+            agrees: true,
+            looked_up: false,
+        },
+    ];
+    // Back to back from the tip request, as the engine records them.
+    let mut at = 40;
+    for tier in Tier::ALL {
+        let ms = if tier == Tier::Blocks { 160 } else { 3 };
+        events.push(Event::Unit {
+            tier,
+            pass: 1,
+            start_ms: at,
+            ms,
+            progress: UnitProgress::Idle,
+        });
+        at += ms;
+        events.push(Event::TierEnded {
+            tier,
+            outcome: if tier == Tier::Blocks && backlogged {
+                TierOutcome::Backlogged
+            } else {
+                TierOutcome::Idle
+            },
+        });
+    }
+    events.push(Event::Work {
+        tier: Tier::Blocks,
+        start_ms: at,
+        ms: 1,
+        what: Work::CacheCarry,
+    });
+    events.push(Event::RoundFinished {
+        round: number,
+        ms: at + 1,
+        backlogged,
+    });
+    events
+}
+
+/// `POST /__coverage/engine/story`: plays a story into the fixture
+/// engine's mainnet record, one event every 120 ms: a new block with a
+/// payment, a pool payment settling, the store catching up and joining
+/// the frontier, then a reorganisation from detection to rewind.
+async fn engine_story(State(control): State<Controls>) -> StatusCode {
+    let activity = control.engine.activity(monero::Network::Mainnet);
+    let mut story = Vec::new();
+    story.push(Event::Slept {
+        ms: 1_000,
+        woken_by: Wake::NewBlock,
+    });
+    story.extend(round(2, Some(3_412_881), true));
+    story.extend([
+        Event::Fetched {
+            from: 3_412_881,
+            count: 1,
+            bytes: 90_000,
+            ahead: false,
+        },
+        Event::BlockScanStarted {
+            height: 3_412_881,
+            group: Group::Frontier,
+            stores: 41,
+            txs: 30,
+            header_only: false,
+        },
+        Event::Committed {
+            height: 3_412_881,
+            group: Group::Frontier,
+            stores: 41,
+            matches: 1,
+            idle_moved: 0,
+            header_only: false,
+        },
+        Event::Recomputed {
+            orders: 1,
+            transitions: vec![Transition {
+                from: OrderStatus::Unconfirmed,
+                to: OrderStatus::Confirming,
+            }],
+        },
+        Event::PoolScanned {
+            path: PoolPath::Fast,
+            pool: 5,
+            scanned: 1,
+        },
+        Event::TxMatched {
+            path: PoolPath::Fast,
+            txid: "6e7f8a9b".into(),
+        },
+        Event::Recomputed {
+            orders: 1,
+            transitions: vec![Transition {
+                from: OrderStatus::Pending,
+                to: OrderStatus::Unconfirmed,
+            }],
+        },
+        Event::IdleAdvanced {
+            from: 3_412_838,
+            to: 3_412_881,
+            stores: 1,
+        },
+        Event::Fetched {
+            from: 3_412_839,
+            count: 8,
+            bytes: 720_000,
+            ahead: true,
+        },
+        Event::Checkpointed {
+            height: 3_412_839,
+            stores: 2,
+            done_txs: 1_200,
+            total_txs: 3_000,
+        },
+    ]);
+    for height in 3_412_839..=3_412_881 {
+        story.push(Event::Committed {
+            height,
+            group: Group::CatchUp,
+            stores: 2,
+            matches: 0,
+            idle_moved: 0,
+            header_only: false,
+        });
+    }
+    story.extend([
+        Event::Upkeep { pruned: 3 },
+        Event::ReorgFound { fork: 3_412_881 },
+        Event::ReorgCollected,
+        Event::ReorgProcessed {
+            examined: 1,
+            changed: 1,
+            voided: 0,
+        },
+        Event::ReorgRewound { fork: 3_412_881 },
+    ]);
+    story.extend(round(3, Some(3_412_881), false));
+    tokio::spawn(async move {
+        for event in story {
+            activity.record(event);
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        }
+    });
+    StatusCode::NO_CONTENT
 }
 
 async fn mark_paid(State(control): State<Controls>, Path(id): Path<String>) -> StatusCode {
@@ -254,6 +484,21 @@ async fn main() {
         monokulo::now_unix(),
     )
     .expect("create fixture session");
+    db.create_user(
+        &shared::ids::UserId::new("coverage-admin"),
+        "admin@example.test",
+        "unused",
+        true,
+        0,
+    )
+    .expect("create fixture admin");
+    db.create_session(
+        &shared::auth::RawToken::presented(ADMIN_SESSION).hash(),
+        &shared::ids::UserId::new("coverage-admin"),
+        monokulo::now_unix(),
+    )
+    .expect("create fixture admin session");
+    record_baseline(&engine);
     db.create_store_connection(
         &shared::ids::ConnectionId::new("coverage-store"),
         &shared::ids::UserId::new("coverage-merchant"),
@@ -320,6 +565,7 @@ async fn main() {
             "/__coverage/orders/{id}/browser-created",
             post(mark_browser_created),
         )
+        .route("/__coverage/engine/story", post(engine_story))
         .with_state(Controls {
             engine,
             client: state.engine.client.clone(),
@@ -346,7 +592,8 @@ async fn main() {
             "connection_id":"coverage-store",
             "public_key":tenant.public_key,
             "order_id":order.order_id,
-            "session":SESSION
+            "session":SESSION,
+            "admin_session":ADMIN_SESSION
         }))
         .0
     );
