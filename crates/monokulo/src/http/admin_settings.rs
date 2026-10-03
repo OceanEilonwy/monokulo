@@ -2423,17 +2423,11 @@ mod tests {
 
     /// The engine's own view of its settings, straight from its admin API.
     async fn engine_settings(engine: &engine_test_support::TestEngineHandle) -> serde_json::Value {
-        reqwest::Client::new()
-            .get(format!("http://{}/api/v1/admin/settings", engine.addr))
-            .header(
-                shared::auth::ENGINE_TOKEN_HEADER,
-                shared::auth::TEST_ENGINE_TOKEN,
-            )
-            .send()
+        EngineClient::embedded_for_tests(engine.router())
+            .get_settings()
             .await
             .unwrap()
             .json()
-            .await
             .unwrap()
     }
 
@@ -2847,18 +2841,25 @@ mod tests {
     }
 
     /// The options file on disk: the page names it, a save writes it
-    /// keeping the admin's own comments, the Reload button applies an edit
-    /// made by hand, and a bad edit is refused by line, changing nothing.
+    /// keeping the admin's own comments and the engine's table, the Reload
+    /// button applies an edit made by hand, and a bad edit is refused by
+    /// line, changing nothing. On the file as monokulo runs it, the engine
+    /// inside it keeping its settings in the same file.
     #[tokio::test]
     async fn the_options_file_is_named_saved_to_and_reloaded_from_the_page() {
         let dir = TempDir::new("options");
         let path = dir.0.join("monokulo.toml");
-        std::fs::write(&path, "# Mine.\n[signup]\nmode = \"public\"\n").unwrap();
-        let state = test_app_state_with_options(
-            "127.0.0.1:1".parse().unwrap(),
-            live_settings::OptionsFile::at(&path),
+        std::fs::write(
+            &path,
+            "# Mine.\n[signup]\nmode = \"public\"\n\n[engine.payment]\nconfirmations_required = 3\n",
         )
-        .await;
+        .unwrap();
+        let (engine, state) = embedded_on_file(&path).await;
+        assert_eq!(
+            engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"],
+            "3",
+            "the engine reads its table of the file"
+        );
         let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2879,7 +2880,7 @@ mod tests {
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "# Mine.\n[signup]\nmode = \"public\"\n\n[abuse]\nsoft_per_min = 61\n"
+            "# Mine.\n[signup]\nmode = \"public\"\n\n[engine.payment]\nconfirmations_required = 3\n\n[abuse]\nsoft_per_min = 61\n"
         );
 
         let reload = |fields: &'static [(&'static str, &'static str)]| {
@@ -2985,11 +2986,7 @@ mod tests {
         if std::fs::OpenOptions::new().append(true).open(&path).is_ok() {
             return; // Root: permission bits don't bind it.
         }
-        let state = test_app_state_with_options(
-            "127.0.0.1:1".parse().unwrap(),
-            live_settings::OptionsFile::at(&path),
-        )
-        .await;
+        let (engine, state) = embedded_on_file(&path).await;
         let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -3039,6 +3036,37 @@ mod tests {
         );
         assert_eq!(monokulo_value(&settings, "abuse.soft_per_min").0, "60");
 
+        // The engine keeps its settings in the same file: locked too, and
+        // a form that sends one anyway saves nothing.
+        let payments = body_text(
+            get(
+                &router,
+                &crate::views::admin::SettingsTab::Payments.href(),
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            !payments.contains(r#"name="payment.confirmations_required""#),
+            "the engine's settings in the file are locked: {payments}"
+        );
+        let refused = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "payments"), ("payment.confirmations_required", "4")],
+        )
+        .await;
+        if refused.status() == StatusCode::SEE_OTHER {
+            let html = unescaped(&follow(&router, &cookie, refused).await);
+            assert!(!html.contains("Settings saved and applied."), "{html}");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(
+            engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["source"],
+            "default"
+        );
+
         // The runtime switch still saves, to the database.
         let saved = post_settings(
             &router,
@@ -3059,11 +3087,7 @@ mod tests {
     async fn a_missing_options_file_is_created_by_the_first_save() {
         let dir = TempDir::new("missing");
         let path = dir.0.join("config").join("monokulo.toml");
-        let state = test_app_state_with_options(
-            "127.0.0.1:1".parse().unwrap(),
-            live_settings::OptionsFile::at(&path),
-        )
-        .await;
+        let (engine, state) = embedded_on_file(&path).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let page = unescaped(&body_text(get_settings_page(&router, &cookie).await).await);
@@ -3071,7 +3095,7 @@ mod tests {
             page.contains("Not created yet: saving a setting here creates it."),
             "{page}"
         );
-        assert!(page.contains(r#"name="engine.url""#), "editable: {page}");
+        assert!(page.contains(r#"name="public_url""#), "editable: {page}");
 
         let saved = post_settings(
             &router,
@@ -3088,6 +3112,416 @@ mod tests {
         assert!(
             page.contains("Saving here writes it; after editing it by hand, reload it."),
             "{page}"
+        );
+
+        // The engine's first save adds its table to the file monokulo made.
+        let saved = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "payments"), ("payment.confirmations_required", "4")],
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[abuse]\nsoft_per_min = 61\n\n[engine.payment]\nconfirmations_required = 4\n"
+        );
+        assert_eq!(
+            engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["source"],
+            "toml"
+        );
+    }
+
+    /// What a browser sends for `tab`: every setting the page shows there
+    /// that it can change, at the value shown, monokulo's and the engine's.
+    async fn tab_as_shown(
+        state: &AppState,
+        engine: &engine_test_support::TestEngineHandle,
+        tab: crate::views::admin::SettingsTab,
+    ) -> Vec<(String, String)> {
+        use crate::views::admin::{setting_placement, SettingOwner};
+        let mut form = vec![("tab".to_string(), tab.id().to_string())];
+        for view in state.settings.registry.as_ref().unwrap().describe() {
+            if setting_placement(view.key, SettingOwner::Monokulo).0 == tab
+                && view.locked.is_none()
+                && super::only_for_a_remote_engine(state, view.key).is_none()
+            {
+                form.push((view.key.to_string(), view.value));
+            }
+        }
+        let engine_view = engine_settings(engine).await;
+        for (key, view) in engine_view["scalars"].as_object().unwrap() {
+            if setting_placement(key, SettingOwner::Engine).0 == tab && view["locked"].is_null() {
+                let name = if super::is_monokulo_key(key) {
+                    format!("engine:{key}")
+                } else {
+                    key.clone()
+                };
+                form.push((name, view["value"].as_str().unwrap().to_string()));
+            }
+        }
+        form
+    }
+
+    /// Saving a tab as it is shown, nothing changed, leaves the options
+    /// file exactly as it was, for monokulo's settings and the engine's:
+    /// a field left at its default isn't a change. (Every default on the
+    /// tab used to be written into the file, pinned there for good.)
+    /// Changing one field then writes that one alone.
+    #[tokio::test]
+    async fn saving_a_tab_as_shown_leaves_the_options_file_as_it_was() {
+        use crate::views::admin::SettingsTab;
+        let dir = TempDir::new("as-shown");
+        let path = dir.0.join("monokulo.toml");
+        let text = "# Mine.\n[signup]\nmode = \"public\"\n";
+        std::fs::write(&path, text).unwrap();
+        let (engine, state) = embedded_on_file(&path).await;
+        let mut forms = Vec::new();
+        for tab in [
+            SettingsTab::Abuse,
+            SettingsTab::Payments,
+            SettingsTab::Server,
+        ] {
+            forms.push(tab_as_shown(&state, &engine, tab).await);
+        }
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+
+        for form in &forms {
+            assert!(form.len() > 2, "a tab with settings on it: {form:?}");
+            let fields: Vec<(&str, &str)> =
+                form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let save = post_settings(&router, &cookie, &fields).await;
+            assert_eq!(save.status(), StatusCode::SEE_OTHER, "{form:?}");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                text,
+                "nothing changed, nothing written: {form:?}"
+            );
+        }
+
+        // The Payments tab again, one engine field and one of monokulo's
+        // changed: those two are written, nothing else.
+        let mut payments = forms[1].clone();
+        for (key, value) in &mut payments {
+            match key.as_str() {
+                "payment.confirmations_required" => *value = "4".to_string(),
+                "exchange_rate.cache_seconds" => *value = "77".to_string(),
+                _ => {}
+            }
+        }
+        let fields: Vec<(&str, &str)> = payments
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let save = post_settings(&router, &cookie, &fields).await;
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.starts_with(text), "{saved}");
+        let added: Vec<&str> = saved[text.len()..]
+            .lines()
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(
+            added,
+            [
+                "[exchange_rate]",
+                "cache_seconds = 77",
+                "[engine.payment]",
+                "confirmations_required = 4"
+            ],
+            "{saved}"
+        );
+    }
+
+    /// monokulo with the engine inside it, on one options file at `path`,
+    /// wired as monokulo's `main` wires them: monokulo's own settings through
+    /// `file.leaving("engine")`, the engine's through `file.scoped("engine")`,
+    /// so its settings are the `[engine.*]` tables of the same file.
+    async fn embedded_on_file(
+        path: &std::path::Path,
+    ) -> (engine_test_support::TestEngineHandle, AppState) {
+        let file = live_settings::OptionsFile::at(path);
+        let engine = engine_test_support::TestEngineConfig::new()
+            .embedded()
+            .with_options(file.clone().scoped(crate::settings::ENGINE_TABLE))
+            .spawn()
+            .await;
+        let state = test_app_state_with_client(
+            EngineClient::embedded_for_tests(engine.router()),
+            file.leaving(crate::settings::ENGINE_TABLE),
+        )
+        .await;
+        (engine, state)
+    }
+
+    /// Every setting an engine inside monokulo has saves from the admin
+    /// page into the `[engine.*]` tables of monokulo's own options file,
+    /// leaving monokulo's settings and the admin's comments as they were,
+    /// and reads back from there. The embedded counterpart of
+    /// `every_remote_engine_setting_on_the_admin_page_saves_correctly_over_http`,
+    /// less the remote engine's own `server.bind` and `logging.*`.
+    #[tokio::test]
+    async fn every_embedded_engine_setting_saves_from_the_admin_page_into_monokulos_options_file() {
+        let dir = TempDir::new("embedded-every");
+        let path = dir.0.join("monokulo.toml");
+        let mine = "# Mine.\n[signup]\nmode = \"public\"\n";
+        std::fs::write(&path, mine).unwrap();
+        let (engine, state) = embedded_on_file(&path).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+
+        let new_values: &[(&str, &str)] = &[
+            ("key_custody.enabled_backends", "plain"),
+            ("key_custody.default_backend", "plain"),
+            ("key_custody.socket_path", ""),
+            ("key_custody.socket_connections", "7"),
+            ("payment.confirmations_required", "5"),
+            ("payment.order_expiry_minutes", "45"),
+            ("payment.reorg_check_depth", "15"),
+            ("payment.mempool_poll_interval_ms", "2000"),
+            ("payment.expired_order_grace_period_minutes", "500"),
+            ("payment.scan_chunk_memory_budget_mb", "16"),
+            ("monero_node.strict_tls", "true"),
+            ("proof_of_work.mainnet", "false"),
+            ("proof_of_work.stagenet", "true"),
+            ("proof_of_work.testnet", "true"),
+            ("server.worker_threads", "4"),
+            ("server.cpus", "0"),
+            ("server.nice", "5"),
+            ("server.rate_limit_per_token_per_min", "200"),
+            ("server.max_body_bytes", "16384"),
+            // The same key as monokulo's own, so sent as `engine:<key>`.
+            ("engine:database.read_connections", "6"),
+            ("webhooks.allow_private_urls", "true"),
+            ("webhooks.delivery_timeout_ms", "10000"),
+            ("webhooks.max_attempts", "12"),
+        ];
+        assert_eq!(
+            new_values.len(),
+            engine::engine_settings::embedded_settings()
+                .iter()
+                .filter(|s| (s.sources().toml || s.sources().database) && s.editable())
+                .count()
+                - engine::engine_settings::NETWORKS.len(),
+            "this test must cover every setting an embedded engine has that the page can save, \
+             apart from the node ones"
+        );
+
+        let save = router
+            .clone()
+            .oneshot(authed_form_request(
+                "POST",
+                "/dashboard/admin/settings",
+                &cookie,
+                new_values,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+        let html = unescaped(&follow(&router, &cookie, save).await);
+        assert!(html.contains("Settings saved and applied."), "{html}");
+        assert!(
+            html.contains("take effect after the engine restarts"),
+            "worker threads are restart-only: {html}"
+        );
+        assert!(
+            !html.contains("set monokulo's engine.url to"),
+            "an engine inside monokulo has no address to point monokulo at: {html}"
+        );
+
+        let html = settings_tabs_html(&router, &cookie).await;
+        for (key, value) in new_values {
+            if value.is_empty() {
+                continue; // see the remote test: an empty value can't be told apart
+            }
+            assert!(
+                shows_value(&html, value),
+                "expected {key}={value:?} to have round-tripped, got: {html}"
+            );
+        }
+
+        // Where each one went: the file's `[engine.*]` tables, or the
+        // engine's database for a runtime switch. Nothing else in the file
+        // moved.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with(mine),
+            "monokulo's own part is kept: {text}"
+        );
+        let view = engine_settings(&engine).await;
+        let mut in_file = 0;
+        for (key, _) in new_values {
+            let key = key.trim_start_matches("engine:");
+            let source = view["scalars"][key]["source"].as_str().unwrap_or_default();
+            let (table, name) = key.rsplit_once('.').unwrap();
+            match source {
+                "toml" => {
+                    in_file += 1;
+                    let table_text = text
+                        .split(&format!("[engine.{table}]\n"))
+                        .nth(1)
+                        .unwrap_or_else(|| panic!("no [engine.{table}] for {key}: {text}"));
+                    let table_text = table_text.split("\n[").next().unwrap();
+                    assert!(
+                        table_text
+                            .lines()
+                            .any(|line| line.starts_with(&format!("{name} = "))),
+                        "{key} under [engine.{table}]: {text}"
+                    );
+                }
+                "database" => assert!(
+                    !text.contains(&format!("{name} = ")),
+                    "{key} is a runtime switch, not in the file: {text}"
+                ),
+                // Sent at its default (`plain` is the only backend here):
+                // not a change, so not written.
+                "default" => assert!(
+                    !text.contains(&format!("{name} = ")),
+                    "{key} is at its default, not pinned into the file: {text}"
+                ),
+                other => panic!("{key} came back from {other:?}: {view}"),
+            }
+        }
+        assert!(in_file > 0, "{text}");
+        assert!(
+            !text.contains("[engine.logging]") && !text.contains("bind"),
+            "no standalone-only setting reaches the file: {text}"
+        );
+    }
+
+    /// A standalone engine's own settings (`server.bind`, `server.token`,
+    /// `logging.*`) mean nothing to an engine inside monokulo: the page
+    /// doesn't offer them, and a form that sends them anyway saves nothing,
+    /// to the engine or to the file.
+    #[tokio::test]
+    async fn an_embedded_engines_standalone_only_settings_are_not_offered_and_a_form_sending_them_saves_nothing(
+    ) {
+        let dir = TempDir::new("embedded-standalone-only");
+        let path = dir.0.join("monokulo.toml");
+        let text = "[signup]\nmode = \"public\"\n";
+        std::fs::write(&path, text).unwrap();
+        let (engine, state) = embedded_on_file(&path).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+
+        let html = settings_tabs_html(&router, &cookie).await;
+        for setting in engine::engine_settings::STANDALONE_ONLY {
+            assert!(
+                !html.contains(&format!("engine:{}", setting.key())),
+                "{} isn't offered for an engine inside monokulo: {html}",
+                setting.key()
+            );
+        }
+        let before = engine_settings(&engine).await;
+        for setting in engine::engine_settings::STANDALONE_ONLY {
+            assert!(
+                before["scalars"].get(setting.key()).is_none(),
+                "{} isn't among an embedded engine's settings: {before}",
+                setting.key()
+            );
+        }
+
+        for (tab, key, value) in [
+            ("server", "engine:server.bind", "127.0.0.1:9443"),
+            ("logging", "engine:logging.level", "debug"),
+            ("logging", "engine:logging.max_mb", "300"),
+        ] {
+            let response = post_settings(&router, &cookie, &[("tab", tab), (key, value)]).await;
+            let saved = response.status() == StatusCode::SEE_OTHER;
+            let html = if saved {
+                unescaped(&follow(&router, &cookie, response).await)
+            } else {
+                unescaped(&body_text(response).await)
+            };
+            assert!(
+                !html.contains("Settings saved and applied."),
+                "{key} is not saved: {html}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                text,
+                "{key}: the file is untouched"
+            );
+        }
+        let after = engine_settings(&engine).await;
+        assert_eq!(
+            after["scalars"], before["scalars"],
+            "the engine is untouched"
+        );
+    }
+
+    /// One tab with both monokulo's and the engine's settings: both halves
+    /// are written into the one file, each in its own place, the admin's
+    /// comments and the tables already there kept.
+    #[tokio::test]
+    async fn a_mixed_tab_writes_both_halves_into_the_one_options_file() {
+        let dir = TempDir::new("embedded-mixed");
+        let path = dir.0.join("monokulo.toml");
+        std::fs::write(
+            &path,
+            "# Mine.\n[signup]\nmode = \"public\"\n\n# The engine's.\n[engine.payment]\nreorg_check_depth = 12\n",
+        )
+        .unwrap();
+        let (engine, state) = embedded_on_file(&path).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+
+        let save = post_settings(
+            &router,
+            &cookie,
+            &[
+                ("tab", "payments"),
+                ("payment.confirmations_required", "7"),
+                ("exchange_rate.cache_seconds", "88"),
+            ],
+        )
+        .await;
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+        let html = follow(&router, &cookie, save).await;
+        assert!(html.contains("Settings saved and applied."), "{html}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# Mine.\n[signup]\nmode = \"public\"\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "# The engine's.\n[engine.payment]\nreorg_check_depth = 12\nconfirmations_required = 7\n"
+            ),
+            "the engine's half joins its table: {text}"
+        );
+        assert!(
+            text.contains("[exchange_rate]\ncache_seconds = 88\n"),
+            "monokulo's half, its own table: {text}"
+        );
+        let view = engine_settings(&engine).await;
+        assert_eq!(
+            view["scalars"]["payment.reorg_check_depth"]["value"], "12",
+            "the engine read its table: {view}"
+        );
+        assert_eq!(
+            view["scalars"]["payment.confirmations_required"]["source"],
+            "toml"
+        );
+
+        // And again, now that each handle has written the file: neither
+        // refuses the next save as "changed since it was loaded".
+        let again = post_settings(
+            &router,
+            &cookie,
+            &[
+                ("tab", "payments"),
+                ("payment.confirmations_required", "8"),
+                ("exchange_rate.cache_seconds", "89"),
+            ],
+        )
+        .await;
+        assert_eq!(again.status(), StatusCode::SEE_OTHER);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("confirmations_required = 8\n") && text.contains("cache_seconds = 89\n"),
+            "{text}"
         );
     }
 
