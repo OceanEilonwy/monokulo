@@ -1,0 +1,151 @@
+#!/bin/sh /etc/rc.common
+# Monokulo and its engine, as two procd instances of one service. How they
+# start (port, listen address, data folder, the engine's CPUs) is in
+# /etc/config/monokulo, or LuCI: Services > Monokulo; saving restarts them.
+# Everything else is set on monokulo's own admin page, which saves to the
+# options files in the data folder.
+
+START=99
+STOP=10
+USE_PROCD=1
+
+# Created by the package (USERID in its Makefile).
+RUN_AS=monokulo
+# Runs /usr/bin/monokulo-engine on the CPUs it is given.
+PINNED_ENGINE=/usr/libexec/monokulo/monokulo-engine
+# The encryption key for monokulo's data at rest and the engine token: made
+# once, readable by root only, and passed to the two processes in their
+# environment (they take secrets from nowhere else).
+SECRETS_DIR=/etc/monokulo
+SECRETS=$SECRETS_DIR/secrets
+
+log() {
+	logger -t monokulo "$*"
+}
+
+random_hex() {
+	hexdump -vn32 -e '32/1 "%02x"' /dev/urandom
+}
+
+secret() {
+	sed -n "s/^$1=//p" "$SECRETS"
+}
+
+# Never replaced once written: without the encryption key, monokulo's data
+# can't be read.
+ensure_secrets() {
+	if [ ! -s "$SECRETS" ]; then
+		mkdir -p "$SECRETS_DIR" || return 1
+		chmod 700 "$SECRETS_DIR"
+		(
+			umask 077
+			printf 'MONOKULO_ENCRYPTION_KEY=%s\nENGINE_TOKEN=%s\n' "$(random_hex)" "$(random_hex)" >"$SECRETS.new"
+		) && mv "$SECRETS.new" "$SECRETS" || return 1
+		log "created $SECRETS. Back it up: without it monokulo's data can't be read."
+	fi
+	chown root:root "$SECRETS"
+	chmod 600 "$SECRETS"
+	case "$(secret MONOKULO_ENCRYPTION_KEY)$(secret ENGINE_TOKEN)" in
+	*[!0-9a-f]* | '')
+		log "$SECRETS is damaged: it needs MONOKULO_ENCRYPTION_KEY and ENGINE_TOKEN, each 64 hex characters. Restore it from a backup."
+		return 1
+		;;
+	esac
+	[ "$(secret MONOKULO_ENCRYPTION_KEY | wc -c)" = 65 ] && [ "$(secret ENGINE_TOKEN | wc -c)" = 65 ] || {
+		log "$SECRETS is damaged: each secret must be 64 hex characters. Restore it from a backup."
+		return 1
+	}
+}
+
+# Use the data folder only if it is monokulo's own: new, empty, or already
+# owned by monokulo. Never take over some other directory.
+prepare_data_dir() {
+	local dir="$1" owner
+	case "$dir" in
+	/tmp/* | /var/*) log "the data folder $dir is in memory and would be lost on reboot; choose one on storage"; return 1 ;;
+	/*) ;;
+	*) log "the data folder must be an absolute path, not '$dir'"; return 1 ;;
+	esac
+	[ -e "$dir" ] || mkdir -p "$dir" || return 1
+	if [ ! -d "$dir" ]; then
+		log "the data folder $dir is not a folder"
+		return 1
+	fi
+	owner=$(ls -ld "$dir" | awk '{ print $3 }')
+	if [ "$owner" != "$RUN_AS" ] && [ -n "$(ls -A "$dir")" ]; then
+		log "not using $dir: it holds other files and isn't monokulo's own folder; choose a new or empty folder in Services > Monokulo"
+		return 1
+	fi
+	chown -R "$RUN_AS:$RUN_AS" "$dir"
+	chmod 700 "$dir"
+}
+
+start_service() {
+	local enabled port listen engine_port data_dir engine_cpus engine_nice addr
+
+	config_load monokulo
+	config_get_bool enabled main enabled 1
+	[ "$enabled" = 1 ] || return 0
+	config_get port main port 8081
+	config_get listen main listen lan
+	config_get engine_port main engine_port 8443
+	config_get data_dir main data_dir /srv/monokulo
+	config_get engine_cpus main engine_cpus '2,3'
+	config_get engine_nice main engine_nice 10
+
+	case "$listen" in
+	all) addr=0.0.0.0 ;;
+	loopback) addr=127.0.0.1 ;;
+	*)
+		. /lib/functions/network.sh
+		network_get_ipaddr addr lan || {
+			log "the lan interface has no address yet; waiting for it"
+			return 0
+		}
+		;;
+	esac
+
+	ensure_secrets || return 1
+	prepare_data_dir "$data_dir" || return 1
+
+	# The engine: private, on loopback, for monokulo alone. Pinned to some
+	# CPUs and niced so catching up with the chain never takes the router's
+	# whole CPU (its scan slots follow the CPUs it may use).
+	if [ -n "$engine_cpus" ] && ! taskset -c "$engine_cpus" true 2>/dev/null; then
+		log "can't pin the engine to CPUs '$engine_cpus' (no such CPUs here, or no taskset); it may use all of them"
+		engine_cpus=
+	fi
+	procd_open_instance engine
+	procd_set_param command "$PINNED_ENGINE" "$engine_cpus" \
+		--options "$data_dir/engine.toml" \
+		--server-bind "127.0.0.1:$engine_port" \
+		--database-path "$data_dir/engine.db"
+	[ -n "$engine_nice" ] && procd_set_param nice "$engine_nice"
+	procd_set_param env ENGINE_TOKEN="$(secret ENGINE_TOKEN)"
+	procd_set_param user "$RUN_AS"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	procd_open_instance monokulo
+	procd_set_param command /usr/bin/monokulo \
+		--options "$data_dir/monokulo.toml" \
+		--server-bind "$addr:$port" \
+		--database-path "$data_dir/monokulo.db" \
+		--engine-url "http://127.0.0.1:$engine_port"
+	procd_set_param env \
+		MONOKULO_ENCRYPTION_KEY="$(secret MONOKULO_ENCRYPTION_KEY)" \
+		MONOKULO_ENGINE_TOKEN="$(secret ENGINE_TOKEN)"
+	procd_set_param user "$RUN_AS"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger monokulo
+	# In "LAN only" mode the listen address follows the LAN interface.
+	procd_add_interface_trigger "interface.*.up" lan /etc/init.d/monokulo restart
+}

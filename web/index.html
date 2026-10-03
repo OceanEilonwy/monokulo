@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monokulo: Monero payments from your router</title>
+<meta name="description" content="Monokulo is a self-hosted Monero payment gateway that runs on an OpenWrt router like the GL.iNet Flint 2. Watch-only: it never holds a spend key.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<!-- Colours come only from monokulo's own theme (crates/monokulo/src/views/theme.css,
+     copied here at build time): light or dark follows the OS. -->
+<link rel="stylesheet" href="assets/theme.css">
+<style>
+@font-face{font-family:"Manrope";font-style:normal;font-weight:500;font-display:swap;src:url(assets/manrope-500.woff2) format("woff2")}
+@font-face{font-family:"Manrope";font-style:normal;font-weight:700;font-display:swap;src:url(assets/manrope-700.woff2) format("woff2")}
+@font-face{font-family:"Manrope";font-style:normal;font-weight:800;font-display:swap;src:url(assets/manrope-800.woff2) format("woff2")}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font:500 16px/1.6 var(--font-ui);overflow-x:hidden}
+a{color:var(--ink);text-decoration-thickness:1px}
+a:hover{color:var(--accent-text)}
+:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+h1,h2,h3{font-weight:800;letter-spacing:-.01em;line-height:1.15;margin:0}
+p{margin:0}
+code{font-family:var(--font-mono);font-size:.9em;background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius-sm);padding:.05em .35em;overflow-wrap:anywhere}
+
+header{background:var(--chrome-bg);color:var(--chrome-ink);border-bottom:3px solid var(--chrome-rule)}
+.bar{max-width:1040px;margin:0 auto;padding:var(--space-md) var(--space-lg);display:flex;align-items:center;justify-content:space-between;gap:var(--space-lg);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:var(--space-sm);color:var(--chrome-ink);text-decoration:none;font-weight:800;font-size:20px}
+.logo-pupil{fill:var(--brand-orange)}
+nav{display:flex;gap:var(--space-lg);flex-wrap:wrap;font-weight:700;font-size:15px}
+nav a{color:var(--chrome-ink);text-decoration:none}
+nav a:hover{text-decoration:underline}
+
+main{max-width:1040px;margin:0 auto;padding:var(--space-xl) var(--space-lg) 64px;display:flex;flex-direction:column;gap:56px}
+.card{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius-lg);padding:var(--space-xl)}
+.card h3{font-size:18px;margin-bottom:var(--space-sm)}
+.muted{color:var(--muted)}
+.small{font-size:14px}
+
+.hero{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--space-xl);align-items:center;padding-top:var(--space-xl)}
+.hero .mark{color:var(--ink)}
+.hero h1{font-size:clamp(32px,5.5vw,52px);margin-bottom:var(--space-md)}
+.hero .lead{font-size:18px;color:var(--muted);max-width:40em}
+.actions{display:flex;gap:var(--space-md);flex-wrap:wrap;margin-top:var(--space-xl)}
+.btn{display:inline-flex;align-items:center;min-height:44px;padding:0 var(--space-xl);border:1px solid var(--btn-border);border-radius:var(--radius-md);background:var(--btn-bg);color:var(--btn-ink);font:700 16px var(--font-ui);text-decoration:none;cursor:pointer}
+.btn:hover{background:var(--btn-hover-bg);border-color:var(--btn-hover-border);color:var(--btn-ink)}
+.btn-primary{background:var(--btn-primary-bg);border-color:var(--btn-primary-bg);color:var(--btn-primary-ink)}
+.btn-primary:hover{background:var(--btn-primary-hover);border-color:var(--btn-primary-hover);color:var(--btn-primary-ink)}
+
+.section-title{margin-bottom:var(--space-xl)}
+.section-title h2{font-size:clamp(26px,4vw,34px)}
+.section-title p{color:var(--muted);margin-top:var(--space-xs)}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-lg)}
+.grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid .card p{color:var(--muted)}
+
+.install{display:flex;flex-direction:column;gap:var(--space-lg)}
+.install ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:var(--space-xl)}
+.install ol>li{display:flex;gap:var(--space-lg)}
+.install ol>li>div{flex:1;min-width:0;display:flex;flex-direction:column;gap:var(--space-sm)}
+.num{flex-shrink:0;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:var(--tint-highlight);border:1px solid var(--accent-text);color:var(--ink);font-weight:800}
+.cmd{position:relative}
+pre{margin:0;padding:var(--space-md) var(--space-lg);padding-right:84px;overflow-x:auto;background:var(--surface-sunken);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius-md);font:14px/1.6 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.copy{position:absolute;top:var(--space-sm);right:var(--space-sm);min-height:30px;padding:0 var(--space-md);border:1px solid var(--btn-border);border-radius:var(--radius-sm);background:var(--btn-bg);color:var(--btn-ink);font:700 13px var(--font-ui);cursor:pointer}
+.copy:hover{background:var(--btn-hover-bg)}
+.note{padding:var(--space-md) var(--space-lg);border-radius:var(--radius-md);background:var(--tint-warning);border:1px solid var(--warning);font-size:15px}
+.note.info{background:var(--tint-neutral);border-color:var(--line-strong)}
+.req{display:flex;flex-wrap:wrap;gap:var(--space-sm);margin-top:var(--space-xs)}
+.req span{padding:4px 12px;border-radius:999px;background:var(--surface-sunken);border:1px solid var(--line);font-size:14px;font-weight:700}
+.files{margin:var(--space-sm) 0 0;padding-left:20px}
+.path{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;align-self:flex-start;padding:2px 10px;border-radius:var(--radius-sm);background:var(--surface-sunken);border:1px solid var(--line);font-weight:700;font-size:15px}
+.path.inline{display:inline;padding:1px 8px}
+.path b{color:var(--accent-text)}
+.path em{font-style:normal;text-decoration:underline;text-underline-offset:3px}
+.tabs{display:flex;gap:var(--space-xs);margin:-4px 0 var(--space-xl);border-bottom:2px solid var(--line)}
+.tabs[hidden]{display:none}
+.tabs [role=tab]{position:relative;top:2px;min-height:44px;padding:0 var(--space-lg);border:0;border-bottom:3px solid transparent;background:none;color:var(--muted);font:700 16px var(--font-ui);cursor:pointer}
+.tabs [role=tab][aria-selected=true]{color:var(--ink);border-bottom-color:var(--tab-current)}
+.tabpanel+.tabpanel{margin-top:var(--space-xl)}
+.js .tabpanel+.tabpanel{margin-top:0}
+.js .nojs{display:none}
+footer{max-width:1040px;margin:0 auto;padding:0 var(--space-lg) var(--space-xl);color:var(--muted);font-size:14px;text-align:center}
+
+@media (max-width:820px){
+  .hero,.grid,.grid.two{grid-template-columns:minmax(0,1fr)}
+  .hero .mark{width:56px;height:56px}
+  main{gap:40px}
+  .card{padding:var(--space-lg)}
+}
+@media (max-width:520px){
+  pre{padding:44px var(--space-md) var(--space-md)}
+  .install ol>li{gap:var(--space-sm)}
+  .tabs [role=tab]{padding:0 var(--space-md);font-size:15px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <a class="brand" href="#top">
+      <svg width="30" height="30" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><line x1="19.7" y1="16.3" x2="15.5" y2="12.5" stroke="currentColor" stroke-width="2.25"/><circle cx="13.5" cy="10.5" r="2.25" fill="none" stroke="currentColor" stroke-width="2.25"/><line x1="39.3" y1="39.3" x2="56" y2="56" stroke="currentColor" stroke-width="6" stroke-linecap="round"/><circle cx="28" cy="28" r="16" fill="none" stroke="currentColor" stroke-width="5"/><path d="M19,28 Q28,20.5 37,28 Q28,35.5 19,28 Z" fill="none" stroke="currentColor" stroke-width="1.75"/><circle class="logo-pupil" cx="28" cy="28" r="5" stroke="currentColor" stroke-width="1"/><rect x="26.1" y="26.1" width="3.8" height="3.8" fill="currentColor" transform="rotate(45 28 28)"/></svg>
+      <span>Monokulo</span>
+    </a>
+    <nav aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#install">Install</a>
+      <a href="@REPO_URL@">Source code</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <svg class="mark" width="96" height="96" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><line x1="19.7" y1="16.3" x2="15.5" y2="12.5" stroke="currentColor" stroke-width="2.25"/><circle cx="13.5" cy="10.5" r="2.25" fill="none" stroke="currentColor" stroke-width="2.25"/><line x1="39.3" y1="39.3" x2="56" y2="56" stroke="currentColor" stroke-width="6" stroke-linecap="round"/><circle cx="28" cy="28" r="16" fill="none" stroke="currentColor" stroke-width="5"/><path d="M19,28 Q28,20.5 37,28 Q28,35.5 19,28 Z" fill="none" stroke="currentColor" stroke-width="1.75"/><circle class="logo-pupil" cx="28" cy="28" r="5" stroke="currentColor" stroke-width="1"/><rect x="26.1" y="26.1" width="3.8" height="3.8" fill="currentColor" transform="rotate(45 28 28)"/></svg>
+    <div>
+      <h1>Accept Monero, from your own router</h1>
+      <p class="lead">Monokulo is a self-hosted Monero payment gateway. It runs on your OpenWrt router, watches the chain with each store’s view key, and tells the store when an order is paid. It never holds a spend key, so it can never move your coins.</p>
+      <div class="actions">
+        <a class="btn btn-primary" href="#install">Install on your Flint 2</a>
+        <a class="btn" href="@REPO_URL@">Source on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="section-title">
+      <h2>How it works</h2>
+      <p>Two small programs on the router, a page in LuCI, and a Monero node it can reach.</p>
+    </div>
+    <div class="grid">
+      <div class="card"><h3>Watch-only</h3><p>Each store gives Monokulo its view key, never its spend key. Payments go straight to the store’s own wallet; Monokulo just sees them arrive.</p></div>
+      <div class="card"><h3>Checkout that works anywhere</h3><p>A hosted checkout page and embed for static sites, a point-of-sale screen, and webhooks when an order is paid. The checkout works without JavaScript.</p></div>
+      <div class="card"><h3>Fast detection</h3><p>Payments show up within about a second of reaching the network, and are confirmed as blocks arrive.</p></div>
+      <div class="card"><h3>Easy on the router</h3><p>Two static programs and SQLite. The engine scans on two of the Flint 2’s four cores, at low priority, so routing comes first. Checking each block’s proof of work (on by default for mainnet) takes about 256 MB of memory; turn it off on the admin page if you run your own node.</p></div>
+      <div class="card"><h3>Settings in LuCI</h3><p>Start, stop, port, listen address and the engine’s CPUs are under Services → Monokulo. Stores, nodes and everything else are on Monokulo’s own admin page.</p></div>
+      <div class="card"><h3>Survives upgrades</h3><p>Its settings, keys and databases are kept across OpenWrt firmware upgrades.</p></div>
+    </div>
+  </section>
+
+  <section id="install" class="install">
+    <div class="section-title">
+      <h2>Install on your Flint 2</h2>
+      <p>About ten minutes. You can do it all from the router’s web interface.</p>
+    </div>
+
+    <div class="card">
+      <h3>You’ll need</h3>
+      <div class="req">
+        <span>GL.iNet Flint 2 (GL-MT6000)</span>
+        <span>OpenWrt 25.12 with LuCI</span>
+        <span>The router’s root password</span>
+        <span>A Monero node it can reach</span>
+      </div>
+      <p class="muted" style="margin-top:var(--space-md)">This is for stock OpenWrt, not GL.iNet’s own firmware. Other OpenWrt 25.12 routers with an <code>aarch64_cortex-a53</code> CPU (MediaTek Filogic and similar) work the same way.</p>
+      <p class="muted" style="margin-top:var(--space-sm)">The router can’t hold the Monero blockchain itself. Point Monokulo at a node on your network (a NAS or a desktop running <code>monerod</code>), or at a remote node over HTTPS.</p>
+    </div>
+
+    <div class="card">
+      <div class="tabs" role="tablist" aria-label="How to install" hidden>
+        <button type="button" role="tab" id="tab-web" aria-controls="panel-web" aria-selected="true">Web (LuCI)</button>
+        <button type="button" role="tab" id="tab-ssh" aria-controls="panel-ssh" aria-selected="false" tabindex="-1">Terminal (SSH)</button>
+      </div>
+
+      <div class="tabpanel" id="panel-web" role="tabpanel" aria-labelledby="tab-web">
+        <h3 class="nojs">In the web interface (LuCI)</h3>
+        <ol>
+          <li><span class="num">1</span><div>
+            <h3>Log in to LuCI</h3>
+            <p>Open <a href="http://192.168.1.1/" target="_blank" rel="noreferrer"><code>http://192.168.1.1</code></a> (your router’s address, if you changed it) and log in as <strong>root</strong>.</p>
+          </div></li>
+          <li><span class="num">2</span><div>
+            <h3>Trust Monokulo’s signing key</h3>
+            <p class="path">System <b>›</b> Administration <b>›</b> <em>Repo Public Keys</em> tab</p>
+            <p>Copy the key below into the box that says <em>“Paste content of a file, or a URL to a key file…”</em>, then click <strong>Add key</strong>.</p>
+            <div class="cmd"><pre>@PUBKEY@</pre></div>
+            <p class="muted small">Or paste this address instead of the key: <code>@PAGES_URL@/monokulo.pem</code>. It’s the same key that signs Kringle, so if you already trust that, skip this step.</p>
+          </div></li>
+          <li><span class="num">3</span><div>
+            <h3>Add the Monokulo repository</h3>
+            <p class="path">System <b>›</b> Software <b>›</b> <em>Configure apk</em> button</p>
+            <p>Find the box for <code>/etc/apk/repositories.d/customfeeds.list</code>. Add this line at the end, on a line of its own, then click <strong>Save</strong>.</p>
+            <div class="cmd"><pre>@PAGES_URL@/@REPO_PATH@/packages.adb</pre></div>
+          </div></li>
+          <li><span class="num">4</span><div>
+            <h3>Install Monokulo</h3>
+            <p class="path">System <b>›</b> Software</p>
+            <p>Click <strong>Update lists…</strong> and wait for it to finish. Type <code>monokulo</code> into the <em>Type to filter…</em> box, open the <em>Available</em> tab, and click <strong>Install…</strong> next to <strong>monokulo</strong>. Then confirm with <strong>Install</strong>. It’s one package with both programs and the LuCI page, and it starts straight away.</p>
+          </div></li>
+          <li><span class="num">5</span><div>
+            <h3>Open Monokulo</h3>
+            <p class="path">Services <b>›</b> Monokulo</p>
+            <p>Reload the page first so the new menu item appears. Both lines should say <em>Running</em>. Click <strong>Open monokulo</strong> (it’s at <code>http://192.168.1.1:8081</code>) and create the admin account: the first account made is the admin.</p>
+          </div></li>
+          <li><span class="num">6</span><div>
+            <h3>Add a Monero node, then a store</h3>
+            <p>On Monokulo’s admin page, add your node under the network you’ll take payments on, then add a store with its address and view key.</p>
+          </div></li>
+        </ol>
+      </div>
+
+      <div class="tabpanel" id="panel-ssh" role="tabpanel" aria-labelledby="tab-ssh">
+        <h3 class="nojs">In a terminal (SSH)</h3>
+        <ol>
+          <li><span class="num">1</span><div>
+            <h3>Connect to the router</h3>
+            <p>From a computer on your network, log in as root. Stock OpenWrt is at <code>192.168.1.1</code> unless you changed it.</p>
+            <div class="cmd"><pre>ssh root@192.168.1.1</pre></div>
+          </div></li>
+          <li><span class="num">2</span><div>
+            <h3>Trust the key and add the repository</h3>
+            <p>You only do this once.</p>
+            <div class="cmd"><pre>wget -O /etc/apk/keys/monokulo.pem @PAGES_URL@/monokulo.pem
+echo "@PAGES_URL@/@REPO_PATH@/packages.adb" &gt;&gt; /etc/apk/repositories.d/customfeeds.list</pre></div>
+          </div></li>
+          <li><span class="num">3</span><div>
+            <h3>Install Monokulo</h3>
+            <p>One package: both programs and the LuCI page. It starts straight away.</p>
+            <div class="cmd"><pre>apk update
+apk add monokulo</pre></div>
+          </div></li>
+          <li><span class="num">4</span><div>
+            <h3>Open Monokulo</h3>
+            <p>Go to <code>http://192.168.1.1:8081</code> and create the admin account, then add a Monero node and a store. Settings for how it starts are in LuCI under <span class="path inline">Services <b>›</b> Monokulo</span>. If it isn’t running:</p>
+            <div class="cmd"><pre>service monokulo enable
+service monokulo start
+logread -e monokulo   # what it said</pre></div>
+          </div></li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Back up its secrets</h3>
+      <p>On first start Monokulo makes an encryption key for its data and a token for its engine, in <code>/etc/monokulo/secrets</code>. Firmware upgrades keep the file, but if it’s ever lost, Monokulo’s data can’t be read. Copy it somewhere safe from your computer:</p>
+      <div class="cmd" style="margin-top:var(--space-sm)"><pre>scp root@192.168.1.1:/etc/monokulo/secrets monokulo-secrets</pre></div>
+      <p class="note" style="margin-top:var(--space-md)">Keep that file private: with it and a copy of the data folder, anyone can read your stores’ details.</p>
+    </div>
+
+    <div class="card">
+      <h3>Optional: let customers outside your home pay</h3>
+      <p>By default Monokulo listens on your LAN only. For checkouts on the internet, it needs to listen on every interface, and the firewall needs to let its port in.</p>
+      <p class="path" style="margin-top:var(--space-md)">Services <b>›</b> Monokulo</p>
+      <p>Set <strong>Listen on</strong> to <em>All interfaces</em>, then <strong>Save &amp; Apply</strong>.</p>
+      <p class="path" style="margin-top:var(--space-md)">Network <b>›</b> Firewall <b>›</b> <em>Traffic Rules</em> tab <b>›</b> Add</p>
+      <p>Name <em>Monokulo</em>, Protocol <em>TCP</em>, Source zone <em>wan</em>, Destination zone <em>Device (input)</em>, Destination port <em>8081</em>, Action <em>accept</em>. Click <strong>Save</strong>, then <strong>Save &amp; Apply</strong>.</p>
+      <p class="note info" style="margin-top:var(--space-md)"><strong>Use Traffic Rules, not Port Forwards.</strong> Monokulo runs on the router itself, so there’s nothing to forward. Only if your ISP’s modem sits in front of the Flint 2 do you forward TCP 8081 on <em>that</em> device.</p>
+      <p style="margin-top:var(--space-md)">Then set the <strong>public URL</strong> on Monokulo’s admin page (Settings) to the address customers use, for example <code>https://pay.example.com</code>. Behind CGNAT, or to keep your address private, serve it as a Tor onion service instead: see <a href="@REPO_URL@/blob/main/docs/TOR.md">docs/TOR.md</a> and set <em>Listen on</em> to <em>This router only</em>.</p>
+      <p style="margin-top:var(--space-md)">Prefer a terminal? This does the same:</p>
+      <div class="cmd" style="margin-top:var(--space-sm)"><pre>uci set monokulo.main.listen=all
+uci commit monokulo
+uci add firewall rule
+uci set firewall.@rule[-1].name=Monokulo
+uci set firewall.@rule[-1].src=wan
+uci set firewall.@rule[-1].proto=tcp
+uci set firewall.@rule[-1].dest_port=8081
+uci set firewall.@rule[-1].target=ACCEPT
+uci commit firewall
+service firewall reload
+service monokulo restart</pre></div>
+    </div>
+
+    <div class="grid two">
+      <div class="card">
+        <h3>Updating</h3>
+        <p><span class="path inline">System <b>›</b> Software</span>: click <strong>Update lists…</strong>, then look in the <em>Updates</em> tab. Or in a terminal:</p>
+        <div class="cmd" style="margin-top:var(--space-sm)"><pre>apk update &amp;&amp; apk upgrade monokulo</pre></div>
+        <p class="muted small" style="margin-top:var(--space-sm)">Settings, secrets and databases are kept. After a firmware upgrade, repeat the install steps to put the package back; your data is still there.</p>
+      </div>
+      <div class="card">
+        <h3>Removing</h3>
+        <p><span class="path inline">System <b>›</b> Software</span>: in the <em>Installed</em> tab, click <strong>Remove…</strong> on monokulo. Or in a terminal:</p>
+        <div class="cmd" style="margin-top:var(--space-sm)"><pre>apk del monokulo
+rm -rf /srv/monokulo /etc/monokulo   # also delete all data and secrets</pre></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Package files</h3>
+      <p class="muted">You don’t need these if you use the repository above. The package is signed with the Monokulo key, so once it’s trusted (step 2) you can also install it directly: upload it in <span class="path inline">System <b>›</b> Software <b>›</b> Upload Package…</span>, or use <code>apk add</code>.</p>
+      <ul class="files">
+        <li><a href="@REPO_PATH@/@APK@">@APK@</a> (@APK_SIZE@): monokulo, its engine and the LuCI page</li>
+        <li><a href="@REPO_PATH@/packages.adb">packages.adb</a>: the signed repository index</li>
+        <li><a href="monokulo.pem">monokulo.pem</a>: the signing key</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer>Monokulo @VERSION@ · <a href="@REPO_URL@">GitHub</a> · Typeset in Manrope.</footer>
+
+<script>
+document.documentElement.classList.add("js");
+
+// Install tabs: Web (LuCI) by default. Without JavaScript both show, one after the other.
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll("[role=tab]"));
+  if (!tabs.length) return;
+  function select(tab, focus) {
+    tabs.forEach(function (t) {
+      var on = t === tab;
+      t.setAttribute("aria-selected", on ? "true" : "false");
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+    });
+    if (focus) tab.focus();
+  }
+  tabs.forEach(function (t, i) {
+    t.addEventListener("click", function () { select(t); });
+    t.addEventListener("keydown", function (e) {
+      var d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (d) { e.preventDefault(); select(tabs[(i + d + tabs.length) % tabs.length], true); }
+    });
+  });
+  document.querySelector(".tabs").hidden = false;
+  select(location.hash === "#ssh" ? tabs[1] : tabs[0]);
+})();
+
+// Copy buttons on every command and key (comments after a command are left out).
+document.querySelectorAll(".cmd").forEach(function (box) {
+  var b = document.createElement("button");
+  b.type = "button"; b.className = "copy"; b.textContent = "Copy";
+  b.setAttribute("aria-label", "Copy to clipboard");
+  b.addEventListener("click", function () {
+    var text = box.querySelector("pre").textContent.replace(/[ \t]+#.*$/gm, "");
+    navigator.clipboard.writeText(text).then(function () {
+      b.textContent = "Copied!";
+      setTimeout(function () { b.textContent = "Copy"; }, 1600);
+    });
+  });
+  box.appendChild(b);
+});
+</script>
+</body>
+</html>
