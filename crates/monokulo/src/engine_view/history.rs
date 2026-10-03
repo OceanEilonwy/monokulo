@@ -238,19 +238,21 @@ impl History {
     /// Round `number` as the round card draws it once it ended (or as far
     /// as it has got): `None` once it has left the history.
     pub fn round(&self, number: u64) -> Option<RoundView> {
-        let starts = |recorded: &Recorded| {
-            matches!(recorded.event, Event::RoundStarted { round, budget_ms: _, tip: _ } if round == number)
-        };
+        let starts = |recorded: &Recorded| matches!(recorded.event, Event::RoundStarted { round, budget_ms: _, tip: _ } if round == number);
         let start = self.events.iter().find(|recorded| starts(recorded))?.seq;
-        let index = self
-            .keyframes
-            .iter()
-            .rposition(|k| k.next_seq <= start)?;
+        let index = self.keyframes.iter().rposition(|k| k.next_seq <= start)?;
         let keyframe = &self.keyframes[index];
         let mut state = keyframe.state.clone();
         for recorded in self.events.iter().skip_while(|e| e.seq < keyframe.next_seq) {
             if recorded.seq > start
-                && matches!(recorded.event, Event::RoundStarted { round: _, budget_ms: _, tip: _ })
+                && matches!(
+                    recorded.event,
+                    Event::RoundStarted {
+                        round: _,
+                        budget_ms: _,
+                        tip: _
+                    }
+                )
             {
                 break;
             }
@@ -329,5 +331,4 @@ impl History {
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;

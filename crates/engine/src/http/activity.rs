@@ -103,7 +103,10 @@ mod tests {
             &state.networks.scanner_status,
             monero::Network::Stagenet,
         );
-        activity.record(Event::ChainChecked { agrees: true, looked_up: true });
+        activity.record(Event::ChainChecked {
+            agrees: true,
+            looked_up: true,
+        });
         activity.record(Event::Snapshot(Box::default()));
         activity.record(Event::Vanished { looked: 3 });
 

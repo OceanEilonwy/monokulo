@@ -232,7 +232,6 @@ impl Relay {
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use monero::Network;
     use shared::activity::Event;

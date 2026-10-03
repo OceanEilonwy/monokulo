@@ -1653,12 +1653,14 @@ impl MoneroDaemonClient for RpcDaemonClient {
     /// Neither request touches the link's estimates (`post_unsampled`).
     async fn get_pool_outlook(&self) -> Result<Option<PoolOutlook>, DaemonError> {
         let body = json!({ "jsonrpc": "2.0", "id": "0", "method": "get_info", "params": {} });
-        let answer = self
-            .post_unsampled("get_info", "/json_rpc", &body)
-            .await?;
+        let answer = self.post_unsampled("get_info", "/json_rpc", &body).await?;
         let info: GetInfoResult = json_rpc_result("get_info", answer.to_string().as_bytes())?;
         let stats = self
-            .post_unsampled("/get_transaction_pool_stats", "/get_transaction_pool_stats", &json!({}))
+            .post_unsampled(
+                "/get_transaction_pool_stats",
+                "/get_transaction_pool_stats",
+                &json!({}),
+            )
             .await
             .ok()
             .filter(|value| value.get("status").and_then(Value::as_str) == Some("OK"))

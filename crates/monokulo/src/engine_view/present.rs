@@ -495,10 +495,8 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
         Some(finished) if finished.backlogged => {
             "Ended with work left: the next round starts at once.".to_owned()
         }
-        Some(_) => {
-            "Ended. Sleeping until the poll interval is up or the node announces a block."
-                .to_owned()
-        }
+        Some(_) => "Ended. Sleeping until the poll interval is up or the node announces a block."
+            .to_owned(),
         None => match round.woken_by {
             Some(Wake::Interval) => "Running, after the poll interval.".to_owned(),
             Some(Wake::NewBlock) => "Running, woken by the node announcing a block.".to_owned(),
@@ -706,7 +704,9 @@ fn side(state: &State) -> Side {
                     String::new()
                 };
                 match (state.node_pool, state.pool.watched) {
-                    (Some(node), true) => format!("{} in the node's pool{found}", thousands(node.txs)),
+                    (Some(node), true) => {
+                        format!("{} in the node's pool{found}", thousands(node.txs))
+                    }
                     (Some(node), false) => {
                         format!("{} in the node's pool, not scanned", thousands(node.txs))
                     }
@@ -959,5 +959,4 @@ fn dash() -> String {
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;

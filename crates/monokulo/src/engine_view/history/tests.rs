@@ -60,7 +60,13 @@ fn network(minutes: i64) -> Vec<Recorded> {
                 tip: Some(tip),
             },
         );
-        push(at + 2, Event::ChainChecked { agrees: true, looked_up: true });
+        push(
+            at + 2,
+            Event::ChainChecked {
+                agrees: true,
+                looked_up: true,
+            },
+        );
         for (i, tier) in Tier::ALL.iter().enumerate() {
             push(
                 at + 3 + i as i64,
@@ -333,10 +339,13 @@ fn a_past_round_is_rebuilt_as_it_ended() {
 fn any_moment_asked_for_is_answered() {
     let events = network(1);
     let history = History::new(page(&events, "e"));
-    for (from, to) in [(i64::MIN, i64::MAX), (i64::MIN, 0), (i64::MAX - 1, i64::MAX)] {
+    for (from, to) in [
+        (i64::MIN, i64::MAX),
+        (i64::MIN, 0),
+        (i64::MAX - 1, i64::MAX),
+    ] {
         let _ = history.frames(from, to);
     }
     let _ = history.frame_at(i64::MIN);
     let _ = history.frame_at(i64::MAX);
 }
-

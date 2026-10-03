@@ -53,14 +53,19 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(events).toContainText('Block 3,412,881 scanned for 41 stores and committed, 1 payment found in it.', { timeout: 20000 });
   await expect(events).toContainText('Transaction 6e7f8a9b in the pool pays an order', { timeout: 20000 });
   await expect(page.locator('#orders-sum')).toContainText('unconfirmed');
-  await expect(page.locator('#d-reorg')).toHaveAttribute('open', '', { timeout: 20000 });
-  await expect(page.locator('#d-reorg summary')).toContainText('Reorg from 3,412,881');
-  await captureCoverageStage(page, 'engine-reorg', test.info(), shot);
   await expect(events).toContainText('Rewound: block 3,412,881 deleted', { timeout: 20000 });
   await expect(events).toContainText('caught up and joined the frontier');
   await expect(page.locator('#pills .pill.catchup')).toHaveCount(0);
   await expect(page.locator('#d-reorg')).not.toHaveAttribute('open', '');
   await captureCoverageStage(page, 'engine-live', test.info(), shot);
+
+  // The reorg, gone to from its event (live, it can begin and end within
+  // one poll on a slow machine): its panel opens by itself while it is open.
+  await events.locator('tr', { hasText: "The node's chain differs from block 3,412,881" }).click();
+  await expect(mode('paused')).toBeChecked();
+  await expect(page.locator('#d-reorg')).toHaveAttribute('open', '');
+  await expect(page.locator('#d-reorg summary')).toContainText('Reorg from 3,412,881');
+  await captureCoverageStage(page, 'engine-reorg', test.info(), shot);
 
   // A click on an event goes to it: paused, and the page as it was then.
   await events.locator('tr', { hasText: '1 payment found in it' }).click();

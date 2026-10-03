@@ -7,9 +7,7 @@ use maud::{html, Markup, PreEscaped};
 
 use super::{layout_with_head, reload_button, PageChrome};
 use crate::engine_view::machine::Mark;
-use crate::engine_view::present::{
-    Bar, ChainView, Lane, Panel, Presented, RibbonMark, RoundView,
-};
+use crate::engine_view::present::{Bar, ChainView, Lane, Panel, Presented, RibbonMark, RoundView};
 use crate::views::scaling::thousands;
 
 /// Blocks drawn without JavaScript (the script fits the strip's width).

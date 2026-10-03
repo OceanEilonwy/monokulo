@@ -450,8 +450,7 @@ pub async fn run_scanner_loop(
         }
         // Not while scanning work waits on the database: the snapshot's
         // reads would delay the round. It is taken at the next quiet round.
-        if db.queued(crate::store::db::Class::Scanner) == 0
-            && scan_state.activity().snapshot_due()
+        if db.queued(crate::store::db::Class::Scanner) == 0 && scan_state.activity().snapshot_due()
         {
             record_snapshot(
                 &scan_state,
@@ -555,10 +554,7 @@ fn record_node_pool(
 ) {
     let (activity, daemon) = (Arc::clone(activity), Arc::clone(daemon));
     tokio::spawn(async move {
-        if let Some(outlook) = daemon
-            .pool_outlook(crate::activity::NODE_POOL_EVERY)
-            .await
-        {
+        if let Some(outlook) = daemon.pool_outlook(crate::activity::NODE_POOL_EVERY).await {
             activity.record(shared::activity::Event::NodePool {
                 txs: outlook.txs,
                 bytes: outlook.bytes,

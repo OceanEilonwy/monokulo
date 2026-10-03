@@ -1021,7 +1021,10 @@ fn the_node_s_pool_fills_the_next_block() {
     );
     assert!(feed.state.pool.watched);
     feed.feed(Event::Snapshot(Box::default()));
-    assert!(!feed.state.pool.watched, "the snapshot says nothing is looked for");
+    assert!(
+        !feed.state.pool.watched,
+        "the snapshot says nothing is looked for"
+    );
     assert_eq!(
         feed.state.node_pool.map(|pool| pool.txs),
         Some(20),

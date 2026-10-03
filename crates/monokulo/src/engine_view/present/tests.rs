@@ -102,7 +102,10 @@ fn an_empty_state_reads_as_not_yet_known() {
 fn a_caught_up_network_reads_as_caught_up() {
     let state = after([
         snapshot(3_412_880, 3_412_880, &[(3_412_880, 41)]),
-        Event::ChainChecked { agrees: true, looked_up: true },
+        Event::ChainChecked {
+            agrees: true,
+            looked_up: true,
+        },
     ]);
     let presented = present(&state, &TUNING);
     assert_eq!(
@@ -248,7 +251,11 @@ fn a_round_s_lanes_are_drawn_to_scale() {
     );
     let blocks = &round.lanes[1];
     assert_eq!((blocks.name, blocks.share.as_str()), ("Blocks", "40 %"));
-    assert_eq!(blocks.bars.len(), 1, "pass 1 and pass 2 back to back: one segment");
+    assert_eq!(
+        blocks.bars.len(),
+        1,
+        "pass 1 and pass 2 back to back: one segment"
+    );
     assert!(blocks.bars[0].leftover);
     assert_eq!(blocks.bars[0].label.as_deref(), Some("60ms"));
     assert_eq!(blocks.reserved, None);
@@ -327,7 +334,11 @@ fn a_round_s_parts_add_up_to_it() {
             .map(|bar| (bar.start_ms, bar.ms, bar.label.as_deref(), bar.last))
             .collect()
     };
-    assert_eq!(drawn(0), [(0, 423, Some("423ms"), false)], "one Chain segment");
+    assert_eq!(
+        drawn(0),
+        [(0, 423, Some("423ms"), false)],
+        "one Chain segment"
+    );
     assert_eq!(
         round.lanes[0].bars[0].title,
         "Asking the node for its tip: 403ms; a unit of work: 20ms"
@@ -338,8 +349,16 @@ fn a_round_s_parts_add_up_to_it() {
         [(423, 40, None, false), (464, 2, Some("42ms"), true)],
         "the cache carry is too close to share a label; it finished last"
     );
-    assert_eq!(drawn(2), [(463, 1, Some("1ms"), false)], "the 0ms span left out");
-    assert_eq!(drawn(3), [(464, 0, Some("0ms"), false)], "a lane with only 0ms keeps one");
+    assert_eq!(
+        drawn(2),
+        [(463, 1, Some("1ms"), false)],
+        "the 0ms span left out"
+    );
+    assert_eq!(
+        drawn(3),
+        [(464, 0, Some("0ms"), false)],
+        "a lane with only 0ms keeps one"
+    );
     assert!(drawn(4).is_empty());
     let labelled: u64 = round
         .lanes
@@ -616,8 +635,13 @@ fn the_next_block_fills_with_the_node_s_pool() {
     );
 
     let full = chain(&pool(1_234, Some(450_000))).next_block.unwrap();
-    assert_eq!((full.fill, full.over, full.count.as_str()), (Some(1.0), true, "1.2k"));
-    assert!(full.title.ends_with("(150 %): more than one block takes without a smaller reward."));
+    assert_eq!(
+        (full.fill, full.over, full.count.as_str()),
+        (Some(1.0), true, "1.2k")
+    );
+    assert!(full
+        .title
+        .ends_with("(150 %): more than one block takes without a smaller reward."));
 
     let sizeless = chain(&pool(1, None)).next_block.unwrap();
     assert_eq!(sizeless.fill, None);
@@ -652,10 +676,16 @@ fn the_pool_panel_says_whether_the_engine_looks() {
     };
     let idle = summary(vec![watched(false)]);
     assert_eq!(idle.summary, "Not scanned: no order waits to be paid");
-    assert_eq!(idle.rows[0], ("In the node's pool".to_owned(), "–".to_owned()));
+    assert_eq!(
+        idle.rows[0],
+        ("In the node's pool".to_owned(), "–".to_owned())
+    );
     assert_eq!(
         idle.rows[2],
-        ("Scanned by the engine".to_owned(), "no: no order waits to be paid".to_owned())
+        (
+            "Scanned by the engine".to_owned(),
+            "no: no order waits to be paid".to_owned()
+        )
     );
     assert_eq!(
         summary(vec![watched(false), node.clone()]).summary,

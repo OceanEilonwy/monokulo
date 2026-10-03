@@ -395,7 +395,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(engine_page::events),
         )
         .route("/status/engine/at", axum::routing::get(engine_page::at))
-        .route("/status/engine/round", axum::routing::get(engine_page::round))
+        .route(
+            "/status/engine/round",
+            axum::routing::get(engine_page::round),
+        )
         .route(
             "/status/engine/replay",
             axum::routing::get(engine_page::replay),
