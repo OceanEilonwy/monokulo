@@ -1,7 +1,7 @@
 # Proposal: the engine as a library inside monokulo
 
-Status: proposal, nothing implemented. Written 2026-10-03 against
-`1cc17f2` (origin/main).
+Status: proposal accepted (see "Decisions" at the end), nothing implemented
+yet. Written 2026-10-03 against `1cc17f2` (origin/main).
 
 ## Summary
 
@@ -421,14 +421,15 @@ Each phase leaves both binaries working. Phases 1 and 2 are worth doing even
 if embedded mode were never shipped: they remove the duplicated boot
 wiring and make the client's surface explicit.
 
-## Questions for you
+## Decisions
 
-1. **Default mode.** Embedded by default everywhere (including Docker), or
-   only in the router package? The proposal says everywhere, with `remote`
-   as the opt-in for a split deployment.
-2. **One options file.** Are you happy with `[engine.*]` tables inside
-   `monokulo.toml` for embedded mode, or would you rather keep `engine.toml`
-   as a second file even when embedded? It would be read from a path
-   monokulo names: a smaller change, but two files.
-3. **The engine's own runtime.** Worth the extra threads for the isolation
-   and per-thread pinning, or share monokulo's runtime and keep it simpler?
+Made by the project owner on 2026-10-03:
+
+1. **Embedded is the default everywhere**, Docker included. `remote` is
+   the opt-in for a split deployment, such as the SEV-SNP host.
+2. **One options file.** In embedded mode the engine's settings live in
+   `monokulo.toml` under `[engine.*]` tables, as in section 4. `engine.toml`
+   is only read by the standalone engine.
+3. **The engine gets its own thread pool**, as in section 5: its own Tokio
+   runtime on `engine-*` threads, pinned and reniced by `engine.cpus` and
+   `engine.nice`.
