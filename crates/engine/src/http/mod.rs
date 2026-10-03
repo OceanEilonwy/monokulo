@@ -24,8 +24,9 @@
 //! per-origin checks; everything a customer's browser, a merchant or a
 //! plugin touches is served by monokulo.
 //!
-//! Not implemented in this pass: TLS termination (expected to sit behind a reverse
-//! proxy or terminate via `rustls` in `main`, not implemented here).
+//! The engine serves plain HTTP; TLS, where monokulo isn't on the same
+//! machine, is a proxy or tunnel in front of it (`deploy/sev-snp/README.md`,
+//! decision 40 of the snp-key-custody workpack).
 
 mod activity;
 mod admin;

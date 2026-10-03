@@ -467,6 +467,14 @@ What the `snp` backend does not hide from the host, by design or for now:
   Authenticating the scan state alone wouldn't close this (the node and the API
   remain). Encrypting the database inside the guest would hide recorded payments at
   rest, but not the node route; it isn't done.
+- **The link from monokulo.** The engine serves plain HTTP, and the host sees it: the
+  engine token, `plain` stores' keys and the engine's answers (payments, `/status`).
+  The host holds the token anyway (the engine's environment is on its disk) and
+  controls the node and database, so encrypting the link wouldn't keep any of this
+  from it. Keys for `snp` stores are encrypted to the attested engine, and with
+  `snp_entry_required` a forged `/status` can't get keys typed in the clear. Against
+  the network, the deploy guide requires a private network or a tunnel (WireGuard, or
+  a TLS proxy in the guest, which monokulo reaches with an `https://` `engine.url`).
 - **Time.** The engine's clock is the host's. Bundle and certificate freshness, the
   revocation list's validity and challenge expiry are checked against it, so a host can
   make a stale revocation list look current. The merchant's client checks a bundle

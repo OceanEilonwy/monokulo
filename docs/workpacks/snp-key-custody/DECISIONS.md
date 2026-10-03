@@ -394,3 +394,14 @@ end need a decision.
   (option B) would hide recorded payments at rest, but not the node route. It is a
   workpack of its own if that becomes a requirement.
 
+### 40. The monokulo-to-engine link: documented, private by deployment (you chose option A, no warning)
+- **Decision:** the engine keeps serving plain HTTP. The deploy guide (§4) requires
+  the link from monokulo to be the same machine, a private network or a tunnel ending
+  inside the guest (WireGuard, or a TLS proxy such as stunnel or Caddy in front of
+  `server.bind`, reached with an `https://` `engine.url`, which monokulo already
+  accepts). DESIGN §6.5 Limits says the host sees the link and why encrypting it
+  wouldn't help against the host: it holds the token and controls the node and
+  database.
+- **No warning in monokulo** for a plain `http://` `engine.url` (your call).
+- **Not done:** TLS in the engine (B) and attested TLS (C).
+
