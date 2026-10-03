@@ -197,34 +197,35 @@ shows fewer cells.
 
 ### Timeline
 
-Two tracks across the top of the page.
+One track across the top of the page, showing a **window** of the history
+(the last five minutes at first).
 
-- **The overview** (a thin strip): the whole history the page has, up to the
-  last 30 minutes, labelled "25 min ago" at its left and "now" at its right.
-  Every event is a faint tick and key events a coloured one. A highlighted
-  **window** on it marks the part shown below. Drag the window to move it
-  (say, to 4 to 6 minutes ago), drag either edge to resize it, or click
-  elsewhere on the strip to centre it there. While its right edge is at now
-  it follows now; once moved into the past it stays there.
-- **The detail track** shows that window: every event a thin vertical line,
-  **key events a circle** in their tier's colour (a payment found, a reorg
-  found and rewound, a group of stores falling behind or catching up, a
-  block checkpointed, a failure). New blocks are not key events: they come
-  every two minutes and would crowd out everything else. Hovering a circle
-  shows its sentence. Its axis is labelled in time ago ("6 min ago").
-  Scrolling over it zooms the window around the pointer (down to 20 s).
-- **The playhead** is a dark line on both tracks. Clicking or dragging on
-  the detail track pauses and moves the whole page to that moment: chain,
-  round, panels and events table. Events after the playhead are drawn
-  faded, and the stretch from the playhead to now is shaded. A playhead
-  outside the window shows as an arrow at the edge it lies past.
+- **Every event is a thin vertical line; key events are a circle** in their
+  tier's colour (a payment found, a reorg found and rewound, a group of
+  stores falling behind or catching up, a block checkpointed, a failure).
+  New blocks are not key events: they come every two minutes and would
+  crowd out everything else. Hovering a circle shows its sentence. The axis
+  is labelled in time ago ("6 min ago").
+- **Drag the track to move along the history**: drag right to go back in
+  time, left to come forward. **Scroll to zoom** around the pointer (from
+  20 s to the whole history). While the window's right edge is at now it
+  follows now; once moved into the past it stays there.
+- **Click to move the playhead** (a press that doesn't move more than a few
+  pixels is a click, not a drag). That pauses and moves the whole page to
+  that moment: chain, round, panels and events table. Events after the
+  playhead are drawn faded, and the stretch from the playhead to now is
+  shaded. A playhead outside the window shows as an arrow at the edge it
+  lies past.
+- **A thin bar along the track's bottom edge** is the whole history (up to
+  30 minutes): the window is marked on it, and the playhead as a tick, so
+  you always know where in the history you are looking.
 - **Play** replays at real speed from there, sliding the window along when
   the playhead reaches its edge, and turns live on reaching now; **Live**
   jumps to now and sets the window following again.
-- **Keyboard:** the detail track is a slider: left and right jump to the
-  previous or next key event, with Shift to any event; End goes live; Space
-  plays or pauses. The overview takes left and right to move the window,
-  plus and minus to zoom, Home and End to go to either end.
+- **Keyboard:** the track is a slider. Left and right jump to the previous
+  or next key event, with Shift to any event; Page Up and Page Down move
+  along the history by half a window; plus and minus zoom; End goes live;
+  Space plays or pauses.
 
 How seeking works: the page keeps the events it has received and a copy of
 its own state every 2 s (a keyframe). To show a moment it takes the
