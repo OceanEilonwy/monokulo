@@ -567,6 +567,9 @@ pub struct TestEngineConfig {
     live_nodes: bool,
     /// `true` when [`TestEngineConfig::embedded`] has been used.
     embedded: bool,
+    /// The engine's options file, from [`TestEngineConfig::with_options`];
+    /// an empty one in memory without it.
+    options: Option<live_settings::OptionsFile>,
 }
 
 impl TestEngineConfig {
@@ -592,6 +595,15 @@ impl TestEngineConfig {
     /// monokulo does by default.
     pub fn embedded(mut self) -> Self {
         self.embedded = true;
+        self
+    }
+
+    /// Keeps the engine's settings in `options`: with
+    /// `monokulo_file.scoped("engine")`, the `[engine.*]` tables of the
+    /// options file monokulo keeps its own settings in, as monokulo's
+    /// `main` hands the engine inside it.
+    pub fn with_options(mut self, options: live_settings::OptionsFile) -> Self {
+        self.options = Some(options);
         self
     }
 
@@ -881,7 +893,9 @@ impl TestEngineConfig {
                 engine::engine_settings::SERVER_TOKEN.env_var,
                 TEST_ENGINE_TOKEN,
             ),
-            live_settings::OptionsFile::in_memory(""),
+            self.options
+                .clone()
+                .unwrap_or_else(|| live_settings::OptionsFile::in_memory("")),
             self.embedded,
         )
         .await
