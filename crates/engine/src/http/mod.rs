@@ -191,15 +191,17 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             "/api/v1/admin/key-custody/bundle",
             post(admin::create_key_bundle),
         )
-        .route(
-            "/api/v1/admin/key-custody/handoff",
-            post(admin::answer_handoff),
-        )
-        .route("/status", get(status_page::status_page))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            admin_rate_limit_middleware,
-        ));
+        .route("/status", get(status_page::status_page));
+    // An upgraded engine image asking for the snp master key.
+    #[cfg(feature = "snp")]
+    let unauthenticated_router = unauthenticated_router.route(
+        "/api/v1/admin/key-custody/handoff",
+        post(admin::answer_handoff),
+    );
+    let unauthenticated_router = unauthenticated_router.layer(middleware::from_fn_with_state(
+        state.clone(),
+        admin_rate_limit_middleware,
+    ));
 
     // Every route here requires a real `Authorization: Bearer sk_...` (see
     // `AuthedTenant`), so each gets its own per-token budget.

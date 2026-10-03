@@ -20,12 +20,14 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 
-use crate::engine_settings::{
-    Daemons, EngineSettings, SnpBootConfig, ALL, SERVER_TOKEN, STANDALONE_ONLY,
-};
+#[cfg(feature = "snp")]
+use crate::engine_settings::SnpBootConfig;
+use crate::engine_settings::{Daemons, EngineSettings, ALL, SERVER_TOKEN, STANDALONE_ONLY};
 use crate::http::rate_limit::RateLimiter;
 use crate::http::{build_router, AppState};
-use crate::key_custody::{CustodyRouter, KeyCustody, SnpSlot, StoreWraps, WalletHandle};
+use crate::key_custody::{CustodyRouter, KeyCustody, WalletHandle};
+#[cfg(feature = "snp")]
+use crate::key_custody::{SnpSlot, StoreWraps};
 use crate::store::{SharedStore, Store, StoreError, TenantId};
 
 /// A fixed outer ceiling on request bodies; `server.max_body_bytes` (the
@@ -161,24 +163,34 @@ impl Engine {
         let admin_rate_limiter = Arc::new(RateLimiter::new(1));
         let custody_router = Arc::new(CustodyRouter::default());
         // The snp backend's settings apply at a restart: read once, here. It
-        // starts when it is first enabled (`SnpSlot`).
-        let file = config
-            .options
-            .read(ALL)
-            .map_err(|e| StartError::Settings(e.to_string()))?;
-        let snp_boot = live_settings::read_sync_with_env::<SnpBootConfig>(Ok(file), env);
-        let snp = Arc::new(SnpSlot::new(
+        // starts when it is first enabled (`SnpSlot`). Only in a build with
+        // the `snp` feature.
+        #[cfg(feature = "snp")]
+        let snp_boot = {
+            let file = config
+                .options
+                .read(ALL)
+                .map_err(|e| StartError::Settings(e.to_string()))?;
+            live_settings::read_sync_with_env::<SnpBootConfig>(Ok(file), env)
+        };
+        #[cfg(feature = "snp")]
+        let snp = Some(Arc::new(SnpSlot::new(
             snp_boot.snp_config(),
             // Fixed, not a setting: the host writes the settings.
             Arc::new(snp_attest::guest::SevGuest::new("/dev/sev-guest")),
             Arc::new(StoreWraps(Arc::clone(&store))),
-        ));
+        )));
+        #[cfg(not(feature = "snp"))]
+        let snp: Option<Arc<crate::key_custody::SnpSlot>> = None;
+        // Only the snp backend's handoff calls another engine with it.
+        #[cfg(not(feature = "snp"))]
+        drop(raw_token);
         let settings = EngineSettings::load(
             Arc::clone(&store),
             daemons.clone(),
             crate::engine_settings::CustodyReloadable::new(
                 Arc::clone(&custody_router),
-                Arc::clone(&snp),
+                snp.clone(),
             ),
             Arc::clone(&admin_rate_limiter),
             env.clone(),
@@ -229,7 +241,7 @@ impl Engine {
                 backends: Arc::clone(&key_custody),
                 default_backend,
                 wallet_handles: Arc::clone(&wallet_handles),
-                snp: Some(Arc::clone(&snp)),
+                snp: snp.clone(),
             },
             networks: crate::http::Networks {
                 daemons: daemons.clone(),
@@ -259,20 +271,23 @@ impl Engine {
 
         // AMD's certificates for the snp backend's report, and the handoff
         // of its master key when it runs a new image.
-        let handoff_url = snp_boot.handoff_url.map(|url| url.url().to_string());
-        loops.push(shared::supervise::supervise_until(
-            "snp key custody upkeep",
-            stopped.clone(),
-            move || {
-                crate::key_custody::run_snp_upkeep(
-                    Arc::clone(&snp),
-                    handoff_url.clone().map(|url| crate::key_custody::Handoff {
-                        url,
-                        token: raw_token.clone(),
-                    }),
-                )
-            },
-        ));
+        #[cfg(feature = "snp")]
+        if let Some(snp) = snp {
+            let handoff_url = snp_boot.handoff_url.map(|url| url.url().to_string());
+            loops.push(shared::supervise::supervise_until(
+                "snp key custody upkeep",
+                stopped.clone(),
+                move || {
+                    crate::key_custody::run_snp_upkeep(
+                        Arc::clone(&snp),
+                        handoff_url.clone().map(|url| crate::key_custody::Handoff {
+                            url,
+                            token: raw_token.clone(),
+                        }),
+                    )
+                },
+            ));
+        }
 
         // One scanner loop per configured network (task 7.4), started and
         // stopped as node settings are saved (task 2.1). Supervised like the

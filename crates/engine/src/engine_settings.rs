@@ -745,6 +745,7 @@ impl SnpBootConfig {
     }
 
     /// The backend's configuration, or why it can't start.
+    #[cfg(feature = "snp")]
     pub fn snp_config(&self) -> Result<crate::key_custody::snp::SnpConfig, String> {
         let product = self
             .product
@@ -798,6 +799,12 @@ impl Section for CustodyConfig {
         enabled.dedup();
         let default = snapshot.get(&KEY_CUSTODY_DEFAULT_BACKEND);
         let mut errors = Vec::new();
+        if !cfg!(feature = "snp") && enabled.contains(&CustodyBackend::Snp) {
+            errors.push(FieldError::new(
+                KEY_CUSTODY_ENABLED_BACKENDS.key,
+                format!("snp {}", crate::key_custody::SNP_NOT_BUILT),
+            ));
+        }
         if enabled.is_empty() {
             errors.push(FieldError::new(
                 KEY_CUSTODY_ENABLED_BACKENDS.key,
@@ -833,13 +840,14 @@ impl Section for CustodyConfig {
 /// brings them back.
 pub struct CustodyReloadable {
     router: Arc<crate::key_custody::CustodyRouter>,
-    snp: Arc<crate::key_custody::SnpSlot>,
+    /// `None` in an engine built without the `snp` feature.
+    snp: Option<Arc<crate::key_custody::SnpSlot>>,
 }
 
 impl CustodyReloadable {
     pub fn new(
         router: Arc<crate::key_custody::CustodyRouter>,
-        snp: Arc<crate::key_custody::SnpSlot>,
+        snp: Option<Arc<crate::key_custody::SnpSlot>>,
     ) -> Self {
         Self { router, snp }
     }
@@ -872,7 +880,10 @@ impl live_settings::Reloadable for CustodyReloadable {
                     Some(existing) => Arc::clone(existing),
                     None => Arc::new(crate::key_custody::PlainKeyCustody::default()),
                 },
-                CustodyBackend::Snp => match self.snp.start() {
+                CustodyBackend::Snp => match self.snp.as_ref().map_or_else(
+                    || Err(crate::key_custody::SNP_NOT_BUILT.to_owned()),
+                    |slot| slot.start(),
+                ) {
                     Ok(snp) => snp,
                     Err(e) => {
                         warnings.push(live_settings::Warning::for_key(
@@ -1348,6 +1359,7 @@ mod tests {
             .unwrap_err();
     }
 
+    #[cfg(feature = "snp")]
     #[test]
     fn snp_settings_are_checked_and_say_what_the_backend_still_needs() {
         KEY_CUSTODY_SNP_TRUSTED_ID_KEY
@@ -1388,7 +1400,29 @@ mod tests {
         }
     }
 
+    /// An engine built without the `snp` feature refuses to enable it,
+    /// rather than saving a backend it can't run.
+    #[cfg(not(feature = "snp"))]
+    #[test]
+    fn snp_is_refused_by_an_engine_built_without_snp() {
+        let snapshot = Snapshot::new(
+            HashMap::from([(
+                KEY_CUSTODY_ENABLED_BACKENDS.key.to_owned(),
+                "plain,snp".to_owned(),
+            )]),
+            live_settings::Env::fixed(Vec::<(String, String)>::new()),
+        );
+        let errors = CustodyConfig::from_snapshot(&snapshot).unwrap_err();
+        assert_eq!(errors[0].key, KEY_CUSTODY_ENABLED_BACKENDS.key);
+        assert!(
+            errors[0].message.contains("`snp` feature"),
+            "{}",
+            errors[0].message
+        );
+    }
+
     /// A slot whose backend runs on a stand-in security processor.
+    #[cfg(feature = "snp")]
     fn test_slot() -> Arc<crate::key_custody::SnpSlot> {
         use snp_attest::guest::{TestGuest, TestIdentity};
         let store = crate::store::Store::open_in_memory().unwrap().into_shared();
@@ -1406,6 +1440,7 @@ mod tests {
         ))
     }
 
+    #[cfg(feature = "snp")]
     async fn save(
         reloadable: &CustodyReloadable,
         new: &CustodyConfig,
@@ -1420,12 +1455,13 @@ mod tests {
     /// The snp backend starts the first time it is enabled and is the same
     /// instance from then on, so the stores registered in it stay
     /// registered whatever else is saved.
+    #[cfg(feature = "snp")]
     #[tokio::test]
     async fn the_snp_backend_starts_once_and_keeps_its_stores() {
         use crate::key_custody::{CustodyRouter, KeyCustody as _, WalletMaterial};
         let router = Arc::new(CustodyRouter::plain());
         let slot = test_slot();
-        let reloadable = CustodyReloadable::new(Arc::clone(&router), Arc::clone(&slot));
+        let reloadable = CustodyReloadable::new(Arc::clone(&router), Some(Arc::clone(&slot)));
         let both = CustodyConfig {
             enabled: vec![CustodyBackend::Plain, CustodyBackend::Snp],
             default: CustodyBackend::Plain,
@@ -1457,6 +1493,7 @@ mod tests {
 
     /// An snp backend that can't start (here: no product set) is enabled as
     /// a stand-in that says why, with a warning; plain carries on.
+    #[cfg(feature = "snp")]
     #[tokio::test]
     async fn an_snp_backend_that_cannot_start_says_why_and_plain_carries_on() {
         use crate::key_custody::{CustodyRouter, KeyCustody as _};
@@ -1467,7 +1504,7 @@ mod tests {
             Arc::new(crate::key_custody::StoreWraps(store)),
         ));
         let router = Arc::new(CustodyRouter::plain());
-        let reloadable = CustodyReloadable::new(Arc::clone(&router), slot);
+        let reloadable = CustodyReloadable::new(Arc::clone(&router), Some(slot));
         let both = CustodyConfig {
             enabled: vec![CustodyBackend::Plain, CustodyBackend::Snp],
             default: CustodyBackend::Plain,

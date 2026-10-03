@@ -26,9 +26,10 @@ hmac = "0.13.0"
 http-body = "1.1.0"
 http-body-util = "0.1.5"
 # Key custody: the boundary, the backends and the router.
-key-custody = { path = "../key-custody" }
-# The snp backend's security processor device and AMD certificate fetching.
-snp-attest = { path = "../snp-attest" }
+key-custody = { path = "../key-custody", default-features = false, features = ["backends"] }
+# AMD SEV-SNP report types; with the `snp` feature, the snp backend's
+# security processor device and AMD certificate fetching.
+snp-attest = { path = "../snp-attest", default-features = false }
 monero = "0.22.0"
 # `RpcDaemonClient::get_blocks_range`'s real `get_blocks.bin` batching (see
 # `daemon_rpc.rs`'s own doc comment) - a small, standalone epee-binary-protocol
@@ -72,6 +73,12 @@ clap = "4.6.7"
 zeromq = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport", "ipc-transport"], optional = true }
 
 [features]
+# The `snp` key custody backend, for an engine inside an AMD SEV-SNP
+# confidential VM (`key_custody::snp`, `deploy/sev-snp/README.md`): the
+# `/dev/sev-guest` device, AMD's key distribution service and the master key
+# handoff route. Off by default; without it, enabling `snp` in
+# key_custody.enabled_backends is refused.
+snp = ["key-custody/snp", "snp-attest/guest", "snp-attest/kds"]
 # The in-thread database pools (`store::Database::inline`) for
 # `engine-test-support` and the e2e harness (`crates/e2e-harness`). Never in
 # production.

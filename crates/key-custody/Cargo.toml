@@ -12,18 +12,24 @@ edition = "2021"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = ["backends"]
-# The boundary and the backends: everything the engine uses.
+default = ["backends", "snp"]
+# The boundary and the `plain` backend (and the router).
 backends = [
-    "dep:aes-gcm",
     "dep:async-trait",
-    "dep:hmac",
     "dep:monero",
     "dep:parking_lot",
-    "dep:reqwest",
     "dep:tokio",
     "dep:tracing",
     "dep:uuid",
+]
+# The `snp` backend: sealing with the security processor's derived key,
+# `/dev/sev-guest` and AMD's key distribution service. The engine turns it
+# on only with its own `snp` feature.
+snp = [
+    "backends",
+    "dep:aes-gcm",
+    "dep:hmac",
+    "dep:reqwest",
     "snp-attest/guest",
     "snp-attest/kds",
 ]

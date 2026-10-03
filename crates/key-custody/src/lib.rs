@@ -47,7 +47,7 @@ mod outputs;
 mod plain;
 #[cfg(feature = "backends")]
 pub mod router;
-#[cfg(feature = "backends")]
+#[cfg(feature = "snp")]
 pub mod snp;
 #[cfg(all(test, feature = "backends"))]
 mod test_log;

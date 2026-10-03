@@ -421,3 +421,27 @@ end need a decision.
 - **Not done:** issuing bundles only when SEV-SNP is picked (option B), a possible
   efficiency change later.
 
+### 42. SEV-SNP is a build-time feature, off by default (your request)
+- **Decision:** the engine has an `snp` Cargo feature, off by default
+  (`snp = ["key-custody/snp", "snp-attest/guest", "snp-attest/kds"]`). `key-custody`
+  splits its `snp` backend out of `backends` into a feature of its own. It stays in
+  `key-custody`'s defaults so its own tests run, but the engine takes only
+  `backends`. Monokulo has `snp = ["engine?/snp"]` for its embedded engine.
+- **Without it:** no `/dev/sev-guest` code, no AMD KDS client, no handoff route and no
+  upkeep loop. `SnpSlot` is a type with no values, so `Custody::snp` is always `None`.
+  `key_custody.enabled_backends` containing `snp` is refused at load and on save, with
+  "snp needs an engine built with the `snp` feature (cargo build --features snp); this
+  one wasn't", the same way `zmq` is refused. The `snp_*` settings stay in the registry
+  (inert), so an options file is valid for either build.
+- **Off by default at runtime too**, as before: `enabled_backends` defaults to
+  `plain`.
+- **Builds:** release binaries and the Docker image leave it out (checked: the
+  release build's feature graph has no `engine/snp`). The deploy guide builds the
+  measured image's engine with `--features snp`. `engine-test-support` turns it on,
+  so the workspace tests, and the browser suite whose `cargo build` includes
+  `engine-test-support`, run with it.
+- **CI:** two steps were added. "Clippy, engine without SEV-SNP"
+  (`cargo clippy -p engine --all-targets`), and "Run tests of an engine built without
+  SEV-SNP" (the `without_snp` tests: refusal by the settings section and over the
+  settings API).
+
