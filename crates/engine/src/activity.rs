@@ -23,6 +23,11 @@ pub const KEEP: Duration = Duration::from_mins(30);
 pub const MAX_EVENTS: usize = 50_000;
 /// How often the scan loop records a snapshot of the state the page draws.
 pub const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
+/// How long after the record was last read someone counts as watching.
+pub const WATCHED_FOR: Duration = Duration::from_mins(1);
+/// How often, while someone watches, the node is asked about its whole
+/// pool (`Event::NodePool`): the engine itself never needs to know.
+pub const NODE_POOL_EVERY: Duration = Duration::from_secs(5);
 
 /// One network's record.
 pub struct Activity {
@@ -31,6 +36,8 @@ pub struct Activity {
     record: Mutex<Record>,
     rounds: AtomicU64,
     last_snapshot: Mutex<Option<Instant>>,
+    last_read: Mutex<Option<Instant>>,
+    last_node_pool: Mutex<Option<Instant>>,
 }
 
 #[derive(Default)]
@@ -54,6 +61,8 @@ impl Default for Activity {
             record: Mutex::default(),
             rounds: AtomicU64::new(0),
             last_snapshot: Mutex::new(None),
+            last_read: Mutex::new(None),
+            last_node_pool: Mutex::new(None),
         }
     }
 }
@@ -117,6 +126,22 @@ impl Activity {
         due
     }
 
+    /// Whether the node's whole pool is due to be asked for (and, if so,
+    /// marks it asked now): only while someone has read the record in the
+    /// last [`WATCHED_FOR`], every [`NODE_POOL_EVERY`].
+    pub fn node_pool_due(&self) -> bool {
+        let watched = self
+            .last_read
+            .lock()
+            .is_some_and(|at| at.elapsed() < WATCHED_FOR);
+        let mut last = self.last_node_pool.lock();
+        let due = watched && last.is_none_or(|at| at.elapsed() >= NODE_POOL_EVERY);
+        if due {
+            *last = Some(Instant::now());
+        }
+        due
+    }
+
     pub fn epoch(&self) -> &str {
         &self.epoch
     }
@@ -126,6 +151,7 @@ impl Activity {
     /// another epoch's numbering), everything from the oldest snapshot kept,
     /// so the reader can rebuild the state from there; `gap` says it had to.
     pub fn page(&self, from: Option<u64>) -> Page {
+        *self.last_read.lock() = Some(Instant::now());
         let record = self.record.lock();
         let oldest = record.events.front().map_or(record.next_seq, |e| e.seq);
         let continues = from.filter(|from| (oldest..=record.next_seq).contains(from));
@@ -213,6 +239,22 @@ mod tests {
         let behind = aged.page(Some(1));
         assert!(behind.gap);
         assert_eq!(seqs(&behind), [2]);
+    }
+
+    /// The node's whole pool is asked for only while someone reads the
+    /// record, and then at most every [`NODE_POOL_EVERY`].
+    #[test]
+    fn the_node_s_pool_is_asked_for_only_while_someone_watches() {
+        let activity = Activity::default();
+        assert!(!activity.node_pool_due(), "nobody has read the record");
+        activity.page(None);
+        assert!(activity.node_pool_due());
+        assert!(!activity.node_pool_due(), "asked a moment ago");
+        *activity.last_node_pool.lock() = Instant::now().checked_sub(NODE_POOL_EVERY);
+        assert!(activity.node_pool_due(), "due again after the interval");
+        *activity.last_node_pool.lock() = None;
+        *activity.last_read.lock() = Instant::now().checked_sub(WATCHED_FOR);
+        assert!(!activity.node_pool_due(), "the last reader left a minute ago");
     }
 
     /// Older than [`KEEP`] or past [`MAX_EVENTS`], the oldest go.

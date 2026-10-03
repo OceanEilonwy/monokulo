@@ -37,10 +37,21 @@ const ENGINE_STYLE: &str = r#"
 .wrap.engine-page { max-width: 1880px; display: grid; gap: var(--space-sm); padding-bottom: var(--space-xl); }
 .engine-page h1 { border: 0; margin: 0; padding: 0; font-size: 1.3rem; }
 .engine-page h2 { border: 0; margin: 0; padding: 0; font-size: 0.85rem; font-weight: 800; }
-.engine-top { display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-md); align-items: center; margin-top: var(--space-sm); }
+.engine-top { position: relative; display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-md); align-items: center; margin-top: var(--space-sm); }
 .engine-tabs { display: flex; gap: var(--space-xs); }
 .engine-tabs a { border: 1px solid var(--btn-border); border-radius: var(--radius-sm); padding: 2px 9px; font-weight: 700; font-size: 0.8rem; color: var(--btn-ink); text-decoration: none; }
 .engine-tabs a[aria-current] { box-shadow: inset 0 -3px 0 var(--accent-text); }
+.engine-help > summary { list-style: none; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--btn-border); display: grid; place-items: center; font-weight: 800; font-size: 0.8rem; cursor: pointer; color: var(--btn-ink); background: var(--btn-bg); }
+.engine-help > summary::-webkit-details-marker { display: none; }
+.engine-help > summary:hover { border-color: var(--btn-hover-border); }
+.engine-help[open] > summary { background: var(--ink); color: var(--paper-raised); border-color: var(--ink); }
+.help-body { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: min(920px, calc(100vw - 32px)); max-height: min(78vh, 760px); overflow-y: auto; background: var(--paper-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md) var(--space-md); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-xs) var(--space-lg); font-size: 0.75rem; }
+.help-body h3 { grid-column: 1 / -1; margin: var(--space-sm) 0 0; padding: 0; border: 0; font-size: 0.8rem; font-weight: 800; }
+.help-body dl { margin: 0; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 5px 8px; align-items: start; }
+.help-body dt { display: flex; justify-content: center; padding-top: 2px; }
+.help-body dd { margin: 0; }
+.help-body dd b { font-weight: 800; }
+.help-body .wide { grid-column: 1 / -1; margin: 0; color: var(--muted); }
 .engine-card { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); min-width: 0; }
 .engine-card > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-xs) var(--space-md); margin-bottom: var(--space-xs); }
 .engine-hint { font-size: 0.72rem; color: var(--muted); }
@@ -50,16 +61,27 @@ const ENGINE_STYLE: &str = r#"
 .engine-chip.warn { background: var(--tint-warning); border-color: var(--warning); }
 .engine-chip.err { background: var(--tint-error); border-color: var(--error); }
 .engine-chip.hi { background: var(--tint-highlight); border-color: var(--accent); }
-.engine-timeline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-md); align-items: center; }
-.engine-timeline .tl-track { position: relative; display: grid; gap: 2px; }
-.engine-timeline .btn { padding: 3px 10px; font-size: 0.8rem; }
-.engine-timeline canvas { width: 100%; height: 32px; display: block; border-radius: 4px; touch-action: none; cursor: grab; }
-.engine-timeline canvas.panning { cursor: grabbing; }
+.engine-timeline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-md); align-items: start; }
+.engine-timeline .tl-track { position: relative; display: grid; gap: 3px; }
+.tl-buttons { display: flex; gap: var(--space-xs); align-items: center; height: 32px; }
+.engine-timeline .btn { margin: 0; padding: 0 10px; height: 28px; line-height: 26px; font-size: 0.8rem; }
+.engine-timeline canvas { width: 100%; display: block; border-radius: 4px; touch-action: none; }
+#tl { height: 32px; cursor: pointer; }
+#tl.scrubbing { cursor: ew-resize; }
+.tl-brush { position: relative; height: 16px; }
+#tl-over { height: 16px; }
+.tl-win { position: absolute; top: 0; bottom: 0; border: 1.5px solid var(--accent-text); border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, transparent); cursor: grab; touch-action: none; min-width: 14px; }
+.tl-win.moving { cursor: grabbing; }
+.tl-handle { position: absolute; top: -2px; bottom: -2px; width: 10px; border-radius: 3px; background: var(--accent-text); cursor: ew-resize; touch-action: none; }
+.tl-handle::after { content: ""; position: absolute; left: 4px; top: 5px; bottom: 5px; border-left: 2px solid var(--paper-raised); }
+.tl-handle.l { left: -6px; }
+.tl-handle.r { right: -6px; }
+.tl-win:focus-visible, .tl-handle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .tl-axis { position: relative; height: 12px; font-size: 0.62rem; color: var(--muted); }
 .tl-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .tl-axis span:first-child { transform: none; }
 .tl-axis span:last-child { transform: translateX(-100%); }
-.tl-read { font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; gap: 6px; white-space: nowrap; min-width: 13rem; }
+.tl-read { font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; gap: 6px; white-space: nowrap; min-width: 13rem; height: 32px; }
 .tl-read i { width: 9px; height: 9px; border-radius: 50%; background: var(--success); }
 .tl-read.paused i { background: var(--warning); }
 .tl-tip { position: absolute; z-index: 30; pointer-events: none; transform: translate(-50%, -100%); top: -4px; background: var(--ink); color: var(--paper-raised); font-size: 0.7rem; font-weight: 700; padding: 3px 7px; border-radius: 4px; white-space: nowrap; max-width: 30rem; overflow: hidden; text-overflow: ellipsis; }
@@ -82,6 +104,12 @@ const ENGINE_STYLE: &str = r#"
 .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 0.66rem; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend .cell { width: 11px; height: 13px; border-radius: 3px; }
+.legend .cell.next { width: 13px; }
+.legend .cell.next .pool { height: 55%; }
+.rpair { display: inline-flex; gap: 0; align-items: flex-end; height: 12px; }
+.rpair i { width: 6px; background: var(--viz-tier-blocks); border-radius: 2px 2px 0 0; }
+.rpair i:first-child { height: 8px; }
+.rpair i:last-child { height: 12px; background: var(--viz-tier-chain); }
 .chain-row { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 10px; align-items: start; }
 .strip-scroll { overflow: hidden; }
 .strip { position: relative; padding-inline: 14px 8px; padding-top: 26px; height: 128px; }
@@ -91,6 +119,11 @@ const ENGINE_STYLE: &str = r#"
 .cell.new { background: var(--paper-raised); border-style: dashed; }
 .cell.cached { background: var(--viz-cell-cached); border-color: var(--viz-tier-blocks); }
 .cell.ghost { border-style: dotted; background: transparent; opacity: 0.6; }
+.cell.next { width: 32px; opacity: 1; border-color: var(--viz-tier-chain); }
+.cell.next::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--viz-penalty); z-index: 1; }
+.cell.next.over::before { height: 4px; }
+.cell .pool { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: var(--viz-pool-fill); transition: height 0.6s ease-out; }
+.cell .cnt { position: absolute; inset: 0; display: grid; place-items: center; font: 800 0.56rem/1 var(--font-mono); color: var(--ink); z-index: 2; }
 .cell.reorg { border-color: var(--error); background: repeating-linear-gradient(135deg, var(--tint-error) 0 4px, var(--paper-raised) 4px 8px); }
 .cell.enter { animation: cell-enter 0.6s cubic-bezier(0.3, 1.4, 0.5, 1); }
 .cell.flash { box-shadow: 0 0 0 3px var(--tint-highlight); }
@@ -203,6 +236,7 @@ details.mini.alert { border-color: var(--error); }
   .engine-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .chain-row { grid-template-columns: minmax(0, 1fr); }
   .engine-timeline { grid-template-columns: minmax(0, 1fr); }
+  .help-body { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
   .engine-page *, .engine-page *::before, .engine-page *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.15s !important; }
@@ -228,6 +262,7 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
             div class="engine-top" {
                 nav class="context-nav" aria-label="Breadcrumb" { a href="/status" { "Status" } }
                 h1 { "Engine" }
+                (help())
                 @if page.networks.len() > 1 {
                     nav class="engine-tabs" aria-label="Network" {
                         @for network in &page.networks {
@@ -263,12 +298,20 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
 fn timeline() -> Markup {
     html! {
         section class="engine-card engine-timeline" id="engine-timeline" aria-label="Timeline" hidden {
-            div { button class="btn" id="tl-play" type="button" { "Pause" } " " button class="btn" id="tl-live" type="button" disabled { "Live" } }
+            div class="tl-buttons" { button class="btn" id="tl-play" type="button" { "Pause" } button class="btn" id="tl-live" type="button" disabled { "Live" } }
             div class="tl-track" id="tl-track" {
                 canvas id="tl" tabindex="0" role="slider"
-                    aria-label="Timeline. Click to move the playback position, drag to move along the history, scroll to zoom. Left and right jump between key events, with Shift between any events; Page Up and Page Down move along the history; plus and minus zoom; End returns to live."
+                    aria-label="Timeline. Click or drag to move the playback position. Left and right jump between key events, with Shift between any events; End returns to live."
                     aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" {}
                 div class="tl-axis" id="tl-axis" {}
+                div class="tl-brush" id="tl-brush" title="The whole history this page holds. The window is the part drawn above: drag its middle to move it, its handles to widen or narrow it." {
+                    canvas id="tl-over" aria-hidden="true" {}
+                    div class="tl-win" id="tl-win" tabindex="0" role="group"
+                        aria-label="The part of the history drawn above. Left and right move it; drag it to move it." {
+                        span class="tl-handle l" id="tl-from" tabindex="0" role="slider" aria-label="Start of the window: left and right move it" {}
+                        span class="tl-handle r" id="tl-to" tabindex="0" role="slider" aria-label="End of the window: left and right move it" {}
+                    }
+                }
             }
             div class="tl-read" id="tl-read" { i {} span id="tl-text" { "Live" } }
         }
@@ -341,6 +384,7 @@ fn chain(chain: &ChainView) -> Markup {
                     span { i class="cell new" aria-hidden="true" {} "at the node" }
                     span { i class="cell cached" aria-hidden="true" {} "in the cache" }
                     span { i class="cell reorg" aria-hidden="true" {} "replaced" }
+                    span { i class="cell ghost next" aria-hidden="true" { span class="pool" {} } "next block: the node's pool" }
                     span { i class="saved-glyph" aria-hidden="true" {} "saved to disk" }
                 }
                 span class="engine-chip engine-right" id="cache-chip" { (chain.cache) }
@@ -408,10 +452,134 @@ fn cell(chain: &ChainView, height: u64) -> Markup {
         Some((h, done)) if h == height => done,
         _ => checkpoint.map_or(0.0, |(_, done)| *done),
     };
+    let next = chain.next_block.as_ref().filter(|_| height == tip + 1);
+    let class = match next {
+        Some(next) if next.over => format!("cell{state} next over"),
+        Some(_) => format!("cell{state} next"),
+        None => format!("cell{state}"),
+    };
+    let title = next.map_or_else(
+        || format!("Block {}", thousands(height)),
+        |next| next.title.clone(),
+    );
     html! {
-        div class=(format!("cell{state}")) data-h=(height) title=(format!("Block {}", thousands(height))) {
+        div class=(class) data-h=(height) title=(title) {
             span class="fill" style=(format!("width:{:.0}%", fill * 100.0)) {}
             @if checkpoint.is_some() { span class="save" {} }
+            @if let Some(next) = next {
+                span class="pool" style=(format!("height:{:.0}%", next.fill.unwrap_or(0.0) * 100.0)) {}
+                span class="cnt" { (next.count) }
+            }
+        }
+    }
+}
+
+/// The legend behind the (?) button: what every label, symbol and
+/// movement on the page means. A `details`, so it opens without
+/// JavaScript too.
+fn help() -> Markup {
+    let tier = |tier: &str| html! { i class=(format!("tierchip t-{tier}")) aria-hidden="true" {} };
+    html! {
+        details class="engine-help" id="engine-help" {
+            summary aria-label="What the page shows" title="What the page shows" { "?" }
+            div class="help-body" {
+                p class="wide" { "The engine scans the Monero chain for the stores' payments in rounds. This page follows one network's scanner about 1.5 s behind, and the timeline replays the last 30 minutes." }
+
+                h3 { "Timeline" }
+                dl {
+                    dt { svg width="10" height="16" aria-hidden="true" { line x1="5" y1="2" x2="5" y2="14" stroke="var(--muted)" stroke-width="1.5" {} } }
+                    dd { "An event." }
+                    dt { svg width="14" height="14" aria-hidden="true" { circle cx="7" cy="7" r="5" fill="var(--viz-tier-blocks)" {} } }
+                    dd { b { "A key event" } ", in its tier's colour: a payment found, a reorganisation, a block's scan saved partway, stores catching up. Hover over it for what it was." }
+                    dt { svg width="10" height="16" aria-hidden="true" { rect x="4" y="1" width="2" height="14" fill="var(--ink)" {} } }
+                    dd { b { "The playback position." } " Click or drag on the timeline to go to a moment; Play replays from there, Live returns." }
+                }
+                dl {
+                    dt { span class="tl-win" style="position:static;display:block;width:22px;height:12px" {} }
+                    dd { b { "The window" } ": the bar under the timeline is the whole history the page holds, the window the part drawn above. Drag its middle to move it, its handles to widen or narrow it." }
+                    dt { kbd { "←" } }
+                    dd { "On the timeline, left and right jump between key events (with Shift, any event), space plays and pauses, End goes live." }
+                }
+
+                h3 { "Summary" }
+                p class="wide" { b { "Node tip" } ": the newest block the node has. " b { "Scanned to" } ": the high-water mark, the newest block the engine has recorded. " b { "Behind" } ": blocks between the node's tip and the store furthest behind. " b { "Last round" } ": how long the last round took, of its 10 s budget. " b { "Chain" } ": whether the recorded chain still agrees with the node's." }
+
+                h3 { "Chain" }
+                dl {
+                    dt { i class="cell" aria-hidden="true" style="width:11px;height:13px" {} }
+                    dd { "A block the engine has recorded." }
+                    dt { i class="cell new" aria-hidden="true" style="width:11px;height:13px" {} }
+                    dd { "A block the node has that the engine hasn't scanned yet." }
+                    dt { i class="cell cached" aria-hidden="true" style="width:11px;height:13px" {} }
+                    dd { "Fetched from the node and held in memory to be scanned (the cache chip says how much)." }
+                    dt { i class="cell reorg" aria-hidden="true" style="width:11px;height:13px" {} }
+                    dd { "Replaced: the node's chain no longer has this block (a reorganisation)." }
+                    dt { span class="cell" aria-hidden="true" style="width:11px;height:13px;display:block" { span class="fill" style="width:60%" {} } }
+                    dd { "A block being scanned fills left to right. A dark corner square means its scan was saved partway, to carry on next round." }
+                }
+                dl {
+                    dt { i class="cell ghost next" aria-hidden="true" style="width:13px;height:13px" { span class="pool" style="height:55%" {} } }
+                    dd { b { "The next block" } ", not mined yet. It fills from the bottom with the transactions waiting in the node's pool (the number) against what a miner can fit in a block at full reward. The red top edge is where the penalty zone starts, and it thickens when the pool holds more than a block's worth. The page asks the node every 5 s while it is open." }
+                    dt { span class="engine-chip" style="font-size:0.6rem;padding:0 4px" { "tip" } }
+                    dd { b { "node tip" } " and " b { "scanned to" } " mark the node's newest block and the engine's high-water mark. The blue line under the last blocks is the reorg window, checked again for a reorganisation every round." }
+                    dt { span class="pill frontier" style="position:static;transform:none;padding:0 5px;font-size:0.6rem" { "F" } }
+                    dd { b { "Groups of stores" } ", by the block their scan has reached. " b { "Frontier" } " stores are at the high-water mark and scanned as each block arrives. " b { "Catching up" } " stores are behind (a new store, or after downtime) and scanned with time left over until they join the frontier." }
+                }
+
+                h3 { "Round" }
+                p class="wide" { "Each round gives the five tiers a share of a 10 s budget, in order; time left over goes round again. Before the first tier runs, the round asks the node for its tip (and pool). The line above the lanes says how long that took, and the lanes start after it." }
+                dl {
+                    dt { (tier("chain")) }
+                    dd { b { "Chain" } " checks the recorded chain still matches the node's. Each round it asks the node for the hash of the newest recorded block (the blue " b { "hash check" } " that flies from the node) and compares the two. If they differ, it reconciles the reorganisation: payments are re-examined and blocks rewound." }
+                    dt { (tier("blocks")) }
+                    dd { b { "Blocks" } " fetches new blocks from the node and scans each one for every group of stores." }
+                    dt { (tier("mempool")) }
+                    dd { b { "Mempool" } " scans transactions still in the pool, so a payment is seen before it is mined. It runs only while an order waits to be paid." }
+                    dt { (tier("settlement")) }
+                    dd { b { "Settlement" } " turns what the chain and the pool say into each order's status (paid, confirming, expired) and queues the store's webhook." }
+                    dt { (tier("upkeep")) }
+                    dd { b { "Upkeep" } " does a little housekeeping each round: pruning old block hashes, rechecking voided payments." }
+                }
+                dl {
+                    dt { small { "40 %" } }
+                    dd { "The tier's share of the round's budget." }
+                    dt { span class="bar" style="position:static;display:block;width:18px;height:10px;background:var(--viz-tier-blocks)" {} }
+                    dd { "A unit of work. Striped " span class="bar p2 t-blocks" style="position:static;display:inline-block;width:18px;height:10px" {} " ran on time left over (pass 2). While stores catch up or a reorganisation is open, a dashed box shows the tier's reserved share." }
+                    dt { span class="ruler-label" style="position:static;transform:none" { "s" } }
+                    dd { "The marker and its label: how long the tiers have run." }
+                    dt { span class="engine-chip ok" style="font-size:0.6rem" { "Idle" } }
+                    dd { b { "Idle" } ": nothing left to do. " b { "Backlogged" } ": out of time with work left, so the next round starts at once. " b { "Waiting" } ": held up by what it names. " b { "Failed" } ": an error, retried next round." }
+                }
+
+                h3 { "Last rounds" }
+                dl {
+                    dt { span class="rbar" style="height:14px;width:8px" { i class="t-blocks" style="height:60%" {} i class="t-chain" style="height:40%" {} } }
+                    dd { "A round. The taller, the longer (on a log scale), coloured by where its time went." }
+                    dt { i class="rgap" aria-hidden="true" {} }
+                    dd { "The scanner slept until the poll interval was up." }
+                }
+                dl {
+                    dt { i class="rgap woken" aria-hidden="true" {} }
+                    dd { "The sleep was cut short: the node announced a new block." }
+                    dt { i class="rpair" aria-hidden="true" { i {} i {} } }
+                    dd { "Rounds back to back with no sleep between: the first ended with work left, so the next started at once." }
+                }
+
+                h3 { "Things that move" }
+                dl {
+                    dt { span class="token pkt chain" style="position:static;display:inline-block" { "hash" } }
+                    dd { "A call to the node, flying from the node to where its answer goes: a hash check (blue), blocks (orange), the pool or transactions (green)." }
+                    dt { span class="token token-stores" style="position:static;display:inline-block" {} }
+                    dd { "Stores moving on to the next block." }
+                }
+                dl {
+                    dt { span class="token payment" style="position:static;display:inline-block" {} }
+                    dd { "A payment found, on its way to the order's status. An envelope " span class="token envelope" style="position:static;display:inline-block" {} " is a webhook queued for the store." }
+                    dt { span class="saved-glyph" aria-hidden="true" {} }
+                    dd { "Something saved to disk. A restart carries on from there." }
+                }
+                p class="wide" { "The panels on the right sum up the reorg check, the pool, orders, upkeep, the database worker, webhooks and what a restart would lose. Click one for its figures." }
+            }
         }
     }
 }
@@ -459,7 +627,7 @@ fn round(view: &Presented) -> Markup {
                 div class="legend" {
                     span { i class="rgap" aria-hidden="true" {} "slept" }
                     span { i class="rgap woken" aria-hidden="true" {} "woken by a new block" }
-                    span { "no gap: work left" }
+                    span { i class="rpair" aria-hidden="true" { i {} i {} } "back to back: work was left" }
                 }
             }
         }
@@ -530,7 +698,7 @@ fn side(view: &Presented) -> Markup {
                         span { (side.mempool.summary) }
                     }
                 }
-                (panel_body(&side.mempool, "The fast path checks the pool every 250 ms for transactions it hasn't seen; the round's rotation rescans the rest as a safety net."))
+                (panel_body(&side.mempool, "The node's pool is what the next block is mined from; the page asks the node about it every 5 s while it is open. The engine itself looks at the pool only while an order could be paid from it: the fast path every 250 ms for transactions it hasn't seen, the round's rotation rescanning the rest as a safety net."))
             }
             details class="mini t-settlement" id="d-orders" {
                 summary {
@@ -679,6 +847,7 @@ mod tests {
                 label: "Frontier, 1 store".into(),
                 title: String::new(),
             }],
+            next_block: None,
             cache: String::new(),
             nodes: vec![NodeView {
                 label: "node-a".into(),

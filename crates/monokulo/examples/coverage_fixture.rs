@@ -66,6 +66,7 @@ fn record_baseline(engine: &TestEngineHandle) {
         ],
         cache_budget_bytes: 64 * 1024 * 1024,
         pool: shared::activity::Pool {
+            watched: true,
             size: 4,
             txids: vec![
                 "0a1b2c3d".into(),
@@ -95,6 +96,12 @@ fn record_baseline(engine: &TestEngineHandle) {
         },
         ..Snapshot::default()
     })));
+    // The node's whole pool, as the engine asks while the page is open.
+    activity.record(Event::NodePool {
+        txs: 23,
+        bytes: Some(96_000),
+        penalty_free: 300_000,
+    });
     for event in round(1, Some(3_412_880), false) {
         activity.record(event);
     }

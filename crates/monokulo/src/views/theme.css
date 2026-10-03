@@ -80,11 +80,14 @@
      2.6:1 on paper, so the ring takes the orange used for text. */
   --focus-ring: var(--accent-text);
   /* The engine page's chain strip: a recorded block, its edge, a block
-     held in the scan's cache, and the mark of something saved to disk. */
+     held in the scan's cache, the mark of something saved to disk, and the
+     next block: filled by the node's pool, up to the penalty zone. */
   --viz-cell-recorded: var(--surface-sunken);
   --viz-cell-edge: var(--line-strong);
   --viz-cell-cached: color-mix(in srgb, var(--viz-tier-blocks) 22%, var(--paper-raised));
   --viz-saved: var(--ink);
+  --viz-pool-fill: color-mix(in srgb, var(--viz-tier-chain) 75%, var(--paper-raised));
+  --viz-penalty: var(--error);
 
   /* Soft backgrounds for messages, mixed from the colours above so a status
      colour and its tint can't drift apart. Ink on any tint clears 4.5:1;

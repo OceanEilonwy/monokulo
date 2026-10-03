@@ -1,6 +1,7 @@
 // The engine page (docs/engine_visualizer.md) in a real browser, against the
 // coverage fixture's engine: following it live, scrubbing the timeline,
-// replaying and going live again, zooming, and the page without JavaScript.
+// replaying and going live again, moving and resizing the timeline's window,
+// the legend, and the page without JavaScript.
 // The fixture plays a scripted story into the engine's activity record
 // (`POST /__coverage/engine/story`): a block with a payment, a pool payment
 // settling, a store catching up and joining the frontier, and a reorg.
@@ -20,7 +21,7 @@ async function openAsAdmin(page, context) {
   await page.goto(`${fixture.base_url}/status/engine?network=mainnet`);
 }
 
-test('the engine page follows the engine live, scrubs, replays and zooms', async ({ page, context }) => {
+test('the engine page follows the engine live, scrubs, replays and moves its window', async ({ page, context }) => {
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error)));
   await page.setViewportSize({ width: 1600, height: 900 });
@@ -29,8 +30,19 @@ test('the engine page follows the engine live, scrubs, replays and zooms', async
   await expect(page.locator('#tl-text')).toHaveText(/^Live/);
   await expect(page.locator('.engine-page a.reload')).toBeHidden();
   await expect(page.locator('#engine-summary')).toContainText('3,412,880');
-  await expect(page.locator('.pill.frontier')).toHaveText('Frontier, 41 stores');
-  await expect(page.locator('.pill.catchup')).toHaveText('Catching up, 3 stores');
+  await expect(page.locator('#pills .pill.frontier')).toHaveText('Frontier, 41 stores');
+  await expect(page.locator('#pills .pill.catchup')).toHaveText('Catching up, 3 stores');
+  // The next block holds the node's pool: 23 transactions, 32 % of a block.
+  const next = page.locator('#cells .cell.next');
+  await expect(next.locator('.cnt')).toHaveText('23');
+  await expect(next).toHaveAttribute('title', /23 transactions waiting in the node's pool, 96 kB of the 300 kB/);
+
+  // The legend opens from the (?) and closes with Escape.
+  await page.locator('#engine-help summary').click();
+  await expect(page.locator('.help-body')).toBeVisible();
+  await expect(page.locator('.help-body')).toContainText('hash check');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.help-body')).toBeHidden();
 
   await page.request.post(`${fixture.base_url}/__coverage/engine/story`);
   const events = page.locator('#engine-events');
@@ -42,7 +54,7 @@ test('the engine page follows the engine live, scrubs, replays and zooms', async
   await captureCoverageStage(page, 'engine-reorg', test.info(), shot);
   await expect(events).toContainText('Rewound: block 3,412,881 deleted', { timeout: 20000 });
   await expect(events).toContainText('caught up and joined the frontier');
-  await expect(page.locator('.pill.catchup')).toHaveCount(0);
+  await expect(page.locator('#pills .pill.catchup')).toHaveCount(0);
   await expect(page.locator('#d-reorg')).not.toHaveAttribute('open', '');
   await captureCoverageStage(page, 'engine-live', test.info(), shot);
 
@@ -50,7 +62,7 @@ test('the engine page follows the engine live, scrubs, replays and zooms', async
   await events.locator('tr', { hasText: '1 payment found in it' }).click();
   await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
   await expect(page.locator('#engine-summary')).toContainText('3,412,881');
-  await expect(page.locator('.pill.catchup')).toHaveCount(1);
+  await expect(page.locator('#pills .pill.catchup')).toHaveCount(1);
   await expect(events.locator('tr.now')).toContainText('1 payment found in it');
 
   // Left and right jump between key events; End returns to live.
@@ -69,17 +81,33 @@ test('the engine page follows the engine live, scrubs, replays and zooms', async
   await page.locator('#tl-live').click();
   await expect(page.locator('#tl-text')).toHaveText(/^Live/);
 
-  // Scrolling zooms; dragging moves along the history.
+  // Scrolling over the timeline leaves its window alone.
   const axis = page.locator('#tl-axis');
-  const before = await axis.textContent();
   await page.mouse.move(track.x + track.width * 0.5, track.y + 8);
   for (let i = 0; i < 6; i++) await page.mouse.wheel(0, -120);
-  await expect(axis).not.toHaveText(before);
-  await page.mouse.move(track.x + track.width * 0.6, track.y + 8);
+  await expect(axis.locator('span').last()).toHaveText('now');
+
+  // Dragging the window's right handle back ends it in the past; dragging
+  // its middle moves it; dragging on the timeline scrubs.
+  const handle = await page.locator('#tl-to').boundingBox();
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
   await page.mouse.down();
-  await page.mouse.move(track.x + track.width * 0.9, track.y + 8, { steps: 6 });
+  await page.mouse.move(handle.x - track.width * 0.3, handle.y + handle.height / 2, { steps: 6 });
   await page.mouse.up();
   await expect(axis.locator('span').last()).toHaveText(/ago$/);
+  const resized = await axis.textContent();
+  const box = await page.locator('#tl-win').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 - 40, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect(axis).not.toHaveText(resized);
+  await expect(page.locator('#tl-text')).toHaveText(/^Live/, { message: 'moving the window leaves playback where it was' });
+  await page.mouse.move(track.x + track.width * 0.3, track.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(track.x + track.width * 0.6, track.y + 8, { steps: 5 });
+  await page.mouse.up();
+  await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
 
   // A filter hides a tier's rows.
   await page.locator('#engine-filters input[data-tier="blocks"]').uncheck();

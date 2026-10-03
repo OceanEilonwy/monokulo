@@ -39,7 +39,7 @@ deliberately left out (see "Left out").
 
 | Engine | Shown as |
 | --- | --- |
-| `loops::run_scanner_loop`: a round, then sleep for the poll interval, or start again at once when the round was backlogged, or wake early on a ZMQ block announcement | Round ribbon: one bar per round, coloured by tier. A sleep is a dotted gap; a sleep cut short by the node announcing a block ends in a small block outline (the same shape as a chain cell); a round that started at once because work was left has no gap |
+| `loops::run_scanner_loop`: a round, then sleep for the poll interval, or start again at once when the round was backlogged, or wake early on a ZMQ block announcement | Round ribbon: one bar per round, coloured by tier. A sleep is a dotted gap; a sleep cut short by the node announcing a block ends in a small block outline (the same shape as a chain cell); a round that started at once because work was left stands back to back with the one before |
 | `loops::run_fast_mempool_loop`: every 250 ms, scan new pool transactions against every store in scope | Mempool line: a heartbeat each pass; new transactions appear as dots, filled once scanned |
 | Store key registration retries | A line in the stores summary ("2 stores waiting for their keys to register") |
 
@@ -69,6 +69,7 @@ deliberately left out (see "Left out").
 | Commit: cursors moved, matches promoted, hash recorded, one transaction | The pill moves one cell right; the cell gets its recorded state; a save square goes to the Database line |
 | `Diverged` | The cell turns to the reorg colour with "doesn't extend the recorded chain" and the frontier stops |
 | First-run seed just below the tip | The strip starts with one recorded cell |
+| The node's whole pool (`get_info`'s pool size and median block weight, `/get_transaction_pool_stats`'s bytes), asked every 5 s only while the page is open (`Event::NodePool`) | The next block, the dotted cell after the tip: filled from the bottom with the pool's size against the block weight a miner can fill at full reward (the penalty-free zone, at least 300 kB), the number of transactions written on it, a red top edge where the penalty zone starts (thicker when the pool is bigger than that) |
 | Slow block, headers-first mode | Banner over the strip, same sentences as the status page |
 
 ### Chain tier (`work::chain`)
@@ -160,8 +161,12 @@ scrolling. Only the events table is below.
 
 Top to bottom:
 
-1. **Header** (one line): Status crumb, "Engine", network tabs. The app bar
-   carries monokulo's System / Light / Dark toggle, as on every page.
+1. **Header** (one line): Status crumb, "Engine", a **(?)** that opens the
+   legend, network tabs. The app bar carries monokulo's System / Light /
+   Dark toggle, as on every page. The legend (a `<details>`, so it opens
+   without JavaScript too) explains every label, symbol and movement: what
+   each tier does, the cell states, the next block, the outcome chips, the
+   ribbon's gaps, the tokens that fly.
 2. **Timeline** (one line, see below): Pause or Play, Live, the track, and
    "Live, 1.5 s behind" or "Paused, 36 s behind live".
 3. **Summary** (one line of six): node tip, scanned to, behind (and time to
@@ -183,7 +188,9 @@ Top to bottom:
      - Reorg: "Agrees at 3,412,882, free". Opens by itself, with a red edge,
        while a reorg job is open, and closes when it ends.
      - Mempool: a heartbeat for each fast pass, the newest transactions as
-       dots, "8 in the pool, 1 payment found".
+       dots, "8 in the node's pool, 1 payment found". The engine looks at
+       the pool only while an order could be paid from it; otherwise the
+       line says "not scanned".
      - Order status: "2 to recompute", and the last state reached.
      - Upkeep: four squares lighting as each job runs.
      - Database: three queue bars and jobs a second.
@@ -200,7 +207,8 @@ shows fewer cells.
 ### Timeline
 
 One track across the top of the page, showing a **window** of the history
-(the last five minutes at first).
+(the last five minutes at first), and under it the whole history with the
+window marked on it.
 
 - **Every event is a thin vertical line; key events are a circle** in their
   tier's colour (a payment found, a reorg found and rewound, a group of
@@ -208,26 +216,26 @@ One track across the top of the page, showing a **window** of the history
   New blocks are not key events: they come every two minutes and would
   crowd out everything else. Hovering a circle shows its sentence. The axis
   is labelled in time ago ("6 min ago").
-- **Drag the track to move along the history**: drag right to go back in
-  time, left to come forward. **Scroll to zoom** around the pointer (from
-  5 s, about five rounds, to the whole history). While the window's right edge is at now it
-  follows now; once moved into the past it stays there.
-- **Click to move the playhead** (a press that doesn't move more than a few
-  pixels is a click, not a drag). That pauses and moves the whole page to
-  that moment: chain, round, panels and events table. Events after the
-  playhead are drawn faded, and the stretch from the playhead to now is
-  shaded. A playhead outside the window shows as an arrow at the edge it
-  lies past.
-- **A thin bar along the track's bottom edge** is the whole history (up to
-  30 minutes): the window is marked on it, and the playhead as a tick, so
-  you always know where in the history you are looking.
+- **Click or drag on the track to move the playhead.** That pauses and
+  moves the whole page to that moment: chain, round, panels and events
+  table; dragging scrubs through the moments. Events after the playhead are
+  drawn faded, and the stretch from the playhead to now is shaded. A
+  playhead outside the window shows as an arrow at the edge it lies past.
+- **The bar under the track** is the whole history (up to 30 minutes), its
+  key events as dots and the playhead as a tick. The **window** on it is
+  the part the track draws: drag its middle to move it, its left or right
+  handle to widen or narrow it (down to 5 s, about five rounds); a press on
+  the bar outside it centres it there. While its right edge is at now it
+  follows now; once moved into the past it stays there. Moving the window
+  never moves the playhead.
+- **The mouse wheel scrolls the page**, never the timeline.
 - **Play** replays at real speed from there, sliding the window along when
   the playhead reaches its edge, and turns live on reaching now; **Live**
   jumps to now and sets the window following again.
 - **Keyboard:** the track is a slider. Left and right jump to the previous
-  or next key event, with Shift to any event; Page Up and Page Down move
-  along the history by half a window; plus and minus zoom; End goes live;
-  Space plays or pauses.
+  or next key event, with Shift to any event; End goes live; Space plays
+  or pauses. The window and its two handles take Tab, and left and right
+  move them by a tenth of the window.
 
 How seeking works: the page keeps the events it has received and a copy of
 its own state every 2 s (a keyframe). To show a moment it takes the
@@ -258,12 +266,15 @@ accent, saves `--ink`. The new colours become roles in `views/theme.css`
 - **Playback, not real time.** The page plays frames about 1.5 s behind the
   engine, so a burst that arrived in one poll plays out in order; a frame's
   effects play staggered by their own events' times.
-- **Rounds to scale.** A caught-up round takes tens of milliseconds, so its
-  lanes are scaled to its real length (with a floor of 120 ms), its length
-  so far on the playhead's label. While a group is catching up or a reorg
-  is open, the lanes are scaled to the full 10 s budget and show each tier's
-  reserved share. The time before a round's first unit is the node
-  answering the round's tip request, and is shown as it is.
+- **Rounds to scale, from the left.** A round first asks the node for its
+  tip (and pool); against a remote node that is most of a quiet round. The
+  lanes start at the round's first unit, so every round's work starts at
+  the left edge, and the state line says how long the ask took ("Ended at
+  0.46 s (0.40 s of it asking the node for its tip)"). A caught-up round's
+  work takes milliseconds, so the lanes are scaled to it (with a floor of
+  120 ms), its length so far on the playhead's label ("4 ms", "0.42 s").
+  While a group is catching up or a reorg is open, the lanes are scaled to
+  the full 10 s budget and show each tier's reserved share.
 - **Falling behind.** A hidden tab doesn't animate; with more than 40 frames
   waiting, playback skips to the newest. Nothing is lost: the timeline
   still holds every mark, and scrubbing rebuilds any moment.
@@ -352,7 +363,9 @@ everything from the oldest snapshot, flagged as a `gap`; the record's
   mined, reorged, mined again, confirmed) recorded in order inside its
   rounds; a big block's checkpoints and commit; idle stores moving on; the
   fast path's match and status change; the loop's snapshot and its sleep
-  cut short by a new block; the snapshot after the story; the store facts
+  cut short by a new block; the node's pool asked only while someone reads
+  the record, and read from `get_info` and the pool stats; the pool marked
+  as looked at while an order waits; the snapshot after the story; the store facts
   counted once per network, with their query plans checked; the endpoint.
 - Monokulo: the machine, event kind by event kind, and a 20,000-step run of
   events in any order against its invariants; the presentation's words; the
@@ -361,6 +374,7 @@ everything from the oldest snapshot, flagged as a `gap`; the record's
   router; the status page's link.
 - Browser (`e2e/pos-playwright/tests/coverage-engine.spec.js`, in the
   browser coverage suite): a scripted story played into the fixture
-  engine's record, followed live; a click on an event, the keys, replay,
-  zoom and drag, a filter; the page without JavaScript; the admin gate;
-  gallery shots in both themes.
+  engine's record, followed live; the next block's count; the legend; a
+  click on an event, the keys, replay; the wheel leaving the window alone,
+  the window's handle and middle, scrubbing; a filter; the page without
+  JavaScript; the admin gate; gallery shots in both themes.

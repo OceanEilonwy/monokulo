@@ -54,6 +54,9 @@ pub struct State {
     pub chain_agrees: Option<bool>,
     pub reorg: Option<Reorg>,
     pub pool: Pool,
+    /// The node's whole pool, what the next block is mined from: known
+    /// only while someone watches the page.
+    pub node_pool: Option<NodePool>,
     pub orders: Orders,
     pub upkeep: Upkeep,
     pub database: Database,
@@ -184,6 +187,9 @@ pub struct Reorg {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Pool {
+    /// Whether the scanner looks at the pool: only while an order could be
+    /// paid from it, or a payment waits for a block.
+    pub watched: bool,
     /// Transactions the scanner remembers from the pool.
     pub size: u64,
     /// The newest few, shortened, oldest first.
@@ -192,6 +198,15 @@ pub struct Pool {
     pub fast_passes: VecDeque<i64>,
     /// Payments found in the pool since the page's history began.
     pub found: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct NodePool {
+    pub txs: u64,
+    /// Their size in bytes, when the node said.
+    pub bytes: Option<u64>,
+    /// The block weight a miner can fill without a smaller reward.
+    pub penalty_free: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -522,12 +537,35 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
                 ),
             );
         }
+        Event::NodePool {
+            txs,
+            bytes,
+            penalty_free,
+        } => {
+            state.node_pool = Some(NodePool {
+                txs: *txs,
+                bytes: *bytes,
+                penalty_free: *penalty_free,
+            });
+        }
         Event::PoolScanned {
             path,
             pool,
             scanned,
         } => {
             state.pool.size = *pool;
+            state.pool.watched = true;
+            // The scanner read the node's pool: its count is the latest,
+            // and its size moves with it, at the same size per transaction.
+            if let Some(node_pool) = &mut state.node_pool {
+                node_pool.bytes = node_pool.bytes.map(|bytes| {
+                    bytes
+                        .saturating_mul(*pool)
+                        .checked_div(node_pool.txs)
+                        .unwrap_or(bytes)
+                });
+                node_pool.txs = *pool;
+            }
             match path {
                 PoolPath::Fast => {
                     state.pool.fast_passes.push_back(recorded.at_ms);
@@ -683,6 +721,7 @@ impl State {
             .filter(|tx| tx.matched)
             .map(|tx| tx.txid.clone())
             .collect();
+        self.pool.watched = snapshot.pool.watched;
         self.pool.size = snapshot.pool.size;
         self.pool.txs = snapshot
             .pool

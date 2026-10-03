@@ -241,7 +241,7 @@ fn a_round_s_lanes_are_drawn_to_scale() {
     let round = present(&quick, &TUNING).round.unwrap();
     assert_eq!(round.title, "Round 1,290");
     assert_eq!(round.state, "Running.", "the page's first round");
-    assert_eq!(round.elapsed, "0.08 s");
+    assert_eq!(round.elapsed, "80 ms", "under a tenth of a second, in milliseconds");
     assert_eq!(
         round.scale_ms, MIN_SCALE_MS,
         "a floor for a very short round"
@@ -265,6 +265,49 @@ fn a_round_s_lanes_are_drawn_to_scale() {
     assert_eq!(round.lanes[1].reserved, Some((2, 4_000)));
     assert_eq!(round.lanes[0].reserved, Some((0, 2_000)));
     assert_eq!(round.lanes[4].reserved, None, "upkeep hasn't started");
+}
+
+/// A round's first unit starts after the round asked the node for its
+/// tip: the lanes start at the first unit, whatever the ask took, and the
+/// state line tells the ask.
+#[test]
+fn a_round_s_lanes_start_at_its_first_unit() {
+    let state = after([
+        snapshot(10, 10, &[(10, 1)]),
+        Event::RoundStarted {
+            round: 4_976,
+            budget_ms: 10_000,
+            tip: Some(10),
+        },
+        Event::Unit {
+            tier: Tier::Chain,
+            pass: 1,
+            start_ms: 400,
+            ms: 20,
+            progress: UnitProgress::Idle,
+        },
+        Event::Unit {
+            tier: Tier::Blocks,
+            pass: 1,
+            start_ms: 420,
+            ms: 40,
+            progress: UnitProgress::Idle,
+        },
+        Event::RoundFinished {
+            round: 4_976,
+            ms: 460,
+            backlogged: false,
+        },
+    ]);
+    let round = present(&state, &TUNING).round.unwrap();
+    assert_eq!(round.lanes[0].bars[0].start_ms, 0, "the chain tier starts at the left");
+    assert_eq!(round.lanes[1].bars[0].start_ms, 20);
+    assert_eq!((round.elapsed_ms, round.elapsed.as_str()), (60, "60 ms"));
+    assert_eq!(round.scale_ms, MIN_SCALE_MS);
+    assert_eq!(
+        round.state,
+        "Ended at 0.46 s (0.40 s of it asking the node for its tip). Sleeping until the poll interval is up or the node announces a block."
+    );
 }
 
 /// The round's state line follows what woke it and how it ended.
@@ -443,6 +486,7 @@ fn the_side_summarises_the_pool_orders_upkeep_webhooks_and_saves() {
     let state = after([
         Event::Snapshot(Box::new(Snapshot {
             pool: shared::activity::Pool {
+                watched: true,
                 size: 12,
                 txids: vec!["aaaaaaaa".into()],
             },
@@ -500,4 +544,80 @@ fn seconds_read_to_two_places_under_one_and_one_over() {
     for tier in Tier::ALL {
         assert!(!tier_name(tier).is_empty());
     }
+}
+
+/// The next block fills with the node's pool against the size a miner can
+/// fill at full reward, and says when the pool is more than that.
+#[test]
+fn the_next_block_fills_with_the_node_s_pool() {
+    let pool = |txs, bytes| {
+        after([Event::NodePool {
+            txs,
+            bytes,
+            penalty_free: 300_000,
+        }])
+    };
+    let chain = |state: &State| present(state, &TUNING).chain;
+    assert_eq!(chain(&State::default()).next_block, None, "not asked yet");
+
+    let quarter = chain(&pool(23, Some(75_000))).next_block.unwrap();
+    assert_eq!(quarter.fill, Some(0.25));
+    assert!(!quarter.over);
+    assert_eq!(quarter.count, "23");
+    assert_eq!(
+        quarter.title,
+        "The next block: 23 transactions waiting in the node's pool, 75 kB of the 300 kB a miner can fill at full reward (25 %)."
+    );
+
+    let full = chain(&pool(1_234, Some(450_000))).next_block.unwrap();
+    assert_eq!((full.fill, full.over, full.count.as_str()), (Some(1.0), true, "1.2k"));
+    assert!(full.title.ends_with("(150 %): more than one block takes without a smaller reward."));
+
+    let sizeless = chain(&pool(1, None)).next_block.unwrap();
+    assert_eq!(sizeless.fill, None);
+    assert_eq!(
+        sizeless.title,
+        "The next block: 1 transaction waiting in the node's pool (the node didn't say their size)."
+    );
+    assert_eq!(compact(999), "999");
+    assert_eq!(compact(12_345), "12k");
+    assert_eq!(compact(2_500_000), "2.5M");
+}
+
+/// The pool panel says what's in the node's pool, and whether the engine
+/// looks at it at all.
+#[test]
+fn the_pool_panel_says_whether_the_engine_looks() {
+    let summary = |events: Vec<Event>| present(&after(events), &TUNING).side.mempool;
+    let watched = |watched| {
+        Event::Snapshot(Box::new(Snapshot {
+            pool: shared::activity::Pool {
+                watched,
+                size: 4,
+                txids: Vec::new(),
+            },
+            ..Snapshot::default()
+        }))
+    };
+    let node = Event::NodePool {
+        txs: 30,
+        bytes: Some(60_000),
+        penalty_free: 300_000,
+    };
+    let idle = summary(vec![watched(false)]);
+    assert_eq!(idle.summary, "Not scanned: no order waits to be paid");
+    assert_eq!(idle.rows[0], ("In the node's pool".to_owned(), "–".to_owned()));
+    assert_eq!(
+        idle.rows[2],
+        ("Scanned by the engine".to_owned(), "no: no order waits to be paid".to_owned())
+    );
+    assert_eq!(
+        summary(vec![watched(false), node.clone()]).summary,
+        "30 in the node's pool, not scanned"
+    );
+    let looking = summary(vec![watched(true), node]);
+    assert_eq!(looking.summary, "30 in the node's pool");
+    assert_eq!(looking.rows[1].1, "20 %");
+    assert_eq!(looking.rows[2].1, "yes");
+    assert_eq!(summary(vec![watched(true)]).summary, "4 in the pool");
 }

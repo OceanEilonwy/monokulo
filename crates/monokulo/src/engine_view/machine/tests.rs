@@ -147,6 +147,7 @@ fn a_snapshot_sets_what_the_page_draws() {
         checkpoints: vec![91],
         reorg: None,
         pool: SnapshotPool {
+            watched: true,
             size: 9,
             txids: vec!["aaaaaaaa".into()],
         },
@@ -231,6 +232,7 @@ fn a_later_snapshot_corrects_the_page_but_keeps_identities() {
         ],
         checkpoints: vec![81],
         pool: SnapshotPool {
+            watched: true,
             size: 2,
             txids: vec!["bbbbbbbb".into(), "cccccccc".into()],
         },
@@ -981,6 +983,61 @@ fn pool_passes_flash_count_and_call() {
     assert_eq!(feed.state.last_call, Some(Call::Pool));
 }
 
+/// The node's whole pool is what the next block is drawn from; when the
+/// scanner reads the pool too, its count is the latest and the size
+/// follows it. Whether the scanner looks at all comes from the snapshot,
+/// and a scan says it does.
+#[test]
+fn the_node_s_pool_fills_the_next_block() {
+    let mut feed = Feed::new();
+    assert_eq!(feed.state.node_pool, None, "nobody asked the node yet");
+    let out = feed.feed(Event::NodePool {
+        txs: 10,
+        bytes: Some(30_000),
+        penalty_free: 300_000,
+    });
+    assert_eq!(out, Output::default(), "routine: no mark, no movement");
+    feed.feed(Event::PoolScanned {
+        path: PoolPath::Round,
+        pool: 20,
+        scanned: 1,
+    });
+    assert_eq!(
+        feed.state.node_pool,
+        Some(NodePool {
+            txs: 20,
+            bytes: Some(60_000),
+            penalty_free: 300_000,
+        })
+    );
+    assert!(feed.state.pool.watched);
+    feed.feed(Event::Snapshot(Box::default()));
+    assert!(!feed.state.pool.watched, "the snapshot says nothing is looked for");
+    assert_eq!(
+        feed.state.node_pool.map(|pool| pool.txs),
+        Some(20),
+        "the snapshot doesn't carry the node's pool"
+    );
+    feed.feed(Event::NodePool {
+        txs: 0,
+        bytes: None,
+        penalty_free: 400_000,
+    });
+    feed.feed(Event::PoolScanned {
+        path: PoolPath::Fast,
+        pool: 3,
+        scanned: 0,
+    });
+    assert_eq!(
+        feed.state.node_pool,
+        Some(NodePool {
+            txs: 3,
+            bytes: None,
+            penalty_free: 400_000,
+        })
+    );
+}
+
 /// A pool transaction that pays an order is marked (added if new), flies
 /// to order status, is saved and is a key event; the newest few are kept.
 #[test]
@@ -1158,7 +1215,7 @@ fn no_sequence_of_events_breaks_the_page_s_invariants() {
     };
     for _ in 0..20_000 {
         let height = 880 + next(140);
-        let event = match next(17) {
+        let event = match next(18) {
             0 => started(next(1_000), Some(1_000 + next(20))),
             1 => committed(
                 height,
@@ -1235,6 +1292,11 @@ fn no_sequence_of_events_breaks_the_page_s_invariants() {
                 path: PoolPath::Fast,
                 pool: next(50),
                 scanned: next(3),
+            },
+            16 => Event::NodePool {
+                txs: next(50),
+                bytes: (next(2) == 0).then(|| next(400_000)),
+                penalty_free: 300_000,
             },
             _ => Event::Upkeep { pruned: next(3) },
         };

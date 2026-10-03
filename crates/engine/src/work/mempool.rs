@@ -29,7 +29,7 @@
 //! its start ([`watching`], `run_round`): one request for both.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -80,6 +80,9 @@ pub(crate) struct MempoolState {
     windows: parking_lot::Mutex<Option<(Instant, Windows)>>,
     /// The chain height the last round saw, for the fast path's recomputes.
     pub(crate) last_tip: AtomicU64,
+    /// Whether the last round's tier had anything to look for in the pool:
+    /// for the engine page.
+    watched: AtomicBool,
 }
 
 /// Mempool bodies kept between rounds, with their serialized size.
@@ -154,6 +157,11 @@ impl MempoolState {
             .map(|txid| shared::activity::short_id(txid))
             .collect();
         (remembered.scanned.len(), listed)
+    }
+
+    /// Whether the last round looked at the pool (see the module doc).
+    pub(super) fn watched(&self) -> bool {
+        self.watched.load(Ordering::Relaxed)
     }
 
     /// Drops everything remembered: the pool isn't being watched.
@@ -244,8 +252,9 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     // Nothing to look for in the pool: no store has an order in scope and
     // no payment is waiting for a block. The node isn't asked.
     match round.mempool.watching.take() {
-        Some(Ok(true)) => {}
+        Some(Ok(true)) => state.watched.store(true, Ordering::Relaxed),
         Some(Ok(false)) | None => {
+            state.watched.store(false, Ordering::Relaxed);
             state.forget();
             return Progress::Idle;
         }

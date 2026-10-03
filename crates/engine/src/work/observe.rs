@@ -64,6 +64,7 @@ pub async fn snapshot(
             candidates,
         }),
         pool: Pool {
+            watched: state.mempool.watched(),
             size: u64::try_from(pool_size).unwrap_or(u64::MAX),
             txids,
         },

@@ -252,6 +252,18 @@ pub enum Event {
     Diverged { height: u64 },
     /// Stores with nothing that could have been paid moved straight on.
     IdleAdvanced { from: u64, to: u64, stores: u64 },
+    /// The node's whole pool, as the next block would be mined from it:
+    /// asked for only while someone watches the engine page.
+    NodePool {
+        /// Transactions in the pool.
+        txs: u64,
+        /// Their size in bytes, when the node said.
+        bytes: Option<u64>,
+        /// The block weight a miner can fill without its reward being cut
+        /// (the penalty-free zone: the median of recent blocks, 300,000 at
+        /// least).
+        penalty_free: u64,
+    },
     /// A mempool path looked at the pool and scanned `scanned` transactions.
     PoolScanned {
         path: PoolPath,
@@ -293,7 +305,9 @@ impl Event {
             | Event::Committed { .. }
             | Event::Diverged { .. }
             | Event::IdleAdvanced { .. } => Some(Tier::Blocks),
-            Event::PoolScanned { .. } | Event::TxMatched { .. } => Some(Tier::Mempool),
+            Event::NodePool { .. } | Event::PoolScanned { .. } | Event::TxMatched { .. } => {
+                Some(Tier::Mempool)
+            }
             Event::Recomputed { .. } | Event::Vanished { .. } => Some(Tier::Settlement),
             Event::Upkeep { .. } => Some(Tier::Upkeep),
             Event::Snapshot(_)
@@ -381,6 +395,9 @@ pub struct ReorgJob {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pool {
+    /// Whether the scanner looks at the pool: only while an order could be
+    /// paid from it, or a payment waits for a block.
+    pub watched: bool,
     /// Transactions the scanner remembers from the pool.
     pub size: u64,
     /// The first 8 characters of up to [`Snapshot::POOL_TXS`] of them.

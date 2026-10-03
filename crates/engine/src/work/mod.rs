@@ -324,7 +324,7 @@ impl ScanState {
     }
 
     /// Where this network's scanner records what it does.
-    pub fn activity(&self) -> &crate::activity::Activity {
+    pub fn activity(&self) -> &std::sync::Arc<crate::activity::Activity> {
         &self.activity
     }
 

@@ -6,7 +6,7 @@
 use serde::Serialize;
 use shared::activity::{Group, Tier, TierOutcome, Tuning, Wait, Wake};
 
-use super::machine::{plural, stores_phrase, Call, ReorgStep, RibbonEntry, State};
+use super::machine::{plural, stores_phrase, Call, NodePool, ReorgStep, RibbonEntry, State};
 use crate::views::scaling::thousands;
 
 /// A round shorter than this is drawn to this scale, so its units are
@@ -45,6 +45,8 @@ pub struct ChainView {
     /// The block being scanned, and how far (0 to 1).
     pub scanning: Option<(u64, f64)>,
     pub groups: Vec<GroupView>,
+    /// The block still to come, filled by the node's pool.
+    pub next_block: Option<NextBlock>,
     pub cache: String,
     pub nodes: Vec<NodeView>,
     /// The last call to the node, as monerod names it.
@@ -64,6 +66,19 @@ pub struct GroupView {
     pub title: String,
 }
 
+/// The next block, as the node's pool would fill it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NextBlock {
+    /// How full, of the size a miner can fill at full reward (0 to 1),
+    /// when the node said how big its pool is.
+    pub fill: Option<f64>,
+    /// More than a block takes at full reward.
+    pub over: bool,
+    /// The pool's transactions, short: "23", "1.2k".
+    pub count: String,
+    pub title: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NodeView {
     pub label: String,
@@ -78,6 +93,8 @@ pub struct RoundView {
     pub state: String,
     /// The length the lanes are drawn to.
     pub scale_ms: u64,
+    /// How far the tiers have got, from the first unit: the lanes start
+    /// there, after the round's request for the node's tip.
     pub elapsed_ms: u64,
     pub elapsed: String,
     pub lanes: Vec<Lane>,
@@ -302,6 +319,7 @@ fn chain(state: &State, tuning: &Tuning) -> ChainView {
                 }
             })
             .collect(),
+        next_block: state.node_pool.map(next_block),
         cache: format!(
             "cache {} of {}",
             megabytes(chain.cache_bytes),
@@ -344,19 +362,63 @@ fn chain(state: &State, tuning: &Tuning) -> ChainView {
     }
 }
 
+fn next_block(pool: NodePool) -> NextBlock {
+    let fill = pool
+        .bytes
+        .map(|bytes| bytes as f64 / pool.penalty_free.max(1) as f64);
+    let over = fill.is_some_and(|fill| fill > 1.0);
+    let transactions = plural(pool.txs, "transaction");
+    NextBlock {
+        fill: fill.map(|fill| fill.min(1.0)),
+        over,
+        count: compact(pool.txs),
+        title: match pool.bytes {
+            Some(bytes) => format!(
+                "The next block: {transactions} waiting in the node's pool, {} of the {} a miner can fill at full reward ({:.0} %){}",
+                kilobytes(bytes),
+                kilobytes(pool.penalty_free),
+                fill.unwrap_or(0.0) * 100.0,
+                if over {
+                    ": more than one block takes without a smaller reward."
+                } else {
+                    "."
+                }
+            ),
+            None => format!(
+                "The next block: {transactions} waiting in the node's pool (the node didn't say their size)."
+            ),
+        },
+    }
+}
+
 fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> RoundView {
+    // A round asks the node for its tip (and the pool) before any tier
+    // runs: against a remote node, most of a quiet round. The lanes start
+    // at the first unit, and the ask is told in the state line.
+    let asked_ms = round
+        .units
+        .iter()
+        .map(|unit| unit.start_ms)
+        .min()
+        .unwrap_or(0);
+    let elapsed_ms = round.elapsed_ms.saturating_sub(asked_ms);
     let scale_ms = if round.to_budget {
-        round.budget_ms.max(round.elapsed_ms)
+        round.budget_ms.max(elapsed_ms)
     } else {
-        (round.elapsed_ms.saturating_mul(115) / 100).max(MIN_SCALE_MS)
+        (elapsed_ms.saturating_mul(115) / 100).max(MIN_SCALE_MS)
+    };
+    let asking = if asked_ms > 0 {
+        format!(" ({} of it asking the node for its tip)", seconds(asked_ms))
+    } else {
+        String::new()
     };
     let state_line = match round.finished {
         Some(finished) if finished.backlogged => format!(
-            "Ended at {} with work left: the next round starts at once.",
+            "Ended at {}{asking} with work left: the next round starts at once.",
             seconds(finished.ms)
         ),
         Some(finished) => format!(
-            "Ended at {}. Sleeping until the poll interval is up or the node announces a block.",
+            "Ended at {}{asking}. Sleeping until the poll interval is up or the node announces a block.",
             seconds(finished.ms)
         ),
         None => match round.woken_by {
@@ -382,13 +444,18 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
                 share: format!("{share} %"),
                 bars: units
                     .map(|unit| Bar {
-                        start_ms: unit.start_ms,
+                        start_ms: unit.start_ms.saturating_sub(asked_ms),
                         ms: unit.ms,
                         leftover: unit.pass == 2,
                     })
                     .collect(),
                 reserved: if round.to_budget {
-                    started.map(|start| (start, round.budget_ms * u64::from(share) / 100))
+                    started.map(|start| {
+                        (
+                            start.saturating_sub(asked_ms),
+                            round.budget_ms * u64::from(share) / 100,
+                        )
+                    })
                 } else {
                     None
                 },
@@ -400,8 +467,12 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
         title: format!("Round {}", thousands(round.number)),
         state: state_line,
         scale_ms,
-        elapsed_ms: round.elapsed_ms,
-        elapsed: seconds(round.elapsed_ms),
+        elapsed_ms,
+        elapsed: if elapsed_ms < 100 {
+            format!("{elapsed_ms} ms")
+        } else {
+            seconds(elapsed_ms)
+        },
         lanes,
     }
 }
@@ -547,19 +618,53 @@ fn side(state: &State) -> Side {
             ],
         },
         mempool: Panel {
-            summary: format!(
-                "{} in the pool{}",
-                thousands(state.pool.size),
-                if state.pool.found > 0 {
+            summary: {
+                let found = if state.pool.found > 0 {
                     format!(", {} found", plural(state.pool.found, "payment"))
                 } else {
                     String::new()
+                };
+                match (state.node_pool, state.pool.watched) {
+                    (Some(node), true) => format!("{} in the node's pool{found}", thousands(node.txs)),
+                    (Some(node), false) => {
+                        format!("{} in the node's pool, not scanned", thousands(node.txs))
+                    }
+                    (None, true) => format!("{} in the pool{found}", thousands(state.pool.size)),
+                    (None, false) => "Not scanned: no order waits to be paid".to_owned(),
                 }
-            ),
+            },
             alert: false,
             rows: vec![
                 (
-                    "Transactions remembered".to_owned(),
+                    "In the node's pool".to_owned(),
+                    state
+                        .node_pool
+                        .map_or_else(dash, |node| thousands(node.txs)),
+                ),
+                (
+                    "Of the next block's full-reward size".to_owned(),
+                    state
+                        .node_pool
+                        .and_then(|node| {
+                            node.bytes.map(|bytes| {
+                                format!(
+                                    "{:.0} %",
+                                    bytes as f64 / node.penalty_free.max(1) as f64 * 100.0
+                                )
+                            })
+                        })
+                        .unwrap_or_else(dash),
+                ),
+                (
+                    "Scanned by the engine".to_owned(),
+                    if state.pool.watched {
+                        "yes".to_owned()
+                    } else {
+                        "no: no order waits to be paid".to_owned()
+                    },
+                ),
+                (
+                    "Transactions scanned and remembered".to_owned(),
                     thousands(state.pool.size),
                 ),
                 (
@@ -725,6 +830,21 @@ pub fn seconds(ms: u64) -> String {
 
 fn megabytes(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+/// Decimal kilobytes, as block sizes are usually given: "41 kB".
+fn kilobytes(bytes: u64) -> String {
+    format!("{} kB", thousands(bytes.div_ceil(1000)))
+}
+
+/// A count in at most four characters: "23", "1.2k", "12k", "1.2M".
+fn compact(n: u64) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..10_000 => format!("{:.1}k", n as f64 / 1000.0),
+        10_000..1_000_000 => format!("{}k", n / 1000),
+        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
 }
 
 fn micros(us: u64) -> String {

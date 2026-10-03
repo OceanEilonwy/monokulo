@@ -33,7 +33,7 @@ use tokio::time::Instant;
 
 use crate::daemon::{
     ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, DifficultyHeader, EndpointStats,
-    FetchedTx, KeyImageStatus, MoneroDaemonClient, PoolAnswer, TxLocation,
+    FetchedTx, KeyImageStatus, MoneroDaemonClient, PoolAnswer, PoolOutlook, TxLocation,
 };
 
 pub struct RpcDaemonClient {
@@ -1180,6 +1180,24 @@ struct GetInfoResult {
     stagenet: bool,
     #[serde(default)]
     testnet: bool,
+    /// Transactions in the pool.
+    #[serde(default)]
+    tx_pool_size: Option<u64>,
+    /// The median weight of recent blocks, as the penalty is reckoned from.
+    #[serde(default)]
+    block_weight_median: Option<u64>,
+}
+
+/// `/get_transaction_pool_stats`: only the pool's totals are read.
+#[derive(Deserialize)]
+struct PoolStatsResponse {
+    pool_stats: PoolStats,
+}
+
+#[derive(Deserialize)]
+struct PoolStats {
+    bytes_total: u64,
+    txs_total: u64,
 }
 
 impl GetInfoResult {
@@ -1603,6 +1621,32 @@ impl MoneroDaemonClient for RpcDaemonClient {
             nettype: result.nettype(),
             height: result.height.and_then(|count| count.checked_sub(1)),
         })
+    }
+
+    /// `get_info` for the pool's size and the median block weight, and
+    /// `/get_transaction_pool_stats` for the pool's bytes: a node that
+    /// refuses the second still gives the count.
+    async fn get_pool_outlook(&self) -> Result<Option<PoolOutlook>, DaemonError> {
+        let info: GetInfoResult = self.post_json_rpc("get_info", json!({})).await?;
+        let stats = self
+            .post_plain::<PoolStatsResponse>("/get_transaction_pool_stats", json!({}))
+            .await
+            .ok();
+        let Some(txs) = stats
+            .as_ref()
+            .map(|stats| stats.pool_stats.txs_total)
+            .or(info.tx_pool_size)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(PoolOutlook {
+            txs,
+            bytes: stats.map(|stats| stats.pool_stats.bytes_total),
+            penalty_free: info
+                .block_weight_median
+                .unwrap_or(0)
+                .max(PoolOutlook::FULL_REWARD_ZONE),
+        }))
     }
 
     /// `on_get_block_hash`: the hash and nothing else (about a hundred
@@ -3130,6 +3174,56 @@ mod wire_tests {
         assert!(after.measured);
         assert!(after.rtt_ms < 1000, "a local answer: {after:?}");
         assert!(after.last_measured_unix.is_some());
+    }
+
+    /// The pool outlook comes from `get_info` and the pool's stats; a node
+    /// that refuses the stats still gives the count, and a median under
+    /// the full-reward zone counts as the zone.
+    #[tokio::test]
+    async fn the_pool_outlook_reads_the_node_s_info_and_pool_stats() {
+        async fn node(stats: bool) -> RpcDaemonClient {
+            let app = axum::Router::new()
+                .route(
+                    "/json_rpc",
+                    axum::routing::post(async || {
+                        axum::Json(json!({ "jsonrpc": "2.0", "id": "0", "result": {
+                            "status": "OK", "tx_pool_size": 7, "block_weight_median": 120_000
+                        }}))
+                    }),
+                )
+                .route(
+                    "/get_transaction_pool_stats",
+                    axum::routing::post(async move || {
+                        if stats {
+                            axum::Json(json!({ "status": "OK", "pool_stats": {
+                                "bytes_total": 21_000, "txs_total": 9, "histo": []
+                            }}))
+                        } else {
+                            axum::Json(json!({ "status": "Restricted" }))
+                        }
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap()
+        }
+        assert_eq!(
+            node(true).await.get_pool_outlook().await.unwrap(),
+            Some(PoolOutlook {
+                txs: 9,
+                bytes: Some(21_000),
+                penalty_free: PoolOutlook::FULL_REWARD_ZONE,
+            })
+        );
+        assert_eq!(
+            node(false).await.get_pool_outlook().await.unwrap(),
+            Some(PoolOutlook {
+                txs: 7,
+                bytes: None,
+                penalty_free: PoolOutlook::FULL_REWARD_ZONE,
+            })
+        );
     }
 
     /// A request that runs out of time is a timeout, not any failure: the

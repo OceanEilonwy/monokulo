@@ -5440,12 +5440,28 @@ async fn the_activity_record_tells_the_paid_story_in_order() {
 #[tokio::test]
 async fn a_snapshot_after_the_paid_story_shows_where_it_ended() {
     let story = Story::new().await;
-    for stage in PAID {
+    let db = Db::over_shared(Arc::clone(&story.store));
+    for (i, stage) in PAID.iter().enumerate() {
         stage(&story);
         story.round().await;
         story.settle().await;
+        if i == 0 {
+            let watching = snapshot(
+                &story.state,
+                &db,
+                monero::Network::Mainnet,
+                Vec::new(),
+                16,
+                crate::now_unix(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                watching.pool.watched,
+                "an order waits to be paid: the pool is looked at"
+            );
+        }
     }
-    let db = Db::over_shared(Arc::clone(&story.store));
     let nodes = vec![shared::activity::Node {
         label: "fake".to_owned(),
         active: true,

@@ -445,6 +445,9 @@ pub async fn run_scanner_loop(
             .map(|(id, h)| (id.clone(), *h))
             .collect();
         let started_at = now_unix();
+        if scan_state.activity().node_pool_due() {
+            record_node_pool(scan_state.activity(), &daemon);
+        }
         if scan_state.activity().snapshot_due() {
             record_snapshot(
                 &scan_state,
@@ -543,6 +546,27 @@ pub async fn run_scanner_loop(
 /// Records `network`'s snapshot for the engine page
 /// (`docs/engine_visualizer.md`). One that can't be taken is skipped: the
 /// next is due in seconds, and scanning matters more.
+/// Asks the active node about its whole pool for the engine page, beside
+/// the round rather than before it: the round doesn't wait for the answer.
+fn record_node_pool(
+    activity: &Arc<crate::activity::Activity>,
+    daemon: &Arc<crate::daemon_fallback::FallbackDaemonClient>,
+) {
+    let (activity, daemon) = (Arc::clone(activity), Arc::clone(daemon));
+    tokio::spawn(async move {
+        if let Some(outlook) = daemon
+            .pool_outlook(crate::activity::NODE_POOL_EVERY)
+            .await
+        {
+            activity.record(shared::activity::Event::NodePool {
+                txs: outlook.txs,
+                bytes: outlook.bytes,
+                penalty_free: outlook.penalty_free,
+            });
+        }
+    });
+}
+
 async fn record_snapshot(
     scan_state: &crate::work::ScanState,
     db: &Db,
@@ -835,10 +859,32 @@ mod tests {
         // Settled into its hour-long wait.
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(ticks(), 1);
+        let node_pool = |events: &[shared::activity::Recorded]| {
+            events.iter().any(|recorded| {
+                matches!(
+                    recorded.event,
+                    shared::activity::Event::NodePool {
+                        txs: 0,
+                        bytes: Some(0),
+                        penalty_free: crate::daemon::PoolOutlook::FULL_REWARD_ZONE,
+                    }
+                )
+            })
+        };
+        assert!(
+            !node_pool(&scan_state.activity().page(None).events),
+            "nobody watched the first round"
+        );
 
+        // Someone is watching now (the read above): the next round has the
+        // node's whole pool recorded beside it.
         node.push_block("h2", vec![]);
         scan_state.node_wakes().chain_changed();
         eventually("a round for the announced block", || ticks() == 2).await;
+        eventually("the node's pool, for the watcher", || {
+            node_pool(&scan_state.activity().page(None).events)
+        })
+        .await;
         scan_loop.abort();
         // The engine page sees the loop's snapshot, and that the wait
         // between the rounds was cut short by the new block.
@@ -850,8 +896,11 @@ mod tests {
             .map(|recorded| recorded.event)
             .collect();
         assert!(
-            matches!(recorded.first(), Some(shared::activity::Event::Snapshot(_))),
-            "{recorded:#?}"
+            matches!(
+                recorded.first(),
+                Some(shared::activity::Event::Snapshot(snapshot)) if !snapshot.pool.watched
+            ),
+            "no store has anything to look for in the pool: {recorded:#?}"
         );
         assert!(recorded.iter().any(|event| matches!(
             event,

@@ -131,7 +131,7 @@ The design said 20 s. With rounds about a second apart, 20 s is still a
 blur of lines; 5 s shows single rounds. Found while writing the browser
 test.
 
-## D15. Rounds include the tip request
+## D15. Rounds include the tip request (replaced by D21)
 
 A round's lanes start at the round's start, and the round first asks the
 node for its tip (and the pool) before any tier runs. Against a remote node
@@ -179,6 +179,90 @@ The poll (500 ms), the linger (60 s), the record's reach (30 minutes,
 (5 s) are constants with their reasons beside them, as the scanner's own
 timings are. None is something an operator would tune, and each is
 checked by a test at its production value.
+
+## Second review
+
+The reviewer's eight points after trying the page, and the calls made on
+each.
+
+## D21. A round's lanes start at its first unit
+
+Replaces D15. Drawing the tip request on the lanes put every quiet round's
+work at the far right, at a different place each round, which read as the
+lanes jumping about. The lanes now start at the first unit; the state line
+says how long the ask took ("Ended at 0.46 s (0.40 s of it asking the node
+for its tip)"), so the time is still told. The playhead's label is the
+tiers' time, in milliseconds under a tenth of a second ("4 ms"), since
+"0.00 s" said nothing. Alternative: a grey "asking the node" segment at the
+start of every lane; it would take most of the width in every quiet round
+for the same information.
+
+## D22. The node's whole pool, asked only while someone watches
+
+The next block (the dotted cell after the tip) fills with the node's pool.
+The engine never needed the pool's size, and it only reads the pool while
+an order could be paid from it, so this is a new call: monerod's `get_info`
+(pool size, median block weight) and `/get_transaction_pool_stats` (the
+pool's bytes). It is asked every 5 s, and only while the activity record
+has been read in the last minute: an engine nobody watches sends the node
+nothing more than before.
+
+- **Beside the round, not in it.** The scan loop spawns the call, so a slow
+  node never delays a round, and it goes to the active node directly
+  (`FallbackDaemonClient::pool_outlook`), so an answer or a failure never
+  changes which node scans.
+- **Bytes stand for weight.** The penalty is reckoned on weight, which
+  monerod's pool stats don't give; bytes are close for ordinary
+  transactions. The penalty-free zone is the median block weight, never
+  under 300 kB (monerod's `CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V5`).
+- **A node that refuses the stats** still gives the count from `get_info`:
+  the cell shows the number with no fill.
+- **Between askings** a scan of the pool (`pool_scanned`) updates the count
+  and scales the bytes with it.
+
+Alternative: the engine always asking. Rejected: the engine is careful to
+ask the node nothing it doesn't need (the mempool tier's own rule), and the
+page is the only reader.
+
+## D23. "In the pool" says whose pool
+
+"0 in the pool" counted the transactions the scanner remembers, and with no
+order waiting the scanner doesn't look at the pool at all (by design: no
+request is made). The snapshot now says whether the pool is looked at
+(`Pool::watched`), and the line reads "23 in the node's pool, not scanned"
+or "23 in the node's pool, 1 payment found"; the panel's rows separate the
+node's count, the next block's fill, whether the engine scans, and what it
+remembers.
+
+## D24. The timeline's window has handles; the wheel scrolls the page
+
+Replaces the wheel zoom and the drag-to-pan of the approved design. The
+bar under the track (the whole history) carries the window as a box: its
+middle moves it, its two handles resize it (5 s at least), a press beside
+it centres it there. Pressing or dragging on the track itself moves the
+playhead (scrubbing). Moving the window never moves the playhead or leaves
+live. Scrubbing sends one request at a time: while one is out, the latest
+position is noted and asked for next, so a fast drag doesn't queue
+hundreds. The keyboard keeps left, right, End and Space on the track; the
+window and its handles take Tab and the arrow keys. Page Up and Page Down,
+plus and minus are gone (the window's keys do the same).
+
+## D25. The legend is a `details`
+
+The (?) beside the title is a `<details>`, so the legend opens without
+JavaScript too; the script closes it on Escape and on a press outside. Its
+words are written in Rust with the rest of the page, and its symbols are
+the page's own classes, so the legend can't drift from what it explains.
+
+## D26. Smaller wording calls
+
+- The reorg check's packet reads "hash check", not "hash": it is the Chain
+  tier asking the node for the hash of the newest recorded block, to
+  compare with the recorded one.
+- "no gap: work left" became a symbol of two bars back to back, "back to
+  back: work was left", and the legend says why.
+- The buttons' misalignment came from the site-wide button margin; the
+  timeline's buttons and readout are now the track's height.
 
 ## What differs from the design, and what is left
 
