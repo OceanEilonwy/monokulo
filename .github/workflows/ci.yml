@@ -161,9 +161,9 @@ jobs:
       # installs locally, but prebuilt.
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
           # monokulo's build script builds key custody's browser module.
-          targets: wasm32-unknown-unknown, llvm-tools-preview
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
