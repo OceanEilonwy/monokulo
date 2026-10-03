@@ -3264,8 +3264,6 @@ mod tests {
         let new_values: &[(&str, &str)] = &[
             ("key_custody.enabled_backends", "plain"),
             ("key_custody.default_backend", "plain"),
-            ("key_custody.socket_path", ""),
-            ("key_custody.socket_connections", "7"),
             ("payment.confirmations_required", "5"),
             ("payment.order_expiry_minutes", "45"),
             ("payment.reorg_check_depth", "15"),

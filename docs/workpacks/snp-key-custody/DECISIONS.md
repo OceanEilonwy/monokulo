@@ -255,3 +255,7 @@ following; each was fixed as described unless it says otherwise.
 Also fixed: the CLI's packaging step no longer needs Python on Windows; the report fields
 only tests read (family/image ID, author key digest) and the CLI's test-only
 `check_against` were removed; a stale comment named the socket backend.
+
+### 28. SEV-SNP runs the engine standalone
+- **Decision:** `main` now runs the engine inside monokulo by default. The snp backend works in either mode, but an engine inside monokulo serves no HTTP API of its own, so it can't answer an upgraded engine's handoff (`POST /api/v1/admin/key-custody/handoff`). The SEV-SNP deploy guide runs the engine standalone (`monokulo-engine`), so upgrades keep the master key.
+- **Why:** answering a handoff through monokulo's public address would expose an engine route publicly, which the engine boundary rules out.

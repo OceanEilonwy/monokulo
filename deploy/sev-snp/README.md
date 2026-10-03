@@ -175,6 +175,9 @@ launched without the ID block, signed by another key, below
 
 ## 6. Upgrading the engine image
 
+Run the engine standalone (`monokulo-engine`, as above), not inside
+monokulo: only a standalone engine serves the handoff route below.
+
 A new image has a new measurement, so it can't unwrap the master key itself:
 the engine it replaces hands it over.
 
