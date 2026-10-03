@@ -27,6 +27,7 @@
 //! Not implemented in this pass: TLS termination (expected to sit behind a reverse
 //! proxy or terminate via `rustls` in `main`, not implemented here).
 
+mod activity;
 mod admin;
 pub mod instance_admin;
 mod logs;
@@ -257,6 +258,9 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/api/v1/admin/logs/trace/{trace_id}", get(logs::trace))
         .route("/api/v1/admin/logs/histogram", get(logs::histogram))
         .route("/api/v1/admin/logs/attributes", get(logs::attributes))
+        // What the scanner has been doing, for monokulo's engine page
+        // (docs/engine_visualizer.md).
+        .route("/api/v1/admin/engine/activity", get(activity::activity))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_rate_limit_middleware,

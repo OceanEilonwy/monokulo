@@ -462,12 +462,13 @@ pub struct ActivityPage {
     pub epoch: String,
     pub now_ms: i64,
     pub tuning: Tuning,
-    /// Oldest first. Without `after` (or when `after` has left the record),
+    /// Oldest first. Without `from` (or when `from` has left the record),
     /// from the oldest snapshot kept.
     pub events: Vec<Recorded>,
-    /// What to ask for `after` next time.
+    /// The `from` to ask with next time.
     pub next: u64,
-    /// `after` had already left the record: the page starts over.
+    /// `from` had already left the record (or belongs to another epoch):
+    /// the page starts over.
     pub gap: bool,
 }
 
