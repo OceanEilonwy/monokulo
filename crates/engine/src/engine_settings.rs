@@ -85,6 +85,24 @@ settings! {
         description: "The Monero node for testnet, in the same JSON shape as mainnet's. Leave empty to not use testnet.",
         example: r#"{"host":"127.0.0.1","port":28081}"#,
     },
+    PROOF_OF_WORK_MAINNET: bool {
+        key: "proof_of_work.mainnet",
+        default: true,
+        description: "Check the proof of work of every mainnet block an order's confirmations are counted in, so a node can't make up the blocks a payment is in. Takes about 260 MB of memory and a few seconds of CPU a day. Turn it off only for a node you fully trust, such as your own.",
+        example: "true",
+    },
+    PROOF_OF_WORK_STAGENET: bool {
+        key: "proof_of_work.stagenet",
+        default: false,
+        description: "The same check for stagenet. Off by default: stagenet coins are worth nothing.",
+        example: "false",
+    },
+    PROOF_OF_WORK_TESTNET: bool {
+        key: "proof_of_work.testnet",
+        default: false,
+        description: "The same check for testnet. Off by default: testnet coins are worth nothing.",
+        example: "false",
+    },
     KEY_CUSTODY_ENABLED_BACKENDS: CommaList<CustodyBackend> {
         key: "key_custody.enabled_backends",
         default: live_settings::parsed_default("plain"),
@@ -363,6 +381,15 @@ pub struct ScanConfig {
     pub poll_interval: Duration,
     pub expired_order_grace_period_seconds: i64,
     pub scan_chunk_memory_budget_mb: u32,
+    /// The networks whose blocks' proof of work is checked
+    /// (docs/proof_of_work.md).
+    pub proof_of_work: Vec<monero::Network>,
+}
+
+impl ScanConfig {
+    pub fn checks_proof_of_work(&self, network: monero::Network) -> bool {
+        self.proof_of_work.contains(&network)
+    }
 }
 
 impl Section for ScanConfig {
@@ -373,6 +400,9 @@ impl Section for ScanConfig {
             &PAYMENT_MEMPOOL_POLL_INTERVAL_MS,
             &PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES,
             &PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB,
+            &PROOF_OF_WORK_MAINNET,
+            &PROOF_OF_WORK_STAGENET,
+            &PROOF_OF_WORK_TESTNET,
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
@@ -393,6 +423,15 @@ impl Section for ScanConfig {
                 .get(&PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES)
                 * 60,
             scan_chunk_memory_budget_mb: snapshot.get(&PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB),
+            proof_of_work: [
+                (monero::Network::Mainnet, &PROOF_OF_WORK_MAINNET),
+                (monero::Network::Stagenet, &PROOF_OF_WORK_STAGENET),
+                (monero::Network::Testnet, &PROOF_OF_WORK_TESTNET),
+            ]
+            .into_iter()
+            .filter(|(_, setting)| snapshot.get(*setting))
+            .map(|(network, _)| network)
+            .collect(),
         })
     }
 }

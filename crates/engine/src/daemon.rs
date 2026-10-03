@@ -818,6 +818,21 @@ pub mod fake {
             }
         }
 
+        /// Has block `height`'s header claim `difficulty`, whatever it was
+        /// mined to: a node lying about the one thing a block's id doesn't
+        /// commit to.
+        pub fn set_claimed_difficulty(&self, height: u64, difficulty: u128) {
+            if let Some(proof) = self
+                .state
+                .lock()
+                .blocks
+                .get_mut(&height)
+                .and_then(|b| b.proof.as_mut())
+            {
+                proof.difficulty = difficulty;
+            }
+        }
+
         /// A block known only by its id, at a RandomX key height below a
         /// test chain: `get_block_hash` answers with it.
         pub fn seed_key_block(&self, height: u64, hash: &str) {

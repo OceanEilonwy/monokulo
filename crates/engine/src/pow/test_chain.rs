@@ -3,7 +3,7 @@
 //!
 //! A chain starts with blocks that claim difficulty 1, which any hash
 //! meets, so nothing is mined for them: the window an anchor takes. With
-//! 735 of them 30 seconds apart, the blocks after need difficulty 4, and
+//! 735 of them a minute apart, the blocks after need difficulty 2, and
 //! those are mined for real, so a block with a wrong proof is as easy to
 //! make as a right one.
 
@@ -102,6 +102,19 @@ impl TestChain {
     /// at time `last_time`, `spacing` seconds apart, the first one's parent
     /// made up.
     pub fn unmined(hasher: Hasher, top: u64, count: u64, spacing: u64, last_time: u64) -> Self {
+        Self::unmined_claiming(hasher, top, count, spacing, last_time, 1)
+    }
+
+    /// [`Self::unmined`], each block claiming `difficulty`: above 1, their
+    /// proofs of work don't meet it.
+    pub fn unmined_claiming(
+        hasher: Hasher,
+        top: u64,
+        count: u64,
+        spacing: u64,
+        last_time: u64,
+        difficulty: u128,
+    ) -> Self {
         let mut chain = TestChain {
             hasher,
             blocks: Vec::new(),
@@ -118,8 +131,8 @@ impl TestChain {
                 id,
                 prev_id,
                 timestamp,
-                difficulty: 1,
-                cumulative_difficulty: u128::from(height),
+                difficulty,
+                cumulative_difficulty: u128::from(height) * difficulty,
                 blob: serialize(&block),
                 txs: Vec::new(),
             });
@@ -129,10 +142,10 @@ impl TestChain {
     }
 
     /// The window [`Self::unmined`] makes for an anchor at `top`: 735
-    /// blocks 30 seconds apart, the last at `last_time`; the next block
-    /// needs difficulty 4.
+    /// blocks a minute apart, the last at `last_time`; the next block
+    /// needs difficulty 2.
     pub fn anchored_at(hasher: Hasher, top: u64, last_time: u64) -> Self {
-        Self::unmined(hasher, top, DIFFICULTY_BLOCKS as u64, 30, last_time)
+        Self::unmined(hasher, top, DIFFICULTY_BLOCKS as u64, 60, last_time)
     }
 
     pub fn blocks(&self) -> &[TestBlock] {
@@ -198,25 +211,17 @@ impl TestChain {
         let height = tip.height + 1;
         let key = self.key(height);
         let mut block = block_blob(height, timestamp, tip.id, &txs);
-        let mut nonce = 0u32;
-        'mining: loop {
-            let inputs: Vec<Vec<u8>> = (0..8u32)
-                .map(|i| {
-                    block.header.nonce = nonce + i;
-                    block.serialize_hashable()
-                })
-                .collect();
-            let hashes = self
+        // A nonce at a time: at these difficulties the first or second
+        // usually does, and every hash costs about 16 ms.
+        for nonce in 0u32.. {
+            block.header.nonce = nonce;
+            let hash = self
                 .hasher
-                .hash_blocking(&key, inputs)
+                .hash_blocking(&key, vec![block.serialize_hashable()])
                 .expect("a test chain's hashes");
-            for (i, hash) in hashes.iter().enumerate() {
-                if check_hash(hash, difficulty) == valid {
-                    block.header.nonce = nonce + i as u32;
-                    break 'mining;
-                }
+            if check_hash(&hash[0], difficulty) == valid {
+                break;
             }
-            nonce += 8;
         }
         self.blocks.push(TestBlock {
             height,

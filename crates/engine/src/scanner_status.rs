@@ -40,6 +40,8 @@ pub struct NetworkScanStatus {
     /// What wakes the network's loops early, and what it has done
     /// (docs/monero_zmq.md).
     pub wakes: Arc<crate::node_events::NodeWakes>,
+    /// Proof-of-work checking (docs/proof_of_work.md), while it is on.
+    pub proof: Option<shared::proof::ProofStatus>,
 }
 
 impl Default for NetworkScanStatus {
@@ -53,6 +55,7 @@ impl Default for NetworkScanStatus {
             tenants_scanned: 0,
             progress: crate::scaling::new_progress(),
             wakes: Arc::default(),
+            proof: None,
         }
     }
 }

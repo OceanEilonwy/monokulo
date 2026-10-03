@@ -31,6 +31,9 @@ const MIN_GAP: Duration = Duration::from_millis(20);
 pub struct NodeWakes {
     pool: Notify,
     chain: Notify,
+    /// The chain too, for proof-of-work checking's own loop: one `Notify`
+    /// wakes one waiter, and the scan loop waits on `chain`.
+    proof: Notify,
     pool_passes_woken: AtomicU64,
     rounds_woken: AtomicU64,
     publishers: parking_lot::Mutex<Vec<shared::announcements::Publisher>>,
@@ -45,6 +48,7 @@ impl NodeWakes {
     /// The node's chain has a new tip.
     pub fn chain_changed(&self) {
         self.chain.notify_one();
+        self.proof.notify_one();
     }
 
     /// Waits `interval`, or until the pool changes if sooner (but at least
@@ -56,6 +60,11 @@ impl NodeWakes {
     /// [`Self::pool_or`] for the chain.
     pub async fn chain_or(&self, interval: Duration) -> bool {
         counted(&self.rounds_woken, wait(&self.chain, interval).await)
+    }
+
+    /// [`Self::chain_or`] for proof-of-work checking (not counted).
+    pub async fn proof_or(&self, interval: Duration) -> bool {
+        wait(&self.proof, interval).await
     }
 
     /// For `/status`: `None` while no publisher is configured.
