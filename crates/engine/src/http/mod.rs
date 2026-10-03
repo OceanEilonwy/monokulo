@@ -614,7 +614,13 @@ pub async fn resolve_wallet_handle(
         *handles.entry(tenant.id.clone()).or_insert(handle)
     };
     if winner != handle {
-        let _ = state.custody.backends.remove_wallet(handle).await;
+        crate::key_custody::remove_wallet_logged(
+            state.custody.backends.as_ref(),
+            handle,
+            Some(tenant.id.as_str()),
+            "registering a store's keys, another request registered them first",
+        )
+        .await;
     }
     Ok(winner)
 }

@@ -60,6 +60,40 @@ pub fn wallet_matches_address(
 }
 pub use plain::PlainKeyCustody;
 
+/// Removes `handle` from `custody`, best effort, and logs a failure.
+///
+/// Until the backend restarts, a removal that failed leaves a copy of a
+/// store's view key live in it. `UnknownWallet` means the handle is already
+/// gone, which is what was wanted, so it is not logged. `store_id` is the
+/// store the handle belonged to, when the caller knows it; `context` says
+/// what was being done, for the log line.
+pub async fn remove_wallet_logged(
+    custody: &dyn KeyCustody,
+    handle: WalletHandle,
+    store_id: Option<&str>,
+    context: &str,
+) {
+    let Err(e) = custody.remove_wallet(handle).await else {
+        return;
+    };
+    if matches!(e, KeyCustodyError::UnknownWallet) {
+        return;
+    }
+    if let Some(store_id) = store_id {
+        tracing::warn!(
+            store.id = %store_id,
+            error = %e,
+            "{context}: removing a store's keys from key custody failed, so a copy stays there until the backend restarts"
+        );
+    } else {
+        tracing::warn!(
+            wallet.handle = ?handle,
+            error = %e,
+            "{context}: removing a store's keys from key custody failed, so a copy stays there until the backend restarts"
+        );
+    }
+}
+
 pub use shared::key_custody::{
     KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,
     TxMatches, WalletHandle, WalletMaterial,
