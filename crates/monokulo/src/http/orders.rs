@@ -989,8 +989,15 @@ pub(super) async fn render_store_settings_page(
                 current: super::status_page::custody_backend_label(&current),
                 current_disabled: !enabled.contains(&current),
                 move_to,
+                snp_entry: None,
             })
         });
+    let mut key_storage = key_storage;
+    if let Some(view) = key_storage.as_mut() {
+        let targets: Vec<String> = view.move_to.iter().map(|c| c.backend.clone()).collect();
+        view.snp_entry =
+            super::key_entry::prepare(state, super::key_entry::Purpose::Move(&sk), &targets).await;
+    }
     let confirmations_required = tenant_result
         .as_ref()
         .map(|t| t.confirmations_required)
@@ -1574,8 +1581,14 @@ pub async fn update_confirmations_required(
 #[derive(Deserialize)]
 pub struct MoveKeyStorageForm {
     pub backend: String,
+    #[serde(default)]
     pub view_key_hex: String,
+    #[serde(default)]
     pub spend_pubkey_hex: String,
+    /// The keys encrypted for SEV-SNP key storage (`key_entry`), instead of
+    /// the two above.
+    #[serde(default)]
+    pub encrypted_keys: Option<String>,
 }
 
 /// `POST /dashboard/stores/{id}/settings/key-custody` - moves the store's
@@ -1599,9 +1612,30 @@ pub async fn move_key_storage(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    let backend = form.backend.trim();
+    let keys = match super::key_entry::store_keys(
+        &state.engine,
+        Some(backend),
+        &form.view_key_hex,
+        &form.spend_pubkey_hex,
+        form.encrypted_keys.as_deref(),
+    ) {
+        Ok(keys) => keys,
+        Err(message) => {
+            return render_store_settings_page(
+                &state,
+                row,
+                &user,
+                Some(message),
+                None,
+                Some((SECTION, fx)),
+            )
+            .await
+        }
+    };
     match state
         .engine.client
-        .switch_key_custody(&sk, form.backend.trim(), form.view_key_hex.trim(), form.spend_pubkey_hex.trim())
+        .switch_key_custody(&sk, backend, &keys)
         .await
     {
         Ok(_) => {
@@ -3953,9 +3987,39 @@ mod tests {
             .key_custody_backend
     }
 
+    /// What `key-custody-cli` does on the merchant's computer, with the
+    /// test engine's stand-in for AMD: fetches the bundle the page links,
+    /// checks it and encrypts the keys. Returns what it would print.
+    async fn cli_seal(
+        router: &Router,
+        engine: &engine_test_support::TestEngineHandle,
+        html: &str,
+        view_key_hex: &str,
+    ) -> String {
+        let at = html
+            .find("/key-custody/bundles/")
+            .expect("the page links its bundle");
+        let path = &html[at..at + "/key-custody/bundles/".len() + 32];
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let bundle: engine::key_custody::transport::Bundle =
+            serde_json::from_slice(&bytes).unwrap();
+        engine.seal_keys_for_snp(&bundle, view_key_hex, TEST_SPEND_PUBKEY_HEX)
+    }
+
+    /// Without JavaScript: the keys move to SEV-SNP key storage encrypted
+    /// with key-custody-cli against the bundle the page links. Keys typed
+    /// in the clear for it are refused and not sent on; another wallet's
+    /// keys are refused by the engine; nothing moves until the right ones
+    /// come.
     #[tokio::test]
-    async fn a_store_can_move_its_keys_to_another_backend_from_its_settings_page_without_js() {
-        let (state, _engine) = test_state_with_two_custody_backends().await;
+    async fn a_store_can_move_its_keys_to_snp_from_its_settings_page_without_js() {
+        let (state, engine) = test_state_with_two_custody_backends().await;
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3980,60 +4044,63 @@ mod tests {
             "the current place is described: {html}"
         );
         assert!(
-            html.contains(r#"<option value="socket" selected>"#),
+            html.contains(r#"<option value="snp" selected>"#),
             "the other backend is offered: {html}"
         );
+        assert!(html.contains("key-custody-cli seal --bundle"), "{html}");
+        assert!(html.contains(r#"name="encrypted_keys""#), "{html}");
         assert!(
             !html.contains(TEST_VIEW_KEY_HEX),
             "keys are never echoed back"
         );
 
-        // Keys of another wallet are refused, and nothing moves.
-        let wrong_view_key = format!("01{}", "0".repeat(62));
+        // Typed in the clear: refused here, never sent on.
+        let move_uri = format!("{settings_uri}/key-custody");
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("{settings_uri}/key-custody"),
+                &move_uri,
                 &session_token,
                 &[
-                    ("backend", "socket"),
-                    ("view_key_hex", wrong_view_key.as_str()),
+                    ("backend", "snp"),
+                    ("view_key_hex", TEST_VIEW_KEY_HEX),
                     ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                 ],
             ))
             .await
             .unwrap();
+        let html = body_text(response).await;
+        assert!(html.contains("were not sent"), "{html}");
+        assert!(!html.contains(TEST_VIEW_KEY_HEX), "{html}");
+
+        // Another wallet's keys, encrypted: the engine refuses them.
+        let wrong_view_key = format!("01{}", "0".repeat(62));
+        let encrypted = cli_seal(&router, &engine, &html, &wrong_view_key).await;
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &move_uri,
+                &session_token,
+                &[("backend", "snp"), ("encrypted_keys", encrypted.as_str())],
+            ))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let html = String::from_utf8(
-            response
-                .into_body()
-                .collect()
-                .await
-                .unwrap()
-                .to_bytes()
-                .to_vec(),
-        )
-        .unwrap();
+        let html = body_text(response).await;
         assert!(html.contains("different wallet"), "{html}");
-        assert!(
-            !html.contains(&wrong_view_key),
-            "keys are never echoed back, even on an error"
-        );
         assert_eq!(
             engine_backend_of(&state, &public_key).await.as_deref(),
             Some("plain")
         );
 
+        // The store's own keys, encrypted against the page's new bundle.
+        let encrypted = cli_seal(&router, &engine, &html, TEST_VIEW_KEY_HEX).await;
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("{settings_uri}/key-custody"),
+                &move_uri,
                 &session_token,
-                &[
-                    ("backend", "socket"),
-                    ("view_key_hex", TEST_VIEW_KEY_HEX),
-                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                ],
+                &[("backend", "snp"), ("encrypted_keys", encrypted.as_str())],
             ))
             .await
             .unwrap();
@@ -4044,26 +4111,26 @@ mod tests {
         );
         assert_eq!(
             engine_backend_of(&state, &public_key).await.as_deref(),
-            Some("socket")
+            Some("snp")
         );
 
         // Straight after the move (which empties the status cache), as the
         // redirect lands.
         let html = get_page(&router, &session_token, &settings_uri).await;
-        assert!(html.contains("In a separate key storage service"), "{html}");
+        assert!(html.contains("AMD SEV-SNP confidential machine"), "{html}");
         assert!(
             html.contains(r#"<option value="plain" selected>"#),
             "and it can move back: {html}"
         );
 
         // Still takes orders from its new place.
-        let order_id = seed_real_order(&state, _engine.addr, &public_key).await;
+        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
         assert!(!order_id.is_empty());
     }
 
     #[tokio::test]
     async fn a_new_store_can_choose_where_its_keys_are_kept_when_there_is_a_choice() {
-        let (state, _engine) = test_state_with_two_custody_backends().await;
+        let (state, engine) = test_state_with_two_custody_backends().await;
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -4081,7 +4148,12 @@ mod tests {
             html.contains(r#"<option value="plain" selected>"#),
             "the default is preselected: {html}"
         );
+        assert!(
+            html.contains(r#"data-key-custody-backend-field="key_custody_backend""#),
+            "the script encrypts only when snp is chosen: {html}"
+        );
 
+        let encrypted = cli_seal(&router, &engine, &html, TEST_VIEW_KEY_HEX).await;
         let response = router
             .clone()
             .oneshot(form_post_request(
@@ -4089,11 +4161,12 @@ mod tests {
                 &session_token,
                 &[
                     ("site_url", "https://kept-apart.example.com"),
-                    ("view_key_hex", TEST_VIEW_KEY_HEX),
-                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                    ("view_key_hex", ""),
+                    ("spend_pubkey_hex", ""),
+                    ("encrypted_keys", encrypted.as_str()),
                     ("network", "mainnet"),
                     ("base_currency", "XMR"),
-                    ("key_custody_backend", "socket"),
+                    ("key_custody_backend", "snp"),
                 ],
             ))
             .await
@@ -4111,8 +4184,37 @@ mod tests {
         };
         assert_eq!(
             engine_backend_of(&state, &public_key).await.as_deref(),
-            Some("socket")
+            Some("snp")
         );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_bundle_is_not_found_and_the_key_checker_is_served_as_webassembly() {
+        let router = build_router(AppState::for_tests());
+        let missing = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/key-custody/bundles/{}", "0".repeat(32)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let module = router
+            .oneshot(
+                Request::builder()
+                    .uri("/static/key-custody.wasm")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(module.status(), StatusCode::OK);
+        assert_eq!(module.headers()["content-type"], "application/wasm");
+        let bytes = module.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..4], b"\0asm");
     }
 
     #[tokio::test]

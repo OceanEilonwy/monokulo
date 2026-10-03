@@ -297,14 +297,14 @@ pub async fn create_order(
 /// Scripts and styles: kept, but checked with the server on every use, so
 /// a new release's pages never run an old script. A check costs one round
 /// trip and no body (`304`), which is what matters over Tor.
-const REVALIDATE: &str = "no-cache";
+pub(super) const REVALIDATE: &str = "no-cache";
 /// Fonts and images change rarely: a week before they are checked again.
 const LONG_LIVED: &str = "public, max-age=604800";
 
 /// A file baked into the binary, with `Cache-Control` and an `ETag` of its
 /// content: a browser that already has it is answered `304 Not Modified`
 /// with no body.
-fn static_asset(
+pub(super) fn static_asset(
     headers: &axum::http::HeaderMap,
     content_type: &'static str,
     cache_control: &'static str,

@@ -316,8 +316,11 @@ async fn start_monokulo(
     let engine_client = EngineClient::embedded_for_tests(engine.router());
     let tenant = engine_client
         .create_tenant(CreateTenantRequest {
-            view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
-            spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
+            keys: monokulo::engine_client::StoreKeys {
+                view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
+                spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
+                encrypted_keys: None,
+            },
             network: Some("mainnet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: Some(3600),
