@@ -380,11 +380,22 @@ pub fn free_handles(handles: Vec<(Arc<dyn KeyCustody>, WalletHandle)>) {
     };
     runtime.spawn(async move {
         for (custody, handle) in handles {
-            let _ = tokio::time::timeout(
+            let removed = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                custody.remove_wallet(handle),
+                super::remove_wallet_logged(
+                    custody.as_ref(),
+                    handle,
+                    None,
+                    "freeing a handle the router no longer uses",
+                ),
             )
             .await;
+            if removed.is_err() {
+                tracing::warn!(
+                    wallet.handle = ?handle,
+                    "freeing a handle the router no longer uses: removing a store's keys from key custody timed out, so a copy stays there until the backend restarts"
+                );
+            }
         }
     });
 }
@@ -528,11 +539,13 @@ mod tests {
         );
     }
 
-    /// A backend that restarts (its epoch goes up) and forgets its wallets.
+    /// A backend that restarts (its epoch goes up) and forgets its wallets,
+    /// and that can be down for removals.
     #[derive(Default)]
     struct Restartable {
         inner: PlainKeyCustody,
         epoch: std::sync::atomic::AtomicU64,
+        refuses_removals: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -544,6 +557,12 @@ mod tests {
             self.inner.register_wallet(material).await
         }
         async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
+            if self
+                .refuses_removals
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(KeyCustodyError::BackendUnavailable("down".to_owned()));
+            }
             self.inner.remove_wallet(handle).await
         }
         async fn seal(&self, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
@@ -577,6 +596,36 @@ mod tests {
         async fn check_state(&self) -> Result<u64, KeyCustodyError> {
             Ok(self.epoch.load(std::sync::atomic::Ordering::SeqCst))
         }
+    }
+
+    #[tokio::test]
+    async fn a_removal_the_backend_refuses_is_logged_and_one_already_done_is_not() {
+        const FAILED: &str = "removing a store's keys from key custody failed";
+        let backend = Restartable::default();
+        let handle = backend.register_wallet(material(1)).await.unwrap();
+        let (_guard, logs) = crate::test_log::capture();
+
+        backend
+            .refuses_removals
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        super::super::remove_wallet_logged(&backend, handle, Some("st_down"), "deleting a store")
+            .await;
+        assert_eq!(logs.count(FAILED), 1, "{}", logs.text());
+        assert!(logs.text().contains("st_down"), "{}", logs.text());
+        assert!(logs.text().contains("deleting a store"), "{}", logs.text());
+
+        backend
+            .refuses_removals
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        super::super::remove_wallet_logged(&backend, handle, Some("st_down"), "deleting a store")
+            .await;
+        super::super::remove_wallet_logged(&backend, handle, None, "deleting a store").await;
+        assert_eq!(
+            logs.count(FAILED),
+            1,
+            "a removal that worked, and one of a handle already gone, log nothing: {}",
+            logs.text()
+        );
     }
 
     #[tokio::test]
