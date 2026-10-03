@@ -35,6 +35,31 @@ version tag's image is also on `ghcr.io/oceaneilonwy/monokulo`. Keep
 `MONOKULO_ENCRYPTION_KEY`: it encrypts monokulo's data at rest. The
 databases live in the `engine-data` and `monokulo-data` volumes.
 
+### On an OpenWrt router (GL.iNet Flint 2)
+
+One signed package, `monokulo`, holds both binaries, a procd service that
+runs them, and a LuCI page (Services › Monokulo). It is for OpenWrt 25.12 on
+`aarch64_cortex-a53` (the Flint 2 and other MediaTek Filogic routers). The
+install steps are on the landing page, https://oceaneilonwy.github.io/monokulo/,
+which is also the package repository; `web/index.html` is its source.
+
+`scripts/build-openwrt.sh` builds the package, the signed repository and the
+landing page into `dist/` and `site/` (it needs Docker, for the OpenWrt
+SDK). The `OpenWrt package` workflow runs it on every pull request and push
+to main, uploads `dist/` and `site/` as artifacts, and deploys the site to
+GitHub Pages from main. On the router:
+
+- `/etc/config/monokulo` (or LuCI) sets the port, listen address (LAN only
+  by default), data folder (`/srv/monokulo`) and the engine's CPUs (2 and 3,
+  at nice 10, so catching up with the chain leaves the rest for routing).
+  These are passed as options, so the admin page shows them locked; every
+  other setting is on the admin page as usual.
+- `/etc/monokulo/secrets` holds the encryption key and engine token, made on
+  first start and readable by root only. Back it up.
+- Both processes run as the `monokulo` user; `logread -e monokulo` shows their logs.
+
+The design and the CPU and capacity figures are in `docs/flint2_openwrt_apk.md`.
+
 ### From release binaries or source
 
 Each version tag's GitHub release has `monokulo-engine`, `monokulo` and
