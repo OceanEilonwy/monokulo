@@ -258,4 +258,11 @@ impl KeyCustody for Unstarted {
     fn takes_raw_keys(&self) -> bool {
         false
     }
+    async fn key_bundle(
+        &self,
+        _action: transport::Action,
+        _store: Option<&str>,
+    ) -> Result<transport::Bundle, KeyCustodyError> {
+        Err(self.error())
+    }
 }

@@ -5,9 +5,12 @@ name: CI
 #   tests     the workspace's Rust tests on every platform we build for
 #   coverage  each coverage collector in a job of its own (Linux only), then
 #             one report job that joins their outputs into the artifact
-#   publish   release binaries and the Docker image (main and version tags),
-#             once lint, tests and coverage passed; a version tag also makes a
-#             GitHub release and pushes the image to ghcr.io
+#   publish   release binaries, key-custody-cli for every computer merchants
+#             use, and the Docker image (main and version tags), once lint,
+#             tests and coverage passed; a version tag also makes a GitHub
+#             release (with build provenance for the CLI) and pushes the
+#             image to ghcr.io. A version tag must name the workspace's
+#             version: monokulo links the CLI release by it.
 # lint, tests and coverage start together: none needs another's build.
 # Every test and coverage job writes a summary table and lists its failures.
 
@@ -74,6 +77,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
+          # monokulo's build script builds key custody's browser module.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --all --check
@@ -88,7 +93,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Not Windows: key custody talks over Unix sockets.
+        # Not Windows: monokulo and the engine run on Linux (and macOS for
+        # development); only key-custody-cli is built for Windows (publish-cli).
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -106,6 +112,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
+          # monokulo's build script builds key custody's browser module.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
@@ -153,7 +161,9 @@ jobs:
       # installs locally, but prebuilt.
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rustfmt, clippy, llvm-tools-preview
+          components: rustfmt, clippy
+          # monokulo's build script builds key custody's browser module.
+          targets: wasm32-unknown-unknown, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
@@ -217,6 +227,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
+          # monokulo's build script builds key custody's browser module.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Collect browser coverage
         id: collect
@@ -300,6 +312,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
+          # monokulo's build script builds key custody's browser module.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Measure engine scanner progress on one CPU
         id: stress
@@ -385,13 +399,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
+          # monokulo's build script builds key custody's browser module.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - name: Check the tag names this version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME doesn't match the workspace version $version"; exit 1; }
       - name: Build release binaries
+        env:
+          # Which key-custody-cli release monokulo's key entry links.
+          MONOKULO_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          MONOKULO_GIT_COMMIT: ${{ github.sha }}
         run: >-
           cargo build --release --locked
           -p engine --bin monokulo-engine
           -p monokulo --bin monokulo
-          -p key-custody-server --bin key-custody-server
       - name: Package
         id: package
         shell: bash
@@ -400,7 +425,7 @@ jobs:
           if test "$GITHUB_REF_TYPE" != tag; then version="main-${GITHUB_SHA::7}"; fi
           name="monokulo-${version}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp target/release/monokulo-engine target/release/monokulo target/release/key-custody-server README.md "dist/$name/"
+          cp target/release/monokulo-engine target/release/monokulo README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           echo "name=$name" >> "$GITHUB_OUTPUT"
@@ -409,7 +434,7 @@ jobs:
             echo
             echo "| File | Size |"
             echo "| --- | ---: |"
-            for f in monokulo-engine monokulo key-custody-server; do
+            for f in monokulo-engine monokulo; do
               echo "| \`$f\` | $(du -h "dist/$name/$f" | cut -f1) |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
@@ -418,6 +443,78 @@ jobs:
           name: ${{ steps.package.outputs.name }}
           path: |
             dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish-cli:
+    # key-custody-cli, for every computer a merchant might run it on: the
+    # files monokulo's key entry forms link
+    # (key-custody-cli-{version}-{target}.tar.gz, .zip on Windows), each with
+    # its SHA-256 and, on a version tag, GitHub build provenance
+    # (`gh attestation verify`).
+    name: publish-cli (${{ matrix.target }})
+    needs: [lint, tests, coverage]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      # The latest nightly, as rust-toolchain.toml names it.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}, wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+      - name: Build key-custody-cli
+        run: cargo build --release --locked -p key-custody-cli --target ${{ matrix.target }}
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if test "$GITHUB_REF_TYPE" != tag; then
+            version=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          fi
+          name="key-custody-cli-${version}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          bin=key-custody-cli
+          if test "${{ runner.os }}" = Windows; then bin=key-custody-cli.exe; fi
+          cp "target/${{ matrix.target }}/release/$bin" "dist/$name/"
+          cd dist
+          if test "${{ runner.os }}" = Windows; then
+            7z a "$name.zip" "$name" > /dev/null
+            file="$name.zip"
+          else
+            tar -czf "$name.tar.gz" "$name"
+            file="$name.tar.gz"
+          fi
+          if command -v sha256sum > /dev/null; then sha256sum "$file" > "$file.sha256"; else shasum -a 256 "$file" > "$file.sha256"; fi
+          echo "file=dist/$file" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          subject-path: ${{ steps.package.outputs.file }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
             dist/*.sha256
           if-no-files-found: error
 
@@ -459,7 +556,7 @@ jobs:
 
   release:
     # A version tag's binaries as a GitHub release, for merchants to download.
-    needs: [publish]
+    needs: [publish, publish-cli]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -468,6 +565,13 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           pattern: monokulo-*
+          path: dist
+          merge-multiple: true
+      # Never removed once released: every monokulo of this version links
+      # these files.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: key-custody-cli-*
           path: dist
           merge-multiple: true
       - uses: softprops/action-gh-release@v3

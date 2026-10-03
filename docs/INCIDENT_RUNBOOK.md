@@ -28,8 +28,8 @@ finding, since not every read the attacker got is equally bad.
 |---|---|---|
 | Spend keys | **None ever.** No such key exists on this box, in this database, in this process, or in any backend `KeyCustody` implements. | §6.1 — watch-only by construction, not by policy. |
 | View keys (`plain` backend) | **Full.** `PlainKeyCustody` holds unwrapped key material in-process, in cleartext memory, for as long as the process runs (`src/key_custody/plain.rs`). | This is the *documented, accepted* default for self-hosted single-tenant, where host compromise already means "the attacker owns the one wallet" regardless of `KeyCustody`. On a hosted multi-tenant box it is the worst case: every connected tenant's key at once. |
-| View keys (`socket` backend) | **Full, same as above, once the process is compromised** — a live root/process compromise can simply read `key-custody-server`'s memory too, or intercept the length-prefixed protocol on the loopback/unix socket in flight. `SocketKeyCustody` (WBS 2.1.2/2.1.3) buys process *separation*, not confidentiality against a host-level attacker — it is not a hardware enclave. That is WBS 2.2 (SEV-SNP), which is **not built yet**. Do not describe an incident as "contained because we use the socket backend" — it is not, today. | `docs/DESIGN.md` §6.1's own framing: a hardware-backed implementation is what closes the "host-level compromise exposes every tenant's view key" case; the socket split alone does not. |
-| `tenants.sealed_key_material` (at rest, in the SQLite file) | Depends entirely on what "sealed" means for the backend that wrote it. For `plain`, this is `PlainKeyCustody`'s own encoding, not defense against an attacker who already has filesystem + process access to the box that holds the unseal key alongside it. Treat any `sealed_key_material` recovered from a compromised box as **recoverable by the attacker**, not as safely opaque. | Never assume "it's sealed" means "it's safe" once the box that can unseal it is the box that was compromised. |
+| View keys (`snp` backend) | **None from a host or hypervisor compromise** outside the confidential VM: memory is encrypted by the hardware, keys at rest are sealed to the engine image's measurement, and keys arrive encrypted to the backend. **Full from a compromise inside the guest** (code execution in the engine's VM reads what the engine reads). Keys entered through a monokulo whose *served page* was compromised at the time are exposed too, unless the merchant used key-custody-cli. | `docs/DESIGN.md` §6.3/§6.5. Before calling an incident "contained by SEV-SNP", establish where the foothold was: host, guest, or monokulo. |
+| `tenants.sealed_key_material` (at rest, in the SQLite file) | Depends entirely on the backend that wrote it. For `plain` it is the keys in the clear. For `snp` it is encrypted under a master key only a trusted engine image on that chip can unwrap: a stolen database file alone gives nothing; a compromise inside the guest gives everything. | Never assume "it's sealed" means "it's safe" once the box that can unseal it is the box that was compromised. |
 | `tenants.secret_token`, webhook signing secrets | **Full**, plaintext in the same database. | `src/store.rs` schema — these are not hashed at rest (unlike merchant-facing login passwords elsewhere in this codebase — see `src/password.rs`, which is not used for these fields). |
 | Order metadata (fiat amounts, `merchant_order_id`, `description`) | **Full**, plaintext, no PII by design (this system deliberately never collects buyer identity — §2/§3 non-goals) but a merchant's own `description` field is merchant-controlled free text and could contain more than intended. | Worth calling out to affected merchants explicitly, not assumed benign. |
 | Funds already sent to a watch-only address | **None at risk.** The attacker can *see* these outputs (once they have the view key) but cannot spend them, redirect them, or reverse them. | Same watch-only guarantee as row 1. |
@@ -73,8 +73,7 @@ finding, since not every read the attacker got is equally bad.
    compromised one. A box that was compromised once is not trusted to be
    clean just because the immediate foothold was closed.
 4. **Preserve evidence before any cleanup**: process list, open file
-   handles/sockets (was `key-custody-server`'s unix socket reachable from
-   somewhere it shouldn't have been?), auth logs, and a copy of the database
+   handles and sockets, auth logs, and a copy of the database
    file *as found* (separate from the clean restore in step 3) — needed for
    §3's scope determination and for any legal/compliance notification
    obligations in the affected merchants' jurisdictions.
@@ -94,8 +93,8 @@ misses affected ones:
    read-only information-disclosure bug reaching, say, only the HTTP read
    pool (`docs/DESIGN.md` §5's read-pool component, which never touches
    `KeyCustody`) is a materially smaller incident than root/process-level
-   access that can read `key-custody-server`'s memory or the database file
-   directly. Do not default to "assume the worst" for the *notification*
+   access that can read the engine's memory or the database file
+   directly (for `snp` stores: inside the confidential VM, or only on the host?). Do not default to "assume the worst" for the *notification*
    without checking — but *do* default to the worst for the *response* in §2
    above, since containment must not wait on a slow forensic answer.
 3. **How long was the foothold live?** Cross-reference against access/auth
@@ -145,12 +144,8 @@ misses affected ones:
 - [ ] Affected merchants notified (§4)
 - [ ] Compromised box's disk/backups either forensically preserved or
       securely wiped — never left half-preserved-half-reused
-- [ ] Post-incident review: how the foothold was gained, and whether it
-      changes the WBS 2.2 (SEV-SNP) prioritization — a real, observed
-      compromise is the strongest possible argument for pulling that item
-      forward, and this runbook's own §1 table (`socket` backend confers no
-      confidentiality against a host-level attacker) is precisely the gap
-      2.2 exists to close
+- [ ] Post-incident review: how the foothold was gained, and whether stores
+      still on `plain` on a hosted instance should move to `snp` (§1)
 
 ## 6. Test: tabletop walkthrough
 
@@ -160,6 +155,22 @@ equivalent is a tabletop walkthrough: pick a concrete, specific scenario (e.g.
 has root for an estimated six hours before detection"), and walk every section
 above against it by hand — confirm each step names a concrete command or
 concrete decision-maker, not a vague aspiration. Redo this walkthrough whenever
-the architecture changes underneath it (most importantly: once WBS 2.2 ships,
-§1's `socket` backend row and this document's framing of what a host
-compromise exposes both need re-checking, not just this file's existence).
+the architecture changes underneath it (most importantly: §1's `snp` row and
+this document's framing of what a host compromise exposes, whenever key
+custody changes).
+
+## 7. SEV-SNP key custody: master key situations
+
+- **"waits for the master key from the engine it replaces"** (`/status`): a new engine
+  image is running on a database that has only other images' wraps. Start it with
+  `key_custody.snp_handoff_url` set to the engine it replaces, still running on the same
+  private network with the same engine token; it takes the key over within seconds. The
+  old engine refuses an image not signed by the trusted ID key, or below its own
+  security version.
+- **"doesn't open on this chip: the database was moved"**: wraps are bound to the chip.
+  Hand the key over from an engine on the old chip as above (new machine, same image or
+  a newer one).
+- **Starting afresh** (the old engine is gone, nothing can hand over): stop the engine,
+  `DELETE FROM snp_master_keys;`, start it. It makes a new master key; every `snp`
+  store's sealed keys no longer open, so each is reported unavailable and its owner
+  enters its keys again on the store's settings page. Nothing else is lost.

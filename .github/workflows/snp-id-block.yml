@@ -1,0 +1,56 @@
+name: snp-id-block
+
+# Signs an engine image's ID block with the engine ID key (the repository
+# secret SNP_ID_KEY), for launching that image in an SEV-SNP confidential VM
+# (deploy/sev-snp/README.md §3). Run it by hand for each image to release:
+# whoever can run it can make an image merchants' keys are trusted to.
+on:
+  workflow_dispatch:
+    inputs:
+      measurement:
+        description: The image's launch measurement (96 hex characters)
+        required: true
+      guest_svn:
+        description: Its security version (raise it with every security fix)
+        required: true
+      policy:
+        description: The guest policy it is launched with (hex)
+        default: '30000'
+      family_id:
+        description: Family ID (32 hex characters; empty for the default)
+        default: ''
+      image_id:
+        description: Image ID (32 hex characters; empty for the default)
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      # The latest nightly, as rust-toolchain.toml names it.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Sign
+        env:
+          SNP_ID_KEY: ${{ secrets.SNP_ID_KEY }}
+          MEASUREMENT: ${{ inputs.measurement }}
+          GUEST_SVN: ${{ inputs.guest_svn }}
+          POLICY: ${{ inputs.policy }}
+          FAMILY_ID: ${{ inputs.family_id }}
+          IMAGE_ID: ${{ inputs.image_id }}
+        shell: bash
+        run: |
+          args=(--measurement "$MEASUREMENT" --guest-svn "$GUEST_SVN" --policy "$POLICY" --out id)
+          if test -n "$FAMILY_ID"; then args+=(--family-id "$FAMILY_ID"); fi
+          if test -n "$IMAGE_ID"; then args+=(--image-id "$IMAGE_ID"); fi
+          cargo xtask snp-id-block "${args[@]}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: snp-id-block-${{ inputs.guest_svn }}
+          path: id/
+          if-no-files-found: error

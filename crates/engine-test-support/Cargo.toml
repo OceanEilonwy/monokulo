@@ -1,6 +1,7 @@
 [package]
 name = "engine-test-support"
 version.workspace = true
+repository.workspace = true
 edition = "2021"
 
 [dependencies]
