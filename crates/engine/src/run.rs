@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 
-use crate::engine_settings::{Daemons, EngineSettings, SERVER_TOKEN};
+use crate::engine_settings::{Daemons, EngineSettings, SERVER_TOKEN, STANDALONE_ONLY};
 use crate::http::rate_limit::RateLimiter;
 use crate::http::{build_router, AppState};
 use crate::key_custody::{CustodyRouter, KeyCustody, WalletHandle};
@@ -38,13 +38,28 @@ const REGISTRATION_ALLOWANCE: Duration = Duration::from_secs(20);
 /// What an engine starts from, decided by whoever hosts it.
 pub struct EngineConfig {
     /// The options file the engine's settings are read from, and the admin
-    /// page saves them to.
-    pub options: PathBuf,
+    /// page saves them to: `engine.toml` for the standalone engine, the
+    /// `[engine.*]` tables of monokulo's own file when embedded
+    /// (`OptionsFile::scoped`).
+    pub options: live_settings::OptionsFile,
     /// Command-line options and environment variables, which win over the
-    /// file. The engine token (`ENGINE_TOKEN`) is required among them.
+    /// file.
     pub env: live_settings::Env,
     /// The engine's database file.
     pub database_path: PathBuf,
+    pub host: Host,
+}
+
+/// Who runs the engine.
+pub enum Host {
+    /// Its own process (`monokulo-engine`), serving its API over HTTP: the
+    /// engine token (`ENGINE_TOKEN`) is required in the environment.
+    Standalone,
+    /// Inside monokulo, which calls its router in-process with `token`, one
+    /// it made for this run. Settings in
+    /// [`STANDALONE_ONLY`](crate::engine_settings::STANDALONE_ONLY) do
+    /// nothing here, so giving one stops the engine.
+    Embedded { token: shared::auth::RawToken },
 }
 
 /// Why an engine didn't start.
@@ -65,6 +80,12 @@ pub enum StartError {
     DatabaseWorker(StoreError),
     #[error("failed to open the database read pool: {0}")]
     ReadPool(StoreError),
+    /// Settings that only mean something to the standalone engine, given
+    /// to an embedded one: each named with where it was given.
+    #[error(
+        "{0}: these only apply to the engine running on its own (monokulo-engine), not inside monokulo. Remove them, or set engine.mode = \"remote\" and run monokulo-engine."
+    )]
+    NotWhenEmbedded(String),
 }
 
 /// How [`Engine::shutdown`] went.
@@ -90,13 +111,30 @@ impl Engine {
     /// Opens the database, loads the settings, registers every active
     /// store's wallet, and starts the engine's loops.
     pub async fn start(config: EngineConfig) -> Result<Self, StartError> {
-        let env = &config.env;
         // Every request must carry it (`http::engine_token_middleware`):
         // without one, nothing could talk to this engine, so it doesn't start.
-        let engine_token = SERVER_TOKEN
-            .require(env)
-            .map(|token| Arc::new(shared::auth::engine_token(token.expose()).hash()))
-            .map_err(StartError::Token)?;
+        let embedded = matches!(config.host, Host::Embedded { token: _ });
+        let (engine_token, env) = match &config.host {
+            Host::Standalone => (
+                SERVER_TOKEN
+                    .require(&config.env)
+                    .map(|token| Arc::new(shared::auth::engine_token(token.expose()).hash()))
+                    .map_err(StartError::Token)?,
+                config.env.clone(),
+            ),
+            Host::Embedded { token } => {
+                refuse_standalone_settings(&config.options, &config.env)?;
+                // The token monokulo made is this engine's `server.token`.
+                (
+                    Arc::new(token.hash()),
+                    config
+                        .env
+                        .clone()
+                        .with_var(SERVER_TOKEN.env_var, token.expose()),
+                )
+            }
+        };
+        let env = &env;
 
         let db_path = config.database_path;
         let db_file = db_path.to_string_lossy().into_owned();
@@ -122,7 +160,8 @@ impl Engine {
             Arc::clone(&custody_router),
             Arc::clone(&admin_rate_limiter),
             env.clone(),
-            live_settings::OptionsFile::at(&config.options),
+            config.options,
+            embedded,
         )
         .await
         .map_err(StartError::Settings)?;
@@ -247,6 +286,44 @@ impl Engine {
     }
 }
 
+/// An embedded engine has no listener, is given its token, and logs through
+/// its host's logger: a [`STANDALONE_ONLY`] setting given to it (in the
+/// options file, on the command line or in the environment) would do
+/// nothing, so it is refused rather than ignored.
+fn refuse_standalone_settings(
+    options: &live_settings::OptionsFile,
+    env: &live_settings::Env,
+) -> Result<(), StartError> {
+    let file = options
+        .read(crate::engine_settings::ALL)
+        .map_err(|e| StartError::Settings(e.to_string()))?;
+    let snapshot = live_settings::Snapshot::new(file, env.clone());
+    let given: Vec<String> = STANDALONE_ONLY
+        .iter()
+        .filter_map(|setting| {
+            let source = snapshot.source_of(*setting);
+            let place = match source {
+                live_settings::SettingSource::Default | live_settings::SettingSource::Database => {
+                    return None
+                }
+                live_settings::SettingSource::Toml => {
+                    format!("engine.{} in the options file", setting.key())
+                }
+                live_settings::SettingSource::Cli => {
+                    format!("--engine-{}", live_settings::cli_flag(setting.key()))
+                }
+                live_settings::SettingSource::Env => setting.env_var().to_owned(),
+            };
+            Some(place)
+        })
+        .collect();
+    if given.is_empty() {
+        Ok(())
+    } else {
+        Err(StartError::NotWhenEmbedded(given.join(", ")))
+    }
+}
+
 /// Warns about stores whose keys are in a key custody backend that isn't
 /// enabled: their payments aren't detected until it is, or they move.
 fn warn_about_stranded_stores(store: &SharedStore, custody_router: &CustodyRouter) {
@@ -366,9 +443,23 @@ mod tests {
     /// What the standalone binary would start from, in `dir`.
     fn config(dir: &TempDir, env: &[(&str, &str)]) -> EngineConfig {
         EngineConfig {
-            options: dir.0.join("engine.toml"),
+            options: live_settings::OptionsFile::at(dir.0.join("engine.toml")),
             env: live_settings::Env::fixed(env.iter().copied()),
             database_path: dir.0.join("engine.db"),
+            host: Host::Standalone,
+        }
+    }
+
+    /// What monokulo would start an embedded engine from, in `dir`: the
+    /// `[engine.*]` tables of its own options file, and a token of its own.
+    fn embedded_config(dir: &TempDir, env: &[(&str, &str)]) -> EngineConfig {
+        EngineConfig {
+            options: live_settings::OptionsFile::at(dir.0.join("monokulo.toml")).scoped("engine"),
+            env: live_settings::Env::fixed(env.iter().copied()),
+            database_path: dir.0.join("engine.db"),
+            host: Host::Embedded {
+                token: shared::auth::RawToken::presented(TOKEN),
+            },
         }
     }
 
@@ -511,6 +602,101 @@ mod tests {
         assert_eq!(
             second.shutdown(Duration::from_secs(5)).await,
             Stopped::Cleanly
+        );
+    }
+
+    /// Inside monokulo: started with the token monokulo made (no
+    /// `ENGINE_TOKEN` anywhere), it answers through its router, and keeps
+    /// its settings in the `[engine.*]` tables of monokulo's file, leaving
+    /// monokulo's own keys as they were.
+    #[tokio::test]
+    async fn an_embedded_engine_uses_its_hosts_token_and_its_table_of_the_file() {
+        let dir = TempDir::new("embedded");
+        std::fs::write(
+            dir.0.join("monokulo.toml"),
+            "[server]\nbind = \"0.0.0.0:8081\"\n\n[engine.payment]\nconfirmations_required = 6\n",
+        )
+        .unwrap();
+        let engine = Engine::start(embedded_config(&dir, &[])).await.unwrap();
+
+        let (status, body) = call(&engine, "GET", "/api/v1/admin/settings", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let confirmations = &body["scalars"]["payment.confirmations_required"];
+        assert_eq!(confirmations["value"], "6", "{confirmations}");
+        assert_eq!(
+            confirmations["set_with"], "--engine-payment-confirmations-required",
+            "monokulo's option names: {confirmations}"
+        );
+        for standalone in [
+            "server.bind",
+            "server.token",
+            "logging.level",
+            "logging.format",
+        ] {
+            assert!(
+                body["scalars"].get(standalone).is_none(),
+                "{standalone} is left out inside monokulo"
+            );
+        }
+
+        let (status, body) = call(
+            &engine,
+            "POST",
+            "/api/v1/admin/settings",
+            Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "8" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, body) = call(
+            &engine,
+            "POST",
+            "/api/v1/admin/settings",
+            Some(serde_json::json!({ "scalars": { "server.bind": "0.0.0.0:9999" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["fields"][0]["key"], "server.bind", "{body}");
+
+        let saved = std::fs::read_to_string(dir.0.join("monokulo.toml")).unwrap();
+        assert_eq!(
+            saved,
+            "[server]\nbind = \"0.0.0.0:8081\"\n\n[engine.payment]\nconfirmations_required = 8\n"
+        );
+        assert_eq!(
+            engine.shutdown(Duration::from_secs(5)).await,
+            Stopped::Cleanly
+        );
+    }
+
+    /// The standalone engine's own settings do nothing inside monokulo:
+    /// given in the file, on the command line or in the environment, each
+    /// stops the engine, named as it was given, before anything is opened.
+    #[tokio::test]
+    async fn an_embedded_engine_refuses_the_standalone_engines_settings() {
+        let dir = TempDir::new("embedded-refused");
+        std::fs::write(
+            dir.0.join("monokulo.toml"),
+            "[engine.server]\nbind = \"0.0.0.0:8443\"\n",
+        )
+        .unwrap();
+        let mut config = embedded_config(&dir, &[("ENGINE_TOKEN", TOKEN)]);
+        config.env = config.env.with_cli(HashMap::from([(
+            "logging.level".to_owned(),
+            "debug".to_owned(),
+        )]));
+        let Err(error) = Engine::start(config).await else {
+            panic!("started with the standalone engine's settings");
+        };
+        let StartError::NotWhenEmbedded(given) = &error else {
+            panic!("not refused for them: {error}");
+        };
+        assert_eq!(
+            given,
+            "engine.server.bind in the options file, ENGINE_TOKEN, --engine-logging-level"
+        );
+        assert!(
+            !dir.0.join("engine.db").exists(),
+            "nothing is opened before they are refused"
         );
     }
 }

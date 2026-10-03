@@ -276,6 +276,40 @@ settings! {
     },
 }
 
+/// Settings that only mean something for the standalone engine.
+///
+/// They are its listen address, the token its HTTP clients carry, and its
+/// own process's logging (`docs/engine_as_library.md` §4). An engine
+/// embedded in monokulo has no listener, is given a token by monokulo, and
+/// logs through monokulo's logger, so these do nothing there: given to it,
+/// they stop it at start, and its settings API leaves them out.
+pub const STANDALONE_ONLY: &[&'static dyn AnySetting] = &[
+    &SERVER_BIND,
+    &SERVER_TOKEN,
+    &LOGGING_FORMAT,
+    &LOGGING_LEVEL,
+    &LOGGING_DEV_MODE_UNTIL,
+    &LOGGING_RETENTION_DAYS,
+    &LOGGING_MAX_MB,
+    &LOGGING_OTLP_ENDPOINT,
+    &LOGGING_OTLP_HEADERS,
+];
+
+/// Whether `key` is one of [`STANDALONE_ONLY`].
+pub fn standalone_only(key: &str) -> bool {
+    STANDALONE_ONLY.iter().any(|setting| setting.key() == key)
+}
+
+/// Every setting an embedded engine has: [`ALL`] less [`STANDALONE_ONLY`].
+/// What monokulo offers on its command line (`--engine-…`) and in its
+/// options file (`[engine.…]`) for the engine inside it.
+pub fn embedded_settings() -> Vec<&'static dyn AnySetting> {
+    ALL.iter()
+        .copied()
+        .filter(|setting| !standalone_only(setting.key()))
+        .collect()
+}
+
 /// The networks the engine can scan, with their node setting.
 pub const NETWORKS: [(
     &str,
@@ -830,6 +864,10 @@ pub struct EngineSettings {
     pub tenant_defaults: Live<TenantDefaults>,
     pub runtime: Live<RuntimeConfig>,
     pub custody: Live<CustodyConfig>,
+    /// Whether this engine runs inside monokulo: then
+    /// [`STANDALONE_ONLY`] settings do nothing, and its settings API leaves
+    /// them out.
+    pub embedded: bool,
 }
 
 fn defaults_of<S: Section>() -> S {
@@ -867,6 +905,7 @@ impl EngineSettings {
             tenant_defaults: Live::new(defaults_of()),
             runtime: Live::new(defaults_of()),
             custody: Live::new(defaults_of()),
+            embedded: false,
         })
     }
 }
@@ -1012,6 +1051,7 @@ impl EngineSettings {
     /// Loads every setting from `store` (and the environment), builds the
     /// runtime pieces that depend on them, and returns the live sections plus
     /// the registry the settings API saves through.
+    /// `embedded`: the engine runs inside monokulo (see the field).
     pub async fn load(
         store: SharedStore,
         daemons: Daemons,
@@ -1019,6 +1059,7 @@ impl EngineSettings {
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
         options: live_settings::OptionsFile,
+        embedded: bool,
     ) -> Result<Arc<Self>, String> {
         Self::load_full(
             store,
@@ -1027,6 +1068,7 @@ impl EngineSettings {
             rate_limiter,
             env,
             options,
+            embedded,
         )
         .await
     }
@@ -1048,6 +1090,7 @@ impl EngineSettings {
             rate_limiter,
             env.or_var(SERVER_TOKEN.env_var, shared::auth::TEST_ENGINE_TOKEN),
             live_settings::OptionsFile::in_memory(""),
+            false,
         )
         .await
     }
@@ -1062,6 +1105,7 @@ impl EngineSettings {
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
         options: live_settings::OptionsFile,
+        embedded: bool,
     ) -> Result<Arc<Self>, String> {
         // The options file holds the configuration and the database the
         // runtime switches, each key in its own place.
@@ -1080,7 +1124,13 @@ impl EngineSettings {
         // Read at start, before the store opened (`main`); registered so it
         // is described, checked and reported like every other setting.
         builder.section::<BootConfig>();
-        builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
+        if embedded {
+            // monokulo's logger is the process's: its logging settings
+            // govern it, not these (STANDALONE_ONLY).
+            builder.section::<LoggingConfig>();
+        } else {
+            builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
+        }
         let custody = match custody {
             Some(reloadable) => builder.reloadable(reloadable),
             None => builder.section::<CustodyConfig>(),
@@ -1109,6 +1159,7 @@ impl EngineSettings {
             tenant_defaults,
             runtime,
             custody,
+            embedded,
         }))
     }
 }

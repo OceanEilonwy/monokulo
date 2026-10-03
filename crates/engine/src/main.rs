@@ -23,7 +23,7 @@
 
 use engine::cli;
 use engine::engine_settings::{RuntimeConfig, ALL, LOGGING_FORMAT, LOGGING_LEVEL};
-use engine::run::{Engine, EngineConfig, Stopped};
+use engine::run::{Engine, EngineConfig, Host, Stopped};
 use live_settings::{OptionsFile, Snapshot};
 
 /// Builds the runtime with `server.worker_threads` threads (task 2.8: read
@@ -61,8 +61,9 @@ fn main() {
         live_settings::read_sync_with_env::<RuntimeConfig>(Ok(file), &start.env).worker_threads;
     let config = EngineConfig {
         database_path: cli::database_path(&early),
-        options: start.options,
+        options: OptionsFile::at(&start.options),
         env: start.env,
+        host: Host::Standalone,
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)

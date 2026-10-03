@@ -162,7 +162,61 @@ pub fn values(
         .collect()
 }
 
+/// `command` with an option for every setting in `declared` that accepts
+/// the command line, each named under `prefix`: `--engine-payment-…` for
+/// `payment.…` with `prefix` `engine`. For the settings of a service that
+/// runs inside this process and keeps its options in this process's file,
+/// under `[prefix.…]` (an embedded engine, docs/engine_as_library.md). Their
+/// environment variables are their own.
+pub fn with_nested_settings(
+    mut command: Command,
+    prefix: &str,
+    declared: &[&'static dyn AnySetting],
+) -> Command {
+    for setting in declared.iter().filter(|s| s.sources().cli) {
+        command = command.arg(nested_arg(*setting, prefix));
+    }
+    command
+}
+
+/// The values given on the command line for the settings
+/// [`with_nested_settings`] added under `prefix`, by their own keys (without
+/// the prefix): what that service's [`Env::with_cli`](crate::Env::with_cli)
+/// takes.
+pub fn nested_values(
+    matches: &ArgMatches,
+    prefix: &str,
+    declared: &[&'static dyn AnySetting],
+) -> HashMap<String, String> {
+    declared
+        .iter()
+        .filter(|s| s.sources().cli)
+        .filter_map(|s| {
+            matches
+                .get_one::<String>(&format!("{prefix}.{}", s.key()))
+                .map(|value| (s.key().to_string(), value.clone()))
+        })
+        .collect()
+}
+
 fn arg(setting: &'static dyn AnySetting) -> Arg {
+    described(
+        setting,
+        setting.key().to_string(),
+        setting.key().to_string(),
+    )
+    .help_heading(heading(setting.key()))
+}
+
+fn nested_arg(setting: &'static dyn AnySetting, prefix: &str) -> Arg {
+    let key = format!("{prefix}.{}", setting.key());
+    let title = heading(prefix).replace(" settings", "");
+    described(setting, key.clone(), key)
+        .help_heading(format!("{title}: {}", heading(setting.key())))
+}
+
+/// The option for `setting`, with id `id` and named after `key`.
+fn described(setting: &'static dyn AnySetting, id: String, key: String) -> Arg {
     let description = setting.description();
     let mut notes = Vec::new();
     if setting.sources().env {
@@ -179,16 +233,15 @@ fn arg(setting: &'static dyn AnySetting) -> Arg {
         });
     }
     if setting.sources().toml {
-        notes.push(format!("[options file: {}]", setting.key()));
+        notes.push(format!("[options file: {key}]"));
     } else {
         notes.push("[command line only]".to_string());
     }
-    Arg::new(setting.key())
-        .long(cli_flag(setting.key()))
+    Arg::new(id)
+        .long(cli_flag(&key))
         .value_name(value_name(&setting.kind()))
         .help(first_sentence(description))
         .long_help(format!("{description}\n{}", notes.join("\n")))
-        .help_heading(heading(setting.key()))
         .num_args(1)
         .value_parser(move |raw: &str| setting.normalise(raw))
 }

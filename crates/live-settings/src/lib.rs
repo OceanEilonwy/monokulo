@@ -45,7 +45,9 @@ mod setting;
 mod store;
 mod value;
 
-pub use options::{render_init, write_init, FileInfo, LayeredStore, OptionsFile};
+pub use options::{
+    render_init, render_init_nested, write_init, FileInfo, LayeredStore, OptionsFile,
+};
 pub use registry::{
     read_sync, read_sync_with_env, BootError, BootReport, BuildError, Changes, Registry,
     RegistryBuilder, SaveError, SaveReport, SettingView,

@@ -145,12 +145,28 @@ pub async fn get_settings(
             );
             continue;
         }
+        // Inside monokulo, the standalone engine's own server and logging
+        // settings do nothing: not shown.
+        if settings.embedded && crate::engine_settings::standalone_only(view.key) {
+            continue;
+        }
+        // Inside monokulo, the engine's options are monokulo's
+        // `--engine-…` ones.
+        let set_with = if settings.embedded {
+            live_settings::outside_names(
+                &format!("engine.{}", view.key),
+                view.env_var,
+                view.sources,
+            )
+        } else {
+            live_settings::outside_names(view.key, view.env_var, view.sources)
+        };
         scalars.insert(
             view.key.to_owned(),
             ScalarSettingView {
                 value: view.value,
                 source: source_str(view.source),
-                set_with: live_settings::outside_names(view.key, view.env_var, view.sources),
+                set_with,
                 locked: view.locked.or_else(|| {
                     // Kept in the options file, which can't be written.
                     (view.sources.toml && !file_writable).then(|| read_only.clone())
@@ -320,6 +336,22 @@ pub async fn update_settings(
         )
             .into_response();
     };
+    if settings.embedded {
+        let standalone: Vec<live_settings::FieldError> = req
+            .scalars
+            .keys()
+            .filter(|key| crate::engine_settings::standalone_only(key))
+            .map(|key| {
+                live_settings::FieldError::new(
+                    key.clone(),
+                    "Only the engine running on its own uses this, not the engine inside monokulo.",
+                )
+            })
+            .collect();
+        if !standalone.is_empty() {
+            return refused(&standalone);
+        }
+    }
     let mut changes: live_settings::Changes =
         req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
     // A node that can never work where it's being saved is refused before

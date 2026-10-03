@@ -738,6 +738,7 @@ mod tests {
             tenant_defaults: defaults.tenant_defaults.clone(),
             runtime: defaults.runtime.clone(),
             custody: defaults.custody.clone(),
+            embedded: false,
         });
         let node = Arc::new(FakeDaemonClient::new());
         node.push_block("h1", vec![]);

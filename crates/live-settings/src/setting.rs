@@ -533,6 +533,9 @@ pub struct Env {
     fixed: Option<Arc<HashMap<String, String>>>,
     /// Values from the command line, by setting key.
     cli: Arc<HashMap<String, String>>,
+    /// Variables the process sets itself ([`Env::with_var`]), over the
+    /// environment's.
+    given: Arc<HashMap<String, String>>,
 }
 
 /// Names only: a variable's value may be a secret (an admin token).
@@ -572,7 +575,19 @@ impl Env {
                     .collect(),
             )),
             cli: Arc::default(),
+            given: Arc::default(),
         }
+    }
+
+    /// This environment with `var` set to `value` by the process itself,
+    /// over whatever the environment says: for a value the host decides,
+    /// such as the token monokulo makes for the engine inside it. The
+    /// process environment is left as it is.
+    pub fn with_var(mut self, var: &str, value: &str) -> Self {
+        let mut given = (*self.given).clone();
+        given.insert(var.to_string(), value.to_string());
+        self.given = Arc::new(given);
+        self
     }
 
     /// This fixed environment with `var` set to `value` unless it is set
@@ -586,6 +601,7 @@ impl Env {
                 Env {
                     fixed: Some(Arc::new(vars)),
                     cli: self.cli,
+                    given: self.given,
                 }
             }
             _ => self,
@@ -608,6 +624,9 @@ impl Env {
     /// The variable's value. Unset and blank are the same: a blank
     /// variable must not hide a saved value.
     pub fn get(&self, var: &str) -> Option<String> {
+        if let Some(value) = self.given.get(var) {
+            return Some(value.clone());
+        }
         let value = match &self.fixed {
             Some(vars) => vars.get(var).cloned(),
             None => std::env::var(var).ok(),
@@ -671,6 +690,16 @@ impl Snapshot {
     pub fn source<T: SettingValue>(&self, setting: &Setting<T>) -> SettingSource {
         setting
             .resolve(self.stored.get(setting.key).map(String::as_str), &self.env)
+            .source
+    }
+
+    /// [`Self::source`] for a setting known only as an [`AnySetting`].
+    pub fn source_of(&self, setting: &dyn AnySetting) -> SettingSource {
+        setting
+            .resolve_view(
+                self.stored.get(setting.key()).map(String::as_str),
+                &self.env,
+            )
             .source
     }
 

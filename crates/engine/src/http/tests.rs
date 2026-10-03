@@ -1744,6 +1744,7 @@ async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
         Arc::new(RateLimiter::new(10_000)),
         live_settings::Env::fixed([("ENGINE_TOKEN", TEST_ENGINE_TOKEN)]),
         live_settings::OptionsFile::at(&path),
+        false,
     )
     .await
     .unwrap();
@@ -1848,6 +1849,7 @@ async fn a_read_only_options_file_is_locked_and_a_save_to_it_refused() {
         Arc::new(RateLimiter::new(10_000)),
         live_settings::Env::fixed([("ENGINE_TOKEN", TEST_ENGINE_TOKEN)]),
         live_settings::OptionsFile::at(&path),
+        false,
     )
     .await
     .unwrap();
