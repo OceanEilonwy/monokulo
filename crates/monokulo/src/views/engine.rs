@@ -138,7 +138,7 @@ const ENGINE_STYLE: &str = r#"
 .cell .pool { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: var(--viz-pool-fill); transition: height 0.6s ease-out; }
 .cell .cnt { position: absolute; inset: 0; display: grid; place-items: center; font: 800 0.56rem/1 var(--font-mono); color: var(--ink); z-index: 2; }
 .cell.reorg { border-color: var(--error); background: repeating-linear-gradient(135deg, var(--tint-error) 0 4px, var(--paper-raised) 4px 8px); }
-.cell.enter { animation: cell-enter 0.6s cubic-bezier(0.3, 1.4, 0.5, 1); }
+.cell.enter { animation: cell-enter 1.1s cubic-bezier(0.3, 1.4, 0.5, 1); }
 .cell.flash { box-shadow: 0 0 0 3px var(--tint-highlight); }
 .cell.probe::after { content: ""; position: absolute; inset: -1px; border: 2px solid var(--viz-tier-chain); border-radius: 4px; }
 .cell .save { position: absolute; right: 1px; top: 1px; width: 7px; height: 7px; border-radius: 2px; background: var(--viz-saved); }
@@ -170,7 +170,7 @@ const ENGINE_STYLE: &str = r#"
 .node .nm .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .node .nm .engine-chip { flex: none; margin-left: auto; }
 .node .call { font-family: var(--font-mono); font-size: 0.66rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.node.spark { animation: node-spark 0.8s; }
+.node.spark { animation: node-spark 1.2s; }
 @keyframes node-spark { 30% { box-shadow: 0 0 0 4px var(--tint-highlight); } }
 .round-head { flex-wrap: nowrap !important; }
 .round-head .round-state { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

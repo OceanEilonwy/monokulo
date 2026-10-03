@@ -24,6 +24,15 @@
   const MIN_SPAN = 5000;
   const REPLAY_MS = 10000;
   const CELL_PX = 26;
+  // How long things take to cross the page: slow enough to follow by eye.
+  const FLY_MS = 1600; // a payment, an envelope, stores moving
+  const CALL_MS = 1300; // a call to the node
+  const SAVE_MS = 1100; // a save flying to the database
+  const DROP_MS = 1400; // a rewound block falling away
+  // Effects of one frame are spread out by their events' times, doubled,
+  // up to this, so a burst plays one after another.
+  const STAGGER_MS = 1000;
+  const PULSE_MS = 1200; // a block or the node lighting up
   const TIERS = ["chain", "blocks", "mempool", "settlement", "upkeep"];
   const TIER_NAMES = { chain: "Chain", blocks: "Blocks", mempool: "Mempool", settlement: "Settlement", upkeep: "Upkeep" };
 
@@ -98,7 +107,7 @@
     if (!quietly && !document.hidden && !reduced) {
       const first = frame.effects.length ? frame.effects[0].at_ms : 0;
       for (const timed of frame.effects) {
-        const delay = Math.min(400, Math.max(0, timed.at_ms - first));
+        const delay = Math.min(STAGGER_MS, Math.max(0, timed.at_ms - first) * 2);
         setTimeout(() => animate(timed.effect), delay);
       }
     }
@@ -400,7 +409,7 @@
     const s = stage.getBoundingClientRect(), r = el.getBoundingClientRect();
     return [r.left + r.width / 2 - s.left, r.top + r.height / 2 - s.top];
   }
-  function fly(from, to, cls, label, ms = 650) {
+  function fly(from, to, cls, label, ms = FLY_MS) {
     if (!from || !to) return;
     const [x0, y0] = centre(from), [x1, y1] = centre(to);
     const token = document.createElement("div");
@@ -422,7 +431,7 @@
     el.classList.remove(cls);
     void el.offsetWidth;
     el.classList.add(cls);
-    setTimeout(() => el.classList.remove(cls), 700);
+    setTimeout(() => el.classList.remove(cls), PULSE_MS);
   }
   function clearTokens() {
     stage.querySelectorAll(".token, .ghostcell").forEach((el) => el.remove());
@@ -439,13 +448,13 @@
     switch (effect.kind) {
       case "packet": {
         const cls = effect.call.kind === "block_hash" || effect.call.kind === "transactions" ? "pkt chain" : effect.call.kind === "pool" ? "pkt mempool" : "pkt";
-        fly(anchor({ kind: "node" }), anchor(effect.to), cls, callLabel(effect.call), 520);
+        fly(anchor({ kind: "node" }), anchor(effect.to), cls, callLabel(effect.call), CALL_MS);
         break;
       }
       case "fly":
         fly(anchor(effect.from), anchor(effect.to), effect.token === "stores" ? "token-stores" : effect.token);
         break;
-      case "save": fly(anchor(effect.at), $("db-sum"), "save", "", 450); break;
+      case "save": fly(anchor(effect.at), $("db-sum"), "save", "", SAVE_MS); break;
       case "flash": {
         const at = effect.at;
         if (at.kind === "cell") pulse(anchor(at), "flash");
@@ -469,7 +478,7 @@
           ghost.style.left = `${x - cell.offsetWidth / 2}px`;
           ghost.style.top = `${y - cell.offsetHeight / 2}px`;
           stage.appendChild(ghost);
-          ghost.animate([{ transform: "none", opacity: 1 }, { transform: "translateY(40px) rotate(8deg)", opacity: 0 }], { duration: 750, easing: "ease-in" })
+          ghost.animate([{ transform: "none", opacity: 1 }, { transform: "translateY(40px) rotate(8deg)", opacity: 0 }], { duration: DROP_MS, easing: "ease-in" })
             .finished.then(() => ghost.remove(), () => ghost.remove());
         }
         break;

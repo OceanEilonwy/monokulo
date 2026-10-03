@@ -421,6 +421,15 @@ time and was drawn as a stub whose left edge the marker sat on.
   page for that network.
 - **The end marker touches its segment** (no gap).
 
+## D35. Slower movement
+
+Things that fly were too quick to follow (0.45 to 0.75s). They now take
+1.1 to 1.6s (a payment, an envelope or stores 1.6s, a call to the node
+1.3s, a save 1.1s, a rewound block 1.4s), a frame's effects are spread
+twice as far apart (up to 1s), and block and node flashes last 1.2s. The
+lengths are constants at the top of the script. Reduced motion is
+unchanged: nothing travels.
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,
