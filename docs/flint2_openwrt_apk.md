@@ -1,7 +1,8 @@
 # Proposal: monokulo and the engine on a GL.iNet Flint 2, as one OpenWrt apk with a LuCI app
 
-Status: proposal only. Nothing here is implemented. Written 2026-10-03 against
-`b127291` (origin/main at the time).
+Status: the package, its LuCI page, the CI build and the landing page are
+implemented (see "As built" at the end). The rest of this document is the
+proposal they came from, written 2026-10-03 against `b127291`.
 
 ## Summary
 
@@ -431,6 +432,8 @@ For roughly 5 to 20 stores the Flint 2 is not the limit:
   some rows. On top of that come the scan memory budget (8 MB per network by
   default), the pool bodies, and monokulo's HTTP cache. A realistic total is
   well under 150 MB of the router's 1 GB. Measure on the device to confirm.
+  (Added after this was written: proof-of-work checking, on by default for
+  mainnet, holds a 256 MiB RandomX cache on top of that; see "As built".)
 - **Storage**: orders, payments and webhooks grow slowly. The log stores are
   capped by `logging.max_mb`. Several years of a handful of small stores'
   orders fit in hundreds of MB, not GB.
@@ -521,6 +524,95 @@ is not recommended unless space becomes a problem. It is not one today.
 | Engine CPU pinning and nice in the init script (no engine change) | small |
 | Optional: SOCKS proxy for the engine's node client | small to medium |
 | Optional: own tor build with PoW | small, plus maintaining it |
+
+## As built
+
+The files:
+
+| Path | What it is |
+|---|---|
+| `scripts/build-openwrt.sh` | Builds everything: copies the SDK's cross toolchain out of its image, cross-compiles both binaries with it, has the SDK package and sign them, and renders the landing page. Output in `dist/` and `site/`. |
+| `openwrt/monokulo/Makefile` | The package: both binaries, the init script, the UCI config, the keep list and the LuCI files. |
+| `openwrt/monokulo/files/monokulo.init` | procd service with two instances, `engine` and `monokulo`. |
+| `openwrt/monokulo/files/monokulo-engine.pinned` | Starts the engine on its CPUs (installed as `/usr/libexec/monokulo/monokulo-engine`). |
+| `openwrt/monokulo/files/monokulo.config` | `/etc/config/monokulo`. |
+| `openwrt/monokulo/files/luci/` | The LuCI view (Services › Monokulo), its menu entry and its ACL. |
+| `openwrt/keys/monokulo.pem` | The public signing key. It is the same key as kringle's. |
+| `web/index.html` | The landing page template, with install steps. |
+| `.github/workflows/openwrt.yml` | Builds on every PR and push to main, uploads the artifacts, and deploys Pages from main. |
+
+### Decisions
+
+Each line gives what was decided, the alternatives, and why.
+
+- **One package, not `monokulo` plus `luci-app-monokulo`** (kringle uses two).
+  The brief asked for a single APK and the proposal recommended one. The
+  LuCI files are three small files that do nothing without LuCI, and one
+  package means one thing to install, upgrade and remove. The package
+  installs them with plain `INSTALL_DATA` rather than `luci.mk`, so the
+  build needs no LuCI feed and no network access in the SDK.
+- **C code compiled with the SDK's gcc, Rust with our own nightly.**
+  aws-lc-sys and SQLite need a C cross compiler. Kringle gets by with
+  `rust-lld` because it is pure Rust. The toolchain is copied out of the
+  same SDK image that does the packaging, and cached in
+  `target/openwrt-sdk/<tag>`, so nothing else has to be installed.
+- **No `panic=immediate-abort` or `build-std`** (kringle uses both to save
+  size). `shared::supervise` and the SQLite pools catch panics to restart a
+  task, and abort would take the whole process down instead. The binaries
+  are only stripped (`CARGO_PROFILE_RELEASE_STRIP=symbols`).
+- **The package version is the crate version, and the release number is the
+  commit count** (`0.1.0-r<N>`). Every build from main is then an upgrade
+  over the one before, without bumping the crate version. CI checks out the
+  full history to count it.
+- **Secrets are made by the init script on first start**, written to
+  `/etc/monokulo/secrets` (root, 0600) and never overwritten. If the file is
+  damaged, the service refuses to start rather than making new secrets.
+  The alternatives were making them in the package's postinst (but then a
+  sysupgrade that restores the config would race it) or asking the user
+  (an extra step that is easy to get wrong).
+- **Listen on the LAN address by default** (kringle defaults to all
+  interfaces). A payment gateway's admin login shouldn't be on the WAN until
+  the owner chooses that. The landing page explains how to open it, and the
+  Tor setup.
+- **Engine pinned to CPUs 2 and 3 with BusyBox's `taskset`, at nice 10
+  through procd's own `nice` parameter.** `taskset -c` is in OpenWrt 25.12's
+  default BusyBox, so the package needs no extra dependency. procd names an
+  instance's log lines after the first word of its command, so starting
+  `taskset …` directly would tag every engine line `taskset[pid]`. The engine
+  is therefore started through a three-line wrapper installed as
+  `/usr/libexec/monokulo/monokulo-engine`, which runs `taskset` and then
+  the engine, and the lines still read `monokulo-engine[pid]`. If the
+  CPU list doesn't fit the router, the init script logs that and starts the
+  engine unpinned, rather than leaving it unable to start.
+- **RandomX (the engine's proof-of-work check, added on main after the
+  proposal) is linked statically.** `randomx-rs` asks for `libstdc++` as a
+  shared library, which made the engine a dynamic executable with glibc's
+  loader path, one that can't run on OpenWrt. The build script now puts the
+  toolchain's `libstdc++.a` alone in a search directory that is checked
+  first, links `libgcc` statically for `__clear_cache`, and refuses to package
+  a binary that `file` doesn't call statically linked. The alternative was
+  patching `randomx-rs` (a `[patch]` or a fork), which has to be maintained.
+- **Proof-of-work checking stays on for mainnet by default.** It costs 256 MiB
+  (512 MiB for a moment around a key change) of the Flint 2's 1 GB. That
+  fits, alongside about 40 MB for the two processes and OpenWrt itself. It
+  is also what keeps a lying node from faking payments. The landing page
+  says how to turn it off for someone who runs their own node.
+- **Data in `/srv/monokulo` and everything kept across sysupgrade.** For a
+  handful of stores the databases are small. A large deployment should
+  measure the backup size against RAM first (see "Keeping it through
+  sysupgrade").
+- **The landing page uses monokulo's own `theme.css`**, which the build
+  copies in, along with its fonts and logo. It has no colour of its own, so
+  the page matches the app in light and dark.
+- **Pages deploys only from main, and only after Pages is switched to
+  GitHub Actions** in the repository's settings. Pull requests upload the
+  site as an artifact to review instead.
+- **No GitHub release step yet.** Version tags already make a release in
+  `ci.yml`. Attaching the `.apk` to it is a small follow-up, best done once
+  versions are tagged.
+- **Not done yet from the proposal:** the LuCI logs tab, backup download
+  and token rotation. The LuCI page shows how to back up the secrets with
+  `scp`, and `logread -e monokulo` shows the logs.
 
 ## Sources
 
