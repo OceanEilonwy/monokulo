@@ -265,15 +265,20 @@ accent, saves `--ink`. The new colours become roles in `views/theme.css`
 - **Playback, not real time.** The page plays frames about 1.5 s behind the
   engine, so a burst that arrived in one poll plays out in order; a frame's
   effects play staggered by their own events' times.
-- **Rounds to scale, from the left.** A round first asks the node for its
-  tip (and pool); against a remote node that is most of a quiet round. The
-  lanes start at the round's first unit, so every round's work starts at
-  the left edge, and the state line says how long the ask took ("Ended at
-  0.46 s (0.40 s of it asking the node for its tip)"). A caught-up round's
-  work takes milliseconds, so the lanes are scaled to it (with a floor of
-  120 ms), its length so far on the playhead's label ("4 ms", "0.42 s").
-  While a group is catching up or a reorg is open, the lanes are scaled to
-  the full 10 s budget and show each tier's reserved share.
+- **A round's parts add up to it.** Every millisecond of a round belongs
+  to one tier: the engine records its units back to back from the round's
+  start, and the work outside them as `Event::Work` in the lane of the
+  tier it serves (the round's opening tip request to Chain, the check
+  whether the pool needs looking at to Mempool, keeping fetched blocks for
+  the next round to Blocks), drawn pale with an edge. Each lane shows its
+  time, and the playhead's label is their sum ("547 ms"). The lanes are
+  scaled to the round (with a floor of 120 ms); while a group is catching
+  up or a reorg is open, to the full 10 s budget, with each tier's
+  reserved share.
+- **A past round.** A click on a bar of the recent rounds shows that round
+  in the round card, with a "× Paused" chip that goes back to the live
+  round; the rest of the page carries on. Without JavaScript the bars are
+  links to the page with `&round=`.
 - **Falling behind.** A hidden tab doesn't animate; with more than 40 frames
   waiting, playback skips to the newest. Nothing is lost: the timeline
   still holds every mark, and scrubbing rebuilds any moment.

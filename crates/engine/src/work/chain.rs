@@ -78,6 +78,8 @@ pub(crate) struct Chain<'a> {
     now: i64,
     /// The id of the node's tip block, if it came with the tip's height.
     tip_hash: Option<String>,
+    /// Whether [`Self::detect`] asked the node for a block's hash.
+    looked_up: std::sync::atomic::AtomicBool,
 }
 
 impl<'a> Chain<'a> {
@@ -95,7 +97,14 @@ impl<'a> Chain<'a> {
             reorg_check_depth,
             now,
             tip_hash: None,
+            looked_up: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Whether detection asked the node for a block's hash, rather than
+    /// comparing with the tip's hash it already had.
+    pub(crate) fn looked_up(&self) -> bool {
+        self.looked_up.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// With the id the node gave for its tip block along with the height
@@ -175,6 +184,8 @@ impl<'a> Chain<'a> {
     }
 
     async fn node_agrees(&self, (height, stored): &(u64, String)) -> Result<bool, ScannerError> {
+        self.looked_up
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(bounded(self.daemon.get_block_hash(*height)).await? == *stored)
     }
 
@@ -595,7 +606,10 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
                 }
                 activity.record(Event::ReorgFound { fork });
             }
-            Ok(None) => activity.record(Event::ChainChecked { agrees: true }),
+            Ok(None) => activity.record(Event::ChainChecked {
+                agrees: true,
+                looked_up: chain.looked_up(),
+            }),
             Err(error) => return Progress::Failed(error),
         }
     }

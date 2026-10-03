@@ -29,7 +29,7 @@ use crate::store::{Db, Store};
 pub use blocks::ScannedBlock;
 pub use mempool::{fast_pass, FastReport};
 pub use observe::snapshot;
-use shared::activity::{Event, UnitProgress};
+use shared::activity::{Event, UnitProgress, Work};
 pub use shared::activity::{Tier, TierOutcome, Wait};
 pub use tuning::{ScanTuning, TierShares, TuningError};
 
@@ -417,11 +417,13 @@ pub async fn run_round(
     budget: Duration,
 ) -> RoundReport {
     let started = Instant::now();
+    let mut laps = Laps::new(started);
     let round_end = started + budget;
     let now = crate::now_unix();
     // A round that will look at the pool asks for the tip and the pool
     // together: one request while the chain hasn't moved.
     let watching = mempool::watching(inputs, now).await;
+    let pool_check = laps.lap();
     let (tip_answer, polled) = if matches!(watching, Ok(true)) {
         match tokio::time::timeout(CALL_DEADLINE, inputs.daemon.get_tip_and_mempool()).await {
             Ok((tip, pool)) => (tip.map_err(ScannerError::from), Some(pool)),
@@ -433,6 +435,7 @@ pub async fn run_round(
     } else {
         (bounded(inputs.daemon.get_tip()).await, None)
     };
+    let tip_request = laps.lap();
     let (tip, tip_hash, tip_error) = match tip_answer {
         Ok(tip) => (Some(tip.height), tip.hash, None),
         Err(error) => {
@@ -459,6 +462,17 @@ pub async fn run_round(
         budget_ms: millis(budget),
         tip,
     });
+    for (tier, (start_ms, ms), what) in [
+        (Tier::Mempool, pool_check, Work::PoolCheck),
+        (Tier::Chain, tip_request, Work::TipRequest),
+    ] {
+        activity.record(Event::Work {
+            tier,
+            start_ms,
+            ms,
+            what,
+        });
+    }
     let mut round = Round {
         inputs,
         state,
@@ -493,14 +507,16 @@ pub async fn run_round(
                 if report.steps[tier] > 0 && Instant::now() >= until {
                     break;
                 }
-                let unit_start = started.elapsed();
                 let progress = step(tier, &mut round, until).await;
                 report.steps[tier] += 1;
+                // From where the last span ended: the moment between two
+                // units is the later one's.
+                let (start_ms, ms) = laps.lap();
                 activity.record(Event::Unit {
                     tier,
                     pass,
-                    start_ms: millis(unit_start),
-                    ms: millis(started.elapsed().saturating_sub(unit_start)),
+                    start_ms,
+                    ms,
                     progress: UnitProgress::from(&progress),
                 });
                 match progress {
@@ -531,12 +547,49 @@ pub async fn run_round(
         }
     }
     blocks::carry(&mut round).await;
+    let (start_ms, ms) = laps.lap();
+    activity.record(Event::Work {
+        tier: Tier::Blocks,
+        start_ms,
+        ms,
+        what: Work::CacheCarry,
+    });
     activity.record(Event::RoundFinished {
         round: round_number,
-        ms: millis(started.elapsed()),
+        ms: laps.total(),
         backlogged: report.backlogged(),
     });
     report
+}
+
+/// A round's time cut into back-to-back spans, in whole milliseconds since
+/// its start: each span starts where the last ended, so the spans add up
+/// to the round exactly.
+struct Laps {
+    started: Instant,
+    last_ms: u64,
+}
+
+impl Laps {
+    const fn new(started: Instant) -> Self {
+        Self {
+            started,
+            last_ms: 0,
+        }
+    }
+
+    /// The span since the last lap: its start and length.
+    fn lap(&mut self) -> (u64, u64) {
+        let now = millis(self.started.elapsed()).max(self.last_ms);
+        let span = (self.last_ms, now - self.last_ms);
+        self.last_ms = now;
+        span
+    }
+
+    /// Where the last lap ended.
+    const fn total(&self) -> u64 {
+        self.last_ms
+    }
 }
 
 /// `n` as a count in the activity record.

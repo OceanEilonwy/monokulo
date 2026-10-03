@@ -109,34 +109,60 @@ fn record_baseline(engine: &TestEngineHandle) {
 
 /// A round's own events: the chain checked, each tier's unit, its end.
 fn round(number: u64, tip: Option<u64>, backlogged: bool) -> Vec<Event> {
+    use shared::activity::Work;
     let mut events = vec![
         Event::RoundStarted {
             round: number,
             budget_ms: 10_000,
             tip,
         },
-        Event::ChainChecked { agrees: true },
+        Event::Work {
+            tier: Tier::Mempool,
+            start_ms: 0,
+            ms: 2,
+            what: Work::PoolCheck,
+        },
+        Event::Work {
+            tier: Tier::Chain,
+            start_ms: 2,
+            ms: 38,
+            what: Work::TipRequest,
+        },
+        Event::ChainChecked {
+            agrees: true,
+            looked_up: false,
+        },
     ];
-    for (i, tier) in Tier::ALL.iter().enumerate() {
+    // Back to back from the tip request, as the engine records them.
+    let mut at = 40;
+    for tier in Tier::ALL {
+        let ms = if tier == Tier::Blocks { 160 } else { 3 };
         events.push(Event::Unit {
-            tier: *tier,
+            tier,
             pass: 1,
-            start_ms: 40 + i as u64 * 3,
-            ms: if *tier == Tier::Blocks { 160 } else { 2 },
+            start_ms: at,
+            ms,
             progress: UnitProgress::Idle,
         });
+        at += ms;
         events.push(Event::TierEnded {
-            tier: *tier,
-            outcome: if *tier == Tier::Blocks && backlogged {
+            tier,
+            outcome: if tier == Tier::Blocks && backlogged {
                 TierOutcome::Backlogged
             } else {
                 TierOutcome::Idle
             },
         });
     }
+    events.push(Event::Work {
+        tier: Tier::Blocks,
+        start_ms: at,
+        ms: 1,
+        what: Work::CacheCarry,
+    });
     events.push(Event::RoundFinished {
         round: number,
-        ms: 220,
+        ms: at + 1,
         backlogged,
     });
     events

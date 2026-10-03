@@ -60,7 +60,7 @@ fn network(minutes: i64) -> Vec<Recorded> {
                 tip: Some(tip),
             },
         );
-        push(at + 2, Event::ChainChecked { agrees: true });
+        push(at + 2, Event::ChainChecked { agrees: true, looked_up: true });
         for (i, tier) in Tier::ALL.iter().enumerate() {
             push(
                 at + 3 + i as i64,
@@ -303,3 +303,28 @@ fn replay_frames_carry_their_events_and_end_on_the_right_state() {
     );
     assert_eq!(history.live_frame().view, present(history.live(), &TUNING));
 }
+
+/// A past round, chosen from the recent rounds, is rebuilt as it ended:
+/// what stepping every event up to its end gives. Once it has left the
+/// history it can't be.
+#[test]
+fn a_past_round_is_rebuilt_as_it_ended() {
+    let events = network(3);
+    let history = History::new(page(&events, "e"));
+    for number in [1, 5, 120] {
+        let finished = events
+            .iter()
+            .find(|e| matches!(e.event, Event::RoundFinished { round, ms: _, backlogged: _ } if round == number))
+            .unwrap();
+        let expected = present_round(&brute_force(&events, finished.at_ms), &TUNING);
+        assert_eq!(history.round(number), expected, "round {number}");
+        assert_eq!(expected.unwrap().number, number);
+    }
+    assert_eq!(history.round(999), None, "never happened");
+
+    let long = network(40);
+    let trimmed = History::new(page(&long, "e"));
+    assert_eq!(trimmed.round(1), None, "left the history");
+    assert!(trimmed.round(2_390).is_some());
+}
+

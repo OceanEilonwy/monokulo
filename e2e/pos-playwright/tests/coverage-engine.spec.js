@@ -125,7 +125,23 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(marker).not.toHaveAttribute('aria-valuetext', at);
   await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
 
-  // A filter hides a tier's rows.
+  // A click on a recent round shows it in the round card, paused; the chip
+  // goes back to the live round. The lanes add up to the round.
+  await page.locator('#tl-live').click();
+  const firstRound = page.locator('#ribbon a.rbar').first();
+  const number = await firstRound.getAttribute('data-round');
+  await firstRound.click();
+  const card = page.locator('#engine-round');
+  await expect(card.locator('#round-resume')).toHaveText('× Paused');
+  await expect(card.locator('#h-round')).toHaveText(`Round ${Number(number).toLocaleString('en-GB')}`);
+  await expect(card.locator('a.rbar.pinned')).toHaveCount(1);
+  const times = await card.locator('.lane-time').allTextContents();
+  const total = await card.locator('.ruler-label').textContent();
+  expect(times.reduce((sum, t) => sum + Number(t.replace(/[^0-9]/g, '')), 0)).toBe(Number(total.replace(/[^0-9]/g, '')));
+  await card.locator('#round-resume').click();
+  await expect(card.locator('#round-resume')).toHaveCount(0);
+
+
   await page.locator('#engine-filters input[data-tier="blocks"]').uncheck();
   await expect(events.locator('.tierchip.t-blocks')).toHaveCount(0);
   expect(errors).toEqual([]);

@@ -191,7 +191,13 @@ pub enum Event {
     /// The loop waited `ms` between two rounds.
     Slept { ms: u64, woken_by: Wake },
     /// Reorg detection: whether the recorded chain agrees with the node's.
-    ChainChecked { agrees: bool },
+    ChainChecked {
+        agrees: bool,
+        /// The node was asked for a block's hash. False when the hash of
+        /// the node's tip, which came with the round's tip request, was
+        /// enough.
+        looked_up: bool,
+    },
     /// A reorg job was opened, or deepened, from `fork`.
     ReorgFound { fork: u64 },
     /// A page of the payments a reorg may affect was queued.
@@ -264,6 +270,14 @@ pub enum Event {
         /// least).
         penalty_free: u64,
     },
+    /// Round time spent outside a tier's units, counted to the tier it was
+    /// for, so a round's parts add up to the round.
+    Work {
+        tier: Tier,
+        start_ms: u64,
+        ms: u64,
+        what: Work,
+    },
     /// A mempool path looked at the pool and scanned `scanned` transactions.
     PoolScanned {
         path: PoolPath,
@@ -291,7 +305,9 @@ impl Event {
     /// The tier whose work this event is, if any.
     pub fn tier(&self) -> Option<Tier> {
         match self {
-            Event::Unit { tier, .. } | Event::TierEnded { tier, .. } => Some(*tier),
+            Event::Unit { tier, .. } | Event::TierEnded { tier, .. } | Event::Work { tier, .. } => {
+                Some(*tier)
+            }
             Event::ChainChecked { .. }
             | Event::ReorgFound { .. }
             | Event::ReorgCollected
@@ -322,6 +338,21 @@ impl Event {
 /// tell them apart on the page.
 pub fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
+}
+
+/// What a [`Event::Work`] span was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Work {
+    /// Whether the pool needs looking at this round (a database read):
+    /// the mempool tier's.
+    PoolCheck,
+    /// The round's request for the node's tip (and its pool, when the
+    /// mempool tier will look at it, in the same request): the chain
+    /// tier's, which reads the chain as the node has it.
+    TipRequest,
+    /// Keeping the fetched blocks for the next round: the blocks tier's.
+    CacheCarry,
 }
 
 /// One recorded event: its place in the engine's record and when it

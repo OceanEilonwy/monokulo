@@ -102,7 +102,7 @@ fn an_empty_state_reads_as_not_yet_known() {
 fn a_caught_up_network_reads_as_caught_up() {
     let state = after([
         snapshot(3_412_880, 3_412_880, &[(3_412_880, 41)]),
-        Event::ChainChecked { agrees: true },
+        Event::ChainChecked { agrees: true, looked_up: true },
     ]);
     let presented = present(&state, &TUNING);
     assert_eq!(
@@ -228,7 +228,7 @@ fn a_round_s_lanes_are_drawn_to_scale() {
         Event::Unit {
             tier: Tier::Blocks,
             pass: 2,
-            start_ms: 60,
+            start_ms: 42,
             ms: 20,
             progress: UnitProgress::Advanced,
         },
@@ -241,7 +241,7 @@ fn a_round_s_lanes_are_drawn_to_scale() {
     let round = present(&quick, &TUNING).round.unwrap();
     assert_eq!(round.title, "Round 1,290");
     assert_eq!(round.state, "Running.", "the page's first round");
-    assert_eq!(round.elapsed, "80 ms", "under a tenth of a second, in milliseconds");
+    assert_eq!(round.elapsed, "62 ms");
     assert_eq!(
         round.scale_ms, MIN_SCALE_MS,
         "a floor for a very short round"
@@ -267,11 +267,24 @@ fn a_round_s_lanes_are_drawn_to_scale() {
     assert_eq!(round.lanes[4].reserved, None, "upkeep hasn't started");
 }
 
-/// A round's first unit starts after the round asked the node for its
-/// tip: the lanes start at the first unit, whatever the ask took, and the
-/// state line tells the ask.
+/// A round's parts add up to it: its units, and the work done for a tier
+/// outside them (the pool check, the tip request, the cache carry), each
+/// in its tier's lane, back to back from the round's start.
 #[test]
-fn a_round_s_lanes_start_at_its_first_unit() {
+fn a_round_s_parts_add_up_to_it() {
+    let work = |tier, start_ms, ms, what| Event::Work {
+        tier,
+        start_ms,
+        ms,
+        what,
+    };
+    let unit = |tier, start_ms, ms| Event::Unit {
+        tier,
+        pass: 1,
+        start_ms,
+        ms,
+        progress: UnitProgress::Idle,
+    };
     let state = after([
         snapshot(10, 10, &[(10, 1)]),
         Event::RoundStarted {
@@ -279,34 +292,41 @@ fn a_round_s_lanes_start_at_its_first_unit() {
             budget_ms: 10_000,
             tip: Some(10),
         },
-        Event::Unit {
-            tier: Tier::Chain,
-            pass: 1,
-            start_ms: 400,
-            ms: 20,
-            progress: UnitProgress::Idle,
-        },
-        Event::Unit {
-            tier: Tier::Blocks,
-            pass: 1,
-            start_ms: 420,
-            ms: 40,
-            progress: UnitProgress::Idle,
-        },
+        work(Tier::Mempool, 0, 3, shared::activity::Work::PoolCheck),
+        work(Tier::Chain, 3, 400, shared::activity::Work::TipRequest),
+        unit(Tier::Chain, 403, 20),
+        unit(Tier::Blocks, 423, 40),
+        unit(Tier::Mempool, 463, 1),
+        work(Tier::Blocks, 464, 2, shared::activity::Work::CacheCarry),
         Event::RoundFinished {
             round: 4_976,
-            ms: 460,
+            ms: 466,
             backlogged: false,
         },
     ]);
     let round = present(&state, &TUNING).round.unwrap();
-    assert_eq!(round.lanes[0].bars[0].start_ms, 0, "the chain tier starts at the left");
-    assert_eq!(round.lanes[1].bars[0].start_ms, 20);
-    assert_eq!((round.elapsed_ms, round.elapsed.as_str()), (60, "60 ms"));
-    assert_eq!(round.scale_ms, MIN_SCALE_MS);
+    let times: Vec<(u64, &str)> = round
+        .lanes
+        .iter()
+        .map(|lane| (lane.ms, lane.time.as_str()))
+        .collect();
+    assert_eq!(
+        times,
+        [(420, "420 ms"), (42, "42 ms"), (4, "4 ms"), (0, "0 ms"), (0, "0 ms")]
+    );
+    assert_eq!(
+        round.lanes.iter().map(|lane| lane.ms).sum::<u64>(),
+        round.elapsed_ms,
+        "the parts add up to the round"
+    );
+    assert_eq!((round.elapsed_ms, round.elapsed.as_str()), (466, "466 ms"));
+    let ask = &round.lanes[0].bars[0];
+    assert_eq!((ask.start_ms, ask.work), (3, true));
+    assert_eq!(ask.title, "Asking the node for its tip: 400 ms");
+    assert_eq!(round.lanes[0].bars[1].title, "A unit of work: 20 ms");
     assert_eq!(
         round.state,
-        "Ended at 0.46 s (0.40 s of it asking the node for its tip). Sleeping until the poll interval is up or the node announces a block."
+        "Ended. Sleeping until the poll interval is up or the node announces a block."
     );
 }
 
@@ -354,7 +374,7 @@ fn a_round_s_state_line_says_what_woke_it_and_how_it_ended() {
                 backlogged: true
             }
         ]),
-        "Ended at 7.8 s with work left: the next round starts at once."
+        "Ended with work left: the next round starts at once."
     );
     assert_eq!(
         line(vec![
@@ -365,7 +385,7 @@ fn a_round_s_state_line_says_what_woke_it_and_how_it_ended() {
                 backlogged: false
             }
         ]),
-        "Ended at 0.04 s. Sleeping until the poll interval is up or the node announces a block."
+        "Ended. Sleeping until the poll interval is up or the node announces a block."
     );
 }
 
@@ -407,6 +427,7 @@ fn the_ribbon_shows_rounds_by_length_and_sleeps_by_what_ended_them() {
     assert_eq!(
         ribbon[0],
         RibbonMark::Round {
+            number: 9,
             height: 22,
             parts: vec![(Tier::Blocks, 0.75), (Tier::Settlement, 0.25)],
             title: "Round 9: 1.0 s".to_owned(),

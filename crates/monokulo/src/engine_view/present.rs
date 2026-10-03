@@ -4,7 +4,7 @@
 //! formats a number or writes a sentence of its own.
 
 use serde::Serialize;
-use shared::activity::{Group, Tier, TierOutcome, Tuning, Wait, Wake};
+use shared::activity::{Group, Tier, TierOutcome, Tuning, Wait, Wake, Work};
 
 use super::machine::{plural, stores_phrase, Call, NodePool, ReorgStep, RibbonEntry, State};
 use crate::views::scaling::thousands;
@@ -89,12 +89,12 @@ pub struct NodeView {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RoundView {
+    pub number: u64,
     pub title: String,
     pub state: String,
     /// The length the lanes are drawn to.
     pub scale_ms: u64,
-    /// How far the tiers have got, from the first unit: the lanes start
-    /// there, after the round's request for the node's tip.
+    /// How far the round has got: the sum of its lanes' times.
     pub elapsed_ms: u64,
     pub elapsed: String,
     pub lanes: Vec<Lane>,
@@ -105,6 +105,9 @@ pub struct Lane {
     pub tier: Tier,
     pub name: &'static str,
     pub share: String,
+    /// The tier's time in the round, everything it waited on included.
+    pub ms: u64,
+    pub time: String,
     pub bars: Vec<Bar>,
     /// The tier's reserved share, from where it started: drawn while the
     /// round is drawn to its budget.
@@ -112,12 +115,15 @@ pub struct Lane {
     pub outcome: Option<Chip>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Bar {
     pub start_ms: u64,
     pub ms: u64,
     /// Ran in pass 2, on time left over.
     pub leftover: bool,
+    /// Work for the tier outside its units (the round's tip request, say).
+    pub work: bool,
+    pub title: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -131,6 +137,7 @@ pub struct Chip {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RibbonMark {
     Round {
+        number: u64,
         /// Height in pixels, by the round's length on a log scale.
         height: u8,
         /// Each tier's part of the round, in tier order.
@@ -180,10 +187,7 @@ pub fn present(state: &State, tuning: &Tuning) -> Presented {
     Presented {
         summary: summary(state),
         chain: chain(state, tuning),
-        round: state
-            .round
-            .as_ref()
-            .map(|round| round_view(state, round, tuning)),
+        round: present_round(state, tuning),
         ribbon: state.ribbon.iter().map(ribbon_mark).collect(),
         side: side(state),
     }
@@ -391,36 +395,31 @@ fn next_block(pool: NodePool) -> NextBlock {
     }
 }
 
+/// The round in progress, or the last one, as the round card draws it.
+pub fn present_round(state: &State, tuning: &Tuning) -> Option<RoundView> {
+    state
+        .round
+        .as_ref()
+        .map(|round| round_view(state, round, tuning))
+}
+
 fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> RoundView {
-    // A round asks the node for its tip (and the pool) before any tier
-    // runs: against a remote node, most of a quiet round. The lanes start
-    // at the first unit, and the ask is told in the state line.
-    let asked_ms = round
-        .units
-        .iter()
-        .map(|unit| unit.start_ms)
-        .min()
-        .unwrap_or(0);
-    let elapsed_ms = round.elapsed_ms.saturating_sub(asked_ms);
+    // The round's spans are back to back from its start, so the lanes'
+    // times add up to how far it has got.
+    let elapsed_ms: u64 = round.units.iter().map(|unit| unit.ms).sum();
     let scale_ms = if round.to_budget {
         round.budget_ms.max(elapsed_ms)
     } else {
         (elapsed_ms.saturating_mul(115) / 100).max(MIN_SCALE_MS)
     };
-    let asking = if asked_ms > 0 {
-        format!(" ({} of it asking the node for its tip)", seconds(asked_ms))
-    } else {
-        String::new()
-    };
     let state_line = match round.finished {
-        Some(finished) if finished.backlogged => format!(
-            "Ended at {}{asking} with work left: the next round starts at once.",
-            seconds(finished.ms)
-        ),
-        Some(finished) => format!(
-            "Ended at {}{asking}. Sleeping until the poll interval is up or the node announces a block.",
-            seconds(finished.ms)
-        ),
+        Some(finished) if finished.backlogged => {
+            "Ended with work left: the next round starts at once.".to_owned()
+        }
+        Some(_) => {
+            "Ended. Sleeping until the poll interval is up or the node announces a block."
+                .to_owned()
+        }
         None => match round.woken_by {
             Some(Wake::Interval) => "Running, after the poll interval.".to_owned(),
             Some(Wake::NewBlock) => "Running, woken by the node announcing a block.".to_owned(),
@@ -433,6 +432,7 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
         .map(|tier| {
             let share = tuning.shares[tier.index()];
             let units = round.units.iter().filter(|unit| unit.tier == *tier);
+            let lane_ms = units.clone().map(|unit| unit.ms).sum();
             let started = round
                 .units
                 .iter()
@@ -442,20 +442,29 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
                 tier: *tier,
                 name: tier_name(*tier),
                 share: format!("{share} %"),
+                ms: lane_ms,
+                time: milliseconds(lane_ms),
                 bars: units
                     .map(|unit| Bar {
-                        start_ms: unit.start_ms.saturating_sub(asked_ms),
+                        start_ms: unit.start_ms,
                         ms: unit.ms,
                         leftover: unit.pass == 2,
+                        work: unit.work.is_some(),
+                        title: format!(
+                            "{}: {}",
+                            match unit.work {
+                                Some(Work::PoolCheck) => "Checking whether the pool needs looking at",
+                                Some(Work::TipRequest) => "Asking the node for its tip",
+                                Some(Work::CacheCarry) => "Keeping fetched blocks for the next round",
+                                None if unit.pass == 2 => "A unit on time left over",
+                                None => "A unit of work",
+                            },
+                            milliseconds(unit.ms)
+                        ),
                     })
                     .collect(),
                 reserved: if round.to_budget {
-                    started.map(|start| {
-                        (
-                            start.saturating_sub(asked_ms),
-                            round.budget_ms * u64::from(share) / 100,
-                        )
-                    })
+                    started.map(|start| (start, round.budget_ms * u64::from(share) / 100))
                 } else {
                     None
                 },
@@ -464,15 +473,12 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
         })
         .collect();
     RoundView {
+        number: round.number,
         title: format!("Round {}", thousands(round.number)),
         state: state_line,
         scale_ms,
         elapsed_ms,
-        elapsed: if elapsed_ms < 100 {
-            format!("{elapsed_ms} ms")
-        } else {
-            seconds(elapsed_ms)
-        },
+        elapsed: milliseconds(elapsed_ms),
         lanes,
     }
 }
@@ -522,6 +528,7 @@ fn ribbon_mark(entry: &RibbonEntry) -> RibbonMark {
         } => {
             let total: u64 = tiers_ms.iter().sum();
             RibbonMark::Round {
+                number,
                 height: ribbon_height(ms),
                 parts: Tier::ALL
                     .iter()
@@ -830,6 +837,12 @@ pub fn seconds(ms: u64) -> String {
 
 fn megabytes(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+/// "4 ms", "1,204 ms": the round card's times, whole milliseconds so its
+/// parts visibly add up to it.
+pub fn milliseconds(ms: u64) -> String {
+    format!("{} ms", thousands(ms))
 }
 
 /// Decimal kilobytes, as block sizes are usually given: "41 kB".

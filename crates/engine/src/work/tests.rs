@@ -5312,7 +5312,8 @@ async fn the_activity_record_tells_the_paid_story_in_order() {
     let events = recorded(&story.state);
 
     // Rounds open and close in pairs, numbered one up; units and tier
-    // endings fall inside them, units in time order.
+    // endings fall inside them. A round's units and other work are back to
+    // back from its start, so its parts add up to it exactly.
     let (mut open, mut last, mut unit_end) = (None, 0, 0);
     for event in &events {
         if let Event::RoundStarted {
@@ -5333,7 +5334,7 @@ async fn the_activity_record_tells_the_paid_story_in_order() {
         } = event
         {
             assert_eq!(open.take(), Some(*round));
-            assert!(*ms >= unit_end, "the round ends after its units");
+            assert_eq!(*ms, unit_end, "the parts add up to the round");
         } else if let Event::Unit {
             pass,
             start_ms,
@@ -5344,7 +5345,25 @@ async fn the_activity_record_tells_the_paid_story_in_order() {
         {
             assert!(open.is_some(), "a unit outside a round");
             assert!(matches!(pass, 1 | 2));
-            assert!(*start_ms >= unit_end, "units in time order");
+            assert_eq!(*start_ms, unit_end, "back to back");
+            unit_end = start_ms + ms;
+        } else if let Event::Work {
+            tier,
+            start_ms,
+            ms,
+            what,
+        } = event
+        {
+            assert!(open.is_some(), "work outside a round");
+            assert_eq!(*start_ms, unit_end, "back to back");
+            assert_eq!(
+                *tier,
+                match what {
+                    Work::PoolCheck => Tier::Mempool,
+                    Work::TipRequest => Tier::Chain,
+                    Work::CacheCarry => Tier::Blocks,
+                }
+            );
             unit_end = start_ms + ms;
         } else if let Event::TierEnded {
             tier: _,
@@ -5360,6 +5379,15 @@ async fn the_activity_record_tells_the_paid_story_in_order() {
         }
     }
     assert!(open.is_none(), "every round finished");
+    // The fake node gives its tip's hash with its height: while the
+    // recorded chain ends at the tip, the reorg check asks nothing more.
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::ChainChecked {
+            agrees: true,
+            looked_up: false
+        }
+    )));
 
     let at = |what: &str, wanted: &dyn Fn(&Event) -> bool| {
         events

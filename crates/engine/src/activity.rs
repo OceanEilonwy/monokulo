@@ -190,7 +190,7 @@ mod tests {
     fn a_reader_following_next_sees_every_event_once() {
         let activity = Activity::default();
         activity.record(Event::Snapshot(Box::default()));
-        activity.record(Event::ChainChecked { agrees: true });
+        activity.record(Event::ChainChecked { agrees: true, looked_up: true });
         let first = activity.page(None);
         assert_eq!(seqs(&first), [0, 1]);
         assert!(!first.gap);
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn a_fresh_reader_starts_at_the_oldest_snapshot() {
         let activity = Activity::default();
-        activity.record(Event::ChainChecked { agrees: true });
+        activity.record(Event::ChainChecked { agrees: true, looked_up: true });
         activity.record(Event::Snapshot(Box::new(Snapshot {
             round: 4,
             ..Snapshot::default()
@@ -224,7 +224,7 @@ mod tests {
     fn a_reader_behind_the_record_or_from_another_epoch_starts_over() {
         let activity = Activity::default();
         activity.record(Event::Snapshot(Box::default()));
-        activity.record(Event::ChainChecked { agrees: true });
+        activity.record(Event::ChainChecked { agrees: true, looked_up: true });
         let ahead = activity.page(Some(99));
         assert!(ahead.gap);
         assert_eq!(seqs(&ahead), [0, 1]);
@@ -234,7 +234,7 @@ mod tests {
         let old = now_ms() - KEEP.as_millis() as i64 - 1;
         let aged = Activity::default();
         aged.record_at(old, Event::Snapshot(Box::default()));
-        aged.record_at(old, Event::ChainChecked { agrees: true });
+        aged.record_at(old, Event::ChainChecked { agrees: true, looked_up: true });
         aged.record(Event::Snapshot(Box::default()));
         let behind = aged.page(Some(1));
         assert!(behind.gap);

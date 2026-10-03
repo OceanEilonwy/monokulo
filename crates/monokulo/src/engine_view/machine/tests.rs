@@ -914,14 +914,23 @@ fn snapshots_during_and_after_a_reorg() {
 }
 
 /// A reorg check probes the recorded high-water mark; with nothing
-/// recorded there is nothing to probe.
+/// recorded there is nothing to probe. A call flies from the node only
+/// when the node was asked: the tip's own hash, which came with the
+/// round's tip request, often settles it.
 #[test]
 fn a_reorg_check_probes_the_high_water_mark() {
     let mut feed = Feed::new();
-    assert_eq!(feed.feed(Event::ChainChecked { agrees: true }).effects, []);
+    let checked = |looked_up| Event::ChainChecked {
+        agrees: true,
+        looked_up,
+    };
+    assert_eq!(feed.feed(checked(true)).effects, []);
     assert_eq!(feed.state.chain_agrees, Some(true));
     feed.feed(snapshot(50, &[(50, 1)]));
-    let out = feed.feed(Event::ChainChecked { agrees: true });
+    let free = feed.feed(checked(false));
+    assert_eq!(free.effects, [Effect::Probe { height: 50 }]);
+    assert_eq!(feed.state.last_call, None, "nothing was asked");
+    let out = feed.feed(checked(true));
     assert_eq!(
         out.effects,
         [

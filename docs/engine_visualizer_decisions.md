@@ -289,6 +289,54 @@ The bar's detail is the cost: thirty minutes across one bar puts rounds a
 pixel or two apart, so single rounds can't be picked out; the key events'
 circles and the events table carry the detail.
 
+## Third review
+
+## D28. A round's parts add up to it
+
+The reviewer: the round's time must be the sum of its tiers', and a call
+made for a part counts to that part. The engine now cuts a round into back
+to back spans (`work::Laps`): each unit runs from where the last span
+ended, so the moments between units are the later unit's, and the work
+outside units is recorded as `Event::Work` with the tier it serves:
+
+- **The tip request** to Chain. It is asked once, before any tier, because
+  every tier needs the tip; Chain is the tier that reads the chain as the
+  node has it, and it runs first. When the mempool tier will look at the
+  pool, the pool comes in the same request: one request can't be split, so
+  it all counts to Chain, and the legend says so.
+- **The pool check** (whether any order could be paid from the pool, a
+  database read) to Mempool.
+- **The cache carry** (keeping fetched blocks for the next round) to
+  Blocks.
+
+Spans are whole milliseconds from the round's start, each starting where
+the last ended, so they add up to the round exactly; the round card shows
+every time in milliseconds, so the sum can be checked by eye. Engine and
+page tests check the sum. This replaces D21's shift of the lanes: with the
+tip request drawn in Chain's lane, a round's work starts at the left
+again, and the "(0.40 s of it asking the node for its tip)" text, which
+the reviewer found noise, is gone; the state line no longer gives times.
+
+## D29. A past round in the round card
+
+A click on a bar of the recent rounds shows that round in the round card
+with a "× Paused" chip; the chip goes back to live. Only the card is
+paused: the timeline, chain and panels carry on, since the point is to
+look at one round closely. Monokulo rebuilds the round from its history
+(`History::round`: the keyframe before the round's start, its events to
+its end) and serves it at `/status/engine/round`; without JavaScript the
+bars are links to the page with `&round=`, rendered the same way. A round
+older than the history has no bar to click.
+
+## D30. The hash check flies only when the node is asked
+
+The reorg check compares the newest recorded block's hash with the node's.
+While the engine is caught up, the newest recorded block is the node's
+tip, whose hash came with the round's tip request: nothing more is asked.
+The page drew a "hash check" call every round regardless. The event now
+says whether the node was asked (`ChainChecked::looked_up`), and the call
+flies only then; the probe on the block still shows the comparison.
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,

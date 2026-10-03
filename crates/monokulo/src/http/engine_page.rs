@@ -11,6 +11,9 @@
 //!   (the timeline's scrubbing).
 //! - `GET /status/engine/replay?network=&from=&to=`: the frames between two
 //!   moments (replay), at most a minute of them.
+//! - `GET /status/engine/round?network=&number=`: a past round as the round
+//!   card draws it (a click on the recent rounds). Without JavaScript the
+//!   recent rounds link to the page with `&round=`.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -31,6 +34,19 @@ use crate::views;
 #[derive(Debug, Deserialize)]
 pub struct NetworkQuery {
     network: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PageQuery {
+    network: Option<String>,
+    /// A past round to show in the round card.
+    round: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RoundQuery {
+    network: String,
+    number: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,7 +89,7 @@ fn known(networks: &[String], network: &str) -> Option<String> {
 pub async fn page(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,
-    Query(query): Query<NetworkQuery>,
+    Query(query): Query<PageQuery>,
 ) -> Response {
     let chrome = super::page_chrome(&state, Some(&admin), "/status/engine".to_owned()).await;
     let networks = match networks(&state).await {
@@ -86,6 +102,7 @@ pub async fn page(
                         networks: Vec::new(),
                         network: String::new(),
                         view: None,
+                        pinned: None,
                         marks: Vec::new(),
                         error: Some(error),
                     },
@@ -115,14 +132,15 @@ pub async fn page(
                     .take(views::engine::MARKS_SHOWN)
                     .cloned()
                     .collect();
-                (history.live_frame().view, marks)
+                let pinned = query.round.and_then(|number| history.round(number));
+                (history.live_frame().view, pinned, marks)
             })
             .await
             .map_err(|error| error.to_string())
     };
-    let (view, marks, error) = match read {
-        Ok((view, marks)) => (Some(view), marks, None),
-        Err(error) => (None, Vec::new(), Some(error)),
+    let (view, pinned, marks, error) = match read {
+        Ok((view, pinned, marks)) => (Some(view), pinned, marks, None),
+        Err(error) => (None, None, Vec::new(), Some(error)),
     };
     Html(
         views::engine::page(
@@ -131,6 +149,7 @@ pub async fn page(
                 networks,
                 network,
                 view,
+                pinned,
                 marks,
                 error,
             },
@@ -220,6 +239,29 @@ pub async fn at(
         .await
     {
         Ok(frame) => Json(frame).into_response(),
+        Err(error) => (StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
+    }
+}
+
+/// A past round, as the round card draws it: 404 once it has left the
+/// history.
+pub async fn round(
+    State(state): State<AppState>,
+    AuthedAdmin(_, _): AuthedAdmin,
+    Query(query): Query<RoundQuery>,
+) -> Response {
+    let networks = networks(&state).await.unwrap_or_default();
+    let Some(network) = known(&networks, &query.network) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match state
+        .engine
+        .activity
+        .read(&network, |history| history.round(query.number))
+        .await
+    {
+        Ok(Some(round)) => Json(round).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => (StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
     }
 }
@@ -325,6 +367,7 @@ mod tests {
             "/status/engine/events?network=stagenet",
             "/status/engine/at?network=stagenet&ms=0",
             "/status/engine/replay?network=stagenet&from=0&to=1",
+            "/status/engine/round?network=stagenet&number=7",
         ] {
             let anonymous = get(&router, uri, None).await;
             assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED, "{uri}");
@@ -377,6 +420,42 @@ mod tests {
             StatusCode::NOT_FOUND,
             "the engine scans no mainnet"
         );
+    }
+
+    /// A past round: as JSON for the script, and in the page's round card
+    /// with a chip back to live for a page asked for with `&round=`.
+    #[tokio::test]
+    async fn a_past_round_is_shown_on_request() {
+        let (_engine, router, cookie) = site().await;
+        let response = get(
+            &router,
+            "/status/engine/round?network=stagenet&number=7",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["title"], "Round 7");
+        let gone = get(
+            &router,
+            "/status/engine/round?network=stagenet&number=99",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+
+        let pinned = body_text(
+            get(
+                &router,
+                "/status/engine?network=stagenet&round=7",
+                Some(&cookie),
+            )
+            .await,
+        )
+        .await;
+        assert!(pinned.contains("× Paused"), "{pinned}");
+        assert!(pinned.contains("id=\"round-resume\" href=\"/status/engine?network=stagenet\""));
+        let live = body_text(get(&router, "/status/engine", Some(&cookie)).await).await;
+        assert!(!live.contains("id=\"round-resume\""), "live: no chip");
     }
 
     /// An engine that can't be reached is said so on the page, not a 500.

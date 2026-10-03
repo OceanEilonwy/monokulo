@@ -272,18 +272,23 @@
 
   const pct = (ms, scale) => Math.min(100, (ms / Math.max(1, scale)) * 100);
 
+  // A past round chosen from the recent rounds, shown in place of the live
+  // one until its "× Paused" chip is pressed.
+  let pinned = null;
+  const live = `/status/engine?network=${encodeURIComponent(network)}`;
   function drawRound(v) {
     const box = $("engine-round");
     if (!box) return;
     let html = "";
-    const round = v.round;
+    const round = pinned || v.round;
     if (round) {
-      html += `<header class="round-head"><h2 id="h-round">${esc(round.title)}</h2><span class="engine-hint round-state">${esc(round.state)}</span></header><div class="lanes">`;
+      const chip = pinned ? `<a class="engine-chip round-paused" id="round-resume" href="${live}" title="Showing a past round: back to the live one">× Paused</a>` : "";
+      html += `<header class="round-head"><h2 id="h-round">${esc(round.title)}</h2>${chip}<span class="engine-hint round-state">${esc(round.state)}</span></header><div class="lanes">`;
       for (const lane of round.lanes) {
         html += `<div class="lane-label"><span class="tierchip t-${lane.tier}">${esc(lane.name)}</span><small>${esc(lane.share)}</small></div><div class="track t-${lane.tier}">`;
         if (lane.reserved) html += `<div class="share" style="left:${pct(lane.reserved[0], round.scale_ms)}%;width:${pct(lane.reserved[1], round.scale_ms)}%"></div>`;
-        for (const bar of lane.bars) html += `<div class="bar${bar.leftover ? " p2" : ""}" style="left:${pct(bar.start_ms, round.scale_ms)}%;width:${Math.max(0.5, pct(bar.ms, round.scale_ms))}%"></div>`;
-        html += `<div class="playhead" style="left:${Math.min(99.5, pct(round.elapsed_ms, round.scale_ms))}%"></div></div><div class="outcome">`;
+        for (const bar of lane.bars) html += `<div class="bar${bar.work ? " work" : bar.leftover ? " p2" : ""}" title="${esc(bar.title)}" style="left:${pct(bar.start_ms, round.scale_ms)}%;width:${Math.max(0.5, pct(bar.ms, round.scale_ms))}%"></div>`;
+        html += `<div class="playhead" style="left:${Math.min(99.5, pct(round.elapsed_ms, round.scale_ms))}%"></div></div><div class="outcome"><span class="lane-time">${esc(lane.time)}</span>`;
         if (lane.outcome) html += `<span class="engine-chip ${lane.outcome.tone}" title="${esc(lane.outcome.text)}">${esc(lane.outcome.text)}</span>`;
         html += "</div>";
       }
@@ -294,7 +299,7 @@
     html += '<div class="ribbon-row"><span class="engine-hint">Last rounds</span><div class="ribbon" id="ribbon" aria-label="Recent rounds">';
     for (const mark of v.ribbon) {
       if (mark.kind === "round") {
-        html += `<span class="rbar" style="height:${mark.height}px" title="${esc(mark.title)}">${mark.parts.map(([tier, part]) => `<i class="t-${tier}" style="height:${(part * 100).toFixed(1)}%"></i>`).join("")}</span>`;
+        html += `<a class="rbar${pinned && pinned.number === mark.number ? " pinned" : ""}" href="${live}&round=${mark.number}" data-round="${mark.number}" style="height:${mark.height}px" title="${esc(mark.title)}">${mark.parts.map(([tier, part]) => `<i class="t-${tier}" style="height:${(part * 100).toFixed(1)}%"></i>`).join("")}</a>`;
       } else {
         html += `<i class="rgap${mark.woken ? " woken" : ""}" title="${esc(mark.title)}"></i>`;
       }
@@ -583,6 +588,26 @@
   }
 
   let dragging = null;
+  // A click on a recent round shows it in the round card; the chip goes
+  // back to the live round.
+  function wireRounds() {
+    $("engine-round").addEventListener("click", async (e) => {
+      if (e.target.closest("#round-resume")) {
+        e.preventDefault();
+        pinned = null;
+        if (view) drawRound(view);
+        return;
+      }
+      const bar = e.target.closest("a.rbar[data-round]");
+      if (!bar) return;
+      e.preventDefault();
+      const response = await fetch(`/status/engine/round?network=${encodeURIComponent(network)}&number=${bar.dataset.round}`);
+      if (!response.ok) return;
+      pinned = await response.json();
+      if (view) drawRound(view);
+    });
+  }
+
   function wireTimeline() {
     const track = $("tl-track"), box = $("tl-win"), marker = $("tl-head");
     const tip = document.createElement("div");
@@ -691,6 +716,7 @@
   $("engine-filters").hidden = false;
   document.querySelectorAll(".engine-page .reload").forEach((el) => { el.hidden = true; });
   wireTimeline();
+  wireRounds();
   const help = $("engine-help");
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && help.open) { help.open = false; help.querySelector("summary").focus(); } });
   document.addEventListener("pointerdown", (e) => { if (help.open && !help.contains(e.target)) help.open = false; });

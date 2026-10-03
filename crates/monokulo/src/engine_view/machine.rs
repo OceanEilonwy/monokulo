@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::Serialize;
 use shared::activity::{
     Database, Event, Group, Node, PoolPath, Recorded, Snapshot, Tier, TierOutcome, Transition,
-    UnitProgress, Wait, Wake,
+    UnitProgress, Wait, Wake, Work,
 };
 use shared::order_status::OrderStatus;
 
@@ -132,13 +132,18 @@ pub struct Round {
     pub finished: Option<Finished>,
 }
 
+/// A span of a round: one of a tier's units, or work done for a tier
+/// outside its units (`work`). A round's spans are back to back, so they
+/// add up to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct UnitBar {
     pub tier: Tier,
+    /// 1 or 2 for a unit; 0 for other work.
     pub pass: u8,
     pub start_ms: u64,
     pub ms: u64,
     pub progress: UnitProgress,
+    pub work: Option<Work>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -360,6 +365,23 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
                 start_ms: *start_ms,
                 ms: *ms,
                 progress: *progress,
+                work: None,
+            },
+        ),
+        Event::Work {
+            tier,
+            start_ms,
+            ms,
+            what,
+        } => state.unit(
+            &mut out,
+            UnitBar {
+                tier: *tier,
+                pass: 0,
+                start_ms: *start_ms,
+                ms: *ms,
+                progress: UnitProgress::Advanced,
+                work: Some(*what),
             },
         ),
         Event::TierEnded { tier, outcome } => {
@@ -379,14 +401,18 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
             });
             state.pending_wake = Some(*woken_by);
         }
-        Event::ChainChecked { agrees } => {
+        Event::ChainChecked { agrees, looked_up } => {
             state.chain_agrees = Some(*agrees);
             if let Some(height) = state.chain.high_water {
-                state.last_call = Some(Call::BlockHash { height });
-                out.effects.push(Effect::Packet {
-                    to: Anchor::Cell(height),
-                    call: Call::BlockHash { height },
-                });
+                // Asked of the node only when the tip's own hash, which
+                // came with the round's tip request, wasn't enough.
+                if *looked_up {
+                    state.last_call = Some(Call::BlockHash { height });
+                    out.effects.push(Effect::Packet {
+                        to: Anchor::Cell(height),
+                        call: Call::BlockHash { height },
+                    });
+                }
                 out.effects.push(Effect::Probe { height });
             }
         }

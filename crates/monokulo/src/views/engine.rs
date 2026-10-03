@@ -7,7 +7,9 @@ use maud::{html, Markup, PreEscaped};
 
 use super::{layout_with_head, reload_button, PageChrome};
 use crate::engine_view::machine::Mark;
-use crate::engine_view::present::{Bar, ChainView, Lane, Panel, Presented, RibbonMark};
+use crate::engine_view::present::{
+    Bar, ChainView, Lane, Panel, Presented, RibbonMark, RoundView,
+};
 use crate::views::scaling::thousands;
 
 /// Blocks drawn without JavaScript (the script fits the strip's width).
@@ -26,6 +28,9 @@ pub struct EnginePage {
     pub networks: Vec<String>,
     pub network: String,
     pub view: Option<Presented>,
+    /// A past round chosen from the recent rounds, shown in the round card
+    /// in place of the live one.
+    pub pinned: Option<RoundView>,
     /// Newest first.
     pub marks: Vec<Mark>,
     /// Why the engine couldn't be read, if it couldn't.
@@ -166,6 +171,12 @@ const ENGINE_STYLE: &str = r#"
 .lane-label small { color: var(--muted); font-weight: 600; }
 .track { position: relative; height: 15px; background: var(--surface-sunken); border-radius: 3px; overflow: hidden; }
 .bar { position: absolute; top: 2px; bottom: 2px; min-width: 3px; border-radius: 2px; background: var(--tier); transition: left 0.3s, width 0.3s; }
+.bar.work { background: color-mix(in srgb, var(--tier) 30%, var(--paper-raised)); box-shadow: inset 0 0 0 1.5px var(--tier); }
+.lane-time { flex: none; width: 64px; text-align: right; margin-right: 8px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.round-paused { flex: none; text-decoration: none; color: var(--ink); background: var(--tint-warning); border-color: var(--warning); cursor: pointer; }
+.round-paused:hover { border-color: var(--ink); }
+.rbar { cursor: pointer; }
+.rbar:hover, .rbar.pinned { outline: 2px solid var(--ink); outline-offset: 1px; }
 .bar.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 40%, var(--paper-raised)) 4px 7px); }
 .share { position: absolute; top: 0; bottom: 0; border: 1.5px dashed var(--line-strong); border-radius: 3px; transition: left 0.3s, width 0.3s; }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); transition: left 0.3s; z-index: 2; }
@@ -282,7 +293,7 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
                 div class="engine-main" {
                     div class="engine-left" {
                         (chain(&view.chain))
-                        (round(view))
+                        (round(view, page.pinned.as_ref(), &page.network))
                     }
                     (side(view))
                 }
@@ -523,10 +534,10 @@ fn help() -> Markup {
                 }
 
                 h3 { "Round" }
-                p class="wide" { "Each round gives the five tiers a share of a 10 s budget, in order; time left over goes round again. Before the first tier runs, the round asks the node for its tip (and pool). The line above the lanes says how long that took, and the lanes start after it." }
+                p class="wide" { "Each round gives the five tiers a share of a 10 s budget, in order; time left over goes round again. Every millisecond of a round belongs to one tier, so the lanes' times add up to the round's: the round's opening request for the node's tip counts to Chain, the check whether the pool needs looking at to Mempool, keeping fetched blocks for the next round to Blocks." }
                 dl {
                     dt { (tier("chain")) }
-                    dd { b { "Chain" } " checks the recorded chain still matches the node's. Each round it asks the node for the hash of the newest recorded block (the blue " b { "hash check" } " that flies from the node) and compares the two. If they differ, it reconciles the reorganisation: payments are re-examined and blocks rewound." }
+                    dd { b { "Chain" } " asks the node for its tip, then checks the recorded chain still matches the node's: it compares the newest recorded block's hash with the node's. When the engine is caught up, the tip's hash came with the tip and nothing more is asked; otherwise a blue " b { "hash check" } " flies from the node. If they differ, it reconciles the reorganisation: payments are re-examined and blocks rewound." }
                     dt { (tier("blocks")) }
                     dd { b { "Blocks" } " fetches new blocks from the node and scans each one for every group of stores." }
                     dt { (tier("mempool")) }
@@ -540,9 +551,9 @@ fn help() -> Markup {
                     dt { small { "40 %" } }
                     dd { "The tier's share of the round's budget." }
                     dt { span class="bar" style="position:static;display:block;width:18px;height:10px;background:var(--viz-tier-blocks)" {} }
-                    dd { "A unit of work. Striped " span class="bar p2 t-blocks" style="position:static;display:inline-block;width:18px;height:10px" {} " ran on time left over (pass 2). While stores catch up or a reorganisation is open, a dashed box shows the tier's reserved share." }
+                    dd { "A unit of work. Striped " span class="bar p2 t-blocks" style="position:static;display:inline-block;width:18px;height:10px" {} " ran on time left over (pass 2); pale with an edge " span class="bar work t-chain" style="position:static;display:inline-block;width:18px;height:10px" {} " is work for the tier outside its units, such as the tip request. Hover over a bar for what it was. While stores catch up or a reorganisation is open, a dashed box shows the tier's reserved share." }
                     dt { span class="ruler-label" style="position:static;transform:none" { "s" } }
-                    dd { "The marker and its label: how long the tiers have run." }
+                    dd { "The marker and its label: how long the round has run, the sum of the times beside each lane." }
                     dt { span class="engine-chip ok" style="font-size:0.6rem" { "Idle" } }
                     dd { b { "Idle" } ": nothing left to do. " b { "Backlogged" } ": out of time with work left, so the next round starts at once. " b { "Waiting" } ": held up by what it names. " b { "Failed" } ": an error, retried next round." }
                 }
@@ -550,7 +561,7 @@ fn help() -> Markup {
                 h3 { "Last rounds" }
                 dl {
                     dt { span class="rbar" style="height:14px;width:8px" { i class="t-blocks" style="height:60%" {} i class="t-chain" style="height:40%" {} } }
-                    dd { "A round. The taller, the longer (on a log scale), coloured by where its time went." }
+                    dd { "A round. The taller, the longer (on a log scale), coloured by where its time went. Click one to show it in the round card; its " b { "× Paused" } " chip goes back to the live round." }
                     dt { i class="rgap" aria-hidden="true" {} }
                     dd { "The scanner slept until the poll interval was up." }
                 }
@@ -580,13 +591,20 @@ fn help() -> Markup {
     }
 }
 
-fn round(view: &Presented) -> Markup {
+/// The round card: the live round, or `pinned`, a past one chosen from
+/// the recent rounds, with a chip back to live.
+fn round(view: &Presented, pinned: Option<&RoundView>, network: &str) -> Markup {
+    let live = format!("/status/engine?network={network}");
     html! {
         section class="engine-card" id="engine-round" aria-labelledby="h-round" {
-            @match &view.round {
+            @match pinned.or(view.round.as_ref()) {
                 Some(round) => {
                     header class="round-head" {
                         h2 id="h-round" { (round.title) }
+                        @if pinned.is_some() {
+                            a class="engine-chip round-paused" id="round-resume" href=(live)
+                                title="Showing a past round: back to the live one" { "× Paused" }
+                        }
                         span class="engine-hint round-state" { (round.state) }
                     }
                     div class="lanes" {
@@ -607,8 +625,10 @@ fn round(view: &Presented) -> Markup {
                 div class="ribbon" id="ribbon" aria-label="Recent rounds" {
                     @for mark in &view.ribbon {
                         @match mark {
-                            RibbonMark::Round { height, parts, title } => {
-                                span class="rbar" style=(format!("height:{height}px")) title=(title) {
+                            RibbonMark::Round { number, height, parts, title } => {
+                                a class=(if pinned.is_some_and(|p| p.number == *number) { "rbar pinned" } else { "rbar" })
+                                    href=(format!("{live}&round={number}")) data-round=(number)
+                                    style=(format!("height:{height}px")) title=(title) {
                                     @for (tier, part) in parts {
                                         i class=(format!("t-{tier}")) style=(format!("height:{:.1}%", part * 100.0)) {}
                                     }
@@ -644,6 +664,7 @@ fn lane_row(lane: &Lane, scale_ms: u64, elapsed_ms: u64) -> Markup {
             div class="playhead" style=(left_pct(elapsed_ms, scale_ms)) {}
         }
         div class="outcome" {
+            span class="lane-time" { (lane.time) }
             @if let Some(chip) = &lane.outcome {
                 span class=(format!("engine-chip {}", chip.tone)) title=(chip.text) { (chip.text) }
             }
@@ -653,7 +674,8 @@ fn lane_row(lane: &Lane, scale_ms: u64, elapsed_ms: u64) -> Markup {
 
 fn bar_div(bar: &Bar, scale_ms: u64) -> Markup {
     html! {
-        div class=(if bar.leftover { "bar p2" } else { "bar" }) style=(span_style(bar.start_ms, bar.ms, scale_ms)) {}
+        div class=(match (bar.work, bar.leftover) { (true, _) => "bar work", (false, true) => "bar p2", (false, false) => "bar" })
+            style=(span_style(bar.start_ms, bar.ms, scale_ms)) title=(bar.title) {}
     }
 }
 
