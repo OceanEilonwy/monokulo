@@ -2184,6 +2184,45 @@ async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
     );
 }
 
+/// An engine built without the `snp` feature refuses to enable it, says
+/// why, and keeps what it had.
+#[cfg(not(feature = "snp"))]
+#[tokio::test]
+async fn enabling_snp_is_refused_by_an_engine_built_without_snp() {
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
+    let router = build_router(state, 1_000_000);
+    let post = router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some(serde_json::json!({
+                "scalars": {
+                    "key_custody.enabled_backends": "plain,snp",
+                    "key_custody.default_backend": "plain"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(post.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(post).await;
+    assert_eq!(body["fields"][0]["key"], "key_custody.enabled_backends");
+    assert!(
+        body["fields"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("`snp` feature"),
+        "{body}"
+    );
+    let get = router.oneshot(settings_request("GET", None)).await.unwrap();
+    let body = body_json(get).await;
+    assert_eq!(
+        body["scalars"]["key_custody.enabled_backends"]["value"],
+        "plain"
+    );
+}
+
+#[cfg(feature = "snp")]
 #[tokio::test]
 async fn enabling_the_snp_key_custody_backend_is_saved_and_reported() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;

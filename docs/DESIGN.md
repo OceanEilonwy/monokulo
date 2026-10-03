@@ -362,6 +362,12 @@ Each store's keys live in one backend, named on its row (`tenants.key_custody_ba
 itself a `KeyCustody`, which routes every call on a handle to the backend that issued
 it. The trait and the backends are the `key-custody` crate.
 
+- **Build**: the `snp` backend (the `/dev/sev-guest` device, AMD's key distribution
+  service, the handoff route) is compiled in only with the engine's `snp` Cargo
+  feature (`key-custody`'s `snp`; monokulo passes it through for its embedded
+  engine). It is off by default: release binaries and the Docker image leave it out,
+  and such an engine refuses `snp` in `key_custody.enabled_backends`, so it can't be
+  saved and silently not run.
 - **Settings**: `key_custody.enabled_backends` and `key_custody.default_backend` (where
   new stores go unless they ask for another) apply as soon as they're saved. Turning a
   backend off leaves its stores unscanned, and reported as such to their owners, until

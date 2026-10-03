@@ -15,6 +15,9 @@ default = ["embedded-engine"]
 # (docs/engine_as_library.md): the engine runs inside monokulo's process.
 # Without it the client only reaches an engine over HTTP.
 embedded-engine = ["dep:engine", "dep:tower", "dep:http-body-util"]
+# The embedded engine's `snp` key custody backend (the engine's `snp`
+# feature). Off by default.
+snp = ["engine?/snp"]
 
 [dependencies]
 engine = { path = "../engine", optional = true }

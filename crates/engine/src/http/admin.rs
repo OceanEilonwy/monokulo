@@ -7,7 +7,9 @@ use std::sync::Arc;
 use crate::auth::generate_webhook_secret;
 use crate::daemon::MoneroDaemonClient as _;
 use crate::engine_settings::EngineSettings;
-use crate::key_custody::transport::{Action, Bundle, Envelope, HandoffAnswer};
+#[cfg(feature = "snp")]
+use crate::key_custody::transport::HandoffAnswer;
+use crate::key_custody::transport::{Action, Bundle, Envelope};
 use crate::key_custody::{
     remove_wallet_logged, KeyCustodyError, SubaddressIndex, WalletHandle, WalletMaterial,
 };
@@ -557,6 +559,7 @@ pub(super) async fn move_key_bundle(
 /// one for the snp master key (`key_custody::snp`). Answered only for an
 /// engine image signed by this engine's own ID key at its security version
 /// or later: encrypted to that engine alone, and attested by this one.
+#[cfg(feature = "snp")]
 pub(super) async fn answer_handoff(
     State(state): State<AppState>,
     Json(bundle): Json<Bundle>,

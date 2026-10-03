@@ -87,6 +87,10 @@ jobs:
         # compiler's own. Every feature, so the e2e targets (built only with
         # `e2e`) are checked too.
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Clippy, engine without SEV-SNP
+        # --all-features above builds the snp backend in; this is the
+        # default build, where it is left out.
+        run: cargo clippy -p engine --all-targets --locked -- -D warnings
 
   tests:
     name: tests (${{ matrix.os }})
@@ -128,6 +132,11 @@ jobs:
         continue-on-error: true
         # Only what differs: a node setting naming a publisher is refused.
         run: cargo nextest run -p engine --lib --locked -E 'test(/without_zmq/)'
+      - name: Run tests of an engine built without SEV-SNP
+        id: nextest_no_snp
+        continue-on-error: true
+        # Only what differs: enabling the snp backend is refused.
+        run: cargo nextest run -p engine --lib --locked -E 'test(/without_snp/)'
       - name: Run doctests
         id: doctest
         continue-on-error: true
@@ -141,9 +150,10 @@ jobs:
             rust=target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
           echo "Doctests: ${{ steps.doctest.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Engine without ZMQ: ${{ steps.nextest_no_zmq.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Engine without SEV-SNP: ${{ steps.nextest_no_snp.outcome }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Fail on test failure
         if: always()
-        run: test '${{ steps.nextest.outcome }}' = success && test '${{ steps.nextest_no_zmq.outcome }}' = success && test '${{ steps.doctest.outcome }}' = success
+        run: test '${{ steps.nextest.outcome }}' = success && test '${{ steps.nextest_no_zmq.outcome }}' = success && test '${{ steps.nextest_no_snp.outcome }}' = success && test '${{ steps.doctest.outcome }}' = success
 
   coverage-rust:
     runs-on: ubuntu-latest

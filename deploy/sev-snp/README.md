@@ -73,6 +73,15 @@ read-only dm-verity image and put its root hash on the measured kernel command
 line, or put the engine in the measured initrd. An engine installed on an
 unmeasured disk is not attested, whatever the report says.
 
+The `snp` backend is built only into an engine compiled with the `snp`
+feature; release binaries and the Docker image leave it out, and refuse
+`snp` in `key_custody.enabled_backends`. Build the image's engine with it:
+
+```sh
+cargo build --release --locked -p engine --bin monokulo-engine --features snp
+# with ZMQ notifications too: --features snp,zmq
+```
+
 Building the image is outside this repository (it depends on your
 distribution and hypervisor). Compute its launch measurement with the image's
 exact launch parameters (vCPU count and type, OVMF, kernel, initrd, command
