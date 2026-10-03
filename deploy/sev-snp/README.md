@@ -237,9 +237,13 @@ no engine can hand over any more, see `docs/INCIDENT_RUNBOOK.md` §7.
   Keep `SNP_ID_KEY` to the release process: a secret of the `snp-id-key`
   environment, with required reviewers, available to `main` and version tags
   only (`.github/workflows/snp-id-block.yml`).
-- **Which payments are a store's.** The host runs `monerod`; by feeding the
-  engine crafted blocks it can learn which outputs belong to a store. Keys stay
-  sealed; the link between a store and its payments doesn't.
+- **A store's payment history.** The keys stay sealed, but the engine scans
+  with them for whoever asks, and the host can ask: by feeding crafted blocks
+  from `monerod`, by editing the database on its disk (orders at chosen
+  subaddress indices, rewound scan cursors) and reading the payments and
+  amounts the engine records there, and through the admin API with the engine
+  token. Assume the host can learn which payments are a store's and how much
+  they were for (`docs/DESIGN.md` §6.5, Limits).
 - **The engine's clock** is the host's: it can make a stale revocation list
   look current to the engine. Merchants' clients check bundles against their
   own clocks.

@@ -382,3 +382,15 @@ end need a decision.
   all, so the spec now checks that plain stays the only choice. This was CI's only
   failure on `cc1f97e`.
 
+### 39. The scan oracle is documented, not closed (you chose option A)
+- **Decision:** DESIGN §6.5 Limits and the deploy guide's "What this does *not*
+  protect against" now state the guarantee plainly: SEV-SNP keeps a store's keys from
+  being read or used outside a trusted engine, not its payment history from the host.
+  They name the three ways the host can make the engine scan for it: crafted blocks
+  from its node, the unencrypted database (reading recorded payments, editing orders
+  and scan cursors), and the admin API with the engine token.
+- **Not done:** authenticating scan state (option C) leaves the node and the API open,
+  and a restored older database passes it. Encrypting the database inside the guest
+  (option B) would hide recorded payments at rest, but not the node route. It is a
+  workpack of its own if that becomes a requirement.
+
