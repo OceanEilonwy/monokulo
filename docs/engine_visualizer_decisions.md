@@ -337,6 +337,33 @@ The page drew a "hash check" call every round regardless. The event now
 says whether the node was asked (`ChainChecked::looked_up`), and the call
 flies only then; the probe on the block still shows the comparison.
 
+## Fourth review
+
+## D31. A fixed 30-minute bar, a radio group, smaller units
+
+- **The bar is always 30 minutes**, the engine's reach; the history fills
+  it from the right. While live its right edge is now; leaving live
+  freezes it where it was, so a paused page doesn't drift, and replay
+  moves it on only once it passes it. A window narrower than it can be
+  grabbed grows to the left (it is anchored by its right edge), and its
+  handles sit outside it, so its middle stays grabbable.
+- **Smooth:** the bar was drawn at whole pixels, so at 30 minutes across
+  about 1,500 px everything stepped a pixel every second or so. It is now
+  drawn at sub-pixel positions every frame, new events fade in over
+  0.4 s, and replay advances by the real time between frames rather than
+  16 ms a frame.
+- **Live / Play / Pause is a radio group** (native radios: arrow keys move
+  between them), on the right of the bar, with how far behind live the
+  page is beside it. Play is disabled while live: there is nothing to
+  replay up to now that live doesn't show.
+- **No space before s, ms or h** ("0.46s", "547ms", "11m 8s"), "m" for
+  minutes in the timeline. "ms" follows "s" for consistency, although the
+  reviewer named only seconds and hours.
+- **The round card:** each lane's time sits just after its last bar (or
+  just before, near the right edge); there is one thin marker, on the lane
+  that ran last, at the round's end, with the round's total under it.
+- Node chips are right-aligned.
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,

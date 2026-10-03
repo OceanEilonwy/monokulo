@@ -108,6 +108,10 @@ pub struct Lane {
     /// The tier's time in the round, everything it waited on included.
     pub ms: u64,
     pub time: String,
+    /// Where its last bar ends: its time is written just after.
+    pub end_ms: u64,
+    /// The tier that ran last: the round's marker is on its lane.
+    pub last: bool,
     pub bars: Vec<Bar>,
     /// The tier's reserved share, from where it started: drawn while the
     /// round is drawn to its budget.
@@ -244,7 +248,7 @@ fn summary(state: &State) -> Vec<Figure> {
             value: last_round.map_or_else(dash, |(ms, _)| seconds(ms)),
             note: match last_round {
                 Some((_, true)) => "work was left".to_owned(),
-                Some((_, false)) | None => "of a 10 s budget".to_owned(),
+                Some((_, false)) | None => "of a 10s budget".to_owned(),
             },
         },
         Figure {
@@ -407,6 +411,7 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
     // The round's spans are back to back from its start, so the lanes'
     // times add up to how far it has got.
     let elapsed_ms: u64 = round.units.iter().map(|unit| unit.ms).sum();
+    let last_tier = round.units.iter().max_by_key(|unit| unit.start_ms).map(|unit| unit.tier);
     let scale_ms = if round.to_budget {
         round.budget_ms.max(elapsed_ms)
     } else {
@@ -444,6 +449,8 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
                 share: format!("{share} %"),
                 ms: lane_ms,
                 time: milliseconds(lane_ms),
+                end_ms: units.clone().map(|unit| unit.start_ms + unit.ms).max().unwrap_or(0),
+                last: last_tier == Some(*tier),
                 bars: units
                     .map(|unit| Bar {
                         start_ms: unit.start_ms,
@@ -826,12 +833,12 @@ pub fn tier_name(tier: Tier) -> &'static str {
     }
 }
 
-/// "0.42 s" under a second, "7.8 s" over.
+/// "0.42s" under a second, "7.8s" over.
 pub fn seconds(ms: u64) -> String {
     if ms < 1000 {
-        format!("{:.2} s", ms as f64 / 1000.0)
+        format!("{:.2}s", ms as f64 / 1000.0)
     } else {
-        format!("{:.1} s", ms as f64 / 1000.0)
+        format!("{:.1}s", ms as f64 / 1000.0)
     }
 }
 
@@ -839,10 +846,10 @@ fn megabytes(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
-/// "4 ms", "1,204 ms": the round card's times, whole milliseconds so its
+/// "4ms", "1,204ms": the round card's times, whole milliseconds so its
 /// parts visibly add up to it.
 pub fn milliseconds(ms: u64) -> String {
-    format!("{} ms", thousands(ms))
+    format!("{}ms", thousands(ms))
 }
 
 /// Decimal kilobytes, as block sizes are usually given: "41 kB".
@@ -862,9 +869,9 @@ fn compact(n: u64) -> String {
 
 fn micros(us: u64) -> String {
     if us < 1000 {
-        format!("{us} µs")
+        format!("{us}µs")
     } else {
-        format!("{:.1} ms", us as f64 / 1000.0)
+        format!("{:.1}ms", us as f64 / 1000.0)
     }
 }
 

@@ -150,12 +150,12 @@ fn a_caught_up_network_reads_as_caught_up() {
         .side
         .database
         .rows
-        .contains(&("Longest wait for a turn".to_owned(), "1.7 ms".to_owned())));
+        .contains(&("Longest wait for a turn".to_owned(), "1.7ms".to_owned())));
     assert!(presented
         .side
         .database
         .rows
-        .contains(&("Longest job".to_owned(), "340 µs".to_owned())));
+        .contains(&("Longest job".to_owned(), "340µs".to_owned())));
 }
 
 /// Stores catching up: the behind figure counts from the lowest group, the
@@ -241,7 +241,7 @@ fn a_round_s_lanes_are_drawn_to_scale() {
     let round = present(&quick, &TUNING).round.unwrap();
     assert_eq!(round.title, "Round 1,290");
     assert_eq!(round.state, "Running.", "the page's first round");
-    assert_eq!(round.elapsed, "62 ms");
+    assert_eq!(round.elapsed, "62ms");
     assert_eq!(
         round.scale_ms, MIN_SCALE_MS,
         "a floor for a very short round"
@@ -312,18 +312,18 @@ fn a_round_s_parts_add_up_to_it() {
         .collect();
     assert_eq!(
         times,
-        [(420, "420 ms"), (42, "42 ms"), (4, "4 ms"), (0, "0 ms"), (0, "0 ms")]
+        [(420, "420ms"), (42, "42ms"), (4, "4ms"), (0, "0ms"), (0, "0ms")]
     );
     assert_eq!(
         round.lanes.iter().map(|lane| lane.ms).sum::<u64>(),
         round.elapsed_ms,
         "the parts add up to the round"
     );
-    assert_eq!((round.elapsed_ms, round.elapsed.as_str()), (466, "466 ms"));
+    assert_eq!((round.elapsed_ms, round.elapsed.as_str()), (466, "466ms"));
     let ask = &round.lanes[0].bars[0];
     assert_eq!((ask.start_ms, ask.work), (3, true));
-    assert_eq!(ask.title, "Asking the node for its tip: 400 ms");
-    assert_eq!(round.lanes[0].bars[1].title, "A unit of work: 20 ms");
+    assert_eq!(ask.title, "Asking the node for its tip: 400ms");
+    assert_eq!(round.lanes[0].bars[1].title, "A unit of work: 20ms");
     assert_eq!(
         round.state,
         "Ended. Sleeping until the poll interval is up or the node announces a block."
@@ -430,14 +430,14 @@ fn the_ribbon_shows_rounds_by_length_and_sleeps_by_what_ended_them() {
             number: 9,
             height: 22,
             parts: vec![(Tier::Blocks, 0.75), (Tier::Settlement, 0.25)],
-            title: "Round 9: 1.0 s".to_owned(),
+            title: "Round 9: 1.0s".to_owned(),
         }
     );
     assert_eq!(
         ribbon[1],
         RibbonMark::Sleep {
             woken: true,
-            title: "Slept 0.30 s, cut short by a new block".to_owned()
+            title: "Slept 0.30s, cut short by a new block".to_owned()
         }
     );
     assert_eq!(ribbon_height(0), 4);
@@ -555,11 +555,11 @@ fn the_side_summarises_the_pool_orders_upkeep_webhooks_and_saves() {
 
 #[test]
 fn seconds_read_to_two_places_under_one_and_one_over() {
-    assert_eq!(seconds(0), "0.00 s");
-    assert_eq!(seconds(420), "0.42 s");
-    assert_eq!(seconds(999), "1.00 s");
-    assert_eq!(seconds(1_000), "1.0 s");
-    assert_eq!(seconds(7_840), "7.8 s");
+    assert_eq!(seconds(0), "0.00s");
+    assert_eq!(seconds(420), "0.42s");
+    assert_eq!(seconds(999), "1.00s");
+    assert_eq!(seconds(1_000), "1.0s");
+    assert_eq!(seconds(7_840), "7.8s");
     assert_eq!(outcome_chip(TierOutcome::Failed).tone, "err");
     assert_eq!(outcome_chip(TierOutcome::Backlogged).tone, "hi");
     for tier in Tier::ALL {

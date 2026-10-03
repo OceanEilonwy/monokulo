@@ -206,8 +206,14 @@ shows fewer cells.
 
 ### Timeline
 
-One bar across the top of the page: the whole history the page holds (up
-to 30 minutes), with an orange **window** over it, its full height.
+One bar across the top of the page, always **30 minutes** long: the
+history fills it from the right (an engine that started ten minutes ago
+fills a third of it), with an orange **window** over it, its full height.
+While live its right edge is now; off live it stays at the moment playback
+left live, and moves on only as replay passes it. Everything on it is drawn
+at sub-pixel positions, so it glides as time passes, and a new event fades
+in. On the right, a **Live / Play / Pause** radio group, and off live how
+far behind live the page is ("11m 8s behind live").
 
 - **Every event is a thin vertical line; key events are a circle** in their
   tier's colour (a payment found, a reorg found and rewound, a group of

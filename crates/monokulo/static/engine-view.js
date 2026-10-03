@@ -61,7 +61,8 @@
     source.addEventListener("frame", (e) => {
       const frame = JSON.parse(e.data);
       if (oldest === null) oldest = frame.at_ms;
-      for (const mark of frame.marks) marks.push(mark);
+      const arrived = performance.now();
+      for (const mark of frame.marks) { mark.arrived = arrived; marks.push(mark); }
       if (mode === "live") queue.push(frame);
       tlDirty = true;
     });
@@ -70,14 +71,17 @@
   }
 
   // ---- playback ----
-  function frameLoop() {
+  let lastTick = performance.now();
+  function frameLoop(tick = performance.now()) {
+    const dt = Math.min(250, tick - lastTick);
+    lastTick = tick;
     if (mode === "live") {
       head = Math.max(head, engineNow() - LAG);
       while (queue.length && queue[0].at_ms <= head) play(queue.shift());
       // Far behind (a hidden tab): skip to the newest.
       if (queue.length > 40) { const last = queue.pop(); queue = []; play(last, true); }
     } else if (mode === "replay") {
-      head += 16;
+      head += dt;
       while (queue.length && queue[0].at_ms <= head) play(queue.shift());
       if (!queue.length && head >= replayTo) fetchReplay();
       // Replay plays the window: it pauses at the window's end, or goes
@@ -146,11 +150,16 @@
     }
   }
 
+  // The playback radio group follows the mode: Play only off live. Leaving
+  // live freezes the timeline's axis where it was; going live lets it go.
   function setMode(next) {
+    if (mode === "live" && next !== "live") frozenEnd = engineNow();
+    if (next === "live") frozenEnd = null;
     mode = next;
-    $("tl-play").textContent = mode === "paused" ? "Play" : "Pause";
-    $("tl-live").disabled = mode === "live";
-    $("tl-read").classList.toggle("paused", mode !== "live");
+    for (const radio of document.querySelectorAll('#tl-modes input[name="tl-mode"]')) {
+      radio.checked = radio.value === mode;
+      if (radio.value === "replay") radio.disabled = mode === "live";
+    }
     tlDirty = true;
   }
 
@@ -288,7 +297,9 @@
         html += `<div class="lane-label"><span class="tierchip t-${lane.tier}">${esc(lane.name)}</span><small>${esc(lane.share)}</small></div><div class="track t-${lane.tier}">`;
         if (lane.reserved) html += `<div class="share" style="left:${pct(lane.reserved[0], round.scale_ms)}%;width:${pct(lane.reserved[1], round.scale_ms)}%"></div>`;
         for (const bar of lane.bars) html += `<div class="bar${bar.work ? " work" : bar.leftover ? " p2" : ""}" title="${esc(bar.title)}" style="left:${pct(bar.start_ms, round.scale_ms)}%;width:${Math.max(0.5, pct(bar.ms, round.scale_ms))}%"></div>`;
-        html += `<div class="playhead" style="left:${Math.min(99.5, pct(round.elapsed_ms, round.scale_ms))}%"></div></div><div class="outcome"><span class="lane-time">${esc(lane.time)}</span>`;
+        if (lane.last) html += `<div class="playhead" style="left:${Math.min(99.5, pct(round.elapsed_ms, round.scale_ms))}%"></div>`;
+        const end = pct(lane.end_ms, round.scale_ms);
+        html += `<span class="lane-time${end > 88 ? " before" : ""}" style="left:${Math.min(99.5, end).toFixed(2)}%">${esc(lane.time)}</span></div><div class="outcome">`;
         if (lane.outcome) html += `<span class="engine-chip ${lane.outcome.tone}" title="${esc(lane.outcome.text)}">${esc(lane.outcome.text)}</span>`;
         html += "</div>";
       }
@@ -469,11 +480,23 @@
   // position, a marker inside the window, shows only when it isn't.
   const canvas = $("tl"), ctx = canvas.getContext("2d");
   const win = { span: Infinity, end: null };
+  // The bar always spans 30 minutes, the history filling it from the
+  // right. Its right edge is now while live, and stays where it was when
+  // playback left live (moving on only as replay passes it).
+  const AXIS = 30 * 60000;
+  let frozenEnd = null;
   let hoverX = null, tlDirty = true;
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function axisEnd() {
+    if (frozenEnd === null) return engineNow();
+    frozenEnd = Math.max(frozenEnd, head);
+    return frozenEnd;
+  }
+  function axis() { const end = axisEnd(); return [end - AXIS, end]; }
+  // The stretch the window can cover: the history held, on the bar.
   function range() {
-    const now = engineNow(), start = oldest ?? now - 60000;
-    return [start, Math.max(now, start + MIN_SPAN)];
+    const [a, end] = axis(), start = Math.max(a, oldest ?? end - 60000);
+    return [start, Math.max(end, start + MIN_SPAN)];
   }
   // The window, in engine milliseconds.
   function view_() {
@@ -495,9 +518,15 @@
     if (t < a) setWindow(t + (b - a) * 0.8, b - a);
     else if (t > b) setWindow(t + (b - a) * 0.2, b - a);
   }
-  const xOf = (t, w) => { const [start, now] = range(); return ((t - start) / (now - start)) * w; };
-  const tOf = (x, w) => { const [start, now] = range(); return start + (x / w) * (now - start); };
-  const ago = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? " " + (s % 60) + " s" : ""}`; };
+  const xOf = (t, w) => { const [a, b] = axis(); return ((t - a) / (b - a)) * w; };
+  const tOf = (x, w) => { const [a, b] = axis(); return a + (x / w) * (b - a); };
+  // "45s", "11m 8s", "1h 5m".
+  const ago = (ms) => {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m${s % 60 ? ` ${s % 60}s` : ""}`;
+    return `${Math.floor(s / 3600)}h${Math.floor(s / 60) % 60 ? ` ${Math.floor(s / 60) % 60}m` : ""}`;
+  };
   const clock = (t) => new Date(t - offset).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   function setReadout(text) { $("tl-text").textContent = text; }
   function headText() {
@@ -510,26 +539,28 @@
     if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    const mid = h / 2, live = mode === "live";
+    const mid = h / 2, live = mode === "live", clock = performance.now();
     const [a, b] = view_(), [start, now] = range();
-    ctx.fillStyle = css("--surface-sunken"); ctx.fillRect(0, 0, w, h);
+    // The history held fills the bar from the right; before it, nothing.
+    ctx.fillStyle = css("--surface-sunken");
+    const held = Math.max(0, xOf(start, w));
+    ctx.fillRect(held, 0, w - held, h);
+    // Positions aren't rounded to pixels, so everything glides as time
+    // passes; a new event fades in.
+    const fade = (mark) => (mark.arrived ? Math.min(1, (clock - mark.arrived) / 400) : 1);
     const keys = [];
     ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1;
-    for (const past of [true, false]) {
-      ctx.beginPath();
-      for (const mark of marks) {
-        if ((live || mark.at_ms <= head) !== past) continue;
-        const x = Math.round(xOf(mark.at_ms, w)) + 0.5;
-        if (mark.key) { keys.push([x, mark]); continue; }
-        ctx.moveTo(x, mid - 6); ctx.lineTo(x, mid + 6);
-      }
-      ctx.globalAlpha = past ? 0.75 : 0.3; ctx.stroke();
+    for (const mark of marks) {
+      const x = xOf(mark.at_ms, w);
+      if (x < -6 || x > w + 6) continue;
+      if (mark.key) { keys.push([x, mark]); continue; }
+      ctx.globalAlpha = (live || mark.at_ms <= head ? 0.75 : 0.3) * fade(mark);
+      ctx.beginPath(); ctx.moveTo(x, mid - 6); ctx.lineTo(x, mid + 6); ctx.stroke();
     }
-    ctx.globalAlpha = 1;
     for (const [x, mark] of keys) {
       ctx.beginPath(); ctx.arc(x, mid, 5, 0, Math.PI * 2);
       ctx.fillStyle = css(`--viz-tier-${mark.tier || "chain"}`);
-      ctx.globalAlpha = !live && mark.at_ms > head ? 0.4 : 1;
+      ctx.globalAlpha = (!live && mark.at_ms > head ? 0.4 : 1) * fade(mark);
       ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = css("--paper-raised"); ctx.stroke();
     }
     ctx.globalAlpha = 1;
@@ -537,7 +568,9 @@
 
     // The window and the playback position, as elements over the bar.
     const box = $("tl-win"), marker = $("tl-head");
-    box.style.left = `${(xOf(a, w) / w) * 100}%`;
+    // Anchored by its right edge, so a window too short to grab grows to
+    // the left, never past the bar's end.
+    box.style.right = `${100 - (xOf(b, w) / w) * 100}%`;
     box.style.width = `${((xOf(b, w) - xOf(a, w)) / w) * 100}%`;
     const windowText = `${ago(now - a)} ago to ${win.end == null ? "now" : ago(now - b) + " ago"}`;
     for (const id of ["tl-win", "tl-from", "tl-to"]) $(id).setAttribute("aria-valuetext", windowText);
@@ -555,18 +588,19 @@
     if (onHead) { tip.textContent = headText(); tip.style.left = `${Math.max(180, Math.min(w - 180, xOf(head, w)))}px`; }
     else if (best) { tip.textContent = best[1].text; tip.style.left = `${Math.max(140, Math.min(w - 140, best[0]))}px`; }
 
-    setReadout(live ? "Live, 1.5 s behind" : `${mode === "paused" ? "Paused" : "Replaying"}, ${ago(now - head)} behind live`);
-    const span = now - start;
-    const step = [5e3, 1e4, 15e3, 3e4, 6e4, 12e4, 3e5, 6e5].find((s) => span / s <= 7) || 6e5;
-    let axis = "";
-    for (let back = step; now - back >= start; back += step) {
-      const p = ((now - back - start) / span) * 100;
-      // Clear of the labels at either end.
-      if ((p / 100) * w < 90 || ((100 - p) / 100) * w < 60) continue;
-      axis += `<span style="left:${p}%">${ago(back)} ago</span>`;
+    setReadout(live ? "" : `${ago(engineNow() - head)} behind live`);
+    // Five-minute marks back from the bar's right edge, which is now while
+    // live and the moment playback left live otherwise.
+    const [axisStart, end] = axis(), reallyNow = engineNow();
+    const label = (t) => (reallyNow - t < 1000 ? "now" : `${ago(reallyNow - t)} ago`);
+    let labels = `<span class="edge" style="left:0">${label(axisStart)}</span>`;
+    for (let back = 5 * 60000; back < AXIS; back += 5 * 60000) {
+      const p = ((AXIS - back) / AXIS) * 100;
+      if ((p / 100) * w < 90 || ((100 - p) / 100) * w < 70) continue;
+      labels += `<span style="left:${p}%">${label(end - back)}</span>`;
     }
-    const html = `<span style="left:0">${ago(span)} ago</span>${axis}<span style="left:100%">now</span>`;
-    if ($("tl-axis").innerHTML !== html) $("tl-axis").innerHTML = html;
+    labels += `<span class="end" style="left:100%">${label(end)}</span>`;
+    if ($("tl-axis").innerHTML !== labels) $("tl-axis").innerHTML = labels;
   }
 
   // Moving the window: by its middle, or one end by a handle. The window
@@ -586,6 +620,9 @@
     if (mode === "live" && win.end != null) { setMode("paused"); seek(a); }
     else if (mode !== "live" && (head < a || head > b)) seek(Math.max(a, Math.min(b, head)));
   }
+
+  function startReplay() { setMode("replay"); queue = []; replayTo = head; fetchReplay(); }
+  function togglePlay() { if (mode === "paused") startReplay(); else setMode("paused"); }
 
   let dragging = null;
   // A click on a recent round shows it in the round card; the chip goes
@@ -686,15 +723,18 @@
       if (e.key === "ArrowLeft") { const p = candidates.filter((m) => m.at_ms < head - 1).pop(); if (p) { setMode("paused"); containPlayhead(p.at_ms); seek(p.at_ms); } }
       else if (e.key === "ArrowRight") { const n = candidates.find((m) => m.at_ms > head + 1); if (n) { setMode("paused"); containPlayhead(n.at_ms); seek(n.at_ms); } }
       else if (e.key === "End") goLive();
-      else if (e.key === " ") $("tl-play").click();
+      else if (e.key === " ") togglePlay();
       else return;
       e.preventDefault();
     });
-    $("tl-play").addEventListener("click", () => {
-      if (mode === "paused") { setMode("replay"); queue = []; replayTo = head; fetchReplay(); }
-      else { setMode("paused"); }
-    });
-    $("tl-live").addEventListener("click", goLive);
+    for (const radio of document.querySelectorAll('#tl-modes input[name="tl-mode"]')) {
+      radio.addEventListener("change", () => {
+        if (!radio.checked) return;
+        if (radio.value === "live") goLive();
+        else if (radio.value === "replay") startReplay();
+        else setMode("paused");
+      });
+    }
     $("engine-events").addEventListener("click", (e) => {
       const row = e.target.closest("tr[data-at]");
       if (!row) return;
@@ -722,6 +762,7 @@
   document.addEventListener("pointerdown", (e) => { if (help.open && !help.contains(e.target)) help.open = false; });
   addEventListener("resize", () => { if (view) drawChain(view.chain); tlDirty = true; });
   document.addEventListener("visibilitychange", () => { if (!document.hidden && mode === "live") queue = queue.slice(-1); });
+  setInterval(() => { if (mode !== "live") tlDirty = true; }, 1000);
   connect();
   requestAnimationFrame(frameLoop);
 })();

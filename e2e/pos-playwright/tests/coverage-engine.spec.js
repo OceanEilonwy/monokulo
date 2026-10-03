@@ -15,7 +15,11 @@ let fixture;
 test.beforeAll(async () => { fixture = await startCoverageFixture(); });
 test.afterAll(async () => { await stopCoverageFixture(fixture && fixture.process); });
 
+// One of the playback radio group's options.
+let mode;
+
 async function openAsAdmin(page, context) {
+  mode = (value) => page.locator(`#tl-modes input[value="${value}"]`);
   if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
   await context.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
   await page.goto(`${fixture.base_url}/status/engine?network=mainnet`);
@@ -27,7 +31,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.setViewportSize({ width: 1600, height: 900 });
   await openAsAdmin(page, context);
   await expect(page.locator('#engine-timeline')).toBeVisible();
-  await expect(page.locator('#tl-text')).toHaveText(/^Live/);
+  await expect(mode('live')).toBeChecked();
   await expect(page.locator('.engine-page a.reload')).toBeHidden();
   await expect(page.locator('#engine-summary')).toContainText('3,412,880');
   await expect(page.locator('#pills .pill.frontier')).toHaveText('Frontier, 41 stores');
@@ -60,7 +64,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
 
   // A click on an event goes to it: paused, and the page as it was then.
   await events.locator('tr', { hasText: '1 payment found in it' }).click();
-  await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
+  await expect(mode('paused')).toBeChecked();
   await expect(page.locator('#engine-summary')).toContainText('3,412,881');
   await expect(page.locator('#pills .pill.catchup')).toHaveCount(1);
   await expect(events.locator('tr.now')).toContainText('1 payment found in it');
@@ -75,27 +79,30 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   // marker goes.
   await page.locator('#tl-win').focus();
   await page.keyboard.press('ArrowRight');
-  await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
+  await expect(mode('paused')).toBeChecked();
   await page.keyboard.press('End');
-  await expect(page.locator('#tl-text')).toHaveText(/^Live/);
+  await expect(mode('live')).toBeChecked();
   await expect(marker).toBeHidden();
 
   // A press in the window goes to that moment; Play replays; Live goes back.
   const track = await page.locator('#tl').boundingBox();
   await page.mouse.click(track.x + track.width * 0.5, track.y + 16);
-  await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
+  await expect(mode('paused')).toBeChecked();
   await expect(marker).toBeVisible();
-  await page.locator('#tl-play').click();
-  await expect(page.locator('#tl-text')).toHaveText(/^(Replaying|Live)/);
-  await page.locator('#tl-live').click();
-  await expect(page.locator('#tl-text')).toHaveText(/^Live/);
+  await expect(page.locator('#tl-text')).toHaveText(/^\d+(s|m \d+s|m) behind live$/);
+  await mode('replay').check({ force: true });
+  await expect(page.locator('#tl-modes input:checked')).toHaveValue(/^(replay|live)$/);
+  await mode('live').check({ force: true });
+  await expect(mode('live')).toBeChecked();
 
   // Scrolling over the timeline leaves its window alone.
   const windowBox = page.locator('#tl-win');
   await page.mouse.move(track.x + track.width * 0.5, track.y + 16);
   for (let i = 0; i < 6; i++) await page.mouse.wheel(0, -120);
+  // The bar is 30 minutes; the window covers the history held, from the
+  // right.
   const whole = await windowBox.boundingBox();
-  expect(whole.width).toBeGreaterThan(track.width - 4);
+  expect(Math.abs(whole.x + whole.width - (track.x + track.width))).toBeLessThan(3);
   await expect(windowBox).toHaveAttribute('aria-valuetext', /to now$/);
 
   // Dragging the window's right handle back ends it in the past: playback
@@ -106,13 +113,14 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.mouse.down();
   await page.mouse.move(handle.x - track.width * 0.4, handle.y + handle.height / 2, { steps: 6 });
   await page.mouse.up();
-  await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
+  await expect(mode('paused')).toBeChecked();
   await expect(windowBox).toHaveAttribute('aria-valuetext', /ago to .* ago$/);
   const resized = await windowBox.getAttribute('style');
   const box = await windowBox.boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  // Clear of the playback marker, at the window's start.
+  await page.mouse.move(box.x + 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2 + 60, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.move(box.x + 2 + 60, box.y + box.height / 2, { steps: 4 });
   await page.mouse.up();
   await expect(windowBox).not.toHaveAttribute('style', resized);
   const at = await marker.getAttribute('aria-valuetext');
@@ -123,11 +131,11 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.mouse.move(inside.x + inside.width - 4, head.y + head.height / 2, { steps: 5 });
   await page.mouse.up();
   await expect(marker).not.toHaveAttribute('aria-valuetext', at);
-  await expect(page.locator('#tl-text')).toHaveText(/^Paused/);
+  await expect(mode('paused')).toBeChecked();
 
   // A click on a recent round shows it in the round card, paused; the chip
   // goes back to the live round. The lanes add up to the round.
-  await page.locator('#tl-live').click();
+  await mode('live').check({ force: true });
   const firstRound = page.locator('#ribbon a.rbar').first();
   const number = await firstRound.getAttribute('data-round');
   await firstRound.click();

@@ -66,10 +66,16 @@ const ENGINE_STYLE: &str = r#"
 .engine-chip.warn { background: var(--tint-warning); border-color: var(--warning); }
 .engine-chip.err { background: var(--tint-error); border-color: var(--error); }
 .engine-chip.hi { background: var(--tint-highlight); border-color: var(--accent); }
-.engine-timeline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-md); align-items: start; }
+.engine-timeline { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--space-md); align-items: start; }
 .engine-timeline .tl-track { position: relative; display: grid; gap: 3px; }
-.tl-buttons { display: flex; gap: var(--space-xs); align-items: center; height: 32px; }
-.engine-timeline .btn { margin: 0; padding: 0 10px; height: 28px; line-height: 26px; font-size: 0.8rem; }
+.tl-modes { display: inline-flex; align-self: start; margin-top: 2px; height: 28px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
+.tl-modes label { position: relative; display: flex; align-items: center; padding: 0 12px; font-size: 0.8rem; font-weight: 700; cursor: pointer; color: var(--btn-ink); background: var(--btn-bg); }
+.tl-modes label + label { border-left: 1px solid var(--btn-border); }
+.tl-modes input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+.tl-modes label:has(input:checked) { background: var(--ink); color: var(--paper-raised); }
+.tl-modes label:has(input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.tl-modes label:has(input:disabled) { opacity: 0.45; cursor: default; }
+.tl-modes label:not(:has(input:checked)):not(:has(input:disabled)):hover { background: var(--btn-hover-bg); }
 .engine-timeline canvas { width: 100%; display: block; border-radius: 4px; touch-action: none; }
 #tl { height: 32px; cursor: pointer; }
 .tl-win { position: absolute; top: 0; height: 32px; box-sizing: border-box; border: 1.5px solid var(--accent-text); border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, transparent); cursor: grab; touch-action: none; min-width: 14px; }
@@ -79,16 +85,14 @@ const ENGINE_STYLE: &str = r#"
 .tl-win.moving { cursor: grabbing; }
 .tl-handle { position: absolute; top: 3px; bottom: 3px; width: 10px; border-radius: 3px; background: var(--accent-text); cursor: ew-resize; touch-action: none; }
 .tl-handle::after { content: ""; position: absolute; left: 4px; top: 5px; bottom: 5px; border-left: 2px solid var(--paper-raised); }
-.tl-handle.l { left: -6px; }
-.tl-handle.r { right: -6px; }
+.tl-handle.l { left: -11px; }
+.tl-handle.r { right: -11px; }
 .tl-win:focus-visible, .tl-handle:focus-visible, .tl-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .tl-axis { position: relative; height: 12px; font-size: 0.62rem; color: var(--muted); }
 .tl-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
-.tl-axis span:first-child { transform: none; }
-.tl-axis span:last-child { transform: translateX(-100%); }
-.tl-read { font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; gap: 6px; white-space: nowrap; min-width: 13rem; height: 32px; }
-.tl-read i { width: 9px; height: 9px; border-radius: 50%; background: var(--success); }
-.tl-read.paused i { background: var(--warning); }
+.tl-axis span.edge { transform: none; }
+.tl-axis span.end { transform: translateX(-100%); }
+.tl-read { font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; justify-content: flex-end; white-space: nowrap; min-width: 9rem; height: 32px; font-variant-numeric: tabular-nums; }
 .tl-tip { position: absolute; z-index: 30; pointer-events: none; transform: translate(-50%, -100%); top: -4px; background: var(--ink); color: var(--paper-raised); font-size: 0.7rem; font-weight: 700; padding: 3px 7px; border-radius: 4px; white-space: nowrap; max-width: 30rem; overflow: hidden; text-overflow: ellipsis; }
 .engine-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); padding: 0; }
 .engine-summary > div { padding: 5px var(--space-md); border-left: 1px solid var(--line); min-width: 0; display: grid; grid-template-columns: auto 1fr; column-gap: var(--space-sm); align-items: baseline; }
@@ -160,7 +164,7 @@ const ENGINE_STYLE: &str = r#"
 .node { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 5px 8px; font-size: 0.7rem; }
 .node .nm { font-weight: 800; display: flex; gap: 6px; align-items: center; font-size: 0.75rem; min-width: 0; }
 .node .nm .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.node .nm .engine-chip { flex: none; }
+.node .nm .engine-chip { flex: none; margin-left: auto; }
 .node .call { font-family: var(--font-mono); font-size: 0.66rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .node.spark { animation: node-spark 0.8s; }
 @keyframes node-spark { 30% { box-shadow: 0 0 0 4px var(--tint-highlight); } }
@@ -172,14 +176,15 @@ const ENGINE_STYLE: &str = r#"
 .track { position: relative; height: 15px; background: var(--surface-sunken); border-radius: 3px; overflow: hidden; }
 .bar { position: absolute; top: 2px; bottom: 2px; min-width: 3px; border-radius: 2px; background: var(--tier); transition: left 0.3s, width 0.3s; }
 .bar.work { background: color-mix(in srgb, var(--tier) 30%, var(--paper-raised)); box-shadow: inset 0 0 0 1.5px var(--tier); }
-.lane-time { flex: none; width: 64px; text-align: right; margin-right: 8px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.lane-time { position: absolute; top: 0; line-height: 15px; margin-left: 5px; font-size: 0.62rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink); z-index: 1; }
+.lane-time.before { margin-left: -5px; transform: translateX(-100%); }
 .round-paused { flex: none; text-decoration: none; color: var(--ink); background: var(--tint-warning); border-color: var(--warning); cursor: pointer; }
 .round-paused:hover { border-color: var(--ink); }
 .rbar { cursor: pointer; }
 .rbar:hover, .rbar.pinned { outline: 2px solid var(--ink); outline-offset: 1px; }
 .bar.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 40%, var(--paper-raised)) 4px 7px); }
 .share { position: absolute; top: 0; bottom: 0; border: 1.5px dashed var(--line-strong); border-radius: 3px; transition: left 0.3s, width 0.3s; }
-.playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); transition: left 0.3s; z-index: 2; }
+.playhead { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -1px; background: var(--ink); transition: left 0.3s; z-index: 2; }
 .outcome { font-size: 0.7rem; height: 18px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; min-width: 0; }
 .outcome .engine-chip { line-height: 14px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .ruler { position: relative; height: 18px; }
@@ -309,7 +314,6 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
 fn timeline() -> Markup {
     html! {
         section class="engine-card engine-timeline" id="engine-timeline" aria-label="Timeline" hidden {
-            div class="tl-buttons" { button class="btn" id="tl-play" type="button" { "Pause" } button class="btn" id="tl-live" type="button" disabled { "Live" } }
             div class="tl-track" id="tl-track" {
                 canvas id="tl" aria-label="The whole history this page holds, each event a line and each key event a circle. A press outside the window takes the window and the playback position there." {}
                 div class="tl-win" id="tl-win" tabindex="0" role="group"
@@ -320,7 +324,12 @@ fn timeline() -> Markup {
                 div class="tl-head" id="tl-head" role="slider" aria-label="Playback position" hidden {}
                 div class="tl-axis" id="tl-axis" {}
             }
-            div class="tl-read" id="tl-read" { i {} span id="tl-text" { "Live" } }
+            div class="tl-read" id="tl-read" aria-live="polite" { span id="tl-text" {} }
+            div class="tl-modes" id="tl-modes" role="radiogroup" aria-label="Playback" {
+                label { input type="radio" name="tl-mode" value="live" checked; span { "Live" } }
+                label title="Replay from the playback position" { input type="radio" name="tl-mode" value="replay" disabled; span { "Play" } }
+                label { input type="radio" name="tl-mode" value="paused"; span { "Pause" } }
+            }
         }
     }
 }
@@ -490,7 +499,7 @@ fn help() -> Markup {
         details class="engine-help" id="engine-help" {
             summary aria-label="What the page shows" title="What the page shows" { "?" }
             div class="help-body" {
-                p class="wide" { "The engine scans the Monero chain for the stores' payments in rounds. This page follows one network's scanner about 1.5 s behind, and the timeline replays the last 30 minutes." }
+                p class="wide" { "The engine scans the Monero chain for the stores' payments in rounds. This page follows one network's scanner about 1.5s behind, and the timeline replays the last 30 minutes." }
 
                 h3 { "Timeline" }
                 dl {
@@ -503,13 +512,13 @@ fn help() -> Markup {
                 }
                 dl {
                     dt { span class="tl-win" style="position:static;display:block;width:22px;height:12px" {} }
-                    dd { b { "The window" } ": the bar is the whole history the page holds (up to 30 minutes), the orange window the stretch you are looking at. Drag its middle to move it, its handles to widen or narrow it. While it ends at now the page is live; move it into the past and playback pauses at its start, and Play replays through it." }
+                    dd { b { "The window" } ": the bar is always the last 30 minutes, the history filling it from the right; paused, it stops at the moment you left live. The orange window is the stretch you are looking at: drag its middle to move it, its handles to widen or narrow it. While it ends at now the page is live; move it into the past and playback pauses at its start." }
                     dt { kbd { "←" } }
-                    dd { "With the window focused, left and right jump between key events (with Shift, any event), space plays and pauses, End goes live." }
+                    dd { b { "Live, Play, Pause" } " choose how the page plays: following the engine, replaying from the playback position, or held still; off live, it says how far behind live it is. With the window focused, left and right jump between key events (with Shift, any event), space plays and pauses, End goes live." }
                 }
 
                 h3 { "Summary" }
-                p class="wide" { b { "Node tip" } ": the newest block the node has. " b { "Scanned to" } ": the high-water mark, the newest block the engine has recorded. " b { "Behind" } ": blocks between the node's tip and the store furthest behind. " b { "Last round" } ": how long the last round took, of its 10 s budget. " b { "Chain" } ": whether the recorded chain still agrees with the node's." }
+                p class="wide" { b { "Node tip" } ": the newest block the node has. " b { "Scanned to" } ": the high-water mark, the newest block the engine has recorded. " b { "Behind" } ": blocks between the node's tip and the store furthest behind. " b { "Last round" } ": how long the last round took, of its 10s budget. " b { "Chain" } ": whether the recorded chain still agrees with the node's." }
 
                 h3 { "Chain" }
                 dl {
@@ -526,7 +535,7 @@ fn help() -> Markup {
                 }
                 dl {
                     dt { i class="cell ghost next" aria-hidden="true" style="width:13px;height:13px" { span class="pool" style="height:55%" {} } }
-                    dd { b { "The next block" } ", not mined yet. It fills from the bottom with the transactions waiting in the node's pool (the number) against what a miner can fit in a block at full reward. The red top edge is where the penalty zone starts, and it thickens when the pool holds more than a block's worth. The page asks the node every 5 s while it is open." }
+                    dd { b { "The next block" } ", not mined yet. It fills from the bottom with the transactions waiting in the node's pool (the number) against what a miner can fit in a block at full reward. The red top edge is where the penalty zone starts, and it thickens when the pool holds more than a block's worth. The page asks the node every 5s while it is open." }
                     dt { span class="engine-chip" style="font-size:0.6rem;padding:0 4px" { "tip" } }
                     dd { b { "node tip" } " and " b { "scanned to" } " mark the node's newest block and the engine's high-water mark. The blue line under the last blocks is the reorg window, checked again for a reorganisation every round." }
                     dt { span class="pill frontier" style="position:static;transform:none;padding:0 5px;font-size:0.6rem" { "F" } }
@@ -534,7 +543,7 @@ fn help() -> Markup {
                 }
 
                 h3 { "Round" }
-                p class="wide" { "Each round gives the five tiers a share of a 10 s budget, in order; time left over goes round again. Every millisecond of a round belongs to one tier, so the lanes' times add up to the round's: the round's opening request for the node's tip counts to Chain, the check whether the pool needs looking at to Mempool, keeping fetched blocks for the next round to Blocks." }
+                p class="wide" { "Each round gives the five tiers a share of a 10s budget, in order; time left over goes round again. Every millisecond of a round belongs to one tier, so the lanes' times add up to the round's: the round's opening request for the node's tip counts to Chain, the check whether the pool needs looking at to Mempool, keeping fetched blocks for the next round to Blocks." }
                 dl {
                     dt { (tier("chain")) }
                     dd { b { "Chain" } " asks the node for its tip, then checks the recorded chain still matches the node's: it compares the newest recorded block's hash with the node's. When the engine is caught up, the tip's hash came with the tip and nothing more is asked; otherwise a blue " b { "hash check" } " flies from the node. If they differ, it reconciles the reorganisation: payments are re-examined and blocks rewound." }
@@ -553,7 +562,7 @@ fn help() -> Markup {
                     dt { span class="bar" style="position:static;display:block;width:18px;height:10px;background:var(--viz-tier-blocks)" {} }
                     dd { "A unit of work. Striped " span class="bar p2 t-blocks" style="position:static;display:inline-block;width:18px;height:10px" {} " ran on time left over (pass 2); pale with an edge " span class="bar work t-chain" style="position:static;display:inline-block;width:18px;height:10px" {} " is work for the tier outside its units, such as the tip request. Hover over a bar for what it was. While stores catch up or a reorganisation is open, a dashed box shows the tier's reserved share." }
                     dt { span class="ruler-label" style="position:static;transform:none" { "s" } }
-                    dd { "The marker and its label: how long the round has run, the sum of the times beside each lane." }
+                    dd { "Each lane's time is written after its bars. The thin marker sits where the round has got to, on the lane that ran last, and the label under it is the round's time: the sum of the lanes'." }
                     dt { span class="engine-chip ok" style="font-size:0.6rem" { "Idle" } }
                     dd { b { "Idle" } ": nothing left to do. " b { "Backlogged" } ": out of time with work left, so the next round starts at once. " b { "Waiting" } ": held up by what it names. " b { "Failed" } ": an error, retried next round." }
                 }
@@ -661,10 +670,13 @@ fn lane_row(lane: &Lane, scale_ms: u64, elapsed_ms: u64) -> Markup {
             @for bar in &lane.bars {
                 (bar_div(bar, scale_ms))
             }
-            div class="playhead" style=(left_pct(elapsed_ms, scale_ms)) {}
+            @if lane.last {
+                div class="playhead" style=(left_pct(elapsed_ms, scale_ms)) {}
+            }
+            span class=(if pct(lane.end_ms, scale_ms) > 88.0 { "lane-time before" } else { "lane-time" })
+                style=(left_pct(lane.end_ms, scale_ms)) { (lane.time) }
         }
         div class="outcome" {
-            span class="lane-time" { (lane.time) }
             @if let Some(chip) = &lane.outcome {
                 span class=(format!("engine-chip {}", chip.tone)) title=(chip.text) { (chip.text) }
             }
@@ -716,7 +728,7 @@ fn side(view: &Presented) -> Markup {
                         span { (side.mempool.summary) }
                     }
                 }
-                (panel_body(&side.mempool, "The node's pool is what the next block is mined from; the page asks the node about it every 5 s while it is open. The engine itself looks at the pool only while an order could be paid from it: the fast path every 250 ms for transactions it hasn't seen, the round's rotation rescanning the rest as a safety net."))
+                (panel_body(&side.mempool, "The node's pool is what the next block is mined from; the page asks the node about it every 5s while it is open. The engine itself looks at the pool only while an order could be paid from it: the fast path every 250ms for transactions it hasn't seen, the round's rotation rescanning the rest as a safety net."))
             }
             details class="mini t-settlement" id="d-orders" {
                 summary {
