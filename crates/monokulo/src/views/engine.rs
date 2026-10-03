@@ -43,9 +43,12 @@ const ENGINE_STYLE: &str = r#"
 .engine-page h1 { border: 0; margin: 0; padding: 0; font-size: 1.3rem; }
 .engine-page h2 { border: 0; margin: 0; padding: 0; font-size: 0.85rem; font-weight: 800; }
 .engine-top { position: relative; display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-md); align-items: center; margin-top: var(--space-sm); }
-.engine-tabs { display: flex; gap: var(--space-xs); }
-.engine-tabs a { border: 1px solid var(--btn-border); border-radius: var(--radius-sm); padding: 2px 9px; font-weight: 700; font-size: 0.8rem; color: var(--btn-ink); text-decoration: none; }
-.engine-tabs a[aria-current] { box-shadow: inset 0 -3px 0 var(--accent-text); }
+.engine-tabs { display: inline-flex; height: 26px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
+.engine-tabs a, .engine-tabs span { display: flex; align-items: center; padding: 0 11px; font-weight: 700; font-size: 0.8rem; color: var(--btn-ink); background: var(--btn-bg); text-decoration: none; }
+.engine-tabs > * + * { border-left: 1px solid var(--btn-border); }
+.engine-tabs a:hover { background: var(--btn-hover-bg); }
+.engine-tabs a[aria-current] { background: var(--ink); color: var(--paper-raised); }
+.engine-tabs span.off { opacity: 0.45; cursor: not-allowed; }
 .engine-help > summary { list-style: none; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--btn-border); display: grid; place-items: center; font-weight: 800; font-size: 0.8rem; cursor: pointer; color: var(--btn-ink); background: var(--btn-bg); }
 .engine-help > summary::-webkit-details-marker { display: none; }
 .engine-help > summary:hover { border-color: var(--btn-hover-border); }
@@ -56,6 +59,7 @@ const ENGINE_STYLE: &str = r#"
 .help-body dt { display: flex; justify-content: center; padding-top: 2px; }
 .help-body dd { margin: 0; }
 .help-body dd b { font-weight: 800; }
+.help-body .hatch { display: block; width: 22px; height: 12px; border: 1px solid var(--line-strong); border-radius: 3px; background: repeating-linear-gradient(135deg, var(--muted) 0 1px, transparent 1px 5px); }
 .help-body .wide { grid-column: 1 / -1; margin: 0; color: var(--muted); }
 .engine-card { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); min-width: 0; }
 .engine-card > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-xs) var(--space-md); margin-bottom: var(--space-xs); }
@@ -85,8 +89,8 @@ const ENGINE_STYLE: &str = r#"
 .tl-win.moving { cursor: grabbing; }
 .tl-handle { position: absolute; top: 3px; bottom: 3px; width: 10px; border-radius: 3px; background: var(--accent-text); cursor: ew-resize; touch-action: none; }
 .tl-handle::after { content: ""; position: absolute; left: 4px; top: 5px; bottom: 5px; border-left: 2px solid var(--paper-raised); }
-.tl-handle.l { left: -11px; }
-.tl-handle.r { right: -11px; }
+.tl-handle.l { left: -16px; }
+.tl-handle.r { right: -16px; }
 .tl-win:focus-visible, .tl-handle:focus-visible, .tl-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .tl-axis { position: relative; height: 12px; font-size: 0.62rem; color: var(--muted); }
 .tl-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
@@ -184,7 +188,7 @@ const ENGINE_STYLE: &str = r#"
 .rbar:hover, .rbar.pinned { outline: 2px solid var(--ink); outline-offset: 1px; }
 .bar.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 40%, var(--paper-raised)) 4px 7px); }
 .share { position: absolute; top: 0; bottom: 0; border: 1.5px dashed var(--line-strong); border-radius: 3px; transition: left 0.3s, width 0.3s; }
-.playhead { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -1px; background: var(--ink); transition: left 0.3s; z-index: 2; }
+.bar.last::after { content: ""; position: absolute; right: -1px; top: -2px; bottom: -2px; width: 1px; background: var(--ink); }
 .outcome { font-size: 0.7rem; height: 18px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; min-width: 0; }
 .outcome .engine-chip { line-height: 14px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .ruler { position: relative; height: 18px; }
@@ -259,6 +263,9 @@ details.mini.alert { border-color: var(--error); }
 }
 "#;
 
+/// Every Monero network, in the order the switcher shows them.
+const NETWORKS: [&str; 3] = ["mainnet", "stagenet", "testnet"];
+
 const TIERS: [(&str, &str); 5] = [
     ("chain", "Chain"),
     ("blocks", "Blocks"),
@@ -279,11 +286,14 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
                 nav class="context-nav" aria-label="Breadcrumb" { a href="/status" { "Status" } }
                 h1 { "Engine" }
                 (help())
-                @if page.networks.len() > 1 {
-                    nav class="engine-tabs" aria-label="Network" {
-                        @for network in &page.networks {
+                nav class="engine-tabs" aria-label="Network" {
+                    @for network in NETWORKS {
+                        @if page.networks.iter().any(|n| n == network) {
                             a href=(format!("/status/engine?network={network}"))
-                                aria-current=[(network == &page.network).then_some("page")] { (network) }
+                                aria-current=[(*network == page.network).then_some("page")] { (network) }
+                        } @else {
+                            span class="off" aria-disabled="true"
+                                title=(format!("Not scanned: this engine has no Monero node for {network}. Add one in the admin settings.")) { (network) }
                         }
                     }
                 }
@@ -321,7 +331,7 @@ fn timeline() -> Markup {
                     span class="tl-handle l" id="tl-from" tabindex="0" role="slider" aria-label="Start of the window: left and right move it" {}
                     span class="tl-handle r" id="tl-to" tabindex="0" role="slider" aria-label="End of the window: left and right move it" {}
                 }
-                div class="tl-head" id="tl-head" role="slider" aria-label="Playback position" hidden {}
+                div class="tl-head" id="tl-head" role="slider" aria-label="Playback position" {}
                 div class="tl-axis" id="tl-axis" {}
             }
             div class="tl-read" id="tl-read" aria-live="polite" { span id="tl-text" {} }
@@ -508,11 +518,13 @@ fn help() -> Markup {
                     dt { svg width="14" height="14" aria-hidden="true" { circle cx="7" cy="7" r="5" fill="var(--viz-tier-blocks)" {} } }
                     dd { b { "A key event" } ", in its tier's colour: a payment found, a reorganisation, a block's scan saved partway, stores catching up. Hover over it for what it was." }
                     dt { svg width="10" height="16" aria-hidden="true" { rect x="4" y="1" width="2" height="14" fill="var(--ink)" {} } }
-                    dd { b { "The playback position" } ", shown once you leave live: the moment the whole page is showing. Drag it to scrub, press anywhere in the window to go there; Play replays from it, Live returns." }
+                    dd { b { "The playback position" } ": the moment the whole page is showing, 1.5s behind the engine while live. Drag it to scrub (that pauses there, as Pause does), press anywhere in the window to go there; Play replays from it, Live returns." }
                 }
                 dl {
                     dt { span class="tl-win" style="position:static;display:block;width:22px;height:12px" {} }
                     dd { b { "The window" } ": the bar is always the last 30 minutes, the history filling it from the right; paused, it stops at the moment you left live. The orange window is the stretch you are looking at: drag its middle to move it, its handles to widen or narrow it. While it ends at now the page is live; move it into the past and playback pauses at its start." }
+                    dt { span class="hatch" aria-hidden="true" {} }
+                    dd { b { "Hatched" } ": the engine has no record of that time, because it started (or restarted) since. There is nothing to show or move the window to there; the faint line is where its record starts." }
                     dt { kbd { "←" } }
                     dd { b { "Live, Play, Pause" } " choose how the page plays: following the engine, replaying from the playback position, or held still; off live, it says how far behind live it is. With the window focused, left and right jump between key events (with Shift, any event), space plays and pauses, End goes live." }
                 }
@@ -543,7 +555,7 @@ fn help() -> Markup {
                 }
 
                 h3 { "Round" }
-                p class="wide" { "Each round gives the five tiers a share of a 10s budget, in order; time left over goes round again. Every millisecond of a round belongs to one tier, so the lanes' times add up to the round's: the round's opening request for the node's tip counts to Chain, the check whether the pool needs looking at to Mempool, keeping fetched blocks for the next round to Blocks." }
+                p class="wide" { "Each round gives the five tiers a share of a 10s budget, in order; time left over goes round again. Every millisecond of a round belongs to one tier, so the times written after the segments add up to the round's: the round's opening (deciding whether to ask for the pool, then asking the node for its tip) counts to Chain, keeping fetched blocks for the next round to Blocks. A tier's work that ran back to back is one segment; hover over it for its parts." }
                 dl {
                     dt { (tier("chain")) }
                     dd { b { "Chain" } " asks the node for its tip, then checks the recorded chain still matches the node's: it compares the newest recorded block's hash with the node's. When the engine is caught up, the tip's hash came with the tip and nothing more is asked; otherwise a blue " b { "hash check" } " flies from the node. If they differ, it reconciles the reorganisation: payments are re-examined and blocks rewound." }
@@ -562,7 +574,7 @@ fn help() -> Markup {
                     dt { span class="bar" style="position:static;display:block;width:18px;height:10px;background:var(--viz-tier-blocks)" {} }
                     dd { "A unit of work. Striped " span class="bar p2 t-blocks" style="position:static;display:inline-block;width:18px;height:10px" {} " ran on time left over (pass 2); pale with an edge " span class="bar work t-chain" style="position:static;display:inline-block;width:18px;height:10px" {} " is work for the tier outside its units, such as the tip request. Hover over a bar for what it was. While stores catch up or a reorganisation is open, a dashed box shows the tier's reserved share." }
                     dt { span class="ruler-label" style="position:static;transform:none" { "s" } }
-                    dd { "Each lane's time is written after its bars. The thin marker sits where the round has got to, on the lane that ran last, and the label under it is the round's time: the sum of the lanes'." }
+                    dd { "Each segment's time is written after it. The thin marker is on the right edge of the segment that finished last, and the label under it is the round's time: the sum of the segments'." }
                     dt { span class="engine-chip ok" style="font-size:0.6rem" { "Idle" } }
                     dd { b { "Idle" } ": nothing left to do. " b { "Backlogged" } ": out of time with work left, so the next round starts at once. " b { "Waiting" } ": held up by what it names. " b { "Failed" } ": an error, retried next round." }
                 }
@@ -618,7 +630,7 @@ fn round(view: &Presented, pinned: Option<&RoundView>, network: &str) -> Markup 
                     }
                     div class="lanes" {
                         @for lane in &round.lanes {
-                            (lane_row(lane, round.scale_ms, round.elapsed_ms))
+                            (lane_row(lane, round.scale_ms))
                         }
                         div {}
                         div class="ruler" { span class="ruler-label" style=(left_pct(round.elapsed_ms, round.scale_ms)) { (round.elapsed) } }
@@ -659,7 +671,7 @@ fn round(view: &Presented, pinned: Option<&RoundView>, network: &str) -> Markup 
     }
 }
 
-fn lane_row(lane: &Lane, scale_ms: u64, elapsed_ms: u64) -> Markup {
+fn lane_row(lane: &Lane, scale_ms: u64) -> Markup {
     let tier = lane.tier.to_string();
     html! {
         div class="lane-label" { span class=(format!("tierchip t-{tier}")) { (lane.name) } small { (lane.share) } }
@@ -669,12 +681,13 @@ fn lane_row(lane: &Lane, scale_ms: u64, elapsed_ms: u64) -> Markup {
             }
             @for bar in &lane.bars {
                 (bar_div(bar, scale_ms))
+                @if let Some(label) = &bar.label {
+                    // After the bar as drawn: a short one is drawn wider than its time.
+                    @let end = pct(bar.start_ms, scale_ms) + pct(bar.ms, scale_ms).max(0.5);
+                    span class=(if end > 88.0 { "lane-time before" } else { "lane-time" })
+                        style=(format!("left:{:.2}%", end.min(99.5))) { (label) }
+                }
             }
-            @if lane.last {
-                div class="playhead" style=(left_pct(elapsed_ms, scale_ms)) {}
-            }
-            span class=(if pct(lane.end_ms, scale_ms) > 88.0 { "lane-time before" } else { "lane-time" })
-                style=(left_pct(lane.end_ms, scale_ms)) { (lane.time) }
         }
         div class="outcome" {
             @if let Some(chip) = &lane.outcome {
@@ -686,7 +699,7 @@ fn lane_row(lane: &Lane, scale_ms: u64, elapsed_ms: u64) -> Markup {
 
 fn bar_div(bar: &Bar, scale_ms: u64) -> Markup {
     html! {
-        div class=(match (bar.work, bar.leftover) { (true, _) => "bar work", (false, true) => "bar p2", (false, false) => "bar" })
+        div class=(format!("{}{}", match (bar.work, bar.leftover) { (true, _) => "bar work", (false, true) => "bar p2", (false, false) => "bar" }, if bar.last { " last" } else { "" }))
             style=(span_style(bar.start_ms, bar.ms, scale_ms)) title=(bar.title) {}
     }
 }

@@ -364,6 +364,63 @@ flies only then; the probe on the block still shows the comparison.
   that ran last, at the round's end, with the round's total under it.
 - Node chips are right-aligned.
 
+## D32. Where the engine has no record, the bar says so
+
+The window couldn't be moved: it was as long as the history (D27), and
+after an engine restart the history is minutes long, so there was nowhere
+for it to go. Two changes:
+
+- **The window starts as the last five minutes** (the approved design's
+  first window), so once there are more than five minutes of history it
+  has room to move. Shorter than that, it covers all of it.
+- **The stretch with no record is hatched**, with a faint line where the
+  engine's record starts, and "No data: the engine started 16:43:07" when
+  there is room; hovering over it says there is nothing to show or move
+  to there. The engine's record starts when the engine started, unless it
+  is older than the bar's 30 minutes, when there is no such stretch.
+
+The window's handles sit 16 px outside it.
+
+## D33. A lane's spans are drawn as segments
+
+After D28, a lane could show several spans: Chain's tip request and then
+its own unit (a 3 px stub, read as "a thick line"), Mempool's pool check at
+the round's start and its unit at the end (two entries, one unlabelled),
+and the round's end marker went on Blocks' cache carry, which takes no
+time and was drawn as a stub whose left edge the marker sat on.
+
+- **The pool check is part of the round's opening**, counted with the tip
+  request to Chain: it only decides whether that request also asks for the
+  pool. `Work::PoolCheck` is gone.
+- **Spans of a tier that ran back to back are one segment** (nothing else
+  ran between them); its tooltip lists its parts.
+- **Spans that took no time are left out** where the lane has one that
+  took some; a lane whose spans all took none keeps one, labelled "0ms".
+- **Every segment is labelled with its time**, just after it as drawn (a
+  short segment is drawn wider than its time). When the lane's next
+  segment starts within 8 % of the drawn length, the earlier label is left
+  out and the later one carries both, so labels never collide and still
+  add up to the round.
+- **The end marker is on the right edge of the segment that finished
+  last** (the latest to start, of those ending last), with the round's
+  total under it.
+
+## D34. Fifth review
+
+- **A paused round card holds the recent rounds still too**, as they were
+  when the round was chosen, so the bar picked stays where it was; the
+  chip lets both go.
+- **The playback position shows while live**, 1.5s behind the engine.
+  Dragging it pauses where it is let go, as Pause would, and moves the
+  window (keeping its length) to keep it inside.
+- **The hatching carries no words**: the legend explains it, and hovering
+  over it still says what it is.
+- **The network switcher is always there**: mainnet, stagenet and testnet,
+  in that order. A network the engine scans is a link; one it has no node
+  for is greyed out, saying so and where to add one. Switching loads the
+  page for that network.
+- **The end marker touches its segment** (no gap).
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,

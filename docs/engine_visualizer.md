@@ -274,10 +274,11 @@ accent, saves `--ink`. The new colours become roles in `views/theme.css`
 - **A round's parts add up to it.** Every millisecond of a round belongs
   to one tier: the engine records its units back to back from the round's
   start, and the work outside them as `Event::Work` in the lane of the
-  tier it serves (the round's opening tip request to Chain, the check
-  whether the pool needs looking at to Mempool, keeping fetched blocks for
-  the next round to Blocks), drawn pale with an edge. Each lane shows its
-  time, and the playhead's label is their sum ("547 ms"). The lanes are
+  tier it serves (the round's opening, whether to ask for the pool and the
+  tip request, to Chain; keeping fetched blocks for the next round to
+  Blocks). A tier's spans that ran back to back are one segment, labelled
+  with its time; the end marker is on the right edge of the segment that
+  finished last, with the round's total ("547ms") under it. The lanes are
   scaled to the round (with a floor of 120 ms); while a group is catching
   up or a reorg is open, to the full 10 s budget, with each tier's
   reserved share.

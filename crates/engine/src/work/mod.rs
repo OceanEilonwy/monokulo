@@ -423,7 +423,6 @@ pub async fn run_round(
     // A round that will look at the pool asks for the tip and the pool
     // together: one request while the chain hasn't moved.
     let watching = mempool::watching(inputs, now).await;
-    let pool_check = laps.lap();
     let (tip_answer, polled) = if matches!(watching, Ok(true)) {
         match tokio::time::timeout(CALL_DEADLINE, inputs.daemon.get_tip_and_mempool()).await {
             Ok((tip, pool)) => (tip.map_err(ScannerError::from), Some(pool)),
@@ -462,17 +461,15 @@ pub async fn run_round(
         budget_ms: millis(budget),
         tip,
     });
-    for (tier, (start_ms, ms), what) in [
-        (Tier::Mempool, pool_check, Work::PoolCheck),
-        (Tier::Chain, tip_request, Work::TipRequest),
-    ] {
-        activity.record(Event::Work {
-            tier,
-            start_ms,
-            ms,
-            what,
-        });
-    }
+    // The opening: the pool check and the tip request, one span, as they
+    // make one request to the node.
+    let (start_ms, ms) = tip_request;
+    activity.record(Event::Work {
+        tier: Tier::Chain,
+        start_ms,
+        ms,
+        what: Work::TipRequest,
+    });
     let mut round = Round {
         inputs,
         state,

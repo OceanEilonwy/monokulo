@@ -283,7 +283,7 @@
 
   // A past round chosen from the recent rounds, shown in place of the live
   // one until its "× Paused" chip is pressed.
-  let pinned = null;
+  let pinned = null, pinnedRibbon = [];
   const live = `/status/engine?network=${encodeURIComponent(network)}`;
   function drawRound(v) {
     const box = $("engine-round");
@@ -296,10 +296,15 @@
       for (const lane of round.lanes) {
         html += `<div class="lane-label"><span class="tierchip t-${lane.tier}">${esc(lane.name)}</span><small>${esc(lane.share)}</small></div><div class="track t-${lane.tier}">`;
         if (lane.reserved) html += `<div class="share" style="left:${pct(lane.reserved[0], round.scale_ms)}%;width:${pct(lane.reserved[1], round.scale_ms)}%"></div>`;
-        for (const bar of lane.bars) html += `<div class="bar${bar.work ? " work" : bar.leftover ? " p2" : ""}" title="${esc(bar.title)}" style="left:${pct(bar.start_ms, round.scale_ms)}%;width:${Math.max(0.5, pct(bar.ms, round.scale_ms))}%"></div>`;
-        if (lane.last) html += `<div class="playhead" style="left:${Math.min(99.5, pct(round.elapsed_ms, round.scale_ms))}%"></div>`;
-        const end = pct(lane.end_ms, round.scale_ms);
-        html += `<span class="lane-time${end > 88 ? " before" : ""}" style="left:${Math.min(99.5, end).toFixed(2)}%">${esc(lane.time)}</span></div><div class="outcome">`;
+        for (const bar of lane.bars) {
+          html += `<div class="bar${bar.work ? " work" : bar.leftover ? " p2" : ""}${bar.last ? " last" : ""}" title="${esc(bar.title)}" style="left:${pct(bar.start_ms, round.scale_ms)}%;width:${Math.max(0.5, pct(bar.ms, round.scale_ms))}%"></div>`;
+          if (bar.label) {
+            // After the bar as drawn: a short one is drawn wider than its time.
+            const end = pct(bar.start_ms, round.scale_ms) + Math.max(0.5, pct(bar.ms, round.scale_ms));
+            html += `<span class="lane-time${end > 88 ? " before" : ""}" style="left:${Math.min(99.5, end).toFixed(2)}%">${esc(bar.label)}</span>`;
+          }
+        }
+        html += `</div><div class="outcome">`;
         if (lane.outcome) html += `<span class="engine-chip ${lane.outcome.tone}" title="${esc(lane.outcome.text)}">${esc(lane.outcome.text)}</span>`;
         html += "</div>";
       }
@@ -308,7 +313,7 @@
       html += '<header><h2 id="h-round">Round</h2><span class="engine-hint">No round recorded yet.</span></header>';
     }
     html += '<div class="ribbon-row"><span class="engine-hint">Last rounds</span><div class="ribbon" id="ribbon" aria-label="Recent rounds">';
-    for (const mark of v.ribbon) {
+    for (const mark of pinned ? pinnedRibbon : v.ribbon) {
       if (mark.kind === "round") {
         html += `<a class="rbar${pinned && pinned.number === mark.number ? " pinned" : ""}" href="${live}&round=${mark.number}" data-round="${mark.number}" style="height:${mark.height}px" title="${esc(mark.title)}">${mark.parts.map(([tier, part]) => `<i class="t-${tier}" style="height:${(part * 100).toFixed(1)}%"></i>`).join("")}</a>`;
       } else {
@@ -479,7 +484,9 @@
   // edge is at now it follows now and the page is live; the playback
   // position, a marker inside the window, shows only when it isn't.
   const canvas = $("tl"), ctx = canvas.getContext("2d");
-  const win = { span: Infinity, end: null };
+  // The last five minutes at first: once the history is longer than the
+  // window, there is room to move it.
+  const win = { span: 5 * 60000, end: null };
   // The bar always spans 30 minutes, the history filling it from the
   // right. Its right edge is now while live, and stays where it was when
   // playback left live (moving on only as replay passes it).
@@ -527,10 +534,11 @@
     if (s < 3600) return `${Math.floor(s / 60)}m${s % 60 ? ` ${s % 60}s` : ""}`;
     return `${Math.floor(s / 3600)}h${Math.floor(s / 60) % 60 ? ` ${Math.floor(s / 60) % 60}m` : ""}`;
   };
-  const clock = (t) => new Date(t - offset).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const clockAt = (t) => new Date(t - offset).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   function setReadout(text) { $("tl-text").textContent = text; }
   function headText() {
-    return `Playback position: ${ago(engineNow() - head)} ago (${clock(head)}). Drag it to scrub; Play replays from here.`;
+    if (mode === "live") return "Playback position: live, 1.5s behind the engine. Drag it back to pause there.";
+    return `Playback position: ${ago(engineNow() - head)} ago (${clockAt(head)}). Drag it to scrub; Play replays from here.`;
   }
   function drawTimeline() {
     tlDirty = false;
@@ -541,10 +549,24 @@
     ctx.clearRect(0, 0, w, h);
     const mid = h / 2, live = mode === "live", clock = performance.now();
     const [a, b] = view_(), [start, now] = range();
-    // The history held fills the bar from the right; before it, nothing.
+    // The history held fills the bar from the right. Before it (the engine
+    // started less than 30 minutes ago) the bar is hatched, with a line
+    // where the engine's record starts: nothing to show or move to there.
     ctx.fillStyle = css("--surface-sunken");
     const held = Math.max(0, xOf(start, w));
     ctx.fillRect(held, 0, w - held, h);
+    if (held > 0) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, 0, held, h); ctx.clip();
+      ctx.strokeStyle = css("--muted"); ctx.globalAlpha = 0.55; ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      for (let x = -h; x < held; x += 7) { ctx.moveTo(x, h); ctx.lineTo(x + h, 0); }
+      ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 0.7; ctx.fillStyle = css("--muted");
+      ctx.fillRect(held - 0.5, 0, 1, h);
+      ctx.globalAlpha = 1;
+    }
     // Positions aren't rounded to pixels, so everything glides as time
     // passes; a new event fades in.
     const fade = (mark) => (mark.arrived ? Math.min(1, (clock - mark.arrived) / 400) : 1);
@@ -574,18 +596,17 @@
     box.style.width = `${((xOf(b, w) - xOf(a, w)) / w) * 100}%`;
     const windowText = `${ago(now - a)} ago to ${win.end == null ? "now" : ago(now - b) + " ago"}`;
     for (const id of ["tl-win", "tl-from", "tl-to"]) $(id).setAttribute("aria-valuetext", windowText);
-    marker.hidden = live;
-    if (!live) {
-      marker.style.left = `${(xOf(head, w) / w) * 100}%`;
-      marker.setAttribute("aria-valuetext", headText());
-    }
+    marker.style.left = `${(xOf(head, w) / w) * 100}%`;
+    marker.setAttribute("aria-valuetext", headText());
 
     const tip = $("tl-tipbox");
     let best = null;
     if (hoverX != null && !dragging) for (const k of keys) if (Math.abs(k[0] - hoverX) < 7 && (!best || Math.abs(k[0] - hoverX) < Math.abs(best[0] - hoverX))) best = k;
-    const onHead = !live && hoverX != null && Math.abs(xOf(head, w) - hoverX) < 6;
-    tip.hidden = !best && !onHead;
-    if (onHead) { tip.textContent = headText(); tip.style.left = `${Math.max(180, Math.min(w - 180, xOf(head, w)))}px`; }
+    const onHead = hoverX != null && Math.abs(xOf(head, w) - hoverX) < 6;
+    const onVoid = !best && !onHead && hoverX != null && hoverX < held - 2;
+    tip.hidden = !best && !onHead && !onVoid;
+    if (onVoid) { tip.textContent = `No data before ${clockAt(start)}, when the engine started: nothing to show or move to there.`; tip.style.left = `${Math.max(220, Math.min(w - 220, hoverX))}px`; }
+    else if (onHead) { tip.textContent = headText(); tip.style.left = `${Math.max(180, Math.min(w - 180, xOf(head, w)))}px`; }
     else if (best) { tip.textContent = best[1].text; tip.style.left = `${Math.max(140, Math.min(w - 140, best[0]))}px`; }
 
     setReadout(live ? "" : `${ago(engineNow() - head)} behind live`);
@@ -641,7 +662,8 @@
       const response = await fetch(`/status/engine/round?network=${encodeURIComponent(network)}&number=${bar.dataset.round}`);
       if (!response.ok) return;
       pinned = await response.json();
-      if (view) drawRound(view);
+      // The recent rounds hold still with it, as they were.
+      if (view) { pinnedRibbon = view.ribbon; drawRound(view); }
     });
   }
 
@@ -669,8 +691,12 @@
       dragging.moved = true;
       const dt = tAt(e) - dragging.t0, [start, now] = range();
       if (dragging.part === "head") {
+        // As if Pause were pressed, wherever it is let go; the window
+        // follows it.
         if (mode !== "paused") setMode("paused");
-        seek(Math.max(dragging.a, Math.min(dragging.b, tAt(e))));
+        const t = tAt(e);
+        containPlayhead(t);
+        seek(t);
       } else if (dragging.part === "move") {
         const shift = Math.max(start - dragging.a, Math.min(now - dragging.b, dt));
         moveWindow("move", dragging.a + shift, dragging.b + shift);

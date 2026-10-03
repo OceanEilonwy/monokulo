@@ -5359,7 +5359,6 @@ async fn the_activity_record_tells_the_paid_story_in_order() {
             assert_eq!(
                 *tier,
                 match what {
-                    Work::PoolCheck => Tier::Mempool,
                     Work::TipRequest => Tier::Chain,
                     Work::CacheCarry => Tier::Blocks,
                 }

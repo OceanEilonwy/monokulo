@@ -69,8 +69,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(page.locator('#pills .pill.catchup')).toHaveCount(1);
   await expect(events.locator('tr.now')).toContainText('1 payment found in it');
 
-  // The playback position shows inside the window once off live, with
-  // its moment as a tooltip.
+  // Off live, the playback position's tooltip gives its moment.
   const marker = page.locator('#tl-head');
   await expect(marker).toBeVisible();
   await expect(marker).toHaveAttribute('aria-valuetext', /^Playback position: .* ago/);
@@ -82,7 +81,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(mode('paused')).toBeChecked();
   await page.keyboard.press('End');
   await expect(mode('live')).toBeChecked();
-  await expect(marker).toBeHidden();
+  await expect(marker).toHaveAttribute('aria-valuetext', /^Playback position: live/);
 
   // A press in the window goes to that moment; Play replays; Live goes back.
   const track = await page.locator('#tl').boundingBox();
@@ -95,6 +94,11 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await mode('live').check({ force: true });
   await expect(mode('live')).toBeChecked();
 
+  // Before the engine's record starts (it started seconds ago, on a
+  // 30-minute bar) the bar is hatched, and says so.
+  await page.mouse.move(track.x + 40, track.y + 16);
+  await expect(page.locator('#tl-tipbox')).toHaveText(/^No data before .*, when the engine started/);
+
   // Scrolling over the timeline leaves its window alone.
   const windowBox = page.locator('#tl-win');
   await page.mouse.move(track.x + track.width * 0.5, track.y + 16);
@@ -104,6 +108,17 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   const whole = await windowBox.boundingBox();
   expect(Math.abs(whole.x + whole.width - (track.x + track.width))).toBeLessThan(3);
   await expect(windowBox).toHaveAttribute('aria-valuetext', /to now$/);
+
+  // While live the playback position is there too; dragging it back
+  // pauses there, as Pause would.
+  const live = await marker.boundingBox();
+  await page.mouse.move(live.x + live.width / 2, live.y + live.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(live.x - 30, live.y + live.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect(mode('paused')).toBeChecked();
+  await mode('live').check({ force: true });
+  await expect(mode('live')).toBeChecked();
 
   // Dragging the window's right handle back ends it in the past: playback
   // pauses at its start. Dragging the middle moves it; dragging the marker

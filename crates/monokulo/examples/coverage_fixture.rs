@@ -117,15 +117,9 @@ fn round(number: u64, tip: Option<u64>, backlogged: bool) -> Vec<Event> {
             tip,
         },
         Event::Work {
-            tier: Tier::Mempool,
-            start_ms: 0,
-            ms: 2,
-            what: Work::PoolCheck,
-        },
-        Event::Work {
             tier: Tier::Chain,
-            start_ms: 2,
-            ms: 38,
+            start_ms: 0,
+            ms: 40,
             what: Work::TipRequest,
         },
         Event::ChainChecked {

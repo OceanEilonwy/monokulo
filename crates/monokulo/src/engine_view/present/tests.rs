@@ -248,8 +248,9 @@ fn a_round_s_lanes_are_drawn_to_scale() {
     );
     let blocks = &round.lanes[1];
     assert_eq!((blocks.name, blocks.share.as_str()), ("Blocks", "40 %"));
-    assert_eq!(blocks.bars.len(), 2);
-    assert!(blocks.bars[1].leftover);
+    assert_eq!(blocks.bars.len(), 1, "pass 1 and pass 2 back to back: one segment");
+    assert!(blocks.bars[0].leftover);
+    assert_eq!(blocks.bars[0].label.as_deref(), Some("60ms"));
     assert_eq!(blocks.reserved, None);
     assert_eq!(round.lanes[0].outcome.as_ref().unwrap().text, "Idle");
     let mempool = round.lanes[2].outcome.as_ref().unwrap();
@@ -267,17 +268,14 @@ fn a_round_s_lanes_are_drawn_to_scale() {
     assert_eq!(round.lanes[4].reserved, None, "upkeep hasn't started");
 }
 
-/// A round's parts add up to it: its units, and the work done for a tier
-/// outside them (the pool check, the tip request, the cache carry), each
-/// in its tier's lane, back to back from the round's start.
+/// A round's parts add up to it. A lane's spans that ran back to back
+/// are one segment (Chain's tip request and its unit); spans that took no
+/// time are left out where the lane has one that took some; each segment
+/// is labelled with its time, unless the lane's next one is too close,
+/// which then carries both. The end marker is on the segment that
+/// finished last.
 #[test]
 fn a_round_s_parts_add_up_to_it() {
-    let work = |tier, start_ms, ms, what| Event::Work {
-        tier,
-        start_ms,
-        ms,
-        what,
-    };
     let unit = |tier, start_ms, ms| Event::Unit {
         tier,
         pass: 1,
@@ -292,12 +290,23 @@ fn a_round_s_parts_add_up_to_it() {
             budget_ms: 10_000,
             tip: Some(10),
         },
-        work(Tier::Mempool, 0, 3, shared::activity::Work::PoolCheck),
-        work(Tier::Chain, 3, 400, shared::activity::Work::TipRequest),
+        Event::Work {
+            tier: Tier::Chain,
+            start_ms: 0,
+            ms: 403,
+            what: shared::activity::Work::TipRequest,
+        },
+        unit(Tier::Mempool, 403, 0),
         unit(Tier::Chain, 403, 20),
         unit(Tier::Blocks, 423, 40),
         unit(Tier::Mempool, 463, 1),
-        work(Tier::Blocks, 464, 2, shared::activity::Work::CacheCarry),
+        unit(Tier::Settlement, 464, 0),
+        Event::Work {
+            tier: Tier::Blocks,
+            start_ms: 464,
+            ms: 2,
+            what: shared::activity::Work::CacheCarry,
+        },
         Event::RoundFinished {
             round: 4_976,
             ms: 466,
@@ -305,25 +314,41 @@ fn a_round_s_parts_add_up_to_it() {
         },
     ]);
     let round = present(&state, &TUNING).round.unwrap();
-    let times: Vec<(u64, &str)> = round
-        .lanes
-        .iter()
-        .map(|lane| (lane.ms, lane.time.as_str()))
-        .collect();
-    assert_eq!(
-        times,
-        [(420, "420ms"), (42, "42ms"), (4, "4ms"), (0, "0ms"), (0, "0ms")]
-    );
     assert_eq!(
         round.lanes.iter().map(|lane| lane.ms).sum::<u64>(),
         round.elapsed_ms,
         "the parts add up to the round"
     );
     assert_eq!((round.elapsed_ms, round.elapsed.as_str()), (466, "466ms"));
-    let ask = &round.lanes[0].bars[0];
-    assert_eq!((ask.start_ms, ask.work), (3, true));
-    assert_eq!(ask.title, "Asking the node for its tip: 400ms");
-    assert_eq!(round.lanes[0].bars[1].title, "A unit of work: 20ms");
+    let drawn = |lane: usize| -> Vec<(u64, u64, Option<&str>, bool)> {
+        round.lanes[lane]
+            .bars
+            .iter()
+            .map(|bar| (bar.start_ms, bar.ms, bar.label.as_deref(), bar.last))
+            .collect()
+    };
+    assert_eq!(drawn(0), [(0, 423, Some("423ms"), false)], "one Chain segment");
+    assert_eq!(
+        round.lanes[0].bars[0].title,
+        "Asking the node for its tip: 403ms; a unit of work: 20ms"
+    );
+    assert!(!round.lanes[0].bars[0].work, "not only the tip request");
+    assert_eq!(
+        drawn(1),
+        [(423, 40, None, false), (464, 2, Some("42ms"), true)],
+        "the cache carry is too close to share a label; it finished last"
+    );
+    assert_eq!(drawn(2), [(463, 1, Some("1ms"), false)], "the 0ms span left out");
+    assert_eq!(drawn(3), [(464, 0, Some("0ms"), false)], "a lane with only 0ms keeps one");
+    assert!(drawn(4).is_empty());
+    let labelled: u64 = round
+        .lanes
+        .iter()
+        .flat_map(|lane| &lane.bars)
+        .filter_map(|bar| bar.label.as_deref())
+        .map(|label| label.trim_end_matches("ms").parse::<u64>().unwrap())
+        .sum();
+    assert_eq!(labelled, 466, "the labels add up to the round");
     assert_eq!(
         round.state,
         "Ended. Sleeping until the poll interval is up or the node announces a block."

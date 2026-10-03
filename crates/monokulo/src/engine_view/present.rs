@@ -108,10 +108,6 @@ pub struct Lane {
     /// The tier's time in the round, everything it waited on included.
     pub ms: u64,
     pub time: String,
-    /// Where its last bar ends: its time is written just after.
-    pub end_ms: u64,
-    /// The tier that ran last: the round's marker is on its lane.
-    pub last: bool,
     pub bars: Vec<Bar>,
     /// The tier's reserved share, from where it started: drawn while the
     /// round is drawn to its budget.
@@ -119,15 +115,94 @@ pub struct Lane {
     pub outcome: Option<Chip>,
 }
 
+/// A segment of a lane: the tier's spans that ran back to back.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Bar {
     pub start_ms: u64,
     pub ms: u64,
     /// Ran in pass 2, on time left over.
     pub leftover: bool,
-    /// Work for the tier outside its units (the round's tip request, say).
+    /// Only work for the tier outside its units (the round's tip request,
+    /// say).
     pub work: bool,
     pub title: String,
+    /// Its time, written after it; `None` when the next segment of the
+    /// lane is too close, which then carries this one's time too. The
+    /// labels add up to the round.
+    pub label: Option<String>,
+    /// The segment that finished last: the round's end marker is on its
+    /// right edge.
+    pub last: bool,
+}
+
+/// Segments closer than this, as a share of the drawn length, share one
+/// label.
+const LABEL_GAP: f64 = 0.08;
+
+/// `tier`'s segments in `round`: its spans, merged where nothing else ran
+/// between them, those that took no time left out when the lane has one
+/// that took some, each labelled with its time.
+fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar> {
+    let mut merged: Vec<(Bar, Vec<String>)> = Vec::new();
+    for unit in round.units.iter().filter(|unit| unit.tier == tier) {
+        let part = format!(
+            "{}: {}",
+            match unit.work {
+                Some(Work::TipRequest) => "asking the node for its tip",
+                Some(Work::CacheCarry) => "keeping fetched blocks for the next round",
+                None if unit.pass == 2 => "a unit on time left over",
+                None => "a unit of work",
+            },
+            milliseconds(unit.ms)
+        );
+        match merged.last_mut() {
+            Some((bar, parts)) if bar.start_ms + bar.ms == unit.start_ms => {
+                bar.ms += unit.ms;
+                bar.leftover |= unit.pass == 2;
+                bar.work &= unit.work.is_some();
+                parts.push(part);
+            }
+            Some(_) | None => merged.push((
+                Bar {
+                    start_ms: unit.start_ms,
+                    ms: unit.ms,
+                    leftover: unit.pass == 2,
+                    work: unit.work.is_some(),
+                    title: String::new(),
+                    label: None,
+                    last: false,
+                },
+                vec![part],
+            )),
+        }
+    }
+    if merged.iter().any(|(bar, _)| bar.ms > 0) {
+        merged.retain(|(bar, _)| bar.ms > 0);
+    } else {
+        merged.truncate(1);
+    }
+    let close = (scale_ms as f64 * LABEL_GAP) as u64;
+    let next_starts: Vec<Option<u64>> = (0..merged.len())
+        .map(|i| merged.get(i + 1).map(|(next, _)| next.start_ms))
+        .collect();
+    let mut carried = 0;
+    merged
+        .into_iter()
+        .zip(next_starts)
+        .map(|((mut bar, parts), next_start)| {
+            let mut title = parts.join("; ");
+            if let Some(first) = title.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            bar.title = title;
+            carried += bar.ms;
+            if next_start.is_none_or(|next| next.saturating_sub(bar.start_ms + bar.ms) >= close) {
+                bar.label = Some(milliseconds(carried));
+                carried = 0;
+            }
+            bar
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -411,7 +486,6 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
     // The round's spans are back to back from its start, so the lanes'
     // times add up to how far it has got.
     let elapsed_ms: u64 = round.units.iter().map(|unit| unit.ms).sum();
-    let last_tier = round.units.iter().max_by_key(|unit| unit.start_ms).map(|unit| unit.tier);
     let scale_ms = if round.to_budget {
         round.budget_ms.max(elapsed_ms)
     } else {
@@ -432,12 +506,16 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
             None => "Running, started at once: work was left.".to_owned(),
         },
     };
-    let lanes = Tier::ALL
+    let mut lanes: Vec<Lane> = Tier::ALL
         .iter()
         .map(|tier| {
             let share = tuning.shares[tier.index()];
-            let units = round.units.iter().filter(|unit| unit.tier == *tier);
-            let lane_ms = units.clone().map(|unit| unit.ms).sum();
+            let lane_ms = round
+                .units
+                .iter()
+                .filter(|unit| unit.tier == *tier)
+                .map(|unit| unit.ms)
+                .sum();
             let started = round
                 .units
                 .iter()
@@ -449,27 +527,7 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
                 share: format!("{share} %"),
                 ms: lane_ms,
                 time: milliseconds(lane_ms),
-                end_ms: units.clone().map(|unit| unit.start_ms + unit.ms).max().unwrap_or(0),
-                last: last_tier == Some(*tier),
-                bars: units
-                    .map(|unit| Bar {
-                        start_ms: unit.start_ms,
-                        ms: unit.ms,
-                        leftover: unit.pass == 2,
-                        work: unit.work.is_some(),
-                        title: format!(
-                            "{}: {}",
-                            match unit.work {
-                                Some(Work::PoolCheck) => "Checking whether the pool needs looking at",
-                                Some(Work::TipRequest) => "Asking the node for its tip",
-                                Some(Work::CacheCarry) => "Keeping fetched blocks for the next round",
-                                None if unit.pass == 2 => "A unit on time left over",
-                                None => "A unit of work",
-                            },
-                            milliseconds(unit.ms)
-                        ),
-                    })
-                    .collect(),
+                bars: segments(round, *tier, scale_ms),
                 reserved: if round.to_budget {
                     started.map(|start| (start, round.budget_ms * u64::from(share) / 100))
                 } else {
@@ -479,6 +537,15 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
             }
         })
         .collect();
+    // The end marker goes on the segment that finished last (the latest
+    // to start, of those ending last).
+    if let Some(bar) = lanes
+        .iter_mut()
+        .flat_map(|lane| lane.bars.iter_mut())
+        .max_by_key(|bar| (bar.start_ms + bar.ms, bar.start_ms))
+    {
+        bar.last = true;
+    }
     RoundView {
         number: round.number,
         title: format!("Round {}", thousands(round.number)),

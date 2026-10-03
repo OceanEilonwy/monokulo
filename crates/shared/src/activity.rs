@@ -344,12 +344,10 @@ pub fn short_id(id: &str) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Work {
-    /// Whether the pool needs looking at this round (a database read):
-    /// the mempool tier's.
-    PoolCheck,
-    /// The round's request for the node's tip (and its pool, when the
-    /// mempool tier will look at it, in the same request): the chain
-    /// tier's, which reads the chain as the node has it.
+    /// The round's opening: whether the pool needs looking at (a database
+    /// read), then the request for the node's tip (and its pool, when it
+    /// does, in the same request). The chain tier's, which reads the chain
+    /// as the node has it.
     TipRequest,
     /// Keeping the fetched blocks for the next round: the blocks tier's.
     CacheCarry,

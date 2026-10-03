@@ -411,6 +411,9 @@ mod tests {
             "id=\"tl\"",
             "Reload",
             "data-network=\"stagenet\"",
+            // The switcher: the network scanned is a link, the others say why not.
+            "href=\"/status/engine?network=stagenet\" aria-current=\"page\"",
+            "this engine has no Monero node for mainnet",
         ] {
             assert!(html.contains(expected), "no {expected:?} in the page");
         }
