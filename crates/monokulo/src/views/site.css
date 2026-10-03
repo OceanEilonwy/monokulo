@@ -285,7 +285,8 @@ tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparen
   tr:has(::target-text) { background: var(--tint-highlight); }
 }
 form label { display: block; margin: 0.9em 0 0.6em; font-weight: 700; }
-form .field-help { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: 0.88em; }
+/* Long unbroken words (an address, a file name) wrap rather than widen the page. */
+form .field-help { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: 0.88em; overflow-wrap: anywhere; }
 /* A small "?" affordance next to a checkbox/label needing a longer
    explanation than fits inline - the native `title` attribute supplies the
    actual tooltip text, so this needs no JS to be useful. */

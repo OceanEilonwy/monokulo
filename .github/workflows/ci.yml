@@ -487,7 +487,8 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           if test "$GITHUB_REF_TYPE" != tag; then
-            version=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+            # The workspace version (no Python on every runner).
+            version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           fi
           name="key-custody-cli-${version}-${{ matrix.target }}"
           mkdir -p "dist/$name"
@@ -551,6 +552,10 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Which key-custody-cli release monokulo's key entry links.
+          build-args: |
+            MONOKULO_RELEASE_TAG=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+            MONOKULO_GIT_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

@@ -1062,6 +1062,10 @@ pub struct KeyBundleTrust {
     /// `key-custody-cli`; if not, merchants pass it with `--trust-id-key`.
     pub official: bool,
     pub min_guest_svn: u32,
+    /// The lowest firmware trusted, `bootloader,tee,snp,microcode`; empty
+    /// for none.
+    #[serde(default)]
+    pub min_tcb: String,
 }
 
 /// Mirrors the engine's own `CreateTenantResponse`.

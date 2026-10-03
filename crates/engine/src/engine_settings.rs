@@ -164,6 +164,15 @@ settings! {
         applies: Restart,
         editable: false,
     },
+    KEY_CUSTODY_SNP_MIN_TCB: Option<String> {
+        key: "key_custody.snp_min_tcb",
+        default: None,
+        check: check_tcb_floor,
+        description: "The lowest firmware trusted with keys, as the security patch levels bootloader,tee,snp,microcode of the attested TCB: this engine refuses to start below it, merchants' key entry checks it, and a handoff checks it both ways. Set it to the levels AMD's security bulletins name for your EPYC generation; empty checks none.",
+        example: "10,0,23,213",
+        applies: Restart,
+        editable: false,
+    },
     KEY_CUSTODY_SNP_HANDOFF_URL: Option<live_settings::HttpUrl> {
         key: "key_custody.snp_handoff_url",
         default: None,
@@ -703,6 +712,19 @@ fn check_id_key_digest(digest: &Option<String>) -> Result<(), String> {
     })
 }
 
+/// A TCB floor setting: empty, or four numbers.
+#[expect(
+    clippy::ref_option,
+    reason = "the settings macro passes a setting's value by reference"
+)]
+fn check_tcb_floor(floor: &Option<String>) -> Result<(), String> {
+    floor.as_deref().map_or(Ok(()), |text| {
+        crate::key_custody::transport::TcbFloor::parse(text)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+}
+
 /// Which key custody backends are enabled, and which new stores get
 /// (task 5.2, decision D3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -718,6 +740,7 @@ pub struct SnpBootConfig {
     pub device: PathBuf,
     pub trusted_id_key: Option<String>,
     pub min_guest_svn: u32,
+    pub min_tcb: Option<String>,
     pub handoff_url: Option<live_settings::HttpUrl>,
 }
 
@@ -743,6 +766,10 @@ impl SnpBootConfig {
             trust: crate::key_custody::transport::TrustPolicy {
                 id_key_digest,
                 min_guest_svn: self.min_guest_svn,
+                min_tcb: crate::key_custody::transport::TcbFloor::parse(
+                    self.min_tcb.as_deref().unwrap_or(""),
+                )
+                .map_err(|e| e.to_string())?,
             },
         })
     }
@@ -756,6 +783,7 @@ impl Section for SnpBootConfig {
             &KEY_CUSTODY_SNP_DEVICE,
             &KEY_CUSTODY_SNP_TRUSTED_ID_KEY,
             &KEY_CUSTODY_SNP_MIN_GUEST_SVN,
+            &KEY_CUSTODY_SNP_MIN_TCB,
             &KEY_CUSTODY_SNP_HANDOFF_URL,
         ]
     }
@@ -765,6 +793,7 @@ impl Section for SnpBootConfig {
             device: snapshot.get(&KEY_CUSTODY_SNP_DEVICE),
             trusted_id_key: snapshot.get(&KEY_CUSTODY_SNP_TRUSTED_ID_KEY),
             min_guest_svn: snapshot.get(&KEY_CUSTODY_SNP_MIN_GUEST_SVN),
+            min_tcb: snapshot.get(&KEY_CUSTODY_SNP_MIN_TCB),
             handoff_url: snapshot.get(&KEY_CUSTODY_SNP_HANDOFF_URL),
         })
     }
@@ -1338,6 +1367,8 @@ mod tests {
             .unwrap();
         KEY_CUSTODY_SNP_TRUSTED_ID_KEY.parse("ab").unwrap_err();
         KEY_CUSTODY_SNP_PRODUCT.parse("Venice").unwrap_err();
+        KEY_CUSTODY_SNP_MIN_TCB.parse("1,2,3,4").unwrap();
+        KEY_CUSTODY_SNP_MIN_TCB.parse("1,2,3").unwrap_err();
         assert_eq!(
             KEY_CUSTODY_SNP_PRODUCT.parse("Genoa").unwrap(),
             Some(SnpProduct::Genoa)
@@ -1350,12 +1381,14 @@ mod tests {
             product: Some(SnpProduct::Turin),
             trusted_id_key: Some("cd".repeat(48)),
             min_guest_svn: 3,
+            min_tcb: Some("1,2,3,4".to_owned()),
             ..defaults.clone()
         };
         let config = own_key.snp_config().unwrap();
         assert_eq!(config.product, snp_attest::report::Product::Turin);
         assert_eq!(config.trust.id_key_digest, [0xCD; 48]);
         assert_eq!(config.trust.min_guest_svn, 3);
+        assert_eq!(config.trust.min_tcb.to_text(), "1,2,3,4");
         if crate::key_custody::transport::official_id_key_digest().is_none() {
             let official = SnpBootConfig {
                 product: Some(SnpProduct::Turin),
@@ -1378,6 +1411,7 @@ mod tests {
                 trust: crate::key_custody::transport::TrustPolicy {
                     id_key_digest: TestIdentity::default().id_key_digest,
                     min_guest_svn: 0,
+                    min_tcb: crate::key_custody::transport::TcbFloor::default(),
                 },
             }),
             Arc::new(TestGuest::new([1; 32], TestIdentity::default())),

@@ -35,6 +35,10 @@ enum Command {
         /// Refuse engine images below this security version.
         #[arg(long, default_value_t = 0)]
         min_guest_svn: u32,
+        /// Refuse engines on firmware below this TCB:
+        /// bootloader,tee,snp,microcode security patch levels.
+        #[arg(long, default_value = "")]
+        min_tcb: String,
     },
 }
 
@@ -44,8 +48,9 @@ fn main() -> ExitCode {
         bundle,
         trust_id_key,
         min_guest_svn,
+        min_tcb,
     } = command;
-    match seal(&bundle, trust_id_key.as_deref(), min_guest_svn) {
+    match seal(&bundle, trust_id_key.as_deref(), min_guest_svn, &min_tcb) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("key-custody-cli: {e}");
@@ -54,8 +59,13 @@ fn main() -> ExitCode {
     }
 }
 
-fn seal(source: &str, trust_id_key: Option<&str>, min_guest_svn: u32) -> Result<(), String> {
-    let (policy, custom) = key_custody_cli::trust_policy(trust_id_key, min_guest_svn)?;
+fn seal(
+    source: &str,
+    trust_id_key: Option<&str>,
+    min_guest_svn: u32,
+    min_tcb: &str,
+) -> Result<(), String> {
+    let (policy, custom) = key_custody_cli::trust_policy(trust_id_key, min_guest_svn, min_tcb)?;
     if custom {
         eprintln!(
             "WARNING: trusting engine images signed by the ID key {} given with --trust-id-key, not the official \

@@ -145,6 +145,9 @@ fn ready_view(state: &AppState, answer: &KeyBundleAnswer) -> SnpReady {
     if answer.trust.min_guest_svn > 0 {
         command.push_str(&format!(" --min-guest-svn {}", answer.trust.min_guest_svn));
     }
+    if !answer.trust.min_tcb.is_empty() {
+        command.push_str(&format!(" --min-tcb {}", answer.trust.min_tcb));
+    }
     let links = state.settings.cli_links.load();
     let release = cli_release();
     SnpReady {
@@ -154,6 +157,7 @@ fn ready_view(state: &AppState, answer: &KeyBundleAnswer) -> SnpReady {
         trust_id_key: (!answer.trust.official).then(|| answer.trust.id_key_digest.clone()),
         id_key_digest: answer.trust.id_key_digest.clone(),
         min_guest_svn: answer.trust.min_guest_svn,
+        min_tcb: answer.trust.min_tcb.clone(),
         command,
         version: release.version.to_owned(),
         downloads: release
@@ -240,6 +244,14 @@ pub fn store_keys(
             .into_iter()
             .next()
     });
+    if backend.is_none() && encrypted.is_none() && !view_key_hex.trim().is_empty() {
+        // The engine's default can't be known: it might take keys only
+        // encrypted, so typed ones aren't sent on.
+        return Err(
+            "The engine isn't answering, so this store's keys were not sent. Try again in a minute."
+                .to_owned(),
+        );
+    }
     let encrypted_only = backend.as_deref().is_some_and(takes_keys_encrypted);
     if encrypted_only {
         if !view_key_hex.trim().is_empty() {

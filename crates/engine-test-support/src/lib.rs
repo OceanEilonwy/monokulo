@@ -280,6 +280,7 @@ pub fn snp_test_trust() -> engine::key_custody::transport::TrustPolicy {
     engine::key_custody::transport::TrustPolicy {
         id_key_digest: snp_attest::guest::TestIdentity::default().id_key_digest,
         min_guest_svn: 0,
+        min_tcb: engine::key_custody::transport::TcbFloor::default(),
     }
 }
 
@@ -1749,6 +1750,8 @@ mod tests {
         .unwrap();
         new.refresh_evidence(&TestEvidence).await.unwrap();
         assert!(new.awaiting_handoff());
+        // The old engine's answer is checked against its stand-in VCEK.
+        let old_anchor = engine::key_custody::transport::Anchor::Vcek(old.snp_vcek.unwrap());
 
         let wrong_token = engine::key_custody::request_handoff(
             &reqwest::Client::new(),
@@ -1757,6 +1760,7 @@ mod tests {
                 url: base_url.clone(),
                 token: "not-the-engine-token".into(),
             },
+            &old_anchor,
         )
         .await;
         assert!(wrong_token.is_err());
@@ -1767,6 +1771,7 @@ mod tests {
                 url: base_url,
                 token: TEST_ENGINE_TOKEN.into(),
             },
+            &old_anchor,
         )
         .await
         .unwrap();

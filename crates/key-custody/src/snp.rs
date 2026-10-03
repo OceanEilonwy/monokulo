@@ -12,9 +12,12 @@
 //!
 //! One random 32-byte key encrypts every store's keys. It is stored wrapped,
 //! once per engine image, under a key the security processor derives from the
-//! chip's secret, the guest policy and the image's **launch measurement**
-//! ([`WrapStore`], a table in the engine's database). Only a guest launched
-//! from that exact image, on that chip, can unwrap it.
+//! chip's secret, the guest policy and the image's **launch measurement**,
+//! mixed with the digest of the ID key the image was launched with, as the
+//! report attests it ([`WrapStore`], a table in the engine's database). Only a
+//! guest launched from that exact image, under that ID key, on that chip, can
+//! unwrap it: the same image relaunched with an ID block someone else signed
+//! gets another key.
 //!
 //! The measurement, and not the ID block's family and image IDs, because the
 //! firmware does not mix the ID key into derived keys: a host could launch an
@@ -24,11 +27,13 @@
 //! A new image (an upgrade) therefore can't unwrap the old image's wrap. It
 //! gets the master key from the engine it replaces instead, by **handoff**:
 //! the new engine sends a bundle for [`Action::Handoff`]; the old one checks,
-//! against AMD's chain, that it comes from an image signed by the trusted ID
+//! against AMD's chain, that it comes from an image signed by **its own** ID
 //! key at the same security version or later ([`SnpKeyCustody::answer_handoff`]),
-//! and encrypts the master key to it. The new engine wraps it under its own
-//! measurement. So upgrades signed with the trusted ID key keep every store's
-//! keys, and nothing else can take them.
+//! and encrypts the master key to it, attesting the answer with a report of
+//! its own. The new engine takes it only from such an attested answer, from
+//! an engine signed by its own ID key ([`SnpKeyCustody::accept_handoff`]), and
+//! wraps it under its own measurement. So upgrades signed with the same ID key
+//! keep every store's keys, and nothing else can take them or plant one.
 //!
 //! Which case applies at start:
 //! - a wrap for this image: unwrap it;
@@ -55,7 +60,8 @@ use snp_attest::verify::Evidence;
 use zeroize::Zeroizing;
 
 use crate::transport::{
-    self, Action, Anchor, Bundle, Envelope, ReceiverKey, TransportError, TrustPolicy, KEYS_LEN,
+    self, Action, Anchor, Attestation, Bundle, Envelope, HandoffAnswer, ReceiverKey,
+    TransportError, TrustPolicy, KEYS_LEN,
 };
 use crate::{
     KeyCustody, KeyCustodyError, MatchedOutput, Network, PlainKeyCustody, ScanIndices, ScanInput,
@@ -262,6 +268,9 @@ impl SnpKeyCustody {
         let mut mac = <hmac::Hmac<sha2::Sha256>>::new_from_slice(derived.as_slice())
             .map_err(|e| e.to_string())?;
         mac.update(WRAP_LABEL);
+        // The ID key isn't among the fields the firmware mixes in; this
+        // launch's, as its report attests it, is mixed in here.
+        mac.update(&self.report.id_key_digest);
         Ok(Zeroizing::new(mac.finalize().into_bytes().into()))
     }
 
@@ -412,8 +421,9 @@ impl SnpKeyCustody {
     }
 
     /// Opens a merchant's envelope: its challenge must be one this backend
-    /// issued for `action` and `store`, unexpired and unused (it is used up
-    /// whatever happens next).
+    /// issued for `action` and `store`, unexpired and unused. It is used up
+    /// once the envelope opens, so an envelope that doesn't (sent by anyone
+    /// who saw the bundle) can't spend it.
     fn open_merchant_envelope(
         &self,
         envelope: &Envelope,
@@ -423,16 +433,29 @@ impl SnpKeyCustody {
     ) -> Result<WalletMaterial, KeyCustodyError> {
         let refused = |e: TransportError| KeyCustodyError::InvalidKeyMaterial(e.to_string());
         let challenge = ReceiverKey::challenge_of(envelope).map_err(refused)?;
-        let issued = self.challenges.lock().remove(&challenge);
+        let issued = self
+            .challenges
+            .lock()
+            .get(&challenge)
+            .map(|c| (c.action, c.store.clone(), c.expires_at));
         match issued {
-            Some(c) if c.action == action && c.store.as_deref() == store && c.expires_at > now => {}
-            Some(c) if c.expires_at <= now => return Err(refused(TransportError::Expired)),
+            Some((issued_for, issued_store, expires_at))
+                if issued_for == action && issued_store.as_deref() == store && expires_at > now => {
+            }
+            Some((_, _, expires_at)) if expires_at <= now => {
+                self.challenges.lock().remove(&challenge);
+                return Err(refused(TransportError::Expired));
+            }
             _ => return Err(refused(TransportError::Open)),
         }
         let keys = self
             .receiver
             .open(envelope, action, store)
             .map_err(refused)?;
+        // Used once: of two copies of the same envelope, only one gets here.
+        if self.challenges.lock().remove(&challenge).is_none() {
+            return Err(refused(TransportError::Open));
+        }
         if keys.len() != KEYS_LEN {
             return Err(KeyCustodyError::InvalidKeyMaterial(
                 "the encrypted keys are not a view key and a spend key".into(),
@@ -475,35 +498,82 @@ impl SnpKeyCustody {
         )
     }
 
+    /// Who this engine exchanges the master key with: images signed by its
+    /// own ID key (as its report attests it, not as configured), at
+    /// `min_guest_svn` or later, on firmware the configured floor admits.
+    fn handoff_policy(&self, min_guest_svn: u32) -> TrustPolicy {
+        TrustPolicy {
+            id_key_digest: self.report.id_key_digest,
+            min_guest_svn,
+            min_tcb: self.config.trust.min_tcb,
+        }
+    }
+
     /// Answers a successor's handoff request: checks its bundle (under
-    /// `anchor`, AMD's chain in production) names an image signed by the
-    /// trusted ID key, at this engine's security version or later, and
-    /// encrypts the master key to it.
+    /// `anchor`, AMD's chain in production) names an image signed by this
+    /// engine's own ID key, at this engine's security version or later, and
+    /// encrypts the master key to it, with a report of this engine's own
+    /// attesting the answer.
     pub fn answer_handoff(
         &self,
         bundle: &Bundle,
         anchor: &Anchor,
         now: i64,
-    ) -> Result<Envelope, KeyCustodyError> {
+    ) -> Result<HandoffAnswer, KeyCustodyError> {
         let master = self.master()?;
         if bundle.action != Action::Handoff {
             return Err(KeyCustodyError::InvalidKeyMaterial(
                 "not a handoff request".into(),
             ));
         }
-        let policy = TrustPolicy {
-            min_guest_svn: self.config.trust.min_guest_svn.max(self.report.guest_svn),
-            ..self.config.trust
-        };
+        let policy =
+            self.handoff_policy(self.config.trust.min_guest_svn.max(self.report.guest_svn));
         let verified = transport::verify_bundle(bundle, &policy, anchor, now)
             .map_err(|e| KeyCustodyError::InvalidKeyMaterial(e.to_string()))?;
-        transport::seal(&verified, master.as_slice())
-            .map_err(|e| KeyCustodyError::InvalidKeyMaterial(e.to_string()))
+        let envelope = transport::seal(&verified, master.as_slice())
+            .map_err(|e| KeyCustodyError::InvalidKeyMaterial(e.to_string()))?;
+        let evidence = self.evidence.read().clone().ok_or_else(|| {
+            unavailable("AMD's certificates for this engine haven't been fetched yet; try again in a minute")
+        })?;
+        let report = self
+            .guest
+            .report(&transport::handoff_answer_report_data(
+                &verified.public_key,
+                &envelope,
+            ))
+            .map_err(|e| unavailable(e.to_string()))?;
+        Ok(HandoffAnswer {
+            v: transport::PROTOCOL_VERSION,
+            envelope,
+            from: Attestation {
+                product: self.config.product.kds_name().to_owned(),
+                report: hex::encode(report),
+                ask: hex::encode(&evidence.ask_der),
+                vcek: hex::encode(&evidence.vcek_der),
+                crl: hex::encode(&evidence.crl_der),
+            },
+        })
     }
 
     /// Takes the master key from the predecessor's answer, wraps it for this
-    /// image and starts serving.
-    pub fn accept_handoff(&self, envelope: &Envelope) -> Result<(), String> {
+    /// image and starts serving. The answer must be attested (under
+    /// `anchor`) by an engine signed by this engine's own ID key, made for
+    /// this engine's handoff request.
+    pub fn accept_handoff(
+        &self,
+        answer: &HandoffAnswer,
+        anchor: &Anchor,
+        now: i64,
+    ) -> Result<(), String> {
+        transport::verify_handoff_answer(
+            answer,
+            &self.handoff_policy(self.config.trust.min_guest_svn),
+            anchor,
+            now,
+            &self.receiver.public_key(),
+        )
+        .map_err(|e| e.to_string())?;
+        let envelope = &answer.envelope;
         if ReceiverKey::challenge_of(envelope).map_err(|e| e.to_string())? != self.handoff_challenge
         {
             return Err(TransportError::Open.to_string());
@@ -686,6 +756,7 @@ mod tests {
         TrustPolicy {
             id_key_digest: TestIdentity::default().id_key_digest,
             min_guest_svn: 1,
+            min_tcb: transport::TcbFloor::default(),
         }
     }
 
@@ -785,12 +856,17 @@ mod tests {
         let refused = |r: Result<(WalletHandle, Vec<u8>), KeyCustodyError>| {
             matches!(r, Err(KeyCustodyError::InvalidKeyMaterial(_)))
         };
-        // Another store's request: refused, and the challenge is spent.
+        // Another store's request: refused, and the challenge is kept for
+        // the store it was issued to, which then uses it up.
         assert!(refused(
             e.backend
                 .register_envelope_at(&envelope, Action::Move, Some("st_2"), NOW)
                 .await
         ));
+        e.backend
+            .register_envelope_at(&envelope, Action::Move, Some("st_1"), NOW)
+            .await
+            .unwrap();
         assert!(refused(
             e.backend
                 .register_envelope_at(&envelope, Action::Move, Some("st_1"), NOW)
@@ -873,7 +949,9 @@ mod tests {
             .backend
             .answer_handoff(&request, &Anchor::Vcek(new.vcek), NOW)
             .unwrap();
-        new.backend.accept_handoff(&answer).unwrap();
+        new.backend
+            .accept_handoff(&answer, &Anchor::Vcek(old.vcek), NOW)
+            .unwrap();
         assert!(!new.backend.awaiting_handoff());
         new.backend.unseal_and_register(&sealed).await.unwrap();
 
@@ -931,10 +1009,16 @@ mod tests {
             )
             .unwrap();
         assert!(
-            other.backend.accept_handoff(&answer).is_err(),
+            other
+                .backend
+                .accept_handoff(&answer, &Anchor::Vcek(old.vcek), NOW)
+                .is_err(),
             "not the engine that asked"
         );
-        newer.backend.accept_handoff(&answer).unwrap();
+        newer
+            .backend
+            .accept_handoff(&answer, &Anchor::Vcek(old.vcek), NOW)
+            .unwrap();
     }
 
     /// The database moved to another chip: the wrap doesn't open there, and
@@ -991,5 +1075,118 @@ mod tests {
             backend.issue_bundle(Action::Create, None, NOW),
             Err(KeyCustodyError::BackendUnavailable(_))
         ));
+    }
+
+    /// A handoff answer is taken only when a trusted engine attested it for
+    /// this request: one sealed to the new engine's key by anyone else (the
+    /// host, who saw the request), or attested by an engine signed by
+    /// another ID key, plants nothing.
+    #[tokio::test]
+    async fn a_handoff_answer_nobody_trusted_attested_is_refused() {
+        let wraps = Arc::new(MemoryWraps::default());
+        let old = engine(1, identity(1, 1), &wraps).await;
+        let new = engine(1, identity(2, 2), &wraps).await;
+        let request = new.backend.handoff_bundle(NOW).unwrap();
+        let genuine = old
+            .backend
+            .answer_handoff(&request, &Anchor::Vcek(new.vcek), NOW)
+            .unwrap();
+
+        // The host's own key, sealed to the new engine, with the genuine
+        // answer's attestation reused: the report doesn't vouch for it.
+        let verified =
+            transport::verify_bundle(&request, &trust(), &Anchor::Vcek(new.vcek), NOW).unwrap();
+        let planted = HandoffAnswer {
+            envelope: transport::seal(&verified, &[0x66; 32]).unwrap(),
+            ..genuine.clone()
+        };
+        assert!(new
+            .backend
+            .accept_handoff(&planted, &Anchor::Vcek(old.vcek), NOW)
+            .is_err());
+
+        // Attested by an engine on the host's own ID key.
+        let rogue_guest = TestGuest::new(
+            [1; 32],
+            TestIdentity {
+                id_key_digest: [0xEE; 48],
+                ..identity(9, 9)
+            },
+        );
+        let rogue_report = rogue_guest
+            .report(&transport::handoff_answer_report_data(
+                &verified.public_key,
+                &planted.envelope,
+            ))
+            .unwrap();
+        let rogue = HandoffAnswer {
+            from: Attestation {
+                report: hex::encode(rogue_report),
+                ..planted.from.clone()
+            },
+            ..planted
+        };
+        assert!(new
+            .backend
+            .accept_handoff(&rogue, &Anchor::Vcek(rogue_guest.vcek()), NOW)
+            .is_err());
+        assert!(new.backend.awaiting_handoff());
+
+        new.backend
+            .accept_handoff(&genuine, &Anchor::Vcek(old.vcek), NOW)
+            .unwrap();
+    }
+
+    /// The genuine image relaunched with an ID block someone else signed
+    /// (and configured to trust that key) gets another wrapping key: it
+    /// can't unwrap the master key, and waits.
+    #[tokio::test]
+    async fn the_same_image_under_another_id_key_cannot_unwrap_the_master_key() {
+        let wraps = Arc::new(MemoryWraps::default());
+        engine(1, identity(1, 1), &wraps).await;
+        let host_key = [0xEE; 48];
+        let relaunched = SnpKeyCustody::start(
+            Arc::new(TestGuest::new(
+                [1; 32],
+                TestIdentity {
+                    id_key_digest: host_key,
+                    ..identity(1, 1)
+                },
+            )),
+            SnpConfig {
+                product: Product::Genoa,
+                trust: TrustPolicy {
+                    id_key_digest: host_key,
+                    ..trust()
+                },
+            },
+            Arc::<MemoryWraps>::clone(&wraps) as Arc<dyn WrapStore>,
+        )
+        .unwrap();
+        assert!(relaunched.awaiting_handoff());
+    }
+
+    /// A garbage envelope under a real challenge doesn't spend it.
+    #[tokio::test]
+    async fn an_envelope_that_does_not_open_leaves_its_challenge_for_the_real_one() {
+        let wraps = Arc::new(MemoryWraps::default());
+        let e = engine(1, identity(1, 1), &wraps).await;
+        let bundle = e.backend.issue_bundle(Action::Create, None, NOW).unwrap();
+        let garbage = Envelope {
+            v: transport::PROTOCOL_VERSION,
+            challenge: bundle.challenge.clone(),
+            enc: hex::encode([1u8; 32]),
+            ciphertext: hex::encode([2u8; 80]),
+        };
+        assert!(e
+            .backend
+            .register_envelope_at(&garbage, Action::Create, None, NOW)
+            .await
+            .is_err());
+        let envelope = client_seal(&e, &bundle, &keys(5));
+        e.backend
+            .register_envelope_at(&envelope, Action::Create, None, NOW)
+            .await
+            .unwrap();
     }
 }

@@ -155,12 +155,71 @@ pub enum Anchor {
 
 /// Which guests are trusted with keys: launched with an ID block signed by
 /// the key whose SHA-384 is `id_key_digest`, at security version
-/// `min_guest_svn` or later.
+/// `min_guest_svn` or later, on firmware at `min_tcb` or later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrustPolicy {
     pub id_key_digest: [u8; 48],
     pub min_guest_svn: u32,
+    pub min_tcb: TcbFloor,
 }
+
+/// The lowest firmware a report may come from: the security patch levels of
+/// its reported TCB, each at least this. AMD keeps certifying old firmware,
+/// so a report from firmware with a known SEV-SNP break still checks out
+/// unless a floor refuses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TcbFloor {
+    pub bootloader: u8,
+    pub tee: u8,
+    pub snp: u8,
+    pub microcode: u8,
+}
+
+impl TcbFloor {
+    /// A floor from `bootloader,tee,snp,microcode` (each 0-255); empty is no
+    /// floor.
+    pub fn parse(text: &str) -> Result<Self, TransportError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(TcbFloor::default());
+        }
+        let parts: Vec<u8> = text
+            .split(',')
+            .map(|part| part.trim().parse::<u8>())
+            .collect::<Result<_, _>>()
+            .map_err(|_| TransportError::Malformed(TCB_FLOOR_FORMAT.into()))?;
+        match parts.as_slice() {
+            [bootloader, tee, snp, microcode] => Ok(TcbFloor {
+                bootloader: *bootloader,
+                tee: *tee,
+                snp: *snp,
+                microcode: *microcode,
+            }),
+            _ => Err(TransportError::Malformed(TCB_FLOOR_FORMAT.into())),
+        }
+    }
+
+    /// The floor as [`Self::parse`] reads it; empty when there is none.
+    pub fn to_text(self) -> String {
+        if self == TcbFloor::default() {
+            return String::new();
+        }
+        format!(
+            "{},{},{},{}",
+            self.bootloader, self.tee, self.snp, self.microcode
+        )
+    }
+
+    fn admits(self, tcb: &report::TcbVersion) -> bool {
+        tcb.bootloader >= self.bootloader
+            && tcb.tee >= self.tee
+            && tcb.snp >= self.snp
+            && tcb.microcode >= self.microcode
+    }
+}
+
+const TCB_FLOOR_FORMAT: &str =
+    "a minimum TCB is four numbers, bootloader,tee,snp,microcode (each 0-255)";
 
 /// The digest of the official ID key, the one release builds of the engine
 /// image are signed with, if this build has one (see
@@ -207,6 +266,12 @@ pub enum TransportError {
     NoIdBlock,
     #[error("the engine runs security version {got}, below the minimum {min}")]
     SvnTooLow { got: u32, min: u32 },
+    #[error("the engine's firmware (TCB {got}) is below the minimum {min}: it may have known SEV-SNP vulnerabilities")]
+    TcbTooLow { got: String, min: String },
+    #[error(
+        "the master key's handoff didn't come from a trusted engine, or wasn't made for this one"
+    )]
+    HandoffNotAttested,
     #[error("the report was requested at VMPL {0}, not by the guest kernel (VMPL 0)")]
     WrongVmpl(u32),
     #[error("the public key in the bundle is not the one the report vouches for")]
@@ -277,6 +342,16 @@ pub fn check_identity(
             min: policy.min_guest_svn,
         });
     }
+    if !policy.min_tcb.admits(&report.reported_tcb) {
+        let tcb = &report.reported_tcb;
+        return Err(TransportError::TcbTooLow {
+            got: format!(
+                "{},{},{},{}",
+                tcb.bootloader, tcb.tee, tcb.snp, tcb.microcode
+            ),
+            min: policy.min_tcb.to_text(),
+        });
+    }
     Ok(())
 }
 
@@ -304,6 +379,84 @@ pub fn parse_product(name: &str) -> Result<Product, TransportError> {
     })
 }
 
+/// An engine's attestation report and AMD's certificates for it (hex), as a
+/// handoff answer carries them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attestation {
+    pub product: String,
+    pub report: String,
+    pub ask: String,
+    pub vcek: String,
+    pub crl: String,
+}
+
+/// The master key, from the engine being upgraded from to its successor:
+/// encrypted to the successor, and attested by the engine handing it over
+/// (its report's REPORT_DATA binds the envelope and the successor's key and
+/// challenge, [`handoff_answer_report_data`]), so nothing but a trusted
+/// engine can plant a master key in a successor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffAnswer {
+    pub v: u32,
+    pub envelope: Envelope,
+    pub from: Attestation,
+}
+
+const HANDOFF_ANSWER_CONTEXT: &[u8] = b"monokulo key custody handoff answer v1\0";
+
+/// The REPORT_DATA of the report attesting a handoff answer: the envelope,
+/// for the successor whose key is `successor_key`.
+pub fn handoff_answer_report_data(successor_key: &[u8; 32], envelope: &Envelope) -> [u8; 64] {
+    let mut hash = sha2::Sha512::new();
+    hash.update(HANDOFF_ANSWER_CONTEXT);
+    hash.update(successor_key);
+    for part in [&envelope.challenge, &envelope.enc, &envelope.ciphertext] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    hash.finalize().into()
+}
+
+/// A genuine report from a trusted guest: AMD-signed (under `anchor`) and
+/// admitted by `policy`.
+fn verify_attestation(
+    from: &Attestation,
+    policy: &TrustPolicy,
+    anchor: &Anchor,
+    now_unix: i64,
+) -> Result<AttestationReport, TransportError> {
+    let product = parse_product(&from.product)?;
+    let raw = hex_bytes("report", &from.report)?;
+    let report =
+        report::parse(&raw, product).map_err(|e| TransportError::Attestation(e.to_string()))?;
+    let evidence = Evidence {
+        ask_der: hex_bytes("ASK", &from.ask)?,
+        vcek_der: hex_bytes("VCEK", &from.vcek)?,
+        crl_der: hex_bytes("revocation list", &from.crl)?,
+    };
+    check_report(product, &report, &evidence, anchor, now_unix)?;
+    check_identity(&report, policy)?;
+    Ok(report)
+}
+
+/// Checks a handoff answer was made by a trusted engine (under `policy` and
+/// `anchor`) for the successor whose key is `successor_key`.
+pub fn verify_handoff_answer(
+    answer: &HandoffAnswer,
+    policy: &TrustPolicy,
+    anchor: &Anchor,
+    now_unix: i64,
+    successor_key: &[u8; 32],
+) -> Result<(), TransportError> {
+    check_version(answer.v)?;
+    let report = verify_attestation(&answer.from, policy, anchor, now_unix)?;
+    if report.report_data == handoff_answer_report_data(successor_key, &answer.envelope) {
+        Ok(())
+    } else {
+        Err(TransportError::HandoffNotAttested)
+    }
+}
+
 /// Checks `bundle` (see the module docs) and returns what to encrypt to.
 pub fn verify_bundle(
     bundle: &Bundle,
@@ -315,17 +468,14 @@ pub fn verify_bundle(
     if bundle.expires_at <= now_unix {
         return Err(TransportError::Expired);
     }
-    let product = parse_product(&bundle.product)?;
-    let raw = hex_bytes("report", &bundle.report)?;
-    let report =
-        report::parse(&raw, product).map_err(|e| TransportError::Attestation(e.to_string()))?;
-    let evidence = Evidence {
-        ask_der: hex_bytes("ASK", &bundle.ask)?,
-        vcek_der: hex_bytes("VCEK", &bundle.vcek)?,
-        crl_der: hex_bytes("revocation list", &bundle.crl)?,
+    let from = Attestation {
+        product: bundle.product.clone(),
+        report: bundle.report.clone(),
+        ask: bundle.ask.clone(),
+        vcek: bundle.vcek.clone(),
+        crl: bundle.crl.clone(),
     };
-    check_report(product, &report, &evidence, anchor, now_unix)?;
-    check_identity(&report, policy)?;
+    let report = verify_attestation(&from, policy, anchor, now_unix)?;
     let public_key: [u8; 32] = hex_field("public key", &bundle.public_key)?;
     if report.report_data != report_data_for(&public_key) {
         return Err(TransportError::KeyNotInReport);
@@ -446,6 +596,7 @@ mod tests {
         TrustPolicy {
             id_key_digest: guest.identity.id_key_digest,
             min_guest_svn: 1,
+            min_tcb: TcbFloor::default(),
         }
     }
 
@@ -626,6 +777,31 @@ mod tests {
         assert_eq!(
             refusal(&bundle, &trusted, &Anchor::Vcek(no_id_block.vcek())),
             TransportError::NoIdBlock
+        );
+    }
+
+    #[test]
+    fn a_firmware_floor_refuses_older_firmware_and_reads_its_own_text() {
+        let guest = TestGuest::new([1; 32], TestIdentity::default());
+        let receiver = ReceiverKey::generate();
+        let bundle = bundle_from(&guest, &receiver, Action::Create, None);
+        let floor = TcbFloor::parse("0,0,0,1").unwrap();
+        assert_eq!(floor.to_text(), "0,0,0,1");
+        assert_eq!(TcbFloor::parse("").unwrap(), TcbFloor::default());
+        assert!(TcbFloor::parse("1,2,3").is_err());
+        assert!(TcbFloor::parse("1,2,3,256").is_err());
+        let refused = verify_bundle(
+            &bundle,
+            &TrustPolicy {
+                min_tcb: floor,
+                ..policy(&guest)
+            },
+            &Anchor::Vcek(guest.vcek()),
+            NOW,
+        );
+        assert!(
+            matches!(refused, Err(TransportError::TcbTooLow { .. })),
+            "{refused:?}"
         );
     }
 

@@ -36,6 +36,10 @@ COPY . .
 # the scan at once (docs/monero_zmq.md); it does nothing until a node setting
 # names a `zmq_pub`. `--build-arg ENGINE_FEATURES=` builds without it.
 ARG ENGINE_FEATURES=zmq
+# Which release this is, for the key-custody-cli links monokulo's key entry
+# shows (CI passes them; a local build links the source).
+ARG MONOKULO_RELEASE_TAG=
+ARG MONOKULO_GIT_COMMIT=
 RUN cargo build --release --locked \
         ${ENGINE_FEATURES:+--features engine/${ENGINE_FEATURES}} \
         -p engine --bin monokulo-engine \

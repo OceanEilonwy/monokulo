@@ -15,18 +15,22 @@
 //! replaces the official key for an instance that runs its own signed engine
 //! image, and says so loudly.
 
-use key_custody::transport::{self, Anchor, Bundle, TrustPolicy, Verified, KEYS_LEN};
+use key_custody::transport::{self, Anchor, Bundle, TcbFloor, TrustPolicy, Verified, KEYS_LEN};
 use zeroize::Zeroizing;
 
 /// This build's version: the monokulo release it belongs to.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Which engine images to trust: `--trust-id-key` if given (and `true`,
-/// for the warning), else the official key built in.
+/// for the warning), else the official key built in; at `min_guest_svn` or
+/// later, on firmware at `min_tcb` (`bootloader,tee,snp,microcode`) or
+/// later.
 pub fn trust_policy(
     trust_id_key: Option<&str>,
     min_guest_svn: u32,
+    min_tcb: &str,
 ) -> Result<(TrustPolicy, bool), String> {
+    let min_tcb = TcbFloor::parse(min_tcb).map_err(|e| format!("--min-tcb: {e}"))?;
     let (id_key_digest, custom) = match trust_id_key {
         Some(text) => (
             transport::parse_id_key_digest(text).map_err(|e| format!("--trust-id-key: {e}"))?,
@@ -44,6 +48,7 @@ pub fn trust_policy(
         TrustPolicy {
             id_key_digest,
             min_guest_svn,
+            min_tcb,
         },
         custom,
     ))
@@ -92,17 +97,7 @@ pub fn parse_keys(
 /// Checks `bundle` under `policy` (against AMD's chain, at `now`) and
 /// returns what to encrypt to.
 pub fn check(bundle: &Bundle, policy: &TrustPolicy, now: i64) -> Result<Verified, String> {
-    check_against(bundle, policy, &Anchor::Amd, now)
-}
-
-/// [`check`], against `anchor` instead of AMD's chain: for tests.
-pub fn check_against(
-    bundle: &Bundle,
-    policy: &TrustPolicy,
-    anchor: &Anchor,
-    now: i64,
-) -> Result<Verified, String> {
-    transport::verify_bundle(bundle, policy, anchor, now).map_err(|e| match e {
+    transport::verify_bundle(bundle, policy, &Anchor::Amd, now).map_err(|e| match e {
         transport::TransportError::Version { got } => format!(
             "this key-custody-cli ({VERSION}) reads bundle format {}, and this bundle is format {got}: download \
              the key-custody-cli release that matches the monokulo site you're using (the key entry form links it)",
@@ -153,16 +148,22 @@ mod tests {
 
     #[test]
     fn a_trusted_id_key_given_replaces_the_official_one_and_is_flagged() {
-        let (policy, custom) = trust_policy(Some(&"cd".repeat(48)), 4).unwrap();
+        let (policy, custom) = trust_policy(Some(&"cd".repeat(48)), 4, "1,2,3,4").unwrap();
         assert!(custom);
         assert_eq!(policy.id_key_digest, [0xCD; 48]);
         assert_eq!(policy.min_guest_svn, 4);
-        assert!(trust_policy(Some("cd"), 0)
+        assert_eq!(policy.min_tcb.to_text(), "1,2,3,4");
+        assert!(trust_policy(Some("cd"), 0, "")
             .unwrap_err()
             .starts_with("--trust-id-key"));
+        assert!(trust_policy(Some(&"cd".repeat(48)), 0, "1,2")
+            .unwrap_err()
+            .starts_with("--min-tcb"));
         match transport::official_id_key_digest() {
-            Some(official) => assert_eq!(trust_policy(None, 0).unwrap().0.id_key_digest, official),
-            None => assert!(trust_policy(None, 0)
+            Some(official) => {
+                assert_eq!(trust_policy(None, 0, "").unwrap().0.id_key_digest, official);
+            }
+            None => assert!(trust_policy(None, 0, "")
                 .unwrap_err()
                 .contains("--trust-id-key")),
         }
@@ -199,6 +200,7 @@ mod tests {
         let policy = TrustPolicy {
             id_key_digest: [0; 48],
             min_guest_svn: 0,
+            min_tcb: TcbFloor::default(),
         };
         let error = check(&bundle, &policy, 0).unwrap_err();
         assert!(
