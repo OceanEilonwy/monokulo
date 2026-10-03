@@ -555,7 +555,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "clap_complete",
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "hex",
  "libc",
  "monero-daemon-rpc",
@@ -861,6 +861,21 @@ dependencies = [
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
  "fiat-crypto 0.2.9",
+ "rustc_version",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "curve25519-dalek"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "curve25519-dalek-derive",
+ "fiat-crypto 0.3.0",
  "rustc_version",
  "subtle",
  "zeroize",
@@ -1588,6 +1603,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hkdf"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
+dependencies = [
+ "hmac 0.13.0",
+]
+
+[[package]]
 name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1603,6 +1627,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
+]
+
+[[package]]
+name = "hpke"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5324110b02044183df000f0bd7d2d7e61f1000631508627e77f63983b6fdffb"
+dependencies = [
+ "aead",
+ "aes-gcm",
+ "getrandom 0.4.3",
+ "hkdf",
+ "hybrid-array",
+ "rand_core 0.10.1",
+ "sha2 0.11.0",
+ "subtle",
+ "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
@@ -2057,11 +2099,21 @@ dependencies = [
 name = "key-custody"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "async-trait",
  "futures-util",
+ "getrandom 0.4.3",
  "hex",
+ "hmac 0.13.0",
+ "hpke",
  "monero",
+ "p384",
  "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "snp-attest",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -2310,7 +2362,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a69858fa38267958bb7159f176fe95d6602fa1109ead4c1a33618c1a8b3bd016"
 dependencies = [
  "base58-monero",
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "fixed-hash",
  "hex",
  "hex-literal",
@@ -2349,7 +2401,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9539fd42ef36268e0961bab571d2e8ac5238bba309ae07c3504cf17e60d8b34"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "monero-ed25519",
  "monero-io",
  "std-shims 0.1.5",
@@ -2362,7 +2414,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e6abdca137c989244ad45fb7ee01f45f7d82d054bd1839ea11a5d2826a350d3"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "monero-bulletproofs-generators",
  "monero-ed25519",
  "monero-io",
@@ -2379,7 +2431,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb66ae7110ee718e10d932ef844b1ab4ca839263e9592f11bd338f562cee0c71"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "monero-ed25519",
  "monero-io",
  "monero-primitives",
@@ -2392,7 +2444,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0d6a6518cf95bd14563223726e24efffb3199b024b4fa1a3db73287d66e57c4"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "group 0.13.0",
  "monero-ed25519",
  "monero-io",
@@ -2427,7 +2479,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e03a310abc9a9ffa4984a27297dede91d6282260424216a64c734250617ebd90"
 dependencies = [
  "crypto-bigint 0.5.5",
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "monero-io",
  "rand_core 0.6.4",
  "sha3",
@@ -2470,7 +2522,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ecbad27f38a5ca17bbb4ce9661107dc93e73a2088457fe1411fdffea1279527"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "monero-ed25519",
  "monero-io",
  "std-shims 0.1.5",
@@ -2484,7 +2536,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34ea5d3fd87ca6106220a281213ae2f8c9dd0e29e6363b888de68b3b29e193d0"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "hex-literal",
  "monero-borromean",
  "monero-bulletproofs",
@@ -2511,7 +2563,7 @@ name = "monero-seed"
 version = "0.1.0"
 source = "git+https://github.com/kayabaNerve/monero-wallet-util?branch=develop#797fe701a6f9e99ae614c49479bb981de1afe8ec"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "rand_core 0.6.4",
  "std-shims 0.1.4",
  "thiserror 1.0.69",
@@ -2524,7 +2576,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8d9a2431255db4deaf39671646e17f79bfb4ceadfffc9bb52e0f3fb0d29c75e"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "hex",
  "monero-address",
  "monero-clsag",
@@ -5036,6 +5088,17 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "x25519-dalek"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7e8131a03190127fb2263afc72b322ecadae46b6ff8c6f399ff5d02f5559af6"
+dependencies = [
+ "curve25519-dalek 5.0.0",
+ "rand_core 0.10.1",
+ "zeroize",
+]
 
 [[package]]
 name = "x509-parser"
