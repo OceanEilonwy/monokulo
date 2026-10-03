@@ -210,14 +210,14 @@ async fn render_confirm_form(
     };
     let chrome = super::page_chrome(state, Some(user), format!("/connect/{platform}")).await;
     let custody_choices = super::status_page::custody_choice_views(
-        &state.engine,
+        state,
         resubmit.and_then(|f| f.key_custody_backend.as_deref()),
     );
     let snp_entry = if unavailable.is_none() {
         super::key_entry::prepare(
             state,
             super::key_entry::Purpose::Create,
-            &super::key_entry::offered_backends(&state.engine, &custody_choices),
+            &super::key_entry::offered_backends(state, &custody_choices),
         )
         .await
     } else {

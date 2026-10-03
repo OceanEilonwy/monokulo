@@ -140,6 +140,24 @@ fix the SEV-SNP issues AMD has published for your EPYC generation (§1 gives the
 levels your host reports): the engine, merchants' key entry and handoffs then
 refuse anything older. The example above is a placeholder, not a recommendation.
 
+Then set the same policy in monokulo, whose key entry forms check every
+engine against it (`monokulo.toml`, or the snp section of the admin page's
+Custody tab):
+
+```toml
+[key_custody]
+# snp_entry_id_key = "..."       # the engine's snp_trusted_id_key; empty for the official one
+# snp_entry_min_guest_svn = 1    # the engine's snp_min_guest_svn
+snp_entry_min_tcb = "10,0,23,213" # the engine's snp_min_tcb
+snp_entry_required = true         # never take a store's keys in the clear
+```
+
+The admin page refuses to save values that differ from the engine's. If they
+come to differ anyway (one side's options file edited, the engine restarted
+with new settings), SEV-SNP key storage stops being offered and the status page
+shows a red alert naming what differs. With `snp_entry_required`, no form takes
+keys in the clear, whatever the engine says.
+
 **Keep the engine private.** Its `server.bind` defaults to `127.0.0.1:8443`;
 bind it only to a private address monokulo can reach, never a public one.
 The engine needs outbound HTTPS to `kdsintf.amd.com` (AMD's certificates for

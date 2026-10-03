@@ -9,7 +9,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use ::key_custody::snp::{SnpConfig, SnpKeyCustody, StoredWrap, WrapStore};
-use ::key_custody::transport::Anchor;
+use ::key_custody::transport::{Anchor, TrustPolicy};
 pub use ::key_custody::{
     remove_wallet_logged, router, size_scan_slots, snp, transport, wallet_matches_address,
     CustodyRouter, KeyCustody, KeyCustodyError, MatchedOutput, Network, PlainKeyCustody,
@@ -84,6 +84,13 @@ impl SnpSlot {
 
     pub fn anchor(&self) -> &Anchor {
         &self.anchor
+    }
+
+    /// Which images this engine trusts with keys, when its settings let the
+    /// backend start: reported on `/status`, for monokulo to compare with
+    /// the policy its own key entry forms check.
+    pub fn trust(&self) -> Option<TrustPolicy> {
+        self.config.as_ref().ok().map(|config| config.trust)
     }
 
     /// The backend, if it has started.

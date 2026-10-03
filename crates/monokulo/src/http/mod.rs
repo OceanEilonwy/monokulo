@@ -907,6 +907,7 @@ pub(crate) async fn page_chrome(
     // (docs/engine_scaling.md section 5).
     if user.is_some_and(|user| user.is_admin) {
         alerts.extend(status_page::known_slow_blocks(&state.engine));
+        alerts.extend(status_page::known_snp_policy_alert(state));
     }
     let mut chrome = crate::views::PageChrome::from_user(user, current_path)
         .with_health(status_page::known_health(&state.engine))

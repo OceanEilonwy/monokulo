@@ -411,10 +411,29 @@ Two clients, one implementation:
 The trusted ID key is the one whose digest is in
 `crates/key-custody/src/official_id_key_digest.txt` (made with `cargo xtask snp-id-key`;
 the private key is the `snp-id-key` environment's secret `SNP_ID_KEY`), unless an
-instance sets `key_custody.snp_trusted_id_key`. Monokulo decides from its own build
-whether that digest is the official one; it doesn't take the engine's word for it, and
-it refuses to show a form for a trust answer that doesn't parse. The CLI command it
-prints quotes every value for the shell.
+instance sets its own.
+
+**Monokulo's own policy.** What the forms check a bundle against is monokulo's
+configuration, not the engine's, so whoever runs the engine's machine can't loosen it:
+`key_custody.snp_entry_id_key` (empty: the official key), `snp_entry_min_guest_svn` and
+`snp_entry_min_tcb`, shown in the snp backend's section of the admin page's Custody tab.
+The engine reports its own (`snp_trusted_id_key`, `snp_min_guest_svn`, `snp_min_tcb`)
+on `/status` (`key_custody_snp_trust`), and the two must match:
+
+- a save of monokulo's is checked against the engine's first, and refused, each
+  differing setting named, if they differ (a changed value isn't saved while the engine
+  can't be asked);
+- while they differ (the engine's changed at its restart, or the options files were
+  edited), `snp` isn't offered: it isn't a choice on any form, keys for it are refused,
+  and a store whose engine default is `snp` goes to the next backend, named; the status
+  page and the admin's alert bar show a red alert with what differs.
+
+`key_custody.snp_entry_required` makes `snp` the only way in: no form for keys in the
+clear is shown and typed keys are never sent on, whatever the engine reports, so an
+engine (or a host faking its `/status`) can't have keys typed in the clear by saying it
+has no `snp` backend. Key entry is then unavailable until `snp` is usable.
+
+The CLI command monokulo prints quotes every value for the shell.
 
 The forms link a `gh attestation verify` command for the downloaded CLI: the checksum
 next to a download only shows the file arrived intact; build provenance shows the
@@ -432,9 +451,10 @@ What the `snp` backend does not hide from the host, by design or for now:
   revocation list's validity and challenge expiry are checked against it, so a host can
   make a stale revocation list look current. The merchant's client checks a bundle
   against its own clock.
-- **The firmware floor.** `snp_min_tcb` is a setting, and settings are the host's. The
-  CLI enforces the floor the merchant gives it (`--min-tcb`); the browser takes the
-  engine's, as the page shows it. The derived key isn't yet bound to a TCB version.
+- **The firmware floor.** The engine's `snp_min_tcb` is a setting, and the engine's
+  settings are the host's. Merchants' clients enforce monokulo's
+  (`snp_entry_min_tcb`, which the CLI command carries as `--min-tcb`), not the
+  engine's. The derived key isn't yet bound to a TCB version.
 
 ## 7. Chain Scanning & Payment Detection
 

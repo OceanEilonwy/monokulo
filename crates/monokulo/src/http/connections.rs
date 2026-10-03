@@ -158,8 +158,8 @@ pub(super) async fn create_connection_for_user(
         )
         .await;
     }
-    let keys = super::key_entry::store_keys(
-        &state.engine,
+    let (key_custody_backend, keys) = super::key_entry::store_keys(
+        state,
         req.key_custody_backend.as_deref(),
         &req.view_key_hex,
         &req.spend_pubkey_hex,
@@ -174,7 +174,7 @@ pub(super) async fn create_connection_for_user(
             network: req.network,
             confirmations_required: req.confirmations_required,
             order_expiry_seconds: req.order_expiry_seconds,
-            key_custody_backend: req.key_custody_backend,
+            key_custody_backend,
         })
         .await
         .map_err(|e| match e {

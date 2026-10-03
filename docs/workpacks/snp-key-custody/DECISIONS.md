@@ -312,11 +312,34 @@ end need a decision.
 - The forms show a `gh attestation verify` command for the CLI download.
 
 ### Open, needing a decision
-- Moving the trust policy (digest, minimum version, TCB floor, and "stores must use
-  encrypted entry") into monokulo's own configuration, so the engine's host can't
-  weaken it or report `snp` absent to get keys typed in the clear. This reverses
-  "the engine is the one source of truth" for these values.
 - Binding the TCB version into the derived key, which needs testing on hardware.
 - Authenticating what the engine scans, against the payment-linking limit above.
 - TLS (or the same confidential VM) between monokulo and the engine.
 - A per-user limit on issued bundles.
+
+## Your decisions on the security pass
+
+### 37. The trust policy is monokulo's own (you chose option A)
+- **Decision:** monokulo has four settings of its own in the registry, shown in the snp
+  backend's section of the Custody tab: `key_custody.snp_entry_id_key`,
+  `snp_entry_min_guest_svn`, `snp_entry_min_tcb` and `snp_entry_required`. The key entry
+  forms and the printed CLI command use them; the engine's bundle answer no longer
+  carries a trust policy, and the engine reports its own on `/status`
+  (`key_custody_snp_trust`). This reverses decision 27.
+- **When they disagree** (your addition): `snp` can't be chosen anywhere, keys for it
+  are refused, a store whose engine default is `snp` goes to the next usable backend
+  (named in the request, so the engine can't pick `snp`), and the status page shows a
+  red alert. Operators see what differs there and in the alert bar; others see only
+  that SEV-SNP key storage is unavailable.
+- **Saving** (your addition): the settings are editable on the admin page and apply at
+  once. A save is checked against the engine's `/status` first and refused, each
+  differing setting named beside its field, if they differ. A changed value isn't saved
+  while the engine doesn't answer; an unchanged one doesn't need it.
+- **`snp_entry_required`:** typed keys are never sent on and no plain choice is offered,
+  whatever the engine reports, so a host can't get keys typed in the clear by
+  reporting `snp` absent. It can't be turned on unless the engine has `snp` enabled
+  (the save check), and a build without an official ID key needs `snp_entry_id_key`
+  set for it.
+- **Also:** the Custody tab drew the backends' sections once per group; they are drawn
+  once now, with monokulo's own settings inside the snp one.
+

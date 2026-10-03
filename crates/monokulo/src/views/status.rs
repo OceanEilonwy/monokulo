@@ -104,6 +104,10 @@ pub struct StatusPageViewModel {
     /// A sentence per network with a slow block (docs/engine_scaling.md
     /// section 5).
     pub slow_blocks: Vec<String>,
+    /// Monokulo's SEV-SNP key entry policy and the engine's disagree, or
+    /// monokulo requires a backend the engine doesn't have
+    /// (`http::status_page::snp_policy_alert`).
+    pub snp_alert: Option<String>,
     /// Link each network to its engine page (`docs/engine_visualizer.md`):
     /// only for an admin, who alone may open it.
     pub engine_page: bool,
@@ -119,6 +123,9 @@ pub fn live_fragment(data: &StatusPageViewModel) -> Markup {
                 (data.poll_interval_secs) "s."
             }
 
+            @if let Some(alert) = &data.snp_alert {
+                div class="error" role="alert" id="snp-policy-alert" { (alert) }
+            }
             @for message in &data.slow_blocks {
                 p class="notice slow-block" role="status" { (message) }
             }
@@ -333,6 +340,7 @@ mod tests {
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
             slow_blocks: vec![],
+            snp_alert: None,
             engine_page: false,
         };
         let html = page(&chrome(), &data).into_string();
@@ -356,11 +364,31 @@ mod tests {
             slow_blocks: vec![
                 "Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far.".to_string(),
             ],
+            snp_alert: None,
             engine_page: false,
         };
         let html = page(&chrome(), &data).into_string();
         assert!(
             html.contains(r#"<p class="notice slow-block" role="status">Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far.</p>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_trust_mismatch_is_a_red_alert_at_the_top() {
+        let data = StatusPageViewModel {
+            abuse: None,
+            engine_error: None,
+            networks: vec![],
+            poll_interval_secs: 30,
+            generated_at_display: "just now".to_string(),
+            slow_blocks: vec![],
+            snp_alert: Some("SEV-SNP key storage can't be chosen.".to_string()),
+            engine_page: false,
+        };
+        let html = page(&chrome(), &data).into_string();
+        assert!(
+            html.contains(r#"<div class="error" role="alert" id="snp-policy-alert">SEV-SNP key storage can't be chosen.</div>"#),
             "{html}"
         );
     }
@@ -374,6 +402,7 @@ mod tests {
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
             slow_blocks: vec![],
+            snp_alert: None,
             engine_page: false,
         };
         let html = page(&chrome(), &data).into_string();
@@ -414,6 +443,7 @@ mod tests {
             poll_interval_secs: 30,
             generated_at_display: "just now".to_string(),
             slow_blocks: vec![],
+            snp_alert: None,
             engine_page: false,
         };
         let html = page(&chrome(), &data).into_string();
