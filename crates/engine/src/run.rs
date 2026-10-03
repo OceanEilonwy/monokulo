@@ -175,8 +175,10 @@ impl Engine {
         let settings = EngineSettings::load(
             Arc::clone(&store),
             daemons.clone(),
-            Arc::clone(&custody_router),
-            Arc::clone(&snp),
+            crate::engine_settings::CustodyReloadable::new(
+                Arc::clone(&custody_router),
+                Arc::clone(&snp),
+            ),
             Arc::clone(&admin_rate_limiter),
             env.clone(),
             config.options,

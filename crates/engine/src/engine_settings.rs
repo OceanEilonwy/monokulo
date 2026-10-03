@@ -1173,8 +1173,7 @@ impl EngineSettings {
     pub async fn load(
         store: SharedStore,
         daemons: Daemons,
-        router: Arc<crate::key_custody::CustodyRouter>,
-        snp: Arc<crate::key_custody::SnpSlot>,
+        custody: CustodyReloadable,
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
         options: live_settings::OptionsFile,
@@ -1183,7 +1182,7 @@ impl EngineSettings {
         Self::load_full(
             store,
             Some(NodesReloadable { daemons }),
-            Some(CustodyReloadable::new(router, snp)),
+            Some(custody),
             rate_limiter,
             env,
             options,
