@@ -328,3 +328,15 @@ fn a_past_round_is_rebuilt_as_it_ended() {
     assert!(trimmed.round(2_390).is_some());
 }
 
+/// Replay and scrubbing take any moment a request names, however far off.
+#[test]
+fn any_moment_asked_for_is_answered() {
+    let events = network(1);
+    let history = History::new(page(&events, "e"));
+    for (from, to) in [(i64::MIN, i64::MAX), (i64::MIN, 0), (i64::MAX - 1, i64::MAX)] {
+        let _ = history.frames(from, to);
+    }
+    let _ = history.frame_at(i64::MIN);
+    let _ = history.frame_at(i64::MAX);
+}
+

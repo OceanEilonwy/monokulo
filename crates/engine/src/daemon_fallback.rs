@@ -229,13 +229,6 @@ impl FallbackDaemonClient {
         DaemonError::Request("no Monero daemon nodes configured".to_owned())
     }
 
-    /// A handle that sends every call to one node, for the length of one scan
-    /// tick (task 7.6). Different nodes can be at different heights or on
-    /// different forks, and one tick mixing their answers (a height from one,
-    /// blocks from another) can reach wrong conclusions. The pinned node is
-    /// the first configured one out of cooldown. If it fails,
-    /// the call fails (the tick ends and retries next time, when another node
-    /// is picked) and the failure counts towards its cooldown here.
     /// The active node's pool outlook, for the engine page. Purely
     /// observational: within `deadline`, and an answer or a failure leaves
     /// the nodes' health (and so which node scans) as it was.
@@ -248,6 +241,13 @@ impl FallbackDaemonClient {
             .flatten()
     }
 
+    /// A handle that sends every call to one node, for the length of one scan
+    /// tick (task 7.6). Different nodes can be at different heights or on
+    /// different forks, and one tick mixing their answers (a height from one,
+    /// blocks from another) can reach wrong conclusions. The pinned node is
+    /// the first configured one out of cooldown. If it fails,
+    /// the call fails (the tick ends and retries next time, when another node
+    /// is picked) and the failure counts towards its cooldown here.
     pub fn pin(&self) -> PinnedDaemon<'_> {
         let idx = self.attempt_order().first().copied().unwrap_or(0);
         PinnedDaemon { inner: self, idx }

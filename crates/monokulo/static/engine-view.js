@@ -48,6 +48,7 @@
   let head = 0; // the moment drawn, engine milliseconds
   let mode = "live"; // live | paused | replay
   let replayTo = 0;
+  let lastSeq = -1;
   let replayFetching = false;
   let source = null;
   const engineNow = () => Date.now() + offset;
@@ -61,17 +62,30 @@
       offset = start.engine_now_ms - Date.now();
       oldest = start.oldest_ms;
       marks = start.marks;
+      lastSeq = marks.length ? marks[marks.length - 1].seq : -1;
       queue = [];
+      tlDirty = true;
+      // A reconnect while paused or replaying leaves the view where it is.
+      if (mode !== "live") return;
       head = start.frame.at_ms;
       draw(start.frame.view);
       drawEvents();
-      tlDirty = true;
     });
     source.addEventListener("frame", (e) => {
       const frame = JSON.parse(e.data);
       if (oldest === null) oldest = frame.at_ms;
       const arrived = performance.now();
-      for (const mark of frame.marks) { mark.arrived = arrived; marks.push(mark); }
+      // A frame can repeat marks the history already gave (it was sent
+      // while the history was being read): each is taken once.
+      for (const mark of frame.marks) {
+        if (mark.seq <= lastSeq) continue;
+        mark.arrived = arrived;
+        marks.push(mark);
+        lastSeq = mark.seq;
+      }
+      // What the engine no longer keeps, the page lets go of too.
+      const keep = engineNow() - AXIS;
+      while (marks.length && marks[0].at_ms < keep) marks.shift();
       if (mode === "live") queue.push(frame);
       tlDirty = true;
     });
@@ -150,10 +164,15 @@
     const from = Math.round(head), to = from + REPLAY_MS;
     try {
       const response = await fetch(`/status/engine/replay?network=${encodeURIComponent(network)}&from=${from}&to=${to}`);
-      if (response.ok && mode === "replay") {
+      if (!response.ok) throw new Error(`replay: ${response.status}`);
+      if (mode === "replay") {
         queue = (await response.json()).filter((f) => f.at_ms > head);
         replayTo = to;
       }
+    } catch {
+      // The engine (or monokulo) didn't answer: pause, rather than ask
+      // again every frame.
+      if (mode === "replay") setMode("paused");
     } finally {
       replayFetching = false;
     }
@@ -444,6 +463,16 @@
       default: return "txs";
     }
   }
+  // The cells drawn for blocks `from` to `to`: a node far ahead can
+  // announce millions of blocks, and only the drawn ones are animated.
+  function drawnCells(from, to) {
+    const cells = [];
+    for (const [key, cell] of cellEls) {
+      const h = Number(key);
+      if (key !== "brk" && h >= from && h <= to) cells.push(cell);
+    }
+    return cells;
+  }
   function animate(effect) {
     switch (effect.kind) {
       case "packet": {
@@ -465,13 +494,11 @@
       }
       case "probe": pulse(cellEls.get(String(effect.height)), "probe"); break;
       case "new_blocks":
-        requestAnimationFrame(() => { for (let h = effect.from; h <= effect.to; h++) pulse(cellEls.get(String(h)), "enter"); });
+        requestAnimationFrame(() => { for (const cell of drawnCells(effect.from, effect.to)) pulse(cell, "enter"); });
         pulse(anchor({ kind: "node" }), "spark");
         break;
       case "drop":
-        for (let h = effect.from; h <= effect.to; h++) {
-          const cell = cellEls.get(String(h));
-          if (!cell) continue;
+        for (const cell of drawnCells(effect.from, effect.to)) {
           const [x, y] = centre(cell);
           const ghost = cell.cloneNode(true);
           ghost.classList.add("ghostcell");
@@ -502,7 +529,16 @@
   const AXIS = 30 * 60000;
   let frozenEnd = null;
   let hoverX = null, tlDirty = true;
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  // Theme colours, read once and again when the theme changes, not on
+  // every frame.
+  const cssCache = new Map();
+  const css = (name) => {
+    if (!cssCache.has(name)) cssCache.set(name, getComputedStyle(document.documentElement).getPropertyValue(name).trim());
+    return cssCache.get(name);
+  };
+  const themeChanged = () => { cssCache.clear(); tlDirty = true; };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", themeChanged);
+  new MutationObserver(themeChanged).observe(document.documentElement, { attributes: true });
   function axisEnd() {
     if (frozenEnd === null) return engineNow();
     frozenEnd = Math.max(frozenEnd, head);

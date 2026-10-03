@@ -297,6 +297,30 @@ impl RpcDaemonClient {
         Ok((bytes, timing))
     }
 
+    /// A request for the engine page alone: counted under `endpoint` like
+    /// any other, but never a round-trip sample or a failure for the link
+    /// the scan sizes its requests from, so watching the page can't change
+    /// how the engine scans.
+    async fn post_unsampled(
+        &self,
+        endpoint: &str,
+        path: &str,
+        body: &Value,
+    ) -> Result<Value, DaemonError> {
+        let (bytes, _) = self
+            .post_timed_inner(
+                endpoint,
+                path,
+                body.to_string().into_bytes(),
+                true,
+                REQUEST_TIMEOUT,
+                self.max_response_bytes,
+            )
+            .await?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| DaemonError::Request(format!("invalid JSON response from {path}: {e}")))
+    }
+
     /// Lowers the response size cap, for tests.
     #[cfg(test)]
     fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
@@ -1626,12 +1650,19 @@ impl MoneroDaemonClient for RpcDaemonClient {
     /// `get_info` for the pool's size and the median block weight, and
     /// `/get_transaction_pool_stats` for the pool's bytes: a node that
     /// refuses the second still gives the count.
+    /// Neither request touches the link's estimates (`post_unsampled`).
     async fn get_pool_outlook(&self) -> Result<Option<PoolOutlook>, DaemonError> {
-        let info: GetInfoResult = self.post_json_rpc("get_info", json!({})).await?;
+        let body = json!({ "jsonrpc": "2.0", "id": "0", "method": "get_info", "params": {} });
+        let answer = self
+            .post_unsampled("get_info", "/json_rpc", &body)
+            .await?;
+        let info: GetInfoResult = json_rpc_result("get_info", answer.to_string().as_bytes())?;
         let stats = self
-            .post_plain::<PoolStatsResponse>("/get_transaction_pool_stats", json!({}))
+            .post_unsampled("/get_transaction_pool_stats", "/get_transaction_pool_stats", &json!({}))
             .await
-            .ok();
+            .ok()
+            .filter(|value| value.get("status").and_then(Value::as_str) == Some("OK"))
+            .and_then(|value| serde_json::from_value::<PoolStatsResponse>(value).ok());
         let Some(txs) = stats
             .as_ref()
             .map(|stats| stats.pool_stats.txs_total)
@@ -3216,14 +3247,20 @@ mod wire_tests {
                 penalty_free: PoolOutlook::FULL_REWARD_ZONE,
             })
         );
+        let refused = node(false).await;
         assert_eq!(
-            node(false).await.get_pool_outlook().await.unwrap(),
+            refused.get_pool_outlook().await.unwrap(),
             Some(PoolOutlook {
                 txs: 7,
                 bytes: None,
                 penalty_free: PoolOutlook::FULL_REWARD_ZONE,
             })
         );
+        // The page's requests are no sample, and a refusal no failure, for
+        // the link the scan sizes its requests from.
+        let link = refused.link().unwrap();
+        assert_eq!(link.last_measured_unix, None, "{link:?}");
+        assert_eq!(link.timeouts_last_hour, 0);
     }
 
     /// A request that runs out of time is a timeout, not any failure: the

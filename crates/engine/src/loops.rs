@@ -448,7 +448,11 @@ pub async fn run_scanner_loop(
         if scan_state.activity().node_pool_due() {
             record_node_pool(scan_state.activity(), &daemon);
         }
-        if scan_state.activity().snapshot_due() {
+        // Not while scanning work waits on the database: the snapshot's
+        // reads would delay the round. It is taken at the next quiet round.
+        if db.queued(crate::store::db::Class::Scanner) == 0
+            && scan_state.activity().snapshot_due()
+        {
             record_snapshot(
                 &scan_state,
                 &db,
@@ -543,9 +547,6 @@ pub async fn run_scanner_loop(
     }
 }
 
-/// Records `network`'s snapshot for the engine page
-/// (`docs/engine_visualizer.md`). One that can't be taken is skipped: the
-/// next is due in seconds, and scanning matters more.
 /// Asks the active node about its whole pool for the engine page, beside
 /// the round rather than before it: the round doesn't wait for the answer.
 fn record_node_pool(
@@ -567,6 +568,9 @@ fn record_node_pool(
     });
 }
 
+/// Records `network`'s snapshot for the engine page
+/// (`docs/engine_visualizer.md`). One that can't be taken is skipped: the
+/// next is due in seconds, and scanning matters more.
 async fn record_snapshot(
     scan_state: &crate::work::ScanState,
     db: &Db,

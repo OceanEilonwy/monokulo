@@ -120,24 +120,31 @@ impl Relay {
     }
 
     /// Reads `network`'s history with `read`, reading it from the engine
-    /// first if nobody is watching.
+    /// first if nobody is watching. A read keeps the network followed for
+    /// [`LINGER`] after it, as a viewer leaving does: the page without
+    /// JavaScript, and scrubbing, ask without watching, and must see what
+    /// happened since, not the history as it was first read.
     pub async fn read<T>(
-        &self,
+        self: &Arc<Self>,
         network: &str,
         read: impl FnOnce(&History) -> T,
     ) -> Result<T, EngineClientError> {
         let channel = self.channel(network);
-        if let Some(history) = channel.history.read().await.as_ref() {
-            return Ok(read(history));
+        let mut read = Some(read);
+        loop {
+            if channel.viewers.load(Ordering::SeqCst) == 0 {
+                *channel.idle_since.lock() = Some(Instant::now());
+            }
+            self.ensure_history(&channel).await?;
+            self.ensure_polling(&channel);
+            // The poller may have let the history go in between (its last
+            // reader's linger ran out): read it again.
+            if let Some(history) = channel.history.read().await.as_ref() {
+                if let Some(read) = read.take() {
+                    return Ok(read(history));
+                }
+            }
         }
-        let mut history = channel.history.write().await;
-        let history = match &mut *history {
-            Some(history) => history,
-            None => history.insert(History::new(
-                self.client.engine_activity(&channel.network, None).await?,
-            )),
-        };
-        Ok(read(history))
     }
 
     async fn ensure_history(&self, channel: &Channel) -> Result<(), EngineClientError> {
@@ -290,6 +297,33 @@ mod tests {
             .unwrap();
         assert!(live);
         drop((watch, other));
+    }
+
+    /// Reading without watching (the page without JavaScript, scrubbing)
+    /// keeps the network followed: a later read sees what the engine
+    /// recorded since. Once nobody has read it for the linger, it is let go.
+    #[tokio::test]
+    async fn reads_alone_keep_the_history_current_then_let_it_go() {
+        let engine = engine_test_support::spawn_test_engine().await;
+        let activity = engine.activity(Network::Stagenet);
+        activity.record(Event::Snapshot(Box::default()));
+        let relay = relay(&engine, Duration::from_millis(300));
+        let reorg = |history: &History| history.live().reorg.is_some();
+        assert!(!relay.read("stagenet", reorg).await.unwrap());
+        assert!(relay.polling("stagenet"), "a read starts following");
+
+        activity.record(Event::ReorgFound { fork: 100 });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !relay.read("stagenet", reorg).await.unwrap() {
+            assert!(Instant::now() < deadline, "the read never caught up");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        while relay.polling("stagenet") {
+            assert!(Instant::now() < deadline, "still polling");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(relay.channel("stagenet").history.read().await.is_none());
     }
 
     /// A network nobody watches is let go of after the linger; watching it

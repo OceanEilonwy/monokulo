@@ -430,6 +430,42 @@ twice as far apart (up to 1s), and block and node flashes last 1.2s. The
 lengths are constants at the top of the script. Reduced motion is
 unchanged: nothing travels.
 
+## D36. Code review
+
+An independent review of the pull request found these; all fixed:
+
+- **The page without JavaScript froze.** Only a watcher started the
+  poller, so a page or scrub request with nobody watching read the history
+  once and served it unchanged from then on (and kept it in memory). A
+  read now keeps the network followed for the linger after it, as a viewer
+  leaving does.
+- **Watching the page changed the scanner's link estimates.** The node pool
+  requests went through the path that samples round trips and counts
+  failures for the link the scan sizes its requests from. They now go
+  around it (`post_unsampled`): counted under their endpoints, never a
+  sample or a failure.
+- **A failed replay retried every frame**: it now pauses.
+- **Marks grew without end in a long-open tab**, and two theme colours were
+  read per key mark per frame. Marks older than the bar are let go of, and
+  colours are read once (again when the theme changes).
+- **A reconnect while paused jumped the view to live**: it now leaves a
+  paused or replaying view alone.
+- **A frame could repeat marks the history already gave** a new viewer:
+  marks are taken once, by sequence number.
+- **New or rewound blocks were animated one by one however many there
+  were** (millions, for a node far ahead): only the drawn cells are.
+- **Replay's frame maths could overflow** on a request naming an extreme
+  moment: it saturates.
+- **The snapshot could delay a round** on a busy database: it is skipped
+  while scanning work waits on the database, and taken at the next quiet
+  round. Spawning it instead was rejected: a snapshot read before a commit
+  but recorded after it would move groups back on the page.
+- Two doc comments had slid onto the wrong functions.
+
+Left as is: a viewer's first read of the engine's record copies up to
+50,000 events under the record's lock, once per new viewer or gap
+(acceptable, as the reviewer also judged).
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,

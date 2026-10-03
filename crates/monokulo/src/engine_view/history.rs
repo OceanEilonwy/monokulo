@@ -286,8 +286,15 @@ impl History {
             .iter()
             .filter(|e| e.at_ms > from_ms && e.at_ms <= to_ms)
         {
-            let window_end =
-                from_ms + ((recorded.at_ms - from_ms + FRAME_MS - 1) / FRAME_MS) * FRAME_MS;
+            // Saturating: `from_ms` is whatever the request said.
+            let window_end = from_ms.saturating_add(
+                recorded
+                    .at_ms
+                    .saturating_sub(from_ms)
+                    .saturating_add(FRAME_MS - 1)
+                    / FRAME_MS
+                    * FRAME_MS,
+            );
             if window
                 .as_ref()
                 .is_some_and(|(end, _, _)| *end != window_end)
