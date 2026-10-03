@@ -41,3 +41,9 @@ CREATE TABLE proof_seeds (
     block_hash TEXT NOT NULL,
     PRIMARY KEY (network, height)
 );
+
+-- The id of the block a payment was found in, at its block_height, when it
+-- is known from the block itself (a scan, or the block's own transaction
+-- list): while checking is on, a payment settles only if this is the proven
+-- block at that height. Cleared whenever the height changes.
+ALTER TABLE order_payments ADD COLUMN block_hash TEXT;

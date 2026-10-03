@@ -99,8 +99,8 @@ fn real_blocks_prove_across_a_key_change_and_any_change_fails() {
             candidate.id, expected_id,
             "the id is computed from the blob"
         );
-        let now = timestamp + 60;
-        assert_eq!(check_header(&window, &candidate, now), Ok(difficulty));
+        assert_eq!(check_header(&window, &candidate), Ok(difficulty));
+        assert_eq!(check_time(&candidate, timestamp + 60), Ok(()));
         let key = f.seeds[&seed_height(height)];
         keys_used.insert(seed_height(height));
         let hash = hasher
@@ -179,31 +179,28 @@ fn the_header_rules_each_refuse() {
     let (&height, blob) = f.blobs.iter().next().unwrap();
     let window = f.window_before(height);
     let good = decode(height, blob).unwrap();
-    let now = good.timestamp;
-
     let mut orphan = good.clone();
     orphan.prev_id[0] ^= 1;
-    let rejection = check_header(&window, &orphan, now).unwrap_err();
+    let rejection = check_header(&window, &orphan).unwrap_err();
     assert_eq!(rejection, Rejection::DoesNotFollow { height });
     assert_eq!(rejection.verdict(), Verdict::Moved);
 
     let mut skipped = good.clone();
     skipped.height += 1;
     assert_eq!(
-        check_header(&window, &skipped, now),
+        check_header(&window, &skipped),
         Err(Rejection::DoesNotFollow { height: height + 1 })
     );
 
     let mut old = good.clone();
     old.major_version = RANDOMX_MAJOR_VERSION - 1;
-    let rejection = check_header(&window, &old, now).unwrap_err();
+    let rejection = check_header(&window, &old).unwrap_err();
     assert!(matches!(rejection, Rejection::NotRandomX { .. }));
     assert_eq!(rejection.verdict(), Verdict::Invalid);
 
     // Two hours ahead is allowed; a second more waits for the clock.
-    assert!(check_header(&window, &good, good.timestamp - FUTURE_TIME_LIMIT_SECS).is_ok());
-    let rejection =
-        check_header(&window, &good, good.timestamp - FUTURE_TIME_LIMIT_SECS - 1).unwrap_err();
+    assert!(check_time(&good, good.timestamp - FUTURE_TIME_LIMIT_SECS).is_ok());
+    let rejection = check_time(&good, good.timestamp - FUTURE_TIME_LIMIT_SECS - 1).unwrap_err();
     assert!(matches!(rejection, Rejection::TimestampInFuture { .. }));
     assert_eq!(rejection.verdict(), Verdict::NotYet);
 
@@ -211,11 +208,11 @@ fn the_header_rules_each_refuse() {
     let mut early = good.clone();
     early.timestamp = median;
     assert!(
-        check_header(&window, &early, now).is_ok(),
+        check_header(&window, &early).is_ok(),
         "the median itself is allowed"
     );
     early.timestamp = median - 1;
-    let rejection = check_header(&window, &early, now).unwrap_err();
+    let rejection = check_header(&window, &early).unwrap_err();
     assert_eq!(
         rejection,
         Rejection::TimestampBeforeMedian {
@@ -228,7 +225,7 @@ fn the_header_rules_each_refuse() {
 
     // No window: nothing to follow.
     assert!(matches!(
-        check_header(&Window::default(), &good, now),
+        check_header(&Window::default(), &good),
         Err(Rejection::DoesNotFollow { .. })
     ));
 }

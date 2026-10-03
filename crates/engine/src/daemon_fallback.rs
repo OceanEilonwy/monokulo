@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::daemon::{ChainBlock, ChainHeader, ChainTip, DifficultyHeader, FetchedTx, PoolAnswer};
+use crate::daemon::{ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer};
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
@@ -114,7 +114,7 @@ impl FallbackDaemonClient {
         let mut current = self.excluded.lock();
         for (idx, (&was, &now)) in current.iter().zip(&excluded).enumerate() {
             if was != now {
-                tracing::warn!(
+                tracing::info!(
                     node = %self.nodes[idx].label,
                     excluded = now,
                     "monero daemon fallback: node {idx} {}",
@@ -438,17 +438,6 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.one(|c| c.get_mempool_txids()).await
     }
-    async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
-        self.one(|c| c.get_block_blob(height)).await
-    }
-    async fn get_difficulty_headers(
-        &self,
-        start_height: u64,
-        count: u64,
-    ) -> Result<Vec<DifficultyHeader>, DaemonError> {
-        self.one(|c| c.get_difficulty_headers(start_height, count))
-            .await
-    }
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
@@ -615,19 +604,6 @@ impl MoneroDaemonClient for FallbackDaemonClient {
 
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.failover(|c| c.get_mempool_txids()).await
-    }
-
-    async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
-        self.failover(|c| c.get_block_blob(height)).await
-    }
-
-    async fn get_difficulty_headers(
-        &self,
-        start_height: u64,
-        count: u64,
-    ) -> Result<Vec<DifficultyHeader>, DaemonError> {
-        self.failover(|c| c.get_difficulty_headers(start_height, count))
-            .await
     }
 
     async fn get_transactions_with_ids(

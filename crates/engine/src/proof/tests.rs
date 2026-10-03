@@ -25,12 +25,17 @@ fn builder() -> Hasher {
 }
 
 /// Production's tuning, but anchoring 10 blocks deep and on windows that
-/// claim difficulty 1 (test chains' windows are unmined).
+/// claim difficulty 1 (test chains' windows are unmined), keeping only
+/// what that needs, and letting a caught node back as soon as it serves
+/// the proven chain (`a_caught_node_stays_out_for_a_while` has the real
+/// wait).
 fn tuning() -> ProofTuning {
     ProofTuning {
         anchor_depth: 10,
+        keep_blocks: 0,
+        caught_for: Duration::ZERO,
         anchor_samples: 8,
-        min_anchor_difficulty_mainnet: 1,
+        min_difficulty_mainnet: 1,
         ..ProofTuning::DEFAULT
     }
 }
@@ -271,9 +276,9 @@ async fn a_reorg_deeper_than_can_be_followed_holds_settlement() {
     world.round().await;
     // A replacement for everything from 20 blocks below the anchor.
     let mut other = chain.truncated(TOP - 20);
-    for _ in 0..40 {
-        let ts = other.tip().timestamp + 29;
-        other.push(vec![], ts, true);
+    let resumed = crate::now_unix() as u64 - 3000;
+    for i in 0..40 {
+        other.push(vec![], resumed + i * 29, true);
     }
     other.install(&world.nodes[0], TOP - 19);
     world.round().await;
@@ -365,8 +370,8 @@ async fn an_anchor_below_the_floor_or_with_a_failing_proof_is_refused() {
         builder(),
         TOP,
         crate::pow::DIFFICULTY_BLOCKS as u64,
-        30,
-        crate::now_unix() as u64 - 3600,
+        60,
+        crate::now_unix() as u64 - 200,
         1 << 40,
     );
     heavy.forge(vec![]);
@@ -385,6 +390,18 @@ async fn an_anchor_below_the_floor_or_with_a_failing_proof_is_refused() {
         status.summary.contains("failed its check"),
         "{}",
         status.summary
+    );
+
+    // A window dated two days back (a 10-block-deep anchor should be 20
+    // minutes old): the blocks after it could make the difficulty collapse.
+    let mut old = TestChain::anchored_at(builder(), TOP, crate::now_unix() as u64 - 172_800);
+    old.mine_empty(12);
+    let mut world = World::new(1, &old);
+    world.round().await;
+    assert!(
+        world.status().summary.contains("is dated"),
+        "{}",
+        world.status().summary
     );
 
     // The difficulty claimed for the block after the anchor isn't what the
@@ -547,6 +564,279 @@ async fn an_unreachable_node_is_reported_and_nothing_held_against_it() {
     assert_eq!(world.status().state, ProofState::Following);
 }
 
+#[tokio::test]
+async fn a_caught_node_stays_out_for_a_while() {
+    let mut chain = base_chain();
+    let mut world = World::with_tuning(
+        2,
+        &chain,
+        ProofTuning {
+            caught_for: ProofTuning::DEFAULT.caught_for,
+            ..tuning()
+        },
+    );
+    world.round().await;
+    let proven = world.proven_tip();
+    let mut forged = chain.clone();
+    forged.forge(vec![]);
+    forged.install(&world.nodes[0], proven.height + 1);
+    chain.mine_empty(1);
+    chain.install(&world.nodes[1], proven.height + 1);
+    world.round().await;
+    assert!(world.client.is_excluded(0));
+    // It serves the proven chain now: on chain, still left out.
+    chain.install(&world.nodes[0], proven.height + 1);
+    world.round().await;
+    assert_eq!(world.verdict(0), NodeVerdict::OnChain);
+    assert!(world.client.is_excluded(0), "an hour, not a round");
+    assert!(world.status().nodes[0].excluded);
+}
+
+/// A node that lies about where its chain leaves the proven one (any
+/// block hash it likes) can only make the engine fetch blocks it has:
+/// they are passed over unhashed, and the honest block after them is
+/// checked.
+#[tokio::test]
+async fn blocks_the_proven_chain_has_are_passed_over_unhashed() {
+    struct BentHashes(Arc<FakeDaemonClient>);
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for BentHashes {
+        async fn get_height(&self) -> Result<u64, DaemonError> {
+            self.0.get_height().await
+        }
+        async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
+            self.0.get_tip().await
+        }
+        /// The real id at the deepest followable block and below; made up
+        /// above, so its chain seems to leave the proven one there.
+        async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+            if height > TOP + 2 {
+                Ok("ab".repeat(32))
+            } else {
+                self.0.get_block_hash(height).await
+            }
+        }
+        async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
+            self.0.get_block_blob(height).await
+        }
+        async fn get_chain_blocks(
+            &self,
+            start: u64,
+            count: u64,
+        ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+            self.0.get_chain_blocks(start, count).await
+        }
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+            self.0.get_mempool_txids().await
+        }
+        async fn get_transactions_with_ids(
+            &self,
+            txids: &[String],
+        ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+            self.0.get_transactions_with_ids(txids).await
+        }
+        async fn locate_transaction(
+            &self,
+            txid: &str,
+        ) -> Result<crate::daemon::TxLocation, DaemonError> {
+            self.0.locate_transaction(txid).await
+        }
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> Result<Vec<crate::daemon::KeyImageStatus>, DaemonError> {
+            self.0.is_key_image_spent(key_images).await
+        }
+    }
+
+    let mut chain = base_chain();
+    let mut world = World::new(1, &chain);
+    world.round().await;
+    let checked = world.status().blocks_checked;
+    chain.mine_empty(1);
+    chain.install(&world.nodes[0], TOP + 13);
+    let bent = FallbackDaemonClient::new(vec![FallbackNode {
+        label: "node0:18081".to_string(),
+        client: Arc::new(BentHashes(world.nodes[0].clone())),
+    }]);
+    world.client = bent;
+    world.round().await;
+    assert_eq!(world.proven_tip(), chain.tip().proven());
+    assert_eq!(world.verdict(0), NodeVerdict::OnChain);
+    assert_eq!(
+        world.status().blocks_checked,
+        checked + 1,
+        "only the new block hashed"
+    );
+}
+
+#[tokio::test]
+async fn a_node_contradicting_itself_is_caught() {
+    struct TwoFaced(Arc<FakeDaemonClient>);
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for TwoFaced {
+        async fn get_height(&self) -> Result<u64, DaemonError> {
+            Ok(TOP + 2)
+        }
+        /// Its tip is the anchor's height, with an id that isn't the
+        /// anchor's; asked block by block, it gives the anchor's.
+        async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
+            Ok(crate::daemon::ChainTip {
+                height: TOP + 2,
+                hash: Some("cd".repeat(32)),
+            })
+        }
+        async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+            self.0.get_block_hash(height).await
+        }
+        async fn get_chain_blocks(
+            &self,
+            start: u64,
+            count: u64,
+        ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+            self.0.get_chain_blocks(start, count).await
+        }
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+            self.0.get_mempool_txids().await
+        }
+        async fn get_transactions_with_ids(
+            &self,
+            txids: &[String],
+        ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+            self.0.get_transactions_with_ids(txids).await
+        }
+        async fn locate_transaction(
+            &self,
+            txid: &str,
+        ) -> Result<crate::daemon::TxLocation, DaemonError> {
+            self.0.locate_transaction(txid).await
+        }
+        async fn is_key_image_spent(
+            &self,
+            key_images: &[String],
+        ) -> Result<Vec<crate::daemon::KeyImageStatus>, DaemonError> {
+            self.0.is_key_image_spent(key_images).await
+        }
+    }
+
+    let chain = base_chain();
+    let mut world = World::new(2, &chain);
+    world.round().await;
+    let honest = world.nodes[1].clone();
+    world.client = FallbackDaemonClient::new(vec![
+        FallbackNode {
+            label: "node0:18081".to_string(),
+            client: Arc::new(TwoFaced(world.nodes[0].clone())),
+        },
+        FallbackNode {
+            label: "node1:18081".to_string(),
+            client: honest,
+        },
+    ]);
+    world.round().await;
+    assert_eq!(world.verdict(0), NodeVerdict::Caught);
+    assert!(world.status().nodes[0]
+        .detail
+        .as_ref()
+        .unwrap()
+        .contains("contradict"));
+    assert!(world.client.is_excluded(0));
+}
+
+#[tokio::test]
+async fn a_node_far_behind_is_not_held_against() {
+    let chain = base_chain();
+    let mut world = World::new(2, &chain);
+    world.round().await;
+    world.nodes[1].report_height(TOP - 800);
+    world.round().await;
+    assert_eq!(world.verdict(1), NodeVerdict::Unknown);
+    assert!(world.status().nodes[1]
+        .detail
+        .as_ref()
+        .unwrap()
+        .contains("too far behind"));
+    assert!(!world.client.is_excluded(1));
+}
+
+/// However its timestamps were bent, a block whose difficulty falls below
+/// the network's floor isn't followed.
+#[tokio::test]
+async fn a_block_below_the_difficulty_floor_is_caught() {
+    let mut chain = base_chain();
+    let mut world = World::new(1, &chain);
+    world.round().await;
+    chain.mine_empty(1);
+    chain.install(&world.nodes[0], TOP + 13);
+    // The engine restarts with a floor above the test chain's difficulty.
+    world.follower = Follower::new(
+        NET,
+        ProofTuning {
+            min_difficulty_mainnet: 1_000,
+            ..tuning()
+        },
+    )
+    .unwrap();
+    world.round().await;
+    assert_eq!(world.verdict(0), NodeVerdict::Caught);
+    assert!(world.status().nodes[0]
+        .detail
+        .as_ref()
+        .unwrap()
+        .contains("floor"));
+}
+
+#[tokio::test]
+async fn a_failed_anchor_is_not_retried_at_once() {
+    let chain = base_chain();
+    let mut world = World::with_tuning(
+        3,
+        &chain,
+        ProofTuning {
+            anchor_retry: Duration::from_secs(60),
+            ..tuning()
+        },
+    );
+    world.nodes[1].set_online(false);
+    world.nodes[2].set_online(false);
+    world.round().await;
+    world.nodes[1].set_online(true);
+    world.round().await;
+    assert!(
+        world
+            .store
+            .lock()
+            .proof_network(NET)
+            .unwrap()
+            .unwrap()
+            .anchor
+            .is_none(),
+        "waits out the retry"
+    );
+    let mut world = World::with_tuning(
+        3,
+        &chain,
+        ProofTuning {
+            anchor_retry: Duration::from_millis(1),
+            ..tuning()
+        },
+    );
+    world.nodes[1].set_online(false);
+    world.nodes[2].set_online(false);
+    world.round().await;
+    world.nodes[1].set_online(true);
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    world.round().await;
+    assert!(world
+        .store
+        .lock()
+        .proof_network(NET)
+        .unwrap()
+        .unwrap()
+        .anchor
+        .is_some());
+}
+
 #[test]
 fn a_tuning_checking_cannot_run_with_is_refused() {
     assert!(ProofTuning::DEFAULT.validate().is_ok());
@@ -568,7 +858,7 @@ fn a_tuning_checking_cannot_run_with_is_refused() {
             ..ProofTuning::DEFAULT
         },
         ProofTuning {
-            min_anchor_difficulty_testnet: 0,
+            min_difficulty_testnet: 0,
             ..ProofTuning::DEFAULT
         },
     ] {
@@ -680,6 +970,47 @@ mod settlement {
         }
         assert_ne!(shop.status(), crate::status::OrderStatus::Paid);
         assert_eq!(shop.world.verdict(0), NodeVerdict::Caught);
+    }
+
+    /// The scanner records a made-up chain deeper than its reorg window
+    /// before the proof loop catches the node: the payment in it keeps its
+    /// height after the reorg, but its block was never the proven one.
+    #[tokio::test]
+    async fn a_payment_deep_in_a_made_up_chain_never_settles() {
+        let mut chain = base_chain();
+        let mut shop = Shop::new(3, &chain).await;
+        let mut forged = chain.clone();
+        forged.forge(vec![fixture_tx()]);
+        forged.mine_empty(40);
+        forged.install(&shop.world.nodes[0], TOP + 13);
+        for _ in 0..10 {
+            shop.scan().await;
+        }
+        let recorded = shop
+            .world
+            .store
+            .lock()
+            .max_scanned_height(NET)
+            .unwrap()
+            .unwrap();
+        assert!(
+            recorded > TOP + 13 + 20,
+            "deeper than the reorg window: {recorded}"
+        );
+        for _ in 0..50 {
+            let ts = chain.tip().timestamp + 31;
+            chain.push(vec![], ts, true);
+        }
+        for node in &shop.world.nodes[1..] {
+            chain.install(node, TOP + 13);
+        }
+        for _ in 0..10 {
+            shop.world.round().await;
+            shop.scan().await;
+            assert_ne!(shop.status(), crate::status::OrderStatus::Paid);
+            assert_ne!(shop.status(), crate::status::OrderStatus::Overpaid);
+        }
+        assert!(shop.world.client.is_excluded(0));
     }
 
     #[tokio::test]

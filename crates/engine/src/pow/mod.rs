@@ -249,6 +249,12 @@ pub enum Rejection {
     },
     #[error("block {height}'s proof of work doesn't meet its difficulty {difficulty}")]
     ProofOfWork { height: u64, difficulty: u128 },
+    #[error("block {height}'s difficulty {difficulty} is below this network's floor of {floor}")]
+    BelowFloor {
+        height: u64,
+        difficulty: u128,
+        floor: u128,
+    },
 }
 
 /// What a rejection says about the node that sent the block.
@@ -274,7 +280,8 @@ impl Rejection {
             | Rejection::WrongHeight { .. }
             | Rejection::NotRandomX { .. }
             | Rejection::TimestampBeforeMedian { .. }
-            | Rejection::ProofOfWork { .. } => Verdict::Invalid,
+            | Rejection::ProofOfWork { .. }
+            | Rejection::BelowFloor { .. } => Verdict::Invalid,
         }
     }
 
@@ -286,7 +293,8 @@ impl Rejection {
             | Rejection::DoesNotFollow { height }
             | Rejection::TimestampBeforeMedian { height, .. }
             | Rejection::TimestampInFuture { height, .. }
-            | Rejection::ProofOfWork { height, .. } => *height,
+            | Rejection::ProofOfWork { height, .. }
+            | Rejection::BelowFloor { height, .. } => *height,
         }
     }
 }
@@ -324,11 +332,13 @@ pub fn decode(height: u64, blob: &[u8]) -> Result<Candidate, Rejection> {
     })
 }
 
-/// Checks everything about `candidate` but its hash, against the proven
-/// `window` ending at its parent, at `now` (unix seconds): it must follow
-/// the window's tip, be a RandomX block, and keep the timestamp rules.
-/// Returns the difficulty its RandomX hash must then meet.
-pub fn check_header(window: &Window, candidate: &Candidate, now: u64) -> Result<u128, Rejection> {
+/// Checks what about `candidate` the blocks before it decide, against
+/// the proven `window` ending at its parent: it must follow the window's
+/// tip, be a RandomX block, and keep its timestamp at or above their
+/// median. Returns the difficulty its RandomX hash must then meet. The
+/// clock is checked last ([`check_time`]), once its proof of work is known
+/// good: a block with a bad proof is invalid whatever its time.
+pub fn check_header(window: &Window, candidate: &Candidate) -> Result<u128, Rejection> {
     let height = candidate.height;
     let follows = window
         .tip()
@@ -342,13 +352,6 @@ pub fn check_header(window: &Window, candidate: &Candidate, now: u64) -> Result<
             version: candidate.major_version,
         });
     }
-    if candidate.timestamp > now.saturating_add(FUTURE_TIME_LIMIT_SECS) {
-        return Err(Rejection::TimestampInFuture {
-            height,
-            timestamp: candidate.timestamp,
-            now,
-        });
-    }
     if let Some(median) = window.median_timestamp() {
         if candidate.timestamp < median {
             return Err(Rejection::TimestampBeforeMedian {
@@ -359,6 +362,19 @@ pub fn check_header(window: &Window, candidate: &Candidate, now: u64) -> Result<
         }
     }
     Ok(window.next_difficulty())
+}
+
+/// Whether `candidate`'s timestamp is within two hours of `now` (unix
+/// seconds). A block further ahead isn't invalid: its time hasn't come.
+pub fn check_time(candidate: &Candidate, now: u64) -> Result<(), Rejection> {
+    if candidate.timestamp > now.saturating_add(FUTURE_TIME_LIMIT_SECS) {
+        return Err(Rejection::TimestampInFuture {
+            height: candidate.height,
+            timestamp: candidate.timestamp,
+            now,
+        });
+    }
+    Ok(())
 }
 
 /// `candidate` with its RandomX `hash`, against `difficulty`: the block

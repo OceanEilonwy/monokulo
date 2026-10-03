@@ -39,13 +39,28 @@ use crate::store::{Store, StoreError};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProofTuning {
     /// Blocks below the nodes' tips an anchor is taken at: deeper than any
-    /// reorg Monero has seen (18 blocks, in 2025). Also how far back the
-    /// proven chain is kept, so the deepest reorg it can follow.
+    /// reorg Monero has seen (18 blocks, in 2025). Also the deepest reorg
+    /// the proven chain can follow.
     pub anchor_depth: u64,
+    /// Blocks the proven chain's ids are kept for (at least what
+    /// `anchor_depth` needs): a payment settles only on a block found here,
+    /// so one older than this, never settled, waits for an operator.
+    pub keep_blocks: u64,
+    /// How long a node caught serving a block that breaks a rule stays
+    /// excluded, even once it serves the proven chain again: a liar
+    /// mustn't get back in by answering the proof loop honestly for a
+    /// round.
+    pub caught_for: Duration,
+    /// The wait after an anchor couldn't be taken, doubling with each
+    /// failure in a row up to ten times it: a fresh random sample each
+    /// round would let a window with a few bad blocks through by retries.
+    pub anchor_retry: Duration,
     /// Blocks of an anchor's window whose proof of work is checked.
     pub anchor_samples: usize,
-    /// Most blocks checked in one round, across nodes: a catch-up after
-    /// downtime is spread over rounds, each committed as it goes.
+    /// Most blocks checked for one node in one round: a catch-up after
+    /// downtime is spread over rounds, each committed as it goes. A branch
+    /// leaving the proven chain below its tip gets as many as it needs to
+    /// outweigh it.
     pub blocks_per_round: u64,
     /// Blocks fetched at once from one node.
     pub fetch_concurrency: usize,
@@ -54,35 +69,46 @@ pub struct ProofTuning {
     /// Time between rounds when nothing is left to do and no node announces
     /// a block (never less than the scan's poll interval).
     pub poll: Duration,
-    /// The least difficulty a block of an anchor's window may claim, per
-    /// network: a made-up window costs at least this much work a block.
-    /// Well below the real difficulty, which can fall.
-    pub min_anchor_difficulty_mainnet: u128,
-    pub min_anchor_difficulty_stagenet: u128,
-    pub min_anchor_difficulty_testnet: u128,
+    /// The least difficulty any block may have, per network: claimed by an
+    /// anchor's window, or computed for a block after it. A made-up chain
+    /// then costs at least this much work a block, however its timestamps
+    /// were bent. Well below the real difficulty, which can fall.
+    pub min_difficulty_mainnet: u128,
+    pub min_difficulty_stagenet: u128,
+    pub min_difficulty_testnet: u128,
 }
 
 impl ProofTuning {
     pub const DEFAULT: ProofTuning = ProofTuning {
         anchor_depth: 720,
+        // 30 days.
+        keep_blocks: 21_600,
+        caught_for: Duration::from_secs(60 * 60),
+        anchor_retry: Duration::from_secs(60),
         anchor_samples: 64,
         blocks_per_round: 256,
         fetch_concurrency: 8,
         call_timeout: Duration::from_secs(20),
         poll: Duration::from_secs(5),
         // Mainnet's difficulty was about 750 G in October 2026.
-        min_anchor_difficulty_mainnet: 100_000_000_000,
+        min_difficulty_mainnet: 100_000_000_000,
         // Stagenet's was about 3.7 M.
-        min_anchor_difficulty_stagenet: 100_000,
-        min_anchor_difficulty_testnet: 100,
+        min_difficulty_stagenet: 100_000,
+        min_difficulty_testnet: 100,
     };
 
-    pub fn min_anchor_difficulty(&self, network: monero::Network) -> u128 {
+    pub fn min_difficulty(&self, network: monero::Network) -> u128 {
         match network {
-            monero::Network::Mainnet => self.min_anchor_difficulty_mainnet,
-            monero::Network::Stagenet => self.min_anchor_difficulty_stagenet,
-            monero::Network::Testnet => self.min_anchor_difficulty_testnet,
+            monero::Network::Mainnet => self.min_difficulty_mainnet,
+            monero::Network::Stagenet => self.min_difficulty_stagenet,
+            monero::Network::Testnet => self.min_difficulty_testnet,
         }
+    }
+
+    /// Proven blocks kept below the tip: the larger of what a reorg
+    /// `anchor_depth` deep needs (its window too) and `keep_blocks`.
+    fn kept(&self) -> u64 {
+        (self.anchor_depth + DIFFICULTY_BLOCKS as u64 - 1).max(self.keep_blocks)
     }
 
     /// Refuses a tuning checking can't run with.
@@ -96,14 +122,14 @@ impl ProofTuning {
         if self.blocks_per_round == 0 || self.fetch_concurrency == 0 {
             return Err("blocks_per_round and fetch_concurrency must be at least 1".to_string());
         }
-        if self.call_timeout.is_zero() || self.poll.is_zero() {
-            return Err("call_timeout and poll must be more than zero".to_string());
+        if self.call_timeout.is_zero() || self.poll.is_zero() || self.anchor_retry.is_zero() {
+            return Err("call_timeout, poll and anchor_retry must be more than zero".to_string());
         }
-        if self.min_anchor_difficulty_mainnet == 0
-            || self.min_anchor_difficulty_stagenet == 0
-            || self.min_anchor_difficulty_testnet == 0
+        if self.min_difficulty_mainnet == 0
+            || self.min_difficulty_stagenet == 0
+            || self.min_difficulty_testnet == 0
         {
-            return Err("a network's anchor difficulty floor must be at least 1".to_string());
+            return Err("a network's difficulty floor must be at least 1".to_string());
         }
         Ok(())
     }
@@ -128,6 +154,7 @@ pub struct NodeRef<'a> {
 }
 
 /// What looking at one node found, and whether checking it has more to do.
+#[derive(Clone)]
 struct Finding {
     verdict: NodeVerdict,
     detail: Option<String>,
@@ -183,11 +210,28 @@ pub struct Follower {
     network: monero::Network,
     tuning: ProofTuning,
     hasher: Option<Hasher>,
-    /// Nodes caught or found off the proven chain, by label, with what was
-    /// found: excluded until their tip is on the proven chain again.
-    off_chain: HashMap<String, (NodeVerdict, String)>,
+    /// Nodes caught or found off the proven chain, by label: excluded until
+    /// their tip is on the proven chain again (a caught one, not before
+    /// [`ProofTuning::caught_for`]).
+    off_chain: HashMap<String, OffChain>,
+    /// What each node's tip was last found to be, by label, when it was
+    /// lighter or caught: not checked again until its tip changes.
+    settled: HashMap<String, (String, Finding)>,
     status: Option<ProofStatus>,
     blocks_checked: u64,
+    /// No anchor is tried before this, after a failure; and how many
+    /// failed in a row.
+    next_anchor: Option<tokio::time::Instant>,
+    anchor_failures: u32,
+    /// Checking is known to be off in the database (forgotten on the way).
+    known_off: bool,
+}
+
+/// A node excluded from scanning, and since when.
+struct OffChain {
+    verdict: NodeVerdict,
+    detail: String,
+    since: tokio::time::Instant,
 }
 
 impl Follower {
@@ -199,8 +243,12 @@ impl Follower {
             tuning,
             hasher: None,
             off_chain: HashMap::new(),
+            settled: HashMap::new(),
             status: None,
             blocks_checked: 0,
+            next_anchor: None,
+            anchor_failures: 0,
+            known_off: false,
         })
     }
 
@@ -256,12 +304,17 @@ impl Follower {
     async fn turn_off(&mut self, db: &Db, client: &FallbackDaemonClient) {
         let was_on = self.status.take().is_some() || self.hasher.is_some();
         self.hasher = None;
+        self.settled.clear();
+        self.next_anchor = None;
+        self.anchor_failures = 0;
         if !self.off_chain.is_empty() {
             self.off_chain.clear();
             client.set_excluded(&[]);
         }
-        // Idempotent and cheap: deletes nothing once done. Done every round,
-        // so a failure is retried.
+        // Once (at start, or when turned off), and again until it works.
+        if self.known_off {
+            return;
+        }
         if let Err(error) = self.db(db, |s, network| s.disable_proof(network)).await {
             shared::throttled!(
                 format!("proof-off:{:?}", self.network),
@@ -270,8 +323,11 @@ impl Follower {
                 error = %error,
                 "turning proof-of-work checking off failed (retried)"
             );
-        } else if was_on {
-            tracing::info!(network = ?self.network, "proof-of-work checking turned off: orders settle on the node's word");
+        } else {
+            self.known_off = true;
+            if was_on {
+                tracing::info!(network = ?self.network, "proof-of-work checking turned off: orders settle on the node's word");
+            }
         }
     }
 
@@ -281,8 +337,17 @@ impl Follower {
         client: &FallbackDaemonClient,
         now: i64,
     ) -> Result<RoundReport, ProofError> {
-        self.db(db, move |s, network| s.enable_proof(network, now))
-            .await?;
+        self.known_off = false;
+        let mut state = self.db(db, |s, network| s.proof_network(network)).await?;
+        if state.is_none() {
+            state = self
+                .db(db, move |s, network| {
+                    s.enable_proof(network, now)?;
+                    s.proof_network(network)
+                })
+                .await?;
+            tracing::info!(network = ?self.network, "proof-of-work checking turned on: orders settle on proven blocks only");
+        }
         let hasher = match &self.hasher {
             Some(hasher) => hasher.clone(),
             None => {
@@ -300,11 +365,18 @@ impl Follower {
                 client: node.client.as_ref(),
             })
             .collect();
-        let state = self.db(db, |s, network| s.proof_network(network)).await?;
         let anchor = match state.and_then(|state| state.anchor) {
             Some(anchor) => anchor,
-            None => match anchor::take(&nodes, self.network, &self.tuning, &hasher).await {
+            None if self
+                .next_anchor
+                .is_some_and(|at| tokio::time::Instant::now() < at) =>
+            {
+                return Ok(RoundReport::default());
+            }
+            None => match anchor::take(&nodes, self.network, &self.tuning, &hasher, now).await {
                 Ok(new) => {
+                    self.next_anchor = None;
+                    self.anchor_failures = 0;
                     let top = new.window.last().map(|b| b.height).unwrap_or_default();
                     let (agreed, total) = (new.agreed, new.nodes);
                     self.db(db, move |s, network| s.write_anchor(network, &new, now))
@@ -322,6 +394,13 @@ impl Follower {
                         .ok_or_else(|| ProofError::Missing("the anchor just written".to_string()))?
                 }
                 Err(problem) => {
+                    self.anchor_failures = self.anchor_failures.saturating_add(1);
+                    let wait = self
+                        .tuning
+                        .anchor_retry
+                        .saturating_mul(1 << self.anchor_failures.saturating_sub(1).min(10))
+                        .min(self.tuning.anchor_retry.saturating_mul(10));
+                    self.next_anchor = Some(tokio::time::Instant::now() + wait);
                     shared::throttled!(
                         format!("proof-anchor:{:?}", self.network),
                         info,
@@ -356,10 +435,11 @@ impl Follower {
         // its first bad block.
         let mut order: Vec<usize> = (0..nodes.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(tips[i].as_ref().map_or(0, |t| t.height)));
-        let mut budget = self.tuning.blocks_per_round;
         let mut findings: Vec<Option<Finding>> = (0..nodes.len()).map(|_| None).collect();
         let mut backlogged = false;
         for i in order {
+            // Each node its own: one can't use up another's.
+            let mut budget = self.tuning.blocks_per_round;
             let finding = match &tips[i] {
                 Err(error) => Finding::new(NodeVerdict::Unreachable, None).because(error.clone()),
                 Ok(tip) => {
@@ -388,13 +468,13 @@ impl Follower {
             .db(db, |s, network| s.proven_tip(network))
             .await?
             .ok_or_else(|| ProofError::Missing("a proven chain after anchoring".to_string()))?;
-        let keep_from = tip
-            .height
-            .saturating_sub(self.tuning.anchor_depth + DIFFICULTY_BLOCKS as u64 - 1);
+        let keep_from = tip.height.saturating_sub(self.tuning.kept());
         self.db(db, move |s, network| s.prune_proven(network, keep_from))
             .await?;
         let ceiling = self.db(db, |s, network| s.proof_ceiling(network)).await?;
-        self.status = Some(self.describe(&anchor, &tip, ceiling, &nodes, findings, &hasher, now));
+        self.status = Some(self.describe(
+            client, &anchor, &tip, ceiling, &nodes, findings, &hasher, now,
+        ));
         Ok(RoundReport { backlogged })
     }
 
@@ -412,6 +492,40 @@ impl Follower {
         now: i64,
     ) -> Result<Finding, ProofError> {
         let tuning = self.tuning.clone();
+        // Its tip was found lighter or caught and hasn't changed: nothing
+        // new to check.
+        if let (Some(hash), Some((seen, finding))) = (&hash, self.settled.get(node.label)) {
+            if seen == hash {
+                return Ok(finding.clone());
+            }
+        }
+        let finding = self
+            .look_afresh(db, node, height, hash.clone(), &tuning, hasher, budget, now)
+            .await?;
+        match (&hash, finding.verdict) {
+            (Some(hash), NodeVerdict::Lighter | NodeVerdict::Caught) => {
+                self.settled
+                    .insert(node.label.to_string(), (hash.clone(), finding.clone()));
+            }
+            _ => {
+                self.settled.remove(node.label);
+            }
+        }
+        Ok(finding)
+    }
+
+    #[allow(clippy::too_many_arguments)] // one node's look, with the round's shared handles
+    async fn look_afresh(
+        &mut self,
+        db: &Db,
+        node: &NodeRef<'_>,
+        height: u64,
+        hash: Option<String>,
+        tuning: &ProofTuning,
+        hasher: &Hasher,
+        budget: &mut u64,
+        now: i64,
+    ) -> Result<Finding, ProofError> {
         let ours = self
             .db(db, |s, network| s.proven_tip(network))
             .await?
@@ -427,6 +541,15 @@ impl Follower {
             |error: String| Finding::new(NodeVerdict::Unreachable, Some(height)).because(error);
         let node_hash = |at: u64| tuning.bounded(node.client.get_block_hash(at));
 
+        if height < floor.height {
+            // Syncing, or long down: below everything kept, so nothing to
+            // compare. Not held against it.
+            return Ok(
+                Finding::new(NodeVerdict::Unknown, Some(height)).because(format!(
+                    "too far behind (block {height}) to compare with the proven chain"
+                )),
+            );
+        }
         let top = height.min(ours.height);
         let top_hash = match (&hash, top == height) {
             (Some(hash), true) => hash.clone(),
@@ -484,6 +607,15 @@ impl Follower {
                     hi = mid;
                 }
             }
+            if lo >= height {
+                // It said its tip isn't the proven block there, then that
+                // the proven chain runs up to it.
+                return Ok(self.caught(
+                    node,
+                    height,
+                    format!("its answers about block {height} contradict each other"),
+                ));
+            }
             lo
         };
         self.check_branch(db, node, parent_height, height, ours, hasher, budget, now)
@@ -494,6 +626,12 @@ impl Follower {
     /// the proven one, or the proven tip) up to its tip `height`, replacing
     /// the proven chain above `parent_height` as soon as the branch is
     /// heavier than `ours`, the proven tip.
+    ///
+    /// Each batch is checked cheapest first: blocks the proven chain
+    /// already has are passed over unhashed (a node's word on where its
+    /// chain leaves ours costs it nothing to bend); the rest have every rule
+    /// but the hash checked in order, then are hashed, then their time is
+    /// checked against the clock (a bad proof is caught whatever its time).
     #[allow(clippy::too_many_arguments)] // one branch's check, with the round's shared handles
     async fn check_branch(
         &mut self,
@@ -520,12 +658,25 @@ impl Follower {
         let Some(mut parent) = window.tip().cloned() else {
             return Err(ProofError::Missing(format!("proven block {parent_height}")));
         };
+        // A branch below the proven tip gets what it needs to outweigh it.
+        let competing = parent_height < ours.height;
+        if competing {
+            *budget = (*budget).max(ours.height - parent_height + pow::SEEDHASH_EPOCH_LAG);
+        }
+        let floor = self.tuning.min_difficulty(self.network);
         let mut heaviest = ours.cumulative_difficulty;
         let mut branch: Vec<ProvenBlock> = Vec::new();
         let now_secs = u64::try_from(now).unwrap_or(0);
         let mut next = parent_height + 1;
         while next <= height {
             if *budget == 0 {
+                if competing && !branch.is_empty() {
+                    return Ok(Finding::new(NodeVerdict::Lighter, Some(height)).because(format!(
+                        "its chain leaves the proven one after block {} and, {} blocks on, still has less work",
+                        parent.height,
+                        branch.len()
+                    )));
+                }
                 return Ok(Finding::new(NodeVerdict::Ahead, Some(height))
                     .because(format!(
                         "checked up to block {}; the rest next round",
@@ -539,6 +690,7 @@ impl Follower {
                 .min(*budget)
                 .min(pow::SEEDHASH_EPOCH_LAG);
             let heights: Vec<u64> = (next..next + count).collect();
+            next += count;
             let mut blobs = Vec::with_capacity(heights.len());
             for chunk in heights.chunks(self.tuning.fetch_concurrency) {
                 let fetched = join_all(
@@ -565,10 +717,62 @@ impl Follower {
                     Err(rejection) => return Ok(self.rejected(node, height, &rejection)),
                 }
             }
-            // Hash the batch, a request per key.
+
+            // Blocks the proven chain has: passed over.
+            let mut fresh = candidates.as_slice();
+            while let Some(candidate) = fresh.first().filter(|_| branch.is_empty()) {
+                let at = candidate.height;
+                let mine = self
+                    .db(db, move |s, network| s.proven_block(network, at))
+                    .await?;
+                match mine {
+                    Some(mine) if mine.id == candidate.id => {
+                        window.push(mine.clone());
+                        parent = mine;
+                        fresh = &fresh[1..];
+                    }
+                    _ => break,
+                }
+            }
+
+            // Every rule but the hash, in order, against the window as it
+            // would be: stop at the first broken one.
+            let mut pending: Vec<(usize, u128, ProvenBlock)> = Vec::new();
+            let mut broken: Option<Rejection> = None;
+            let mut ahead = window.clone();
+            for (i, candidate) in fresh.iter().enumerate() {
+                let difficulty = match pow::check_header(&ahead, candidate) {
+                    Ok(difficulty) if difficulty < floor => {
+                        broken = Some(Rejection::BelowFloor {
+                            height: candidate.height,
+                            difficulty,
+                            floor,
+                        });
+                        break;
+                    }
+                    Ok(difficulty) => difficulty,
+                    Err(rejection) => {
+                        broken = Some(rejection);
+                        break;
+                    }
+                };
+                let block = ProvenBlock {
+                    height: candidate.height,
+                    id: candidate.id,
+                    timestamp: candidate.timestamp,
+                    cumulative_difficulty: ahead
+                        .tip()
+                        .map_or(0, |tip| tip.cumulative_difficulty)
+                        .saturating_add(difficulty),
+                };
+                ahead.push(block.clone());
+                pending.push((i, difficulty, block));
+            }
+
+            // Then the hashes, a request per key.
             let mut keyed: Vec<([u8; 32], Vec<usize>)> = Vec::new();
-            for (i, candidate) in candidates.iter().enumerate() {
-                let key_height = pow::seed_height(candidate.height);
+            for (at, (i, _, _)) in pending.iter().enumerate() {
+                let key_height = pow::seed_height(fresh[*i].height);
                 let key = match branch.iter().find(|b| b.height == key_height) {
                     Some(block) => block.id,
                     None => self
@@ -579,56 +783,52 @@ impl Follower {
                         })?,
                 };
                 match keyed.iter_mut().find(|(k, _)| *k == key) {
-                    Some((_, members)) => members.push(i),
-                    None => keyed.push((key, vec![i])),
+                    Some((_, members)) => members.push(at),
+                    None => keyed.push((key, vec![at])),
                 }
             }
-            let mut hashes = vec![[0u8; 32]; candidates.len()];
+            let mut hashes = vec![[0u8; 32]; pending.len()];
             for (key, members) in keyed {
                 let inputs = members
                     .iter()
-                    .map(|&i| candidates[i].pow_input.clone())
+                    .map(|&at| fresh[pending[at].0].pow_input.clone())
                     .collect();
-                for (i, hash) in members.iter().zip(hasher.hash(key, inputs).await?) {
-                    hashes[*i] = hash;
+                for (at, hash) in members.iter().zip(hasher.hash(key, inputs).await?) {
+                    hashes[*at] = hash;
                 }
             }
-            for (candidate, hash) in candidates.iter().zip(&hashes) {
-                let checked = pow::check_header(&window, candidate, now_secs)
-                    .and_then(|difficulty| pow::accept(&window, candidate, difficulty, hash));
-                match checked {
-                    Ok(block) => {
-                        window.push(block.clone());
-                        branch.push(block);
-                        self.blocks_checked += 1;
-                        *budget = budget.saturating_sub(1);
-                    }
-                    Err(rejection) => {
-                        // What was checked of this branch still counts if it
-                        // is heavier.
-                        self.commit_if_heavier(db, &mut parent, &mut branch, &mut heaviest)
-                            .await?;
-                        return Ok(self.rejected(node, height, &rejection));
-                    }
+            for ((i, difficulty, block), hash) in pending.into_iter().zip(&hashes) {
+                let candidate = &fresh[i];
+                let checked = pow::accept(&window, candidate, difficulty, hash)
+                    .and_then(|_| pow::check_time(candidate, now_secs));
+                if let Err(rejection) = checked {
+                    broken = Some(rejection);
+                    break;
                 }
+                window.push(block.clone());
+                branch.push(block);
+                self.blocks_checked += 1;
+                *budget = budget.saturating_sub(1);
             }
-            if self
+            // What was checked of this branch counts if it is heavier.
+            let written = self
                 .commit_if_heavier(db, &mut parent, &mut branch, &mut heaviest)
-                .await?
-                == Some(ProvenWrite::Stale)
-            {
+                .await?;
+            if let Some(rejection) = broken {
+                return Ok(self.rejected(node, height, &rejection));
+            }
+            if written == Some(ProvenWrite::Stale) {
                 return Ok(Finding::new(NodeVerdict::Unknown, Some(height))
                     .because("the proven chain changed while its blocks were checked")
                     .more());
             }
-            next += count;
         }
         if branch.is_empty() {
             Ok(Finding::new(NodeVerdict::OnChain, Some(height)))
         } else {
             Ok(
                 Finding::new(NodeVerdict::Lighter, Some(height)).because(format!(
-                    "its chain leaves the proven one after block {} and has less work",
+                    "its chain leaves the proven one after block {} and has no more work",
                     parent.height
                 )),
             )
@@ -679,64 +879,85 @@ impl Follower {
 
     fn rejected(&self, node: &NodeRef<'_>, height: u64, rejection: &Rejection) -> Finding {
         match rejection.verdict() {
-            Verdict::Invalid => {
-                shared::throttled!(
-                    format!("proof-caught:{}", node.label),
-                    warn,
-                    network = ?self.network,
-                    node = %node.label,
-                    rejection = %rejection,
-                    "a node served a block that breaks the proof-of-work rules"
-                );
-                Finding::new(NodeVerdict::Caught, Some(height)).because(rejection.to_string())
-            }
+            Verdict::Invalid => self.caught(node, height, rejection.to_string()),
             Verdict::NotYet => {
                 Finding::new(NodeVerdict::Ahead, Some(height)).because(rejection.to_string())
             }
+            // Looked at again next round, not at once: a node can say this
+            // every time.
             Verdict::Moved => Finding::new(NodeVerdict::Unknown, Some(height))
-                .because("its chain moved while its blocks were checked")
-                .more(),
+                .because("its chain moved while its blocks were checked"),
         }
     }
 
+    fn caught(&self, node: &NodeRef<'_>, height: u64, why: String) -> Finding {
+        shared::throttled!(
+            format!("proof-caught:{}", node.label),
+            warn,
+            network = ?self.network,
+            node = %node.label,
+            why = %why,
+            "a node served a block that breaks the proof-of-work rules"
+        );
+        Finding::new(NodeVerdict::Caught, Some(height)).because(why)
+    }
+
     /// Excludes from scanning every node caught or found off the proven
-    /// chain, until it is found on it again.
+    /// chain, until it is found on it again (a caught one, not before
+    /// [`ProofTuning::caught_for`]). If that would be every node, only the
+    /// caught ones are left out; if they are every node, none is.
     fn exclude(
         &mut self,
         client: &FallbackDaemonClient,
         nodes: &[NodeRef<'_>],
         findings: &[Finding],
     ) {
+        let now = tokio::time::Instant::now();
         for (node, finding) in nodes.iter().zip(findings) {
             match finding.verdict {
-                NodeVerdict::OnChain | NodeVerdict::Ahead => {
-                    self.off_chain.remove(node.label);
+                NodeVerdict::OnChain => {
+                    let served_its_time = self.off_chain.get(node.label).is_none_or(|off| {
+                        off.verdict != NodeVerdict::Caught
+                            || now.duration_since(off.since) >= self.tuning.caught_for
+                    });
+                    if served_its_time {
+                        self.off_chain.remove(node.label);
+                    }
                 }
                 NodeVerdict::Caught | NodeVerdict::Lighter | NodeVerdict::Diverged => {
+                    let since = match self.off_chain.get(node.label) {
+                        // Caught again: its time starts again.
+                        Some(off) if finding.verdict != NodeVerdict::Caught => off.since,
+                        _ => now,
+                    };
                     self.off_chain.insert(
                         node.label.to_string(),
-                        (finding.verdict, finding.detail.clone().unwrap_or_default()),
+                        OffChain {
+                            verdict: finding.verdict,
+                            detail: finding.detail.clone().unwrap_or_default(),
+                            since,
+                        },
                     );
                 }
-                NodeVerdict::Unknown | NodeVerdict::Unreachable => {}
+                NodeVerdict::Ahead | NodeVerdict::Unknown | NodeVerdict::Unreachable => {}
             }
         }
         // Labels of nodes no longer configured are forgotten.
         self.off_chain
             .retain(|label, _| nodes.iter().any(|node| node.label == label));
-        let indices: Vec<usize> = nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| self.off_chain.contains_key(node.label))
-            .map(|(i, _)| i)
-            .collect();
-        if !client.set_excluded(&indices) {
-            shared::throttled!(
-                format!("proof-exclude-all:{:?}", self.network),
-                warn,
-                network = ?self.network,
-                "every node is off the proven chain; none is excluded, and nothing new settles"
-            );
+        let indices = |caught_only: bool| -> Vec<usize> {
+            nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, node)| {
+                    self.off_chain
+                        .get(node.label)
+                        .is_some_and(|off| !caught_only || off.verdict == NodeVerdict::Caught)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        if !client.set_excluded(&indices(false)) && !client.set_excluded(&indices(true)) {
             client.set_excluded(&[]);
         }
     }
@@ -744,6 +965,7 @@ impl Follower {
     #[allow(clippy::too_many_arguments)] // the round's facts, gathered once
     fn describe(
         &self,
+        client: &FallbackDaemonClient,
         anchor: &crate::store::proof::Anchor,
         tip: &ProvenBlock,
         ceiling: Option<u64>,
@@ -778,7 +1000,7 @@ impl Follower {
                 "No node serves the proven chain or a valid heavier one. Nothing new settles until one does.".to_string(),
             )
         } else {
-            let excluded = self.off_chain.len();
+            let excluded = (0..nodes.len()).filter(|&i| client.is_excluded(i)).count();
             let mut summary = format!(
                 "Proven up to block {}; orders settle on blocks up to {}.",
                 tip.height,
@@ -808,16 +1030,15 @@ impl Follower {
             nodes: nodes
                 .iter()
                 .zip(findings)
-                .map(|(node, finding)| NodeProof {
+                .enumerate()
+                .map(|(i, (node, finding))| NodeProof {
                     node: node.label.to_string(),
                     height: finding.height,
                     verdict: finding.verdict,
-                    detail: finding.detail.or_else(|| {
-                        self.off_chain
-                            .get(node.label)
-                            .map(|(_, detail)| detail.clone())
-                    }),
-                    excluded: self.off_chain.contains_key(node.label),
+                    detail: finding
+                        .detail
+                        .or_else(|| self.off_chain.get(node.label).map(|off| off.detail.clone())),
+                    excluded: client.is_excluded(i),
                 })
                 .collect(),
             blocks_checked: self.blocks_checked,
@@ -874,7 +1095,8 @@ pub async fn run_loop(
             entry.proof = follower.status();
         }
         if report.backlogged {
-            tokio::task::yield_now().await;
+            // At once, but never a busy loop.
+            tokio::time::sleep(Duration::from_millis(100)).await;
         } else {
             wakes.proof_or(poll).await;
         }

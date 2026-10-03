@@ -358,6 +358,65 @@ impl Store {
         })
     }
 
+    /// Records that block `hash` at `height` holds transaction `txid`: from
+    /// the block itself (a scan of it, or its own list of transactions).
+    /// Every unvoided payment of `txid` at `height` gets it.
+    pub fn attest_payment_block(&self, txid: &str, height: u64, hash: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE order_payments SET block_hash = ?3
+             WHERE txid = ?1 AND block_height = ?2 AND voided_at_utc IS NULL",
+            params![txid, sql_height(height)?, hash],
+        )?;
+        Ok(())
+    }
+
+    /// `order_id`'s valid payments as proven, while `network` checks proof of
+    /// work (`None` while it doesn't): a payment in a block counts only if
+    /// the block it was found in is the proven block at its height, and
+    /// only with the confirmations up to [`Self::proof_ceiling`]; one whose
+    /// block isn't (or can't be shown to be) counts none. One in the pool
+    /// counts as it is.
+    pub fn proven_views(
+        &self,
+        network: monero::Network,
+        order_id: &crate::store::OrderId,
+        current_height: u64,
+    ) -> Result<Option<Vec<crate::status::PaymentView>>> {
+        let Some(ceiling) = self.proof_ceiling(network)? else {
+            return Ok(None);
+        };
+        let top = ceiling.min(current_height);
+        let mut statement = self.conn.prepare_cached(
+            "SELECT p.amount_piconero, p.block_height, p.block_hash, pb.block_hash
+             FROM order_payments p
+             LEFT JOIN proven_blocks pb ON pb.network = ?2 AND pb.height = p.block_height
+             WHERE p.order_id = ?1 AND p.voided_at_utc IS NULL",
+        )?;
+        let views = statement
+            .query_map(params![order_id, SqlNetwork(network)], |row| {
+                let amount: shared::sqlite::Unsigned<u64> = row.get(0)?;
+                let height: Option<i64> = row.get(1)?;
+                let found_in: Option<String> = row.get(2)?;
+                let proven: Option<String> = row.get(3)?;
+                let confirmations = match (height, found_in, proven) {
+                    (Some(height), Some(found_in), Some(proven)) if found_in == proven => {
+                        u64::try_from(height)
+                            .ok()
+                            .filter(|h| *h <= top)
+                            .map_or(0, |h| top - h + 1)
+                    }
+                    _ => 0,
+                };
+                Ok(crate::status::PaymentView {
+                    amount_piconero: amount.0,
+                    confirmations,
+                    is_zero_conf: height.is_none(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Some(views))
+    }
+
     /// The highest block an order on `network` may newly settle on, while
     /// checking is on: the highest recorded block that is also proven (by
     /// its id, so every block below it is too), or 0 when there is none.
@@ -366,14 +425,20 @@ impl Store {
         if self.proof_network(network)?.is_none() {
             return Ok(None);
         }
-        let height: Option<i64> = self.conn.query_row(
-            "SELECT MAX(p.height) FROM proven_blocks p
-             JOIN scanned_blocks s
-               ON s.network = p.network AND s.height = p.height AND s.block_hash = p.block_hash
-             WHERE p.network = ?1",
-            [SqlNetwork(network)],
-            |row| row.get(0),
-        )?;
+        // Every order recompute reads this: walked down the proven chain's
+        // key from the top, it stops at the first match (usually the top).
+        let height: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT p.height FROM proven_blocks p
+                 JOIN scanned_blocks s
+                   ON s.network = p.network AND s.height = p.height AND s.block_hash = p.block_hash
+                 WHERE p.network = ?1
+                 ORDER BY p.height DESC LIMIT 1",
+                [SqlNetwork(network)],
+                |row| row.get(0),
+            )
+            .optional()?;
         Ok(Some(height.map_or(0, |h| u64::try_from(h).unwrap_or(0))))
     }
 }
@@ -558,6 +623,98 @@ mod tests {
         store.disable_proof(NET).unwrap();
         assert_eq!(store.proof_ceiling(NET).unwrap(), None);
         assert_eq!(store.proven_tip(NET).unwrap(), None, "forgotten");
+    }
+
+    /// A payment counts toward settlement only once it is attested in the
+    /// block proven at its height; a new height forgets the attestation.
+    #[test]
+    fn a_payment_counts_only_in_its_proven_block() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = store
+            .create_tenant(
+                crate::store::NewTenant {
+                    key_custody_backend: "plain".into(),
+                    sealed_key_material: vec![],
+                    primary_address: "4fixture".into(),
+                    network: "mainnet".into(),
+                    confirmations_required: Some(10),
+                    order_expiry_seconds: None,
+                },
+                1000,
+            )
+            .unwrap();
+        let index = store.allocate_minor_index(&tenant.tenant.id).unwrap();
+        let order = store
+            .create_order(crate::store::NewOrder {
+                idempotency_key: None,
+                confirmations_required_override: None,
+                tenant_id: tenant.tenant.id.clone(),
+                merchant_order_id: None,
+                minor_index: index,
+                address: "fixture".into(),
+                xmr_amount_piconero: 1,
+                description: None,
+                created_at: 1000,
+                expires_at: 10_000,
+            })
+            .unwrap();
+        let order = crate::store::OrderId::new(order.id.into_string());
+        anchored(&store, 100, 120);
+        for h in 100..=120 {
+            store
+                .set_scanned_block(NET, h, &hex::encode(block(h, 0).id))
+                .unwrap();
+        }
+        let views = |store: &Store| store.proven_views(NET, &order, 120).unwrap().unwrap();
+
+        store
+            .record_payment_match(&order, "tx", 0, 5, "[]", 1000, Some(110), None)
+            .unwrap();
+        assert_eq!(views(&store)[0].confirmations, 0, "not attested");
+        store
+            .attest_payment_block("tx", 110, &hex::encode(block(110, 9).id))
+            .unwrap();
+        assert_eq!(
+            views(&store)[0].confirmations,
+            0,
+            "another block than the proven one"
+        );
+        store
+            .attest_payment_block("tx", 110, &hex::encode(block(110, 0).id))
+            .unwrap();
+        assert_eq!(views(&store)[0].confirmations, 11, "110 to 120");
+
+        // Recorded again at the same height: still attested.
+        store
+            .record_payment_match(&order, "tx", 0, 5, "[]", 1000, Some(110), None)
+            .unwrap();
+        assert_eq!(views(&store)[0].confirmations, 11);
+        // Moved: forgotten until attested at its new height.
+        store
+            .update_payment_block_height(&order, "tx", 0, Some(112))
+            .unwrap();
+        assert_eq!(views(&store)[0].confirmations, 0);
+        store
+            .attest_payment_block("tx", 112, &hex::encode(block(112, 0).id))
+            .unwrap();
+        assert_eq!(views(&store)[0].confirmations, 9);
+        store
+            .record_payment_match(&order, "tx", 0, 5, "[]", 1000, Some(111), None)
+            .unwrap();
+        assert_eq!(
+            views(&store)[0].confirmations,
+            0,
+            "a new height from a scan"
+        );
+        // Back in the pool: zero-conf, as it is.
+        store
+            .update_payment_block_height(&order, "tx", 0, None)
+            .unwrap();
+        let pooled = views(&store);
+        assert!(pooled[0].is_zero_conf);
+        // Checking off: no proven views at all.
+        store.disable_proof(NET).unwrap();
+        assert!(store.proven_views(NET, &order, 120).unwrap().is_none());
     }
 
     #[test]

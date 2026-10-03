@@ -22,6 +22,10 @@ use randomx_rs::{RandomXCache, RandomXFlag, RandomXVM};
 
 /// A key unused for this long is dropped once another key is in use.
 const IDLE_KEY: Duration = Duration::from_secs(60);
+/// The most keys held at once (256 MiB each): the one in use and the one
+/// before it, around a key change. Whoever names keys (a node, for an
+/// anchor's window) can't make it hold more.
+pub const MAX_KEYS: usize = 2;
 
 /// What a hashing request failed with: RandomX couldn't be set up (out of
 /// memory, say), or the thread is gone.
@@ -160,10 +164,21 @@ fn serve(incoming: std::sync::mpsc::Receiver<Request>, stats: &HasherStats) {
         keys.retain(|held| held.key == key || now.duration_since(held.used) < IDLE_KEY);
         let index = match keys.iter().position(|held| held.key == key) {
             Some(index) => Ok(index),
-            None => build(&key, &mut jit_works, stats).map(|vm| {
-                keys.push(Key { key, vm, used: now });
-                keys.len() - 1
-            }),
+            None => {
+                // Room first, the least recently used key going.
+                while keys.len() >= MAX_KEYS {
+                    let oldest = keys
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, held)| held.used)
+                        .map_or(0, |(i, _)| i);
+                    keys.remove(oldest);
+                }
+                build(&key, &mut jit_works, stats).map(|vm| {
+                    keys.push(Key { key, vm, used: now });
+                    keys.len() - 1
+                })
+            }
         };
         stats.keys_held.store(keys.len() as u64, Ordering::Relaxed);
         let result = index.and_then(|index| {
@@ -252,5 +267,20 @@ mod tests {
         );
         let stats = hasher.stats();
         assert_eq!((stats.hashes, stats.keys_built, stats.keys_held), (1, 1, 1));
+    }
+
+    /// However many keys are named, at most two caches are held.
+    #[test]
+    fn at_most_two_keys_are_held() {
+        let hasher = Hasher::start("test randomx keys").unwrap();
+        for key in [b"key one", b"key two", b"key thr", b"key one"] {
+            hasher.hash_blocking(key, vec![b"x".to_vec()]).unwrap();
+            assert!(hasher.stats().keys_held <= MAX_KEYS as u64);
+        }
+        assert_eq!(
+            hasher.stats().keys_built,
+            4,
+            "the first was dropped and built again"
+        );
     }
 }

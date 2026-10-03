@@ -10,7 +10,7 @@
 //! - a majority of the configured nodes must give the same window, row for
 //!   row (one node: its word);
 //! - every claimed difficulty must be at least the network's floor
-//!   ([`ProofTuning::min_anchor_difficulty`]), and the difficulty the
+//!   ([`ProofTuning::min_difficulty`]), and the difficulty the
 //!   window gives the block after the anchor must be the one the nodes
 //!   claim for it;
 //! - a random sample of the window's blocks must have a proof of work that
@@ -70,6 +70,7 @@ pub async fn take(
     network: monero::Network,
     tuning: &ProofTuning,
     hasher: &Hasher,
+    now: i64,
 ) -> Result<NewAnchor, AnchorProblem> {
     let total = nodes.len();
     let needed = total / 2 + 1;
@@ -138,12 +139,8 @@ pub async fn take(
         });
     }
 
-    let (window, seeds) = check_answer(
-        &answer,
-        start,
-        anchor,
-        tuning.min_anchor_difficulty(network),
-    )?;
+    let (window, seeds) = check_answer(&answer, start, anchor, tuning.min_difficulty(network))?;
+    check_dates(&window, tuning.anchor_depth, now)?;
     sample(nodes, &members, &answer, &window, &seeds, tuning, hasher).await?;
     Ok(NewAnchor {
         agreed: u32::try_from(members.len()).unwrap_or(u32::MAX),
@@ -189,6 +186,33 @@ fn id_of(hex_id: &str) -> Result<[u8; 32], AnchorProblem> {
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or_else(|| AnchorProblem::Inconsistent(format!("{hex_id:?} isn't a block id")))
+}
+
+/// The window's dates against the clock (`now`, unix seconds): the anchor
+/// between a quarter and four times `depth` blocks' time old, and the window
+/// spanning between a quarter and four times its blocks' time.
+fn check_dates(window: &[ProvenBlock], depth: u64, now: i64) -> Result<(), AnchorProblem> {
+    let target = pow::DIFFICULTY_TARGET_SECS as u64;
+    let (Some(first), Some(last)) = (window.first(), window.last()) else {
+        return Err(AnchorProblem::Inconsistent("an empty window".to_string()));
+    };
+    let age = u64::try_from(now)
+        .unwrap_or(0)
+        .saturating_sub(last.timestamp);
+    let expected_age = depth * target;
+    if age < expected_age / 4 || age > expected_age * 4 {
+        return Err(AnchorProblem::Inconsistent(format!(
+            "the anchor is dated {age} s ago, where about {expected_age} s is expected"
+        )));
+    }
+    let span = last.timestamp.saturating_sub(first.timestamp);
+    let expected_span = (window.len() as u64 - 1) * target;
+    if span < expected_span / 4 || span > expected_span * 4 {
+        return Err(AnchorProblem::Inconsistent(format!(
+            "the window spans {span} s, where about {expected_span} s is expected"
+        )));
+    }
+    Ok(())
 }
 
 /// The agreed window, checked: consecutive, chained, every difficulty

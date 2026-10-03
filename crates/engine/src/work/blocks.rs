@@ -1346,9 +1346,15 @@ fn commit(
                     Some(crate::store::sql_height(height)?),
                     staged.output_key.as_deref(),
                 )?;
+                // Found in this block, whose id the scan computed from it:
+                // what proof-of-work checking settles on
+                // (docs/proof_of_work.md).
+                s.attest_payment_block(&staged.txid, height, &block.hash)?;
             }
             for scan in &scanned.scans {
-                record_scan_match(s, scanned.tenant_id(), scan, now, Some(height))?;
+                if !record_scan_match(s, scanned.tenant_id(), scan, now, Some(height))?.is_empty() {
+                    s.attest_payment_block(&scan.txid, height, &block.hash)?;
+                }
             }
         }
         s.advance_idle_cursors(

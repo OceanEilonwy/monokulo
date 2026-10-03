@@ -1774,13 +1774,6 @@ impl MoneroDaemonClient for RpcDaemonClient {
         })
     }
 
-    /// The pool's transaction ids, followed by its changes where the node
-    /// can say them: one small `get_blocks.bin` answer naming what entered
-    /// and left since the last poll (with the new transactions' bodies,
-    /// pruned), instead of the whole list every time. Every
-    /// `POOL_RESYNC_INTERVAL` the node's plain list replaces what was
-    /// followed, so a missed change doesn't last. A node that can't say
-    /// changes is asked for the plain list each time, as before.
     /// `get_block` by height, keeping only the blob: about a kilobyte
     /// plus 32 bytes a transaction, sent hex-encoded with the same ids again
     /// as JSON (about 9 KB for 30 transactions). The coinbase's height is
@@ -1847,6 +1840,13 @@ impl MoneroDaemonClient for RpcDaemonClient {
         Ok(out)
     }
 
+    /// The pool's transaction ids, followed by its changes where the node
+    /// can say them: one small `get_blocks.bin` answer naming what entered
+    /// and left since the last poll (with the new transactions' bodies,
+    /// pruned), instead of the whole list every time. Every
+    /// `POOL_RESYNC_INTERVAL` the node's plain list replaces what was
+    /// followed, so a missed change doesn't last. A node that can't say
+    /// changes is asked for the plain list each time, as before.
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         Ok(self.poll_pool(None).await?.0)
     }
@@ -3376,6 +3376,77 @@ mod wire_tests {
             .get_block_outline(height + 1, Some(2))
             .await
             .unwrap_err();
+        assert!(error.to_string().contains("sent another"), "{error}");
+    }
+
+    /// What proof-of-work checking reads (docs/proof_of_work.md): a block's
+    /// blob as `get_block` sends it, and headers with their difficulties,
+    /// whose two 64-bit halves are joined; a header from another height is
+    /// refused.
+    #[tokio::test]
+    async fn blobs_and_difficulty_headers_are_read_as_monerod_sends_them() {
+        let (client, node) = scripted().await;
+        let blob = crate::daemon_rpc::tests::COINBASE_ONLY_BLOCK_HEX;
+        node.answer(
+            "/json_rpc",
+            rpc_result(json!({ "status": "OK", "blob": blob, "json": "{}" })),
+        );
+        assert_eq!(
+            client.get_block_blob(7).await.unwrap(),
+            hex::decode(blob).unwrap()
+        );
+        let request: Value = serde_json::from_slice(&node.requests_to("/json_rpc")[0]).unwrap();
+        assert_eq!(request["method"], json!("get_block"));
+        assert_eq!(request["params"], json!({ "height": 7 }));
+
+        let (client, node) = scripted().await;
+        let mut wide = header(6, C, B);
+        wide["difficulty"] = json!(5u64);
+        wide["difficulty_top64"] = json!(1u64);
+        wide["cumulative_difficulty"] = json!(9u64);
+        wide["cumulative_difficulty_top64"] = json!(2u64);
+        let mut narrow = header(5, B, D);
+        narrow["difficulty"] = json!(700u64);
+        narrow["cumulative_difficulty"] = json!(u64::MAX);
+        node.answer(
+            "/json_rpc",
+            rpc_result(json!({ "status": "OK", "headers": [narrow, wide] })),
+        );
+        let headers = client.get_difficulty_headers(5, 2).await.unwrap();
+        assert_eq!(
+            headers,
+            vec![
+                DifficultyHeader {
+                    height: 5,
+                    hash: B.to_string(),
+                    prev_hash: D.to_string(),
+                    timestamp: 1_005,
+                    difficulty: 700,
+                    cumulative_difficulty: u128::from(u64::MAX),
+                },
+                DifficultyHeader {
+                    height: 6,
+                    hash: C.to_string(),
+                    prev_hash: B.to_string(),
+                    timestamp: 1_006,
+                    difficulty: (1u128 << 64) + 5,
+                    cumulative_difficulty: (2u128 << 64) + 9,
+                },
+            ]
+        );
+        let request: Value = serde_json::from_slice(&node.requests_to("/json_rpc")[0]).unwrap();
+        assert_eq!(request["method"], json!("get_block_headers_range"));
+        assert_eq!(
+            request["params"],
+            json!({ "start_height": 5, "end_height": 6 })
+        );
+
+        let (client, node) = scripted().await;
+        node.answer(
+            "/json_rpc",
+            rpc_result(json!({ "status": "OK", "headers": [header(9, B, D)] })),
+        );
+        let error = client.get_difficulty_headers(5, 1).await.unwrap_err();
         assert!(error.to_string().contains("sent another"), "{error}");
     }
 
