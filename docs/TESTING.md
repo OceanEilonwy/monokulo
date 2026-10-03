@@ -194,6 +194,12 @@ Automates what was manually verified live against `sqlite3` during design (§DES
 
 ## 10. Integration / End-to-End
 
+**Logs from a test.** Set `MONOKULO_TEST_LOG` to a `tracing` filter to see what the
+engine, monokulo and the harness log while a test runs, on standard error, even if the
+test hangs: `MONOKULO_TEST_LOG=debug cargo test -p mock-woocommerce <test>` (or
+`cargo nextest run --no-capture ...`). Every test engine turns it on as it starts
+(`engine_test_support::init_test_logging`); unset, nothing is logged.
+
 **Why a separate tier from §3's mocked-daemon tests**: unit-level correctness against
 a scripted fake doesn't prove the pieces compose correctly against a *real* Monero
 node's actual RPC responses (real serialization quirks, real field-naming, real error
