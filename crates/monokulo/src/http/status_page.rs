@@ -246,9 +246,7 @@ pub fn custody_choice_views(
 pub fn custody_backend_label(backend: &str) -> String {
     match backend {
         "plain" => "In the engine (simplest)".to_string(),
-        "socket" => {
-            "In a separate key storage service (the engine never holds the keys)".to_string()
-        }
+        "snp" => "Sealed in the engine's AMD SEV-SNP confidential machine (sent there encrypted; this site never sees them)".to_string(),
         other => other.to_string(),
     }
 }

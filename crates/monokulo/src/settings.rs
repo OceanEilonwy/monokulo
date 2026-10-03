@@ -242,6 +242,24 @@ settings! {
         description: "Requests a minute a shop's server may make with its store's secret key (for example the WooCommerce plugin creating orders). These are never challenged.",
         example: "600",
     },
+    KEY_CUSTODY_CLI_DOWNLOAD_URL: String {
+        key: "key_custody.cli_download_url",
+        default: concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/download/v{version}/{file}").to_owned(),
+        check: |v: &String| check_cli_url(v, "{file}"),
+        description: "Where merchants download key-custody-cli, the tool that encrypts their keys for an SEV-SNP engine without a browser. {version} is this monokulo's version and {file} the release file for their computer (key-custody-cli-{version}-{target}.tar.gz, or .zip for Windows). Change it only if you publish your own builds.",
+        example: "https://github.com/OceanEilonwy/monokulo/releases/download/v{version}/{file}",
+        applies: Restart,
+        editable: false,
+    },
+    KEY_CUSTODY_CLI_SOURCE_URL: String {
+        key: "key_custody.cli_source_url",
+        default: concat!(env!("CARGO_PKG_REPOSITORY"), "/tree/{ref}/crates/key-custody-cli").to_owned(),
+        check: |v: &String| check_cli_url(v, ""),
+        description: "Where merchants read key-custody-cli's source. {ref} is this build's release tag (v{version}), or its commit for a build that isn't a release.",
+        example: "https://github.com/OceanEilonwy/monokulo/tree/{ref}/crates/key-custody-cli",
+        applies: Restart,
+        editable: false,
+    },
     PUBLIC_URL: String {
         key: "public_url",
         default: String::new(),
@@ -494,6 +512,41 @@ impl Section for EngineConnection {
 pub struct PerRequest {
     pub signup_mode: SignupMode,
     pub public_url: String,
+}
+
+/// Where merchants get key-custody-cli (`http::key_entry`): URL templates,
+/// read once at start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliLinks {
+    pub download: String,
+    pub source: String,
+}
+
+impl Section for CliLinks {
+    const NAME: &'static str = "key custody cli";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&KEY_CUSTODY_CLI_DOWNLOAD_URL, &KEY_CUSTODY_CLI_SOURCE_URL]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(CliLinks {
+            download: snapshot.get(&KEY_CUSTODY_CLI_DOWNLOAD_URL),
+            source: snapshot.get(&KEY_CUSTODY_CLI_SOURCE_URL),
+        })
+    }
+}
+
+/// A key-custody-cli link template: an http(s) address, with `needs` in it
+/// when given.
+fn check_cli_url(value: &str, needs: &str) -> Result<(), String> {
+    if !(value.starts_with("https://") || value.starts_with("http://")) {
+        return Err("Must be an http:// or https:// address.".to_owned());
+    }
+    if !needs.is_empty() && !value.contains(needs) {
+        return Err(format!(
+            "Must contain {needs}, where the file for the merchant's computer goes."
+        ));
+    }
+    Ok(())
 }
 
 /// Read once at start: how many read connections the database opens
@@ -870,6 +923,8 @@ pub struct MonokuloSettings {
     pub server: live_settings::Live<ServerConfig>,
     /// Who may sign up and this instance's public address.
     pub per_request: live_settings::Live<PerRequest>,
+    /// Where merchants get key-custody-cli, read once at start.
+    pub cli_links: live_settings::Live<CliLinks>,
 }
 
 impl MonokuloSettings {
@@ -893,6 +948,10 @@ impl MonokuloSettings {
                 engine_url: ENGINE_URL.default_value(),
             }),
             per_request: live_settings::Live::new(per_request),
+            cli_links: live_settings::Live::new(CliLinks {
+                download: KEY_CUSTODY_CLI_DOWNLOAD_URL.default_value(),
+                source: KEY_CUSTODY_CLI_SOURCE_URL.default_value(),
+            }),
         })
     }
 
@@ -943,6 +1002,7 @@ impl MonokuloSettings {
         }
         // Read per request: nothing to rebuild when they change.
         let per_request = builder.section::<PerRequest>();
+        let cli_links = builder.section::<CliLinks>();
         // Read once at start, before the registry exists (`main.rs`).
         builder.section::<DatabaseConfig>();
         builder.section::<BootConfig>();
@@ -964,6 +1024,7 @@ impl MonokuloSettings {
             registry: Some(registry),
             server,
             per_request,
+            cli_links,
         }))
     }
 }
@@ -1195,6 +1256,7 @@ mod tests {
         let covered: std::collections::BTreeSet<&str> = [
             EngineConnection::keys(),
             PerRequest::keys(),
+            CliLinks::keys(),
             ExchangeRateConfig::keys(),
             AbuseConfig::keys(),
             OnionListenerConfig::keys(),

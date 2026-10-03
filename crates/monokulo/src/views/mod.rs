@@ -29,6 +29,7 @@ pub mod create_order;
 pub mod dashboard;
 pub mod engine;
 pub mod integration_help;
+pub mod key_entry;
 pub mod landing;
 pub mod logs;
 pub mod orders;

@@ -1703,8 +1703,6 @@ mod tests {
         let new_values: &[(&str, &str)] = &[
             ("key_custody.enabled_backends", "plain"),
             ("key_custody.default_backend", "plain"),
-            ("key_custody.socket_path", ""),
-            ("key_custody.socket_connections", "7"),
             ("payment.confirmations_required", "5"),
             ("payment.order_expiry_minutes", "45"),
             ("payment.reorg_check_depth", "15"),
@@ -1777,14 +1775,6 @@ mod tests {
 
         let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
-            // `key_custody.socket_path`'s new value is the empty string - an
-            // empty `value=""` attribute is still real output to look for,
-            // just not distinguishable via a bare `value` search, so it's
-            // skipped here (its round-trip is still exercised - a wrong
-            // value there would still show up as *something* nonempty).
-            if value.is_empty() {
-                continue;
-            }
             assert!(
                 shows_value(&html, value),
                 "expected {key}={value:?} to have round-tripped, got: {html}"
@@ -1815,10 +1805,10 @@ mod tests {
         let form = super::joined(pairs(&[
             ("list", ""),
             ("list", "plain"),
-            ("list", "socket"),
+            ("list", "snp"),
             ("other", "a,b"),
         ]));
-        assert_eq!(form["list"], "plain,socket");
+        assert_eq!(form["list"], "plain,snp");
         assert_eq!(form["other"], "a,b");
         assert_eq!(super::joined(pairs(&[("list", "")]))["list"], "");
     }
@@ -3934,10 +3924,13 @@ mod tests {
 
     fn stagenet_tenant() -> crate::engine_client::CreateTenantRequest {
         crate::engine_client::CreateTenantRequest {
-            view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707"
-                .to_string(),
-            spend_pubkey_hex: "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90"
-                .to_string(),
+            keys: crate::engine_client::StoreKeys {
+                view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707"
+                    .to_string(),
+                spend_pubkey_hex:
+                    "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90".to_string(),
+                encrypted_keys: None,
+            },
             network: Some("stagenet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: None,

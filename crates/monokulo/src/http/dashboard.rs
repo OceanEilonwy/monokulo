@@ -150,8 +150,14 @@ pub(crate) fn redirect_to(path: &SafePath) -> Response {
 #[derive(Deserialize)]
 pub struct ConnectForm {
     pub site_url: String,
+    #[serde(default)]
     pub view_key_hex: String,
+    #[serde(default)]
     pub spend_pubkey_hex: String,
+    /// The keys encrypted for SEV-SNP key storage (`key_entry`), instead of
+    /// the two above.
+    #[serde(default)]
+    pub encrypted_keys: Option<String>,
     pub network: String,
     /// Validated against `crate::currencies` in `connect_submit` - see
     /// that module's own doc comment.
@@ -213,6 +219,16 @@ async fn render_connect_form(
         .await
         .unwrap_or_default();
     let chrome = super::page_chrome(state, Some(user), "/dashboard/connect").await;
+    let custody_choices = super::status_page::custody_choice_views(
+        &state.engine,
+        resubmit.and_then(|f| f.key_custody_backend.as_deref()),
+    );
+    let snp_entry = super::key_entry::prepare(
+        state,
+        super::key_entry::Purpose::Create,
+        &super::key_entry::offered_backends(&state.engine, &custody_choices),
+    )
+    .await;
     let data = views::connect::ConnectViewModel {
         error: error.map(str::to_string),
         public_key: None,
@@ -227,10 +243,8 @@ async fn render_connect_form(
         network_stagenet_selected,
         network_testnet_selected,
         currency_options,
-        custody_choices: super::status_page::custody_choice_views(
-            &state.engine,
-            resubmit.and_then(|f| f.key_custody_backend.as_deref()),
-        ),
+        custody_choices,
+        snp_entry,
     };
     views::connect::page(&chrome, &data).into_response()
 }
@@ -256,6 +270,7 @@ async fn render_connect_success(
         network_testnet_selected: false,
         currency_options: Vec::new(),
         custody_choices: vec![],
+        snp_entry: None,
     };
     views::connect::page(&chrome, &data).into_response()
 }
@@ -555,6 +570,7 @@ pub async fn connect_submit(
         site_url: form.site_url.clone(),
         view_key_hex: form.view_key_hex.clone(),
         spend_pubkey_hex: form.spend_pubkey_hex.clone(),
+        encrypted_keys: form.encrypted_keys.clone(),
         network: Some(form.network.clone()),
         domains: Vec::new(),
         confirmations_required: form.confirmations_required,

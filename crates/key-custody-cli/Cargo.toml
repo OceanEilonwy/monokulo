@@ -1,0 +1,27 @@
+[package]
+name = "key-custody-cli"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "Encrypts a store's Monero watch-only keys for a monokulo engine's SEV-SNP key storage, after checking the engine's attestation"
+
+# The merchant's own tool: released with every monokulo version (CI builds
+# it for Linux, macOS and Windows), and linked from monokulo's key entry
+# forms. It checks an engine's bundle against AMD's root certificates and
+# the engine signing key built into `key-custody`, so it doesn't depend on
+# the monokulo site that handed the bundle out.
+[[bin]]
+name = "key-custody-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+hex = "0.4.3"
+key-custody = { path = "../key-custody", default-features = false }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "blocking"] }
+rpassword = "7"
+serde_json = "1.0.151"
+zeroize = "1.9.0"
+
+[lints]
+workspace = true
