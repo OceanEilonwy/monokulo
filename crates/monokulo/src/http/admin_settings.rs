@@ -1589,6 +1589,7 @@ mod tests {
             ("logging.otlp_endpoint", "http://127.0.0.1:4318"),
             ("logging.format", "json"),
             ("server.bind", "127.0.0.1:9081"),
+            ("engine.mode", "remote"),
             ("engine.url", "http://127.0.0.1:9443"),
         ];
         // Every monokulo setting the page can save must be covered here, or

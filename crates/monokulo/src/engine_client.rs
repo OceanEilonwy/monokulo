@@ -99,9 +99,14 @@ enum Transport {
         max_cache_bytes: u64,
         http: reqwest_middleware::ClientWithMiddleware,
     },
-    /// The engine's own router, in this process.
+    /// The engine's own router, in this process; its handlers run on the
+    /// engine's own runtime when given one, so its work stays on the
+    /// engine's threads (docs/engine_as_library.md §5).
     #[cfg(feature = "embedded-engine")]
-    Embedded { router: axum::Router },
+    Embedded {
+        router: axum::Router,
+        runtime: Option<tokio::runtime::Handle>,
+    },
 }
 
 /// The engine (by its transport) and the engine token, and the live-update
@@ -266,9 +271,9 @@ impl EngineTarget {
                 Ok(EngineReply { status, body })
             }
             #[cfg(feature = "embedded-engine")]
-            Transport::Embedded { router } => {
+            Transport::Embedded { router, runtime } => {
                 let call = async {
-                    let response = self.embedded(router, call, None).await?;
+                    let response = self.embedded(router, runtime.as_ref(), call, None).await?;
                     let status = response.status();
                     let body = http_body_util::BodyExt::collect(response.into_body())
                         .await
@@ -319,10 +324,10 @@ impl EngineTarget {
                 )
             }
             #[cfg(feature = "embedded-engine")]
-            Transport::Embedded { router } => {
+            Transport::Embedded { router, runtime } => {
                 let response = tokio::time::timeout(
                     ENGINE_CALL_TIMEOUT,
-                    self.embedded(router, call, Some("text/event-stream")),
+                    self.embedded(router, runtime.as_ref(), call, Some("text/event-stream")),
                 )
                 .await
                 .map_err(|_| {
@@ -355,6 +360,7 @@ impl EngineTarget {
     async fn embedded(
         &self,
         router: &axum::Router,
+        runtime: Option<&tokio::runtime::Handle>,
         call: Call<'_>,
         accept: Option<&'static str>,
     ) -> Result<axum::response::Response, EngineClientError> {
@@ -389,11 +395,15 @@ impl EngineTarget {
         let request = request
             .body(body)
             .map_err(|e| EngineClientError::Embedded(e.to_string()))?;
-        Ok(router
-            .clone()
-            .oneshot(request)
-            .await
-            .unwrap_or_else(|never| match never {}))
+        let answer = router.clone().oneshot(request);
+        let response = match runtime {
+            Some(runtime) => runtime
+                .spawn(answer)
+                .await
+                .map_err(|e| EngineClientError::Embedded(e.to_string()))?,
+            None => answer.await,
+        };
+        Ok(response.unwrap_or_else(|never| match never {}))
     }
 }
 
@@ -406,14 +416,28 @@ impl EngineClient {
 
     /// The engine running in this process, reached through its own
     /// router. `token` is the one the engine was started with: its API
-    /// checks it on every call, as over HTTP.
+    /// checks it on every call, as over HTTP. With `runtime`, the engine's
+    /// own, each call is answered there; without, on the caller's task.
     #[cfg(feature = "embedded-engine")]
-    pub fn embedded(router: axum::Router, token: RawToken) -> Self {
+    pub fn embedded(
+        router: axum::Router,
+        token: RawToken,
+        runtime: Option<tokio::runtime::Handle>,
+    ) -> Self {
         Self::from_target(EngineTarget {
-            transport: Transport::Embedded { router },
+            transport: Transport::Embedded { router, runtime },
             token,
             live: Default::default(),
         })
+    }
+
+    /// Whether the engine runs inside this process.
+    pub fn is_embedded(&self) -> bool {
+        match &self.target().transport {
+            Transport::Remote { .. } => false,
+            #[cfg(feature = "embedded-engine")]
+            Transport::Embedded { .. } => true,
+        }
     }
 
     /// [`Self::new`] with the token every test engine accepts
@@ -429,7 +453,11 @@ impl EngineClient {
     /// [`Self::embedded`] with the token every test engine accepts.
     #[cfg(all(any(test, feature = "test-support"), feature = "embedded-engine"))]
     pub fn embedded_for_tests(router: axum::Router) -> Self {
-        Self::embedded(router, RawToken::presented(shared::auth::TEST_ENGINE_TOKEN))
+        Self::embedded(
+            router,
+            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+            None,
+        )
     }
 
     /// Same as [`Self::new`], but with an explicit byte cap for the HTTP
@@ -1750,21 +1778,45 @@ mod contract_tests {
     const SPEND_PUBKEY_HEX: &str =
         "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
-    /// A fresh engine and a client for it over `transport`.
+    /// A fresh engine and a client for it over `transport`: `remote`,
+    /// `embedded` (answered on the caller's task), or `embedded on its
+    /// runtime` (answered on a runtime of the engine's own, as monokulo's
+    /// `main` runs it), with that runtime.
     async fn engine_and_client(
         transport: &str,
-    ) -> (engine_test_support::TestEngineHandle, EngineClient) {
+    ) -> (
+        engine_test_support::TestEngineHandle,
+        EngineClient,
+        Option<tokio::runtime::Runtime>,
+    ) {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .with_admin_lookup_daemon()
             .spawn()
             .await;
-        let client = match transport {
-            "remote" => EngineClient::for_tests(format!("http://{}", engine.addr)),
-            "embedded" => EngineClient::embedded_for_tests(engine.router()),
+        let (client, runtime) = match transport {
+            "remote" => (
+                EngineClient::for_tests(format!("http://{}", engine.addr)),
+                None,
+            ),
+            "embedded" => (EngineClient::embedded_for_tests(engine.router()), None),
+            "embedded on its runtime" => {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .thread_name("engine-test")
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let client = EngineClient::embedded(
+                    engine.router(),
+                    RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+                    Some(runtime.handle().clone()),
+                );
+                (client, Some(runtime))
+            }
             other => unreachable!("no transport {other}"),
         };
-        (engine, client)
+        (engine, client, runtime)
     }
 
     /// What a failed call says, without the parts that differ by transport
@@ -1782,7 +1834,7 @@ mod contract_tests {
     /// Every method, in the order a store's life uses them; each line of
     /// the transcript is one observable outcome.
     async fn transcript(transport: &str) -> Vec<String> {
-        let (engine, client) = engine_and_client(transport).await;
+        let (engine, client, engine_runtime) = engine_and_client(transport).await;
         let mut lines = Vec::new();
 
         let created = client
@@ -1976,6 +2028,7 @@ mod contract_tests {
             _ => EngineClient::embedded(
                 engine.router(),
                 RawToken::presented("not-the-engine-token-at-all-0000000000"),
+                None,
             ),
         };
         lines.push(format!(
@@ -1988,6 +2041,9 @@ mod contract_tests {
             "after deleting the tenant: {}",
             outcome(&client.get_tenant(&sk).await)
         ));
+        if let Some(runtime) = engine_runtime {
+            runtime.shutdown_background();
+        }
         lines
     }
 
@@ -1995,7 +2051,9 @@ mod contract_tests {
     async fn every_call_has_the_same_outcome_over_both_transports() {
         let remote = transcript("remote").await;
         let embedded = transcript("embedded").await;
+        let on_its_runtime = transcript("embedded on its runtime").await;
         assert_eq!(remote, embedded);
+        assert_eq!(remote, on_its_runtime);
         // And the outcomes are the ones the engine's API promises, so the
         // two can't agree on being wrong.
         let expected_lines = [
@@ -2028,7 +2086,7 @@ mod contract_tests {
     /// created after a browser started watching wakes it.
     #[tokio::test]
     async fn a_watched_order_is_woken_over_the_embedded_transport() {
-        let (_engine, client) = engine_and_client("embedded").await;
+        let (_engine, client, engine_runtime) = engine_and_client("embedded on its runtime").await;
         let created = client
             .create_tenant(CreateTenantRequest {
                 view_key_hex: VIEW_KEY_HEX.to_string(),
@@ -2077,5 +2135,9 @@ mod contract_tests {
             seen.push_str(&String::from_utf8_lossy(&chunk));
         }
         assert!(seen.contains("event: order"), "{seen}");
+        drop(events);
+        if let Some(runtime) = engine_runtime {
+            runtime.shutdown_background();
+        }
     }
 }
