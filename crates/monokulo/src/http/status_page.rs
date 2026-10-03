@@ -195,6 +195,13 @@ pub fn known_custody_choices(engine: &Engine) -> Vec<String> {
     choices
 }
 
+/// Whether a fresh, successful engine status is known.
+pub fn known_status_is_fresh(engine: &Engine) -> bool {
+    status_cache(engine).cached.as_ref().is_some_and(|cached| {
+        cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE && cached.result.is_ok()
+    })
+}
+
 /// Every key custody backend the engine has enabled, the default first.
 /// Empty when the engine offers no choice or its status isn't known.
 pub fn known_enabled_custody_backends(engine: &Engine) -> Vec<String> {

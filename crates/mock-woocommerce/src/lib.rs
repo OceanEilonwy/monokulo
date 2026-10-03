@@ -637,6 +637,17 @@ async fn run_connect_flow_inner(
         .form(&confirm_fields)
         .send()
         .await?;
+    // A confirm monokulo accepts redirects to the callback (followed); one it
+    // refuses shows the form again, with why, and no callback ever comes.
+    if !confirm_response.url().as_str().starts_with(&callback_url) {
+        let status = confirm_response.status().as_u16();
+        let body = confirm_response.text().await.unwrap_or_default();
+        return Err(ConnectFlowError::UnexpectedResponse {
+            step: "connect confirm (refused, no redirect to the callback)".to_string(),
+            status,
+            body,
+        });
+    }
     expect_ok(confirm_response, "connect confirm").await?;
 
     callback.result_rx_recv().await
