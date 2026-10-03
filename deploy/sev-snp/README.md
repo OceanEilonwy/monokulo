@@ -175,6 +175,16 @@ keys in the clear, whatever the engine says.
 
 **Keep the engine private.** Its `server.bind` defaults to `127.0.0.1:8443`;
 bind it only to a private address monokulo can reach, never a public one.
+
+**Keep the link from monokulo private too.** The engine serves plain HTTP,
+and every request from monokulo carries the engine token; `plain` stores'
+keys and every answer monokulo acts on (payments, `/status`) cross it. Unless
+monokulo runs on the same machine, carry it over a private network or a
+tunnel that ends inside the guest: WireGuard, or a TLS proxy (stunnel, Caddy)
+in the guest in front of `server.bind`, with monokulo's `engine.url` set to
+its `https://` address. This guards against the network, not the host: the
+host sees the link and holds the token anyway. Keys for `snp` stores are
+encrypted to the attested engine and don't depend on it.
 The engine needs outbound HTTPS to `kdsintf.amd.com` (AMD's certificates for
 its own report, which merchants' clients check) and to its Monero nodes.
 
