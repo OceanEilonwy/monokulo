@@ -330,7 +330,7 @@ impl<'a> Chain<'a> {
         let Some(payment) = current else {
             return Ok(());
         };
-        let voided = payment.voided_at.is_some();
+        let was_voided = payment.voided_at.is_some();
         let mut location = match located.get(&payment.txid) {
             Some(location) => *location,
             None => bounded(self.daemon.locate_transaction(&payment.txid)).await?,
@@ -341,7 +341,7 @@ impl<'a> Chain<'a> {
         // is what a real payment would be voided on, and its own inputs are
         // spent on every node regardless (see
         // `MoneroDaemonClient::locate_transaction_corroborated`).
-        if !voided && location == TxLocation::NotFound {
+        if !was_voided && location == TxLocation::NotFound {
             if let Some(agreed) =
                 bounded(self.daemon.locate_transaction_corroborated(&payment.txid)).await?
             {
@@ -358,10 +358,10 @@ impl<'a> Chain<'a> {
                 TxLocation::InPool | TxLocation::NotFound => None,
             })
         } else {
-            let proven = !voided
+            let proven = !was_voided
                 && location == TxLocation::NotFound
                 && self.double_spend_proven(&payment).await?;
-            decide(voided, location, proven)
+            decide(was_voided, location, proven)
         };
         let moved_to = match decision {
             Decision::Move(Some(height)) | Decision::Restore(height) => Some(height),
@@ -378,10 +378,10 @@ impl<'a> Chain<'a> {
             payment.output_index,
             self.now,
         );
-        let (changed, voided) = self
+        let (changed, voided_now) = self
             .db(move |s, network| {
                 s.in_transaction(|s| -> Result<(bool, bool), ScannerError> {
-                    let mut voided = false;
+                    let mut voided_now = false;
                     let changed = match decision {
                         Decision::Keep => false,
                         Decision::Move(height) => {
@@ -400,7 +400,8 @@ impl<'a> Chain<'a> {
                             restored || height != payment.block_height
                         }
                         Decision::Void => {
-                            voided = void_and_notify_in_tx(s, &order_id, &txid, output, tip, now)?;
+                            voided_now =
+                                void_and_notify_in_tx(s, &order_id, &txid, output, tip, now)?;
                             true
                         }
                     };
@@ -408,14 +409,14 @@ impl<'a> Chain<'a> {
                         s.attest_payment_block(&txid, height, hash)?;
                     }
                     s.complete_reorg_candidate(network, id)?;
-                    Ok((changed, voided))
+                    Ok((changed, voided_now))
                 })
             })
             .await?;
         if changed {
             done.dirty_orders.insert(candidate.order_id.clone());
         }
-        if voided {
+        if voided_now {
             done.double_spent_orders.insert(candidate.order_id.clone());
         }
         Ok(())

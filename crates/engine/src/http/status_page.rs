@@ -255,16 +255,18 @@ pub(super) async fn status_page(
             .iter()
             .zip(probes)
             .enumerate()
-            .map(|(i, (node, (height, error, network)))| NodeStatus {
-                label: node.label.clone(),
-                is_active: i == current_index,
-                in_cooldown: daemon.in_cooldown(i),
-                height,
-                error,
-                network,
-                rpc: node.client.rpc_stats(),
-                link: node.client.link(),
-            })
+            .map(
+                |(i, (node, (height, error, reported_network)))| NodeStatus {
+                    label: node.label.clone(),
+                    is_active: i == current_index,
+                    in_cooldown: daemon.in_cooldown(i),
+                    height,
+                    error,
+                    network: reported_network,
+                    rpc: node.client.rpc_stats(),
+                    link: node.client.link(),
+                },
+            )
             .collect();
 
         let scan_status = state.networks.scanner_status.read().get(&network).cloned();
