@@ -326,6 +326,32 @@ impl KeyCustody for CustodyRouter {
         self.named(backend)?.seal(material).await
     }
 
+    fn takes_raw_keys_in(&self, backend: &str) -> bool {
+        self.backend(backend)
+            .is_none_or(|custody| custody.takes_raw_keys())
+    }
+
+    async fn key_bundle_in(
+        &self,
+        backend: &str,
+        action: crate::transport::Action,
+        store: Option<&str>,
+    ) -> Result<crate::transport::Bundle, KeyCustodyError> {
+        self.named(backend)?.key_bundle(action, store).await
+    }
+
+    async fn register_envelope_in(
+        &self,
+        backend: &str,
+        envelope: &crate::transport::Envelope,
+        action: crate::transport::Action,
+        store: Option<&str>,
+    ) -> Result<(WalletHandle, Vec<u8>), KeyCustodyError> {
+        let custody = self.named(backend)?;
+        let (handle, sealed) = custody.register_envelope(envelope, action, store).await?;
+        Ok((self.remember_if_current(backend, custody, handle)?, sealed))
+    }
+
     fn handle_is_live(&self, handle: WalletHandle) -> bool {
         self.for_handle(handle).is_ok()
     }
@@ -350,7 +376,7 @@ impl KeyCustody for CustodyRouter {
             )
             .await
             {
-                Ok(Ok(_)) => None,
+                Ok(Ok(_)) => custody.unavailable(),
                 Ok(Err(e)) => Some(e.to_string()),
                 Err(_) => Some("did not answer within 2 seconds".to_owned()),
             };
