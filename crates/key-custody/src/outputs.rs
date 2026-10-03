@@ -24,7 +24,7 @@ use monero::cryptonote::onetime_key::{KeyGenerator, SubKeyChecker};
 use monero::util::ringct::RctType;
 use monero::{PublicKey, ViewPair};
 
-use super::{MatchedOutput, ScanInput, SubaddressIndex};
+use crate::{MatchedOutput, ScanInput, SubaddressIndex};
 
 /// Whether any output of `tx` pays one of the subaddresses in `table`: true
 /// exactly when [`owned_outputs`] would find something.
@@ -212,8 +212,13 @@ mod tests {
     }
 
     fn fixture_tx() -> Transaction {
-        deserialize(&hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap())
-            .unwrap()
+        deserialize(
+            &hex::decode(include_str!(
+                "../../engine/tests/fixtures/subaddress_tx.hex"
+            ))
+            .unwrap(),
+        )
+        .unwrap()
     }
 
     /// The wallet the fixture transaction pays: its second output, to

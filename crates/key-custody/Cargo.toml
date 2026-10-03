@@ -1,0 +1,27 @@
+[package]
+name = "key-custody"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+
+# Where stores' private view keys live: the `KeyCustody` boundary, the
+# backends behind it and the router that holds them. See src/lib.rs.
+[dependencies]
+async-trait = "0.1.92"
+hex = "0.4.3"
+monero = "0.22.0"
+parking_lot = "0.12.5"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt", "sync", "time"] }
+tracing = "0.1.44"
+uuid = { version = "1.26.0", features = ["v4"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "test-util"] }
+# Captures log events in tests that assert a failure was reported.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt"] }
+futures-util = "0.3"
+
+[lints]
+workspace = true

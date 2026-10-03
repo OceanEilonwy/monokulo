@@ -8,8 +8,8 @@ use monero::cryptonote::onetime_key::SubKeyChecker;
 use monero::{Address, PrivateKey, PublicKey, ViewPair};
 use zeroize::Zeroize as _;
 
-use super::outputs::{owned_outputs, pays};
-use super::{
+use crate::outputs::{owned_outputs, pays};
+use crate::{
     KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,
     TxMatches, WalletHandle, WalletMaterial,
 };
@@ -581,8 +581,10 @@ mod tests {
         // *public* spend key (derived here from the fixture's private spend key,
         // the same way a real caller would derive it from a tenant-submitted watch
         // key), matching the watch-only shape `KeyCustody` is built around.
-        let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex"))
-            .expect("fixture is valid hex");
+        let raw_tx = hex::decode(include_str!(
+            "../../engine/tests/fixtures/subaddress_tx.hex"
+        ))
+        .expect("fixture is valid hex");
         let tx: Transaction = deserialize(&raw_tx).expect("fixture is a valid monero tx");
 
         let view_key = PrivateKey::from_slice(
@@ -622,7 +624,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_batch_scan_says_which_of_its_transactions_pay_the_wallet() {
-        let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
+        let raw_tx = hex::decode(include_str!(
+            "../../engine/tests/fixtures/subaddress_tx.hex"
+        ))
+        .unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
         // The same outputs in the other order: each key was made for the
         // other position, so neither belongs to the wallet.
@@ -699,7 +704,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_live_table_is_updated_incrementally_and_never_rebuilt_for_the_same_set() {
-        let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
+        let raw_tx = hex::decode(include_str!(
+            "../../engine/tests/fixtures/subaddress_tx.hex"
+        ))
+        .unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
         let view_key = PrivateKey::from_slice(
             &hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")
@@ -806,7 +814,10 @@ mod tests {
             .unwrap();
         runtime.block_on(async {
             let tx: Transaction = deserialize(
-                &hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap(),
+                &hex::decode(include_str!(
+                    "../../engine/tests/fixtures/subaddress_tx.hex"
+                ))
+                .unwrap(),
             )
             .unwrap();
             let view =
@@ -872,7 +883,10 @@ mod tests {
 
     #[tokio::test]
     async fn scans_of_different_wallets_run_in_parallel_off_the_async_workers() {
-        let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
+        let raw_tx = hex::decode(include_str!(
+            "../../engine/tests/fixtures/subaddress_tx.hex"
+        ))
+        .unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
         let custody = Arc::new(PlainKeyCustody::default());
         let mut handles = vec![];
@@ -1062,7 +1076,10 @@ mod tests {
         // Table construction is one scalar multiplication per candidate index, so a
         // range this size isn't slow, it never finishes - and it would take the
         // whole scanner loop (every tenant, every network) with it, silently.
-        let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
+        let raw_tx = hex::decode(include_str!(
+            "../../engine/tests/fixtures/subaddress_tx.hex"
+        ))
+        .unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
         let view_key = PrivateKey::from_slice(&random_scalar_bytes(9)).unwrap();
         let spend_key = PrivateKey::from_slice(&random_scalar_bytes(10)).unwrap();
@@ -1113,7 +1130,10 @@ mod tests {
             KeyCustodyError::UnknownWallet
         ));
 
-        let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
+        let raw_tx = hex::decode(include_str!(
+            "../../engine/tests/fixtures/subaddress_tx.hex"
+        ))
+        .unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
         assert!(matches!(
             custody

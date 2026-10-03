@@ -1,73 +1,30 @@
-//! The `KeyCustody` boundary.
+//! Key custody: where a store's private view key lives, and the boundary
+//! everything else talks to it through.
 //!
-//! Everything on the caller's side of this trait — the HTTP API, the chain scanner,
-//! the tenant registry — deals only in [`WalletHandle`]s. Nobody outside a
-//! `KeyCustody` implementation ever holds a private view key in their own stack
-//! frame or struct. That's the whole point of drawing the line here: it's the one
-//! seam a future implementation can slot behind to change *where* key material
-//! physically lives (this process's heap, a sealed enclave, a remote HSM) without
-//! touching the scanner, the tenant model, or the API layer at all.
+//! Everything on the caller's side of [`KeyCustody`] — the HTTP API, the chain
+//! scanner, the tenant registry — deals only in [`WalletHandle`]s. Nobody
+//! outside a `KeyCustody` implementation ever holds a private view key in their
+//! own stack frame or struct. That's the whole point of drawing the line here:
+//! it's the one seam an implementation slots behind to change *where* key
+//! material physically lives and how it is protected at rest, without touching
+//! the scanner, the tenant model, or the API layer at all.
 //!
 //! Custody is chosen per store: the engine runs several backends at once
-//! behind a router (`engine`'s `key_custody::CustodyRouter`), which is itself
-//! a `KeyCustody`. The `*_in` methods below name the backend for a new
-//! registration; everything else follows the handle.
+//! behind a [`CustodyRouter`], which is itself a `KeyCustody`. The `*_in`
+//! methods below name the backend for a new registration; everything else
+//! follows the handle.
 //!
-//! `PlainKeyCustody` (`engine`'s `src/key_custody/plain.rs`) is the only
-//! in-process implementation. It keeps view pairs in ordinary process memory with
-//! no encryption and no isolation from the host process — appropriate for a
-//! self-hosted, single-tenant deployment, where a host-level attacker already owns
-//! the one wallet on the box regardless of what this backend does. A multi-tenant,
-//! hosted deployment should implement this trait against a TEE (AWS Nitro Enclaves,
-//! AMD SEV-SNP) instead, so that compromising the host process yields scan requests
-//! and results but never the keys that answered them. See the design notes in the
+//! [`PlainKeyCustody`] (`plain`) keeps view pairs in ordinary process memory,
+//! and seals them as plain bytes. That suits a self-hosted, single-tenant
+//! deployment, where a host-level attacker already owns the one wallet on the
+//! box regardless of what this backend does. A hosted deployment keeps them in
+//! a backend that protects them from the host. See the design notes in the
 //! project README for why SGX specifically is a poor fit for this workload
 //! (secret-scalar EC multiplication is exactly what its published side-channel
 //! attacks target) and why VM-based isolation is preferred.
 //!
-//! ## Why this trait lives in `shared`, not `engine`, as of WBS 2.1.3
-//!
-//! Every other engine type lives in `engine` (`src/key_custody/mod.rs` used
-//! to define all of this directly) — `shared` only ever held logic genuinely common
-//! to the engine and the monokulo (secret-token hashing, HMAC signing,
-//! password hashing, the migration runner), none of which is domain-specific the
-//! way `KeyCustody` is. This module is the one exception, and it exists here for a
-//! structural reason, not a style one: `engine`'s own `main.rs` needs to be
-//! able to construct either `key_custody::PlainKeyCustody` (in-process) or
-//! `key_custody_service::client::SocketKeyCustody` (talks to a separate
-//! `key-custody-server` process over a Unix socket - WBS 2.1.2) behind one config
-//! flag. `key-custody-service`'s wire DTOs (`WalletMaterialWire`,
-//! `KeyCustodyErrorWire`, ...) convert to and from these exact types - `WalletHandle`,
-//! `WalletMaterial`, `KeyCustodyError`, `MatchedOutput`, and the `KeyCustody` trait
-//! itself - so as long as those types were defined inside `engine`,
-//! `key-custody-service` had to depend on `engine` to reach them (true since
-//! WBS 2.1.1). Once `main.rs` (part of the `engine` package) also needs to
-//! depend on `key-custody-service` for `SocketKeyCustody`, that becomes
-//! `engine -> key-custody-service -> engine` - a real, hard cycle
-//! Cargo refuses outright (`error: cyclic package dependency`, confirmed by actually
-//! attempting it, not just reasoned about) - not a lint or a style complaint, a
-//! build that cannot succeed. Moving the trait and its domain types to `shared`
-//! (which nothing in this cycle needs to depend on `engine` to reach) breaks
-//! it: `key-custody-service` now depends on `shared` for these types instead of
-//! `engine`, `engine` re-exports them from `shared` so every existing
-//! `engine::key_custody::{KeyCustody, WalletHandle, ...}` import in the
-//! engine keeps compiling completely unchanged (a `pub use` re-export is the same
-//! type, not a wrapper - nothing downstream of `engine::key_custody` needed
-//! to change), and `main.rs` can finally depend on `key-custody-service` directly.
-//! `PlainKeyCustody` itself, and its real registry/caching logic, stays exactly
-//! where it was (`engine`'s own `src/key_custody/plain.rs`) - only the
-//! *boundary* (trait + wire-crossing types) needed to move; the one in-process
-//! implementation the WBS explicitly never asked to touch did not.
-//!
-//! The socket *server* side (`key-custody-server`'s own `server.rs`, wrapping a
-//! real `PlainKeyCustody`) still needs `engine` - there is no way around
-//! that, since `PlainKeyCustody` only exists there - which is exactly why the
-//! server binary and the client/protocol code that `main.rs` needs were split into
-//! two separate crates (`key-custody-server` depends on both `engine` and
-//! `key-custody-service`; `key-custody-service` itself depends on neither
-//! `engine` nor `key-custody-server`). See `docs/WOOCOMMERCE_WBS.md`'s
-//! 2.1.3 entry and this session's `work_notes.md` entry for the full account of why
-//! this split was necessary, not just tidier.
+//! This crate is its own because key custody is its own concern, used by the
+//! engine and by nothing else that has to know how the engine works.
 
 use std::ops::Range;
 
@@ -79,6 +36,15 @@ pub use monero::Network;
 use monero::{Address, PrivateKey, PublicKey, Transaction, ViewPair};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+mod outputs;
+mod plain;
+pub mod router;
+#[cfg(test)]
+mod test_log;
+
+pub use plain::{size_scan_slots, PlainKeyCustody};
+pub use router::CustodyRouter;
 
 /// Opaque reference to a registered wallet's key material.
 ///
@@ -620,6 +586,60 @@ impl ScanIndices {
     /// Lowest and highest index, if any.
     pub fn bounds(&self) -> Option<(u32, u32)> {
         Some((*self.minors.first()?, *self.minors.last()?))
+    }
+}
+
+/// Whether `material` is the wallet `address` belongs to, on `network`: the
+/// public spend key must match, and so must the public view key derived
+/// from the private view key.
+///
+/// Compares keys, not strings, so any valid spelling of the address works.
+/// `Err` if the address doesn't parse or the keys are malformed.
+pub fn wallet_matches_address(
+    material: &WalletMaterial,
+    address: &str,
+    network: Network,
+) -> Result<bool, String> {
+    let address: monero::Address = address
+        .parse()
+        .map_err(|e| format!("{address:?} is not a Monero address: {e}"))?;
+    let pair = material.to_view_pair().map_err(|e| e.to_string())?;
+    Ok(address.network == network
+        && address.public_spend == pair.spend
+        && address.public_view == monero::PublicKey::from_private_key(&pair.view))
+}
+
+/// Removes `handle` from `custody`, best effort, and logs a failure.
+///
+/// Until the backend restarts, a removal that failed leaves a copy of a
+/// store's view key live in it. `UnknownWallet` means the handle is already
+/// gone, which is what was wanted, so it is not logged. `store_id` is the
+/// store the handle belonged to, when the caller knows it; `context` says
+/// what was being done, for the log line.
+pub async fn remove_wallet_logged(
+    custody: &dyn KeyCustody,
+    handle: WalletHandle,
+    store_id: Option<&str>,
+    context: &str,
+) {
+    let Err(e) = custody.remove_wallet(handle).await else {
+        return;
+    };
+    if matches!(e, KeyCustodyError::UnknownWallet) {
+        return;
+    }
+    if let Some(store_id) = store_id {
+        tracing::warn!(
+            store.id = %store_id,
+            error = %e,
+            "{context}: removing a store's keys from key custody failed, so a copy stays there until the backend restarts"
+        );
+    } else {
+        tracing::warn!(
+            wallet.handle = ?handle,
+            error = %e,
+            "{context}: removing a store's keys from key custody failed, so a copy stays there until the backend restarts"
+        );
     }
 }
 

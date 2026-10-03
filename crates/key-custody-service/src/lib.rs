@@ -72,12 +72,12 @@ pub mod protocol;
 
 use std::ops::Range;
 
-use monero::Address;
-use serde::{Deserialize, Serialize};
-use shared::key_custody::{
+use key_custody::{
     KeyCustodyError, MatchedOutput, Network, ScanInput, SubaddressIndex, TxMatches, WalletHandle,
     WalletMaterial,
 };
+use monero::Address;
+use serde::{Deserialize, Serialize};
 use shared::network::{network_str, parse_network};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
