@@ -116,7 +116,7 @@ def main():
     php = json.loads(local_file('woocommerce/summary.json').read_text())
     assert {f['name'] for f in php['files']} == {'monokulo.php', 'class-wc-gateway-monokulo.php'}, 'unexpected PHP source'
     browser = json.loads(local_file('browser/coverage-final.json').read_text())
-    expected = {'checkout.js', 'challenge.js', 'monokulo-client.js', 'main.tsx', 'timeline.ts'}
+    expected = {'checkout.js', 'challenge.js', 'monokulo-client.js', 'main.tsx', 'timeline.ts', 'engine-view.js'}
     assert {Path(name).name for name in browser} == expected, 'unexpected browser source'
     print('coverage artifact validation passed')
 
