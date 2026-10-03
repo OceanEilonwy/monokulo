@@ -136,8 +136,27 @@ pub struct AttestationReport {
     pub report_data: [u8; 64],
     /// The launch measurement of the guest (0x90): which image is running.
     pub measurement: [u8; 48],
+    /// The guest's security version (0x04), from its ID block: raised by a
+    /// release that must not be rolled back from.
+    pub guest_svn: u32,
+    /// Family and image IDs (0x10, 0x20), from the ID block.
+    pub family_id: [u8; 16],
+    pub image_id: [u8; 16],
+    /// The privilege level the report was requested at (0x30).
+    pub vmpl: u32,
+    /// Report flags (0x48): bit 0 author key present, bit 1 chip key
+    /// masked, bits 2-4 which key signed (0 = VCEK).
+    pub flags: u32,
+    /// SHA-384 of the public key that signed the guest's ID block (0xE0);
+    /// all zero when the guest was launched without one.
+    pub id_key_digest: [u8; 48],
+    /// SHA-384 of the key that signed the ID key (0x110), if any.
+    pub author_key_digest: [u8; 48],
     pub signature: RawSignature,
 }
+
+/// Which key signed a report (flags bits 2-4).
+pub const SIGNING_KEY_VCEK: u32 = 0;
 
 /// Guest policy bit 19: the hypervisor may debug the guest, reading and
 /// writing its memory. A report from such a guest proves nothing about
@@ -148,6 +167,16 @@ impl AttestationReport {
     /// Whether the guest's policy lets the hypervisor debug it.
     pub fn debug_allowed(&self) -> bool {
         self.policy & POLICY_DEBUG != 0
+    }
+
+    /// Which key signed the report: [`SIGNING_KEY_VCEK`] for the chip's own.
+    pub fn signing_key(&self) -> u32 {
+        (self.flags >> 2) & 0b111
+    }
+
+    /// Whether the guest was launched with an ID block (its digest is set).
+    pub fn has_id_key(&self) -> bool {
+        self.id_key_digest.iter().any(|b| *b != 0)
     }
 }
 
@@ -173,6 +202,14 @@ pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, Report
     report_data.copy_from_slice(&raw[0x50..0x90]);
     let mut measurement = [0u8; 48];
     measurement.copy_from_slice(&raw[0x90..0xC0]);
+    let u32_at = |at: usize| u32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
+    let guest_svn = u32_at(0x04);
+    let vmpl = u32_at(0x30);
+    let flags = u32_at(0x48);
+    let family_id: [u8; 16] = raw[0x10..0x20].try_into().unwrap();
+    let image_id: [u8; 16] = raw[0x20..0x30].try_into().unwrap();
+    let id_key_digest: [u8; 48] = raw[0xE0..0x110].try_into().unwrap();
+    let author_key_digest: [u8; 48] = raw[0x110..0x140].try_into().unwrap();
 
     let mut r_le = [0u8; 72];
     let mut s_le = [0u8; 72];
@@ -189,8 +226,24 @@ pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, Report
         policy,
         report_data,
         measurement,
+        guest_svn,
+        family_id,
+        image_id,
+        vmpl,
+        flags,
+        id_key_digest,
+        author_key_digest,
         signature: RawSignature { r_le, s_le },
     })
+}
+
+/// The hwID KDS expects in the VCEK URL path - full 64-byte `chip_id` on
+/// legacy products, first 8 bytes only on Turin+.
+pub fn hw_id_for_product(product: Product, chip_id: &[u8; 64]) -> Vec<u8> {
+    match product {
+        Product::Turin => chip_id[..8].to_vec(),
+        _ => chip_id.to_vec(),
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +293,41 @@ mod tests {
         );
         bytes[0x08..0x10].copy_from_slice(&0x30000u64.to_le_bytes());
         assert!(!parse(&bytes, Product::Milan).unwrap().debug_allowed());
+    }
+
+    /// The ID-block fields key custody checks come from their offsets.
+    #[test]
+    fn identity_fields_are_read_from_their_offsets() {
+        let mut bytes = synthetic_report_bytes();
+        bytes[0x04..0x08].copy_from_slice(&7u32.to_le_bytes());
+        bytes[0x10] = 0xF1;
+        bytes[0x1F] = 0xF2;
+        bytes[0x20] = 0xE1;
+        bytes[0x2F] = 0xE2;
+        bytes[0x30..0x34].copy_from_slice(&1u32.to_le_bytes());
+        bytes[0x48..0x4C].copy_from_slice(&(1u32 << 2 | 1).to_le_bytes());
+        bytes[0xE0] = 0xD1;
+        bytes[0x10F] = 0xD2;
+        bytes[0x110] = 0xC1;
+        bytes[0x13F] = 0xC2;
+        let report = parse(&bytes, Product::Genoa).unwrap();
+        assert_eq!(report.guest_svn, 7);
+        assert_eq!((report.family_id[0], report.family_id[15]), (0xF1, 0xF2));
+        assert_eq!((report.image_id[0], report.image_id[15]), (0xE1, 0xE2));
+        assert_eq!(report.vmpl, 1);
+        assert_eq!(report.signing_key(), 1, "bits 2-4");
+        assert_eq!(
+            (report.id_key_digest[0], report.id_key_digest[47]),
+            (0xD1, 0xD2)
+        );
+        assert_eq!(
+            (report.author_key_digest[0], report.author_key_digest[47]),
+            (0xC1, 0xC2)
+        );
+        assert!(report.has_id_key());
+        assert!(!parse(&synthetic_report_bytes(), Product::Genoa)
+            .unwrap()
+            .has_id_key());
     }
 
     #[test]
