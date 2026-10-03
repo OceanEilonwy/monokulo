@@ -16,7 +16,12 @@
 //!
 //! The supersession is recomputed every time, so it is undone if the
 //! credited payment loses its block (a reorg). A double spend's void is
-//! never touched here.
+//! never touched here, and a payment sharing its key with another is never
+//! voided as one (`scanner::void_and_notify_in_tx`): a copy's inputs being
+//! spent is no double spend of the order's money.
+//!
+//! (Migration 0021's note that a later payment with a credited key is
+//! refused describes what was done before this.)
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -143,6 +148,27 @@ impl Store {
             }
         }
         Ok(conflicts)
+    }
+
+    /// Whether another payment on `order_id`, credited or superseded (not
+    /// voided as a double spend), carries the output key of
+    /// `(txid, output_index)`.
+    pub fn shares_output_key(
+        &self,
+        order_id: &OrderId,
+        txid: &str,
+        output_index: i64,
+    ) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM order_payments mine JOIN order_payments other
+                   ON other.order_id = mine.order_id AND other.output_key = mine.output_key
+                 WHERE mine.order_id = ?1 AND mine.txid = ?2 AND mine.output_index = ?3
+                   AND NOT (other.txid = mine.txid AND other.output_index = mine.output_index)
+                   AND (other.voided_at_utc IS NULL OR other.superseded_by IS NOT NULL))",
+            params![order_id, txid, output_index],
+            |row| row.get(0),
+        )?)
     }
 
     /// Voids payment `id` for `by` (`Some`), or brings it back (`None`).
@@ -363,13 +389,11 @@ mod tests {
             .attest_payment_block("made-up", 30, &hex::encode([9u8; 32]))
             .unwrap();
         pay(&store, &order, "real", Some(35));
-        let (status, _) = recompute(&store, &order);
-        assert_ne!(
-            status,
-            OrderStatus::Paid,
-            "neither is in its proven block yet"
-        );
+        recompute(&store, &order);
+        // In a block first, but not the proven one: not credited, and the
+        // real one (not attested yet) isn't voided for it.
         assert_eq!(payment(&store, &order, "made-up").superseded_by, None);
+        assert_eq!(payment(&store, &order, "real").superseded_by, None);
 
         store
             .attest_payment_block("real", 35, &hex::encode([7u8; 32]))
@@ -379,6 +403,24 @@ mod tests {
             payment(&store, &order, "made-up").superseded_by,
             Some(payment(&store, &order, "real").id)
         );
+    }
+
+    /// An unsettled conflict holds the order even where its other payments
+    /// would settle it (0-conf here), and counts once.
+    #[test]
+    fn an_unsettled_conflict_holds_an_order_its_other_payments_would_settle() {
+        let (store, order) = shop(0);
+        store
+            .record_payment_match(&order, "other", 0, 5, "[]", 1000, None, Some("ffff"))
+            .unwrap();
+        assert_eq!(recompute(&store, &order), (OrderStatus::Paid, 5));
+        let (store, order) = shop(0);
+        store
+            .record_payment_match(&order, "other", 0, 5, "[]", 1000, None, Some("ffff"))
+            .unwrap();
+        pay(&store, &order, "a", None);
+        pay(&store, &order, "b", None);
+        assert_eq!(recompute(&store, &order), (OrderStatus::Unconfirmed, 10));
     }
 
     /// Payments with different keys aren't in conflict, and one output seen

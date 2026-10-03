@@ -694,8 +694,7 @@ async fn void_if_double_spend_proven(
     db.run(crate::store::db::Class::Scanner, move |s| {
         void_and_notify(s, &order_id, &txid, output, current_height, now)
     })
-    .await?;
-    Ok(true)
+    .await
 }
 
 /// Voids a payment proven double-spent and, in the *same transaction*, records every
@@ -719,7 +718,7 @@ fn void_and_notify(
     output_index: i64,
     current_height: u64,
     now: i64,
-) -> Result<()> {
+) -> Result<bool> {
     store.in_transaction(|store| {
         void_and_notify_in_tx(store, order_id, txid, output_index, current_height, now)
     })
@@ -734,7 +733,17 @@ pub(crate) fn void_and_notify_in_tx(
     output_index: i64,
     current_height: u64,
     now: i64,
-) -> Result<()> {
+) -> Result<bool> {
+    // Another payment on the order carries its output key: its inputs being
+    // spent is no double spend of the order's money, as a copy of a real
+    // payment (a lying node's, carrying the real one's key images) shows.
+    // Which of them is credited is `store::conflicts`'s to settle, at the
+    // recompute; nothing is voided or flagged here. Returns whether it
+    // voided.
+    if store.shares_output_key(order_id, txid, output_index)? {
+        recompute_and_notify_in_tx(store, order_id, current_height, now)?;
+        return Ok(false);
+    }
     // A payment is voided on the evidence that its transaction is in no
     // block, so its recorded height (from a discarded chain, if it has one)
     // goes too: a void that is later reversed must come back unconfirmed,
@@ -753,7 +762,8 @@ pub(crate) fn void_and_notify_in_tx(
         "order.double_spend_detected",
         &[("order_id", order_id.as_str())],
         now,
-    )
+    )?;
+    Ok(true)
 }
 
 /// Reverses a payment void that a later, corroborated re-check no longer supports -
@@ -795,7 +805,7 @@ fn unvoid_as_false_positive(
         if store
             .get_all_payments(order_id)?
             .iter()
-            .all(|p| p.voided_at.is_none())
+            .all(|p| p.voided_at.is_none() || p.superseded_by.is_some())
         {
             store.clear_double_spend_flag(order_id)?;
         }
@@ -5393,6 +5403,60 @@ pub(crate) mod tests {
             .unwrap();
         assert!(copy.voided_at.is_some());
         assert_eq!(copy.superseded_by, Some(credited.id));
+    }
+
+    /// A copy of a real payment's outputs (a lying node's) leaves the pool,
+    /// its inputs spent: no double spend of the order's money, since the
+    /// real one carries the same output. Nothing is voided or flagged;
+    /// `store::conflicts` credits the one that gets into a block.
+    #[tokio::test]
+    async fn a_copy_vanishing_from_the_pool_is_not_voided_as_a_double_spend() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tenant = shared::ids::TenantId::new(tenant_id.to_string());
+        let order = shared::ids::OrderId::new(order_id.to_string());
+        let (real, copy) = (fixture_tx(), key_reusing_tx(1));
+        for tx in [&copy, &real] {
+            scan_transaction_for_tenant(
+                &store,
+                &key_custody,
+                handle,
+                &tenant,
+                tx,
+                0..3,
+                1500,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let daemon = FakeDaemonClient::new();
+        daemon.set_mempool(vec![real.clone()]);
+        for image in key_images_of(&copy) {
+            daemon.set_key_image_status(&image, KeyImageStatus::SpentInBlockchain);
+        }
+        let unconfirmed = store.get_all_payments(&order).unwrap();
+        let store = store.into_shared();
+        let db = crate::store::Db::over_shared(store.clone());
+        let mempool: HashSet<String> = [tx_id_hex(&real)].into();
+        check_vanished_candidates(
+            &db,
+            &daemon,
+            &mempool,
+            100,
+            1600,
+            unconfirmed,
+            &VanishedHints::default(),
+        )
+        .await
+        .unwrap();
+        let store = store.lock();
+        assert!(store
+            .get_all_payments(&order)
+            .unwrap()
+            .iter()
+            .all(|p| p.voided_at.is_none()));
+        let order_row = store.get_order(&tenant, &order).unwrap().unwrap();
+        assert_eq!(order_row.double_spend_detected_at, None, "not flagged");
     }
 
     #[tokio::test]
