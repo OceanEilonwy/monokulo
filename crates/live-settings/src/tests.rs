@@ -1860,6 +1860,106 @@ mod sources {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A value saved empty is kept empty: the file records it, so a reload
+    /// and the next start read back what was saved, not the default. (The
+    /// key used to be dropped from the file while the process carried on
+    /// with the empty value, until a restart quietly brought the default
+    /// back.) Only taking a value away (`None`) removes the key.
+    #[tokio::test]
+    async fn a_value_saved_empty_is_kept_in_the_file_not_turned_back_into_the_default() {
+        let dir = temp_dir("saved-empty");
+        let path = dir.join("app.toml");
+        std::fs::write(&path, "[scan]\nnetworks = \"mainnet,testnet\"\n").unwrap();
+        let s = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+
+        s.registry
+            .save(vec![change("scan.networks", "")])
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[scan]\nnetworks = \"\"\n"
+        );
+        assert!(s.rate.load().networks.is_empty());
+        let saved = view(&s.registry.describe(), "scan.networks").clone();
+        assert_eq!(
+            (saved.value.as_str(), saved.source),
+            ("", SettingSource::Toml)
+        );
+
+        let report = s.registry.reload().await.unwrap();
+        assert!(
+            report.changed.is_empty(),
+            "the file says what the process has: {:?}",
+            report.changed
+        );
+
+        let restarted = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+        assert!(
+            restarted.rate.load().networks.is_empty(),
+            "not the default, mainnet: {:?}",
+            restarted.rate.load().networks
+        );
+        assert_eq!(
+            view(&restarted.registry.describe(), "scan.networks").source,
+            SettingSource::Toml
+        );
+
+        // Taking the value away is what brings the default back.
+        restarted
+            .registry
+            .save(vec![("scan.networks".to_string(), None)])
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[scan]\n");
+        assert_eq!(restarted.rate.load().networks, ["mainnet"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A save of values already in effect writes nothing: a form sends
+    /// every field of its tab, and the ones left as they were (at their
+    /// defaults, or at what the file already says) are not changes. (Every
+    /// default used to be written into the file on any save of its tab,
+    /// pinned there for good.)
+    #[tokio::test]
+    async fn a_save_of_the_values_already_in_effect_writes_nothing() {
+        let dir = temp_dir("unchanged");
+        let path = dir.join("app.toml");
+        let text = "# Mine.\n[scan]\nlimit_per_min = 20\n";
+        std::fs::write(&path, text).unwrap();
+        let s = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+
+        let unchanged = || {
+            vec![
+                change("scan.limit_per_min", "20"),
+                change("scan.networks", "mainnet"),
+                change("public_url", ""),
+                change("abuse.under_attack", "false"),
+            ]
+        };
+        let report = s.registry.save(unchanged()).await.unwrap();
+        assert!(report.changed.is_empty(), "{:?}", report.changed);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert!(
+            s.database.read_all().await.unwrap().is_empty(),
+            "nor into the database"
+        );
+        let views = s.registry.describe();
+        assert_eq!(view(&views, "scan.networks").source, SettingSource::Default);
+        assert_eq!(view(&views, "public_url").source, SettingSource::Default);
+
+        // One field changed among the rest: only it is written.
+        let mut one_changed = unchanged();
+        one_changed[2] = change("public_url", "https://pay.example.com");
+        let report = s.registry.save(one_changed).await.unwrap();
+        assert_eq!(report.changed, ["public_url"]);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "public_url = \"https://pay.example.com\"\n# Mine.\n[scan]\nlimit_per_min = 20\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Sets a file's permission bits.
     #[cfg(unix)]
     fn chmod(path: &std::path::Path, mode: u32) {
