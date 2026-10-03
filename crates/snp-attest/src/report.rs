@@ -158,6 +158,10 @@ pub const SIGNING_KEY_VCEK: u32 = 0;
 /// what it keeps secret.
 pub const POLICY_DEBUG: u64 = 1 << 19;
 
+/// Guest policy bit 18: a migration agent may be associated with the guest,
+/// which can export its memory. Key custody refuses such guests.
+pub const POLICY_MIGRATE_MA: u64 = 1 << 18;
+
 impl AttestationReport {
     /// Whether the guest's policy lets the hypervisor debug it.
     pub fn debug_allowed(&self) -> bool {

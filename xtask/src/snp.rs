@@ -124,6 +124,14 @@ pub fn id_block(args: &[&str]) -> Result<bool, String> {
         .map_err(|_| "--guest-svn is a number")?;
     let policy = u64::from_str_radix(policy.trim_start_matches("0x"), 16)
         .map_err(|_| "--policy is the guest policy, in hex")?;
+    if policy & snp_attest::report::POLICY_DEBUG != 0 {
+        return Err("--policy allows debugging (bit 19): key custody refuses such guests".into());
+    }
+    if policy & snp_attest::report::POLICY_MIGRATE_MA != 0 {
+        return Err(
+            "--policy allows a migration agent (bit 18): key custody refuses such guests".into(),
+        );
+    }
     let out = out.ok_or("--out is required")?;
     let block = IdBlock {
         measurement,

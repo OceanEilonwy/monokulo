@@ -274,6 +274,8 @@ pub enum TransportError {
     HandoffNotAttested,
     #[error("the report was requested at VMPL {0}, not by the guest kernel (VMPL 0)")]
     WrongVmpl(u32),
+    #[error("the engine's guest policy allows a migration agent, which could export its memory")]
+    MigrationAllowed,
     #[error("the public key in the bundle is not the one the report vouches for")]
     KeyNotInReport,
     #[error("encrypting failed: {0}")]
@@ -326,6 +328,9 @@ pub fn check_identity(
     }
     if report.vmpl != 0 {
         return Err(TransportError::WrongVmpl(report.vmpl));
+    }
+    if report.policy & report::POLICY_MIGRATE_MA != 0 {
+        return Err(TransportError::MigrationAllowed);
     }
     if !report.has_id_key() {
         return Err(TransportError::NoIdBlock);

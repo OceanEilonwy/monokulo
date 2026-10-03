@@ -127,7 +127,6 @@ one describing every setting):
 enabled_backends = ["plain", "snp"]
 default_backend = "snp"
 snp_product = "Genoa"            # Milan, Genoa or Turin: the host's EPYC generation
-# snp_device = "/dev/sev-guest"
 # snp_trusted_id_key = "..."     # only for your own ID key; empty trusts the official one
 # snp_min_guest_svn = 1
 snp_min_tcb = "10,0,23,213"      # bootloader,tee,snp,microcode: the levels AMD's bulletins name for your product
@@ -202,4 +201,18 @@ no engine can hand over any more, see `docs/INCIDENT_RUNBOOK.md` §7.
   browser runs the code monokulo serves. `key-custody-cli` checks the engine
   itself and doesn't have this gap; the key entry forms say so.
 - **Whoever holds the ID key** can sign an image that is trusted with keys.
-  Keep `SNP_ID_KEY` to the release process.
+  Keep `SNP_ID_KEY` to the release process: a secret of the `snp-id-key`
+  environment, with required reviewers, available to `main` and version tags
+  only (`.github/workflows/snp-id-block.yml`).
+- **Which payments are a store's.** The host runs `monerod`; by feeding the
+  engine crafted blocks it can learn which outputs belong to a store. Keys stay
+  sealed; the link between a store and its payments doesn't.
+- **The engine's clock** is the host's: it can make a stale revocation list
+  look current to the engine. Merchants' clients check bundles against their
+  own clocks.
+- **A restored copy of the database** from before an upgrade lets the host run
+  the older image again. Without such a copy an older image is refused once a
+  newer one has used the database.
+- **A tampered `key-custody-cli` download**: check it with
+  `gh attestation verify <file> --repo <owner>/<repo>`, as the key entry forms
+  say, not only against its checksum.

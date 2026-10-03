@@ -292,6 +292,20 @@ impl SnpKeyCustody {
 
     fn recover_master(&self) -> Result<Master, String> {
         let wraps = self.wraps.load()?;
+        // A later security version has used this database: an older image
+        // (perhaps one with a known flaw) is refused, not handed the key.
+        if let Some(newer) = wraps
+            .iter()
+            .map(|wrap| wrap.guest_svn)
+            .filter(|svn| *svn > self.report.guest_svn)
+            .max()
+        {
+            return Ok(Master::Waiting(format!(
+                "an engine image at security version {newer} has used this database; this one, at {}, \
+                 is older and isn't trusted with its keys",
+                self.report.guest_svn
+            )));
+        }
         if let Some(own) = wraps
             .iter()
             .find(|wrap| wrap.measurement == self.report.measurement)
@@ -1188,5 +1202,46 @@ mod tests {
             .register_envelope_at(&envelope, Action::Create, None, NOW)
             .await
             .unwrap();
+    }
+
+    /// Once a later security version has used the database, an older image
+    /// is refused even though its own wrap is still there.
+    #[tokio::test]
+    async fn an_older_image_is_refused_once_a_newer_one_used_the_database() {
+        let wraps = Arc::new(MemoryWraps::default());
+        let old = engine(1, identity(1, 1), &wraps).await;
+        let new = engine(1, identity(2, 2), &wraps).await;
+        let answer = old
+            .backend
+            .answer_handoff(
+                &new.backend.handoff_bundle(NOW).unwrap(),
+                &Anchor::Vcek(new.vcek),
+                NOW,
+            )
+            .unwrap();
+        new.backend
+            .accept_handoff(&answer, &Anchor::Vcek(old.vcek), NOW)
+            .unwrap();
+        let rolled_back = engine(1, identity(1, 1), &wraps).await;
+        let waiting = rolled_back.backend.status().waiting.unwrap();
+        assert!(waiting.contains("security version 2"), "{waiting}");
+    }
+
+    /// A guest whose policy allows a migration agent isn't trusted.
+    #[test]
+    fn a_guest_a_migration_agent_could_export_is_refused() {
+        let migratable = TestIdentity {
+            policy: TestIdentity::default().policy | snp_attest::report::POLICY_MIGRATE_MA,
+            ..TestIdentity::default()
+        };
+        let started = SnpKeyCustody::start(
+            Arc::new(TestGuest::new([1; 32], migratable)),
+            SnpConfig {
+                product: Product::Genoa,
+                trust: trust(),
+            },
+            Arc::new(MemoryWraps::default()),
+        );
+        assert!(started.err().unwrap().contains("migration agent"));
     }
 }

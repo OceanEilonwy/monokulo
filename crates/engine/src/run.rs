@@ -169,7 +169,8 @@ impl Engine {
         let snp_boot = live_settings::read_sync_with_env::<SnpBootConfig>(Ok(file), env);
         let snp = Arc::new(SnpSlot::new(
             snp_boot.snp_config(),
-            Arc::new(snp_attest::guest::SevGuest::new(&snp_boot.device)),
+            // Fixed, not a setting: the host writes the settings.
+            Arc::new(snp_attest::guest::SevGuest::new("/dev/sev-guest")),
             Arc::new(StoreWraps(Arc::clone(&store))),
         ));
         let settings = EngineSettings::load(

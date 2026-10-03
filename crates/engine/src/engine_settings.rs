@@ -139,14 +139,6 @@ settings! {
         applies: Restart,
         editable: false,
     },
-    KEY_CUSTODY_SNP_DEVICE: PathBuf {
-        key: "key_custody.snp_device",
-        default: PathBuf::from("/dev/sev-guest"),
-        description: "The guest kernel's SEV-SNP device, through which the snp backend asks the security processor for reports and sealing keys.",
-        example: "/dev/sev-guest",
-        applies: Restart,
-        editable: false,
-    },
     KEY_CUSTODY_SNP_TRUSTED_ID_KEY: Option<String> {
         key: "key_custody.snp_trusted_id_key",
         default: None,
@@ -737,7 +729,6 @@ pub struct CustodyConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnpBootConfig {
     pub product: Option<SnpProduct>,
-    pub device: PathBuf,
     pub trusted_id_key: Option<String>,
     pub min_guest_svn: u32,
     pub min_tcb: Option<String>,
@@ -780,7 +771,6 @@ impl Section for SnpBootConfig {
     fn keys() -> &'static [&'static dyn AnySetting] {
         &[
             &KEY_CUSTODY_SNP_PRODUCT,
-            &KEY_CUSTODY_SNP_DEVICE,
             &KEY_CUSTODY_SNP_TRUSTED_ID_KEY,
             &KEY_CUSTODY_SNP_MIN_GUEST_SVN,
             &KEY_CUSTODY_SNP_MIN_TCB,
@@ -790,7 +780,6 @@ impl Section for SnpBootConfig {
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(Self {
             product: snapshot.get(&KEY_CUSTODY_SNP_PRODUCT),
-            device: snapshot.get(&KEY_CUSTODY_SNP_DEVICE),
             trusted_id_key: snapshot.get(&KEY_CUSTODY_SNP_TRUSTED_ID_KEY),
             min_guest_svn: snapshot.get(&KEY_CUSTODY_SNP_MIN_GUEST_SVN),
             min_tcb: snapshot.get(&KEY_CUSTODY_SNP_MIN_TCB),
@@ -1374,7 +1363,6 @@ mod tests {
         );
 
         let defaults = defaults_of::<SnpBootConfig>();
-        assert_eq!(defaults.device, PathBuf::from("/dev/sev-guest"));
         assert!(defaults.snp_config().unwrap_err().contains("snp_product"));
         let own_key = SnpBootConfig {
             product: Some(SnpProduct::Turin),

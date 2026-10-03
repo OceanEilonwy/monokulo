@@ -101,16 +101,21 @@ pub async fn prepare(
         Purpose::Create => state.engine.client.create_key_bundle(SNP).await,
         Purpose::Move(sk) => state.engine.client.move_key_bundle(sk, SNP).await,
     };
-    Some(match answer {
-        Ok(answer) => SnpKeyEntry::Ready(ready_view(state, &answer)),
-        Err(e) => {
-            tracing::warn!(error = %e, "couldn't get a key custody bundle from the engine");
-            SnpKeyEntry::Unavailable(
+    Some(
+        match answer.map_err(|e| e.to_string()).and_then(|answer| {
+            let trust = checked_trust(&answer.trust)?;
+            Ok(ready_view(state, &answer, &trust))
+        }) {
+            Ok(ready) => SnpKeyEntry::Ready(Box::new(ready)),
+            Err(e) => {
+                tracing::warn!(error = %e, "couldn't get a key custody bundle from the engine");
+                SnpKeyEntry::Unavailable(
                 "Encrypted key entry for SEV-SNP key storage isn't available right now. Try again in a minute."
                     .to_owned(),
             )
-        }
-    })
+            }
+        },
+    )
 }
 
 /// The backends a new store's keys may go to from a form: its choices, or
@@ -129,7 +134,73 @@ pub fn offered_backends(
     }
 }
 
-fn ready_view(state: &AppState, answer: &KeyBundleAnswer) -> SnpReady {
+/// The digest of the official engine ID key this monokulo was built with
+/// (`key-custody`'s own file): empty when the build has none.
+const OFFICIAL_ID_KEY_DIGEST: &str =
+    include_str!("../../../key-custody/src/official_id_key_digest.txt");
+
+/// The engine's trust answer after monokulo checked it. The engine (and the
+/// network between it and monokulo) is not trusted to say what goes into
+/// the page or a printed command: a digest must be 96 hex characters, a
+/// firmware floor four numbers, and whether the key is the official one is
+/// monokulo's own comparison with the digest it was built with.
+#[derive(Debug, PartialEq, Eq)]
+struct CheckedTrust {
+    /// Lowercase hex.
+    id_key_digest: String,
+    official: bool,
+    min_guest_svn: u32,
+    /// `bootloader,tee,snp,microcode`, or empty.
+    min_tcb: String,
+}
+
+fn checked_trust(trust: &crate::engine_client::KeyBundleTrust) -> Result<CheckedTrust, String> {
+    let digest = trust.id_key_digest.trim().to_ascii_lowercase();
+    if digest.len() != 96 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the engine's trusted ID key digest isn't 96 hex characters".to_owned());
+    }
+    let min_tcb = trust.min_tcb.trim();
+    let min_tcb = if min_tcb.is_empty() {
+        String::new()
+    } else {
+        let parts: Vec<u8> = min_tcb
+            .split(',')
+            .map(|part| part.trim().parse::<u8>())
+            .collect::<Result<_, _>>()
+            .map_err(|_| "the engine's firmware floor isn't four numbers".to_owned())?;
+        if parts.len() != 4 {
+            return Err("the engine's firmware floor isn't four numbers".to_owned());
+        }
+        parts
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let official = OFFICIAL_ID_KEY_DIGEST.trim().to_ascii_lowercase();
+    Ok(CheckedTrust {
+        official: !official.is_empty() && official == digest,
+        id_key_digest: digest,
+        min_guest_svn: trust.min_guest_svn,
+        min_tcb,
+    })
+}
+
+/// `value` as one shell word: unchanged when it holds only characters no
+/// shell treats specially, single-quoted otherwise.
+fn shell_word(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./:=,%@+".contains(&b));
+    if plain {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn ready_view(state: &AppState, answer: &KeyBundleAnswer, trust: &CheckedTrust) -> SnpReady {
     let json = answer.bundle.to_string();
     let id = state.engine.key_bundles.insert(json.clone());
     let path = format!("/key-custody/bundles/{id}");
@@ -138,15 +209,18 @@ fn ready_view(state: &AppState, answer: &KeyBundleAnswer) -> SnpReady {
         Some(base) => format!("{base}{path}"),
         None => "key-custody-bundle.json".to_owned(),
     };
-    let mut command = format!("key-custody-cli seal --bundle {bundle_arg}");
-    if !answer.trust.official {
-        command.push_str(&format!(" --trust-id-key {}", answer.trust.id_key_digest));
+    let mut command = format!("key-custody-cli seal --bundle {}", shell_word(&bundle_arg));
+    if !trust.official {
+        command.push_str(&format!(
+            " --trust-id-key {}",
+            shell_word(&trust.id_key_digest)
+        ));
     }
-    if answer.trust.min_guest_svn > 0 {
-        command.push_str(&format!(" --min-guest-svn {}", answer.trust.min_guest_svn));
+    if trust.min_guest_svn > 0 {
+        command.push_str(&format!(" --min-guest-svn {}", trust.min_guest_svn));
     }
-    if !answer.trust.min_tcb.is_empty() {
-        command.push_str(&format!(" --min-tcb {}", answer.trust.min_tcb));
+    if !trust.min_tcb.is_empty() {
+        command.push_str(&format!(" --min-tcb {}", shell_word(&trust.min_tcb)));
     }
     let links = state.settings.cli_links.load();
     let release = cli_release();
@@ -154,10 +228,12 @@ fn ready_view(state: &AppState, answer: &KeyBundleAnswer) -> SnpReady {
         bundle_json: json,
         bundle_path: path,
         bundle_is_file: public.is_none(),
-        trust_id_key: (!answer.trust.official).then(|| answer.trust.id_key_digest.clone()),
-        id_key_digest: answer.trust.id_key_digest.clone(),
-        min_guest_svn: answer.trust.min_guest_svn,
-        min_tcb: answer.trust.min_tcb.clone(),
+        trust_id_key: (!trust.official).then(|| trust.id_key_digest.clone()),
+        // The official key is the one built into the browser's checker: it
+        // isn't told which key to trust then.
+        id_key_digest: (!trust.official).then(|| trust.id_key_digest.clone()),
+        min_guest_svn: trust.min_guest_svn,
+        min_tcb: trust.min_tcb.clone(),
         command,
         version: release.version.to_owned(),
         downloads: release
@@ -165,6 +241,9 @@ fn ready_view(state: &AppState, answer: &KeyBundleAnswer) -> SnpReady {
             .map(|_| downloads(&links.download, release.version))
             .unwrap_or_default(),
         source_url: links.source.replace("{ref}", &release.reference()),
+        verify_command: env!("CARGO_PKG_REPOSITORY")
+            .strip_prefix("https://github.com/")
+            .map(|repo| format!("gh attestation verify <the file> --repo {repo}")),
     }
 }
 
@@ -334,6 +413,56 @@ pub async fn module(headers: HeaderMap) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn trust(digest: &str, min_tcb: &str) -> crate::engine_client::KeyBundleTrust {
+        crate::engine_client::KeyBundleTrust {
+            id_key_digest: digest.to_owned(),
+            official: true,
+            min_guest_svn: 0,
+            min_tcb: min_tcb.to_owned(),
+        }
+    }
+
+    /// What the engine says is checked, not trusted: only well-formed values
+    /// reach the page and the command, and "official" is monokulo's own
+    /// comparison, whatever the engine claims.
+    #[test]
+    fn the_engines_trust_answer_is_checked_and_official_is_decided_here() {
+        let digest = "Ab".repeat(48);
+        let checked = checked_trust(&trust(&digest, " 1, 2,3,4")).unwrap();
+        assert_eq!(checked.id_key_digest, "ab".repeat(48));
+        assert_eq!(checked.min_tcb, "1,2,3,4");
+        assert_eq!(
+            checked.official,
+            OFFICIAL_ID_KEY_DIGEST.trim().eq_ignore_ascii_case(&digest),
+            "the engine's claim is ignored"
+        );
+        for (bad_digest, bad_tcb) in [
+            (format!("{}$(curl x|sh)", "ab".repeat(45)), ""),
+            ("ab".repeat(47), ""),
+            ("ab".repeat(48), "10,0,23,213; curl x | sh"),
+            ("ab".repeat(48), "1,2,3"),
+            ("ab".repeat(48), "1,2,3,256"),
+        ] {
+            assert!(
+                checked_trust(&trust(&bad_digest, bad_tcb)).is_err(),
+                "{bad_digest} {bad_tcb}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_words_are_quoted_unless_plainly_safe() {
+        assert_eq!(
+            shell_word("https://pay.example.com/key-custody/bundles/ab"),
+            "https://pay.example.com/key-custody/bundles/ab"
+        );
+        assert_eq!(shell_word("1,2,3,4"), "1,2,3,4");
+        assert_eq!(shell_word("a b"), "'a b'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+        assert_eq!(shell_word("$(x)"), "'$(x)'");
+        assert_eq!(shell_word(""), "''");
+    }
 
     #[test]
     fn download_links_name_this_version_and_each_computer() {

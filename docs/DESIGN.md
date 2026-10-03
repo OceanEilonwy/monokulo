@@ -340,8 +340,14 @@ Invariants every implementation (including future ones) must uphold:
   - The engine checks its own report at start: launched with an ID block signed by the
     trusted ID key (`key_custody.snp_trusted_id_key`, else the official one), at
     `key_custody.snp_min_guest_svn` or later, on firmware at `key_custody.snp_min_tcb`
-    or later, not debuggable. Otherwise the backend
-    doesn't start and a stand-in reports why, so `plain` stores carry on.
+    or later, not debuggable, and with no migration agent allowed (guest policy bit 18,
+    which could export its memory). Otherwise the backend doesn't start and a stand-in
+    reports why, so `plain` stores carry on.
+  - *Rollback*: each wrap records the security version of the image that made it. An
+    image older than any wrap in the database is refused the master key, so once an
+    upgrade has run, the host can't go back to an older image with a known flaw. A host
+    that restores a copy of the database from before the upgrade defeats this: the
+    database is the host's.
 
 ### 6.4 Key custody per store
 
@@ -354,7 +360,7 @@ it. The trait and the backends are the `key-custody` crate.
   new stores go unless they ask for another) apply as soon as they're saved. Turning a
   backend off leaves its stores unscanned, and reported as such to their owners, until
   it's turned on again or they move; nothing is deleted. The `snp` backend's settings
-  (`key_custody.snp_product`, `snp_device`, `snp_trusted_id_key`, `snp_min_guest_svn`,
+  (`key_custody.snp_product`, `snp_trusted_id_key`, `snp_min_guest_svn`, `snp_min_tcb`,
   `snp_handoff_url`) apply at a restart and can't be changed through the settings API;
   it starts the first time it is enabled.
 - **Moving a store** (`PUT /api/v1/admin/tenant/key-custody`, and the store settings
@@ -404,8 +410,31 @@ Two clients, one implementation:
 
 The trusted ID key is the one whose digest is in
 `crates/key-custody/src/official_id_key_digest.txt` (made with `cargo xtask snp-id-key`;
-the private key is the CI secret `SNP_ID_KEY`), unless an instance sets
-`key_custody.snp_trusted_id_key`.
+the private key is the `snp-id-key` environment's secret `SNP_ID_KEY`), unless an
+instance sets `key_custody.snp_trusted_id_key`. Monokulo decides from its own build
+whether that digest is the official one; it doesn't take the engine's word for it, and
+it refuses to show a form for a trust answer that doesn't parse. The CLI command it
+prints quotes every value for the shell.
+
+The forms link a `gh attestation verify` command for the downloaded CLI: the checksum
+next to a download only shows the file arrived intact; build provenance shows the
+project's release workflow built it.
+
+#### Limits
+
+What the `snp` backend does not hide from the host, by design or for now:
+
+- **Which payments are a store's.** The host runs `monerod` and sees what the engine
+  asks for and what it reports to monokulo, so it can feed the engine crafted blocks
+  and learn from the result which outputs belong to a store. The keys stay sealed; the
+  link between a store and its payments doesn't.
+- **Time.** The engine's clock is the host's. Bundle and certificate freshness, the
+  revocation list's validity and challenge expiry are checked against it, so a host can
+  make a stale revocation list look current. The merchant's client checks a bundle
+  against its own clock.
+- **The firmware floor.** `snp_min_tcb` is a setting, and settings are the host's. The
+  CLI enforces the floor the merchant gives it (`--min-tcb`); the browser takes the
+  engine's, as the page shows it. The derived key isn't yet bound to a TCB version.
 
 ## 7. Chain Scanning & Payment Detection
 

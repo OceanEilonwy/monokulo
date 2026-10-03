@@ -1113,7 +1113,7 @@ async fn submitting_an_invalid_view_key_rerenders_the_form_with_a_visible_error(
 /// covers) with a genuinely invalid spend key, so this exercises the real
 /// `connect_submit` -> `render_connect_form(..., Some(&form))` path.
 #[tokio::test]
-async fn a_rejected_connect_submission_re_fills_every_field_the_merchant_typed() {
+async fn a_rejected_connect_submission_re_fills_what_the_merchant_typed_but_the_view_key() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state);
 
@@ -1159,8 +1159,8 @@ async fn a_rejected_connect_submission_re_fills_every_field_the_merchant_typed()
         "expected site_url re-filled, got: {html}"
     );
     assert!(
-        html.contains(&format!(r#"value="{TEST_VIEW_KEY_HEX}""#)),
-        "expected the valid view key kept, got: {html}"
+        !html.contains(TEST_VIEW_KEY_HEX),
+        "the private view key is never put back in a page: {html}"
     );
     assert!(
         html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),

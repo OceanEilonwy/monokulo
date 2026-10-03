@@ -1,9 +1,15 @@
 name: snp-id-block
 
-# Signs an engine image's ID block with the engine ID key (the repository
-# secret SNP_ID_KEY), for launching that image in an SEV-SNP confidential VM
-# (deploy/sev-snp/README.md §3). Run it by hand for each image to release:
-# whoever can run it can make an image merchants' keys are trusted to.
+# Signs an engine image's ID block with the engine ID key (SNP_ID_KEY), for
+# launching that image in an SEV-SNP confidential VM
+# (deploy/sev-snp/README.md §3). Whoever can sign can make an image
+# merchants' keys are trusted to, so:
+# - SNP_ID_KEY is a secret of the `snp-id-key` environment, which must have
+#   required reviewers and allow only the main branch and version tags
+#   (Settings → Environments); not a repository secret;
+# - the job runs only from main or a version tag;
+# - no build cache is restored (a poisoned cache would run with the key);
+# - every action is pinned to a commit.
 on:
   workflow_dispatch:
     inputs:
@@ -28,13 +34,16 @@ permissions:
 
 jobs:
   sign:
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    environment: snp-id-key
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # The latest nightly, as rust-toolchain.toml names it.
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@0e28dd9a7764e5f83064112bb1f24025a14c313c # nightly
       - name: Sign
         env:
           SNP_ID_KEY: ${{ secrets.SNP_ID_KEY }}
@@ -49,7 +58,7 @@ jobs:
           if test -n "$FAMILY_ID"; then args+=(--family-id "$FAMILY_ID"); fi
           if test -n "$IMAGE_ID"; then args+=(--image-id "$IMAGE_ID"); fi
           cargo xtask snp-id-block "${args[@]}"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: snp-id-block-${{ inputs.guest_svn }}
           path: id/
