@@ -49,6 +49,8 @@ pub enum SnpKeyEntry {
     Ready(Box<SnpReady>),
     /// Why encrypted key entry can't be offered right now.
     Unavailable(String),
+    /// This account has opened too many key entry forms; shown as an alert.
+    Limited(String),
 }
 
 /// The view key and spend key fields. `required` unless the keys may go
@@ -83,6 +85,9 @@ pub fn snp_section(entry: &SnpKeyEntry, backend_field: Option<&str>) -> Markup {
     match entry {
         SnpKeyEntry::Unavailable(why) => html! {
             p class="warning" role="status" { (why) }
+        },
+        SnpKeyEntry::Limited(why) => html! {
+            div class="error" role="alert" { (why) }
         },
         SnpKeyEntry::Ready(ready) => ready_section(ready, backend_field),
     }

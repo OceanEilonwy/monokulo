@@ -1691,6 +1691,18 @@ mod tests {
                 Custody,
                 Some(CLI_DOWNLOADS),
             ),
+            (
+                "key_custody.snp_bundles_per_user",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.snp_bundles_per_user_per_min",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
             ("payment.confirmations_required", E, Payments, None),
             ("payment.order_expiry_minutes", E, Payments, None),
             (

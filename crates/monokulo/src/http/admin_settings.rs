@@ -1735,6 +1735,8 @@ mod tests {
             ("server.bind", "127.0.0.1:9081"),
             ("engine.mode", "remote"),
             ("engine.url", "http://127.0.0.1:9443"),
+            ("key_custody.snp_bundles_per_user", "17"),
+            ("key_custody.snp_bundles_per_user_per_min", "29"),
         ];
         // Every monokulo setting the page can save must be covered here, or
         // this test would silently stop proving anything about a setting

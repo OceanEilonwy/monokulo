@@ -28,6 +28,7 @@ use axum::response::{IntoResponse, Response};
 use super::AppState;
 use crate::engine_client::{KeyBundleAnswer, StoreKeys};
 use crate::views::key_entry::{CliDownload, SnpKeyEntry, SnpReady};
+use shared::ids::UserId;
 
 /// The backend that takes keys only encrypted to it.
 pub const SNP: &str = "snp";
@@ -44,39 +45,87 @@ const BUNDLE_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_BUNDLES: usize = 10_000;
 
 /// Bundles handed out for key entry forms, by id, for `key-custody-cli` to
-/// fetch.
-#[derive(Default, Clone)]
-pub struct KeyBundles(Arc<parking_lot::Mutex<HashMap<String, StoredBundle>>>);
+/// fetch, and how many each account has opened lately
+/// (`key_custody.snp_bundles_per_user*`), so one account can't expire
+/// everyone else's.
+#[derive(Clone)]
+pub struct KeyBundles {
+    bundles: Arc<parking_lot::Mutex<HashMap<String, StoredBundle>>>,
+    opened: Arc<shared::rate_limit::RateLimiter<UserId>>,
+}
 
-/// A bundle's JSON, and when it was handed out.
-type StoredBundle = (Instant, Arc<str>);
+impl Default for KeyBundles {
+    fn default() -> Self {
+        KeyBundles {
+            bundles: Arc::default(),
+            opened: Arc::new(shared::rate_limit::RateLimiter::new(
+                crate::settings::SnpBundleLimits::default().per_user_per_min,
+            )),
+        }
+    }
+}
+
+/// A bundle: who it was handed to, when, and its JSON.
+struct StoredBundle {
+    user: UserId,
+    at: Instant,
+    json: Arc<str>,
+}
 
 impl KeyBundles {
-    fn insert(&self, json: String) -> String {
+    /// Whether `user` may open another key entry form now, at most
+    /// `per_minute` a minute; counts this one if so.
+    fn may_open(&self, user: &UserId, per_minute: u32) -> bool {
+        self.opened.set_limit(per_minute);
+        self.opened.check(user.clone(), crate::now_unix())
+    }
+
+    /// Keeps `json` for `user`, dropping their oldest past `per_user` (and
+    /// the oldest of all past [`MAX_BUNDLES`]); returns its id.
+    fn insert(&self, user: &UserId, per_user: usize, json: String) -> String {
         let id = hex::encode(rand::random::<[u8; 16]>());
-        let mut bundles = self.0.lock();
-        bundles.retain(|_, (at, _)| at.elapsed() < BUNDLE_TTL);
-        if bundles.len() >= MAX_BUNDLES {
-            if let Some(oldest) = bundles
+        let mut bundles = self.bundles.lock();
+        bundles.retain(|_, bundle| bundle.at.elapsed() < BUNDLE_TTL);
+        let oldest = |bundles: &HashMap<String, StoredBundle>, own: bool| {
+            bundles
                 .iter()
-                .min_by_key(|(_, (at, _))| *at)
+                .filter(|(_, bundle)| !own || bundle.user == *user)
+                .min_by_key(|(_, bundle)| bundle.at)
                 .map(|(id, _)| id.clone())
-            {
-                bundles.remove(&oldest);
+        };
+        while bundles.values().filter(|b| b.user == *user).count() >= per_user {
+            let Some(id) = oldest(&bundles, true) else {
+                break;
+            };
+            bundles.remove(&id);
+        }
+        if bundles.len() >= MAX_BUNDLES {
+            if let Some(id) = oldest(&bundles, false) {
+                bundles.remove(&id);
             }
         }
-        bundles.insert(id.clone(), (Instant::now(), json.into()));
+        bundles.insert(
+            id.clone(),
+            StoredBundle {
+                user: user.clone(),
+                at: Instant::now(),
+                json: json.into(),
+            },
+        );
         id
     }
 
     fn get(&self, id: &str) -> Option<Arc<str>> {
-        self.0
+        self.bundles
             .lock()
             .get(id)
-            .filter(|(at, _)| at.elapsed() < BUNDLE_TTL)
-            .map(|(_, json)| Arc::clone(json))
+            .filter(|bundle| bundle.at.elapsed() < BUNDLE_TTL)
+            .map(|bundle| Arc::clone(&bundle.json))
     }
 }
+
+/// What an account that opened too many key entry forms is told.
+pub const TOO_MANY_FORMS: &str = "You've opened SEV-SNP key entry too many times in the last minute. Wait a minute, then reload this page.";
 
 /// What a form's keys are for.
 pub enum Purpose<'a> {
@@ -86,12 +135,14 @@ pub enum Purpose<'a> {
     Move(&'a shared::auth::RawToken),
 }
 
-/// The encrypted key entry for a form whose keys may go to `snp` (one of
-/// `backends`, or every form while monokulo requires it), or `None` when
-/// they can't. A bundle that can't be had, or an engine whose trust
-/// settings aren't this site's, is shown as unavailable.
+/// The encrypted key entry for `user`'s form whose keys may go to `snp`
+/// (one of `backends`, or every form while monokulo requires it), or `None`
+/// when they can't. A bundle that can't be had, or an engine whose trust
+/// settings aren't this site's, is shown as unavailable; an account past
+/// its limit gets an alert, and nothing is asked of the engine.
 pub async fn prepare(
     state: &AppState,
+    user: &UserId,
     purpose: Purpose<'_>,
     backends: &[String],
 ) -> Option<SnpKeyEntry> {
@@ -113,6 +164,15 @@ pub async fn prepare(
         tracing::warn!(reason = %why, "SEV-SNP key entry isn't offered");
         return Some(unavailable());
     }
+    let limits = *state.settings.snp_bundle_limits.load();
+    if !state
+        .engine
+        .key_bundles
+        .may_open(user, limits.per_user_per_min)
+    {
+        tracing::info!(user = %user, "an account opened too many SEV-SNP key entry forms");
+        return Some(SnpKeyEntry::Limited(TOO_MANY_FORMS.to_owned()));
+    }
     let answer = match purpose {
         Purpose::Create => state.engine.client.create_key_bundle(SNP).await,
         Purpose::Move(sk) => state.engine.client.move_key_bundle(sk, SNP).await,
@@ -120,6 +180,8 @@ pub async fn prepare(
     Some(match answer {
         Ok(answer) => SnpKeyEntry::Ready(Box::new(ready_view(
             state,
+            user,
+            limits.per_user,
             &answer,
             &trust,
             policy.is_official(),
@@ -259,12 +321,17 @@ fn shell_word(value: &str) -> String {
 
 fn ready_view(
     state: &AppState,
+    user: &UserId,
+    per_user: usize,
     answer: &KeyBundleAnswer,
     trust: &key_custody::transport::TrustPolicy,
     official: bool,
 ) -> SnpReady {
     let json = answer.bundle.to_string();
-    let id = state.engine.key_bundles.insert(json.clone());
+    let id = state
+        .engine
+        .key_bundles
+        .insert(user, per_user, json.clone());
     let path = format!("/key-custody/bundles/{id}");
     let public = state.settings.public_url();
     let bundle_arg = match &public {
@@ -756,9 +823,96 @@ mod tests {
     #[test]
     fn a_bundle_is_served_while_it_lasts() {
         let bundles = KeyBundles::default();
-        let id = bundles.insert("{\"v\":1}".into());
+        let id = bundles.insert(&UserId::new("u1"), 20, "{\"v\":1}".into());
         assert_eq!(bundles.get(&id).as_deref(), Some("{\"v\":1}"));
         assert_eq!(bundles.get("nope"), None);
         assert_eq!(id.len(), 32);
+    }
+
+    /// One account opening form after form expires only its own oldest
+    /// forms, never another account's.
+    #[test]
+    fn an_account_past_its_open_forms_loses_only_its_own_oldest() {
+        let bundles = KeyBundles::default();
+        let (flooder, other) = (UserId::new("flooder"), UserId::new("other"));
+        let theirs = bundles.insert(&other, 2, "theirs".into());
+        let first = bundles.insert(&flooder, 2, "1".into());
+        for _ in 0..50 {
+            bundles.insert(&flooder, 2, "more".into());
+        }
+        assert_eq!(bundles.get(&first), None, "the flooder's oldest went");
+        assert_eq!(bundles.get(&theirs).as_deref(), Some("theirs"));
+        let kept = bundles
+            .bundles
+            .lock()
+            .values()
+            .filter(|b| b.user == flooder)
+            .count();
+        assert_eq!(kept, 2);
+    }
+
+    /// Past the per-minute limit, the form is an alert and the engine isn't
+    /// asked for a challenge; another account is unaffected.
+    #[tokio::test]
+    async fn an_account_opening_too_many_forms_gets_an_alert() {
+        let engine = engine_test_support::TestEngineConfig::new()
+            .with_snp_backend()
+            .spawn()
+            .await;
+        let base = crate::settings::MonokuloSettings::fixed_with_snp_entry(
+            crate::settings::PerRequest {
+                signup_mode: crate::settings::SignupMode::Public,
+                public_url: String::new(),
+            },
+            crate::settings::SnpEntryPolicy {
+                trust: Some(engine_test_support::snp_test_trust()),
+                required: false,
+            },
+        );
+        let settings = Arc::new(crate::settings::MonokuloSettings {
+            registry: None,
+            server: base.server.clone(),
+            per_request: base.per_request.clone(),
+            cli_links: base.cli_links.clone(),
+            snp_entry: base.snp_entry.clone(),
+            snp_bundle_limits: live_settings::Live::new(crate::settings::SnpBundleLimits {
+                per_user: 20,
+                per_user_per_min: 2,
+            }),
+        });
+        let state = AppState {
+            engine: crate::http::Engine::new(crate::http::EngineClient::embedded_for_tests(
+                engine.router(),
+            )),
+            settings,
+            ..AppState::for_tests()
+        };
+        crate::http::status_page::get_status_cached(&state.engine)
+            .await
+            .unwrap();
+        let backends = vec![SNP.to_owned()];
+        let (flooder, other) = (UserId::new("flooder"), UserId::new("other"));
+        for _ in 0..2 {
+            assert!(matches!(
+                prepare(&state, &flooder, Purpose::Create, &backends).await,
+                Some(SnpKeyEntry::Ready(_))
+            ));
+        }
+        let limited = prepare(&state, &flooder, Purpose::Create, &backends).await;
+        assert!(
+            matches!(&limited, Some(SnpKeyEntry::Limited(m)) if m == TOO_MANY_FORMS),
+            "past the limit"
+        );
+        let html =
+            crate::views::key_entry::snp_section(limited.as_ref().unwrap(), None).into_string();
+        assert!(
+            html.contains(r#"<div class="error" role="alert">"#),
+            "{html}"
+        );
+        assert!(html.contains("Wait a minute"), "{html}");
+        assert!(matches!(
+            prepare(&state, &other, Purpose::Create, &backends).await,
+            Some(SnpKeyEntry::Ready(_))
+        ));
     }
 }
