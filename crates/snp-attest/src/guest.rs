@@ -270,6 +270,8 @@ pub struct TestIdentity {
     pub guest_svn: u32,
     pub id_key_digest: [u8; 48],
     pub chip_id: [u8; 64],
+    /// The platform's TCB, raw: reported, current and committed alike.
+    pub tcb: [u8; 8],
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -284,6 +286,10 @@ impl Default for TestIdentity {
             guest_svn: 1,
             id_key_digest: [0x1D; 48],
             chip_id: [0xC1; 64],
+            // Above every release floor in either layout (legacy:
+            // bootloader 10, tee 10, snp 30, microcode 230; Turin: fmc 10
+            // and the same).
+            tcb: [10, 10, 10, 30, 0, 0, 30, 230],
         }
     }
 }
@@ -331,6 +337,9 @@ impl GuestDevice for TestGuest {
         raw[0x10..0x20].copy_from_slice(&id.family_id);
         raw[0x20..0x30].copy_from_slice(&id.image_id);
         raw[0x34..0x38].copy_from_slice(&1u32.to_le_bytes());
+        raw[0x38..0x40].copy_from_slice(&id.tcb);
+        raw[0x180..0x188].copy_from_slice(&id.tcb);
+        raw[0x1E0..0x1E8].copy_from_slice(&id.tcb);
         raw[0x50..0x90].copy_from_slice(report_data);
         raw[0x90..0xC0].copy_from_slice(&id.measurement);
         raw[0xE0..0x110].copy_from_slice(&id.id_key_digest);
@@ -349,6 +358,21 @@ impl GuestDevice for TestGuest {
         use sha2::Digest as _;
         let id = &self.identity;
         let select = request.guest_field_select;
+        // As the firmware: a TCB above the committed one, in any part, is
+        // refused.
+        if select & FIELD_TCB_VERSION != 0
+            && request
+                .tcb_version
+                .to_le_bytes()
+                .iter()
+                .zip(id.tcb)
+                .any(|(asked, committed)| *asked > committed)
+        {
+            return Err(GuestError::Status {
+                request: "derived key",
+                status: 0x16,
+            });
+        }
         let mut hash = sha2::Sha256::new();
         hash.update(self.chip_secret);
         hash.update(select.to_le_bytes());
@@ -416,6 +440,41 @@ mod tests {
         assert_ne!(*key, *other_chip.derived_key(&request(select)).unwrap());
     }
 
+    /// Like the firmware, the stand-in binds a key to a TCB no newer than
+    /// the committed one, and refuses a newer one in any part.
+    #[test]
+    fn a_derived_key_is_bound_only_to_a_tcb_already_committed() {
+        let select = FIELD_POLICY | FIELD_MEASUREMENT | FIELD_TCB_VERSION;
+        let guest = TestGuest::new([1; 32], TestIdentity::default());
+        let committed = u64::from_le_bytes(guest.identity.tcb);
+        let at = |tcb_version| DerivedKeyRequest {
+            tcb_version,
+            ..request(select)
+        };
+        let current = guest.derived_key(&at(committed)).unwrap();
+        let older = guest.derived_key(&at(committed - 1)).unwrap();
+        assert_ne!(*current, *older);
+        assert!(guest.derived_key(&at(committed + (1 << 56))).is_err());
+
+        let downgraded = TestGuest::new(
+            [1; 32],
+            TestIdentity {
+                tcb: [10, 10, 10, 30, 0, 0, 29, 230],
+                ..TestIdentity::default()
+            },
+        );
+        assert!(downgraded.derived_key(&at(committed)).is_err());
+        assert_eq!(
+            *downgraded
+                .derived_key(&at(u64::from_le_bytes(downgraded.identity.tcb)))
+                .unwrap(),
+            *guest
+                .derived_key(&at(u64::from_le_bytes(downgraded.identity.tcb)))
+                .unwrap(),
+            "the same chip, bound to the same older TCB"
+        );
+    }
+
     /// A stand-in report parses, carries the identity and report data, and
     /// its signature verifies against the stand-in VCEK.
     #[test]
@@ -427,6 +486,8 @@ mod tests {
         assert_eq!(report.measurement, guest.identity.measurement);
         assert_eq!(report.id_key_digest, guest.identity.id_key_digest);
         assert_eq!(report.guest_svn, 1);
+        assert_eq!(report.committed_tcb.raw, guest.identity.tcb);
+        assert_eq!(report.reported_tcb.raw, guest.identity.tcb);
         assert!(!report.debug_allowed());
         crate::verify::verify_report_signed_by(&report, &guest.vcek()).unwrap();
     }

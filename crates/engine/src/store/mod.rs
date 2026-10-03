@@ -37,7 +37,8 @@ pub use work::{
 };
 
 /// A wrapped SEV-SNP master key: (measurement, guest SVN, wrapped key).
-pub type SnpMasterKeyRow = (Vec<u8>, u32, Vec<u8>);
+/// `(measurement, guest_svn, tcb, wrapped)`.
+pub type SnpMasterKeyRow = (Vec<u8>, u32, Vec<u8>, Vec<u8>);
 
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.
@@ -1140,25 +1141,28 @@ impl Store {
     pub fn snp_master_keys(&self) -> Result<Vec<SnpMasterKeyRow>> {
         let mut stmt = self
             .conn
-            .prepare_cached("SELECT measurement, guest_svn, wrapped FROM snp_master_keys")?;
+            .prepare_cached("SELECT measurement, guest_svn, tcb, wrapped FROM snp_master_keys")?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    /// Stores the SEV-SNP master key wrapped for the image `measurement`,
-    /// replacing any earlier wrap for it.
+    /// Stores the SEV-SNP master key wrapped for the image `measurement` at
+    /// firmware `tcb`, replacing any earlier wrap for it.
     pub fn save_snp_master_key(
         &self,
         measurement: &[u8],
         guest_svn: u32,
+        tcb: &[u8],
         wrapped: &[u8],
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO snp_master_keys (measurement, guest_svn, wrapped) VALUES (?1, ?2, ?3)
-             ON CONFLICT (measurement) DO UPDATE SET guest_svn = ?2, wrapped = ?3",
-            params![measurement, guest_svn, wrapped],
+            "INSERT INTO snp_master_keys (measurement, guest_svn, tcb, wrapped) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (measurement) DO UPDATE SET guest_svn = ?2, tcb = ?3, wrapped = ?4",
+            params![measurement, guest_svn, tcb, wrapped],
         )?;
         Ok(())
     }

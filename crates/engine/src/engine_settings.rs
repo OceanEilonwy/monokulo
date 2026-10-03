@@ -160,7 +160,7 @@ settings! {
         key: "key_custody.snp_min_tcb",
         default: None,
         check: check_tcb_floor,
-        description: "The lowest firmware trusted with keys, as the security patch levels bootloader,tee,snp,microcode of the attested TCB: this engine refuses to start below it, and a handoff checks it both ways; keep monokulo's key_custody.snp_entry_min_tcb the same, as its key entry checks its own. Set it to the levels AMD's security bulletins name for your EPYC generation; empty checks none.",
+        description: "The lowest firmware trusted with keys, as the security patch levels bootloader,tee,snp,microcode of the attested TCB: this engine refuses to start below it, and a handoff checks it both ways; keep monokulo's key_custody.snp_entry_min_tcb the same, as its key entry checks its own. This release's own floor for the product applies as well and can't be lowered. Set it to the levels AMD's security bulletins name for your EPYC generation; empty checks none.",
         example: "10,0,23,213",
         applies: Restart,
         editable: false,

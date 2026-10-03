@@ -277,7 +277,7 @@ settings! {
         key: "key_custody.snp_entry_min_tcb",
         default: None,
         check: check_tcb_floor,
-        description: "The lowest firmware this site's key entry forms encrypt keys to, as the security patch levels bootloader,tee,snp,microcode of the attested TCB; empty checks none. Keep it equal to the engine's key_custody.snp_min_tcb; the status page shows an alert when they differ.",
+        description: "The lowest firmware this site's key entry forms encrypt keys to, as the security patch levels bootloader,tee,snp,microcode of the attested TCB; empty checks only this release's own floor, which always applies. Keep it equal to the engine's key_custody.snp_min_tcb; the status page shows an alert when they differ.",
         example: "10,0,23,213",
     },
     KEY_CUSTODY_SNP_ENTRY_REQUIRED: bool {

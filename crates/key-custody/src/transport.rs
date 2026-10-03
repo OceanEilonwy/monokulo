@@ -210,6 +210,16 @@ impl TcbFloor {
         )
     }
 
+    /// The higher of the two floors in each part.
+    pub fn max(self, other: TcbFloor) -> TcbFloor {
+        TcbFloor {
+            bootloader: self.bootloader.max(other.bootloader),
+            tee: self.tee.max(other.tee),
+            snp: self.snp.max(other.snp),
+            microcode: self.microcode.max(other.microcode),
+        }
+    }
+
     fn admits(self, tcb: &report::TcbVersion) -> bool {
         tcb.bootloader >= self.bootloader
             && tcb.tee >= self.tee
@@ -220,6 +230,24 @@ impl TcbFloor {
 
 const TCB_FLOOR_FORMAT: &str =
     "a minimum TCB is four numbers, bootloader,tee,snp,microcode (each 0-255)";
+
+/// The lowest firmware this release trusts on `product`, whatever a
+/// [`TrustPolicy`] says (`src/release_tcb_floors.txt`): built into the engine
+/// image, so its host can't lower it, and into every client.
+pub fn release_tcb_floor(product: Product) -> TcbFloor {
+    include_str!("release_tcb_floors.txt")
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .find(|(name, _)| name.trim() == product.kds_name())
+        .and_then(|(_, floor)| TcbFloor::parse(floor).ok())
+        .expect("release_tcb_floors.txt names a floor for every product")
+}
+
+/// The floor a report from `product` is held to under `policy`: the
+/// policy's, raised to this release's.
+pub fn effective_tcb_floor(product: Product, policy: &TrustPolicy) -> TcbFloor {
+    policy.min_tcb.max(release_tcb_floor(product))
+}
 
 /// The digest of the official ID key, the one release builds of the engine
 /// image are signed with, if this build has one (see
@@ -316,8 +344,10 @@ pub fn report_data_for(public_key: &[u8; 32]) -> [u8; 64] {
 }
 
 /// The parts of a guest's identity [`TrustPolicy`] decides on, checked on a
-/// report already known to be genuine.
+/// report from `product` already known to be genuine. Its firmware is held
+/// to this release's floor as well as the policy's.
 pub fn check_identity(
+    product: Product,
     report: &AttestationReport,
     policy: &TrustPolicy,
 ) -> Result<(), TransportError> {
@@ -347,14 +377,15 @@ pub fn check_identity(
             min: policy.min_guest_svn,
         });
     }
-    if !policy.min_tcb.admits(&report.reported_tcb) {
+    let floor = effective_tcb_floor(product, policy);
+    if !floor.admits(&report.reported_tcb) {
         let tcb = &report.reported_tcb;
         return Err(TransportError::TcbTooLow {
             got: format!(
                 "{},{},{},{}",
                 tcb.bootloader, tcb.tee, tcb.snp, tcb.microcode
             ),
-            min: policy.min_tcb.to_text(),
+            min: floor.to_text(),
         });
     }
     Ok(())
@@ -440,7 +471,7 @@ fn verify_attestation(
         crl_der: hex_bytes("revocation list", &from.crl)?,
     };
     check_report(product, &report, &evidence, anchor, now_unix)?;
-    check_identity(&report, policy)?;
+    check_identity(product, &report, policy)?;
     Ok(report)
 }
 
@@ -790,8 +821,8 @@ mod tests {
         let guest = TestGuest::new([1; 32], TestIdentity::default());
         let receiver = ReceiverKey::generate();
         let bundle = bundle_from(&guest, &receiver, Action::Create, None);
-        let floor = TcbFloor::parse("0,0,0,1").unwrap();
-        assert_eq!(floor.to_text(), "0,0,0,1");
+        let floor = TcbFloor::parse("0,0,0,255").unwrap();
+        assert_eq!(floor.to_text(), "0,0,0,255");
         assert_eq!(TcbFloor::parse("").unwrap(), TcbFloor::default());
         assert!(TcbFloor::parse("1,2,3").is_err());
         assert!(TcbFloor::parse("1,2,3,256").is_err());
@@ -807,6 +838,52 @@ mod tests {
         assert!(
             matches!(refused, Err(TransportError::TcbTooLow { .. })),
             "{refused:?}"
+        );
+    }
+
+    /// Every product has a release floor, and a report below it is refused
+    /// even under a policy with no floor of its own.
+    #[test]
+    fn firmware_below_the_release_floor_is_refused_whatever_the_policy() {
+        for product in [Product::Milan, Product::Genoa, Product::Turin] {
+            assert_ne!(release_tcb_floor(product), TcbFloor::default());
+        }
+        let old_firmware = TestGuest::new(
+            [1; 32],
+            TestIdentity {
+                // Genoa layout: bootloader 10, tee 10, snp 22, microcode 230.
+                tcb: [10, 10, 0, 0, 0, 0, 22, 230],
+                ..TestIdentity::default()
+            },
+        );
+        let receiver = ReceiverKey::generate();
+        let bundle = bundle_from(&old_firmware, &receiver, Action::Create, None);
+        let refused = verify_bundle(
+            &bundle,
+            &policy(&old_firmware),
+            &Anchor::Vcek(old_firmware.vcek()),
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(
+            refused,
+            TransportError::TcbTooLow {
+                got: "10,10,22,230".into(),
+                min: release_tcb_floor(Product::Genoa).to_text(),
+            }
+        );
+        assert_eq!(
+            effective_tcb_floor(
+                Product::Genoa,
+                &TrustPolicy {
+                    min_tcb: TcbFloor::parse("1,0,0,0").unwrap(),
+                    ..policy(&old_firmware)
+                }
+            ),
+            TcbFloor {
+                bootloader: 1,
+                ..release_tcb_floor(Product::Genoa)
+            }
         );
     }
 

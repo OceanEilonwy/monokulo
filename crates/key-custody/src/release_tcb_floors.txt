@@ -1,0 +1,16 @@
+# The lowest firmware this release trusts with keys, per AMD product, as
+# bootloader,tee,snp,microcode security patch levels of the attested TCB.
+# Built into the engine image (so it is part of the measurement), the
+# browser's WASM and key-custody-cli: no setting lowers it, and every engine
+# seals its master key at its platform's committed TCB, never below this.
+#
+# Release checklist: raise these to the levels AMD's latest SEV-SNP security
+# bulletins (https://www.amd.com/en/resources/product-security.html) name as
+# fixed, for each product, before tagging a release.
+#
+# From AMD-SB-3019 (SEV firmware with TCB[SNP] and the microcode patch
+# level's low byte): bootloader and tee are left at 0 until checked against
+# a bulletin that names them.
+Milan = 0,0,24,219
+Genoa = 0,0,23,84
+Turin = 0,0,0,71
