@@ -3,9 +3,9 @@
 Status: design, for review. Nothing here is implemented yet.
 
 The animated mockup that goes with this document is
-`docs/engine-visualizer-mockup.html` (open it in a browser; it plays a
-scripted session against fake data, including a catch-up, a mempool payment
-settling and a reorg).
+`docs/engine-visualizer-mockup.html` (open it in a browser). A fake
+engine runs behind it; three buttons make a store catch up, a customer pay
+and the chain reorganise, and the timeline scrubs through all of it.
 
 ## Purpose
 
@@ -37,7 +37,7 @@ deliberately left out (see "Left out").
 | Engine | Shown as |
 | --- | --- |
 | `loops::run_scanner_loop`: a round, then sleep for the poll interval, or start again at once when the round was backlogged, or wake early on a ZMQ block announcement | Round ribbon: one bar per round, gaps for sleeps, each gap marked with what ended it (timer, node announced a block, backlog) |
-| `loops::run_fast_mempool_loop`: every 250 ms, scan new pool transactions against every store in scope | Mempool panel: a heartbeat tick each pass; a scanning sweep only when a pass found new transactions |
+| `loops::run_fast_mempool_loop`: every 250 ms, scan new pool transactions against every store in scope | Mempool line: a heartbeat each pass; new transactions appear as dots, filled once scanned |
 | Store key registration retries | A line in the stores summary ("2 stores waiting for their keys to register") |
 
 ### A round (`work::run_round`)
@@ -63,7 +63,7 @@ deliberately left out (see "Left out").
 | Header-only recording of blocks nobody is scanned for | Small hollow cells, recorded in runs, without the scan animation |
 | A block scan: per-tenant view-key scans in runs of 32 transactions, paged for large blocks | The scanning cell fills left to right with its transaction progress; the group pill pulses |
 | Checkpoint of an interrupted block (`partial_block_*`) | A save marker on the half-filled cell: "saved at 1,200 of 3,000 transactions" |
-| Commit: cursors moved, matches promoted, hash recorded, one transaction | The pill moves one cell right; the cell gets its recorded state; a save pulse goes to the database panel |
+| Commit: cursors moved, matches promoted, hash recorded, one transaction | The pill moves one cell right; the cell gets its recorded state; a save square goes to the Database line |
 | `Diverged` | The cell turns to the reorg colour with "doesn't extend the recorded chain" and the frontier stops |
 | First-run seed just below the tip | The strip starts with one recorded cell |
 | Slow block, headers-first mode | Banner over the strip, same sentences as the status page |
@@ -73,8 +73,8 @@ deliberately left out (see "Left out").
 | Engine | Shown as |
 | --- | --- |
 | Detection: one compare at `min(high-water, tip)`, free when the tip hash came with the height; binary search on a mismatch | A probe that touches the compared cell ("agrees", or "free: the tip hash matched"); on a mismatch the probe hops through the search |
-| Durable reorg job: Collect, Process (Keep, Move, Restore, Void per payment), Rewind | Reorg panel: four stations, the candidate count, a counter per decision, retrying candidates with their wait |
-| While a job is open: blocks suspended, settlement frozen for paid/overpaid | Block pills greyed with "waiting for the reorg"; a "settlement held" chip on the settlement panel |
+| Durable reorg job: Collect, Process (Keep, Move, Restore, Void per payment), Rewind | Reorg line, opened by itself: four stations, the candidate count, a counter per decision, retrying candidates with their wait |
+| While a job is open: blocks suspended, settlement frozen for paid/overpaid | Block pills greyed with "waiting for the reorg"; "paid held: reorg open" on the Order status line |
 | Rewind: delete losing hashes, re-anchor, clamp cursors | The losing cells drop out of the strip; pills slide back to the fork; replacement cells arrive next round |
 
 ### Mempool tier and fast path (`work::mempool`)
@@ -83,38 +83,49 @@ deliberately left out (see "Left out").
 | --- | --- |
 | Pool txids (polled with the tip), remembered bodies and per-store scans | The pool: one dot per transaction (up to 200, then a count), dimmed once every store has been scanned for it |
 | Fast pass: new transactions only, up to its scan budget, the rest deferred to the round | New dots drop in from the node; a sweep scans them; deferred ones keep a ring until the round's rotation reaches them |
-| A match: payment recorded and its order recomputed in the same job | The dot turns into a payment token and flies to settlement, then on to webhooks |
+| A match: payment recorded and its order recomputed in the same job | The dot turns orange; an envelope flies to the Webhooks line |
 | A transaction mined | Its dot flies to the block that holds it |
 | Not watching (nothing in scope) | The pool is drawn empty with "not watched: no store is waiting for a payment" |
 
-### Settlement tier (`work::settlement`)
+### Settlement tier (`work::settlement`), shown as "Order status"
+
+This tier is where what the chain and the pool say becomes what the shop
+sees: it recomputes each affected order's status (pending, unconfirmed,
+confirming, paid, expired) and queues the shop's webhook in the same
+transaction. Without it a payment would be found and recorded but no order
+would ever change. It earns one line on the page because it answers "the
+payment was seen, so why hasn't the shop heard?": a growing queue, a paid
+status held during a reorg, or an order backing off. The panel is called
+"Order status" (the tier keeps its name in the round lanes), and its detail
+starts with that sentence.
 
 | Engine | Shown as |
 | --- | --- |
-| Obligations (`pending_payment_recomputes`) | A queue of tokens |
-| Due orders by time and by height (`orders.next_due_*`) | A second queue, split by time and height |
-| A recompute page (64, in database jobs of 16), each order once per round | Tokens leave the queues into the recompute box in batches |
-| Status transitions | A chip in the order-state colours (`.state-*`): "confirming to paid" |
-| Webhook enqueued with the transition | An envelope token flies to the webhook panel |
-| Vanished-payment page and its backoff | A line: "12 unconfirmed payments looked at, 1 not found (next look in 16 s)" |
-| Order backoff | "2 orders waiting to retry" |
+| Obligations (`pending_payment_recomputes`) and due orders (`orders.next_due_*`) | Summary: how many orders wait to be recomputed. Detail: the two queues as tokens |
+| A recompute page (64, in database jobs of 16), each order once per round | Tokens leave the queues |
+| Status transitions | Summary: the last state reached, as a `.state-*` chip. Detail: the last three, "confirming to paid" |
+| Webhook enqueued with the transition | An envelope flies to the Webhooks line |
+| A paid transition held during a reorg | Summary reads "paid held: reorg open" |
+| Vanished-payment page and its backoff | Detail line: "12 unconfirmed payments looked at, 1 not found (next look in 16 s)" |
+| Order backoff | Detail line: "2 orders waiting to retry" |
 
 ### Upkeep tier (`work::upkeep`)
 
-Four rows, each lit when it runs: pruning (rows removed), WAL checkpoint
-(every ten minutes, with time to the next), void recheck (page position),
-scanned ranges (page position).
+Summary: four small squares (pruning, WAL checkpoint, void recheck, scanned
+ranges) that light as each runs, and the round it last ran in. Detail: what
+each did (rows removed, time to the next checkpoint, page positions).
 
 ### Shared infrastructure
 
 | Engine | Shown as |
 | --- | --- |
-| Database worker: three classes (Scanner, Webhook, Admin), 64 slots each, served round-robin by one thread | Three short queues feeding one worker; a pointer steps round-robin; depth and the longest wait |
-| Durable state, the "save states" | A "Saved" column listing what is on disk: store cursors, recorded blocks, block checkpoints, the reorg job, the scheduler positions, pending recomputes, webhooks due. Each row flashes when written |
-| In-memory state | A "Memory" column beside it: block cache, carried cache, pool bodies, retry delays, rotation offsets. Its heading says "lost on restart; rebuilt" |
-| Nodes: active and pinned for the round, fallbacks, cooldowns, RPC calls | Node cards on the right of the chain strip; each call is a short packet labelled with its method; a node in cooldown is greyed with its time left |
-| ZMQ announcements | A spark on the node card when it announces a block or a transaction, with the wake it caused |
-| Webhook delivery (batches of 50, woken by the scanner) | Envelopes waiting; a batch leaving; failures returning to wait |
+| Database worker: three classes (Scanner, Webhook, Admin), 64 slots each, served round-robin by one thread | One line: three tiny bars (queue depths) and "38 jobs a second, longest wait 1.7 ms". Detail: each queue's depth, whose turn is next, the longest job |
+| Durable state (the "save states") | In place rather than in a panel: every save puts a small dark square on the thing saved (a block cell, a group pill, the reorg line, the order-status line) and sends it to the Database line. A block checkpoint keeps its square on the half-filled cell |
+| In-memory state | In place too: the cache gauge on the chain, pool bodies on the mempool line, retry delays on pills and order status |
+| Both, together | A "Restart safety" line: "60 saves a minute; 4 blocks and 8 pool bodies only in memory". Detail: what is saved and what is only in memory, side by side, each saved row lighting when written |
+| Nodes: active and pinned for the round, fallbacks, cooldowns, RPC calls | Two small cards right of the chain strip; each call is a short packet labelled with its method; a node in cooldown is greyed with its time left |
+| ZMQ announcements | A spark on the node card when it announces a block or a transaction |
+| Webhook delivery | One line: deliveries a minute and a sparkline of the last five minutes (10 s buckets). Detail: due now, sent and failed in the last five minutes |
 
 ### Overall progress
 
@@ -129,31 +140,82 @@ against its budget.
 - Store, order and payment identities, amounts and addresses. The page shows
   counts, heights, block hashes and txids (shortened; both are public chain
   data), never whose they are.
-- Individual SQL statements and individual database jobs: the database panel
+- Individual SQL statements and individual database jobs: the Database line
   shows queue depths and commits, not every job.
 - Key custody internals beyond "scanning" and per-store retry delays.
 
 ## How it looks
 
 The page is `/status/engine` in monokulo. One network at a time, chosen by
-tabs when more than one is configured. Top to bottom:
+tabs when more than one is configured.
 
-1. **Summary row.** Six figures, each with a state chip where it has one.
-2. **Chain strip** (the centre of the page). Blocks as cells along a height
-   axis, node cards at the right edge, group pills below. When the span from
-   the lowest cursor to the tip is more than about 60 blocks, the middle is
-   cut with an axis break labelled with the blocks it hides, so the cells
-   near the cursors and the tip keep their size.
-3. **Round.** Five lanes for the current round, its playhead, and the round
-   ribbon underneath (the last 40 rounds).
-4. **Work.** Four panels side by side: Reorg, Mempool, Settlement, Upkeep.
-5. **Plumbing.** Database worker, Saved and Memory, Webhooks.
-6. **Events.** The same events as text, newest first, filterable by tier:
-   the accessible equivalent of the animation, and what you read when you
-   pause.
+**It fits one screen.** The target is a 1920 x 1080 monitor (a viewport of
+about 1920 x 960 in a browser). Everything that animates (timeline, summary,
+chain, round) and every panel's one-line summary ends about 560 px from the
+top, so it also fits a 1440 x 900 laptop and a 1366 x 768 one without
+scrolling. Only the events table is below.
 
-At phone width the panels stack in the same order and the chain strip
-scrolls sideways inside its own box.
+Top to bottom:
+
+1. **Header** (one line): Status crumb, "Engine", network tabs. The app bar
+   carries monokulo's System / Light / Dark toggle, as on every page.
+2. **Timeline** (one line, see below): Pause or Play, Live, the track, and
+   "Live, 1.5 s behind" or "Paused, 36 s behind live".
+3. **Summary** (one line of six): node tip, scanned to, behind (and time to
+   catch up), stores (and how many are catching up), the last round against
+   its budget, what sets the pace.
+4. **Two columns.**
+   - Left, the animation: the **chain strip** (blocks as cells, the node
+     cards beside it, group pills under it) and the **round** (five lanes,
+     each 15 px high, with the reserved share, the units, the playhead and
+     the outcome chip; the recent-rounds ribbon underneath).
+   - Right, 380 px: **one line per part**, each opening for its detail
+     (`<details>`, so it works without JavaScript too). Each line is a
+     condensed summary that still moves, and the animations fly to it
+     whether it is open or not:
+     - Reorg: "Agrees at 3,412,882, free". Opens by itself, with a red edge,
+       while a reorg job is open, and closes when it ends.
+     - Mempool: a heartbeat for each fast pass, the newest transactions as
+       dots, "8 in the pool, 1 payment found".
+     - Order status: "2 to recompute", and the last state reached.
+     - Upkeep: four squares lighting as each job runs.
+     - Database: three queue bars and jobs a second.
+     - Webhooks: deliveries a minute and a sparkline.
+     - Restart safety: saves a minute and what is only in memory.
+5. **Events**, below the fold: the same events in words, up to the playback
+   position, filterable by tier; clicking a row moves the timeline there.
+
+Cards are tight: 8 px padding, 8 px between them, 13 px text, 11 px labels.
+Below 1150 px wide the right column moves under the animation as a grid of
+the same lines; at phone width everything is one column and the chain strip
+shows fewer cells.
+
+### Timeline
+
+A track across the top of the page, covering the session (one minute at
+first, growing to the last ten).
+
+- **Every event is a thin vertical line; key events are a circle** in their
+  tier's colour: a block announced, a reorg found and rewound, a payment
+  found, a group of stores falling behind or catching up, a block
+  checkpointed, a failure. Hovering a circle shows its sentence.
+- **The playhead** is a dark line. Dragging it, or clicking anywhere on the
+  track, pauses and moves the whole page to that moment: chain, round,
+  panels and events table. Events after the playhead are drawn faded, and
+  the stretch from the playhead to now is shaded.
+- **Play** replays at real speed from there and turns live on reaching now;
+  **Live** jumps to now.
+- **Keyboard:** the track is a slider. Left and right jump to the previous
+  or next key event, with Shift to any event; End goes live; Space plays or
+  pauses.
+
+How seeking works: the page keeps the events it has received and a copy of
+its own state every 2 s (a keyframe). To show a moment it takes the
+keyframe before it and applies the events up to it without animating, which
+takes milliseconds. Playing forward from there animates again. This is the
+only way the page's state changes: every event is applied to a model and
+the view only draws the model, so a scrubbed view and a live one are drawn
+the same way.
 
 ### Colour
 
@@ -162,40 +224,34 @@ categorical slots in tier order (Chain blue, Blocks orange, Mempool aqua,
 Settlement yellow, Upkeep magenta), stepped separately for dark mode, and
 validated with the dataviz palette checker against the card surface in both
 themes. In light mode three of them are under 3:1 against the card, so
-nothing is told by colour alone: every lane, token and chip also carries the
-tier's name or icon, and the event table is always there.
+nothing is told by colour alone: every lane, token, circle and chip also
+carries the tier's name, and the event table is always there.
 
 Everything else uses the existing theme roles: order transitions use the
 `--state-*` colours, failures `--error`, waits `--warning`, the frontier the
-accent. The new colours become roles in `views/theme.css`
-(`--viz-tier-chain` and so on, and `--viz-cell-*` for block states), so
-`views::theme_tests` covers them like every other colour.
+accent, saves `--ink`. The new colours become roles in `views/theme.css`
+(`--viz-tier-chain` and so on, `--viz-cell-*` for block states,
+`--viz-saved`), so `views::theme_tests` covers them like every other colour.
 
 ### Motion
 
-- **Playback, not real time.** The browser plays events back about 1.5 s
-  behind the engine ("Live, 1.5 s behind"), so a burst that arrived in one
-  poll is played out in order and smoothly.
+- **Playback, not real time.** The page plays events about 1.5 s behind the
+  engine, so a burst that arrived in one poll plays out in order.
 - **A time lens.** A caught-up round takes tens of milliseconds and then the
-  loop sleeps for seconds. Shown in real time it would be a flicker and a
-  long pause. So: each animation has a minimum length (a unit bar 150 ms, a
-  token flight 600 ms); sleeps longer than a second are shortened to one
-  second and labelled with their real length; the round lanes are scaled to
-  the round's real length, with its budget shown as a gauge beside them
-  ("0.42 s of 10 s").
-- **Catching up.** If the playback falls more than 5 s behind, it speeds up
-  (2x, then 4x, shown as a badge). More than 30 s behind, it jumps to the
-  latest state and says how many events it skipped.
+  loop sleeps for seconds. So each animation has a minimum length (a unit
+  bar 150 ms, a token flight 600 ms); sleeps longer than a second are
+  shortened to one second on screen and labelled with their real length;
+  the round lanes are scaled to the round's real length, with its budget as
+  a gauge ("0.42 s of 10 s"). While a group is catching up, the lanes are
+  scaled to the full 10 s budget and show each tier's reserved share.
+- **Catching up.** If live playback falls more than 5 s behind, it speeds
+  up (2x, then 4x, shown as a badge); more than 30 s behind, it jumps to
+  now. Nothing is lost: the timeline still holds every event.
 - **Merging.** Runs of the same thing become one animation: 300 header-only
-  blocks are one sweep, not 300; fast passes that found nothing are a
-  heartbeat; more than 50 tokens in flight merge into counted ones.
-- **The snapshot is the truth.** Every poll carries a snapshot of the state.
-  When the animations for a poll finish, the scene is set to that snapshot,
-  so it never drifts from the engine.
-- **Pause and step.** Pause stops the playback (events keep being buffered,
-  up to a limit); Step plays one event; "Back to live" jumps to now.
+  blocks are one sweep; fast passes that found nothing are a heartbeat; more
+  than 50 tokens in flight merge into counted ones.
 - **Reduced motion** (`prefers-reduced-motion`): nothing travels; states
-  cross-fade in 150 ms. The event table carries the flow.
+  cross-fade in 150 ms. The timeline and the event table carry the flow.
 - **A hidden tab** stops animating and, when shown again, jumps to live.
 
 ## Where the data comes from
@@ -208,11 +264,16 @@ network. It lives where `progress` and `wakes` already live
 `with_activity`, as `with_progress` and `with_wakes` are), so the loops write
 it and the admin API reads it.
 
-- A ring of the last 4,096 events, each with a sequence number and the
-  engine's time in milliseconds.
-- **Recorded only while watched.** A read marks the network watched for the
-  next 30 s; outside that, recording is one atomic load and a return. So an
-  engine nobody watches pays nothing.
+- A ring of the last 15 minutes of events (at most 20,000), each with a
+  sequence number and the engine's time in milliseconds, so a page opened
+  now can scrub back over what happened before it was opened.
+- **A snapshot every 10 s** in the same ring, as an event: the in-memory
+  state the page draws (groups, cache, the scan in progress, queues, the
+  reorg job). It is where a page opened later starts its history; events
+  alone can't say what the state was when they begin.
+- **Always recording.** Events are per unit of work, per block and per
+  payment, never per transaction scanned or per SQL statement, so a busy
+  round adds a few dozen. Recording is a mutex push onto the ring.
 - Typed events (`shared::activity`, used by both crates, as
   `shared::scaling` is):
   - `round_started { round, budget_ms, woken_by }`, `round_finished { round,
@@ -265,6 +326,8 @@ token, like every engine route; monokulo is its only caller):
 - `epoch` changes when the engine restarts, so the page knows to start over.
 - `gap` is true when `after` has already left the ring: the page jumps to the
   snapshot.
+- With no `after`, it returns the whole ring from its oldest snapshot, so a
+  new page has the last 15 minutes to scrub through.
 - The snapshot's in-memory parts are read from the recorder and the
   `ScanState`; its database parts (groups and their sizes, queue lengths,
   checkpoints, the reorg job, scheduler positions) are read on the read pool,
@@ -284,16 +347,17 @@ token, like every engine route; monokulo is its only caller):
   shared poller per network runs while anyone is watching: it asks the
   engine every 500 ms, and sends each viewer the same messages, so ten open
   tabs cost the engine one request every 500 ms. A new viewer gets the
-  latest snapshot and the last 200 events first. Streams count against the
+  history first (the ring, from its oldest snapshot), then live events. Streams count against the
   abuse stream limit like the status page's.
 - **Rust writes every word.** Each event the relay sends carries its
   sentence (`"Block 3,412,881 committed for 41 stores"`) and formatted
   figures, written by monokulo; the script only places and moves things.
 - **The script** is `static/engine-view.js`: plain JavaScript, no library,
-  drawing SVG from the snapshot and animating it with the Web Animations
-  API. SVG rather than canvas so it takes the theme's roles through CSS and
-  stays sharp, with a budget (about 120 cells, 200 pool dots, 50 tokens) that
-  keeps it light.
+  drawing the scene as HTML and SVG and animating it with the Web Animations
+  API, so it takes the theme's roles through CSS and stays sharp; a budget
+  (about 120 cells, 14 pool dots, 50 tokens in flight) keeps it light. The
+  timeline alone is a canvas, since it may draw thousands of lines; it reads
+  its colours from the same roles.
 
 ## Decisions to review
 
@@ -308,23 +372,25 @@ token, like every engine route; monokulo is its only caller):
 2. **Admins only.** Alternative: public like `/status`, with node labels
    hidden. Recommended: admins only, as the abuse and announcement sections
    already are.
-3. **Recording only while watched.** Costs nothing unwatched, but the first
-   view starts with a snapshot and no history. Alternative: always record
-   (the ring is small, and events are per unit, not per transaction).
-   Recommended: only while watched.
+3. **Always recording, 15 minutes kept.** The timeline makes history worth
+   having: an operator opens the page because something just happened.
+   Alternative: record only while a page is open (free when nobody watches,
+   but the timeline starts empty). Recommended: always, 15 minutes. This
+   reverses the first draft, because of the timeline.
 4. **Plain JavaScript, no library.** A charting or animation library would
    save little here and add a dependency we would vendor. Recommended: none.
 
 ## Work, once approved
 
 1. `shared::activity` types; `engine::activity` recorder with its tests
-   (ring, watched window, gap and epoch).
+   (ring, its time and count limits, snapshots, gap and epoch).
 2. Recording in `run_round`, the loops and each tier, with tests that run
    real rounds on the existing work fixtures and check the event sequence
    (a catch-up, a mempool payment, a reorg).
 3. The snapshot and the admin endpoint, with its tests.
 4. Monokulo: client call, relay poller, `/status/engine` no-JS page, admin
    gate, status page link, theme roles.
-5. `static/engine-view.js`: scene, playback, time lens, reduced motion.
+5. `static/engine-view.js`: model, keyframes and seeking, scene, timeline,
+   playback, time lens, reduced motion.
 6. Browser coverage: page loads, plays a scripted session from a fake
    engine, screenshots in the coverage gallery in light and dark.
