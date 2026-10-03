@@ -1,0 +1,1359 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Engine Live View</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=swap">
+<style>
+/* Layout: monokulo's own page chrome (app bar, wrap, cards), the chain strip
+   as the centre of the page, then the round, the work panels, the plumbing,
+   and the events table. Colours are monokulo's theme.css palette and roles,
+   plus the new --viz-* roles this design adds. */
+:root {
+  /* ---- monokulo palette (views/theme.css) ---- */
+  --ink: #1a1917;
+  --paper: #f4f1ea;
+  --paper-raised: #ffffff;
+  --surface-sunken: #efeae0;
+  --line: #dcd5c7;
+  --line-strong: #8c8577;
+  --muted: #5a564c;
+  --accent: #ff6600;
+  --accent-text: #b34700;
+  --error: #b00020;
+  --success: #1a7f37;
+  --warning: #7d5e00;
+  --chrome-bg: var(--paper-raised);
+  --chrome-ink: var(--ink);
+  --chrome-rule: var(--accent);
+  --btn-bg: var(--paper-raised);
+  --btn-ink: var(--ink);
+  --btn-border: var(--line-strong);
+  --btn-hover-bg: var(--surface-sunken);
+  --focus-ring: var(--accent-text);
+  --tint-error: color-mix(in srgb, var(--error) 14%, var(--paper-raised));
+  --tint-warning: color-mix(in srgb, var(--warning) 14%, var(--paper-raised));
+  --tint-success: color-mix(in srgb, var(--success) 14%, var(--paper-raised));
+  --tint-highlight: color-mix(in srgb, var(--accent) 20%, var(--paper-raised));
+  --state-pending-bg: #fff6d8; --state-pending-border: #ac7600; --state-pending-ink: #634800;
+  --state-unconfirmed-bg: #f0f0ff; --state-unconfirmed-border: #7779bb; --state-unconfirmed-ink: #353683;
+  --state-confirming-bg: #e7e8ff; --state-confirming-border: #5556a4; --state-confirming-ink: #353683;
+  --state-paid-bg: #e3f4e7; --state-paid-border: #1a7f37; --state-paid-ink: #165f2e;
+
+  /* ---- new roles this design adds ---- */
+  /* One colour per tier, in tier order: the dataviz reference categorical
+     slots 1-5, validated against the card in both themes. Never colour
+     alone: every lane, token and chip also names its tier. */
+  --viz-tier-chain: #2a78d6;
+  --viz-tier-blocks: #eb6834;
+  --viz-tier-mempool: #1baf7a;
+  --viz-tier-settlement: #eda100;
+  --viz-tier-upkeep: #e87ba4;
+  /* Block cells. */
+  --viz-cell-recorded: var(--surface-sunken);
+  --viz-cell-recorded-edge: var(--line-strong);
+  --viz-cell-new-edge: var(--line-strong);
+  --viz-cell-cached: color-mix(in srgb, var(--viz-tier-blocks) 22%, var(--paper-raised));
+  --viz-cell-fill: var(--viz-tier-blocks);
+  --viz-cell-reorg: var(--error);
+  --viz-frontier: var(--accent);
+
+  --space-xs: 4px; --space-sm: 8px; --space-md: 12px; --space-lg: 16px; --space-xl: 24px;
+  --radius-sm: 5px; --radius-md: 9px;
+  --font-ui: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #d4d4d4; --paper: #1e1e1e; --paper-raised: #2a2a2a; --surface-sunken: #333333;
+    --line: #3d3d3d; --line-strong: #7a7a7a; --muted: #9d9d9d;
+    --accent-text: #ff8a3d; --error: #ff6b6b; --success: #4cc27a; --warning: #e0a83d;
+    --chrome-bg: #181818;
+    --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
+    --state-unconfirmed-bg: #272842; --state-unconfirmed-border: #8d8fe0; --state-unconfirmed-ink: #c9caff;
+    --state-confirming-bg: #272842; --state-confirming-border: #8d8fe0; --state-confirming-ink: #c9caff;
+    --state-paid-bg: #17331f; --state-paid-border: #4cc27a; --state-paid-ink: #a8e6bd;
+    --viz-tier-chain: #3987e5; --viz-tier-blocks: #d95926; --viz-tier-mempool: #199e70;
+    --viz-tier-settlement: #c98500; --viz-tier-upkeep: #d55181;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ink: #d4d4d4; --paper: #1e1e1e; --paper-raised: #2a2a2a; --surface-sunken: #333333;
+  --line: #3d3d3d; --line-strong: #7a7a7a; --muted: #9d9d9d;
+  --accent-text: #ff8a3d; --error: #ff6b6b; --success: #4cc27a; --warning: #e0a83d;
+  --chrome-bg: #181818;
+  --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
+  --state-unconfirmed-bg: #272842; --state-unconfirmed-border: #8d8fe0; --state-unconfirmed-ink: #c9caff;
+  --state-confirming-bg: #272842; --state-confirming-border: #8d8fe0; --state-confirming-ink: #c9caff;
+  --state-paid-bg: #17331f; --state-paid-border: #4cc27a; --state-paid-ink: #a8e6bd;
+  --viz-tier-chain: #3987e5; --viz-tier-blocks: #d95926; --viz-tier-mempool: #199e70;
+  --viz-tier-settlement: #c98500; --viz-tier-upkeep: #d55181;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 500 14px/1.45 var(--font-ui); }
+code, .mono { font-family: var(--font-mono); font-size: 12px; }
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+h1 { font-size: 26px; font-weight: 800; }
+h2 { font-size: 15px; font-weight: 800; }
+h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+
+.appbar { background: var(--chrome-bg); color: var(--chrome-ink); border-bottom: 3px solid var(--chrome-rule); padding: 10px 16px; display: flex; gap: 10px; align-items: center; font-weight: 800; }
+.appbar .mark { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); }
+.appbar nav { margin-left: auto; display: flex; gap: 16px; font-weight: 700; font-size: 13px; }
+.appbar nav a { color: inherit; text-decoration: none; }
+.appbar nav a[aria-current] { color: var(--accent-text); }
+
+#stage { position: relative; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 16px; padding-block: 16px 48px; display: grid; gap: 16px; }
+.crumb a { color: var(--accent-text); font-weight: 700; text-decoration: none; font-size: 13px; }
+.head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.head h1 { margin-right: auto; }
+.tabs { display: flex; gap: 4px; }
+.tab { border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--btn-ink); border-radius: var(--radius-sm); padding: 5px 10px; font: inherit; font-weight: 700; cursor: pointer; }
+.tab[aria-selected="true"] { box-shadow: inset 0 -3px 0 var(--accent-text); }
+.btn { border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--btn-ink); border-radius: var(--radius-sm); padding: 5px 10px; font: inherit; font-weight: 700; cursor: pointer; }
+.btn:hover { background: var(--btn-hover-bg); }
+.btn:focus-visible, .tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.live { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; }
+.live i { width: 9px; height: 9px; border-radius: 50%; background: var(--success); }
+.live.paused i { background: var(--warning); }
+
+.mock { border: 1px dashed var(--line-strong); border-radius: var(--radius-md); padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.mock strong { margin-right: 4px; }
+
+.card { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px; min-width: 0; }
+.card > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.card > header .hint { font-size: 12px; color: var(--muted); }
+.card > header .right { margin-left: auto; }
+
+/* summary row */
+.summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; padding: 0; }
+.summary > div { padding: 12px 14px; border-left: 1px solid var(--line); min-width: 0; }
+.summary > div:first-child { border-left: 0; }
+.summary .k { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.summary .v { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.summary .s { font-size: 12px; color: var(--muted); }
+.chip { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 8px; border: 1px solid var(--line-strong); white-space: nowrap; }
+.chip.ok { background: var(--tint-success); border-color: var(--success); }
+.chip.warn { background: var(--tint-warning); border-color: var(--warning); }
+.chip.err { background: var(--tint-error); border-color: var(--error); }
+.chip.hi { background: var(--tint-highlight); border-color: var(--accent); }
+
+/* tier identity */
+.t-chain { --tier: var(--viz-tier-chain); }
+.t-blocks { --tier: var(--viz-tier-blocks); }
+.t-mempool { --tier: var(--viz-tier-mempool); }
+.t-settlement { --tier: var(--viz-tier-settlement); }
+.t-upkeep { --tier: var(--viz-tier-upkeep); }
+.t-loop { --tier: var(--line-strong); }
+.tierchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; }
+.tierchip::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--tier); }
+
+/* chain strip */
+.chain-row { display: grid; grid-template-columns: minmax(0, 1fr) 210px; gap: 14px; align-items: start; }
+.strip-scroll { overflow-x: auto; padding-bottom: 4px; }
+.strip { position: relative; padding-inline: 14px 8px; padding-top: 34px; padding-bottom: 66px; min-width: max-content; }
+.cells { display: flex; gap: 4px; align-items: flex-end; height: 34px; }
+.cell { position: relative; width: 24px; height: 30px; border-radius: 4px; border: 1.5px solid var(--viz-cell-recorded-edge); background: var(--viz-cell-recorded); overflow: hidden; flex: none; transition: background .3s, border-color .3s, opacity .3s; }
+.cell .fill { position: absolute; left: 0; bottom: 0; top: 0; width: 0; background: var(--viz-cell-fill); opacity: .85; transition: width .25s linear; }
+.cell.new { background: var(--paper-raised); border-style: dashed; border-color: var(--viz-cell-new-edge); }
+.cell.cached { background: var(--viz-cell-cached); border-color: var(--viz-tier-blocks); }
+.cell.header { height: 18px; background: transparent; }
+.cell.pruned { opacity: .45; }
+.cell.ghost { border-style: dotted; background: transparent; opacity: .6; }
+.cell.reorg { border-color: var(--viz-cell-reorg); background: repeating-linear-gradient(135deg, var(--tint-error) 0 4px, var(--paper-raised) 4px 8px); }
+.cell.drop { animation: drop .7s ease-in forwards; }
+.cell.enter { animation: enter .6s cubic-bezier(.3,1.4,.5,1); }
+.cell.flash { box-shadow: 0 0 0 3px var(--tint-highlight); }
+.cell .save { position: absolute; right: 1px; top: 1px; width: 8px; height: 8px; border-radius: 2px; background: var(--ink); }
+.cell.probe::after { content: ""; position: absolute; inset: -1px; border: 2px solid var(--viz-tier-chain); border-radius: 4px; }
+@keyframes drop { to { transform: translateY(40px) rotate(8deg); opacity: 0; } }
+@keyframes enter { from { transform: translateX(60px); opacity: 0; } }
+.brk { width: 64px; height: 30px; flex: none; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: var(--muted); border-inline: 2px dotted var(--line-strong); text-align: center; line-height: 1.1; }
+.axis { position: absolute; left: 0; right: 0; top: 70px; height: 14px; font-size: 10px; color: var(--muted); }
+.axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.marks span { position: absolute; top: 0; transform: translateX(-50%); font-size: 10px; font-weight: 800; white-space: nowrap; padding: 1px 5px; border-radius: 4px; transition: left .5s; }
+.marks span::after { content: ""; position: absolute; left: 50%; top: 17px; height: 13px; border-left: 2px solid currentColor; }
+.marks .m-tip { transform: translateX(-10px); background: var(--paper-raised); color: var(--ink); border: 1px solid var(--line-strong); }
+.marks .m-hw { transform: translateX(calc(-100% + 10px)); color: var(--accent-text); }
+.marks .m-tip::after { left: 9px; }
+.marks .m-hw::after { left: auto; right: 9px; }
+.marks .m-win { top: 31px; height: 2px; border-top: 2px solid var(--viz-tier-chain); transform: none; padding: 0; font-size: 0; }
+.marks .m-win::after { display: none; }
+.pills { position: absolute; left: 0; right: 0; top: 88px; height: 40px; }
+.pill { position: absolute; top: 0; transform: translateX(-12px); display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 800; padding: 3px 8px 3px 6px; border-radius: 99px; border: 1.5px solid var(--line-strong); background: var(--paper-raised); white-space: nowrap; transition: left .45s cubic-bezier(.4,0,.2,1), top .45s; }
+.pill::before { content: ""; position: absolute; left: 10px; top: -10px; height: 9px; border-left: 2px solid currentColor; }
+.pill.frontier { transform: translateX(calc(-100% + 12px)); }
+.pill.frontier::before { left: auto; right: 10px; }
+.pill.frontier { border-color: var(--viz-frontier); background: var(--tint-highlight); }
+.pill.catchup { top: 22px; }
+.pill.catchup::before { top: -32px; height: 31px; }
+.pill.busy { animation: busy .6s ease-in-out infinite alternate; }
+.pill.waiting { opacity: .55; }
+.pill .next { font-size: 10px; color: var(--accent-text); }
+@keyframes busy { to { box-shadow: 0 0 0 4px var(--tint-highlight); } }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--muted); margin-top: 4px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend .cell { width: 14px; height: 16px; }
+.banner { font-size: 12px; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--tint-error); border: 1px solid var(--error); margin-bottom: 8px; }
+
+.nodes { display: grid; gap: 8px; }
+.node { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 12px; position: relative; }
+.node.active { border-color: var(--line-strong); }
+.node .nm { font-weight: 800; display: flex; gap: 6px; align-items: center; }
+.node .call { font-family: var(--font-mono); font-size: 11px; min-height: 16px; color: var(--muted); }
+.node.spark { animation: spark .8s; }
+@keyframes spark { 30% { box-shadow: 0 0 0 4px var(--tint-highlight); } }
+.node.cool { opacity: .55; }
+
+/* round */
+.lanes { display: grid; grid-template-columns: 120px minmax(0, 1fr) 210px; gap: 6px 10px; align-items: center; }
+.lane-label { font-size: 12px; font-weight: 700; display: flex; justify-content: space-between; }
+.lane-label small { color: var(--muted); font-weight: 600; }
+.track { position: relative; height: 22px; background: var(--surface-sunken); border-radius: 4px; overflow: hidden; }
+.bar { position: absolute; top: 3px; bottom: 3px; min-width: 3px; border-radius: 3px; background: var(--tier); transition: left .35s, width .35s; }
+.bar.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 45%, var(--paper-raised)) 4px 7px); }
+.bar.running { animation: run .5s ease-in-out infinite alternate; }
+@keyframes run { to { opacity: .55; } }
+.share { position: absolute; top: 0; bottom: 0; border: 1.5px dashed var(--line-strong); border-radius: 4px; transition: left .35s, width .35s; }
+.playhead { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--ink); transition: left .35s; z-index: 2; }
+.outcome { font-size: 11px; font-weight: 700; min-height: 18px; }
+.round-foot { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-top: 10px; font-size: 12px; }
+.gauge { width: 140px; height: 8px; background: var(--surface-sunken); border-radius: 99px; overflow: hidden; }
+.gauge i { display: block; height: 100%; background: var(--ink); width: 0; transition: width .35s; }
+.ribbon { display: flex; justify-content: flex-end; align-items: flex-end; gap: 0; height: 52px; margin-top: 12px; overflow: hidden; border-bottom: 1px solid var(--line); }
+.rbar { width: 9px; display: flex; flex-direction: column-reverse; flex: none; border-radius: 2px 2px 0 0; overflow: hidden; }
+.rbar i { display: block; background: var(--tier); }
+.rgap { flex: none; height: 6px; position: relative; display: flex; justify-content: center; align-items: flex-end; }
+.rgap::after { content: ""; width: 5px; height: 5px; border-radius: 50%; border: 1.5px solid var(--muted); }
+.rgap.node::after { border-radius: 0; transform: rotate(45deg); border-color: var(--accent-text); background: var(--accent-text); }
+
+/* work panels */
+.grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.grid3 { display: grid; grid-template-columns: 1.1fr 1.3fr .9fr; gap: 16px; }
+.card.tiered > header h2::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--tier); margin-right: 7px; }
+.stations { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 10px; }
+.station { text-align: center; font-size: 11px; font-weight: 700; padding: 6px 2px; border-radius: var(--radius-sm); border: 1px solid var(--line); color: var(--muted); }
+.station.on { border-color: var(--tier); color: var(--ink); box-shadow: inset 0 -3px 0 var(--tier); }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; font-size: 12px; }
+.kv b { font-variant-numeric: tabular-nums; }
+.line { font-size: 12px; margin-top: 8px; min-height: 18px; }
+.pool { display: flex; flex-wrap: wrap; gap: 5px; align-content: flex-start; min-height: 84px; padding: 8px; border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.dot { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--viz-tier-mempool); background: var(--paper-raised); transition: background .3s, opacity .3s; }
+.dot.scanned { background: color-mix(in srgb, var(--viz-tier-mempool) 35%, var(--paper-raised)); }
+.dot.match { background: var(--accent); border-color: var(--accent-text); }
+.dot.sweep { box-shadow: 0 0 0 3px color-mix(in srgb, var(--viz-tier-mempool) 40%, transparent); }
+.beat { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--viz-tier-mempool); opacity: .25; vertical-align: middle; }
+.beat.on { opacity: 1; }
+.queue { display: flex; gap: 4px; align-items: center; min-height: 26px; padding: 4px 6px; border-radius: var(--radius-sm); background: var(--surface-sunken); flex-wrap: wrap; }
+.qlabel { font-size: 11px; font-weight: 700; color: var(--muted); margin: 8px 0 3px; display: flex; justify-content: space-between; }
+.tok { width: 14px; height: 14px; border-radius: 4px; background: var(--viz-tier-settlement); border: 1.5px solid var(--paper-raised); flex: none; }
+.tok.h { border-radius: 50%; }
+.recompute { margin-top: 8px; border: 1.5px dashed var(--viz-tier-settlement); border-radius: var(--radius-sm); padding: 6px; min-height: 30px; display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); }
+.trans { display: grid; gap: 4px; margin-top: 8px; min-height: 52px; }
+.state { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 8px; border: 1px solid; }
+.state-pending { background: var(--state-pending-bg); border-color: var(--state-pending-border); color: var(--state-pending-ink); }
+.state-unconfirmed { background: var(--state-unconfirmed-bg); border-color: var(--state-unconfirmed-border); color: var(--state-unconfirmed-ink); }
+.state-confirming { background: var(--state-confirming-bg); border-color: var(--state-confirming-border); color: var(--state-confirming-ink); }
+.state-paid { background: var(--state-paid-bg); border-color: var(--state-paid-border); color: var(--state-paid-ink); }
+.trow { font-size: 11px; display: flex; gap: 5px; align-items: center; animation: fadein .4s; }
+@keyframes fadein { from { opacity: 0; transform: translateY(-4px); } }
+.uprow { display: grid; grid-template-columns: 1fr auto; gap: 6px; font-size: 12px; padding: 5px 6px; border-radius: 4px; transition: background .4s; }
+.uprow.lit, .saved-row.lit { background: var(--tint-highlight); }
+
+/* plumbing */
+.dbq { display: grid; grid-template-columns: 70px minmax(0,1fr) 30px; gap: 6px; align-items: center; font-size: 12px; margin-bottom: 6px; }
+.dbbar { height: 12px; border-radius: 3px; background: var(--surface-sunken); overflow: hidden; }
+.dbbar i { display: block; height: 100%; background: var(--line-strong); width: 0; transition: width .2s; }
+.worker { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; }
+.gear { width: 38px; height: 38px; border-radius: 50%; border: 3px dashed var(--line-strong); display: grid; place-items: center; font-weight: 800; font-size: 11px; }
+.gear.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.saved-row { display: flex; justify-content: space-between; gap: 6px; font-size: 12px; padding: 3px 6px; border-radius: 4px; transition: background .5s; }
+.saved-row span:last-child { font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
+.env { display: inline-block; width: 16px; height: 11px; border: 1.5px solid var(--ink); border-radius: 2px; position: relative; background: var(--paper-raised); }
+.envs { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; }
+.cachebar { height: 10px; border-radius: 3px; background: var(--surface-sunken); overflow: hidden; margin-top: 4px; }
+.cachebar i { display: block; height: 100%; background: var(--viz-tier-blocks); width: 0; transition: width .3s; }
+
+/* events */
+.events { max-height: 300px; overflow-y: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th { text-align: left; background: var(--surface-sunken); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 5px 8px; position: sticky; top: 0; }
+td { padding: 4px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+td.when { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+tr.new td { animation: fadein .4s; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.filters label { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
+
+/* tokens flying between panels */
+.token { position: absolute; z-index: 20; pointer-events: none; width: 14px; height: 14px; border-radius: 4px; border: 2px solid var(--paper-raised); background: var(--tier, var(--ink)); box-shadow: 0 0 0 1px var(--ink); }
+.token.pkt { width: auto; height: auto; border-radius: 4px; padding: 0 5px; font: 700 10px/16px var(--font-mono); color: var(--paper-raised); background: var(--viz-tier-blocks); border: 0; box-shadow: none; }
+.token.pkt.chain { background: var(--viz-tier-chain); }
+.token.pkt.mempool { background: var(--viz-tier-mempool); }
+.token.save { width: 12px; height: 12px; border-radius: 2px; background: var(--ink); box-shadow: none; }
+.token.envelope { width: 16px; height: 11px; border-radius: 2px; background: var(--paper-raised); border: 1.5px solid var(--ink); box-shadow: none; }
+.token.payment { border-radius: 50%; background: var(--accent); }
+
+@media (max-width: 1000px) {
+  .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .summary > div:nth-child(4) { border-left: 0; }
+  .summary > div:nth-child(n+4) { border-top: 1px solid var(--line); }
+  .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid3 { grid-template-columns: 1fr; }
+  .chain-row { grid-template-columns: minmax(0, 1fr); }
+  .nodes { grid-template-columns: 1fr 1fr; }
+  .lanes { grid-template-columns: 92px minmax(0, 1fr); }
+  .lanes .outcome { grid-column: 2; margin-top: -4px; }
+}
+@media (max-width: 560px) {
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary > div:nth-child(odd) { border-left: 0; }
+  .summary > div:nth-child(4) { border-left: 1px solid var(--line); }
+  .summary > div:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .grid4 { grid-template-columns: 1fr; }
+  .nodes { grid-template-columns: 1fr; }
+  .cols { grid-template-columns: 1fr; }
+  .appbar nav { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .15s !important; }
+}
+</style>
+
+<div class="appbar"><span class="mark" aria-hidden="true"></span> Monokulo
+  <nav aria-label="Site"><a href="#">Dashboard</a><a href="#">Logs</a><a href="#" aria-current="page">Status</a><a href="#">Settings</a></nav>
+</div>
+
+<div id="stage">
+<main class="wrap">
+  <div class="crumb"><a href="#">Status</a></div>
+  <div class="head">
+    <h1>Engine</h1>
+    <div class="tabs" role="tablist" aria-label="Network">
+      <button class="tab" role="tab" aria-selected="false" id="tab-main">mainnet</button>
+      <button class="tab" role="tab" aria-selected="true" id="tab-stage">stagenet</button>
+    </div>
+    <span class="live" id="live"><i></i><span id="live-text">Live, 1.5 s behind</span></span>
+    <button class="btn" id="pause" type="button">Pause</button>
+    <button class="btn" id="step" type="button" disabled>Step</button>
+  </div>
+
+  <div class="mock" aria-label="Mockup controls">
+    <strong>Mockup, fake engine.</strong> Make something happen:
+    <button class="btn" id="sc-catchup" type="button">A store comes back after downtime</button>
+    <button class="btn" id="sc-pay" type="button">A customer pays</button>
+    <button class="btn" id="sc-reorg" type="button">The chain reorganises</button>
+  </div>
+
+  <section class="card summary" aria-label="Summary">
+    <div><div class="k">Node tip</div><div class="v" id="s-tip">–</div><div class="s" id="s-tip-s">node-a, active</div></div>
+    <div><div class="k">Scanned to</div><div class="v" id="s-hw">–</div><div class="s">recorded high-water mark</div></div>
+    <div><div class="k">Behind</div><div class="v" id="s-behind">0</div><div class="s" id="s-behind-s">caught up</div></div>
+    <div><div class="k">Stores</div><div class="v" id="s-stores">41</div><div class="s" id="s-stores-s">all at the tip</div></div>
+    <div><div class="k">Last round</div><div class="v" id="s-round">–</div><div class="s" id="s-round-s">of a 10 s budget</div></div>
+    <div><div class="k">Pace set by</div><div class="v" id="s-pace">–</div><div class="s" id="s-pace-s">nothing to catch up</div></div>
+  </section>
+
+  <section class="card t-blocks" aria-labelledby="h-chain">
+    <header><h2 id="h-chain">Chain</h2><span class="hint">Each square is a block. Groups of stores ride under the block their scan has reached.</span>
+      <span class="right"><span class="chip" id="cache-chip">cache 0 MB of 64 MB</span></span></header>
+    <div id="chain-banner"></div>
+    <div class="chain-row">
+      <div class="strip-scroll" id="strip-scroll">
+        <div class="strip" id="strip">
+          <div class="marks" id="marks"></div>
+          <div class="cells" id="cells"></div>
+          <div class="axis" id="axis"></div>
+          <div class="pills" id="pills"></div>
+        </div>
+      </div>
+      <div class="nodes">
+        <div class="node active" id="node-a"><div class="nm">node-a <span class="chip ok">active, pinned</span></div>
+          <div class="muted">height <span class="num" id="node-a-h">–</span>, link 2.1 MB/s</div><div class="call" id="node-a-call"></div></div>
+        <div class="node" id="node-b"><div class="nm">node-b <span class="chip">fallback</span></div>
+          <div class="muted">height <span class="num" id="node-b-h">–</span></div><div class="call">idle</div></div>
+      </div>
+    </div>
+    <div class="legend">
+      <span><i class="cell" aria-hidden="true"></i>recorded</span>
+      <span><i class="cell new" aria-hidden="true"></i>at the node, not yet scanned</span>
+      <span><i class="cell cached" aria-hidden="true"></i>fetched, in the cache</span>
+      <span><i class="cell" aria-hidden="true" style="background:linear-gradient(90deg,var(--viz-cell-fill) 50%,var(--viz-cell-recorded) 50%)"></i>being scanned</span>
+      <span><i class="cell reorg" aria-hidden="true"></i>replaced by a reorg</span>
+      <span><i class="cell" aria-hidden="true"><span class="save"></span></i>progress saved part-way</span>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-round">
+    <header><h2 id="h-round">Round <span class="num" id="round-n">–</span></h2>
+      <span class="hint">Five tiers in priority order, each with a reserved share. Hatched units ran in pass 2, on time left over.</span></header>
+    <div class="lanes" id="lanes"></div>
+    <div class="round-foot">
+      <span><span class="gauge" style="display:inline-block;vertical-align:middle"><i id="gauge"></i></span> <span id="gauge-text" class="num">0 s of 10 s</span></span>
+      <span id="round-state" class="muted"></span>
+    </div>
+    <div class="ribbon" id="ribbon" aria-label="Recent rounds"></div>
+    <div class="legend"><span>Last 40 rounds, height by length, coloured by tier.</span>
+      <span><i class="rgap" style="width:12px" aria-hidden="true"></i>slept for the poll interval</span>
+      <span><i class="rgap node" style="width:12px" aria-hidden="true"></i>woken by the node announcing a block</span>
+      <span>no gap: started at once, work was left</span></div>
+  </section>
+
+  <div class="grid4">
+    <section class="card tiered t-chain" aria-labelledby="h-reorg">
+      <header><h2 id="h-reorg">Reorg</h2></header>
+      <div class="stations"><div class="station" id="st-detect">Detect</div><div class="station" id="st-collect">Collect</div><div class="station" id="st-process">Process</div><div class="station" id="st-rewind">Rewind</div></div>
+      <div class="kv">
+        <span>Fork at</span><b id="rg-fork">–</b>
+        <span>Candidates left</span><b id="rg-cand">–</b>
+        <span>Kept / moved / restored / voided</span><b id="rg-dec">–</b>
+      </div>
+      <div class="line" id="rg-line">The recorded chain agrees with the node.</div>
+    </section>
+    <section class="card tiered t-mempool" aria-labelledby="h-pool">
+      <header><h2 id="h-pool">Mempool</h2><span class="right muted" style="font-size:11px">fast path <span class="beat" id="beat"></span></span></header>
+      <div class="pool" id="pool" aria-label="Transactions in the pool"></div>
+      <div class="kv" style="margin-top:8px">
+        <span>In the pool</span><b id="mp-size">0</b>
+        <span>Bodies remembered</span><b id="mp-bodies">0 (0 KB)</b>
+        <span>Left for the rotation</span><b id="mp-def">0</b>
+      </div>
+    </section>
+    <section class="card tiered t-settlement" aria-labelledby="h-set">
+      <header><h2 id="h-set">Settlement</h2><span class="right" id="held"></span></header>
+      <div class="qlabel"><span>Payment changed</span><span class="num" id="q-oblig-n">0</span></div>
+      <div class="queue" id="q-oblig"></div>
+      <div class="qlabel"><span>Due by time / by height</span><span class="num" id="q-due-n">0</span></div>
+      <div class="queue" id="q-due"></div>
+      <div class="recompute" id="recompute">Recompute (page of 64)</div>
+      <div class="trans" id="trans"></div>
+      <div class="line muted" id="vanished">No unconfirmed payment has left the pool.</div>
+    </section>
+    <section class="card tiered t-upkeep" aria-labelledby="h-up">
+      <header><h2 id="h-up">Upkeep</h2></header>
+      <div class="uprow" id="up-prune"><span>Prune old block hashes</span><span class="muted num" id="up-prune-v">–</span></div>
+      <div class="uprow" id="up-wal"><span>Database checkpoint</span><span class="muted num" id="up-wal-v">next in 6 min</span></div>
+      <div class="uprow" id="up-void"><span>Recheck voided payments</span><span class="muted num" id="up-void-v">none voided</span></div>
+      <div class="uprow" id="up-range"><span>Orders' scanned ranges</span><span class="muted num" id="up-range-v">–</span></div>
+    </section>
+  </div>
+
+  <div class="grid3">
+    <section class="card" aria-labelledby="h-db">
+      <header><h2 id="h-db">Database worker</h2><span class="hint">one thread, three queues, served in turn</span></header>
+      <div class="dbq"><span>Scanner</span><span class="dbbar"><i id="db-0"></i></span><span class="num" id="db-0n">0</span></div>
+      <div class="dbq"><span>Webhook</span><span class="dbbar"><i id="db-1"></i></span><span class="num" id="db-1n">0</span></div>
+      <div class="dbq"><span>Admin</span><span class="dbbar"><i id="db-2"></i></span><span class="num" id="db-2n">0</span></div>
+      <div class="worker"><span class="gear" id="gear">DB</span><span><span id="db-turn">Next turn: Scanner</span><br><span class="muted num" id="db-stats">0 jobs, longest wait 0.3 ms</span></span></div>
+    </section>
+    <section class="card" aria-labelledby="h-state">
+      <header><h2 id="h-state">Where progress lives</h2></header>
+      <div class="cols">
+        <div><h3>Saved (survives a restart)</h3>
+          <div class="saved-row" id="sv-cursors"><span>Store cursors</span><span id="sv-cursors-v">–</span></div>
+          <div class="saved-row" id="sv-blocks"><span>Recorded blocks</span><span id="sv-blocks-v">–</span></div>
+          <div class="saved-row" id="sv-ckpt"><span>Block checkpoints</span><span id="sv-ckpt-v">none</span></div>
+          <div class="saved-row" id="sv-reorg"><span>Reorg job</span><span id="sv-reorg-v">none</span></div>
+          <div class="saved-row" id="sv-pos"><span>Scheduler positions</span><span id="sv-pos-v">4</span></div>
+          <div class="saved-row" id="sv-oblig"><span>Pending recomputes</span><span id="sv-oblig-v">0</span></div>
+          <div class="saved-row" id="sv-hooks"><span>Webhooks due</span><span id="sv-hooks-v">0</span></div>
+        </div>
+        <div><h3>Memory (rebuilt after a restart)</h3>
+          <div class="saved-row" id="mm-cache"><span>Block cache</span><span id="mm-cache-v">0 blocks</span></div>
+          <div class="cachebar"><i id="mm-cachebar"></i></div>
+          <div class="saved-row" id="mm-bodies"><span>Pool bodies</span><span id="mm-bodies-v">0</span></div>
+          <div class="saved-row" id="mm-backoff"><span>Retry delays</span><span id="mm-backoff-v">none</span></div>
+          <div class="saved-row" id="mm-rot"><span>Rotation offsets</span><span id="mm-rot-v">pool 0, stores 0</span></div>
+        </div>
+      </div>
+    </section>
+    <section class="card" aria-labelledby="h-hooks">
+      <header><h2 id="h-hooks">Webhooks</h2></header>
+      <div class="envs" id="envs" aria-label="Webhooks due"></div>
+      <div class="kv" style="margin-top:8px"><span>Due</span><b id="wh-due">0</b><span>Sent</span><b id="wh-sent">0</b><span>Oldest waiting</span><b id="wh-old">–</b></div>
+      <div class="line muted" id="shops" style="text-align:right">to the shops</div>
+    </section>
+  </div>
+
+  <section class="card" aria-labelledby="h-ev">
+    <header><h2 id="h-ev">Events</h2><span class="hint">the same as the animation, in words</span>
+      <div class="filters right" id="filters"></div></header>
+    <div class="events"><table><thead><tr><th>Round</th><th>Tier</th><th>What happened</th></tr></thead><tbody id="ev"></tbody></table></div>
+  </section>
+</main>
+</div>
+
+<script>
+(() => {
+"use strict";
+const $ = (id) => document.getElementById(id);
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const fmt = (n) => n.toLocaleString("en-GB");
+const secs = (ms) => ms < 1000 ? (ms / 1000).toFixed(2) + " s" : (ms / 1000).toFixed(1) + " s";
+const TIERS = ["chain", "blocks", "mempool", "settlement", "upkeep"];
+const NAMES = { chain: "Chain", blocks: "Blocks", mempool: "Mempool", settlement: "Settlement", upkeep: "Upkeep" };
+const SHARE = { chain: 20, blocks: 40, mempool: 15, settlement: 20, upkeep: 5 };
+const BUDGET = 10000;
+
+// ---- playback clock: waits count only unpaused time ----
+let paused = false;
+function wait(ms) {
+  return new Promise((res) => {
+    let left = ms, last = performance.now();
+    const tick = () => {
+      const now = performance.now();
+      if (!paused) left -= now - last;
+      last = now;
+      if (left <= 0) return res();
+      setTimeout(tick, Math.min(40, left));
+    };
+    setTimeout(tick, Math.min(40, ms));
+  });
+}
+let wake = null;
+function sleepOrWake(ms) {
+  return new Promise((res) => {
+    let done = false;
+    wake = (why) => { if (!done) { done = true; res(why); } };
+    wait(ms).then(() => { if (!done) { done = true; res("timer"); } });
+  });
+}
+$("pause").onclick = () => {
+  paused = !paused;
+  $("pause").textContent = paused ? "Back to live" : "Pause";
+  $("step").disabled = !paused;
+  $("live").classList.toggle("paused", paused);
+  $("live-text").textContent = paused ? "Paused, events are kept" : "Live, 1.5 s behind";
+  document.getAnimations().forEach((a) => paused ? a.pause() : a.play());
+};
+$("step").onclick = async () => {
+  paused = false; document.getAnimations().forEach((a) => a.play());
+  await new Promise((r) => setTimeout(r, 700));
+  paused = true; document.getAnimations().forEach((a) => a.pause());
+};
+
+// ---- tokens flying between parts of the page ----
+const stage = $("stage");
+function centre(el) {
+  const s = stage.getBoundingClientRect(), r = el.getBoundingClientRect();
+  return [r.left + r.width / 2 - s.left, r.top + r.height / 2 - s.top];
+}
+function fly(from, to, cls, label, ms = 700, tier) {
+  if (reduced || !from || !to || document.hidden) return wait(Math.min(ms, 150));
+  const [x0, y0] = centre(from), [x1, y1] = centre(to);
+  const t = document.createElement("div");
+  t.className = "token " + cls + (tier ? " t-" + tier : "");
+  if (label) t.textContent = label;
+  t.style.left = x0 + "px"; t.style.top = y0 + "px";
+  stage.appendChild(t);
+  const dx = x1 - x0, dy = y1 - y0, lift = Math.min(80, 20 + Math.abs(dx) / 8);
+  const a = t.animate([
+    { transform: "translate(-50%,-50%) translate(0,0)", opacity: 0 },
+    { transform: `translate(-50%,-50%) translate(${dx * .5}px,${dy * .5 - lift}px)`, opacity: 1, offset: .5 },
+    { transform: `translate(-50%,-50%) translate(${dx}px,${dy}px)`, opacity: 1 },
+  ], { duration: ms, easing: "cubic-bezier(.45,0,.35,1)" });
+  if (paused) a.pause();
+  return a.finished.then(() => t.remove(), () => t.remove());
+}
+function flash(id, ms = 900) {
+  const el = typeof id === "string" ? $(id) : id;
+  if (!el) return;
+  el.classList.add("lit");
+  setTimeout(() => el.classList.remove("lit"), ms);
+}
+
+// ---- the fake engine's state ----
+const S = {
+  round: 1284, tip: 3412880, hw: 3412880, pruneBelow: 3412860,
+  groups: [{ id: "f", cursor: 3412880, stores: 41, frontier: true }],
+  cached: new Set(), header: new Set(), reorgCells: new Set(),
+  scan: null, ckpt: new Map(), big: null,
+  pool: [], bodiesKb: 0, deferred: 0,
+  oblig: [], due: [], payments: [],
+  hooks: 0, sent: 0, db: [0, 0, 0], dbJobs: 0, dbTurn: 0,
+  reorg: null, forkPending: false, rewound: false, turn: "frontier",
+  payNext: false, reorgArmed: false, nextTx: 0, rangePos: 0, voidPos: 0,
+};
+const evRows = [];
+let filter = new Set(TIERS);
+
+// ---- events table ----
+function event(tier, text) {
+  const tr = document.createElement("tr");
+  tr.className = "new"; tr.dataset.tier = tier;
+  tr.innerHTML = `<td class="when num">${fmt(S.round)}</td><td><span class="tierchip t-${tier}">${NAMES[tier] || tier}</span></td><td></td>`;
+  tr.lastChild.textContent = text;
+  tr.hidden = !(filter.has(tier) || tier === "loop");
+  $("ev").prepend(tr);
+  evRows.unshift(tr);
+  while (evRows.length > 80) evRows.pop().remove();
+}
+(() => {
+  const f = $("filters");
+  [...TIERS, "loop"].forEach((t) => {
+    if (t === "loop") return;
+    const l = document.createElement("label");
+    l.innerHTML = `<input type="checkbox" checked id="f-${t}"> <span class="tierchip t-${t}">${NAMES[t]}</span>`;
+    l.querySelector("input").onchange = (e) => {
+      e.target.checked ? filter.add(t) : filter.delete(t);
+      evRows.forEach((r) => { r.hidden = !(filter.has(r.dataset.tier) || r.dataset.tier === "loop"); });
+    };
+    f.appendChild(l);
+  });
+  NAMES.loop = "Loop";
+})();
+
+// ---- chain strip ----
+const cellEls = new Map();
+function visibleHeights() {
+  const lowest = Math.min(...S.groups.map((g) => g.cursor));
+  const right = S.tip + 1;
+  let left = Math.min(lowest - 1, S.hw - 22);
+  if (S.reorg) left = Math.min(left, S.reorg.fork - 3);
+  if (right - left <= 32) return range(left, right);
+  return [...range(lowest - 1, lowest + 5), "brk", ...range(right - 21, right)];
+}
+function range(a, b) { const r = []; for (let h = a; h <= b; h++) r.push(h); return r; }
+function renderChain() {
+  const list = visibleHeights();
+  const cells = $("cells");
+  const keep = new Set(list.map(String));
+  for (const [k, el] of cellEls) if (!keep.has(k) && !el.classList.contains("drop")) { el.remove(); cellEls.delete(k); }
+  let prev = null;
+  for (const h of list) {
+    const key = String(h);
+    let el = cellEls.get(key);
+    if (!el) {
+      el = document.createElement("div");
+      if (h === "brk") el.className = "brk";
+      else { el.className = "cell"; el.innerHTML = '<span class="fill"></span>'; }
+      el.dataset.h = key;
+      cellEls.set(key, el);
+    }
+    if (prev ? prev.nextSibling !== el : cells.firstChild !== el) cells.insertBefore(el, prev ? prev.nextSibling : cells.firstChild);
+    prev = el;
+    if (h === "brk") {
+      const lowest = Math.min(...S.groups.map((g) => g.cursor));
+      const hidden = (S.tip + 1 - 21) - (lowest + 5) - 1;
+      el.textContent = fmt(hidden) + " blocks";
+      continue;
+    }
+    if (el.classList.contains("drop")) continue;
+    const cls = ["cell"];
+    if (h > S.tip) cls.push("ghost");
+    else if (S.reorgCells.has(h)) cls.push("reorg");
+    else if (h > S.hw) cls.push(S.cached.has(h) ? "cached" : "new");
+    else if (S.header.has(h)) cls.push("header");
+    else if (S.cached.has(h)) cls.push("cached");
+    if (h < S.pruneBelow && h <= S.hw) cls.push("pruned");
+    const fill = S.scan && S.scan.h === h ? S.scan.p : S.ckpt.has(h) ? S.ckpt.get(h) : 0;
+    el.className = cls.join(" ") + (el.dataset.enter ? " enter" : "");
+    el.querySelector(".fill").style.width = (fill * 100) + "%";
+    let save = el.querySelector(".save");
+    if (S.ckpt.has(h) && !save) { save = document.createElement("span"); save.className = "save"; el.appendChild(save); }
+    if (!S.ckpt.has(h) && save) save.remove();
+    el.title = `Block ${fmt(h)}` + (h > S.tip ? ": the next block" : h > S.hw ? ": at the node, not yet recorded" : ": recorded");
+  }
+  renderMarks(list);
+  renderPills();
+  renderSummary();
+}
+function cellX(h) {
+  const el = cellEls.get(String(h));
+  if (el && el.isConnected) return el.offsetLeft + el.offsetWidth / 2;
+  const brk = cellEls.get("brk");
+  return brk && brk.isConnected ? brk.offsetLeft + brk.offsetWidth / 2 : 0;
+}
+function renderMarks(list) {
+  const m = $("marks"), ax = $("axis");
+  const win0 = Math.max(S.hw - 20 + 1, list.find((h) => h !== "brk"));
+  m.innerHTML = `<span class="m-tip" style="left:${cellX(S.tip)}px">node tip</span>` +
+    (S.hw < S.tip ? `<span class="m-hw" style="left:${cellX(S.hw)}px">scanned to</span>` : "") +
+    `<span class="m-win" title="Reorg window: the last 20 recorded blocks" style="left:${cellX(win0) - 12}px;width:${cellX(S.hw) - cellX(win0) + 24}px"></span>`;
+  ax.innerHTML = list.filter((h) => h !== "brk" && h % 5 === 0 && h <= S.tip)
+    .map((h) => `<span style="left:${cellX(h)}px">${fmt(h)}</span>`).join("");
+}
+const pillEls = new Map();
+function renderPills() {
+  const box = $("pills");
+  const seen = new Set();
+  const nextId = S.groups.filter((g) => !g.frontier).sort((a, b) => a.cursor - b.cursor)[0]?.id;
+  for (const g of S.groups) {
+    seen.add(g.id);
+    let el = pillEls.get(g.id);
+    if (!el) { el = document.createElement("div"); pillEls.set(g.id, el); box.appendChild(el); el.style.left = cellX(g.cursor) + "px"; }
+    el.className = "pill " + (g.frontier ? "frontier" : "catchup") + (g.busy ? " busy" : "") + (S.reorg ? " waiting" : "");
+    const pages = g.stores > 256 ? ` (${Math.ceil(g.stores / 256)} pages)` : "";
+    el.innerHTML = (g.frontier ? "Frontier" : "Catching up") + `, ${g.stores} store${g.stores === 1 ? "" : "s"}${pages}` +
+      (!g.frontier && g.id === nextId && S.groups.length > 2 ? ' <span class="next">next</span>' : "");
+    el.title = `${g.stores} stores whose scan has reached block ${fmt(g.cursor)}`;
+    requestAnimationFrame(() => { el.style.left = cellX(g.cursor) + "px"; });
+  }
+  for (const [id, el] of pillEls) if (!seen.has(id)) { el.remove(); pillEls.delete(id); }
+}
+function scrollStripRight() {
+  const sc = $("strip-scroll");
+  sc.scrollLeft = sc.scrollWidth;
+}
+function renderSummary() {
+  $("s-tip").textContent = fmt(S.tip);
+  $("node-a-h").textContent = fmt(S.tip);
+  $("node-b-h").textContent = fmt(S.tip - 1);
+  $("s-hw").textContent = fmt(S.hw);
+  const lowest = Math.min(...S.groups.map((g) => g.cursor));
+  const behind = S.tip - lowest;
+  $("s-behind").textContent = fmt(behind);
+  const cu = S.groups.filter((g) => !g.frontier);
+  $("s-behind-s").textContent = behind === 0 ? "caught up" : cu.length ? `about ${Math.max(1, Math.round(behind / 9))} s at the recent pace` : "a new block to scan";
+  const all = S.groups.reduce((n, g) => n + g.stores, 0);
+  $("s-stores").textContent = all;
+  const lag = cu.reduce((n, g) => n + g.stores, 0);
+  $("s-stores-s").textContent = lag ? `${lag} catching up` : "all at the tip";
+  $("s-pace").textContent = S.reorg ? "Reorg" : cu.length ? "Link" : "Nothing";
+  $("s-pace-s").textContent = S.reorg ? "blocks wait for the rewind" : cu.length ? "the node's link sets the pace" : "caught up";
+  const cacheMb = (S.cached.size * 0.4).toFixed(1);
+  $("cache-chip").textContent = `cache ${cacheMb} MB of 64 MB`;
+  $("mm-cache-v").textContent = `${S.cached.size} blocks, ${cacheMb} MB`;
+  $("mm-cachebar").style.width = Math.min(100, S.cached.size * 0.4 / 64 * 100) + "%";
+  $("sv-cursors-v").textContent = `${S.groups.length} group${S.groups.length > 1 ? "s" : ""}, ${all} stores`;
+  $("sv-blocks-v").textContent = `${fmt(Math.max(S.pruneBelow, lowest - 20))} to ${fmt(S.hw)}`;
+  $("sv-ckpt-v").textContent = S.ckpt.size ? [...S.ckpt.keys()].map(fmt).join(", ") : "none";
+  $("sv-reorg-v").textContent = S.reorg ? `fork ${fmt(S.reorg.fork)}, ${S.reorg.phase}` : "none";
+  $("sv-oblig-v").textContent = S.oblig.length;
+  $("sv-hooks-v").textContent = S.hooks;
+}
+
+// ---- nodes ----
+function call(text) {
+  $("node-a-call").textContent = text;
+}
+
+// ---- database worker ----
+const CLASSES = ["Scanner", "Webhook", "Admin"];
+async function db(cls, rows = [], from) {
+  S.db[cls]++; renderDb();
+  if (from) fly(from, $("db-" + cls), "save", "", 450);
+  await wait(reduced ? 60 : 180);
+  S.db[cls]--; S.dbJobs++; S.dbTurn = (cls + 1) % 3;
+  $("gear").classList.add("spin"); setTimeout(() => $("gear").classList.remove("spin"), 400);
+  rows.forEach((r) => flash(r));
+  renderDb();
+}
+function renderDb() {
+  for (let i = 0; i < 3; i++) { $("db-" + i).style.width = Math.min(100, S.db[i] / 64 * 100 * 8) + "%"; $("db-" + i + "n").textContent = S.db[i]; }
+  $("db-turn").textContent = "Next turn: " + CLASSES[S.dbTurn];
+  $("db-stats").textContent = `${fmt(S.dbJobs)} jobs, longest wait 1.7 ms`;
+}
+
+// ---- round lanes ----
+const L = {};
+(() => {
+  const lanes = $("lanes");
+  for (const t of TIERS) {
+    const lab = document.createElement("div");
+    lab.className = "lane-label t-" + t;
+    lab.innerHTML = `<span class="tierchip t-${t}">${NAMES[t]}</span><small>${SHARE[t]} %</small>`;
+    const track = document.createElement("div");
+    track.className = "track t-" + t;
+    const out = document.createElement("div");
+    out.className = "outcome";
+    lanes.append(lab, track, out);
+    L[t] = { track, out };
+  }
+})();
+let R = null;
+function axis() { return R.long ? Math.max(BUDGET, R.t) : Math.max(R.t * 1.15, 120); }
+function layoutBars() {
+  const ax = axis();
+  for (const b of R.bars) { b.el.style.left = (b.at / ax * 100) + "%"; b.el.style.width = Math.max(0.6, b.ms / ax * 100) + "%"; }
+  for (const s of R.shares) { s.el.style.left = (s.at / ax * 100) + "%"; s.el.style.width = (s.ms / ax * 100) + "%"; }
+  for (const t of TIERS) {
+    let ph = L[t].track.querySelector(".playhead");
+    if (!ph) { ph = document.createElement("div"); ph.className = "playhead"; L[t].track.appendChild(ph); }
+    ph.style.left = Math.min(100, R.t / ax * 100) + "%";
+  }
+  $("gauge").style.width = Math.min(100, R.t / BUDGET * 100) + "%";
+  $("gauge-text").textContent = `${secs(R.t)} of 10 s budget`;
+}
+function startRound(woke) {
+  S.round++;
+  const long = S.groups.some((g) => !g.frontier) || !!S.reorg;
+  R = { t: 0, bars: [], shares: [], long, steps: {}, outcomes: {}, tierStart: {} };
+  $("round-n").textContent = fmt(S.round);
+  for (const t of TIERS) { L[t].track.innerHTML = ""; L[t].out.textContent = ""; L[t].out.className = "outcome"; }
+  $("round-state").textContent = "Running" + (woke ? ", " + woke : "");
+  layoutBars();
+}
+function beginTier(t) {
+  R.tierStart[t] = R.t;
+  if (R.long) {
+    const el = document.createElement("div"); el.className = "share";
+    el.title = `${NAMES[t]}'s reserved share: ${SHARE[t]} % of the round`;
+    L[t].track.prepend(el);
+    R.shares.push({ el, at: R.t, ms: BUDGET * SHARE[t] / 100 });
+  }
+}
+async function unit(t, ms, pass, body) {
+  const el = document.createElement("div");
+  el.className = "bar running" + (pass === 2 ? " p2" : "");
+  L[t].track.appendChild(el);
+  const b = { el, at: R.t, ms };
+  R.bars.push(b);
+  layoutBars();
+  const r = body ? await body() : await wait(140);
+  el.classList.remove("running");
+  R.t += b.ms; R.steps[t] = (R.steps[t] || 0) + 1;
+  layoutBars();
+  return r;
+}
+function outcome(t, kind, text) {
+  R.outcomes[t] = kind;
+  const o = L[t].out;
+  o.innerHTML = "";
+  const c = document.createElement("span");
+  c.className = "chip " + ({ Idle: "ok", Backlogged: "hi", Waiting: "warn", Failed: "err" }[kind] || "");
+  c.textContent = kind + (text ? ": " + text : "");
+  o.appendChild(c);
+}
+const roundsHist = [];
+function finishRound(sleepKind) {
+  const bar = document.createElement("div");
+  bar.className = "rbar";
+  const h = Math.max(4, Math.min(50, 8 + Math.log10(Math.max(1, R.t)) * 11));
+  bar.style.height = h + "px";
+  const per = {};
+  for (const b of R.bars) { const t = TIERS.find((x) => L[x].track.contains(b.el)); per[t] = (per[t] || 0) + b.ms; }
+  for (const t of TIERS) if (per[t]) { const i = document.createElement("i"); i.className = "t-" + t; i.style.height = (per[t] / R.t * 100) + "%"; bar.appendChild(i); }
+  bar.title = `Round ${fmt(S.round)}: ${secs(R.t)}`;
+  $("ribbon").appendChild(bar);
+  roundsHist.push(bar);
+  $("s-round").textContent = secs(R.t);
+  $("s-round-s").textContent = R.long ? "of 10 s, work was left" : "of a 10 s budget";
+  while ($("ribbon").children.length > 80) $("ribbon").firstChild.remove();
+}
+function ribbonGap(kind, ms) {
+  const g = document.createElement("div");
+  g.className = "rgap" + (kind === "node" ? " node" : "");
+  g.style.width = Math.max(8, Math.min(24, ms / 60)) + "px";
+  g.title = kind === "node" ? "Woken early: the node announced a block" : `Slept ${secs(ms)}`;
+  $("ribbon").appendChild(g);
+}
+
+// ---- tiers ----
+async function chainTier() {
+  beginTier("chain");
+  if (!S.reorg && S.forkPending) {
+    await unit("chain", 140, 1, async () => {
+      call("on_get_block_hash x3");
+      const probes = [S.hw, S.hw - 4, S.hw - 2, S.hw - 1];
+      for (const h of probes) {
+        const el = cellEls.get(String(h));
+        fly($("node-a"), el, "pkt chain", "hash", 420);
+        await wait(380);
+        if (el) { el.classList.add("probe"); setTimeout(() => el.classList.remove("probe"), 500); }
+      }
+      const fork = S.hw;
+      S.forkPending = false;
+      S.reorg = { fork, phase: "collect", cand: 0, keep: 0, move: 0, restore: 0, void: 0 };
+      S.reorgCells.clear();
+      for (let h = fork; h <= S.hw; h++) S.reorgCells.add(h);
+      event("chain", `The node's block ${fmt(fork)} differs from the recorded one: a reorg from ${fmt(fork)}. Job opened.`);
+      stations("collect");
+      renderChain(); renderReorg();
+      await db(0, ["sv-reorg"], $("st-detect"));
+      const cand = S.payments.filter((p) => p.height && p.height >= fork).length;
+      S.reorg.cand = cand; S.reorg.phase = "process";
+      event("chain", `Collected ${cand} payment${cand === 1 ? "" : "s"} at or above the fork to re-examine.`);
+      stations("process"); renderReorg();
+      await db(0, ["sv-reorg"]);
+    });
+    outcome("chain", "Backlogged", "reorg job open");
+    return;
+  }
+  if (S.reorg && S.reorg.phase === "process") {
+    await unit("chain", 320, 1, async () => {
+      call("get_transactions");
+      fly($("node-a"), $("st-process"), "pkt chain", "txs", 500);
+      await wait(600);
+      for (const p of S.payments) if (p.height && p.height >= S.reorg.fork) {
+        if (p.status !== "unconfirmed") addTransition(p.status, "unconfirmed");
+        p.height = null; p.status = "unconfirmed"; p.mineAt = S.reorg.fork; S.reorg.move++;
+        S.oblig.push(p);
+      }
+      S.reorg.cand = 0; S.reorg.phase = "rewind";
+      event("chain", S.reorg.move ? `Re-examined: ${S.reorg.move} payment moved back to the pool (its transaction isn't in the new blocks yet).` : "Re-examined: nothing to change.");
+      stations("rewind"); renderReorg(); renderQueues();
+      await db(0, ["sv-reorg", "sv-oblig"]);
+    });
+    outcome("chain", "Backlogged", "rewind next");
+    return;
+  }
+  if (S.reorg && S.reorg.phase === "rewind") {
+    await unit("chain", 60, 1, async () => {
+      const fork = S.reorg.fork;
+      for (let h = fork; h <= S.hw; h++) {
+        const el = cellEls.get(String(h));
+        if (el) el.classList.add("drop");
+      }
+      await wait(700);
+      for (let h = fork; h <= S.hw; h++) { const el = cellEls.get(String(h)); if (el) { el.remove(); cellEls.delete(String(h)); } }
+      S.reorgCells.clear();
+      const was = S.hw;
+      S.hw = fork - 1;
+      for (const g of S.groups) g.cursor = Math.min(g.cursor, S.hw);
+      for (const h of [...S.cached]) if (h >= fork) S.cached.delete(h);
+      S.rewound = true;
+      event("chain", `Rewound: ${fork === was ? "block " + fmt(fork) : "blocks " + fmt(fork) + " to " + fmt(was)} deleted, cursors moved back to ${fmt(S.hw)}. Replacement blocks are scanned next round.`);
+      S.reorg = null;
+      stations(null); renderReorg(); renderChain();
+      await db(0, ["sv-reorg", "sv-blocks", "sv-cursors"]);
+      $("held").innerHTML = "";
+    });
+    outcome("chain", "Idle");
+    return;
+  }
+  await unit("chain", S.hw === S.tip ? 2 : 48, 1, async () => {
+    const el = cellEls.get(String(Math.min(S.hw, S.tip)));
+    if (S.hw === S.tip) {
+      if (el) { el.classList.add("probe"); setTimeout(() => el.classList.remove("probe"), 450); }
+      $("rg-line").textContent = `Agrees at ${fmt(S.hw)}: free, the tip's hash came with its height.`;
+      stations("detect"); await wait(260); stations(null);
+    } else {
+      call("on_get_block_hash");
+      fly($("node-a"), el, "pkt chain", "hash", 420);
+      stations("detect"); await wait(420);
+      if (el) { el.classList.add("probe"); setTimeout(() => el.classList.remove("probe"), 450); }
+      $("rg-line").textContent = `Agrees at ${fmt(S.hw)} (one lookup).`;
+      stations(null);
+    }
+  });
+  outcome("chain", "Idle");
+}
+function stations(on) {
+  for (const s of ["detect", "collect", "process", "rewind"]) $("st-" + s).classList.toggle("on", s === on);
+}
+function renderReorg() {
+  const r = S.reorg;
+  $("rg-fork").textContent = r ? fmt(r.fork) : "–";
+  $("rg-cand").textContent = r ? r.cand : "–";
+  $("rg-dec").textContent = r ? `${r.keep} / ${r.move} / ${r.restore} / ${r.void}` : "–";
+  if (r) $("rg-line").textContent = "Blocks wait, and no order is settled as paid, until the rewind.";
+  if (r) $("held").innerHTML = '<span class="chip warn">paid held: reorg open</span>';
+}
+
+async function blocksTier(pass) {
+  if (pass === 1) beginTier("blocks");
+  if (S.reorg) {
+    await unit("blocks", 1, pass, () => wait(160));
+    outcome("blocks", "Waiting", "a reorg is being reconciled");
+    return;
+  }
+  if (S.rewound) {
+    await unit("blocks", 1, pass, () => wait(160));
+    outcome("blocks", "Waiting", "rewound this round");
+    return;
+  }
+  const start = R.tierStart.blocks;
+  for (let i = 0; i < 8; i++) {
+    const cu = S.groups.filter((g) => !g.frontier).sort((a, b) => a.cursor - b.cursor);
+    const frontierBehind = S.hw < S.tip && !R.diverged;
+    if (frontierBehind && S.forkPending) {
+      R.diverged = true;
+      await unit("blocks", 30, pass, async () => {
+        const el = cellEls.get(String(S.hw + 1));
+        call(`get_blocks.bin from ${fmt(S.hw + 1)}`);
+        await fly($("node-a"), el, "pkt", "1 block", 520);
+        S.reorgCells.add(S.hw + 1); renderChain();
+        event("blocks", `Block ${fmt(S.hw + 1)} doesn't extend the recorded chain: nothing recorded, the frontier waits for the chain tier.`);
+      });
+      if (!cu.length) { outcome("blocks", "Waiting", "the node's chain differs from the recorded one"); return; }
+      continue;
+    }
+    if (frontierBehind && (S.turn === "frontier" || !cu.length)) {
+      S.turn = "catchup";
+      await unit("blocks", 0, pass, () => frontierUnit());
+    } else if (cu.length) {
+      S.turn = "frontier";
+      await unit("blocks", 0, pass, () => catchUpUnit(cu[0]));
+    } else {
+      if (!R.steps.blocks || pass === 2) await unit("blocks", 1, pass, () => wait(90));
+      outcome("blocks", "Idle");
+      return;
+    }
+    if (pass === 1 && R.t - start >= BUDGET * SHARE.blocks / 100) break;
+    if (pass === 2 && R.t >= BUDGET) break;
+  }
+  const left = S.groups.some((g) => !g.frontier) || S.hw < S.tip;
+  outcome("blocks", left ? "Backlogged" : "Idle", left ? "out of time with blocks left" : "");
+}
+// The bar's real length is decided as the unit runs: set it on the last bar.
+function charge(ms) { R.bars[R.bars.length - 1].ms += ms; }
+
+async function frontierUnit() {
+  const f = S.groups.find((g) => g.frontier);
+  let n = 0;
+  while (S.hw < S.tip && n < 8) {
+    const h = S.hw + 1;
+    const el = cellEls.get(String(h));
+    if (!S.cached.has(h)) {
+      call(`get_blocks.bin from ${fmt(h)}`);
+      await fly($("node-a"), el, "pkt", "1 block", 520);
+      S.cached.add(h); renderChain();
+    }
+    f.busy = true; renderPills();
+    S.scan = { h, p: 0 };
+    for (let p = 1; p <= 4; p++) { S.scan.p = p / 4; renderChain(); await wait(110); }
+    S.scan = null;
+    S.hw = h; f.cursor = h; f.busy = false;
+    S.cached.delete(h);
+    const pay = S.payments.find((p) => p.mineAt === h);
+    renderChain();
+    if (el) { el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 500); }
+    charge(180);
+    event("blocks", `Block ${fmt(h)} scanned for ${f.stores} stores and committed` + (pay ? ": 1 payment found in it." : "."));
+    await db(0, ["sv-cursors", "sv-blocks"], el);
+    if (pay) {
+      pay.height = h; pay.mineAt = null;
+      S.oblig.push(pay); renderQueues();
+      fly(el, $("q-oblig"), "payment", "", 650);
+      flash("sv-oblig");
+    }
+    n++;
+  }
+}
+async function catchUpUnit(g) {
+  const f = S.groups.find((x) => x.frontier);
+  if (g.idle) {
+    const moving = g.idle; g.idle = 0;
+    await fly(pillEls.get(g.id), pillEls.get("f"), "token", "", 650, "blocks");
+    g.stores -= moving; f.stores += moving;
+    event("blocks", `${moving} store${moving > 1 ? "s" : ""} with nothing that could have been paid moved straight to ${fmt(S.hw)}.`);
+    await db(0, ["sv-cursors"]);
+    renderChain();
+  }
+  // Prefetch the run ahead.
+  const from = g.cursor + 1, to = Math.min(S.hw, g.cursor + 8);
+  const need = range(from, to).filter((h) => !S.cached.has(h));
+  if (need.length) {
+    call(`get_blocks.bin ${need.length} from ${fmt(need[0])}`);
+    const target = cellEls.get(String(need[Math.floor(need.length / 2)])) || cellEls.get("brk");
+    await fly($("node-a"), target, "pkt", `${need.length} blocks`, 650);
+    need.forEach((h) => S.cached.add(h));
+    charge(420);
+    renderChain();
+    $("mm-cache").classList.add("lit"); setTimeout(() => $("mm-cache").classList.remove("lit"), 800);
+  }
+  let n = 0;
+  while (g.cursor < S.hw && n < 8) {
+    const h = g.cursor + 1;
+    g.busy = true; renderPills();
+    const big = S.big === h;
+    const startP = S.ckpt.get(h) || 0;
+    S.scan = { h, p: startP };
+    const steps = big ? 6 : 2;
+    const stopAt = big && startP === 0 ? 0.4 : 1;
+    for (let p = 1; p <= steps; p++) {
+      S.scan.p = Math.min(stopAt, startP + (1 - startP) * p / steps);
+      renderChain(); await wait(big ? 160 : 70);
+      if (S.scan.p >= stopAt) break;
+    }
+    if (stopAt < 1) {
+      S.ckpt.set(h, 0.4); S.scan = null; g.busy = false;
+      charge(2600);
+      renderChain();
+      event("blocks", `Block ${fmt(h)} has 3,000 transactions: out of time at 1,200, progress saved for ${g.stores} stores.`);
+      await db(0, ["sv-ckpt"], cellEls.get(String(h)));
+      return;
+    }
+    S.ckpt.delete(h);
+    S.scan = null;
+    g.cursor = h; g.busy = false;
+    charge(big ? 2200 : 460);
+    renderChain();
+    if (n === 0 || big) event("blocks", big ? `Block ${fmt(h)} finished from its saved point and committed for ${g.stores} stores.` : `Catching up from ${fmt(h)} for ${g.stores} stores.`);
+    await db(0, ["sv-cursors"]);
+    n++;
+    const spent = R.t + R.bars[R.bars.length - 1].ms;
+    if (spent - R.tierStart.blocks > BUDGET * SHARE.blocks / 100) break;
+    if (spent >= BUDGET) break;
+  }
+  for (const h of [...S.cached]) if (h <= Math.min(...S.groups.map((x) => x.cursor))) S.cached.delete(h);
+  if (g.cursor >= S.hw) {
+    S.groups = S.groups.filter((x) => x !== g);
+    await fly(pillEls.get(g.id), pillEls.get("f"), "token", "", 600, "blocks");
+    f.stores += g.stores;
+    event("blocks", `${g.stores} stores caught up and joined the frontier at ${fmt(S.hw)}.`);
+    S.big = null;
+  }
+  renderChain();
+}
+
+async function mempoolTier() {
+  beginTier("mempool");
+  if (!S.pool.length) {
+    await unit("mempool", 3, 1, () => wait(110));
+    outcome("mempool", "Idle");
+    return;
+  }
+  await unit("mempool", 28, 1, async () => {
+    call("get_transaction_pool_hashes");
+    const slice = S.pool.slice(0, 6);
+    for (const d of slice) { d.el.classList.add("sweep"); }
+    await wait(320);
+    for (const d of slice) { d.el.classList.remove("sweep"); }
+    $("mm-rot-v").textContent = `pool ${fmt(++S.nextTx * 6)}, stores ${S.nextTx * 16 % 41}`;
+    flash("mm-rot");
+  });
+  outcome("mempool", "Idle");
+}
+
+async function settlementTier() {
+  beginTier("settlement");
+  const work = [...S.oblig, ...S.due];
+  if (!work.length) {
+    await unit("settlement", 4, 1, () => wait(110));
+    $("vanished").textContent = S.payments.some((p) => !p.height) ? "1 unconfirmed payment looked at: still in the pool." : "No unconfirmed payment has left the pool.";
+    outcome("settlement", "Idle");
+    return;
+  }
+  await unit("settlement", 12 + work.length * 6, 1, async () => {
+    const rc = $("recompute");
+    await Promise.all([...$("q-oblig").children, ...$("q-due").children].map((t, i) => fly(t, rc, "token", "", 420 + i * 60, "settlement")));
+    S.oblig = []; S.due = [];
+    renderQueues();
+    await db(0, ["sv-oblig"]);
+    for (const p of work) {
+      const next = transition(p);
+      if (!next) continue;
+      if (next === "held") continue;
+      const from = p.status;
+      p.status = next;
+      addTransition(from, next);
+      event("settlement", `Order recomputed: ${from} to ${next}. Webhook queued.`);
+      S.hooks++; renderHooks();
+      fly($("trans"), $("envs"), "envelope", "", 600);
+      flash("sv-hooks");
+    }
+  });
+  outcome("settlement", S.due.length ? "Waiting" : "Idle", S.due.length ? "paid held during the reorg" : "");
+}
+function transition(p) {
+  if (p.status === "unconfirmed" && p.height) return "confirming";
+  if (p.status === "confirming" && p.height && S.hw - p.height + 1 >= 2) {
+    if (S.reorg) { S.due.push(p); return "held"; }
+    return "paid";
+  }
+  return null;
+}
+function addTransition(from, to) {
+  const row = document.createElement("div");
+  row.className = "trow";
+  row.innerHTML = `<span class="state state-${from}">${from}</span> to <span class="state state-${to}">${to}</span>`;
+  $("trans").prepend(row);
+  while ($("trans").children.length > 3) $("trans").lastChild.remove();
+}
+function renderQueues() {
+  const fill = (id, arr, h) => {
+    const q = $(id); q.innerHTML = "";
+    arr.forEach(() => { const t = document.createElement("span"); t.className = "tok" + (h ? " h" : ""); q.appendChild(t); });
+  };
+  fill("q-oblig", S.oblig, false); fill("q-due", S.due, true);
+  $("q-oblig-n").textContent = S.oblig.length; $("q-due-n").textContent = S.due.length;
+  $("sv-oblig-v").textContent = S.oblig.length;
+}
+
+async function upkeepTier() {
+  beginTier("upkeep");
+  await unit("upkeep", 9, 1, async () => {
+    let pruned = 0;
+    while (S.hw - S.pruneBelow > 20) { S.pruneBelow++; pruned++; }
+    $("up-prune-v").textContent = pruned ? `${pruned} removed` : "nothing to remove";
+    flash("up-prune");
+    await wait(90);
+    S.voidPos++;
+    $("up-void-v").textContent = "page checked, none voided"; flash("up-void");
+    await wait(90);
+    S.rangePos = (S.rangePos + 16) % 41;
+    $("up-range-v").textContent = `stores ${S.rangePos} to ${Math.min(41, S.rangePos + 16)}`; flash("up-range");
+    if (pruned) await db(0, ["sv-blocks", "sv-pos"]); else flash("sv-pos");
+  });
+  outcome("upkeep", "Idle");
+  renderChain();
+}
+
+// ---- the round loop ----
+async function roundLoop() {
+  let woke = "";
+  for (;;) {
+    startRound(woke);
+    S.rewound = false;
+    await chainTier();
+    await blocksTier(1);
+    await mempoolTier();
+    await settlementTier();
+    await upkeepTier();
+    if (R.outcomes.blocks === "Backlogged" && R.t < BUDGET) {
+      $("round-state").textContent = "Pass 2: time left over goes to tiers with work";
+      await blocksTier(2);
+    }
+    const backlog = Object.values(R.outcomes).includes("Backlogged");
+    finishRound();
+    if (backlog) {
+      $("round-state").textContent = `Ended at ${secs(R.t)} with work left: the next round starts at once.`;
+      event("loop", `Round ${fmt(S.round)} took ${secs(R.t)}, work left: starting the next at once.`);
+      await wait(500);
+      woke = "started at once: work was left";
+      continue;
+    }
+    $("round-state").textContent = `Ended at ${secs(R.t)}. Sleeping 1 s, or until the node announces a block.`;
+    const why = await sleepOrWake(1600);
+    ribbonGap(why === "node" ? "node" : "timer", why === "node" ? 300 : 1000);
+    woke = why === "node" ? "woken by the node announcing a block" : "after the 1 s poll interval";
+  }
+}
+
+// ---- the node: new blocks and transactions ----
+function newDot(match) {
+  const d = { id: (Math.random() * 1e8 | 0).toString(16).padStart(8, "0"), el: document.createElement("span"), match };
+  d.el.className = "dot";
+  d.el.title = "Transaction " + d.id;
+  S.pool.push(d);
+  $("pool").appendChild(d.el);
+  return d;
+}
+function renderPool() {
+  $("mp-size").textContent = S.pool.length;
+  $("mp-bodies").textContent = `${S.pool.length} (${S.pool.length * 3} KB)`;
+  $("mm-bodies-v").textContent = `${S.pool.length}, ${S.pool.length * 3} KB`;
+}
+async function fastLoop() {
+  for (;;) {
+    await wait(650);
+    $("beat").classList.add("on"); setTimeout(() => $("beat").classList.remove("on"), 160);
+    const arrive = S.payNext || Math.random() < 0.28;
+    if (!arrive) continue;
+    const match = S.payNext; S.payNext = false;
+    const d = newDot(match);
+    d.el.style.visibility = "hidden";
+    call("get_transaction_pool_hashes");
+    await fly($("node-a"), d.el, "pkt mempool", "tx", 500);
+    d.el.style.visibility = "";
+    renderPool();
+    d.el.classList.add("sweep");
+    await wait(250);
+    d.el.classList.remove("sweep");
+    d.el.classList.add("scanned");
+    if (match) {
+      d.el.classList.add("match");
+      const p = { txid: d.id, status: "pending", height: null, dot: d };
+      S.payments.push(p);
+      event("mempool", `Transaction ${d.id} pays an order: recorded at once by the fast path.`);
+      await db(0, ["sv-oblig"], d.el);
+      addTransition("pending", "unconfirmed");
+      p.status = "unconfirmed";
+      event("settlement", "Order recomputed in the same job: pending to unconfirmed. Webhook queued.");
+      S.hooks++; renderHooks();
+      fly(d.el, $("envs"), "envelope", "", 700);
+    } else {
+      event("mempool", `Transaction ${d.id} scanned for 41 stores by the fast path: no match.`);
+    }
+    flash("mm-bodies");
+  }
+}
+async function blockLoop() {
+  for (;;) {
+    await wait(9000 + Math.random() * 5000);
+    await newBlock();
+  }
+}
+async function newBlock() {
+  const node = $("node-a");
+  node.classList.remove("spark"); void node.offsetWidth; node.classList.add("spark");
+  const branch = S.reorgArmed;
+  if (S.reorgArmed) { S.reorgArmed = false; S.forkPending = true; }
+  S.tip++;
+  const key = String(S.tip);
+  renderChain();
+  const el = cellEls.get(key);
+  if (el) { el.dataset.enter = "1"; el.classList.add("enter"); setTimeout(() => { delete el.dataset.enter; el.classList.remove("enter"); }, 650); }
+  scrollStripRight();
+  event("chain", `The node announced block ${fmt(S.tip)}` + (branch ? ", on a branch that replaces block " + fmt(S.hw) + "." : "."));
+  // Some pool transactions are mined into it.
+  const mined = S.pool.filter((d) => !d.match || S.payments.find((p) => p.dot === d && !p.height)).slice(0, 3);
+  for (const d of mined) {
+    const p = S.payments.find((x) => x.dot === d);
+    if (p) p.mineAt = S.tip;
+    fly(d.el, el, "token", "", 600, "mempool");
+    d.el.remove();
+    S.pool = S.pool.filter((x) => x !== d);
+  }
+  renderPool();
+  // Payments waiting for confirmations fall due by height.
+  for (const p of S.payments) if (p.status === "confirming" && !S.due.includes(p)) S.due.push(p);
+  renderQueues();
+  if (wake) wake("node");
+}
+
+// ---- webhooks ----
+function renderHooks() {
+  const e = $("envs"); e.innerHTML = "";
+  for (let i = 0; i < S.hooks; i++) { const s = document.createElement("span"); s.className = "env"; e.appendChild(s); }
+  $("wh-due").textContent = S.hooks; $("wh-sent").textContent = S.sent;
+  $("wh-old").textContent = S.hooks ? "under 1 s" : "–";
+  $("sv-hooks-v").textContent = S.hooks;
+}
+async function webhookLoop() {
+  for (;;) {
+    await wait(900);
+    if (!S.hooks) continue;
+    await db(1, ["sv-hooks"]);
+    const n = S.hooks;
+    const src = $("envs").firstChild;
+    S.hooks = 0; S.sent += n; renderHooks();
+    await fly(src || $("envs"), $("shops"), "envelope", "", 500);
+    event("settlement", `${n} webhook${n > 1 ? "s" : ""} delivered.`);
+  }
+}
+
+// ---- scenarios (mockup only) ----
+$("sc-catchup").onclick = () => {
+  if (S.groups.some((g) => !g.frontier)) return;
+  const behind = 42;
+  S.groups.push({ id: "c" + S.round, cursor: S.hw - behind, stores: 3, idle: 1, frontier: false });
+  S.big = S.hw - behind + 12;
+  event("blocks", `3 stores registered again after downtime, ${behind} blocks behind. 1 of them has nothing in scope.`);
+  renderChain();
+};
+$("sc-pay").onclick = () => { S.payNext = true; };
+$("sc-reorg").onclick = () => {
+  if (S.reorg || S.forkPending) return;
+  S.reorgArmed = true;
+  event("chain", "Scenario: the next block arrives on a branch that replaces the last block.");
+  newBlock();
+};
+
+// ---- start in a realistic working state ----
+for (let i = 0; i < 9; i++) { const d = newDot(false); d.el.classList.add("scanned"); }
+renderPool();
+renderChain();
+renderDb();
+renderQueues();
+renderHooks();
+requestAnimationFrame(() => { renderChain(); scrollStripRight(); });
+addEventListener("resize", () => renderChain());
+roundLoop();
+fastLoop();
+blockLoop();
+webhookLoop();
+})();
+</script>
