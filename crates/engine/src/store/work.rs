@@ -554,9 +554,15 @@ impl Store {
         self.rows(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
-             WHERE op.voided_at_utc IS NOT NULL AND op.voided_at_utc >= ?2 AND op.id > ?3 AND t.network = ?1
+             WHERE op.voided_at_utc IS NOT NULL AND op.superseded_by IS NULL
+               AND op.voided_at_utc >= ?2 AND op.id > ?3 AND t.network = ?1
              ORDER BY op.id LIMIT ?4",
-            params![shared::network::SqlNetwork(network), cutoff, after, Unsigned(limit)],
+            params![
+                shared::network::SqlNetwork(network),
+                cutoff,
+                after,
+                Unsigned(limit)
+            ],
             Self::row_to_payment,
         )
     }
@@ -1306,7 +1312,7 @@ mod tests {
             ),
             (
                 "void recheck page",
-                "SELECT op.* FROM order_payments op WHERE op.voided_at_utc IS NOT NULL AND op.voided_at_utc >= 0 AND op.id > 0 \
+                "SELECT op.* FROM order_payments op WHERE op.voided_at_utc IS NOT NULL AND op.superseded_by IS NULL AND op.voided_at_utc >= 0 AND op.id > 0 \
                  ORDER BY op.id LIMIT 16",
                 "order_payments_voided_idx",
             ),

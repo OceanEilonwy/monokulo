@@ -5307,13 +5307,17 @@ pub(crate) mod tests {
     async fn an_output_reusing_a_credited_one_time_key_is_not_credited_twice() {
         // Two outputs carrying one one-time key are one spendable output:
         // crediting both pays an order with money the merchant cannot have.
+        // Both are recorded (which one a node shows first is its choice, so
+        // it can't decide), and only one is ever counted
+        // (`store::conflicts`).
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tenant = shared::ids::TenantId::new(tenant_id.to_string());
         let order = shared::ids::OrderId::new(order_id.to_string());
         let first = fixture_tx();
         let reused = key_reusing_tx(1);
         assert_ne!(tx_id_hex(&first), tx_id_hex(&reused));
-        for tx in [&first, &reused, &first] {
+        // The copy is seen first, both in the pool.
+        for tx in [&reused, &first, &reused] {
             scan_transaction_for_tenant(
                 &store,
                 &key_custody,
@@ -5328,20 +5332,25 @@ pub(crate) mod tests {
             .unwrap();
         }
         let payments = store.get_all_payments(&order).unwrap();
-        assert_eq!(
-            payments.len(),
-            1,
-            "the second output with the key is refused"
-        );
-        assert_eq!(payments[0].txid, tx_id_hex(&first));
+        assert_eq!(payments.len(), 2, "both outputs with the key are recorded");
         let scan = scan_transaction(&key_custody, handle, &first, 0..3)
             .await
             .unwrap();
         let (index, key) = scan.output_keys.iter().next().unwrap();
-        assert_eq!(payments[0].output_index, *index as i64);
-        assert_eq!(payments[0].output_key.as_deref(), Some(key.as_str()));
+        assert!(payments
+            .iter()
+            .all(|p| p.output_key.as_deref() == Some(key.as_str())));
+        let received = |store: &Store| {
+            store.recompute_order_status(&order, 100, 1600).unwrap();
+            store
+                .get_order(&tenant, &order)
+                .unwrap()
+                .unwrap()
+                .amount_received_piconero
+        };
+        assert_eq!(received(&store), FIXTURE_AMOUNT_PICONERO, "counted once");
 
-        // A genuinely independent second payment is credited.
+        // A genuinely independent second payment counts too.
         let independent = independent_payment_tx(2);
         scan_transaction_for_tenant(
             &store,
@@ -5355,30 +5364,35 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(store.get_all_payments(&order).unwrap().len(), 2);
+        assert_eq!(received(&store), 2 * FIXTURE_AMOUNT_PICONERO);
 
-        // Once the credited one is voided (its transaction lost a double
-        // spend), the other output with the key is the one that can be spent.
-        store
-            .void_payment(&order, &tx_id_hex(&first), *index as i64, 1600)
-            .unwrap();
+        // The real one is mined: credited, the copy voided for it.
         scan_transaction_for_tenant(
             &store,
             &key_custody,
             handle,
             &tenant,
-            &reused,
+            &first,
             0..3,
             1700,
-            None,
+            Some(90),
         )
         .await
         .unwrap();
+        assert_eq!(received(&store), 2 * FIXTURE_AMOUNT_PICONERO);
         let payments = store.get_all_payments(&order).unwrap();
-        assert_eq!(payments.len(), 3);
-        assert!(payments
+        let credited = payments
             .iter()
-            .any(|p| p.txid == tx_id_hex(&reused) && p.voided_at.is_none()));
+            .find(|p| p.txid == tx_id_hex(&first))
+            .unwrap();
+        assert_eq!(credited.output_index, *index as i64);
+        assert_eq!((credited.voided_at, credited.superseded_by), (None, None));
+        let copy = payments
+            .iter()
+            .find(|p| p.txid == tx_id_hex(&reused))
+            .unwrap();
+        assert!(copy.voided_at.is_some());
+        assert_eq!(copy.superseded_by, Some(credited.id));
     }
 
     #[tokio::test]

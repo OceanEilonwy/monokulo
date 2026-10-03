@@ -337,10 +337,21 @@ impl<'a> Chain<'a> {
                 location = agreed;
             }
         }
-        let proven = !voided
-            && location == TxLocation::NotFound
-            && self.double_spend_proven(&payment).await?;
-        let decision = decide(voided, location, proven);
+        // A payment voided for another with its output key
+        // (`store::conflicts`) only has its height followed: which of them
+        // is credited is settled at recompute, never restored or voided as
+        // a double spend here.
+        let decision = if payment.superseded_by.is_some() {
+            Decision::Move(match location {
+                TxLocation::InBlock(height) => Some(height),
+                TxLocation::InPool | TxLocation::NotFound => None,
+            })
+        } else {
+            let proven = !voided
+                && location == TxLocation::NotFound
+                && self.double_spend_proven(&payment).await?;
+            decide(voided, location, proven)
+        };
         let moved_to = match decision {
             Decision::Move(Some(height)) | Decision::Restore(height) => Some(height),
             _ => None,
