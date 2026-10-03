@@ -132,7 +132,8 @@ asked for: both services and the LuCI app.
 /usr/libexec/rpcd/luci.monokulo         small rpcd plugin (status, secret rotation)
 ```
 
-`DEPENDS:=@aarch64 +ca-bundle +rpcd`. `ca-bundle` is required: reqwest uses
+`DEPENDS:=@aarch64 +ca-bundle +rpcd +taskset`. `taskset` pins the engine to
+two cores (see "CPU limits and tenant capacity"). `ca-bundle` is required: reqwest uses
 `rustls-platform-verifier`, which reads the system CA store at
 `/etc/ssl/certs`, for TLS to nodes and rate providers. Time zones need nothing
 on the router because `jiff` has the database built in (`tzdb-bundle-always`).
@@ -171,6 +172,10 @@ Start/Stop button and `service monokulo …` act on both together.
 - **`engine`**: `monokulo-engine --options /etc/monokulo/engine.toml
   --server-bind 127.0.0.1:8443 --database-path /srv/monokulo/engine.db`,
   with `ENGINE_TOKEN` from the secrets file passed through `procd_set_param env`.
+  The command is prefixed with `taskset -c <engine_cpus> nice -n <engine_nice>`
+  (2,3 and 10 by default). Both commands exec the next one, so procd still
+  tracks the engine's own PID. The jail must include the `taskset` binary,
+  or the jail can be applied after the pinning.
 - **`monokulo`**: `monokulo --options /etc/monokulo/monokulo.toml
   --server-bind <lan or 0.0.0.0>:8081 --database-path /srv/monokulo/monokulo.db
   --engine-url http://127.0.0.1:8443`, with `MONOKULO_ENCRYPTION_KEY` and
@@ -205,7 +210,8 @@ config monokulo 'main'
 	option open_wan '0'          # add an fw4 rule for the port on wan
 	option data_dir '/srv/monokulo'
 	option engine_port '8443'    # always on 127.0.0.1
-	option scan_threads '2'      # see "Scan CPU on a router"
+	option engine_cpus '2,3'     # taskset list for the engine; see "CPU limits and tenant capacity"
+	option engine_nice '10'
 ```
 
 No monokulo setting is mirrored into UCI. Mirroring would give each value
@@ -294,21 +300,169 @@ tor package with `--enable-gpl`. We should not make the package depend on tor.
 
 ### 3. Scan CPU on a router
 
-The engine allows one scan per core at a time
-(`engine/src/key_custody/plain.rs`, `SCAN_SLOTS`, sized by
-`available_parallelism()`). On the Flint 2 that is all 4 cores during a
-catch-up scan, which is exactly when the router also has to keep routing.
-Two ways to deal with it, which can be combined:
+Recommendation: limit the engine to 2 of the 4 cores, run it at `nice 10`,
+and do both from the init script. This needs no code change. The cost is
+slower catch-up after downtime, on the order of minutes. When the engine is
+up to date, the router won't notice it. The detail is in
+"CPU limits and tenant capacity" below.
 
-- Run the engine at `nice 10` under procd. This needs no code change and is
-  the first thing to try.
-- Make the slot count a registered setting (`payment.scan_threads`, default
-  = cores, so other deployments see no change), and have the package set it
-  to 2. This is a small code change, so it is left for a decision here.
+## CPU limits and tenant capacity
 
-All of this needs measuring on the device: scan throughput per core on an
-A53 compared with x86, and RSS for both processes idle and during catch-up.
-The budget to aim for is under 150 MB combined.
+### What a scan costs
+
+The engine checks each transaction against each store
+(`engine/src/key_custody/outputs.rs`, `pays`). With view tags, nearly all of
+that cost is one shared-secret derivation (8vR: a point decompression, a
+variable-base scalar multiplication and a compression) per transaction per
+store. Each output then adds a hash, which is cheap.
+
+A scratch benchmark of exactly those calls (`monero` 0.22, one tx key and
+two tagged outputs per transaction, one pinned core) measured:
+
+| CPU | Backend | Per store per transaction | Per core |
+|---|---|---|---|
+| Ryzen 9 5950X | curve25519-dalek AVX2 (picked at run time) | 36 µs | ~27,000/s |
+| Ryzen 9 5950X | curve25519-dalek serial (u64), as aarch64 uses | 51 µs | ~19,500/s |
+| Cortex-A53, 2.0 GHz (Flint 2) | serial | **~300 to 700 µs, estimated** | **~1,500 to 3,300/s** |
+
+The A53 figure is an estimate, not a measurement. Curve25519 in generic C
+takes about 550k cycles on a Cortex-A53 (SUPERCOP, Raspberry Pi 3), roughly
+3 to 4 times what the same code takes per clock on a modern x86 core, and the
+Flint 2 clocks at 2.0 GHz against the 5950X's ~4.9 GHz. Together that makes
+it 6 to 14 times slower. The rest of this section plans on **~450 µs, about
+2,200 per second per core**. The same benchmark, built for the router
+(`scanbench-aarch64`, 0.5 MB, static), replaces the estimate with a real
+number in a few seconds.
+
+### What the engine actually scans
+
+Three facts from the code keep the load small:
+
+- **Stores with nothing in scope cost nothing.** A store with no open order,
+  and none closed within `payment.expired_order_grace_period_minutes`
+  (6 h by default), is not scanned at all. Its cursor jumps past each block
+  in the same transaction that records the block (`advance_idle_cursors`).
+  A store only costs CPU while it has an order in flight.
+- **A pool transaction is scanned once per store** (`work/mempool.rs`), not
+  once per poll. Its block scans it again later, so each transaction costs
+  about two derivations per active store.
+- **Idle polling is light.** When no store has anything in scope, the
+  engine doesn't even ask the node for the pool.
+
+Mainnet carries about 27,000 to 30,000 transactions a day in 2026, about
+0.35 a second or 42 per block. So with **A** stores that have orders in flight:
+
+| Situation | CPU needed | With A = 5 | With A = 20 |
+|---|---|---|---|
+| Steady state (pool + blocks) | 0.35 × 2 × A × 450 µs per s | 0.16 % of one core | 0.6 % of one core |
+| One block arriving | 42 × A × 450 µs | 95 ms, every 2 min | 0.38 s, every 2 min |
+| A spam wave at 5× normal volume | 5 × steady | 0.8 % of one core | 3 % of one core |
+| Catching up 1 day (after downtime) | 30,000 × A × 450 µs | 68 s of CPU | 270 s of CPU |
+| Catching up 1 week | 7 × the above | 8 min of CPU | 32 min of CPU |
+
+Fixed costs come on top: the node polls (once a second while anything is in
+scope), the HTTP and JSON handling, and SQLite writes. They are not measured
+on an A53 yet. On x86 they are lost in the noise, and they don't grow with
+the number of stores.
+
+### What limiting to 2 cores does
+
+**For the router: almost nothing in steady state, and protection during
+catch-up.**
+
+- Day to day the engine needs well under 1 % of one core, so whether it has
+  2 cores or 4 changes nothing, for the router or for the engine.
+- During catch-up, uncapped, the engine would run 4 scans at once
+  (`SCAN_SLOTS` = `available_parallelism()`) and could keep all 4 cores busy
+  for minutes. Capped at 2, it can never take more than half the CPU. The
+  other 2 cores stay free for the kernel's packet processing and for
+  hostapd, dnsmasq, WireGuard and LuCI.
+- How much the router needs those cores depends on its configuration. With
+  hardware flow offloading on (the MT7986's PPE, plus WED for Wi-Fi), routed
+  and NATed traffic mostly bypasses the CPU, and even 4 busy cores would
+  barely show. What really uses the CPU on this SoC is SQM/cake,
+  WireGuard/OpenVPN, software NAT without offload, and DNS filtering. Those
+  are the setups that need the 2 free cores.
+- `nice 10` matters as much as the cap. It gives each engine thread about a
+  tenth of the weight of a normal task, so anything else that wants the CPU
+  gets it first, including the softirq work that spills into `ksoftirqd`.
+  The cap limits how much CPU the engine can take; nice decides who wins when
+  both want the same core.
+
+**For the engine: catch-up takes about twice as long, and nothing else changes.**
+
+- One day of backlog for 5 active stores: about 34 s of wall time on 2 cores
+  instead of 17 s. One week: about 4 min instead of 2. Downloading the
+  backlog (roughly 30 to 60 MB of pruned blocks a day) from a remote node can
+  easily take longer than the CPU work.
+- Zero-confirmation detection while catching up: the fast pool pass waits for
+  the same scan slots, but a batch is 32 transactions (`txs_per_scan`), about
+  15 ms on an A53. A new payment waits at most one batch for a slot.
+- Under load, the scheduler's 10 s round still splits the time between tiers
+  (`ScanTuning::DEFAULT`: blocks 40 %, settlement 20 %, chain 20 %, pool 15 %,
+  upkeep 5 %), so settlement and webhooks keep running during catch-up.
+
+**How, without a code change.** Rust's `available_parallelism()` counts the
+CPUs the process is allowed to run on (its affinity mask) and respects a
+cgroup v2 `cpu.max` quota. Starting the engine as
+`taskset -c 2,3 nice -n 10 monokulo-engine …` makes `SCAN_SLOTS` 2, and caps
+the Tokio blocking pool and workers at those cores too. `taskset` comes from
+OpenWrt's `taskset` package (util-linux), which becomes a package dependency.
+Cores 2 and 3 are suggested because CPU 0 usually takes the most interrupts.
+Check `/proc/interrupts` on the device, and leave the choice in UCI.
+Monokulo itself does little CPU work: page rendering, and Argon2id at sign-in
+(19 MiB, about 0.2 to 0.3 s on an A53 for each sign-in). It can stay
+unpinned, at the default priority.
+
+A `payment.scan_threads` setting is not needed for this. Add it only if a
+deployment wants fewer scan slots than cores without pinning.
+
+### A handful of stores: yes, easily
+
+For roughly 5 to 20 stores the Flint 2 is not the limit:
+
+- **CPU**: see the table above. Even with 20 stores active at once, the
+  steady state stays under 1 % of one core. The only noticeable cost is
+  catch-up after the router has been off, and even then a day's backlog for
+  20 active stores is about 2 min on 2 cores.
+- **Memory**: from scratch with no stores (x86 release build, pinned to 2
+  CPUs, 10 threads each), the engine used 18.6 MB RSS and monokulo 22.2 MB.
+  Each store adds a table of its subaddresses in scope (32-byte keys) and
+  some rows. On top of that come the scan memory budget (8 MB per network by
+  default), the pool bodies, and monokulo's HTTP cache. A realistic total is
+  well under 150 MB of the router's 1 GB. Measure on the device to confirm.
+- **Storage**: orders, payments and webhooks grow slowly. The log stores are
+  capped by `logging.max_mb`. Several years of a handful of small stores'
+  orders fit in hundreds of MB, not GB.
+- **The node**: all stores share one node connection and one block cache, so
+  more stores don't mean more downloads.
+
+When the stores are multiple merchants rather than one owner, other limits
+matter before the hardware does:
+
+- **Availability is shared.** One home connection and one router serve every
+  store's checkout. A reboot or an ISP outage stops all of them. Payments
+  sent meanwhile are still found later, but customers see a dead checkout.
+- **Trust.** Each store's view key lives on the router, encrypted at rest
+  with a key that is also on the router. Whoever controls the router can see
+  every store's incoming payments. Nobody can spend them, since every wallet
+  is watch-only. Merchants need to accept that.
+- **Exposure.** Public checkouts mean a public endpoint (gap 4), and abuse
+  protection is per store and per client. A busy or attacked store competes
+  with the others for one uplink.
+
+Signup should stay in invite mode (`signup.mode`), so the operator
+chooses who gets a store.
+
+### To measure on the device
+
+1. `./scanbench-aarch64 20000`: microseconds per store per transaction on
+   the A53. Divide the tables above by (that ÷ 450 µs).
+2. Catch-up with 5 stores that have open orders, from a height one day
+   back: wall time, the engine's CPU (`top`), and routing throughput and
+   latency (`iperf3` through the router, with SQM on) at the same time.
+   Run it once with `taskset -c 2,3 nice -n 10` and once without.
+3. RSS for both processes, idle and during that catch-up.
 
 ### 4. Reaching the store from outside
 
@@ -364,7 +518,7 @@ is not recommended unless space becomes a problem. It is not one today.
 | Package Makefile, init script, UCI defaults, keep.d, first-start secrets | small |
 | LuCI app: 3 views, rpcd plugin, ACL, menu | medium |
 | On-device validation and tuning of defaults | medium (needs the router) |
-| Optional: `payment.scan_threads` setting | small |
+| Engine CPU pinning and nice in the init script (no engine change) | small |
 | Optional: SOCKS proxy for the engine's node client | small to medium |
 | Optional: own tor build with PoW | small, plus maintaining it |
 
