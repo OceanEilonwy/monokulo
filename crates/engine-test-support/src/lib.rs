@@ -45,7 +45,6 @@ use engine::network::network_str;
 use engine::scanner::run_scan_tick;
 use engine::store::Store;
 use engine::webhook_delivery::{run_delivery_tick, DEFAULT_MAX_ATTEMPTS};
-use key_custody_service::client::SocketKeyCustody;
 use monero::Network;
 
 /// The engine token every engine this crate spawns accepts: what a
@@ -270,6 +269,63 @@ pub struct TestEngineHandle {
     lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>>,
     /// What the engine's `/status` and activity API report per network.
     scanner_status: engine::scanner_status::ScannerStatusMap,
+    /// With [`TestEngineConfig::with_snp_backend`]: the key the stand-in
+    /// security processor signs its reports with.
+    snp_vcek: Option<p384::ecdsa::VerifyingKey>,
+}
+
+/// The ID key digest and security version the snp test backend's stand-in
+/// guest reports, and so what a client checking its bundles trusts.
+pub fn snp_test_trust() -> engine::key_custody::transport::TrustPolicy {
+    engine::key_custody::transport::TrustPolicy {
+        id_key_digest: snp_attest::guest::TestIdentity::default().id_key_digest,
+        min_guest_svn: 0,
+    }
+}
+
+impl TestEngineHandle {
+    /// What a merchant's client does with a bundle from this engine's snp
+    /// backend (`with_snp_backend`): checks it, against the stand-in
+    /// security processor's key in place of AMD's chain, and encrypts the
+    /// keys to it. Returns the envelope as the text a form submits.
+    pub fn seal_keys_for_snp(
+        &self,
+        bundle: &engine::key_custody::transport::Bundle,
+        view_key_hex: &str,
+        spend_pubkey_hex: &str,
+    ) -> String {
+        use engine::key_custody::transport;
+        let vcek = self.snp_vcek.expect("spawned with_snp_backend");
+        let verified = transport::verify_bundle(
+            bundle,
+            &snp_test_trust(),
+            &transport::Anchor::Vcek(vcek),
+            shared::time::now_unix(),
+        )
+        .expect("the test engine's bundle checks out");
+        let mut keys = hex::decode(view_key_hex).unwrap();
+        keys.extend(hex::decode(spend_pubkey_hex).unwrap());
+        transport::seal(&verified, &keys).unwrap().to_text()
+    }
+}
+
+/// AMD's certificates, as far as the snp test backend needs them: present.
+/// Its bundles are checked against the stand-in's key, not AMD's chain.
+struct TestEvidence;
+
+#[async_trait::async_trait]
+impl engine::key_custody::snp::EvidenceSource for TestEvidence {
+    async fn evidence(
+        &self,
+        _product: snp_attest::report::Product,
+        _report: &snp_attest::report::AttestationReport,
+    ) -> Result<snp_attest::verify::Evidence, String> {
+        Ok(snp_attest::verify::Evidence {
+            ask_der: Vec::new(),
+            vcek_der: Vec::new(),
+            crl_der: Vec::new(),
+        })
+    }
 }
 
 impl TestEngineHandle {
@@ -549,13 +605,8 @@ pub struct TestEngineConfig {
     networks: Vec<Network>,
     background_loops: bool,
     background_scan_loop: bool,
-    /// `Some(path)` when [`TestEngineConfig::with_socket_key_custody`] has been
-    /// used - see that method's own doc comment.
-    key_custody_socket_path: Option<String>,
-    two_custody_backends: bool,
-    /// With `two_custody_backends`: the `socket` backend is a real
-    /// `SocketKeyCustody` dialing this path instead of an in-process one.
-    router_socket_path: Option<String>,
+    /// `true` when [`TestEngineConfig::with_snp_backend`] has been used.
+    snp_backend: bool,
     /// `true` when [`TestEngineConfig::with_admin_lookup_daemon`] has been used -
     /// see that method's own doc comment.
     admin_lookup_daemon: bool,
@@ -730,57 +781,20 @@ impl TestEngineConfig {
         self
     }
 
-    /// Points the spawned engine at a real, already-listening `key-custody-server`
-    /// (WBS 2.1.2/2.1.3) instead of the default in-process `PlainKeyCustody` -
-    /// `SocketKeyCustody::connect(socket_path)` is called during [`spawn`], so
-    /// `socket_path` must already have something bound to it (a caller typically
-    /// starts a `key_custody_server::server::KeyCustodyServer` as a background
-    /// task first, exactly as `key-custody-server`'s own tests do, then passes
-    /// its socket path here) - unlike `main.rs`'s own `connect_socket_key_custody`,
-    /// this does not retry, since a test controls both sides of the race itself
-    /// and can simply start the server before calling this.
-    ///
-    /// Added specifically so this crate can host WBS 2.1.3's own regression
-    /// check: the engine's existing order-creation-plus-chain-scan behavior must
-    /// be unchanged when `KeyCustody` is answered by a real out-of-process
-    /// `key-custody-server` instead of an in-process `PlainKeyCustody`. This is
-    /// the right crate for that capability, not a new harness - `TestEngineConfig`
-    /// already owns every other choice about what backs a spawned engine
-    /// (`with_networks`, `with_background_loops`), and both
-    /// `mock-woocommerce`'s and `monokulo`'s own tests already depend on
-    /// this crate to get a real, network-bound engine rather than building their
-    /// own; a `KeyCustody` backend choice is exactly one more axis of "what backs
-    /// the spawned engine," not a different kind of thing.
-    ///
-    /// [`spawn`]: TestEngineConfig::spawn
-    /// Per-store key custody with two backends enabled, `plain` (the
-    /// default) and one named `socket` - both in-process, so a store can be
-    /// created in either and moved between them without a
-    /// key-custody-server (admin_settings_v2.md part 5).
-    pub fn with_two_custody_backends(mut self) -> Self {
-        self.two_custody_backends = true;
-        self
-    }
-
-    /// As [`with_two_custody_backends`](Self::with_two_custody_backends), but
-    /// the `socket` backend is a real key-custody-server at `socket_path`,
-    /// connected lazily (it may not be listening yet, or may go away and
-    /// come back).
-    pub fn with_plain_and_socket_backends(mut self, socket_path: impl Into<String>) -> Self {
-        self.two_custody_backends = true;
-        self.router_socket_path = Some(socket_path.into());
-        self
-    }
-
-    pub fn with_socket_key_custody(mut self, socket_path: impl Into<String>) -> Self {
-        self.key_custody_socket_path = Some(socket_path.into());
+    /// Per-store key custody with two backends enabled: `plain` (the
+    /// default) and `snp`, running on a stand-in security processor
+    /// (`snp_attest::guest::TestGuest`), so stores can be created in either
+    /// and moved between them. Keys for `snp` go in encrypted: get a bundle
+    /// from the engine and seal them with
+    /// [`TestEngineHandle::seal_keys_for_snp`].
+    pub fn with_snp_backend(mut self) -> Self {
+        self.snp_backend = true;
         self
     }
 
     /// Boots a real `engine` engine - in-memory `Store`,
-    /// `PlainKeyCustody` (or, if [`TestEngineConfig::with_socket_key_custody`]
-    /// was used, a real `SocketKeyCustody` dialed against an already-running
-    /// `key-custody-server`), `configured_networks`/exchange rates from this
+    /// `PlainKeyCustody` (or `plain` and `snp` behind a router, with
+    /// [`TestEngineConfig::with_snp_backend`]), `configured_networks` from this
     /// config - bound to an OS-assigned ephemeral port on `127.0.0.1`, served
     /// in a background task. Returns only once the listener is actually
     /// bound, so the returned address is immediately connectable.
@@ -797,41 +811,45 @@ impl TestEngineConfig {
         let store = Store::open_in_memory()
             .expect("failed to open in-memory store for test engine")
             .into_shared();
+        let mut snp_slot = None;
+        let mut snp_vcek = None;
         let (key_custody, key_custody_backend): (Arc<dyn KeyCustody>, &'static str) =
-            match &self.key_custody_socket_path {
-                Some(socket_path) => {
-                    let client = SocketKeyCustody::connect(socket_path)
-                        .await
-                        .unwrap_or_else(|e| {
-                            panic!(
-                                "test engine failed to connect to key-custody-server at \
-                             {socket_path}: {e} - with_socket_key_custody requires the server \
-                             to already be listening before spawn() is called"
-                            )
-                        });
-                    (Arc::new(client), "socket")
-                }
-                None if self.two_custody_backends => {
-                    let socket: Arc<dyn KeyCustody> = match &self.router_socket_path {
-                        Some(path) => Arc::new(SocketKeyCustody::not_connected_yet(
-                            path,
-                            key_custody_service::client::DEFAULT_CALL_TIMEOUT,
-                        )),
-                        None => Arc::new(PlainKeyCustody::default()),
-                    };
-                    let backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::from([
-                        (
-                            "plain".to_string(),
-                            Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
-                        ),
-                        ("socket".to_string(), socket),
-                    ]);
-                    (
-                        Arc::new(engine::key_custody::CustodyRouter::new(backends, "plain")),
-                        "plain",
+            if self.snp_backend {
+                let guest = snp_attest::guest::TestGuest::new(
+                    [7; 32],
+                    snp_attest::guest::TestIdentity::default(),
+                );
+                let vcek = guest.vcek();
+                let slot = Arc::new(
+                    engine::key_custody::SnpSlot::new(
+                        Ok(engine::key_custody::snp::SnpConfig {
+                            product: snp_attest::report::Product::Genoa,
+                            trust: snp_test_trust(),
+                        }),
+                        Arc::new(guest),
+                        Arc::new(engine::key_custody::StoreWraps(store.clone())),
                     )
-                }
-                None => (Arc::new(PlainKeyCustody::default()), "plain"),
+                    .with_anchor(engine::key_custody::transport::Anchor::Vcek(vcek)),
+                );
+                let snp = slot.start().expect("the snp test backend starts");
+                snp.refresh_evidence(&TestEvidence)
+                    .await
+                    .expect("test evidence");
+                let backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::from([
+                    (
+                        "plain".to_string(),
+                        Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
+                    ),
+                    ("snp".to_string(), snp as Arc<dyn KeyCustody>),
+                ]);
+                snp_slot = Some(slot);
+                snp_vcek = Some(vcek);
+                (
+                    Arc::new(engine::key_custody::CustodyRouter::new(backends, "plain")),
+                    "plain",
+                )
+            } else {
+                (Arc::new(PlainKeyCustody::default()), "plain")
             };
 
         // Held separately (not just inline in `AppState`) so the background scan loop
@@ -910,6 +928,7 @@ impl TestEngineConfig {
                 backends: key_custody.clone(),
                 default_backend: key_custody_backend.to_string(),
                 wallet_handles: wallet_handles.clone(),
+                snp: snp_slot,
             },
             // This harness's own background scan loop (below) talks to a
             // bare `NoopDaemonClient` directly, never through
@@ -1034,6 +1053,7 @@ impl TestEngineConfig {
             tenant_requests,
             lookup_mempool,
             scanner_status,
+            snp_vcek,
         }
     }
 }
@@ -1264,12 +1284,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // WBS 2.1.3: the socket-backed `KeyCustody` regression check
+    // The snp backend: the same outcomes as plain, through encrypted keys
     // -----------------------------------------------------------------------
 
     /// A `MoneroDaemonClient` serving exactly one real transaction: the same
-    /// fixture `src/key_custody/plain.rs`'s, `src/scanner.rs`'s, and
-    /// `key-custody-service`'s own test suites already use
+    /// fixture `key-custody`'s and `src/scanner.rs`'s own test suites use
     /// (`tests/fixtures/subaddress_tx.hex`, lifted from monero-rs's own
     /// `code_coverage_owned_tx_out` test - real RingCT amount decryption, not a
     /// synthetic tx) - deliberately reused rather than inventing a fresh one, per
@@ -1374,19 +1393,38 @@ mod tests {
         hex::encode(monero::PublicKey::from_private_key(&secret_spend).to_bytes())
     }
 
-    /// A unique-per-call socket path under the OS temp dir, same convention
-    /// `key-custody-server/tests/socket_key_custody.rs::temp_socket_path` already
-    /// uses (pid + a monotonic counter, not a new `tempfile`/`uuid` dependency
-    /// this crate doesn't otherwise need).
-    fn temp_socket_path() -> std::path::PathBuf {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "engine-test-support-key-custody-{}-{n}.sock",
-            std::process::id()
-        ));
-        path
+    /// The keys a request creating or moving a store carries for `backend`:
+    /// the fixture wallet's, in the clear for `plain`, encrypted to the
+    /// engine's snp backend (under a bundle fetched from `bundle_url`) for
+    /// `snp`.
+    async fn fixture_keys_for(
+        engine: &TestEngineHandle,
+        backend: &str,
+        bundle_url: &str,
+        secret_token: Option<&str>,
+    ) -> serde_json::Value {
+        if backend != "snp" {
+            return serde_json::json!({
+                "view_key_hex": FIXTURE_VIEW_KEY_HEX,
+                "spend_pubkey_hex": fixture_spend_pubkey_hex(),
+            });
+        }
+        let mut request = engine_http_client()
+            .post(bundle_url)
+            .json(&serde_json::json!({ "backend": "snp" }));
+        if let Some(token) = secret_token {
+            request = request.bearer_auth(token);
+        }
+        let answer: serde_json::Value = request.send().await.unwrap().json().await.unwrap();
+        assert_eq!(answer["trust"]["official"], false, "{answer}");
+        let bundle = serde_json::from_value(answer["bundle"].clone()).unwrap();
+        serde_json::json!({
+            "encrypted_keys": engine.seal_keys_for_snp(
+                &bundle,
+                FIXTURE_VIEW_KEY_HEX,
+                &fixture_spend_pubkey_hex(),
+            ),
+        })
     }
 
     /// Runs the real order-creation-plus-chain-scan scenario against a freshly
@@ -1402,6 +1440,7 @@ mod tests {
     /// two results directly rules that out).
     async fn run_order_creation_and_scan_scenario(
         engine_config: TestEngineConfig,
+        backend: &str,
     ) -> (String, u64) {
         // A deliberately tiny target amount (1000 piconero), not a realistic one:
         // the fixture transaction's real, already-fixed amount is unknown ahead of
@@ -1419,13 +1458,18 @@ mod tests {
         let base_url = format!("http://{}", engine.addr);
         let client = engine_http_client();
 
+        let mut request = fixture_keys_for(
+            &engine,
+            backend,
+            &format!("{base_url}/api/v1/admin/key-custody/bundle"),
+            None,
+        )
+        .await;
+        request["network"] = "mainnet".into();
+        request["key_custody_backend"] = backend.into();
         let created: serde_json::Value = client
             .post(format!("{base_url}/api/v1/admin/tenants"))
-            .json(&serde_json::json!({
-                "view_key_hex": FIXTURE_VIEW_KEY_HEX,
-                "spend_pubkey_hex": fixture_spend_pubkey_hex(),
-                "network": "mainnet",
-            }))
+            .json(&request)
             .send()
             .await
             .expect("create_tenant request failed")
@@ -1476,26 +1520,6 @@ mod tests {
         )
     }
 
-    /// A key-custody-server on its own runtime, so shutting that runtime down
-    /// is a real outage: its listener and every open connection go at once.
-    /// The socket is bound before this returns, so nothing waits for it.
-    fn start_key_custody_server(socket_path: &std::path::Path) -> tokio::runtime::Runtime {
-        let _ = std::fs::remove_file(socket_path);
-        let listener = key_custody_server::server::KeyCustodyServer::bind(socket_path)
-            .expect("bind the test key-custody socket");
-        let runtime = tokio::runtime::Runtime::new().expect("key-custody-server runtime");
-        let path = socket_path.to_path_buf();
-        runtime.spawn(async move {
-            let server = key_custody_server::server::KeyCustodyServer::new(
-                engine::key_custody::PlainKeyCustody::default(),
-            );
-            if let Err(e) = server.serve(listener).await {
-                eprintln!("test key-custody-server on {}: {e}", path.display());
-            }
-        });
-        runtime
-    }
-
     async fn order_status(base_url: &str, secret_token: &str, order_id: &str) -> String {
         let status: serde_json::Value = engine_http_client()
             .get(format!("{base_url}/api/v1/admin/tenant/orders/{order_id}"))
@@ -1509,19 +1533,15 @@ mod tests {
         status["status"].as_str().unwrap().to_string()
     }
 
-    /// admin_settings_v2.md task 6.4, the part a browser can't show: a store
-    /// that moved to the socket backend has payments to an order made before
-    /// the move matched, and a payment that arrives while the key-custody
-    /// server is down is matched once it's back (even though it comes back
-    /// empty), with nobody calling the API for it. The loop's own steps are
-    /// run by hand here: register stores whose handle is gone, then scan.
+    /// A store that moves from plain to snp, its keys sent encrypted under a
+    /// bundle for that store, has a payment to an order made before the
+    /// move matched by the snp backend; keys sent in the clear for snp, or
+    /// another store's encrypted keys, are refused.
     #[tokio::test]
-    async fn a_payment_is_matched_after_a_store_moves_backends_and_after_a_key_custody_outage() {
-        let socket_path = temp_socket_path();
-        let server = start_key_custody_server(&socket_path);
+    async fn a_payment_is_matched_after_a_store_moves_its_keys_to_snp() {
         let engine = TestEngineConfig::new()
             .with_networks(&[Network::Mainnet])
-            .with_plain_and_socket_backends(socket_path.to_string_lossy().to_string())
+            .with_snp_backend()
             .spawn()
             .await;
         let base_url = format!("http://{}", engine.addr);
@@ -1567,112 +1587,88 @@ mod tests {
             .unwrap();
         let order_id = order["order_id"].as_str().unwrap().to_string();
 
-        let moved = client
-            .put(format!("{base_url}/api/v1/admin/tenant/key-custody"))
+        let move_url = format!("{base_url}/api/v1/admin/tenant/key-custody");
+        let in_the_clear = client
+            .put(&move_url)
             .bearer_auth(&secret_token)
             .json(&serde_json::json!({
-                "backend": "socket",
+                "backend": "snp",
                 "view_key_hex": FIXTURE_VIEW_KEY_HEX,
                 "spend_pubkey_hex": fixture_spend_pubkey_hex(),
             }))
             .send()
             .await
             .unwrap();
-        assert_eq!(moved.status(), reqwest::StatusCode::OK);
-        assert_eq!(backend().await, "socket");
+        assert_eq!(in_the_clear.status(), reqwest::StatusCode::BAD_REQUEST);
+        let for_creating = fixture_keys_for(
+            &engine,
+            "snp",
+            &format!("{base_url}/api/v1/admin/key-custody/bundle"),
+            None,
+        )
+        .await;
+        let wrong_challenge = client
+            .put(&move_url)
+            .bearer_auth(&secret_token)
+            .json(&serde_json::json!({
+                "backend": "snp",
+                "encrypted_keys": for_creating["encrypted_keys"],
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            wrong_challenge.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "keys sealed for creating a store don't move one"
+        );
+        assert_eq!(backend().await, "plain");
 
-        // The key-custody server goes down just as the payment shows up.
-        server.shutdown_background();
-        let _ = std::fs::remove_file(&socket_path);
+        let mut keys = fixture_keys_for(
+            &engine,
+            "snp",
+            &format!("{base_url}/api/v1/admin/tenant/key-custody/bundle"),
+            Some(&secret_token),
+        )
+        .await;
+        keys["backend"] = "snp".into();
+        let moved = client
+            .put(&move_url)
+            .bearer_auth(&secret_token)
+            .json(&keys)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(moved.status(), reqwest::StatusCode::OK);
+        assert_eq!(backend().await, "snp");
+
         engine
             .run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20)
             .await
-            .expect("the tick carries on without that store");
+            .unwrap();
         assert_eq!(
             order_status(&base_url, &secret_token, &order_id).await,
-            "pending",
-            "nothing could be scanned for it"
-        );
-
-        // It comes back, empty. The first scan finds the store's handle
-        // unknown, the next registration puts it back, and the payment is
-        // matched - all as the scan loop would do on its own.
-        let server = start_key_custody_server(&socket_path);
-        let mut matched = false;
-        for _ in 0..3 {
-            engine.register_missing_wallets_now("mainnet").await;
-            engine
-                .run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20)
-                .await
-                .unwrap();
-            if order_status(&base_url, &secret_token, &order_id).await == "unconfirmed" {
-                matched = true;
-                break;
-            }
-        }
-        server.shutdown_background();
-        let _ = std::fs::remove_file(&socket_path);
-        assert!(
-            matched,
-            "the payment made during the outage was matched once the key-custody server was back"
+            "unconfirmed",
+            "the snp backend matched the payment"
         );
     }
 
-    /// WBS 2.1.3's own acceptance bar, quoted directly: "the engine's existing
-    /// integration tests (order creation, scanning) pass unmodified against this
-    /// configuration - a regression check, not a new test." Taken literally where
-    /// it can be: this reuses the *exact* scenario `src/scanner.rs`'s own
-    /// `run_scan_tick_matches_mempool_tx_recomputes_status_and_enqueues_a_webhook`
-    /// test already proves against `PlainKeyCustody` directly (same fixture
-    /// transaction, same view/spend keys, same `unconfirmed`-with-a-nonzero-amount
-    /// outcome) - not a new scenario invented for this task.
-    ///
-    /// It cannot be taken *completely* literally, though, and that gap is worth
-    /// being honest about rather than silently working around: that internal test
-    /// lives inside `engine`'s own `#[cfg(test)]` build and constructs a
-    /// `PlainKeyCustody`/`Store` directly in-process, so it structurally cannot be
-    /// "pointed at" a different `KeyCustody` backend without becoming a different
-    /// test - and `engine` itself can never depend on `key-custody-service`'s
-    /// `SocketKeyCustody` at all without recreating the exact Cargo dependency cycle
-    /// `shared::key_custody`'s module doc comment describes (this crate,
-    /// `engine-test-support`, is what depends on both, same as `mock-woocommerce`/
-    /// `monokulo` already do for their own real-engine tests). So instead of
-    /// literally re-running that unit test, this reproduces its scenario end-to-end
-    /// through the real HTTP API twice - once per backend - via
-    /// [`run_order_creation_and_scan_scenario`], and asserts the two runs are
-    /// pixel-for-pixel identical, not just individually plausible.
+    /// The engine's order-creation-plus-chain-scan outcome is the same
+    /// whichever backend holds the keys: reproduced end to end through the
+    /// HTTP API once per backend, and compared for equality, not just
+    /// plausibility.
     #[tokio::test]
-    async fn order_creation_and_chain_scanning_behave_identically_through_the_socket_backed_key_custody_path(
-    ) {
-        let plain_result = run_order_creation_and_scan_scenario(TestEngineConfig::new()).await;
+    async fn order_creation_and_chain_scanning_behave_identically_on_the_snp_backend() {
+        let plain_result =
+            run_order_creation_and_scan_scenario(TestEngineConfig::new(), "plain").await;
+        let snp_result =
+            run_order_creation_and_scan_scenario(TestEngineConfig::new().with_snp_backend(), "snp")
+                .await;
 
-        let socket_path = temp_socket_path();
-        let server = std::sync::Arc::new(key_custody_server::server::KeyCustodyServer::new(
-            engine::key_custody::PlainKeyCustody::default(),
-        ));
-        let listener = key_custody_server::server::KeyCustodyServer::bind(&socket_path)
-            .expect("bind the test key-custody socket");
-        let listen_path = socket_path.clone();
-        tokio::spawn(async move {
-            if let Err(e) = server.serve(listener).await {
-                eprintln!("test key-custody-server on {}: {e}", listen_path.display());
-            }
-        });
-
-        let socket_result = run_order_creation_and_scan_scenario(
-            TestEngineConfig::new()
-                .with_socket_key_custody(socket_path.to_string_lossy().to_string()),
-        )
-        .await;
-        let _ = std::fs::remove_file(&socket_path);
-
-        // The real proof: both backends produce the *exact same* observable
-        // outcome, not just "each individually looks fine."
         assert_eq!(
-            plain_result, socket_result,
-            "PlainKeyCustody and SocketKeyCustody must produce identical order-creation-plus-scan outcomes"
+            plain_result, snp_result,
+            "plain and snp must produce identical order-creation-plus-scan outcomes"
         );
-
         // And that shared outcome is the genuine, expected match - not two
         // backends agreeing on a no-op.
         assert_eq!(plain_result.0, "unconfirmed");
@@ -1680,5 +1676,101 @@ mod tests {
             plain_result.1 > 0,
             "the fixture transaction's amount must have been detected"
         );
+    }
+
+    /// An upgraded engine image (another measurement, a later security
+    /// version, signed by the same ID key) on the same chip finds only the
+    /// old image's wrap of the master key, asks the running engine for it
+    /// over HTTP, and then opens the keys that engine sealed.
+    #[tokio::test]
+    async fn an_upgraded_engine_takes_the_master_key_over_http() {
+        use engine::key_custody::snp::{SnpConfig, SnpKeyCustody, StoredWrap, WrapStore};
+        use engine::key_custody::KeyCustody as _;
+
+        struct OtherImagesWrap;
+        impl WrapStore for OtherImagesWrap {
+            fn load(&self) -> Result<Vec<StoredWrap>, String> {
+                Ok(vec![StoredWrap {
+                    measurement: [0xEE; 48],
+                    guest_svn: 1,
+                    wrapped: vec![0; 60],
+                }])
+            }
+            fn save(&self, _wrap: &StoredWrap) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let old = TestEngineConfig::new()
+            .with_networks(&[Network::Mainnet])
+            .with_snp_backend()
+            .spawn()
+            .await;
+        let base_url = format!("http://{}", old.addr);
+        let mut request = fixture_keys_for(
+            &old,
+            "snp",
+            &format!("{base_url}/api/v1/admin/key-custody/bundle"),
+            None,
+        )
+        .await;
+        request["network"] = "mainnet".into();
+        request["key_custody_backend"] = "snp".into();
+        let created = engine_http_client()
+            .post(format!("{base_url}/api/v1/admin/tenants"))
+            .json(&request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let sealed = old
+            .store
+            .lock()
+            .list_active_tenants()
+            .unwrap()
+            .remove(0)
+            .sealed_key_material;
+
+        let new = SnpKeyCustody::start(
+            Arc::new(snp_attest::guest::TestGuest::new(
+                [7; 32],
+                snp_attest::guest::TestIdentity {
+                    measurement: [0x22; 48],
+                    guest_svn: 2,
+                    ..snp_attest::guest::TestIdentity::default()
+                },
+            )),
+            SnpConfig {
+                product: snp_attest::report::Product::Genoa,
+                trust: snp_test_trust(),
+            },
+            Arc::new(OtherImagesWrap),
+        )
+        .unwrap();
+        new.refresh_evidence(&TestEvidence).await.unwrap();
+        assert!(new.awaiting_handoff());
+
+        let wrong_token = engine::key_custody::request_handoff(
+            &reqwest::Client::new(),
+            &new,
+            &engine::key_custody::Handoff {
+                url: base_url.clone(),
+                token: "not-the-engine-token".into(),
+            },
+        )
+        .await;
+        assert!(wrong_token.is_err());
+        engine::key_custody::request_handoff(
+            &reqwest::Client::new(),
+            &new,
+            &engine::key_custody::Handoff {
+                url: base_url,
+                token: TEST_ENGINE_TOKEN.into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!new.awaiting_handoff());
+        new.unseal_and_register(&sealed).await.unwrap();
     }
 }

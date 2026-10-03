@@ -188,8 +188,8 @@ fn pages_follow_the_cursor_both_ways_and_time_ranges_apply() {
     let cursor = rows[3].cursor();
     assert_eq!(Cursor::parse(&cursor.encode()), Some(cursor));
     assert_eq!(
-        Cursor::parse("1.2.key-custody-server").unwrap().service,
-        "key-custody-server"
+        Cursor::parse("1.2.some-other-service").unwrap().service,
+        "some-other-service"
     );
     assert_eq!(Cursor::parse("x.2.a"), None);
 }

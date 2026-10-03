@@ -734,6 +734,7 @@ mod tests {
                 backends: Arc::clone(&key_custody),
                 default_backend: "plain".to_owned(),
                 wallet_handles: Arc::clone(&wallet_handles),
+                snp: None,
             },
             networks: crate::http::Networks {
                 daemons: daemons.clone(),

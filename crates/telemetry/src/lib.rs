@@ -1,4 +1,4 @@
-//! Structured logging for monokulo, the engine and the key-custody server
+//! Structured logging for monokulo and the engine
 //! (structured_logging.md part 1).
 //!
 //! Each process calls [`init`] once, first thing in `main`. That installs a
@@ -233,8 +233,7 @@ pub struct Telemetry {
 static GLOBAL: OnceLock<Arc<Telemetry>> = OnceLock::new();
 
 /// Installs the process-wide subscriber and returns its controls. `service`
-/// names the process in every line (`engine`, `monokulo`,
-/// `key-custody-server`). `env_prefix` names its environment variables:
+/// names the process in every line (`engine`, `monokulo`). `env_prefix` names its environment variables:
 /// `<PREFIX>_LOG` sets the starting level (it is also the level setting's
 /// variable, so it keeps winning after the settings load) and
 /// `<PREFIX>_LOG_FORMAT` picks the format.

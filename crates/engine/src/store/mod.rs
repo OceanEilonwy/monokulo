@@ -36,6 +36,9 @@ pub use work::{
     ReorgJob, ReorgPhase, StagedPayment,
 };
 
+/// A wrapped SEV-SNP master key: (measurement, guest SVN, wrapped key).
+pub type SnpMasterKeyRow = (Vec<u8>, u32, Vec<u8>);
+
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.
 /// Re-running the raw DDL against an already-migrated database (e.g. every time the
@@ -132,6 +135,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         26,
         include_str!("../../migrations/0026_webhook_deliveries_delivered_idx.sql"),
+    ),
+    (
+        27,
+        include_str!("../../migrations/0027_snp_master_keys.sql"),
     ),
 ];
 
@@ -1126,6 +1133,33 @@ impl Store {
         if changed == 0 {
             return Err(StoreError::NotFound);
         }
+        Ok(())
+    }
+
+    /// Every wrapped SEV-SNP master key (`key_custody::snp`).
+    pub fn snp_master_keys(&self) -> Result<Vec<SnpMasterKeyRow>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT measurement, guest_svn, wrapped FROM snp_master_keys")?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Stores the SEV-SNP master key wrapped for the image `measurement`,
+    /// replacing any earlier wrap for it.
+    pub fn save_snp_master_key(
+        &self,
+        measurement: &[u8],
+        guest_svn: u32,
+        wrapped: &[u8],
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO snp_master_keys (measurement, guest_svn, wrapped) VALUES (?1, ?2, ?3)
+             ON CONFLICT (measurement) DO UPDATE SET guest_svn = ?2, wrapped = ?3",
+            params![measurement, guest_svn, wrapped],
+        )?;
         Ok(())
     }
 
