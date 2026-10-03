@@ -229,9 +229,8 @@ async fn render_confirm_form(
         return_url: return_url.to_string(),
         nonce: nonce.to_string(),
         error: error.map(str::to_string),
-        view_key_hex: resubmit
-            .and_then(|f| f.view_key_hex.clone())
-            .unwrap_or_default(),
+        // Never echoed back: the private view key isn't put in a page.
+        view_key_hex: String::new(),
         spend_pubkey_hex: resubmit
             .and_then(|f| f.spend_pubkey_hex.clone())
             .unwrap_or_default(),
@@ -1347,13 +1346,13 @@ mod tests {
     }
 
     /// Same real UX bug `http/tests.rs`'s
-    /// `a_rejected_connect_submission_re_fills_every_field_the_merchant_typed`
+    /// `a_rejected_connect_submission_re_fills_what_the_merchant_typed_but_the_view_key`
     /// covers for `/dashboard/connect`, here for the plugin-driven
     /// `/connect/{platform}` confirm form: a rejected submission must not
     /// throw away the site_url/view key/spend key/network/allowed_origins
     /// the merchant already typed in.
     #[tokio::test]
-    async fn a_rejected_confirm_submission_re_fills_every_field_the_merchant_typed() {
+    async fn a_rejected_confirm_submission_re_fills_what_the_merchant_typed_but_the_view_key() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -1391,8 +1390,8 @@ mod tests {
             "expected a visible error, got: {html}"
         );
         assert!(
-            html.contains(&format!(r#"value="{TEST_VIEW_KEY_HEX}""#)),
-            "expected the valid view key kept, got: {html}"
+            !html.contains(TEST_VIEW_KEY_HEX),
+            "the private view key is never put back in a page: {html}"
         );
         assert!(
             html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),

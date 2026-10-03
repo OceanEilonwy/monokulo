@@ -27,8 +27,9 @@ pub struct SnpReady {
     pub bundle_is_file: bool,
     /// The ID key digest to trust, when it isn't the official one.
     pub trust_id_key: Option<String>,
-    /// The ID key digest trusted, for the page's script.
-    pub id_key_digest: String,
+    /// The ID key digest to trust, for the page's script, when it isn't the
+    /// official one built into the checker.
+    pub id_key_digest: Option<String>,
     pub min_guest_svn: u32,
     /// The lowest firmware trusted, for the page's script.
     pub min_tcb: String,
@@ -39,10 +40,13 @@ pub struct SnpReady {
     /// Its downloads; empty for a build that isn't a release.
     pub downloads: Vec<CliDownload>,
     pub source_url: String,
+    /// The command that checks a download was built by this project's
+    /// release workflow (GitHub build provenance), when it is on GitHub.
+    pub verify_command: Option<String>,
 }
 
 pub enum SnpKeyEntry {
-    Ready(SnpReady),
+    Ready(Box<SnpReady>),
     /// Why encrypted key entry can't be offered right now.
     Unavailable(String),
 }
@@ -86,7 +90,7 @@ pub fn snp_section(entry: &SnpKeyEntry, backend_field: Option<&str>) -> Markup {
 
 fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
     html! {
-        div class="box" data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=(ready.id_key_digest) data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) data-key-custody-backend-field=[backend_field] {
+        div class="box" data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=[ready.id_key_digest.as_deref()] data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) data-key-custody-backend-field=[backend_field] {
             h3 { "SEV-SNP key storage: your keys are encrypted for the engine" }
             p class="hint" {
                 "With SEV-SNP key storage, your keys are encrypted so that only the engine, running in an AMD "
@@ -122,6 +126,10 @@ fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
                                         " (" a href=(download.checksum_url) rel="noopener" { "SHA-256" } ")"
                                     }
                                 }
+                            }
+                            @if let Some(verify) = &ready.verify_command {
+                                "Check the file was built by this project's release, not just served next to its checksum: "
+                                code { (verify) } ". "
                             }
                             "Or read and build it from its "
                             a href=(ready.source_url) rel="noopener" target="_blank" { "source" } "."
@@ -164,7 +172,7 @@ mod tests {
             bundle_path: "/key-custody/bundles/abc".into(),
             bundle_is_file: false,
             trust_id_key: trust_id_key.map(str::to_owned),
-            id_key_digest: "ab".repeat(48),
+            id_key_digest: Some("ab".repeat(48)),
             min_guest_svn: 0,
             min_tcb: String::new(),
             command:
@@ -173,20 +181,21 @@ mod tests {
             version: "1.2.3".into(),
             downloads,
             source_url: "https://example.com/tree/v1.2.3/crates/key-custody-cli".into(),
+            verify_command: Some("gh attestation verify <file> --repo o/r".into()),
         }
     }
 
     #[test]
     fn a_release_links_its_own_cli_and_the_command_to_run() {
         let html = snp_section(
-            &SnpKeyEntry::Ready(ready(
+            &SnpKeyEntry::Ready(Box::new(ready(
                 None,
                 vec![CliDownload {
                     label: "Linux (x86-64)".into(),
                     url: "https://example.com/key-custody-cli-1.2.3-x86_64-unknown-linux-gnu.tar.gz".into(),
                     checksum_url: "https://example.com/key-custody-cli-1.2.3-x86_64-unknown-linux-gnu.tar.gz.sha256".into(),
                 }],
-            )),
+            ))),
             Some("key_custody_backend"),
         )
         .into_string();
@@ -212,8 +221,11 @@ mod tests {
 
     #[test]
     fn a_build_that_is_not_a_release_points_at_the_source_and_a_custom_key_is_named() {
-        let html =
-            snp_section(&SnpKeyEntry::Ready(ready(Some("cdcd"), vec![])), None).into_string();
+        let html = snp_section(
+            &SnpKeyEntry::Ready(Box::new(ready(Some("cdcd"), vec![]))),
+            None,
+        )
+        .into_string();
         assert!(html.contains("isn't a release build"), "{html}");
         assert!(
             html.contains("tree/v1.2.3/crates/key-custody-cli"),

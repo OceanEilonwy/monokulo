@@ -235,7 +235,8 @@ async fn render_connect_form(
         connection_id: None,
         public_url: None,
         site_url: resubmit.map(|f| f.site_url.clone()).unwrap_or_default(),
-        view_key_hex: resubmit.map(|f| f.view_key_hex.clone()).unwrap_or_default(),
+        // Never echoed back: the private view key isn't put in a page.
+        view_key_hex: String::new(),
         spend_pubkey_hex: resubmit
             .map(|f| f.spend_pubkey_hex.clone())
             .unwrap_or_default(),

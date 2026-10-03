@@ -259,3 +259,64 @@ only tests read (family/image ID, author key digest) and the CLI's test-only
 ### 28. SEV-SNP runs the engine standalone
 - **Decision:** `main` now runs the engine inside monokulo by default. The snp backend works in either mode, but an engine inside monokulo serves no HTTP API of its own, so it can't answer an upgraded engine's handoff (`POST /api/v1/admin/key-custody/handoff`). The SEV-SNP deploy guide runs the engine standalone (`monokulo-engine`), so upgrades keep the master key.
 - **Why:** answering a handoff through monokulo's public address would expose an engine route publicly, which the engine boundary rules out.
+
+## After the security pass
+
+A second review looked only at whether merchants' keys and payments are safe. These
+changes follow from it without changing anything decided earlier; the open items at the
+end need a decision.
+
+### 29. Monokulo decides "official" itself, and refuses a bad trust answer
+- **Finding:** the page's "official ID key" flag and the digest came from the engine's
+  answer, so a host could have a custom key presented as official.
+- **Decision:** monokulo compiles in the official digest and compares; the engine's
+  answer only supplies the configured digest, minimum security version and TCB floor,
+  each parsed, and a form isn't shown if any doesn't parse.
+
+### 30. The printed CLI command quotes every value
+- **Finding:** values from the engine were pasted into a shell command unquoted.
+- **Decision:** each is single-quoted for the shell (`shell_word`).
+
+### 31. The private view key is never put back in a page
+- **Finding:** a form that failed validation re-filled the view key.
+- **Decision:** everything else is re-filled; the view key is typed again.
+
+### 32. The guest device is fixed, and its answers are checked
+- **Finding:** `snp_device` was a host-controlled setting naming the device that
+  derives the sealing key; a status left unwritten read as success.
+- **Decision:** the setting is removed and `/dev/sev-guest` is fixed. The status is
+  pre-filled so the firmware must overwrite it, and an all-zero derived key is refused.
+  `root_key_select` stays 0 (the VCEK root, as older firmware expects).
+
+### 33. Guests a migration agent could export are refused
+- **Decision:** policy bit 18 (MIGRATE_MA) is refused by the bundle check, at the
+  engine's start, and by `cargo xtask snp-id-block`, which also refuses DEBUG.
+
+### 34. No going back to an older image
+- **Finding:** the security version stored with each wrap was never used, so a host
+  could run an older, flawed image after an upgrade.
+- **Decision:** an image older than any wrap in the database waits instead of taking
+  the master key. A restored copy of the database from before the upgrade still defeats
+  this; documented.
+
+### 35. The ID block workflow is locked down
+- **Decision:** `SNP_ID_KEY` belongs to the `snp-id-key` environment (required
+  reviewers, main and tags only), the job runs only from main or a version tag, restores
+  no cache and uses actions pinned to commits. **To do on GitHub:** create the
+  environment and move the secret into it.
+
+### 36. Documented limits
+- The host can learn which payments are a store's by feeding the engine crafted blocks.
+- The engine's clock is the host's; merchants' clients check against their own.
+- The TCB floor is a setting; the CLI enforces the merchant's own.
+- The forms show a `gh attestation verify` command for the CLI download.
+
+### Open, needing a decision
+- Moving the trust policy (digest, minimum version, TCB floor, and "stores must use
+  encrypted entry") into monokulo's own configuration, so the engine's host can't
+  weaken it or report `snp` absent to get keys typed in the clear. This reverses
+  "the engine is the one source of truth" for these values.
+- Binding the TCB version into the derived key, which needs testing on hardware.
+- Authenticating what the engine scans, against the payment-linking limit above.
+- TLS (or the same confidential VM) between monokulo and the engine.
+- A per-user limit on issued bundles.

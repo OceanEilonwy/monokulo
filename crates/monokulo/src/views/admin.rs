@@ -1602,7 +1602,6 @@ mod tests {
             ("key_custody.enabled_backends", E, Custody, None),
             ("key_custody.default_backend", E, Custody, None),
             ("key_custody.snp_product", E, Custody, None),
-            ("key_custody.snp_device", E, Custody, None),
             ("key_custody.snp_trusted_id_key", E, Custody, None),
             ("key_custody.snp_min_guest_svn", E, Custody, None),
             ("key_custody.snp_min_tcb", E, Custody, None),
@@ -2528,11 +2527,7 @@ mod tests {
                         },
                     ),
                     field("key_custody.enabled_backends", enabled, backends()),
-                    field(
-                        "key_custody.snp_device",
-                        "/dev/sev-guest",
-                        SettingKindView::Path,
-                    ),
+                    field("key_custody.snp_trusted_id_key", "", SettingKindView::Path),
                     field(
                         "key_custody.snp_min_guest_svn",
                         "",
@@ -2571,7 +2566,9 @@ mod tests {
             .find(r#"<section class="custody-backend" data-custody-backend="snp" hidden>"#)
             .expect(&html);
         assert!(
-            html.find(r#"name="key_custody.snp_device""#).unwrap() > snp,
+            html.find(r#"name="key_custody.snp_trusted_id_key""#)
+                .unwrap()
+                > snp,
             "{html}"
         );
         assert!(

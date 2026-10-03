@@ -87,7 +87,8 @@
           bundle: JSON.parse(box.dataset.keyCustodyBundle),
           view_key: view.value.trim(),
           spend_public_key: spend.value.trim(),
-          id_key_digest: box.dataset.keyCustodyIdKey,
+          // Absent for the official key, which the checker has built in.
+          id_key_digest: box.dataset.keyCustodyIdKey ?? null,
           min_guest_svn: Number(box.dataset.keyCustodyMinSvn || 0),
           min_tcb: box.dataset.keyCustodyMinTcb || '',
           now: Math.floor(Date.now() / 1000),

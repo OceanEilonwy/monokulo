@@ -202,6 +202,9 @@ mod linux {
                 reserved: [0; 28],
             };
             let mut response = Response { data: [0u8; 4000] };
+            // A status the firmware must overwrite: a device that answers
+            // without writing one isn't taken for success.
+            response.data[..4].fill(0xFF);
             self.request("report", SNP_GET_REPORT, &mut request, &mut response)?;
             Ok(response.data[PAYLOAD..PAYLOAD + REPORT_LEN].to_vec())
         }
@@ -219,16 +222,25 @@ mod linux {
                 tcb_version: request.tcb_version,
             };
             let mut response = Response { data: [0u8; 64] };
+            response.data[..4].fill(0xFF);
             let result = self.request(
                 "derived key",
                 SNP_GET_DERIVED_KEY,
                 &mut key_request,
                 &mut response,
             );
-            let key = result.map(|()| {
+            let key = result.and_then(|()| {
                 let mut key = Zeroizing::new([0u8; 32]);
                 key.copy_from_slice(&response.data[PAYLOAD..PAYLOAD + 32]);
-                key
+                // No real derived key is all zeros: a device that didn't
+                // write one is not to seal with.
+                if key.iter().all(|b| *b == 0) {
+                    return Err(GuestError::Status {
+                        request: "derived key",
+                        status: 0,
+                    });
+                }
+                Ok(key)
             });
             response.data.zeroize();
             key
