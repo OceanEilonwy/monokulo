@@ -3,4 +3,6 @@
 //!
 //! - [`machine`]: the page's logic, a pure state machine from the engine's
 //!   activity events to the page's state, what to animate, and sentences.
+pub mod history;
 pub mod machine;
+pub mod present;
