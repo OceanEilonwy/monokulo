@@ -43,11 +43,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use monero::Address;
-use shared::key_custody::{
+use key_custody::{
     KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,
     TxMatches, WalletHandle, WalletMaterial,
 };
+use monero::Address;
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 

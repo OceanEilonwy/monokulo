@@ -14,14 +14,7 @@ test-support = []
 subtle = "2.6.1"
 parking_lot = "0.12.5"
 argon2 = "0.5"
-# WBS 2.1.3: `key_custody`'s `KeyCustody` trait and its domain types (`WalletHandle`,
-# `WalletMaterial`, `KeyCustodyError`, `MatchedOutput`) moved here from
-# `engine` so that `key-custody-service` (the socket client `main.rs` needs
-# to talk to an out-of-process backend) can depend on them without depending on
-# `engine` itself - see `key_custody.rs`'s own module doc comment for the
-# full reasoning (a real `cyclic package dependency` Cargo error, not a style
-# preference). `async-trait` is `KeyCustody`'s own trait-object-safety requirement;
-# `uuid`/`zeroize` are `WalletHandle`/`WalletMaterial`'s.
+# `http_cache`'s async cache trait.
 async-trait = "0.1.92"
 bytes = "1.12.1"
 hex = "0.4.3"
@@ -55,7 +48,6 @@ tracing = "0.1.44"
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
-zeroize = { version = "1.9.0", features = ["derive"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
 [dev-dependencies]

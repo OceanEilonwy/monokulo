@@ -37,6 +37,7 @@ http-body-util = "0.1.5"
 # or runs the standalone binary; that stays a separate process this crate only
 # ever dials as a client.
 key-custody-service = { path = "../key-custody-service" }
+key-custody = { path = "../key-custody" }
 monero = "0.22.0"
 # `RpcDaemonClient::get_blocks_range`'s real `get_blocks.bin` batching (see
 # `daemon_rpc.rs`'s own doc comment) - a small, standalone epee-binary-protocol

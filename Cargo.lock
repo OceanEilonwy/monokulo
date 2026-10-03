@@ -1100,6 +1100,7 @@ dependencies = [
  "hmac 0.13.0",
  "http-body",
  "http-body-util",
+ "key-custody",
  "key-custody-service",
  "live-settings",
  "monero",
@@ -2053,6 +2054,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "key-custody"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "hex",
+ "monero",
+ "parking_lot",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "key-custody-server"
 version = "0.1.0"
 dependencies = [
@@ -2073,6 +2091,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "hex",
+ "key-custody",
  "monero",
  "parking_lot",
  "serde",
@@ -3811,7 +3830,6 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "zeroize",
 ]
 
 [[package]]

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use monero::Address;
 use parking_lot::RwLock;
 
-use super::{
+use crate::{
     KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,
     TxMatches, WalletHandle, WalletMaterial,
 };
@@ -51,7 +51,7 @@ impl CustodyRouter {
         let mut backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::new();
         backends.insert(
             "plain".to_owned(),
-            Arc::new(super::PlainKeyCustody::default()),
+            Arc::new(crate::PlainKeyCustody::default()),
         );
         Self::new(backends, "plain")
     }
@@ -382,7 +382,7 @@ pub fn free_handles(handles: Vec<(Arc<dyn KeyCustody>, WalletHandle)>) {
         for (custody, handle) in handles {
             let removed = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                super::remove_wallet_logged(
+                crate::remove_wallet_logged(
                     custody.as_ref(),
                     handle,
                     None,
@@ -404,7 +404,7 @@ pub fn free_handles(handles: Vec<(Arc<dyn KeyCustody>, WalletHandle)>) {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::key_custody::PlainKeyCustody;
+    use crate::PlainKeyCustody;
 
     fn material(seed: u8) -> WalletMaterial {
         let mut view = [seed; 32];
@@ -608,8 +608,7 @@ mod tests {
         backend
             .refuses_removals
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        super::super::remove_wallet_logged(&backend, handle, Some("st_down"), "deleting a store")
-            .await;
+        crate::remove_wallet_logged(&backend, handle, Some("st_down"), "deleting a store").await;
         assert_eq!(logs.count(FAILED), 1, "{}", logs.text());
         assert!(logs.text().contains("st_down"), "{}", logs.text());
         assert!(logs.text().contains("deleting a store"), "{}", logs.text());
@@ -617,9 +616,8 @@ mod tests {
         backend
             .refuses_removals
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        super::super::remove_wallet_logged(&backend, handle, Some("st_down"), "deleting a store")
-            .await;
-        super::super::remove_wallet_logged(&backend, handle, None, "deleting a store").await;
+        crate::remove_wallet_logged(&backend, handle, Some("st_down"), "deleting a store").await;
+        crate::remove_wallet_logged(&backend, handle, None, "deleting a store").await;
         assert_eq!(
             logs.count(FAILED),
             1,
