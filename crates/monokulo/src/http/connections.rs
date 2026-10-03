@@ -149,7 +149,15 @@ pub(super) async fn create_connection_for_user(
         })?;
 
     // Keys typed in the clear never go on to a backend that takes them only
-    // encrypted.
+    // encrypted: with no backend named, the engine's default decides, so its
+    // status is read first if it isn't known.
+    if req.key_custody_backend.is_none() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            super::status_page::get_status_cached(&state.engine),
+        )
+        .await;
+    }
     let keys = super::key_entry::store_keys(
         &state.engine,
         req.key_custody_backend.as_deref(),

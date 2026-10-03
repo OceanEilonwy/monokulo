@@ -130,12 +130,16 @@ snp_product = "Genoa"            # Milan, Genoa or Turin: the host's EPYC genera
 # snp_device = "/dev/sev-guest"
 # snp_trusted_id_key = "..."     # only for your own ID key; empty trusts the official one
 # snp_min_guest_svn = 1
+snp_min_tcb = "10,0,23,213"      # bootloader,tee,snp,microcode: the levels AMD's bulletins name for your product
 # snp_handoff_url = "http://10.0.0.5:8443"   # only when upgrading, see §6
 ```
 
 `/etc/monokulo/engine.env` holds `ENGINE_TOKEN` (the same value monokulo has as
 `MONOKULO_ENGINE_TOKEN`). The `snp_*` settings apply at a restart and can't be
-changed from monokulo's admin page.
+changed from monokulo's admin page. Set `snp_min_tcb` to the firmware levels that
+fix the SEV-SNP issues AMD has published for your EPYC generation (§1 gives the
+levels your host reports): the engine, merchants' key entry and handoffs then
+refuse anything older. The example above is a placeholder, not a recommendation.
 
 **Keep the engine private.** Its `server.bind` defaults to `127.0.0.1:8443`;
 bind it only to a private address monokulo can reach, never a public one.

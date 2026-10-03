@@ -162,7 +162,7 @@ pub async fn run_snp_upkeep(slot: Arc<SnpSlot>, handoff: Option<Handoff>) {
                 }
             }
             if let (true, Some(handoff)) = (snp.awaiting_handoff(), handoff.as_ref()) {
-                match request_handoff(&http, &snp, handoff).await {
+                match request_handoff(&http, &snp, handoff, slot.anchor()).await {
                     Ok(()) => {
                         tracing::info!(from = %handoff.url, "snp key custody: took the master key over from the engine this one replaces");
                     }
@@ -176,12 +176,16 @@ pub async fn run_snp_upkeep(slot: Arc<SnpSlot>, handoff: Option<Handoff>) {
     }
 }
 
-/// Asks the engine at `handoff.url` for the master key, with this engine's
-/// handoff bundle, and takes it.
+/// Asks the engine at `handoff.url` for the master key, and takes it.
+///
+/// The request is this engine's handoff bundle; the answer must be attested
+/// (under `anchor`, AMD's chain in production) by an engine signed by this
+/// one's ID key.
 pub async fn request_handoff(
     http: &reqwest::Client,
     snp: &SnpKeyCustody,
     handoff: &Handoff,
+    anchor: &Anchor,
 ) -> Result<(), String> {
     let bundle = snp
         .handoff_bundle(::key_custody::snp::unix_now())
@@ -202,9 +206,9 @@ pub async fn request_handoff(
         let body = response.text().await.unwrap_or_default();
         return Err(format!("{status}: {body}"));
     }
-    let envelope: ::key_custody::transport::Envelope =
+    let answer: ::key_custody::transport::HandoffAnswer =
         response.json().await.map_err(|e| e.to_string())?;
-    snp.accept_handoff(&envelope)
+    snp.accept_handoff(&answer, anchor, ::key_custody::snp::unix_now())
 }
 
 /// Stands in for a backend that couldn't start: every call says why, so its

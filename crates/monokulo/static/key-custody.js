@@ -89,6 +89,7 @@
           spend_public_key: spend.value.trim(),
           id_key_digest: box.dataset.keyCustodyIdKey,
           min_guest_svn: Number(box.dataset.keyCustodyMinSvn || 0),
+          min_tcb: box.dataset.keyCustodyMinTcb || '',
           now: Math.floor(Date.now() / 1000),
         });
         if (out.error) {

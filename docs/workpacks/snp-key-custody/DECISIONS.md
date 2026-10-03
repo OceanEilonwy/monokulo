@@ -183,3 +183,75 @@ Format: **Decision**, **Alternatives**, **Why**.
 - The engine test `the_engine_starts_without_a_file_and_follows_one_and_its_options`
   failed once under load (it races on `free_port`); it passes alone and repeatedly. This
   predates this work.
+
+## After the review
+
+A review of the pull request (a separate agent, reading the change cold) found the
+following; each was fixed as described unless it says otherwise.
+
+### 20. A handoff answer must be attested by the engine handing over
+- **Finding:** the successor took any envelope sealed to its handoff key. HPKE's base
+  mode doesn't say who sealed it, and the handoff request travels in the clear to
+  whatever `snp_handoff_url` names. A host could empty the wraps, point the setting at
+  its own server and plant a master key it knows; merchants re-entering their keys
+  would then seal them under it.
+- **Decision:** the answer (`HandoffAnswer`) carries a report of the answering engine
+  whose REPORT_DATA binds the successor's key and the envelope (challenge, encapsulated
+  key, ciphertext). The successor checks it against AMD's chain and takes it only from
+  an engine signed by its own ID key, at the minimum security version and firmware.
+
+### 21. The launch's own ID key is mixed into the wrapping key, and handoffs follow it
+- **Finding:** the trusted ID key was a setting the host controls, and the wrapping key
+  didn't depend on it. The host could relaunch the genuine image under an ID block of
+  its own, configured to trust its key: same measurement, same derived key, the real
+  master key unwrapped. That engine would then hand it to any image the host signed.
+- **Decision:** the wrapping key is HMAC(derived key, label ‖ the ID key digest in this
+  launch's own report). The same image under another ID key gets another wrapping key
+  and waits for a handoff. Handoffs, both ways, go only to images signed by the engine's
+  own attested ID key, not the configured one (which must match it to start at all).
+
+### 22. A firmware floor (`key_custody.snp_min_tcb`)
+- **Finding:** nothing refused reports from old firmware with known SEV-SNP breaks, and
+  AMD keeps certifying old TCBs.
+- **Decision:** `TrustPolicy` gains `min_tcb`: the bootloader, TEE, SNP and microcode
+  patch levels the reported TCB must reach. The engine setting is checked at start and
+  in handoffs, sent to the browser with the bundle, and put into the printed CLI command
+  (`--min-tcb`). There is no built-in default: the right levels depend on the product
+  and AMD's bulletins, and a wrong guess would either refuse every engine or protect
+  nothing. The deploy guide says to set it.
+
+### 23. A revocation list must be in force
+- **Finding:** an old, validly signed revocation list could be replayed past a revocation.
+- **Decision:** a list whose next update has passed, or that isn't issued yet, is
+  refused. The engine fetches a new one twice a day.
+
+### 24. Challenges are used up only by an envelope that opens
+- **Finding:** anyone who saw a bundle could spend its challenge with a garbage envelope.
+- **Decision:** a challenge is removed once its envelope opens (atomically, so of two
+  copies only one registers). Issuing is not rate-limited per user beyond monokulo's
+  existing limits; each bundle needs a signed-in form load.
+
+### 25. Typed keys aren't sent when the default backend is unknown
+- **Finding:** with no backend named and monokulo's status cache empty, typed keys went
+  to the engine, which might default to `snp`.
+- **Decision:** monokulo reads the engine's status first; if it still can't tell, it
+  refuses without forwarding.
+
+### 26. Release images carry the release identity
+- **Finding:** Docker images had no release tag or commit, so their forms linked no CLI
+  download.
+- **Decision:** the Dockerfile takes `MONOKULO_RELEASE_TAG` and `MONOKULO_GIT_COMMIT` as
+  build arguments, and CI passes them.
+
+### 27. Kept: the browser and the printed CLI command use the engine's trusted digest
+- **Finding:** the page and the printed `--trust-id-key` take the digest from the
+  engine's configuration, which the host controls.
+- **Decision:** kept as you decided (one source of truth, the digest in the command,
+  with a warning to confirm it with the operator). Decision 21 removes what made it
+  dangerous for the official key: a host-configured key no longer unwraps or receives the
+  real master key. For an instance on its own key, merchants who want the strongest
+  guarantee get the digest from the operator, not the page; the page says so.
+
+Also fixed: the CLI's packaging step no longer needs Python on Windows; the report fields
+only tests read (family/image ID, author key digest) and the CLI's test-only
+`check_against` were removed; a stale comment named the socket backend.

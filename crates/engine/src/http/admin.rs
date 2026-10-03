@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::auth::generate_webhook_secret;
 use crate::daemon::MoneroDaemonClient as _;
 use crate::engine_settings::EngineSettings;
-use crate::key_custody::transport::{Action, Bundle, Envelope};
+use crate::key_custody::transport::{Action, Bundle, Envelope, HandoffAnswer};
 use crate::key_custody::{
     remove_wallet_logged, KeyCustodyError, SubaddressIndex, WalletHandle, WalletMaterial,
 };
@@ -515,6 +515,8 @@ pub(super) struct TrustView {
     /// the CLI with `--trust-id-key`.
     official: bool,
     min_guest_svn: u32,
+    /// The lowest firmware trusted: `bootloader,tee,snp,microcode`, or empty.
+    min_tcb: String,
 }
 
 #[derive(Serialize)]
@@ -536,6 +538,7 @@ fn trust_view(state: &AppState) -> Result<TrustView, ApiError> {
         official: crate::key_custody::transport::official_id_key_digest()
             == Some(trust.id_key_digest),
         min_guest_svn: trust.min_guest_svn,
+        min_tcb: trust.min_tcb.to_text(),
     })
 }
 
@@ -588,12 +591,12 @@ pub(super) async fn move_key_bundle(
 
 /// `POST /api/v1/admin/key-custody/handoff` - an upgraded engine asking this
 /// one for the snp master key (`key_custody::snp`). Answered only for an
-/// engine image signed by the trusted ID key at this engine's security
-/// version or later, and encrypted to that engine alone.
+/// engine image signed by this engine's own ID key at its security version
+/// or later: encrypted to that engine alone, and attested by this one.
 pub(super) async fn answer_handoff(
     State(state): State<AppState>,
     Json(bundle): Json<Bundle>,
-) -> Result<Json<Envelope>, ApiError> {
+) -> Result<Json<HandoffAnswer>, ApiError> {
     let slot = state.custody.snp.as_ref().ok_or_else(|| {
         ApiError::Unavailable("this engine has no snp key custody backend".into())
     })?;

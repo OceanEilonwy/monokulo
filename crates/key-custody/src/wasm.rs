@@ -5,7 +5,8 @@
 //! from `crypto.getRandomValues`).
 //!
 //! Input: `{"bundle": {...}, "view_key": hex, "spend_public_key": hex,
-//! "id_key_digest": hex or null, "min_guest_svn": n, "now": unix seconds}`.
+//! "id_key_digest": hex or null, "min_guest_svn": n, "min_tcb":
+//! "bootloader,tee,snp,microcode" or "", "now": unix seconds}`.
 //! An `id_key_digest` of null means the official one built in.
 //!
 //! Output: `{"envelope": "<text to submit>", "measurement": hex,
@@ -81,6 +82,8 @@ struct Input {
     id_key_digest: Option<String>,
     #[serde(default)]
     min_guest_svn: u32,
+    #[serde(default)]
+    min_tcb: String,
     now: i64,
 }
 
@@ -124,6 +127,7 @@ fn seal_input(input: &Input) -> Result<Output, String> {
     let policy = TrustPolicy {
         id_key_digest,
         min_guest_svn: input.min_guest_svn,
+        min_tcb: transport::TcbFloor::parse(&input.min_tcb).map_err(|e| e.to_string())?,
     };
     let verified = transport::verify_bundle(&input.bundle, &policy, &Anchor::Amd, input.now)
         .map_err(|e| e.to_string())?;

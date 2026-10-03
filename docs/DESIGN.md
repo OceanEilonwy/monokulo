@@ -317,17 +317,21 @@ Invariants every implementation (including future ones) must uphold:
   - *At rest*: `seal` encrypts a store's keys (AES-256-GCM) under a master key. The
     master key is stored wrapped, once per engine image, in `snp_master_keys`, under a
     key the security processor derives from the chip and the image's **launch
-    measurement** (`SNP_GET_DERIVED_KEY`, policy + measurement). The measurement and
-    not the ID block's family/image IDs: the firmware doesn't mix the ID key into
-    derived keys, so a host could launch its own image with a self-signed ID block
-    carrying the same IDs and derive the same key.
+    measurement** (`SNP_GET_DERIVED_KEY`, policy + measurement), mixed with the ID key
+    digest the launch's own report attests. The measurement and not the ID block's
+    family/image IDs: the firmware doesn't mix the ID key into derived keys, so a host
+    could launch its own image with a self-signed ID block carrying the same IDs and
+    derive the same key; and the attested ID key, so the same image relaunched under
+    another ID key can't unwrap either.
   - *Upgrades*: a new image can't unwrap the old image's wrap. It gets the master key
     from the engine it replaces (`key_custody.snp_handoff_url`): it sends a bundle for
     the `handoff` action; the old engine checks, against AMD's chain, that it comes
-    from an image signed by the trusted ID key at the same security version or later,
-    and encrypts the master key to it (`POST /api/v1/admin/key-custody/handoff`). So
-    every upgrade signed with the trusted ID key keeps every store's keys, and nothing
-    else can take them.
+    from an image signed by its own ID key at the same security version or later, and
+    encrypts the master key to it, attesting the answer with a report of its own whose
+    REPORT_DATA binds the envelope (`POST /api/v1/admin/key-custody/handoff`). The new
+    engine takes only such an answer, from an engine signed by its own ID key. So every
+    upgrade signed with the same ID key keeps every store's keys, and nothing else can
+    take them or plant a master key.
   - *At start*: a wrap for this image is unwrapped; no wraps at all is a new
     installation (a master key is made); only other images' wraps leaves the backend
     waiting for a handoff, reported unavailable with the reason. A store whose sealed
@@ -335,7 +339,8 @@ Invariants every implementation (including future ones) must uphold:
     owner enters its keys again.
   - The engine checks its own report at start: launched with an ID block signed by the
     trusted ID key (`key_custody.snp_trusted_id_key`, else the official one), at
-    `key_custody.snp_min_guest_svn` or later, not debuggable. Otherwise the backend
+    `key_custody.snp_min_guest_svn` or later, on firmware at `key_custody.snp_min_tcb`
+    or later, not debuggable. Otherwise the backend
     doesn't start and a stand-in reports why, so `plain` stores carry on.
 
 ### 6.4 Key custody per store
@@ -378,8 +383,9 @@ an hour (`POST /api/v1/admin/key-custody/bundle`,
 `POST /api/v1/admin/tenant/key-custody/bundle`).
 
 The client checks the bundle: the report chains to AMD's pinned root for its product,
-the guest can't be debugged, its image is signed by the trusted ID key at the minimum
-security version or later, and the public key is the one the report vouches for. Then it
+with a revocation list in force; the guest can't be debugged; its image is signed by
+the trusted ID key at the minimum security version or later, on firmware at the minimum
+TCB or later; and the public key is the one the report vouches for. Then it
 encrypts the keys with HPKE (RFC 9180: X25519, HKDF-SHA256, AES-256-GCM), binding the
 challenge, action and store. Monokulo and the engine's HTTP layer only relay the
 **envelope** (`encrypted_keys`); only the backend opens it, once.

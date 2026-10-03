@@ -30,6 +30,8 @@ pub struct SnpReady {
     /// The ID key digest trusted, for the page's script.
     pub id_key_digest: String,
     pub min_guest_svn: u32,
+    /// The lowest firmware trusted, for the page's script.
+    pub min_tcb: String,
     /// The command to run.
     pub command: String,
     /// This monokulo's version: the key-custody-cli release that matches it.
@@ -84,7 +86,7 @@ pub fn snp_section(entry: &SnpKeyEntry, backend_field: Option<&str>) -> Markup {
 
 fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
     html! {
-        div class="box" data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=(ready.id_key_digest) data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-backend-field=[backend_field] {
+        div class="box" data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=(ready.id_key_digest) data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) data-key-custody-backend-field=[backend_field] {
             h3 { "SEV-SNP key storage: your keys are encrypted for the engine" }
             p class="hint" {
                 "With SEV-SNP key storage, your keys are encrypted so that only the engine, running in an AMD "
@@ -164,6 +166,7 @@ mod tests {
             trust_id_key: trust_id_key.map(str::to_owned),
             id_key_digest: "ab".repeat(48),
             min_guest_svn: 0,
+            min_tcb: String::new(),
             command:
                 "key-custody-cli seal --bundle https://pay.example.com/key-custody/bundles/abc"
                     .into(),

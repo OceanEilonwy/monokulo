@@ -36,6 +36,9 @@
 //! browser calls (built for `wasm32-unknown-unknown` by monokulo's build
 //! script).
 
+// Test modules are left out of coverage reports (`cargo +nightly llvm-cov`).
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 #[cfg(feature = "backends")]
 mod custody;
 #[cfg(feature = "backends")]

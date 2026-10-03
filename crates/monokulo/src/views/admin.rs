@@ -1605,6 +1605,7 @@ mod tests {
             ("key_custody.snp_device", E, Custody, None),
             ("key_custody.snp_trusted_id_key", E, Custody, None),
             ("key_custody.snp_min_guest_svn", E, Custody, None),
+            ("key_custody.snp_min_tcb", E, Custody, None),
             ("key_custody.snp_handoff_url", E, Custody, None),
             (
                 "key_custody.cli_download_url",

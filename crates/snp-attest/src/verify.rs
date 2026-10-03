@@ -66,6 +66,8 @@ pub enum VerifyError {
     NotSignedByVcek,
     #[error("AMD's revocation list does not verify against the pinned ARK - refusing to trust it")]
     CrlNotSignedByArk,
+    #[error("AMD's revocation list is out of date (or not yet in force): an old list could hide a revocation")]
+    CrlStale,
     #[error("AMD has revoked the {which} certificate: its key is not to be trusted")]
     Revoked { which: &'static str },
 }
@@ -199,7 +201,12 @@ pub fn verify_evidence(
 
     // And neither may be on AMD's revocation list: a chip whose key was
     // revoked still signs reports that check out against the chain.
-    check_not_revoked(&evidence.crl_der, &ark, &[("ASK", &ask), ("VCEK", &vcek)])?;
+    check_not_revoked(
+        &evidence.crl_der,
+        &ark,
+        &[("ASK", &ask), ("VCEK", &vcek)],
+        now,
+    )?;
 
     // A VCEK is issued bound to one TCB tuple and one chip: this catches a
     // report paired with the wrong VCEK (a stale one, or another chip's).
@@ -280,11 +287,12 @@ pub async fn verify(
 }
 
 /// Refuses `certs` if the revocation list `crl_der`, which must be signed
-/// by `ark`, lists any of them.
+/// by `ark` and in force at `now`, lists any of them.
 fn check_not_revoked(
     crl_der: &[u8],
     ark: &X509Certificate<'_>,
     certs: &[(&'static str, &X509Certificate<'_>)],
+    now: ASN1Time,
 ) -> Result<(), VerifyError> {
     let (_, crl) = CertificateRevocationList::from_der(crl_der)
         .map_err(|e| VerifyError::CertParse(e.to_string()))?;
@@ -292,6 +300,11 @@ fn check_not_revoked(
         || !rsa_pss_verifies(crl.tbs_cert_list.as_ref(), &crl.signature_value.data, ark)
     {
         return Err(VerifyError::CrlNotSignedByArk);
+    }
+    // A list past its next update could be an old one replayed from before
+    // a revocation.
+    if crl.last_update() > now || crl.next_update().is_some_and(|next| next < now) {
+        return Err(VerifyError::CrlStale);
     }
     for (which, cert) in certs {
         if crl
@@ -473,6 +486,36 @@ pub fn verify_report_signed_by(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-10-02, inside every test certificate's validity period and
+    /// every fixture revocation list's.
+    const NOW: i64 = 1_790_899_200;
+
+    fn at(unix: i64) -> ASN1Time {
+        ASN1Time::from_timestamp(unix).unwrap()
+    }
+
+    /// A revocation list past its next update, or not yet issued, is
+    /// refused: an old list could hide a revocation.
+    #[test]
+    fn an_out_of_date_revocation_list_is_refused() {
+        let chain =
+            parse_pem_chain(include_str!("../tests/fixtures/genoa_ask_ark_chain.pem")).unwrap();
+        let ask = chain[0].parse_x509().unwrap();
+        let pinned = parse_pem_chain(pinned_ark::pinned_ark_pem(Product::Genoa)).unwrap();
+        let ark = pinned[0].parse_x509().unwrap();
+        let crl = include_bytes!("../tests/fixtures/genoa_crl.der");
+        // 2026-12-01, after its next update (2026-11-09).
+        assert!(matches!(
+            check_not_revoked(crl, &ark, &[("ASK", &ask)], at(1_796_083_200)),
+            Err(VerifyError::CrlStale)
+        ));
+        // 2026-09-01, before it was issued (2026-09-22).
+        assert!(matches!(
+            check_not_revoked(crl, &ark, &[("ASK", &ask)], at(1_788_220_800)),
+            Err(VerifyError::CrlStale)
+        ));
+    }
     use p384::ecdsa::{Signature as SigT, SigningKey};
 
     /// Proves the ASK-by-ARK link of the real AMD chain verifies correctly
@@ -539,7 +582,7 @@ mod tests {
             let ask = chain[0].parse_x509().unwrap();
             let pinned = parse_pem_chain(pinned_ark::pinned_ark_pem(product)).unwrap();
             let ark = pinned[0].parse_x509().unwrap();
-            check_not_revoked(crl, &ark, &[("ASK", &ask)])
+            check_not_revoked(crl, &ark, &[("ASK", &ask)], at(NOW))
                 .unwrap_or_else(|e| panic!("{product:?}: {e}"));
         }
 
@@ -549,6 +592,7 @@ mod tests {
                 include_bytes!("../tests/fixtures/milan_crl.der"),
                 &genoa[0].parse_x509().unwrap(),
                 &[],
+                at(NOW),
             ),
             Err(VerifyError::CrlNotSignedByArk)
         ));
@@ -564,15 +608,20 @@ mod tests {
             parse_der_cert(include_bytes!("../tests/fixtures/test_crl/revoked.der")).unwrap();
         let good = parse_der_cert(include_bytes!("../tests/fixtures/test_crl/good.der")).unwrap();
 
-        assert!(check_not_revoked(crl, &ca, &[("VCEK", &good)]).is_ok());
+        assert!(check_not_revoked(crl, &ca, &[("VCEK", &good)], at(NOW)).is_ok());
         assert!(matches!(
-            check_not_revoked(crl, &ca, &[("ASK", &good), ("VCEK", &revoked)]),
+            check_not_revoked(crl, &ca, &[("ASK", &good), ("VCEK", &revoked)], at(NOW)),
             Err(VerifyError::Revoked { which: "VCEK" })
         ));
         // Signed by someone else: refused before its contents count.
         let milan = parse_pem_chain(pinned_ark::pinned_ark_pem(Product::Milan)).unwrap();
         assert!(matches!(
-            check_not_revoked(crl, &milan[0].parse_x509().unwrap(), &[("VCEK", &good)]),
+            check_not_revoked(
+                crl,
+                &milan[0].parse_x509().unwrap(),
+                &[("VCEK", &good)],
+                at(NOW)
+            ),
             Err(VerifyError::CrlNotSignedByArk)
         ));
     }
@@ -661,9 +710,6 @@ mod tests {
         raw[0x34..0x38].copy_from_slice(&1u32.to_le_bytes());
         crate::report::parse(&raw, Product::Genoa).unwrap()
     }
-
-    /// 2026-10-02, inside every test certificate's validity period.
-    const NOW: i64 = 1_790_899_200;
 
     /// The offline pipeline refuses a chip key AMD's ASK didn't issue, a
     /// chain under another product's root, and certificates out of date,
